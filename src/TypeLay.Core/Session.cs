@@ -234,7 +234,7 @@ public sealed class Session
         }
         _candidate = text;
         _preview = text;
-        _previewRevision = _revision;
+        _previewRevision = job.Revision;
         _translationPending = false;
         _job = null;
         if (job.Kind == TranslationKind.AppendToManual)
@@ -470,7 +470,9 @@ public sealed class Session
         State = _current is { IsUsable: true } current
             ? string.IsNullOrWhiteSpace(current.SourceText) ? SessionState.IdleCapsule : SessionState.Translating
             : SessionState.NoSession;
-        _translationPending = State == SessionState.Translating;
+        // Observe must also be able to refresh a safe committed preview during IME.
+        // An empty, usable field is the only case that needs no translation work.
+        _translationPending = State != SessionState.IdleCapsule;
     }
 
     public bool CancelSourceReturn()
