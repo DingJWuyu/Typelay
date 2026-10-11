@@ -78,4 +78,33 @@ jobs:
             artifacts/TypeLay-Windows-preview.zip.sha256
           if-no-files-found: warn
           retention-days: 14
+  linux:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    timeout-minutes: 20
+    steps:
+      - name: Install target desktop build dependencies
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject gtk-layer-shell niri mesa xorg-server-xvfb xdotool dbus
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the native GTK adapter
+        run: |
+          cmake -S src/TypeLay.Linux/native -B artifacts/linux/native -G Ninja -DCMAKE_BUILD_TYPE=Release -DTYPELAY_NATIVE_TESTS=ON
+          cmake --build artifacts/linux/native
+      - name: Exercise actual GTK fields in nested niri
+        run: |
+          Xvfb :99 -screen 0 1280x960x24 -nolisten tcp &
+          export DISPLAY=:99
+          python tests/linux/native_e2e.py --native artifacts/linux/native --output artifacts/linux/nested
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: typelay-linux-${{ github.sha }}
+          path: |
+            artifacts/linux/nested/
+            artifacts/linux/native/libtypelay-gtk3.so
+            artifacts/linux/native/typelay-supervise
+          if-no-files-found: warn
+          retention-days: 14
 # Passing this job does not certify physical Tab, Chinese IME, visual parity or safe universal writeback.
