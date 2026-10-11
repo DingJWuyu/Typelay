@@ -17,7 +17,10 @@ internal sealed class SettingsWindow : Window
     private readonly Action _openTutorial;
     private string _page = "general", _setupStatus = "";
     private string? _settingsError;
-    public Func<string>? ShortcutStatus { get; set; }
+    public Func<string>? ShortcutStatus
+    {
+        get; set;
+    }
     private CancellationTokenSource? _install;
     private ProgressBar? _progress;
     private TextBlock? _progressLabel;
@@ -216,8 +219,12 @@ internal sealed class SettingsWindow : Window
         if (!_model.Ready)
             InstallCard();
         Row("启用 TypeLay", "暂停后保留托盘入口，输入框旁不显示翻译界面。", UiTheme.Toggle(_settings.Value.Enabled, () => Save(_settings.Value with { Enabled = !_settings.Value.Enabled })));
-        var modes = new ComboBox { MinWidth = 155, ItemsSource = new[] { "自动模式（默认）", "按需模式" },
-            SelectedIndex = _settings.Value.Mode == WorkMode.OnDemand ? 1 : 0 };
+        var modes = new ComboBox
+        {
+            MinWidth = 155,
+            ItemsSource = new[] { "自动模式（默认）", "按需模式" },
+            SelectedIndex = _settings.Value.Mode == WorkMode.OnDemand ? 1 : 0
+        };
         System.Windows.Automation.AutomationProperties.SetName(modes, "工作模式");
         modes.SelectionChanged += (_, _) => Save(_settings.Value with { Mode = modes.SelectedIndex == 1 ? WorkMode.OnDemand : WorkMode.Automatic });
         Row("工作模式", "自动模式保留实时翻译；按需模式保持静默，仅通过快捷键启动。", modes);
@@ -307,15 +314,22 @@ internal sealed class SettingsWindow : Window
         save.Margin = new(0, 8, 0, 14);
         _content.Children.Add(save);
         Note("按需快捷键状态", ShortcutStatus?.Invoke() ?? "仅在启用 TypeLay 的按需模式下生效。自动模式不注册这两个快捷键。");
-        Note("直接替换的当前限制", "一次性本地翻译流程已接通，但现有输入后端尚不支持可靠的后台写回。目前直译会安全拒写，不会修改原文，也不会回退到抢焦点或实验性 Tab 写回。失败原因可在托盘快速面板查看。");
+        Note("直接替换的当前范围", "Windows x64 中通过运行时校验的原生 Edit 控件支持后台写回。翻译时可以切换焦点，结果仍只写回原输入框；冲突、输入法状态不明或不兼容控件会安全拒写。不会抢回焦点，也不使用实验性 Tab 写回作为后备。结果与失败原因可在托盘快速面板查看。");
         Note("组合键格式", "例如 Ctrl+Shift+F9。支持 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24，排除系统保留的 F12。组合键被其他应用占用时，设置仍保存，但对应命令不会启用。");
         Rule();
         Note("保留原应用快捷键", "Ctrl / Alt / Shift / Win 与 Tab 的组合交还原应用。没有有效候选时，Tab 不执行接受。");
     }
     private static TextBox ShortcutInput(string value, string label)
     {
-        var input = new TextBox { Text = value, Width = 178, MaxLength = 64, Padding = new(9, 8, 9, 8),
-            VerticalAlignment = VerticalAlignment.Center, FontSize = 12 };
+        var input = new TextBox
+        {
+            Text = value,
+            Width = 178,
+            MaxLength = 64,
+            Padding = new(9, 8, 9, 8),
+            VerticalAlignment = VerticalAlignment.Center,
+            FontSize = 12
+        };
         System.Windows.Automation.AutomationProperties.SetName(input, label);
         return input;
     }
@@ -339,7 +353,7 @@ internal sealed class SettingsWindow : Window
         add.Margin = new(0, 12, 0, 0);
         _content.Children.Add(add);
         Rule();
-        Note("按控件能力提供功能", "普通文本框自动翻译；仅提供文本读取能力的编辑器可预览译文。密码、敏感字段、代码和终端保持安静；未知输入法状态不接受写回。");
+        Note("按控件能力提供功能", "普通文本框按当前工作模式启动翻译；仅提供文本读取能力的编辑器可预览译文。密码、敏感字段、代码和终端保持安静；未知输入法状态不接受写回。");
     }
     private void Translation()
     {
