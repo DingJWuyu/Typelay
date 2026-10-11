@@ -1,4 +1,39 @@
 #include <gtk/gtk.h>
+#include <json-glib/json-glib.h>
+
+/* Only the isolated test executable writes this evidence. Production has no
+ * command to dump source text, inject input or change a test model. */
+static GtkWidget *report_window, *report_first, *report_second;
+static const char *report_path;
+static char *last_report;
+
+static gboolean report_state(gpointer unused) {
+    (void)unused;
+    GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(report_window));
+    JsonBuilder *builder = json_builder_new();
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "first");
+    json_builder_add_string_value(builder, gtk_entry_get_text(GTK_ENTRY(report_first)));
+    json_builder_set_member_name(builder, "second");
+    json_builder_add_string_value(builder, gtk_entry_get_text(GTK_ENTRY(report_second)));
+    json_builder_set_member_name(builder, "focus");
+    json_builder_add_string_value(builder, focus ? gtk_buildable_get_name(GTK_BUILDABLE(focus)) : "");
+    json_builder_end_object(builder);
+    JsonNode *node = json_builder_get_root(builder);
+    JsonGenerator *generator = json_generator_new();
+    json_generator_set_root(generator, node);
+    char *data = json_generator_to_data(generator, NULL);
+    if (g_strcmp0(data, last_report) != 0) {
+        g_file_set_contents(report_path, data, -1, NULL);
+        g_free(last_report);
+        last_report = g_strdup(data);
+    }
+    g_free(data);
+    g_object_unref(generator);
+    json_node_free(node);
+    g_object_unref(builder);
+    return G_SOURCE_CONTINUE;
+}
 
 /* An actual GTK client, not a production backend or a source-string assertion. */
 int main(int argc, char **argv) {
@@ -33,6 +68,14 @@ int main(int argc, char **argv) {
     gtk_widget_show_all(window);
     gtk_widget_grab_focus(first);
     gtk_editable_set_position(GTK_EDITABLE(first), -1);
+    report_path = g_getenv("TYPELAY_FIXTURE_STATE");
+    if (report_path && g_path_is_absolute(report_path)) {
+        report_window = window;
+        report_first = first;
+        report_second = second;
+        g_timeout_add(25, report_state, NULL);
+    }
     gtk_main();
+    g_free(last_report);
     return 0;
 }

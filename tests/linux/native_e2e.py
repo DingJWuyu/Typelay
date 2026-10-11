@@ -155,6 +155,19 @@ def inside(arguments):
             item for item in contents(request("Windows"), "Windows") if item["pid"] == fixture.pid
         )
         geometry = place_geometry(window, outputs, workspaces, native["geometry"])
+        if geometry is None:
+            print(
+                json.dumps(
+                    {
+                        "window": window,
+                        "outputs": outputs,
+                        "workspaces": workspaces,
+                        "nativeGeometry": native["geometry"],
+                    },
+                    indent=2,
+                ),
+                flush=True,
+            )
         assert geometry is not None, "GTK frame geometry does not agree with niri"
         checks.append("real GTK metadata, authorized read and niri geometry")
 
@@ -256,7 +269,10 @@ def inside(arguments):
 
 def outer(arguments):
     arguments.output.mkdir(parents=True, exist_ok=True)
-    (arguments.output / "native-result.json").unlink(missing_ok=True)
+    result_name = "desktop-result.json" if arguments.desktop else "native-result.json"
+    (arguments.output / result_name).unlink(missing_ok=True)
+    failure = arguments.output / "inside.failed"
+    failure.unlink(missing_ok=True)
     runtime = arguments.output / "runtime"
     runtime.mkdir(mode=0o700, exist_ok=True)
     config = arguments.output / "niri.kdl"
@@ -270,6 +286,8 @@ def outer(arguments):
         "--output",
         str(arguments.output),
     ]
+    if arguments.desktop:
+        command.extend(["--desktop", "--package", str(arguments.package)])
     config.write_text("spawn-at-startup " + " ".join(json.dumps(item) for item in command) + "\n")
     environment = {
         **os.environ,
@@ -290,11 +308,19 @@ def outer(arguments):
             start_new_session=True,
         )
         try:
-            deadline = time.monotonic() + 45
-            result = arguments.output / "native-result.json"
-            while time.monotonic() < deadline and compositor.poll() is None and not result.exists():
+            deadline = time.monotonic() + (240 if arguments.desktop else 45)
+            result = arguments.output / result_name
+            while (
+                time.monotonic() < deadline
+                and compositor.poll() is None
+                and not result.exists()
+                and not failure.exists()
+            ):
                 time.sleep(0.1)
             if not result.exists():
+                inside_log = arguments.output / "inside.log"
+                if inside_log.exists():
+                    print(inside_log.read_text(), file=sys.stderr)
                 raise RuntimeError("nested niri/GTK contract failed; inspect nested-niri.log")
             print(result.read_text())
         finally:
@@ -310,9 +336,32 @@ def outer(arguments):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inside", action="store_true")
+    parser.add_argument("--desktop", action="store_true")
+    parser.add_argument("--package", type=Path)
     parser.add_argument("--native", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.native = args.native.resolve()
     args.output = args.output.resolve()
-    (inside if args.inside else outer)(args)
+    if args.desktop and not args.package:
+        parser.error("--desktop requires --package")
+    if args.package:
+        args.package = args.package.resolve()
+    if args.inside:
+        try:
+            if args.desktop:
+                sys.path.insert(0, str(Path(__file__).parent))
+                from desktop_e2e import run
+
+                run(args)
+            else:
+                inside(args)
+        except BaseException:
+            import traceback
+
+            traceback.print_exc()
+            sys.stderr.flush()
+            (args.output / "inside.failed").touch()
+            raise SystemExit(1) from None
+    else:
+        outer(args)
