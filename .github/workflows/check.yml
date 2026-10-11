@@ -31,19 +31,13 @@ jobs:
           dotnet test tests/behavior/TypeLay.Core.Tests -c Release -p:RestoreLockedMode=true --logger trx --results-directory artifacts/shared-test-results
           dotnet test tests/contracts/TypeLay.Protocol.Tests -c Release -p:RestoreLockedMode=true --logger trx --results-directory artifacts/shared-test-results
           PYTHONPATH=src/TypeLay.Worker python -m unittest discover -s tests/worker -v
-      # Temporary offline SDK/package transfer; remove after local verification is prepared.
-      - name: Prepare offline verification tools
-        run: |
-          dotnet restore TypeLay.slnx --locked-mode
-          mkdir -p "$RUNNER_TEMP/offline"
-          cp -a "$DOTNET_INSTALL_DIR" "$RUNNER_TEMP/offline/dotnet"
-          cp -a "$HOME/.nuget/packages" "$RUNNER_TEMP/offline/packages"
-          cp -a "$(dirname "$(readlink -f "$(command -v pwsh)")")" "$RUNNER_TEMP/offline/powershell"
-          tar -czf "$RUNNER_TEMP/typelay-toolchain.tar.gz" -C "$RUNNER_TEMP/offline" .
+      # Temporary source transfer for the isolated refactor workspace; removed with the refactor.
+      - name: Export the exact source revision
+        run: git archive --format=tar.gz -o "$RUNNER_TEMP/typelay-source.tar.gz" HEAD
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: typelay-refactor-toolchain-${{ github.sha }}
-          path: ${{ runner.temp }}/typelay-toolchain.tar.gz
+          name: typelay-refactor-source-${{ github.sha }}
+          path: ${{ runner.temp }}/typelay-source.tar.gz
           retention-days: 1
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
