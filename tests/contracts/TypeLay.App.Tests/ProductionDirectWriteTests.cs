@@ -11,7 +11,9 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 namespace TypeLay.App.Tests;
 
 [CollectionDefinition("Desktop", DisableParallelization = true)]
-public sealed class DesktopCollection { }
+public sealed class DesktopCollection
+{
+}
 
 // Uses production Broker IPC and unmodified system Edit controls in a separate
 // process. It does not use fixture-adapter IME flags, injected keys or a fake writer.
@@ -39,7 +41,11 @@ public sealed class ProductionDirectWriteTests
             nint b = (nint)host.Fields.Single(value => value.Name == "b").Hwnd;
             async Task<BrokerResponse> Call(BrokerRequest request)
             {
-                await Wire.WriteAsync(broker.StandardInput.BaseStream, request with { Id = ++id, Token = token }, deadline.Token);
+                await Wire.WriteAsync(broker.StandardInput.BaseStream, request with
+                {
+                    Id = ++id,
+                    Token = token
+                }, deadline.Token);
                 return await Wire.ReadAsync<BrokerResponse>(broker.StandardOutput.BaseStream, deadline.Token);
             }
             async Task Focus(nint field)
