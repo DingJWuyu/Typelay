@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "suite": "source-structural-checks",
+  "scope": "Not C# compilation or Windows acceptance",
+  "status": "passed",
+  "checks": [
+    {
+      "name": "solution-structure",
+      "status": "passed",
+      "detail": {
+        "projects": 9,
+        "level": "XML syntax and file references only"
+      }
+    },
+    {
+      "name": "python-syntax",
+      "status": "passed",
+      "detail": {
+        "files": 7
+      }
+    },
+    {
+      "name": "reference-integrity",
+      "status": "passed",
+      "detail": "Archived reference SHA-256 values match; product decisions are documented separately."
+    },
+    {
+      "name": "worker-network-imports",
+      "status": "passed",
+      "detail": "No direct networking imports in worker source; not an OS network sandbox."
+    },
+    {
+      "name": "safety-static-tripwires",
+      "status": "passed",
+      "detail": "Guard text/architecture checks only; does not prove atomicity, privacy or physical Tab behavior."
+    },
+    {
+      "name": "launcher-pe-header",
+      "status": "passed",
+      "detail": {
+        "machine": "x64",
+        "subsystem": "Windows GUI",
+        "bytes": 3584,
+        "role": "bootstrap launcher only",
+        "executed_on_windows": false
+      }
+    },
+    {
+      "name": "browser-fixture-js-syntax",
+      "status": "passed",
+      "detail": {
+        "inline_scripts": 1,
+        "level": "JavaScript syntax only; no browser integration run"
+      }
+    },
+    {
+      "name": "package-hygiene",
+      "status": "passed",
+      "detail": "No symlink, bundled font or private-key files in source delivery."
+    }
+  ]
+}

@@ -1,0 +1,312 @@
+{
+  "date": "2026-10-10",
+  "objective": "Automatically follow the current ordinary text input; application names are representative test samples, not a support allowlist.",
+  "complete": false,
+  "productionReplay": {
+    "operation": "replay-finish",
+    "status": "completed",
+    "atMs": 4308703,
+    "elapsedMs": 4953,
+    "sourceLength": 45,
+    "submitCount": 0,
+    "kind": "committed-text-programmatic-not-physical-ime",
+    "requestedIntervalMs": 100,
+    "updatesDuringInput": 8,
+    "updates": [
+      {
+        "atMs": 4304609,
+        "operation": "translate-done",
+        "state": "Invalid",
+        "sourceLength": 0,
+        "previewLength": 21,
+        "committedPrefixLength": 0,
+        "observedPreviewLength": 7,
+        "candidateLength": 0,
+        "ime": "Unknown",
+        "userEpoch": 0,
+        "sourceUserEpoch": 0,
+        "focusEpoch": 5,
+        "writeSupported": false
+      },
+      {
+        "atMs": 4305109,
+        "operation": "translate-done",
+        "state": "Invalid",
+        "sourceLength": 0,
+        "previewLength": 40,
+        "committedPrefixLength": 0,
+        "observedPreviewLength": 12,
+        "candidateLength": 0,
+        "ime": "Unknown",
+        "userEpoch": 0,
+        "sourceUserEpoch": 0,
+        "focusEpoch": 5,
+        "writeSupported": false
+      },
+      {
+        "atMs": 4305640,
+        "operation": "translate-done",
+        "state": "Invalid",
+        "sourceLength": 0,
+        "previewLength": 49,
+        "committedPrefixLength": 0,
+        "observedPreviewLength": 16,
+        "candidateLength": 0,
+        "ime": "Unknown",
+        "userEpoch": 0,
+        "sourceUserEpoch": 0,
+        "focusEpoch": 5,
+        "writeSupported": false
+      },
+      {
+        "atMs": 4306203,
+        "operation": "translate-done",
+        "state": "Invalid",
+        "sourceLength": 0,
+        "previewLength": 59,
+        "committedPrefixLength": 0,
+        "observedPreviewLength": 21,
+        "candidateLength": 0,
+        "ime": "Unknown",
+        "userEpoch": 0,
+        "sourceUserEpoch": 0,
+        "focusEpoch": 5,
+        "writeSupported": false
+      },
+      {
+        "atMs": 4306687,
+        "operation": "translate-done",
+        "state": "Invalid",
+        "sourceLength": 0,
+        "previewLength": 92,
+        "committedPrefixLength": 0,
+        "observedPreviewLength": 26,
+        "candidateLength": 0,
+        "ime": "Unknown",
+        "userEpoch": 0,
+        "sourceUserEpoch": 0,
+        "focusEpoch": 5,
+        "writeSupported": false
+      },
+      {
+        "atMs": 4307218,
+        "operation": "translate-done",
+        "state": "Invalid",
+        "sourceLength": 0,
+        "previewLength": 107,
+        "committedPrefixLength": 0,
+        "observedPreviewLength": 31,
+        "candidateLength": 0,
+        "ime": "Unknown",
+        "userEpoch": 0,
+        "sourceUserEpoch": 0,
+        "focusEpoch": 5,
+        "writeSupported": false
+      },
+      {
+        "atMs": 4307750,
+        "operation": "translate-done",
+        "state": "Invalid",
+        "sourceLength": 0,
+        "previewLength": 108,
+        "committedPrefixLength": 0,
+        "observedPreviewLength": 35,
+        "candidateLength": 0,
+        "ime": "Unknown",
+        "userEpoch": 0,
+        "sourceUserEpoch": 0,
+        "focusEpoch": 5,
+        "writeSupported": false
+      },
+      {
+        "atMs": 4308296,
+        "operation": "translate-done",
+        "state": "Invalid",
+        "sourceLength": 0,
+        "previewLength": 138,
+        "committedPrefixLength": 0,
+        "observedPreviewLength": 40,
+        "candidateLength": 0,
+        "ime": "Unknown",
+        "userEpoch": 0,
+        "sourceUserEpoch": 0,
+        "focusEpoch": 5,
+        "writeSupported": false
+      }
+    ]
+  },
+  "productionFocusSwitching": {
+    "operation": "focus-replay-finish",
+    "status": "completed",
+    "atMs": 4322156,
+    "elapsedMs": 3188,
+    "changes": 100,
+    "finalField": "a",
+    "submitCount": 0,
+    "requestedIntervalMs": 20,
+    "scope": "programmatic own-window preview binding, not write-race proof"
+  },
+  "productionWrites": [
+    {
+      "atMs": 4453609,
+      "operation": "write-Verified-None",
+      "state": "NoSession",
+      "sourceLength": 126,
+      "previewLength": 0,
+      "committedPrefixLength": 0,
+      "observedPreviewLength": 0,
+      "candidateLength": 0,
+      "ime": "Clear",
+      "userEpoch": 4,
+      "sourceUserEpoch": 4,
+      "focusEpoch": 123,
+      "writeSupported": true
+    },
+    {
+      "atMs": 4602984,
+      "operation": "write-Verified-None",
+      "state": "NoSession",
+      "sourceLength": 42,
+      "previewLength": 0,
+      "committedPrefixLength": 0,
+      "observedPreviewLength": 0,
+      "candidateLength": 0,
+      "ime": "Clear",
+      "userEpoch": 13,
+      "sourceUserEpoch": 11,
+      "focusEpoch": 130,
+      "writeSupported": true
+    }
+  ],
+  "actualIme": {
+    "method": "software-injected n/i/space driving Microsoft Pinyin, not physical keyboard",
+    "composingObservations": [
+      {
+        "atMs": 4514468,
+        "operation": "capture",
+        "state": "Invalid",
+        "sourceLength": 0,
+        "previewLength": 58,
+        "committedPrefixLength": 11,
+        "observedPreviewLength": 0,
+        "candidateLength": 0,
+        "ime": "Composing",
+        "userEpoch": 9,
+        "sourceUserEpoch": 9,
+        "focusEpoch": 123,
+        "writeSupported": false
+      },
+      {
+        "atMs": 4529734,
+        "operation": "capture",
+        "state": "Invalid",
+        "sourceLength": 0,
+        "previewLength": 58,
+        "committedPrefixLength": 11,
+        "observedPreviewLength": 0,
+        "candidateLength": 0,
+        "ime": "Composing",
+        "userEpoch": 10,
+        "sourceUserEpoch": 10,
+        "focusEpoch": 123,
+        "writeSupported": false
+      }
+    ],
+    "scope": "committed prefix only; no composition write permit"
+  },
+  "engineering": {
+    "releaseBuild": {
+      "status": "passed",
+      "warnings": 0,
+      "errors": 0
+    },
+    "core": {
+      "total": 114,
+      "passed": 114,
+      "failed": 0
+    },
+    "integration": {
+      "total": 48,
+      "passed": 48,
+      "failed": 0
+    },
+    "nativeAdapter": {
+      "total": 16,
+      "failed": 0,
+      "scope": "spawned-plain-win32-edit-fixture-only"
+    },
+    "python": {
+      "total": 36,
+      "status": "passed"
+    },
+    "sourceChecks": {
+      "total": 8,
+      "status": "passed"
+    }
+  },
+  "installed": [
+    {
+      "name": "TypeLay.App",
+      "installedSha256": "30B143D982E710341FF6020FB43473A0935CAAD48CDFDFCCAD109A183592AC2B",
+      "builtSha256": "30B143D982E710341FF6020FB43473A0935CAAD48CDFDFCCAD109A183592AC2B",
+      "matches": true
+    },
+    {
+      "name": "TypeLay.Broker",
+      "installedSha256": "3ACC12AD580738661B32C741B41B650A847F77FD5375586175362B4C92C8427A",
+      "builtSha256": "3ACC12AD580738661B32C741B41B650A847F77FD5375586175362B4C92C8427A",
+      "matches": true
+    },
+    {
+      "name": "TypeLay.Core",
+      "installedSha256": "AE88764749A15B76FA659E0D8C28856FCD66AB9DDF278BC835137040B9B923FA",
+      "builtSha256": "AE88764749A15B76FA659E0D8C28856FCD66AB9DDF278BC835137040B9B923FA",
+      "matches": true
+    },
+    {
+      "name": "TypeLay.Protocol",
+      "installedSha256": "0F476EC9D725633B48512BE7E9CDFED705B405FBE8E2F4EEC1AD53576CAF0E63",
+      "builtSha256": "0F476EC9D725633B48512BE7E9CDFED705B405FBE8E2F4EEC1AD53576CAF0E63",
+      "matches": true
+    }
+  ],
+  "runtime": {
+    "observedAt": "2026-10-10T14:19:04.6349036-04:00",
+    "method": "Win32_Process metadata, not UI acceptance",
+    "normalAppRunning": true,
+    "productionBrokerRunning": true,
+    "productionWorkerRunning": true,
+    "fixtureProcessesRunning": 0,
+    "traceEnvironmentAtLaunch": "TYPELAY_TRACE cleared before normal launcher start",
+    "processes": [
+      {
+        "ProcessId": 25152,
+        "ParentProcessId": 3264,
+        "Name": "TypeLay.App.exe",
+        "CommandLine": "\"E:\\Projects\\TypeLay\\TypeLay-0.2.0-dev\\app\\TypeLay.App.exe\""
+      },
+      {
+        "ProcessId": 23184,
+        "ParentProcessId": 25152,
+        "Name": "TypeLay.Broker.exe",
+        "CommandLine": "\"E:\\Projects\\TypeLay\\TypeLay-0.2.0-dev\\app\\TypeLay.Broker.exe\""
+      },
+      {
+        "ProcessId": 13536,
+        "ParentProcessId": 25152,
+        "Name": "python.exe",
+        "CommandLine": "\"C:\\Users\\28131\\AppData\\Local\\TypeLay\\runtime\\python\\tools\\python.exe\" -I -B E:\\Projects\\TypeLay\\TypeLay-0.2.0-dev\\worker\\run_worker.py --models C:\\Users\\28131\\AppData\\Local\\TypeLay\\models"
+      }
+    ]
+  },
+  "openBlockers": [
+    "B-01: non-atomic UIA write and asynchronous rejection after consuming Tab",
+    "B-03: missing general observation and safe editing backend for ordinary inputs without reliable IME or writable text interfaces"
+  ],
+  "notExecuted": [
+    "browser continuous input and independent site: Chrome connector unavailable; desktop Chrome launch rejected as blocked by policy; no retry",
+    "physical keyboard acceptance",
+    "real multi-monitor DPI: only one 1260x840 display exposed"
+  ],
+  "cleanup": "Test fixtures and test app stopped; normal app restored; own Notepad test tab saved then closed; prior unrelated tab preserved. Previously rejected removal of old publish copies was not retried."
+}

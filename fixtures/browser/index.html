@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; form-action 'none'; connect-src 'none'; base-uri 'none'">
+<title>TypeLay MVP · 浏览器验收 fixture</title>
+<style>
+body{font:16px/1.6 'Segoe UI',sans-serif;max-width:860px;margin:36px auto;padding:0 24px;color:#252a31;background:#f5f7fa}
+h1{font-size:26px}label{display:block;margin:22px 0 6px}input,textarea,[contenteditable]{box-sizing:border-box;width:100%;font:inherit;padding:12px;border:1px solid #bdc7d7;border-radius:8px;background:white}textarea{height:120px}button{font:inherit;margin:8px 8px 8px 0;padding:8px 14px}output{font-weight:600}.note{padding:12px;background:white;border:1px solid #d9e0eb}.spacer{height:650px}pre{white-space:pre-wrap}
+</style>
+<h1>TypeLay · 实操教程与回归页</h1>
+<p class="note">仅使用测试文本。此页不是 TypeLay 客户端，没有翻译 Mock，不接入模型。浏览器支持、真实物理 Tab 和真实输入法必须分别验收。页面标识不构成可信来源证明。</p>
+<p>先在设置中检查并准备本地模型。默认只读预览；下面的 Tab 替换测试需在「常规」开启实验性写回，并等浮层显示“Tab 接受译文”。</p>
+<ol><li>聚焦 A，修改测试文字，等待真实本地译文。按 Tab 应只替换文字，提交次数保持 0。</li><li>点击译文并修改，第一次 Tab 返回 A；第二次 Tab 接受。也测试用鼠标返回 A。</li><li>点击下方“选择 B 中的中文”，验证选区外内容与 emoji 不变。</li><li>切换真实中文输入法，分别测试候选、提交和 Esc 取消。未提交时 Tab 应交还输入法。</li></ol>
+<p>此页通过仍只代表 fixture 结果。还需在独立真实站点的普通输入框完成同样操作。</p>
+<form id="testForm">
+<label for="fieldA">A · Message · 普通单行输入框</label><input id="fieldA" name="message" autocomplete="off" value="你好，我想确认一下明天下午的会议时间。">
+<label for="fieldB">B · Comment · 多行、选区与 emoji</label><textarea id="fieldB" name="body" aria-multiline="true">Hello 🙂 明天下午见, thanks.
+Second line.</textarea>
+<button type="submit">提交 · 正向计数对照</button>
+</form>
+<p>Submit count = <output id="submits">0</output>；Tab 到达页面 = <output id="tabs">0</output></p>
+<button type="button" id="reset">重置测试文本与计数</button><button type="button" id="selection">选择 B 中的中文</button>
+<button type="button" id="changeLater">2 秒后修改 A（先返回 A）</button><button type="button" id="focusLater">2 秒后切到 B</button>
+<pre id="events" aria-live="polite">事件计数：等待输入</pre>
+<label for="password">密码 · 必须在读取文本前排除</label><input id="password" type="password" value="synthetic-password" autocomplete="new-password">
+<label for="pin">安全码 · 必须排除，不因 text 类型而自动允许</label><input id="pin" type="text" inputmode="numeric" autocomplete="one-time-code" value="123456">
+<label for="readonly">只读 · 必须排除</label><input id="readonly" readonly value="synthetic-readonly">
+<label for="disabled">禁用 · 必须排除</label><input id="disabled" disabled value="synthetic-disabled">
+<label for="rich">富文本 · 本阶段不支持</label><div id="rich" contenteditable="true">这是 <b>富文本</b>，不应被整框降级覆盖。</div>
+<div class="spacer">滚动此页，检查浮层隐藏、恢复与位置。演示页自身不画浮层。</div>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const initialA=$('fieldA').value,initialB=$('fieldB').value;
+const counts={input:0,compositionstart:0,compositionend:0,beforeinput:0,tab:0,submit:0};
+let mutationTimer=null,focusTimer=null;
+function render(){ $('submits').textContent=String(counts.submit);$('tabs').textContent=String(counts.tab);$('events').textContent=JSON.stringify(counts,null,2); }
+$('testForm').addEventListener('submit',event=>{event.preventDefault();counts.submit++;render();});
+for(const id of ['fieldA','fieldB']) for(const name of ['input','beforeinput','compositionstart','compositionend']) $(id).addEventListener(name,()=>{counts[name]++;render();});
+document.addEventListener('keydown',event=>{if(event.key==='Tab'){counts.tab++;render();}});
+$('selection').addEventListener('click',()=>{const field=$('fieldB');field.focus();const start=field.value.indexOf('明天下午见');if(start>=0)field.setSelectionRange(start,start+5);});
+$('changeLater').addEventListener('click',()=>{clearTimeout(mutationTimer);mutationTimer=setTimeout(()=>{$('fieldA').value='这是测试脚本修改后的原文。';$('fieldA').dispatchEvent(new Event('input',{bubbles:true}));},2000);});
+$('focusLater').addEventListener('click',()=>{clearTimeout(focusTimer);focusTimer=setTimeout(()=>$('fieldB').focus(),2000);});
+$('reset').addEventListener('click',()=>{clearTimeout(mutationTimer);clearTimeout(focusTimer);$('fieldA').value=initialA;$('fieldB').value=initialB;for(const key of Object.keys(counts))counts[key]=0;render();$('fieldA').focus();});
+render();
+</script>
+</html>

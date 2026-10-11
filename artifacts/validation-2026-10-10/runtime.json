@@ -1,0 +1,29 @@
+{
+  "observedAt": "2026-10-10T14:19:04.6349036-04:00",
+  "method": "Win32_Process metadata, not UI acceptance",
+  "normalAppRunning": true,
+  "productionBrokerRunning": true,
+  "productionWorkerRunning": true,
+  "fixtureProcessesRunning": 0,
+  "traceEnvironmentAtLaunch": "TYPELAY_TRACE cleared before normal launcher start",
+  "processes": [
+    {
+      "ProcessId": 25152,
+      "ParentProcessId": 3264,
+      "Name": "TypeLay.App.exe",
+      "CommandLine": "\"E:\\Projects\\TypeLay\\TypeLay-0.2.0-dev\\app\\TypeLay.App.exe\""
+    },
+    {
+      "ProcessId": 23184,
+      "ParentProcessId": 25152,
+      "Name": "TypeLay.Broker.exe",
+      "CommandLine": "\"E:\\Projects\\TypeLay\\TypeLay-0.2.0-dev\\app\\TypeLay.Broker.exe\""
+    },
+    {
+      "ProcessId": 13536,
+      "ParentProcessId": 25152,
+      "Name": "python.exe",
+      "CommandLine": "\"C:\\Users\\28131\\AppData\\Local\\TypeLay\\runtime\\python\\tools\\python.exe\" -I -B E:\\Projects\\TypeLay\\TypeLay-0.2.0-dev\\worker\\run_worker.py --models C:\\Users\\28131\\AppData\\Local\\TypeLay\\models"
+    }
+  ]
+}

@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TypeLay Tray & Settings Prototype v1</title>
+<style>
+:root{
+  --bg:#e9edf4;--panel:rgba(255,255,255,.96);--panel-solid:#fff;--panel2:#f6f7f9;--line:#dde2ea;
+  --text:#1c2027;--muted:#727b89;--blue:#3267e3;--blue-soft:#eaf0ff;--good:#299766;--warn:#d18a21;
+  --shadow:0 18px 54px rgba(25,34,52,.18),0 3px 10px rgba(25,34,52,.08);--radius:18px;
+}
+*{box-sizing:border-box} html,body{height:100%} body{margin:0;font-family:Inter,"Segoe UI",system-ui,-apple-system,sans-serif;color:var(--text);overflow:hidden;background:#dce2eb}
+button,select,input{font:inherit} button{cursor:pointer}
+.desktop{height:100%;position:relative;overflow:hidden;background:
+ radial-gradient(circle at 20% 20%,rgba(92,126,216,.24),transparent 32%),
+ radial-gradient(circle at 78% 58%,rgba(111,175,205,.22),transparent 34%),
+ linear-gradient(145deg,#e9edf5 0%,#dfe5ef 42%,#edf0f5 100%)}
+.wallpaperMark{position:absolute;left:7%;top:12%;font-size:48px;font-weight:800;letter-spacing:-.04em;color:rgba(57,75,111,.08);user-select:none}
+.demoBadge{position:absolute;right:18px;top:18px;z-index:120;background:rgba(255,255,255,.83);backdrop-filter:blur(14px);border:1px solid rgba(207,214,225,.9);border-radius:14px;padding:10px 12px;box-shadow:0 7px 20px rgba(28,36,54,.08);width:260px}
+.demoBadge b{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#697487;margin-bottom:4px}.demoBadge span{font-size:11px;line-height:1.45;color:#7b8390}.demoBadge button{margin-top:8px;width:100%;height:30px;border:1px solid #d8dee8;background:#fff;border-radius:9px;color:#4f5866;font-size:11px}.demoBadge button:hover{background:#f5f7fa}
+.taskbar{position:absolute;left:0;right:0;bottom:0;height:52px;background:rgba(245,247,250,.88);backdrop-filter:blur(24px);border-top:1px solid rgba(205,211,220,.9);display:flex;align-items:center;justify-content:center;z-index:80;box-shadow:0 -4px 18px rgba(25,33,49,.06)}
+.taskCenter{display:flex;align-items:center;gap:6px;height:100%}.taskIcon{width:36px;height:36px;border:0;border-radius:9px;background:transparent;display:grid;place-items:center;color:#566173;font-size:15px}.taskIcon:hover{background:rgba(218,223,232,.72)}
+.startLogo{width:16px;height:16px;display:grid;grid-template-columns:1fr 1fr;gap:2px}.startLogo i{display:block;background:#4d72c8;border-radius:1px}
+.trayArea{position:absolute;right:8px;height:100%;display:flex;align-items:center;gap:2px}.trayButton{height:38px;min-width:38px;border:0;background:transparent;border-radius:9px;display:flex;align-items:center;justify-content:center}.trayButton:hover,.trayButton.active{background:rgba(214,220,230,.8)}
+.trayLogo{width:22px;height:22px;border-radius:7px;background:linear-gradient(135deg,#315fd5,#7497ef);display:grid;place-items:center;color:white;font-weight:800;font-size:10px;box-shadow:0 2px 7px rgba(49,95,214,.25)}
+.systemGlyph{font-size:13px;color:#596373;padding:0 4px}.clock{min-width:72px;text-align:center;font-size:10.5px;line-height:1.25;color:#4f5864;padding:0 6px;user-select:none}
+.quickPanel{position:absolute;right:10px;bottom:61px;width:322px;background:var(--panel);backdrop-filter:blur(24px);border:1px solid rgba(205,212,222,.96);border-radius:18px;box-shadow:var(--shadow);z-index:100;overflow:hidden;transform-origin:bottom right;animation:panelIn .15s ease}.quickPanel[hidden]{display:none}@keyframes panelIn{from{opacity:0;transform:translateY(7px) scale(.985)}to{opacity:1;transform:none}}
+.qHead{height:60px;padding:0 15px;display:flex;align-items:center;border-bottom:1px solid #edf0f4}.qBrand{display:flex;align-items:center;gap:9px;min-width:0}.qLogo{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,#315fd5,#7899ed);display:grid;place-items:center;color:#fff;font-weight:800;font-size:12px}.qTitle{font-weight:720;font-size:14px}.qSub{font-size:10px;color:#8a929f;margin-top:2px}
+.switch{margin-left:auto;width:38px;height:22px;border:0;border-radius:99px;padding:2px;background:#c9cfd8;position:relative;transition:.14s}.switch::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.18);transition:.14s}.switch.on{background:#3a6de2}.switch.on::after{transform:translateX(16px)}
+.qSection{padding:13px 14px}.qLabel{font-size:10px;font-weight:700;color:#7c8594;margin:0 0 7px}.langRow{display:grid;grid-template-columns:1fr 28px 1fr;gap:7px;align-items:center}.selectWrap{position:relative}.selectWrap select{appearance:none;width:100%;height:38px;padding:0 29px 0 10px;border:1px solid #dfe3ea;background:#fff;border-radius:10px;color:#343b46;font-size:12px;outline:none}.selectWrap::after{content:"⌄";position:absolute;right:10px;top:8px;color:#8c94a0;pointer-events:none;font-size:12px}.swap{width:28px;height:30px;border:0;border-radius:8px;background:transparent;color:#68717e}.swap:hover:not(:disabled){background:#f0f3f8;color:#3f4c5d}.swap:disabled{opacity:.32;cursor:default}
+.statusLine{display:flex;align-items:center;gap:8px;padding:11px 14px;border-top:1px solid #eef0f3;border-bottom:1px solid #eef0f3;font-size:11.5px;color:#4f5864}.statusDot{width:7px;height:7px;border-radius:50%;background:var(--good)}.statusDot.paused{background:#a6adb8}.statusMeta{margin-left:auto;color:#8a929f;font-size:10.5px}
+.qActions{padding:7px}.qAction{width:100%;height:38px;border:0;background:transparent;border-radius:10px;display:flex;align-items:center;padding:0 9px;color:#414955;font-size:11.5px;text-align:left}.qAction:hover{background:#f1f3f6}.qAction.danger{color:#9c4545}.qIcon{width:26px;color:#7b8492;font-size:14px}.qAction.danger .qIcon{color:#a95a5a}
+.settingsWindow{position:absolute;left:50%;top:50%;transform:translate(-50%,-52%);width:min(920px,88vw);height:min(650px,82vh);background:#fff;border:1px solid #d8dde6;border-radius:20px;box-shadow:0 24px 70px rgba(22,31,48,.2),0 5px 18px rgba(22,31,48,.08);z-index:95;overflow:hidden;display:grid;grid-template-rows:48px 1fr;animation:windowIn .16s ease}.settingsWindow[hidden]{display:none}@keyframes windowIn{from{opacity:0;transform:translate(-50%,-50%) scale(.99)}to{opacity:1;transform:translate(-50%,-52%) scale(1)}}
+.sTitlebar{display:flex;align-items:center;padding:0 14px;border-bottom:1px solid #e8ebf0;background:#fafbfc;user-select:none}.sTitle{display:flex;align-items:center;gap:9px;font-size:12.5px;font-weight:700}.sLogo{width:23px;height:23px;border-radius:7px;background:linear-gradient(135deg,#315fd5,#7497ef);display:grid;place-items:center;color:white;font-size:10px}.closeSettings{margin-left:auto;width:34px;height:30px;border:0;border-radius:8px;background:transparent;color:#69717e}.closeSettings:hover{background:#eef1f5}
+.sBody{display:grid;grid-template-columns:205px 1fr;min-height:0}.nav{background:#f7f8fa;border-right:1px solid #e9ebef;padding:12px 9px;overflow:auto}.navItem{width:100%;height:38px;border:0;background:transparent;border-radius:10px;padding:0 11px;display:flex;align-items:center;gap:10px;text-align:left;color:#5d6674;font-size:12px;margin-bottom:3px}.navItem:hover{background:#eef1f5}.navItem.active{background:#e9eef9;color:#294c98;font-weight:700}.navIcon{width:18px;text-align:center;color:#7d8794}.navItem.active .navIcon{color:#4e74cf}
+.content{overflow:auto;padding:27px 34px 38px}.page{display:none}.page.active{display:block}.pageTitle{font-size:22px;font-weight:760;letter-spacing:-.02em;margin:0}.pageSub{font-size:12px;color:#808897;margin:6px 0 24px;line-height:1.5}.section{border-top:1px solid #eceff3;padding:18px 0}.section:first-of-type{border-top:0;padding-top:0}.sectionTitle{font-size:12px;font-weight:720;margin:0 0 11px}.settingRow{min-height:52px;display:flex;align-items:center;gap:18px;padding:7px 0}.settingText{flex:1;min-width:0}.settingName{font-size:12.5px;color:#333a44}.settingDesc{font-size:10.5px;color:#858d99;line-height:1.45;margin-top:3px}.smallSelect{height:34px;min-width:155px;border:1px solid #dce1e9;border-radius:9px;background:#fff;padding:0 28px 0 10px;color:#3d4551;font-size:11.5px}.miniSwitch{width:36px;height:20px;border:0;border-radius:99px;background:#cbd1da;position:relative;padding:0}.miniSwitch::after{content:"";position:absolute;width:14px;height:14px;border-radius:50%;background:white;left:3px;top:3px;box-shadow:0 1px 3px rgba(0,0,0,.15);transition:.14s}.miniSwitch.on{background:#3a6de2}.miniSwitch.on::after{transform:translateX(16px)}
+.outlineBtn,.primaryBtn{height:32px;border-radius:8px;padding:0 11px;font-size:11px}.outlineBtn{border:1px solid #d8dee7;background:#fff;color:#505967}.outlineBtn:hover{background:#f5f7fa}.primaryBtn{border:1px solid #315fd6;background:#315fd6;color:#fff}.primaryBtn:hover{background:#2855c7}.kbd{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid #cfd4de;background:#fff;border-bottom-width:2px;border-radius:5px;padding:2px 6px;color:#555d69;font-size:10px}.shortcutBox{display:flex;align-items:center;gap:5px}.mutedNote{font-size:10.5px;color:#89919e}.privacyCard{border:1px solid #dfe5ee;background:#f8fafc;border-radius:13px;padding:14px;display:flex;gap:11px}.privacyIcon{width:30px;height:30px;border-radius:9px;background:#e9f0ff;color:#3965c8;display:grid;place-items:center;font-size:14px}.privacyCard b{font-size:12px}.privacyCard p{font-size:10.5px;color:#798290;line-height:1.55;margin:4px 0 0}.empty{border:1px dashed #d6dce5;border-radius:13px;padding:20px;text-align:center;color:#828b98;font-size:11px;background:#fafbfc}.termTable{border:1px solid #e1e5eb;border-radius:12px;overflow:hidden}.termHead,.termRow{display:grid;grid-template-columns:1fr 1fr 90px;min-height:40px;align-items:center}.termHead{background:#f7f8fa;color:#7c8592;font-size:10px;font-weight:700}.termHead>div,.termRow>div{padding:0 12px}.termRow{border-top:1px solid #eceff3;font-size:11.5px}.termInput{width:100%;height:29px;border:1px solid #dce1e8;border-radius:7px;padding:0 8px;font-size:11px}.removeTerm{border:0;background:transparent;color:#9b5353;font-size:10.5px}.inlineStatus{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:#4c5664}.inlineStatus i{width:7px;height:7px;border-radius:50%;background:var(--good);display:block}
+.overlayDim{position:absolute;inset:0 0 52px 0;background:rgba(56,66,82,.12);z-index:90}.overlayDim[hidden]{display:none}
+.exited{position:absolute;left:50%;top:42%;transform:translate(-50%,-50%);background:rgba(255,255,255,.86);backdrop-filter:blur(14px);border:1px solid #d8dee8;border-radius:16px;padding:18px 22px;box-shadow:0 12px 36px rgba(30,39,57,.12);z-index:60;text-align:center;color:#657080;font-size:11.5px}.exited[hidden]{display:none}.exited b{display:block;color:#303845;font-size:14px;margin-bottom:4px}
+@media(max-width:760px){.settingsWindow{width:94vw;height:86vh}.sBody{grid-template-columns:160px 1fr}.content{padding:22px}.demoBadge{display:none}}
+</style>
+</head>
+<body>
+<div class="desktop" id="desktop">
+  <div class="wallpaperMark">TypeLay</div>
+  <div class="demoBadge"><b>Demo controls · 非产品 UI</b><span>点击右下角 TypeLay 托盘图标打开快速面板；“设置…”打开完整设置外壳。</span><button id="restartBtn" hidden>重新启动 TypeLay</button></div>
+
+  <div class="overlayDim" id="dim" hidden></div>
+
+  <section class="settingsWindow" id="settingsWindow" hidden aria-label="TypeLay 设置">
+    <div class="sTitlebar">
+      <div class="sTitle"><span class="sLogo">T</span>TypeLay 设置</div>
+      <button class="closeSettings" id="closeSettings" aria-label="关闭设置">×</button>
+    </div>
+    <div class="sBody">
+      <nav class="nav" id="nav">
+        <button class="navItem active" data-page="general"><span class="navIcon">⌂</span>常规</button>
+        <button class="navItem" data-page="language"><span class="navIcon">文</span>语言</button>
+        <button class="navItem" data-page="shortcuts"><span class="navIcon">⌨</span>快捷键</button>
+        <button class="navItem" data-page="apps"><span class="navIcon">▦</span>应用</button>
+        <button class="navItem" data-page="translation"><span class="navIcon">A</span>翻译</button>
+        <button class="navItem" data-page="glossary"><span class="navIcon">≡</span>术语表</button>
+        <button class="navItem" data-page="about"><span class="navIcon">i</span>关于与隐私</button>
+      </nav>
+      <main class="content">
+        <section class="page active" id="page-general">
+          <h1 class="pageTitle">常规</h1><p class="pageSub">TypeLay 的全局运行方式。</p>
+          <div class="section">
+            <div class="settingRow"><div class="settingText"><div class="settingName">启用 TypeLay</div><div class="settingDesc">暂停后保留托盘入口，输入框旁不显示翻译界面。</div></div><button class="miniSwitch on" id="settingsEnable" aria-label="启用 TypeLay"></button></div>
+            <div class="settingRow"><div class="settingText"><div class="settingName">登录 Windows 后自动启动</div><div class="settingDesc">可以随时在这里关闭。</div></div><button class="miniSwitch on" id="startupSwitch" aria-label="开机启动"></button></div>
+          </div>
+          <div class="section"><div class="privacyCard"><div class="privacyIcon">⌂</div><div><b>文本与译文保留在本机</b><p>翻译推理完全在本地进行；默认不保存翻译历史，也不需要账号或云同步。</p></div></div></div>
+        </section>
+
+        <section class="page" id="page-language">
+          <h1 class="pageTitle">语言</h1><p class="pageSub">选择默认翻译方向。Auto 只用于源语言，目标语言始终明确指定。</p>
+          <div class="section">
+            <div class="settingRow"><div class="settingText"><div class="settingName">源语言</div><div class="settingDesc">Auto 会根据当前输入自动判断。</div></div><select class="smallSelect syncSource"><option value="Auto">Auto</option><option value="中文">中文</option><option value="English">English</option><option value="日本語">日本語</option></select></div>
+            <div class="settingRow"><div class="settingText"><div class="settingName">目标语言</div></div><select class="smallSelect syncTarget"><option value="English">English</option><option value="中文">中文</option><option value="日本語">日本語</option><option value="Español">Español</option></select></div>
+            <div class="settingRow"><div class="settingText"><div class="settingName">交换语言</div><div class="settingDesc" id="swapDesc">源语言为 Auto 时不可直接交换；选择固定源语言后启用。</div></div><button class="outlineBtn settingsSwap" disabled>交换</button></div>
+          </div>
+        </section>
+
+        <section class="page" id="page-shortcuts">
+          <h1 class="pageTitle">快捷键</h1><p class="pageSub">原型只展示当前配置；正式产品允许修改并处理快捷键冲突。</p>
+          <div class="section">
+            <div class="settingRow"><div class="settingText"><div class="settingName">接受译文</div><div class="settingDesc">仅在当前候选有效且可安全写回时生效。</div></div><div class="shortcutBox"><span class="kbd">Tab</span></div></div>
+            <div class="settingRow"><div class="settingText"><div class="settingName">退出当前翻译</div><div class="settingDesc">结束当前 TypeLay 会话，不提交原应用内容。</div></div><div class="shortcutBox"><span class="kbd">Esc</span></div></div>
+          </div>
+        </section>
+
+        <section class="page" id="page-apps">
+          <h1 class="pageTitle">应用</h1><p class="pageSub">永久排除的应用中不显示任何 TypeLay UI。</p>
+          <div class="section"><div id="appList" class="empty">当前没有排除任何应用。</div><div style="margin-top:10px"><button class="outlineBtn" id="addApp">添加应用…</button></div></div>
+        </section>
+
+        <section class="page" id="page-translation">
+          <h1 class="pageTitle">翻译</h1><p class="pageSub">控制译文风格与本地模型状态。</p>
+          <div class="section">
+            <div class="settingRow"><div class="settingText"><div class="settingName">默认风格</div><div class="settingDesc">保持原意与原有语气，默认使用自然表达。</div></div><select class="smallSelect"><option>自然</option><option>正式</option><option>简洁</option><option>口语</option></select></div>
+            <div class="settingRow"><div class="settingText"><div class="settingName">本地翻译模型</div><div class="settingDesc">具体模型与推理引擎尚未冻结。</div></div><span class="inlineStatus"><i></i>已就绪</span></div>
+            <div class="settingRow"><div class="settingText"><div class="settingName">模型管理</div><div class="settingDesc">后续用于查看、更新或管理本地模型。</div></div><button class="outlineBtn" id="modelBtn">模型管理…</button></div>
+          </div>
+        </section>
+
+        <section class="page" id="page-glossary">
+          <h1 class="pageTitle">术语表</h1><p class="pageSub">显式保存需要长期固定的本地术语；人工修改不会自动学习。</p>
+          <div class="section">
+            <div class="termTable" id="termTable"><div class="termHead"><div>原文</div><div>固定译法</div><div></div></div></div>
+            <div style="margin-top:10px"><button class="outlineBtn" id="addTerm">添加术语</button></div>
+          </div>
+        </section>
+
+        <section class="page" id="page-about">
+          <h1 class="pageTitle">关于与隐私</h1><p class="pageSub">TypeLay · Tray & Settings Prototype</p>
+          <div class="section"><div class="privacyCard"><div class="privacyIcon">✓</div><div><b>完全本地的输入翻译</b><p>实际输入文本与译文不上传云端。默认不建立翻译历史数据库；密码、PIN、银行卡安全码等敏感输入区域应完全忽略。</p></div></div></div>
+          <div class="section"><div class="settingRow"><div class="settingText"><div class="settingName">原型版本</div><div class="settingDesc">仅用于 UI/UX 演示，不代表正式客户端技术实现。</div></div><span class="mutedNote">v1.0</span></div></div>
+        </section>
+      </main>
+    </div>
+  </section>
+
+  <section class="quickPanel" id="quickPanel" hidden aria-label="TypeLay 快速面板">
+    <div class="qHead"><div class="qBrand"><div class="qLogo">T</div><div><div class="qTitle">TypeLay</div><div class="qSub" id="serviceSub">已启用</div></div></div><button class="switch on" id="serviceSwitch" aria-label="启用或暂停 TypeLay"></button></div>
+    <div class="qSection"><div class="qLabel">翻译方向</div><div class="langRow">
+      <div class="selectWrap"><select class="syncSource" id="quickSource"><option value="Auto">Auto</option><option value="中文">中文</option><option value="English">English</option><option value="日本語">日本語</option></select></div>
+      <button class="swap quickSwap" id="quickSwap" aria-label="交换语言" disabled>⇄</button>
+      <div class="selectWrap"><select class="syncTarget" id="quickTarget"><option value="English">English</option><option value="中文">中文</option><option value="日本語">日本語</option><option value="Español">Español</option></select></div>
+    </div></div>
+    <div class="statusLine"><span class="statusDot" id="modelDot"></span><span id="modelText">本地翻译已就绪</span><span class="statusMeta">本机</span></div>
+    <div class="qActions"><button class="qAction" id="openSettings"><span class="qIcon">⚙</span>设置…</button><button class="qAction danger" id="quitApp"><span class="qIcon">⏻</span>退出 TypeLay</button></div>
+  </section>
+
+  <div class="exited" id="exited" hidden><b>TypeLay 已退出</b>托盘图标已移除。使用右上角演示按钮重新启动。</div>
+
+  <div class="taskbar">
+    <div class="taskCenter"><button class="taskIcon" aria-label="开始"><span class="startLogo"><i></i><i></i><i></i><i></i></span></button><button class="taskIcon">⌕</button><button class="taskIcon">▣</button></div>
+    <div class="trayArea"><span class="systemGlyph">⌃</span><span class="systemGlyph">⌁</span><span class="systemGlyph">▮</span><button class="trayButton" id="trayButton" aria-label="TypeLay"><span class="trayLogo">T</span></button><div class="clock"><div id="clockTime">--:--</div><div id="clockDate">--/--</div></div></div>
+  </div>
+</div>
+<script>
+(()=>{
+  const $=id=>document.getElementById(id);
+  const state={enabled:true,running:true,source:'Auto',target:'English',startup:true,excluded:false};
+  const quick=$('quickPanel'), tray=$('trayButton'), settings=$('settingsWindow'), dim=$('dim');
+  const serviceSwitch=$('serviceSwitch'),settingsEnable=$('settingsEnable'),serviceSub=$('serviceSub'),modelDot=$('modelDot'),modelText=$('modelText');
+  const sourceSelects=[...document.querySelectorAll('.syncSource')],targetSelects=[...document.querySelectorAll('.syncTarget')];
+  const swapButtons=[...document.querySelectorAll('.settingsSwap,.quickSwap')];
+  function setToggle(btn,on){btn.classList.toggle('on',on)}
+  function syncEnabled(v){state.enabled=v;setToggle(serviceSwitch,v);setToggle(settingsEnable,v);serviceSub.textContent=v?'已启用':'已暂停';modelDot.classList.toggle('paused',!v);modelText.textContent=v?'本地翻译已就绪':'TypeLay 已暂停'}
+  function syncLanguage(){sourceSelects.forEach(s=>s.value=state.source);targetSelects.forEach(s=>s.value=state.target);swapButtons.forEach(b=>b.disabled=state.source==='Auto');$('swapDesc').textContent=state.source==='Auto'?'源语言为 Auto 时不可直接交换；选择固定源语言后启用。':'交换只改变语言配置，不修改当前文本。'}
+  function openQuick(){if(!state.running)return;quick.hidden=false;tray.classList.add('active')}
+  function closeQuick(){quick.hidden=true;tray.classList.remove('active')}
+  function openSettings(){closeQuick();settings.hidden=false;dim.hidden=false}
+  function closeSettings(){settings.hidden=true;dim.hidden=true}
+  tray.addEventListener('click',e=>{e.stopPropagation();quick.hidden?openQuick():closeQuick()});
+  quick.addEventListener('click',e=>e.stopPropagation()); settings.addEventListener('click',e=>e.stopPropagation());
+  document.addEventListener('click',()=>closeQuick());
+  serviceSwitch.addEventListener('click',()=>syncEnabled(!state.enabled));settingsEnable.addEventListener('click',()=>syncEnabled(!state.enabled));
+  $('startupSwitch').addEventListener('click',e=>{state.startup=!state.startup;setToggle(e.currentTarget,state.startup)});
+  sourceSelects.forEach(sel=>sel.addEventListener('change',e=>{state.source=e.target.value;syncLanguage()}));
+  targetSelects.forEach(sel=>sel.addEventListener('change',e=>{state.target=e.target.value;syncLanguage()}));
+  swapButtons.forEach(btn=>btn.addEventListener('click',()=>{if(state.source==='Auto')return;const a=state.source;state.source=state.target;state.target=a;syncLanguage()}));
+  $('openSettings').addEventListener('click',openSettings);$('closeSettings').addEventListener('click',closeSettings);dim.addEventListener('click',closeSettings);
+  document.querySelectorAll('.navItem').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('.navItem').forEach(x=>x.classList.remove('active'));btn.classList.add('active');document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));$('page-'+btn.dataset.page).classList.add('active')}));
+  $('addApp').addEventListener('click',()=>{state.excluded=!state.excluded;const box=$('appList');if(state.excluded){box.className='termTable';box.innerHTML='<div class="termRow" style="grid-template-columns:1fr 110px"><div><b style="font-size:11.5px">WorkChat</b><div class="settingDesc">示例排除项 · 原型 Mock</div></div><div style="text-align:right"><button class="removeTerm" id="removeApp">移除</button></div></div>';$('addApp').textContent='添加其他应用…';$('removeApp').addEventListener('click',()=>{$('addApp').click()})}else{box.className='empty';box.textContent='当前没有排除任何应用。';$('addApp').textContent='添加应用…'}});
+  $('addTerm').addEventListener('click',()=>{const row=document.createElement('div');row.className='termRow';row.innerHTML='<div><input class="termInput" placeholder="例如 TypeLay"></div><div><input class="termInput" placeholder="例如 TypeLay"></div><div><button class="removeTerm">删除</button></div>';row.querySelector('.removeTerm').addEventListener('click',()=>row.remove());$('termTable').appendChild(row);row.querySelector('input').focus()});
+  $('modelBtn').addEventListener('click',()=>{document.querySelectorAll('.navItem').forEach(x=>x.classList.remove('active'));document.querySelector('[data-page="translation"]').classList.add('active')});
+  $('quitApp').addEventListener('click',()=>{closeQuick();closeSettings();state.running=false;tray.hidden=true;$('exited').hidden=false;$('restartBtn').hidden=false});
+  $('restartBtn').addEventListener('click',()=>{state.running=true;tray.hidden=false;$('exited').hidden=true;$('restartBtn').hidden=true});
+  function clock(){const d=new Date();$('clockTime').textContent=d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});$('clockDate').textContent=`${d.getMonth()+1}/${d.getDate()}`}
+  clock();setInterval(clock,30000);syncEnabled(true);syncLanguage();
+})();
+</script>
+</body>
+</html>

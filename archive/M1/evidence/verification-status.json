@@ -1,0 +1,66 @@
+{
+  "date": "2026-09-29",
+  "delivery": "Windows MVP M1 engineering source start, NOT release",
+  "generation_environment": {
+    "system": "Linux",
+    "machine": "x86_64",
+    "dotnet_found": false,
+    "windows_desktop_available": false
+  },
+  "new_code_results": [
+    {
+      "name": "C# build",
+      "status": "not-run",
+      "reason": "dotnet-sdk-unavailable; SDK retrieval blocked by network"
+    },
+    {
+      "name": "C# core test runner",
+      "status": "not-run",
+      "reason": "dotnet-sdk-runtime-unavailable"
+    },
+    {
+      "name": "Windows native directed-I/O runner",
+      "status": "not-run",
+      "reason": "no-Windows-desktop"
+    },
+    {
+      "name": "WPF editing/focus",
+      "status": "not-run",
+      "reason": "not-implemented"
+    },
+    {
+      "name": "physical keyboard Tab/Esc",
+      "status": "not-run",
+      "reason": "native-hook-not-implemented"
+    },
+    {
+      "name": "real IME",
+      "status": "not-run",
+      "reason": "no-Windows-IME-environment"
+    },
+    {
+      "name": "UIA browser provider",
+      "status": "not-run",
+      "reason": "not-implemented"
+    },
+    {
+      "name": "local translation model",
+      "status": "not-run",
+      "reason": "worker-and-model-not-integrated"
+    },
+    {
+      "name": "GitHub CI",
+      "status": "not-run",
+      "reason": "configuration-only-not-pushed-or-triggered"
+    }
+  ],
+  "poc_results_transferred_to_new_code": false,
+  "m1_accepted": false,
+  "production_safe_to_enable": false,
+  "static_packaging_audit": {
+    "status": "passed",
+    "check_count": 21,
+    "report": "source-audit.json",
+    "not_product_execution": true
+  }
+}

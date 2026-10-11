@@ -1,0 +1,41 @@
+test_duplicate (test_worker.InventoryTests.test_duplicate) ... ok
+test_inventory_consistency_only (test_worker.InventoryTests.test_inventory_consistency_only) ... ok
+test_missing_required (test_worker.InventoryTests.test_missing_required) ... ok
+test_no_inventory (test_worker.InventoryTests.test_no_inventory) ... ok
+test_path_escape (test_worker.InventoryTests.test_path_escape) ... ok
+test_tampered_file (test_worker.InventoryTests.test_tampered_file) ... ok
+test_missing_model_fails_without_text_or_trace (test_worker.ProcessBoundaryTests.test_missing_model_fails_without_text_or_trace) ... ok
+test_missing_model_selfcheck_reports_failure_only (test_worker.ProcessBoundaryTests.test_missing_model_selfcheck_reports_failure_only) ... ok
+test_bad_sizes (test_worker.ProtocolTests.test_bad_sizes) ... ok
+test_byte_order (test_worker.ProtocolTests.test_byte_order) ... ok
+test_empty_policy (test_worker.ProtocolTests.test_empty_policy) ... ok
+test_invalid_json (test_worker.ProtocolTests.test_invalid_json) ... ok
+test_invalid_utf8 (test_worker.ProtocolTests.test_invalid_utf8) ... ok
+test_no_nan_write (test_worker.ProtocolTests.test_no_nan_write) ... ok
+test_nonobject (test_worker.ProtocolTests.test_nonobject) ... ok
+test_null_and_nontext (test_worker.ProtocolTests.test_null_and_nontext) ... ok
+test_oversized_write (test_worker.ProtocolTests.test_oversized_write) ... ok
+test_round_trip_unicode (test_worker.ProtocolTests.test_round_trip_unicode) ... ok
+test_short_reads (test_worker.ProtocolTests.test_short_reads) ... ok
+test_truncated (test_worker.ProtocolTests.test_truncated) ... ok
+test_two_frames (test_worker.ProtocolTests.test_two_frames) ... ok
+test_unpaired_surrogates (test_worker.ProtocolTests.test_unpaired_surrogates) ... ok
+test_utf16_limit (test_worker.ProtocolTests.test_utf16_limit) ... ok
+test_bad_output (test_worker.StructureTests.test_bad_output) ... ok
+test_email (test_worker.StructureTests.test_email) ... ok
+test_emoji (test_worker.StructureTests.test_emoji) ... ok
+test_issue (test_worker.StructureTests.test_issue) ... ok
+test_line_endings (test_worker.StructureTests.test_line_endings) ... ok
+test_manual_exact_prefix (test_worker.StructureTests.test_manual_exact_prefix) ... ok
+test_manual_invalid (test_worker.StructureTests.test_manual_invalid) ... ok
+test_manual_limit (test_worker.StructureTests.test_manual_limit) ... ok
+test_manual_space (test_worker.StructureTests.test_manual_space) ... ok
+test_mention (test_worker.StructureTests.test_mention) ... ok
+test_numeric (test_worker.StructureTests.test_numeric) ... ok
+test_url (test_worker.StructureTests.test_url) ... ok
+test_whitespace (test_worker.StructureTests.test_whitespace) ... ok
+
+----------------------------------------------------------------------
+Ran 36 tests in 1.206s
+
+OK

@@ -1,0 +1,17 @@
+* text=auto eol=lf
+
+# Preserve archived reference bytes used by integrity checks.
+reference/** -text
+archive/** -text whitespace=cr-at-eol
+evidence/** -text whitespace=cr-at-eol,-blank-at-eof
+artifacts/** -text whitespace=cr-at-eol,-blank-at-eof
+
+# Markdown hard breaks and generated diagnostic output retain their formatting.
+reference/*.md whitespace=-blank-at-eol
+
+*.cmd text eol=crlf
+
+*.exe binary
+*.png binary
+*.jpg binary
+*.zip binary

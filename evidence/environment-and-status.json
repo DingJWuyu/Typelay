@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "date": "2026-10-07",
+  "platform": "Linux-6.18.44-x86_64-with-glibc2.41",
+  "python": "3.13.5",
+  "tools": {
+    "dotnet": null,
+    "csc": null,
+    "mono": null,
+    "wine": null,
+    "clang": "/usr/local/swift/usr/bin/clang",
+    "lld-link": "/usr/local/swift/usr/bin/lld-link",
+    "node": "/opt/nvm/versions/node/v22.16.0/bin/node"
+  },
+  "actual_results": {
+    "python_unittest": {
+      "status": "passed",
+      "tests": 36
+    },
+    "source_structural_checks": {
+      "status": "passed",
+      "checks": 8
+    },
+    "launcher_cross_compilation": "passed",
+    "launcher_reproducibility": "two builds byte-identical"
+  },
+  "not_run": [
+    "csharp-build",
+    "csharp-core-tests",
+    "csharp-integration-tests",
+    "native-fixture-tests",
+    "powershell-bootstrap",
+    "wpf-client-startup",
+    "real-model-inference",
+    "edge-input",
+    "physical-tab",
+    "chinese-ime",
+    "visual-parity",
+    "github-actions"
+  ],
+  "release_blockers": [
+    "B-01-nonatomic-writeback-and-consumed-tab",
+    "B-02-build-and-windows-evidence-missing"
+  ],
+  "experimental_writeback_default": false,
+  "step_one_accepted": false,
+  "step_two_accepted": false
+}

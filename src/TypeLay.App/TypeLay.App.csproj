@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWPF>true</UseWPF><ImplicitUsings>disable</ImplicitUsings><UseWindowsForms>true</UseWindowsForms><EnableWindowsTargeting>true</EnableWindowsTargeting><ApplicationManifest>app.manifest</ApplicationManifest><AssemblyName>TypeLay.App</AssemblyName></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../TypeLay.Core/TypeLay.Core.csproj" /><ProjectReference Include="../TypeLay.Protocol/TypeLay.Protocol.csproj" /></ItemGroup>
+  <ItemGroup><InternalsVisibleTo Include="TypeLay.DesktopFixture" /></ItemGroup>
+</Project>

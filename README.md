@@ -1,7 +1,82 @@
-# typelay
+# TypeLay · Windows Development Build 0.2.0
 
-Realtime translation overlay above any text input box.
+**最后功能实测：2026-10-10。目标是自动跟随当前聚焦的普通文本输入框，连续翻译并用 Tab 接受；应用名称只是测试场景，不是支持名单。最新版已构建、安装并恢复普通启动。正式 Broker 与真实模型的持续输入、字段切换、记事本 Tab 写回及译文编辑已通过本轮回归。所有普通输入框完整可用的目标尚未达到，通用写回缺口与安全发布阻塞项仍开放。**
 
-You keep typing in the original app with your existing input method. typelay reads the focused field, shows a live translation above it, and replaces the original text only when you accept it.
+项目包含 WPF 客户端、桌面 UIA 输入服务、本地模型安装与推理进程、浮层、托盘和设置。本机已生成 `app/` 中带 .NET 运行时的 Windows x64 客户端和 Broker。根目录 `TypeLay.exe` 优先启动这些程序；没有 `app/` 时才走私有 SDK 自动构建流程。已有 SDK 和有效的本机 Argos 1.9 中英模型可以复用。本机验证记录见 `VERIFICATION_STATUS.md`。
 
-This repository is the product. It is not implemented yet.
+**默认关闭实验性 Tab 写回。** 当前 UIA 写回仍存在“检查原文”到“设置新值”之间的非原子竞态，可能覆盖在这个窗口内发生的新输入；也可能在物理 Tab 已被拦截后拒绝写入，消耗一次 Tab。该问题违反首条可用闭环的安全验收要求，未以测试通过或用户确认来替代解决。可编辑候选支持浮层编辑与显式复制；无法确认输入法状态的译文只读预览。设置中的实验开关仅用于已备份测试文本，不能作为日常输入可用的声明。
+
+## 开始使用
+
+1. 在 Windows x64 上将项目保留在固定位置，然后双击 `TypeLay.exe`。客户端启动后通常位于系统托盘的 T 图标中。无需管理员权限。
+2. 本机的 `app/` 已含客户端和 .NET 运行时。没有预编译文件的源码包会复用已有私有 SDK，或下载 SDK 后构建、执行逻辑测试并缓存结果。`Start-TypeLay.cmd` 是可见控制台的备用入口。
+3. 客户端打开后，在“常规”或“翻译”中选择“检查并准备”，安装私有 Python 与推理组件。安装器会检查本机 Argos 1.9 中英双向模型，校验后复用已有权重；缺失或不完整的方向才下载。只有模型加载和实际 CPU 自检成功后才能显示就绪。模型下载支持暂停和继续；SDK 的首次下载取消后会重下。
+4. 聚焦普通文本输入框并输入，TypeLay 自动跟随当前字段。翻译不要求标点，连续输入时也会更新预览。无需自己选择控件类型、应用或添加 Message/Comment 标签；托盘中的教程只是可选的演示场景。当前实现缺口见下表及验证报告。
+5. 验证实验写回时，在“常规”开启“允许 Tab 写回”。仅使用已备份的测试内容。等浮层提示“Tab 接受译文”，在原输入框按 Tab；人工编辑后第一次 Tab 返回原输入框，下一次 Tab 接受。逐项实测结果见验证报告。
+
+下载/启动失败时，查看 `%LOCALAPPDATA%\TypeLay\build-logs\`。模型组件失败可能涉及网络、CPU 能力、下载完整性或微软 VC++ x64 运行库；设置中有微软官方说明入口。不要以关闭杀毒软件、UAC、SmartScreen 或组织策略作为修复步骤。此包没有代码签名；文件哈希只能核验内容一致性，不能替代发布者身份信任。
+
+## 已接入的实现与未验证边界
+
+| 范围 | 本次代码与界面 | 本次实际证据 |
+|---|---|---|
+| 启动 | x64 启动器、预编译客户端、源码构建缓存 | Windows 构建与启动脚本通过；TypeLay.exe 已启动项目 app 中的自包含客户端和 Broker |
+| 输入 | 当前桌面 Edit/可编辑 Document 自动发现，原生 UIA 范围与组合态读取，未知状态的普通字段值只读预览 | 正式 Broker 的普通 Win32 Edit 无标点回放 45 字，输入期间 8 次预览；两个字段快速切换 100 次后绑定正确。未暴露文本接口的自绘字段尚无后端 |
+| 翻译 | CTranslate2 CPU INT8、SentencePiece、Lingua、本地中英双向 | 36 项 Python 测试通过，中英双向实际 CPU 自检通过，本机权重复用 |
+| 浮层 | 原生译文编辑框、两阶段 Tab、按活动行定位；只读预览明确提示并禁止误导选区 | 本轮记事本实际 IME 组合态保留预览，译文编辑及两阶段 Tab 通过；未知状态预览的鼠标隐藏通过 |
+| 接受 | 低层 Hook、短效许可、精确目标/快照/选区检查、写后核验与未知结果隔离 | 本轮记事本正式 Broker 的整框及人工编辑写回均返回 Verified；普通 Win32 Edit 未取得可靠 IME 状态，只预览且 Tab 正常移焦。B-01/B-03 未关闭，不能认领通用写回 |
+| 托盘/设置 | 快速面板、菜单、启停、退出、语言、排除、主题、自启动、模型安装 | Windows 设置和模型准备已运行，其他交互待测 |
+| 工程 | Core/Protocol/Broker/App/worker 分离，逻辑回归和发布脚本 | Release 构建零警告错误，Core 114、Integration 48、NativeFixture 16、Python 36、源码检查 8 项通过；NativeFixture 专用适配器测试不等于生产写回通过；CI 未运行 |
+
+### 当前能力与实现缺口
+
+当前源语言为 Auto/中文/English，目标语言为中文/English。只有已安装方向可翻译。明显已是目标语言时保持安静。自动语言判断很短或混合文本时可能不准确，尚无翻译质量基准。
+
+翻译不要求标点。停顿 300 毫秒后开始推理；持续输入时最多等待 500 毫秒便调度一次当前可翻译内容，单个推理串行执行，实际刷新还包含控件读取和模型耗时。追加输入期间保留并更新预览；只有可靠输入法状态下与最新原文完全对应的可接受候选才能用于 Tab 写回。已知组合态只提取候选之前的已提交文字，不读取候选范围。无法确认组合态时，普通字段值可以只读预览，值可能包含尚未提交字符，不能称为已确认文字，也不能编辑或写回。本轮通过生产 Broker 的连续回放，历史 WPF 回放不能代替浏览器连续输入验证。
+
+输入识别依据当前焦点，没有浏览器进程白名单、教程 URL 限制或自然语言标签要求。用户不需要挑选“合格输入框”。当前实现主要依靠 UIA：ValuePattern 与文本范围一致且输入法状态可靠时可以申请实验写回；仅有可编辑文本范围或输入法状态未知的字段只能预览。这些是待补齐的后端能力，不能把产品目标缩成指定应用。浏览器实测受工具启动限制，多屏实测受本轮桌面只暴露一块显示器限制，均未认领通过。
+
+密码、PIN、OTP、CVV、账户/密钥/支付相关元数据、代码、终端、浏览器地址栏、只读及离屏控件仍排除。无标签普通输入不再排除；多选区或值与范围暂不一致时只能预览，未知组合态不得写回。没有 ValuePattern 的富文本控件不会被整框 SetValue 扁平化。原型中的 WorkChat 是演示外壳，不能作为任何实际同名应用已适配的证据。
+
+人工编辑冻结自动更新、鼠标返回待接受、末尾追加保留人工前缀以及修改已有原文重新翻译均已接线。追加使用保留人工文本并追加局部译文的确定性策略，尚无完整语义融合质量保证。快捷键自定义、其他翻译风格、术语表、更多语言模型、安装器、代码签名与富文本适配尚未完成；相应设置明确禁用或标注范围，不展示虚假的可用状态。
+
+## 工程与验证
+
+长期开发分支为 `windows-preview`，后续开发、修复和验证均在此分支进行，`main` 保持不变。分支约定见 [AGENTS.md](AGENTS.md)。源码仓库不提交本机 `app/` 运行时、模型、构建缓存及生成的发布清单；自包含安装包由发布流程生成。本轮验证日志作为独立证据随分支保存。
+
+```powershell
+gh repo clone DingJWuyu/Typelay -- --branch windows-preview
+```
+
+桌面自动验收可通过 `app/TypeLay.App.exe --automation-test` 显式允许软件注入的 Tab/Esc。本次进程中浮层及托盘显示“自动化测试”，普通启动仍拒绝注入接受按键，其余写回校验保持启用。使用方法与证据范围见 [自动化测试说明](docs/AUTOMATION_TESTING.md)。
+
+`src/TypeLay.Core` 保留并扩展 M1 状态机和安全计划；`src/TypeLay.Protocol` 管理进程协议、字段策略和 UTF-16 映射；`src/TypeLay.Broker` 独立隔离 UIA 调用；`src/TypeLay.App` 负责 WPF UI、协调器、Hook、设置和安装；`worker` 只负责本地检测与推理。没有采用全局 Ctrl+A/V、剪贴板中转或自动 Enter 作为写回后备。
+
+有开发环境的维护者可执行：
+
+```powershell
+# Windows x64, .NET SDK 10.0.401
+.\tools\validate.ps1
+# 额外的 M1 原生 fixture 测试需要交互式、未锁定桌面
+.\tools\validate.ps1 -NativeFixture
+# 构建带客户端和 .NET 运行时的预编译开发包；不下载模型
+.\tools\publish-windows.ps1
+```
+
+跨平台的已执行检查：
+
+```text
+python tools/verify-source.py
+python -m unittest discover -s tests/python -v
+python tools/bootstrap/build-launcher.py
+```
+
+`publish-windows.ps1` 会在成功构建后生成 `app/TypeLay.App.exe` 和 Broker、自包含运行时、发布证据与新的清单。本机已直接执行 dotnet publish 生成自包含客户端并启动，具体交互验收见上表。CI 只负责编译和确定性测试，不自动认领真实输入法或物理键盘验收。
+
+请先阅读 `VERIFICATION_STATUS.md`、`docs/SAFETY_AND_LIMITS.md` 和 `docs/WINDOWS_ACCEPTANCE.md`。`archive/M1` 保留历史记录，不能代表本次状态；`reference` 保留原规格和原型及原 PoC 报告。PoC 项目决策与报告中的“部分通过”事实均未被重写。
+
+## 本地数据与移除
+
+程序文件保留在解压目录；设置、模型、下载缓存、私有运行时、构建输出和无输入正文的安装自检记录保留在 `%LOCALAPPDATA%\TypeLay`。不建立翻译历史。运行中必要的原文/译文存在内存中，生命周期结束会释放引用；托管内存不保证即时物理擦除，系统转储/分页文件也不在本包控制范围。
+
+移除时先在设置关闭自启动，从托盘退出，再删除解压目录与上述 TypeLay 数据目录。若无法进入设置，检查当前用户 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 下的 `TypeLay` 项，仅删除该项。该版本没有系统服务或驱动。

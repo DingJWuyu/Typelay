@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup><ProjectReference Include="../../src/TypeLay.Platform.Windows/TypeLay.Platform.Windows.csproj" /></ItemGroup>
+</Project>

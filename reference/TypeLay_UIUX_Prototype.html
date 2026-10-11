@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>TypeLay UI/UX Prototype v1.3</title>
+<style>
+  :root{
+    --bg:#eef1f6; --panel:#fff; --panel2:#f7f8fb; --line:#dfe3eb; --text:#171a21; --muted:#707887;
+    --accent:#3267e3; --accent2:#e9f0ff; --good:#19764a; --warn:#a86400; --bad:#b13a3a;
+    --shadow:0 16px 48px rgba(27,35,54,.16),0 3px 10px rgba(27,35,54,.08);
+    --overlay-shadow:0 14px 34px rgba(19,29,52,.18),0 2px 8px rgba(19,29,52,.10);
+    --radius:18px; --type-radius:14px;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;font-family:Inter,"Segoe UI",system-ui,-apple-system,sans-serif;background:linear-gradient(180deg,#f5f7fb 0,#edf0f5 100%);color:var(--text);overflow:hidden}
+  button,input,textarea{font:inherit}
+  button{cursor:pointer}
+  .shell{height:100%;display:grid;grid-template-columns:minmax(650px,1fr) 330px;gap:18px;padding:18px}
+  .stage{position:relative;min-width:0;background:#dfe4ed;border:1px solid #d5dae3;border-radius:24px;box-shadow:var(--shadow);overflow:hidden}
+  .stage.inactive{filter:saturate(.75);opacity:.74}
+  .window{position:absolute;inset:14px;background:var(--panel);border:1px solid #d8dde6;border-radius:18px;overflow:hidden;display:grid;grid-template-rows:48px 1fr;box-shadow:0 8px 26px rgba(24,31,48,.10)}
+  .titlebar{display:grid;grid-template-columns:220px 1fr 190px;align-items:center;border-bottom:1px solid #e7e9ee;background:#fafbfc;user-select:none}
+  .brand{display:flex;gap:10px;align-items:center;padding-left:16px;font-size:13px;font-weight:650;color:#313744}
+  .brandmark{width:22px;height:22px;border-radius:7px;background:linear-gradient(135deg,#315fd5,#7497ef);display:grid;place-items:center;color:#fff;font-weight:800;font-size:11px}
+  .search{justify-self:center;width:min(420px,90%);height:30px;border-radius:9px;border:1px solid #e1e4e9;background:#f1f3f6;color:#8a909a;display:flex;align-items:center;padding:0 12px;font-size:12px}
+  .winbtns{justify-self:end;display:flex;height:48px}
+  .winbtn{width:46px;display:grid;place-items:center;color:#6e7580;font-size:13px}.winbtn:last-child:hover{background:#e65d5d;color:#fff}
+  .appbody{display:grid;grid-template-columns:220px 1fr;min-height:0}
+  .sidebar{border-right:1px solid #e9ebef;background:#f7f8fa;padding:14px 10px}
+  .sideitem{height:38px;border-radius:10px;padding:0 11px;display:flex;gap:10px;align-items:center;font-size:13px;color:#5b626f;margin-bottom:4px}
+  .sideitem.active{background:#e9eef9;color:#244790;font-weight:650}
+  .dot{width:8px;height:8px;border-radius:50%;background:#98a1b2}.active .dot{background:#4e77d4}
+  .conversation{display:grid;grid-template-rows:58px 1fr auto;background:#fff;min-width:0;min-height:0}
+  .chathead{border-bottom:1px solid #eceef2;padding:10px 20px;display:flex;align-items:center;gap:11px}
+  .avatar{width:34px;height:34px;border-radius:50%;background:linear-gradient(135deg,#dbe6ff,#aebfe5);display:grid;place-items:center;font-weight:700;color:#415376}
+  .chatname{font-size:14px;font-weight:650}.chatmeta{font-size:11px;color:#9299a4;margin-top:2px}
+  .messages{padding:28px 28px 10px;overflow:auto;display:flex;flex-direction:column;gap:16px;background:linear-gradient(180deg,#ffffff,#fdfdfd)}
+  .bubble{max-width:62%;padding:10px 13px;border-radius:15px;font-size:13px;line-height:1.5;border:1px solid #e5e8ee;background:#f6f7f9;color:#39404c}
+  .bubble.me{align-self:flex-end;background:#eaf0ff;border-color:#dbe5ff}
+  .composerWrap{position:relative;padding:12px 20px 20px;background:#fff}
+  .composer{display:grid;grid-template-columns:32px minmax(0,1fr) 82px;gap:8px;align-items:end;border:1px solid #dfe3e9;border-radius:16px;padding:8px;background:#fff;box-shadow:0 2px 6px rgba(25,34,55,.04)}
+  .plus{width:32px;height:32px;border:0;background:transparent;border-radius:9px;color:#747b87;font-size:21px}.plus:hover{background:#f2f4f7}
+  #sourceInput{width:100%;resize:none;min-height:34px;max-height:112px;border:0;outline:0;padding:7px 5px 4px;background:transparent;color:#20242b;line-height:1.45;font-size:14px}
+  #sendBtn{height:34px;border:0;border-radius:10px;background:#315fd6;color:#fff;font-size:12px;font-weight:650;box-shadow:0 2px 6px rgba(49,95,214,.22)}
+  #sendBtn:focus-visible,.demo button:focus-visible,.escapeAction:focus-visible{outline:3px solid rgba(50,103,227,.22);outline-offset:2px}
+  .apphint{display:flex;justify-content:space-between;margin:6px 3px 0;color:#9a9faa;font-size:10.5px}
+  .typelay{position:absolute;right:104px;bottom:calc(100% - 4px);z-index:20;min-width:114px;max-width:min(520px,58vw);transition:opacity .14s ease,transform .16s ease}
+  .typelay.hidden{opacity:0;pointer-events:none;transform:translateY(6px)}
+  .overlay{margin-top:0;width:390px;max-width:100%;border:1px solid rgba(205,211,222,.95);border-radius:16px;background:rgba(255,255,255,.96);backdrop-filter:blur(18px);box-shadow:var(--overlay-shadow);overflow:hidden;transform-origin:bottom right;animation:pop .16s ease}
+  @keyframes pop{from{opacity:0;transform:scale(.985) translateY(3px)}to{opacity:1;transform:none}}
+  .overlayTop{height:34px;padding:0 10px 0 12px;border-bottom:1px solid #edf0f4;display:flex;align-items:center;gap:8px;color:#737b89;font-size:10.5px}
+  .langControl{display:inline-flex;align-items:center;gap:5px;font-weight:700;color:#4b5566;white-space:nowrap}.langChevron{font-size:9px;color:#9aa2af}.stateTag{margin-left:auto;display:flex;align-items:center;gap:6px}
+  .miniDot{width:6px;height:6px;border-radius:50%;background:#4f80ef}.miniDot.warn{background:#d58a1b}.miniDot.bad{background:#c94c4c}.miniDot.good{background:#2a9964}
+  .candidate{padding:12px 14px 13px;min-height:54px;max-height:160px;overflow:auto;font-size:14px;line-height:1.55;color:#252a31;cursor:text;position:relative}
+  .candidate.stale{color:#69707b}.candidate.failed{color:#747a84}
+  .candidate[contenteditable="true"]{outline:0;background:#fbfcff;box-shadow:inset 0 0 0 2px rgba(49,95,214,.12)}
+  .candidatePlaceholder{color:#9298a2;font-size:13px;display:flex;align-items:center;gap:8px}
+  .spinner{width:13px;height:13px;border:2px solid #d6dce7;border-top-color:#6089e7;border-radius:50%;animation:spin .8s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}
+  .overlayFoot{height:34px;padding:0 10px 0 13px;border-top:1px solid #edf0f4;background:#fbfcfd;display:flex;align-items:center;gap:12px;font-size:10.5px;color:#808794}
+  .footHint{display:inline-flex;align-items:center;white-space:nowrap}.escapeAction{display:inline-flex;align-items:center;border:0;background:transparent;color:#808794;padding:2px 0;border-radius:6px;white-space:nowrap}.escapeAction:hover{color:#4f5968}
+  .kbd{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid #cfd4de;background:#fff;border-bottom-width:2px;border-radius:5px;padding:1px 5px;color:#555d69;font-size:10px;margin-right:5px}
+  .blockReason{color:#a46100}.failReason{color:#ab3c3c}
+  .toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;background:#202630;color:#fff;border-radius:10px;padding:9px 12px;font-size:11.5px;box-shadow:0 9px 24px rgba(0,0,0,.2);transition:.18s;z-index:100}.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .demo{min-width:0;display:flex;flex-direction:column;gap:12px;overflow:auto;padding:2px 2px 2px 0}
+  .demoCard{background:rgba(255,255,255,.92);border:1px solid #dfe3ea;border-radius:18px;padding:14px;box-shadow:0 7px 20px rgba(28,36,54,.07)}
+  .demoEyebrow{font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:#7a8496;font-weight:750}.demoTitle{font-size:15px;font-weight:720;margin:5px 0 2px}.demoSub{font-size:11.5px;line-height:1.5;color:#7b8390}
+  .statusGrid{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:8px}.statusCell{background:#f6f7f9;border:1px solid #e7e9ee;border-radius:11px;padding:8px}.statusLabel{font-size:9.5px;color:#8b929e}.statusValue{margin-top:4px;font-size:11.5px;font-weight:650;color:#39404a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .scenarioGroup{margin-top:12px}.groupLabel{font-size:10.5px;color:#69717e;font-weight:700;margin:0 0 7px}
+  .btnGrid{display:grid;grid-template-columns:1fr 1fr;gap:7px}.demoBtn{border:1px solid #dfe3ea;background:#fff;border-radius:10px;min-height:36px;padding:7px 9px;color:#3d4552;font-size:11.5px;text-align:left}.demoBtn:hover{background:#f5f7fa;border-color:#cfd6e2}.demoBtn.primary{border-color:#ccdafb;background:#eef3ff;color:#3155a6}.demoBtn.warn{border-color:#ead7b7;background:#fff8ec;color:#8a590d}.demoBtn.danger{border-color:#edcccc;background:#fff3f3;color:#9d3d3d}.demoBtn.wide{grid-column:1/-1;text-align:center}
+  .focusFlow{margin-top:11px;border-top:1px solid #eceef2;padding-top:10px;font-size:11px;line-height:1.6;color:#646c78}.focusFlow b{color:#3e4652}
+  .log{margin-top:8px;display:flex;flex-direction:column;gap:5px}.logline{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:9.7px;color:#6e7682;background:#f6f7f9;border-radius:7px;padding:6px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .legend{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}.chip{font-size:10px;background:#f2f4f7;color:#68717f;border-radius:99px;padding:4px 7px;border:1px solid #e3e6eb}
+  .notes{font-size:10.5px;line-height:1.55;color:#717986;margin:9px 0 0}.notes strong{color:#424a55}
+  @media(max-width:980px){body{overflow:auto}.shell{height:auto;min-height:100%;grid-template-columns:1fr}.stage{height:760px}.demo{overflow:visible}.typelay{right:70px}.sidebar{display:none}.appbody{grid-template-columns:1fr}.titlebar{grid-template-columns:160px 1fr 138px}.search{width:90%}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <section class="stage" id="stage" aria-label="模拟目标应用">
+    <div class="window">
+      <div class="titlebar">
+        <div class="brand"><div class="brandmark">W</div> WorkChat</div>
+        <div class="search">搜索聊天、人员或文件</div>
+        <div class="winbtns"><div class="winbtn">—</div><div class="winbtn">□</div><div class="winbtn">×</div></div>
+      </div>
+      <div class="appbody">
+        <aside class="sidebar">
+          <div class="sideitem active"><span class="dot"></span>项目协作</div>
+          <div class="sideitem"><span class="dot"></span>产品讨论</div>
+          <div class="sideitem"><span class="dot"></span>设计评审</div>
+          <div class="sideitem"><span class="dot"></span>团队日常</div>
+        </aside>
+        <main class="conversation">
+          <header class="chathead"><div class="avatar">A</div><div><div class="chatname">Alex</div><div class="chatmeta">在线 · 模拟目标应用</div></div></header>
+          <div class="messages" id="messages">
+            <div class="bubble">Could we move tomorrow's review to the afternoon?</div>
+            <div class="bubble me">可以，我确认一下时间。</div>
+            <div class="bubble">Thanks. 3 PM works for me.</div>
+          </div>
+          <div class="composerWrap" id="composerWrap">
+            <div class="composer">
+              <button class="plus" aria-label="添加附件">＋</button>
+              <textarea id="sourceInput" rows="1" placeholder="输入消息…" aria-label="原应用输入框"></textarea>
+              <button id="sendBtn">发送</button>
+            </div>
+            <div class="apphint"><span>Enter 发送 · Shift+Enter 换行</span><span id="submitCount">发送次数 0</span></div>
+
+            <div class="typelay hidden" id="typelay" aria-live="polite">
+              <div class="overlay" id="overlay" hidden>
+                <div class="overlayTop">
+                  <span class="langControl" id="langLabel">Auto → EN <span class="langChevron">⌄</span></span>
+                  <span class="stateTag" style="visibility:hidden"><span class="miniDot" id="miniDot"></span><span id="stateLabel"></span></span>
+                </div>
+                <div class="candidate" id="candidate" tabindex="0"></div>
+                <div class="overlayFoot" id="overlayFoot">
+                  <span class="footHint"><span class="kbd">Tab</span><span id="tabHint">接受译文</span></span>
+                  <button class="escapeAction" id="escapeAction" type="button"><span class="kbd">Esc</span><span>退出翻译</span></button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+    <div class="toast" id="toast"></div>
+  </section>
+
+  <aside class="demo" aria-label="演示控制区">
+    <div class="demoCard">
+      <div class="demoEyebrow">Demo controls · 非产品 UI</div>
+      <div class="demoTitle">TypeLay 核心交互原型</div>
+      <div class="demoSub">点击左侧输入框并输入有效文本后，TypeLay 浮层出现在输入框正上方。右侧按钮只用于演示，不属于产品 UI。</div>
+      <div class="statusGrid">
+        <div class="statusCell"><div class="statusLabel">内部状态 · 非产品 UI</div><div class="statusValue" id="demoState">No Session</div></div>
+        <div class="statusCell"><div class="statusLabel">当前焦点</div><div class="statusValue" id="demoFocus">无</div></div>
+        <div class="statusCell"><div class="statusLabel">Tab 此刻</div><div class="statusValue" id="demoTab">交还应用</div></div>
+        <div class="statusCell"><div class="statusLabel">Translation</div><div class="statusValue">本地 Mock</div></div>
+      </div>
+      <div class="focusFlow" id="focusFlow"><b>核心路径：</b>聚焦 → 输入 → 浮层候选 → Tab 接受 / Esc 退出</div>
+    </div>
+
+    <div class="demoCard">
+      <div class="demoEyebrow">Scenarios</div>
+      <div class="scenarioGroup">
+        <div class="groupLabel">主流程</div>
+        <div class="btnGrid">
+          <button class="demoBtn primary" data-scenario="normal">普通翻译</button>
+          <button class="demoBtn primary" data-scenario="edit">人工编辑</button>
+          <button class="demoBtn" data-scenario="selection">选区翻译</button>
+          <button class="demoBtn" data-scenario="updating">继续输入</button>
+        </div>
+      </div>
+      <div class="scenarioGroup">
+        <div class="groupLabel">边界与异常</div>
+        <div class="btnGrid">
+          <button class="demoBtn" data-scenario="ime">输入法输入</button>
+          <button class="demoBtn danger" data-scenario="failure">翻译失败</button>
+          <button class="demoBtn" data-scenario="staleSelection">选区变化</button>
+          <button class="demoBtn wide" data-scenario="reset">重置原型</button>
+        </div>
+      </div>
+      <div class="log" id="log"></div>
+    </div>
+
+    <div class="demoCard">
+      <div class="demoEyebrow">Prototype scope</div>
+      <div class="demoTitle">本轮已模拟</div>
+      <div class="legend">
+        <span class="chip">整框翻译</span><span class="chip">选区替换</span><span class="chip">Tab 接受</span><span class="chip">Esc 退出</span>
+        <span class="chip">人工编辑</span><span class="chip">输入变化重翻</span><span class="chip">失败保护</span>
+        <span class="chip">输入法安全处理</span><span class="chip">Esc 结束会话</span>
+      </div>
+      <p class="notes"><strong>Mock：</strong>翻译文本、延迟、输入法提交、选区变化、焦点与失败均由前端脚本模拟；不调用模型、Windows API、UI Automation、全局 Hook 或云端翻译。</p>
+      <p class="notes"><strong>视觉：</strong>系统字体、浅色半透明浮层、低对比边框与轻阴影；语言方向只在展开浮层左上角出现，状态文案只表达用户当前能做什么，不暴露内部技术状态。</p>
+    </div>
+  </aside>
+</div>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const el = {
+    stage:$('stage'), source:$('sourceInput'), send:$('sendBtn'), messages:$('messages'), submit:$('submitCount'),
+    typelay:$('typelay'), overlay:$('overlay'), candidate:$('candidate'), langLabel:$('langLabel'),
+    stateLabel:$('stateLabel'), miniDot:$('miniDot'), tabHint:$('tabHint'), escapeAction:$('escapeAction'),
+    toast:$('toast'), demoState:$('demoState'), demoFocus:$('demoFocus'), demoTab:$('demoTab'), focusFlow:$('focusFlow'), log:$('log')
+  };
+  const State = {
+    NONE:'No Session', IDLE:'Idle Capsule', TRANSLATING:'Translating', VALID:'Valid Translation', EDITING:'Editing Translation',
+    PENDING:'Edited Translation Pending', STALE:'Stale Translation', FAILED:'Translation Failed', IME:'IME Composition', BLOCKED:'Selection Invalid'
+  };
+  const s = { state:State.NONE, session:false, composing:false, leaving:false, translation:'', manual:'', sourceSnapshot:'', selection:null,
+              timer:null, failNext:false, submitCount:0, selectionInvalid:false, lastSource:'', log:[] };
+
+  function log(msg){
+    const t = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    s.log.unshift(`${t}  ${msg}`); s.log=s.log.slice(0,4);
+    el.log.innerHTML=s.log.map(x=>`<div class="logline">${escapeHtml(x)}</div>`).join('');
+  }
+  function escapeHtml(str=''){ return str.replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+  function toast(msg){ el.toast.textContent=msg; el.toast.classList.add('show'); clearTimeout(toast.t); toast.t=setTimeout(()=>el.toast.classList.remove('show'),1600); }
+  function focusName(){
+    const a=document.activeElement;
+    if(a===el.source) return '原输入框'; if(a===el.candidate) return '译文编辑区'; if(a===el.send) return '模拟应用 · 发送'; if(el.typelay.contains(a)) return 'TypeLay 浮层'; return s.leaving?'其他应用':'模拟应用';
+  }
+  function tabMeaning(){
+    if(document.activeElement===el.candidate && s.state===State.EDITING) return '返回原输入框';
+    if(document.activeElement===el.source){
+      if((s.state===State.VALID || s.state===State.PENDING) && !s.composing && !s.selectionInvalid) return '接受译文';
+      return '交还应用';
+    }
+    return '交还应用';
+  }
+  function updateDemo(){ el.demoState.textContent=s.state; el.demoFocus.textContent=focusName(); el.demoTab.textContent=tabMeaning(); }
+  function endSession(reason='session ended'){
+    clearTimeout(s.timer); s.session=false; s.state=State.NONE; s.composing=false; s.selectionInvalid=false; s.selection=null;
+    el.typelay.classList.add('hidden'); el.overlay.hidden=true; el.candidate.contentEditable='false';
+    log(reason); updateDemo();
+  }
+  function ensureSession(){
+    if(s.leaving) return;
+    if(!s.session){ s.session=true; s.state=State.IDLE; el.typelay.classList.remove('hidden'); log('session-start · supported input focused'); }
+    render();
+  }
+  function activeText(){
+    if(s.selection && s.selection.end>s.selection.start) return el.source.value.slice(s.selection.start,s.selection.end);
+    return el.source.value;
+  }
+  function hasCJK(str){ return /[\u3400-\u9fff]/.test(str); }
+  function mockTranslate(src){
+    const map = new Map([
+      ['明天下午见','see you tomorrow afternoon'],
+      ['你好，我想确认一下明天下午的会议时间。',"Hi, I'd like to confirm the meeting time for tomorrow afternoon."],
+      ['这个方案我觉得可以，我们明天继续讨论。',"I think this plan works. Let's continue discussing it tomorrow."],
+      ['可以，我确认一下时间。',"Sure, I'll confirm the time."],
+      ['我们明天下午继续讨论这个项目。',"Let's continue discussing this project tomorrow afternoon."],
+      ['谢谢，我会尽快回复。',"Thanks, I'll get back to you as soon as possible."],
+      ['请把最终版本发给我。','Please send me the final version.']
+    ]);
+    if(map.has(src.trim())) return map.get(src.trim());
+    let out=src.trim();
+    const rules=[['你好','Hello'],['谢谢','Thanks'],['明天下午','tomorrow afternoon'],['明天','tomorrow'],['会议','meeting'],['项目','project'],['最终版本','final version'],['继续讨论','continue discussing'],['可以','works'],['请','Please ']];
+    for(const [a,b] of rules) out=out.split(a).join(b);
+    if(out===src.trim() || hasCJK(out)) return 'Prototype translation · ' + src.trim();
+    return out.replace(/。/g,'.').replace(/，/g,', ');
+  }
+  function captureSelection(){
+    if(document.activeElement!==el.source) return;
+    const a=el.source.selectionStart,b=el.source.selectionEnd;
+    s.selection=(b>a)?{start:a,end:b,text:el.source.value.slice(a,b),source:el.source.value}:null;
+  }
+  function render(){
+    if(!s.session || s.leaving){ el.typelay.classList.add('hidden'); updateDemo(); return; }
+    const expanded = ![State.IDLE,State.NONE,State.IME,State.BLOCKED].includes(s.state);
+    el.typelay.classList.toggle('hidden', !expanded);
+    el.overlay.hidden=!expanded;
+    el.miniDot.className='miniDot'; el.candidate.className='candidate';
+    let label='', foot='', html='';
+    if(s.state===State.TRANSLATING){ label='正在翻译'; foot='交还应用'; html='<div class="candidatePlaceholder"><span class="spinner"></span>正在翻译…</div>'; el.miniDot.classList.add('warn'); }
+    else if(s.state===State.VALID){ label='译文就绪'; foot='接受译文'; html=escapeHtml(s.translation); el.miniDot.classList.add('good'); }
+    else if(s.state===State.EDITING){ label='编辑中'; foot='返回输入框'; html=escapeHtml(s.manual); el.miniDot.classList.add('good'); }
+    else if(s.state===State.PENDING){ label='译文就绪'; foot='接受译文'; html=escapeHtml(s.manual); el.miniDot.classList.add('good'); }
+    else if(s.state===State.STALE){ label='正在翻译'; foot='交还应用'; html=escapeHtml(s.translation); el.miniDot.classList.add('warn'); el.candidate.classList.add('stale'); }
+    else if(s.state===State.FAILED){ label='暂时无法翻译'; foot='交还应用'; html=escapeHtml(s.translation); el.miniDot.classList.add('bad'); el.candidate.classList.add('failed'); }
+    else if(s.state===State.IME){ label=''; foot='交还应用'; html=''; }
+    else if(s.state===State.BLOCKED){ label=''; foot='交还应用'; html=''; }
+    el.stateLabel.textContent=label;
+    el.stateLabel.parentElement.style.visibility=label?'visible':'hidden';
+    el.tabHint.textContent=foot; el.candidate.innerHTML=html;
+    if(s.state===State.EDITING){ el.candidate.contentEditable='true'; } else { el.candidate.contentEditable='false'; }
+    updateDemo();
+  }
+  function scheduleTranslation({delay=650, preserve=false}={}){
+    clearTimeout(s.timer); if(!s.session || s.composing) return;
+    captureSelection(); const txt=activeText();
+    if(!txt.trim()){ s.state=State.IDLE; s.translation=''; s.selection=null; render(); return; }
+    if(!hasCJK(txt)){ s.state=State.IDLE; s.translation=''; render(); log('target-language text · no rewrite'); return; }
+    s.sourceSnapshot=el.source.value;
+    if(preserve && s.translation){ s.state=State.STALE; } else { s.state=State.TRANSLATING; }
+    render();
+    s.timer=setTimeout(()=>{
+      if(!s.session || s.composing) return;
+      if(s.failNext){ s.failNext=false; s.state=State.FAILED; render(); log('translation-failed · acceptance disabled'); return; }
+      captureSelection(); const now=activeText(); if(!now.trim()) return;
+      s.translation=mockTranslate(now); s.manual=''; s.state=State.VALID; s.sourceSnapshot=el.source.value; render(); log('candidate-valid · current source snapshot');
+    },delay);
+  }
+  function accept(){
+    if(!(s.state===State.VALID || s.state===State.PENDING) || s.composing || s.selectionInvalid) return false;
+    const value=s.state===State.PENDING?s.manual:s.translation;
+    if(s.selection && s.selection.end>s.selection.start){
+      if(el.source.value!==s.selection.source){ s.selectionInvalid=true; s.translation=''; s.manual=''; s.selection=null; s.state=State.IDLE; render(); log('selection-changed · candidate cancelled'); return true; }
+      const before=el.source.value.slice(0,s.selection.start), after=el.source.value.slice(s.selection.end);
+      el.source.value=before+value+after; const pos=before.length+value.length; el.source.setSelectionRange(pos,pos);
+      log('accepted · selection replaced · no submit');
+    } else { el.source.value=value; el.source.setSelectionRange(value.length,value.length); log('accepted · full text replaced · no submit'); }
+    s.translation=''; s.manual=''; s.selection=null; s.state=State.IDLE; s.lastSource=el.source.value; render();
+    return true;
+  }
+  function startEdit({preserveSelection=false}={}){
+    if(s.state!==State.VALID) return;
+    s.manual=el.candidate.innerText || s.translation;
+    s.state=State.EDITING;
+    el.candidate.contentEditable='true';
+    el.stateLabel.textContent='编辑中';
+    el.stateLabel.parentElement.style.visibility='visible';
+    el.tabHint.textContent='返回输入框';
+    updateDemo();
+    if(!preserveSelection){
+      requestAnimationFrame(()=>{
+        el.candidate.focus();
+        const range=document.createRange(); range.selectNodeContents(el.candidate); range.collapse(false);
+        const sel=window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
+      });
+    }
+    log('edit-begin · auto-update frozen');
+  }
+  function returnFromEdit(){
+    if(s.state!==State.EDITING) return;
+    s.manual=el.candidate.innerText.trim(); s.state=State.PENDING; render(); el.source.focus(); log('edit-return · next Tab accepts manual candidate');
+  }
+  function exitTranslation(){
+    if(!s.session || s.state===State.NONE) return;
+    s.leaving=true;
+    el.stage.classList.add('inactive');
+    if(document.activeElement && typeof document.activeElement.blur==='function') document.activeElement.blur();
+    endSession('esc-exit · translation session ended');
+    el.demoFocus.textContent='其他应用';
+  }
+  function setInput(text, focus=true){
+    el.source.value=text; el.source.style.height='auto'; el.source.style.height=Math.min(el.source.scrollHeight,112)+'px';
+    if(focus){ el.source.focus(); ensureSession(); }
+  }
+  function scenario(name){
+    clearTimeout(s.timer); s.failNext=false; s.selectionInvalid=false; s.composing=false; s.leaving=false; el.stage.classList.remove('inactive');
+    if(name==='reset'){ el.source.value=''; s.translation=''; s.manual=''; s.selection=null; s.session=false; endSession('prototype-reset'); setTimeout(()=>el.source.focus(),50); return; }
+    ensureSession();
+    if(name==='normal'){
+      setInput('你好，我想确认一下明天下午的会议时间。'); s.selection=null; scheduleTranslation({delay:500}); el.focusFlow.innerHTML='<b>操作：</b>等待候选出现，然后在原输入框按 Tab。接受后只替换文本，不发送。';
+    }
+    if(name==='edit'){
+      setInput('这个方案我觉得可以，我们明天继续讨论。'); s.selection=null; s.translation=mockTranslate(el.source.value); s.state=State.VALID; render(); el.focusFlow.innerHTML='<b>操作：</b>点击译文并修改 → Tab 返回原输入框 → 再按 Tab 接受人工译文。';
+    }
+    if(name==='selection'){
+      const text='Hello John, 明天下午见, thanks.'; setInput(text); const start=text.indexOf('明天下午见'),end=start+'明天下午见'.length; el.source.setSelectionRange(start,end); s.selection={start,end,text:'明天下午见',source:text}; scheduleTranslation({delay:420}); el.focusFlow.innerHTML='<b>操作：</b>当前只选中中文片段；Tab 仅替换选区，选区外文本保持。';
+    }
+    if(name==='updating'){
+      setInput('我们明天下午继续讨论这个项目。'); s.selection=null; s.translation='Let\'s continue discussing this project tomorrow.'; s.state=State.STALE; render(); log('source-changed · translating again');
+      s.timer=setTimeout(()=>{s.translation=mockTranslate(el.source.value);s.state=State.VALID;render();log('candidate-refreshed');},2300);
+      el.focusFlow.innerHTML='<b>观察：</b>继续输入会触发新的翻译；等待期间只显示“正在翻译”，Tab 交还应用。';
+    }
+    if(name==='ime'){
+      setInput('ni hao'); s.selection=null; s.composing=true; s.state=State.IME; render(); log('composition-start · TypeLay stays quiet');
+      el.focusFlow.innerHTML='<b>观察：</b>输入法尚未提交时，TypeLay 不展示任何技术状态；提交文字后按普通翻译流程出现。';
+      let commit=document.querySelector('[data-ime-commit]');
+      if(!commit){ commit=document.createElement('button');commit.className='demoBtn primary wide';commit.dataset.imeCommit='1';commit.textContent='模拟输入法提交“你好…”'; document.querySelector('.scenarioGroup:nth-of-type(2) .btnGrid').appendChild(commit); commit.addEventListener('click',commitIme); }
+    }
+    if(name==='failure'){
+      setInput('谢谢，我会尽快回复。'); s.selection=null; s.translation='Thanks, I will reply soon.'; s.state=State.STALE; s.failNext=true; render(); log('translation-attempt started'); scheduleTranslation({delay:900,preserve:true}); el.focusFlow.innerHTML='<b>观察：</b>翻译失败时只提示“暂时无法翻译”，Tab 交还应用，不弹窗打断。';
+    }
+    if(name==='staleSelection'){
+      const text='Hello John, 明天下午见, thanks.'; setInput(text); const start=text.indexOf('明天下午见'),end=start+'明天下午见'.length;
+      s.selection={start,end,text:'明天下午见',source:text}; s.translation='see you tomorrow afternoon'; s.state=State.VALID; render();
+      el.source.value='Hello John, 后天下午见, thanks.'; s.selectionInvalid=true; s.translation=''; s.manual=''; s.selection=null; s.state=State.IDLE; render(); log('selection-changed · candidate cancelled');
+      el.focusFlow.innerHTML='<b>观察：</b>选区发生变化时直接取消当前候选，不展示额外错误状态。';
+    }
+  }
+  function commitIme(){
+    if(!s.composing) return; s.composing=false; setInput('你好，我想确认一下明天下午的会议时间。'); log('composition-end · committed text'); scheduleTranslation({delay:650});
+  }
+
+  el.source.addEventListener('focus',()=>{ if(s.leaving){s.leaving=false;el.stage.classList.remove('inactive')} ensureSession(); if(s.state===State.EDITING){ s.manual=el.candidate.innerText.trim(); s.state=State.PENDING; render(); log('mouse-return · manual candidate pending'); } updateDemo(); });
+  el.source.addEventListener('input',()=>{
+    el.source.style.height='auto'; el.source.style.height=Math.min(el.source.scrollHeight,112)+'px';
+    if(s.composing) return;
+    ensureSession();
+    if(s.state===State.PENDING && s.sourceSnapshot && el.source.value.startsWith(s.sourceSnapshot)){
+      s.translation=s.manual; s.state=State.STALE; render(); scheduleTranslation({delay:850,preserve:true}); log('append-after-manual · prototype fusion refresh'); return;
+    }
+    scheduleTranslation({delay:650,preserve:!!s.translation});
+  });
+  el.source.addEventListener('select',()=>{ if(!s.composing && s.session){ captureSelection(); if(activeText().trim()) scheduleTranslation({delay:420,preserve:!!s.translation}); } });
+  el.source.addEventListener('compositionstart',()=>{ ensureSession(); s.composing=true; s.state=State.IME; render(); log('real compositionstart event'); });
+  el.source.addEventListener('compositionend',()=>{ s.composing=false; log('real compositionend event'); scheduleTranslation({delay:650}); });
+  el.source.addEventListener('keydown',(e)=>{
+    if(e.key==='Tab' && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey){
+      if((s.state===State.VALID || s.state===State.PENDING) && !s.composing && !s.selectionInvalid){ e.preventDefault(); accept(); }
+      else { log(`tab-pass-through · ${s.state}`); }
+    }
+  });
+  el.candidate.addEventListener('pointerdown',()=>{ if(s.state===State.VALID) startEdit({preserveSelection:true}); });
+  el.candidate.addEventListener('click',()=>{ if(s.state===State.VALID) startEdit(); });
+  el.candidate.addEventListener('keydown',(e)=>{
+    if(e.key==='Tab' && s.state===State.EDITING){ e.preventDefault(); returnFromEdit(); }
+  });
+  el.candidate.addEventListener('input',()=>{ if(s.state===State.EDITING) s.manual=el.candidate.innerText; });
+  el.escapeAction.addEventListener('click',(e)=>{ e.preventDefault(); e.stopPropagation(); exitTranslation(); });
+  el.candidate.addEventListener('blur',(e)=>{
+    if(s.state===State.EDITING && e.relatedTarget===el.source){ s.manual=el.candidate.innerText.trim(); s.state=State.PENDING; render(); log('mouse-return · manual candidate pending'); }
+  });
+  el.send.addEventListener('click',()=>{
+    const txt=el.source.value.trim(); if(!txt) return; s.submitCount++; el.submit.textContent=`发送次数 ${s.submitCount}`;
+    const b=document.createElement('div');b.className='bubble me';b.textContent=txt;el.messages.appendChild(b);el.source.value='';endSession('mock app submitted message');
+  });
+  document.querySelectorAll('[data-scenario]').forEach(b=>b.addEventListener('click',()=>scenario(b.dataset.scenario)));
+  window.addEventListener('keydown',(e)=>{ if(e.key==='Escape' && s.session){ e.preventDefault(); exitTranslation(); } updateDemo(); }); window.addEventListener('focusin',()=>setTimeout(updateDemo,0));
+  updateDemo(); log('prototype-ready');
+})();
+</script>
+</body>
+</html>

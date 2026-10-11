@@ -1,0 +1,41 @@
+name: Windows compile and deterministic regressions
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.401'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Source structure and Python protocol tests
+        shell: pwsh
+        run: |
+          $env:PYTHONDONTWRITEBYTECODE='1'
+          python tools/verify-source.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests/python -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Compile, logic regressions, publish
+        shell: powershell
+        run: ./tools/publish-windows.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: typelay-development-build-and-logs
+          path: |
+            artifacts/validation-*/
+            artifacts/TypeLay-Windows-0.2.0-dev-prebuilt.zip
+          if-no-files-found: warn
+# No CI result here is treated as a physical Tab / Chinese IME / Edge UI acceptance result.

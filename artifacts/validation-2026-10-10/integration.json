@@ -1,0 +1,201 @@
+{
+  "suite": "protocol-policy-and-session",
+  "kind": "logic-only-not-Windows-GUI",
+  "total": 48,
+  "passed": 48,
+  "failed": 0,
+  "results": [
+    {
+      "name": "wire-model-round-trip-unicode",
+      "status": "passed"
+    },
+    {
+      "name": "wire-web-case-contract",
+      "status": "passed"
+    },
+    {
+      "name": "wire-keeps-source-input-version-separate-from-editor-keystrokes",
+      "status": "passed"
+    },
+    {
+      "name": "wire-preserves-preview-only-ime-prefix",
+      "status": "passed"
+    },
+    {
+      "name": "wire-preserves-unconfirmed-preview-without-promoting-ime",
+      "status": "passed"
+    },
+    {
+      "name": "wire-reject-size--1",
+      "status": "passed"
+    },
+    {
+      "name": "wire-reject-size-0",
+      "status": "passed"
+    },
+    {
+      "name": "wire-reject-size-262145",
+      "status": "passed"
+    },
+    {
+      "name": "wire-reject-size-2147483647",
+      "status": "passed"
+    },
+    {
+      "name": "wire-reject-truncated-header",
+      "status": "passed"
+    },
+    {
+      "name": "wire-reject-truncated-body",
+      "status": "passed"
+    },
+    {
+      "name": "wire-reject-null",
+      "status": "passed"
+    },
+    {
+      "name": "uia-selection-normal",
+      "status": "passed"
+    },
+    {
+      "name": "uia-selection-crlf-normalization",
+      "status": "passed"
+    },
+    {
+      "name": "uia-selection-surrogate-safe",
+      "status": "passed"
+    },
+    {
+      "name": "uia-selection-cannot-split-surrogate",
+      "status": "passed"
+    },
+    {
+      "name": "uia-selection-text-mismatch",
+      "status": "passed"
+    },
+    {
+      "name": "uia-selection-prefix-mismatch",
+      "status": "passed"
+    },
+    {
+      "name": "uia-selection-empty-caret",
+      "status": "passed"
+    },
+    {
+      "name": "uia-selection-caret-at-end",
+      "status": "passed"
+    },
+    {
+      "name": "policy-allows-labelled-message",
+      "status": "passed"
+    },
+    {
+      "name": "policy-allows-chinese-comment",
+      "status": "passed"
+    },
+    {
+      "name": "policy-sensitive-or-machine-Password message",
+      "status": "passed"
+    },
+    {
+      "name": "policy-sensitive-or-machine-PIN message",
+      "status": "passed"
+    },
+    {
+      "name": "policy-sensitive-or-machine-CVV comment",
+      "status": "passed"
+    },
+    {
+      "name": "policy-sensitive-or-machine-message verification",
+      "status": "passed"
+    },
+    {
+      "name": "policy-sensitive-or-machine-API key reply",
+      "status": "passed"
+    },
+    {
+      "name": "policy-sensitive-or-machine-\u94F6\u884C\u5361\u6D88\u606F",
+      "status": "passed"
+    },
+    {
+      "name": "policy-sensitive-or-machine-\u4FE1\u7528\u5361\u6B63\u6587",
+      "status": "passed"
+    },
+    {
+      "name": "policy-sensitive-or-machine-\u6D88\u606F\u9A8C\u8BC1\u7801",
+      "status": "passed"
+    },
+    {
+      "name": "policy-sensitive-or-machine-private token message",
+      "status": "passed"
+    },
+    {
+      "name": "policy-sensitive-or-machine-message terminal",
+      "status": "passed"
+    },
+    {
+      "name": "policy-sensitive-or-machine-shell comment",
+      "status": "passed"
+    },
+    {
+      "name": "policy-sensitive-or-machine-monaco body",
+      "status": "passed"
+    },
+    {
+      "name": "policy-unlabelled-edit-is-discovered",
+      "status": "passed"
+    },
+    {
+      "name": "policy-desktop-edit-is-discovered",
+      "status": "passed"
+    },
+    {
+      "name": "policy-windows-search-is-discovered",
+      "status": "passed"
+    },
+    {
+      "name": "policy-own-app-is-excluded",
+      "status": "passed"
+    },
+    {
+      "name": "policy-browser-address-bar-is-excluded",
+      "status": "passed"
+    },
+    {
+      "name": "policy-exclusion-case-insensitive",
+      "status": "passed"
+    },
+    {
+      "name": "policy-password-first",
+      "status": "passed"
+    },
+    {
+      "name": "policy-textedit-is-not-a-discovery-requirement",
+      "status": "passed"
+    },
+    {
+      "name": "policy-readonly",
+      "status": "passed"
+    },
+    {
+      "name": "policy-offscreen",
+      "status": "passed"
+    },
+    {
+      "name": "policy-disabled",
+      "status": "passed"
+    },
+    {
+      "name": "policy-text-only-editor-is-discovered",
+      "status": "passed"
+    },
+    {
+      "name": "manual-return-failure-preserves-draft",
+      "status": "passed"
+    },
+    {
+      "name": "explicit-regenerate-reopens-valid-candidate",
+      "status": "passed"
+    }
+  ]
+}

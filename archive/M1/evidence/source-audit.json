@@ -1,0 +1,101 @@
+{
+  "suite": "source-packaging-audit",
+  "status": "passed",
+  "scope": "XML/JSON/paths/hashes/limited lexical tripwires/JS syntax ONLY",
+  "checks": [
+    {
+      "name": "five-projects-present",
+      "status": "passed"
+    },
+    {
+      "name": "project-references:fixtures/TypeLay.NativeFixture/TypeLay.NativeFixture.csproj",
+      "status": "passed"
+    },
+    {
+      "name": "no-external-packages:TypeLay.NativeFixture",
+      "status": "passed"
+    },
+    {
+      "name": "project-references:src/TypeLay.Core/TypeLay.Core.csproj",
+      "status": "passed"
+    },
+    {
+      "name": "no-external-packages:TypeLay.Core",
+      "status": "passed"
+    },
+    {
+      "name": "project-references:src/TypeLay.Platform.Windows/TypeLay.Platform.Windows.csproj",
+      "status": "passed"
+    },
+    {
+      "name": "no-external-packages:TypeLay.Platform.Windows",
+      "status": "passed"
+    },
+    {
+      "name": "project-references:tests/TypeLay.Core.Tests/TypeLay.Core.Tests.csproj",
+      "status": "passed"
+    },
+    {
+      "name": "no-external-packages:TypeLay.Core.Tests",
+      "status": "passed"
+    },
+    {
+      "name": "project-references:tests/TypeLay.Windows.Tests/TypeLay.Windows.Tests.csproj",
+      "status": "passed"
+    },
+    {
+      "name": "no-external-packages:TypeLay.Windows.Tests",
+      "status": "passed"
+    },
+    {
+      "name": "solution-paths",
+      "status": "passed"
+    },
+    {
+      "name": "configuration-xml-json-parses",
+      "status": "passed"
+    },
+    {
+      "name": "lexical-forbidden-call-tripwire",
+      "status": "passed"
+    },
+    {
+      "name": "fixture-has-no-remote-assets",
+      "status": "passed"
+    },
+    {
+      "name": "fixture-script-present",
+      "status": "passed"
+    },
+    {
+      "name": "browser-fixture-javascript-syntax",
+      "status": "passed"
+    },
+    {
+      "name": "unchanged-reference:TypeLay_产品规格_v1.0.md",
+      "status": "passed"
+    },
+    {
+      "name": "unchanged-reference:windows-poc-final-validation-2026-09-28.md",
+      "status": "passed"
+    },
+    {
+      "name": "unchanged-reference:TypeLay_UIUX_Prototype.html",
+      "status": "passed"
+    },
+    {
+      "name": "unchanged-reference:TypeLay_Tray_Settings_Prototype.html",
+      "status": "passed"
+    }
+  ],
+  "does_not_prove": [
+    "C# compilation",
+    "C# unit tests",
+    "Win32 behavior",
+    "focus",
+    "global keyboard hook",
+    "IME",
+    "local inference",
+    "privacy isolation"
+  ]
+}
