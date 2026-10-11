@@ -61,6 +61,33 @@ public sealed class IdleCapsuleBehaviorTests
     }
 
     [Theory]
+    [InlineData("")]
+    [InlineData(" \r\n ")]
+    public void EmptyPreviewValuesShowLanguageWithoutGrantingWritePermission(string value)
+    {
+        var session = NewSession();
+        var source = Sample("") with
+        {
+            Ime = ImeState.Unknown,
+            WriteSupported = false,
+            PreviewText = value
+        };
+        session.Observe(source, FocusMember.Source, 1000);
+        Assert.Equal(SessionState.IdleCapsule, session.State);
+        Assert.True(Presentation.From(session.State, false).Visible);
+        Assert.Null(session.TakeTranslationJob(1500));
+        Assert.False(session.BeginEdit());
+        Assert.Null(session.Prepare(source, Context(source), 1000).Plan);
+        Assert.Null(DirectTranslation.Start(source, new("zh", "en"), 1000).Operation);
+        Assert.Equal(ImeState.Unknown, session.Current!.Ime);
+        session.SetDirection(new("zh", "ja"), 1600);
+        session.Observe(source, FocusMember.Source, 1700);
+        Assert.Equal(SessionState.IdleCapsule, session.State);
+        Assert.Null(session.TakeTranslationJob(2000));
+        Assert.Empty(session.Candidate);
+    }
+
+    [Theory]
     [InlineData(ImeState.Unknown)]
     [InlineData(ImeState.Composing)]
     public void LanguageChangesStillRefreshTheExistingSafePreview(ImeState ime)

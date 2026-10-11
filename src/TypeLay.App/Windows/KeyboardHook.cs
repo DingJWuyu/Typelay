@@ -189,13 +189,19 @@ internal sealed class KeyboardHook : IDisposable
         if (lease is null || lease.ContentEpoch != ContentEpoch || lease.ForegroundEpoch != ForegroundEpoch
             || now < lease.Source.ObservedAtMs || now - lease.Source.ObservedAtMs > Limits.ObservationMaxAgeMs
             || Native.GetForegroundWindow() != (nint)lease.Source.Target.RootHwnd
-            || lease.Source.Access != FieldAccess.Supported || lease.Source.Ime != ImeState.Clear)
+            || lease.Source.Access != FieldAccess.Supported)
             return;
         var configuration = Volatile.Read(ref _shortcuts);
         foreach (var binding in configuration.Bindings)
         {
             if (binding.Key == key && binding.Modifiers == CurrentModifiers)
             {
+                // Showing an ordinary value as read-only preview does not grant
+                // input-method certainty or any permission to replace that value.
+                bool previewWake = binding.Action == "wake" && lease.Source.Ime == ImeState.Unknown
+                    && lease.Source.PreviewText is not null;
+                if (lease.Source.Ime != ImeState.Clear && !previewWake)
+                    return;
                 _notices.Enqueue(new(binding.Action, AcceptedAtMs: now, ForegroundEpoch: ForegroundEpoch, Source: lease.Source,
                     CommandGeneration: configuration.Generation));
                 break;

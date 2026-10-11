@@ -131,7 +131,15 @@ public sealed class Session
                 _job = null;
                 _candidate = "";
             }
-            State = next.Ime == ImeState.Clear ? SessionState.Unsupported : SessionState.Invalid;
+            bool emptyPreview = next.Ime == ImeState.Unknown && _previewSource is { IsUsable: true } preview
+                && preview.Target == next.Target && preview.Text == observedPreview && string.IsNullOrWhiteSpace(preview.Text);
+            if (emptyPreview)
+            {
+                ClearPreview();
+                _translationPending = false;
+            }
+            State = emptyPreview ? SessionState.IdleCapsule
+                : next.Ime == ImeState.Clear ? SessionState.Unsupported : SessionState.Invalid;
             return;
         }
         bool retainedManualScope = _manualSeed is not null && previous?.Text == next.Text
