@@ -125,11 +125,10 @@ static gboolean sensitive(Target *target) {
         GtkEntry *entry = GTK_ENTRY(target->widget);
         GtkInputPurpose purpose = gtk_entry_get_input_purpose(entry);
         return !gtk_entry_get_visibility(entry) || purpose == GTK_INPUT_PURPOSE_PASSWORD
-            || purpose == GTK_INPUT_PURPOSE_PIN || (gtk_entry_get_input_hints(entry) & GTK_INPUT_HINT_PRIVATE) != 0;
+            || purpose == GTK_INPUT_PURPOSE_PIN;
     }
     GtkInputPurpose purpose = gtk_text_view_get_input_purpose(GTK_TEXT_VIEW(target->widget));
-    return purpose == GTK_INPUT_PURPOSE_PASSWORD || purpose == GTK_INPUT_PURPOSE_PIN
-        || (gtk_text_view_get_input_hints(GTK_TEXT_VIEW(target->widget)) & GTK_INPUT_HINT_PRIVATE) != 0;
+    return purpose == GTK_INPUT_PURPOSE_PASSWORD || purpose == GTK_INPUT_PURPOSE_PIN;
 }
 static gboolean editable(Target *target) {
     return GTK_IS_ENTRY(target->widget) ? gtk_editable_get_editable(GTK_EDITABLE(target->widget))
