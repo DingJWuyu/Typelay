@@ -1,26 +1,39 @@
-# 项目协作约定
+# TypeLay agent instructions
 
-## Git 分支
+TypeLay 是 Windows 本地翻译浮层。先保持既有产品行为，再改进实现。
 
-- 本项目的长期开发分支是 `windows-preview`，远端为 `DingJWuyu/Typelay`。
-- 后续开发、修复、验证与文档提交均在 `windows-preview` 上进行。
-- 未经用户明确要求，不向 `main` 提交或推送，也不将本分支合并到 `main`。
-- `windows-preview` 是长期分支，不在完成一轮任务后删除或重命名。
+## 不变量
 
-## 产品目标
+- 只在 `DingJWuyu/Typelay` 的 `windows-preview` 开发、提交和验证；不改动、合并到、删除或重命名 `main`。windows-preview 是长期分支，不删除或重命名。推送前检查远端，禁止覆盖他人提交。不自动创建 PR。
+- 用中文沟通；使用普通连字符，不使用长破折号。提交信息不添加 Agent 署名或 co-author。
+- 不手动修改 CHANGELOG.md、自动生成文件或上游 skills。生成物通过相应工具更新；冻结输入和历史证据不重写内容。
+- 优先质量、简单性、健壮性和长期维护；不为单次操作建立平台、策略层或多余抽象。
+- 缺陷修复先沿实际用户路径复现；在能观察同一故障的边界保留回归。不要用源码字符串、实现反射或假模型测试证明产品可用。
+- 未知输入法状态、焦点身份和写入安全不得猜测或降级绕过。普通输入框是产品目标，代表性应用不是支持名单。
+- 发现真实 UI 问题、lint 失败、测试失败或不稳定性时处理根因；不以重试或放宽断言掩盖问题。
+- 立即产生大量子代理的 harness / dynamic workflows / ultra code 需要事先说明取舍并取得用户明确批准。
+- 达到完成条件后删除临时文件；未完成时保留证据和进度。报告失败、未测和环境限制，不冒充通过。
 
-- 自动跟随当前聚焦的普通文本输入框，连续翻译、编辑并用 Tab 接受译文。
-- 应用名称和教程字段只作为代表性验收场景，不构成支持名单；不能要求用户判断输入框类型或添加标签。
-- 真实通过的范围、失败和工具限制分别如实记录，不把预览通过当作写回或通用能力通过。
+## 按任务读取
 
-## 工作规则
+- 改代码前读 `GLOSSARY.md` 与 `docs/agents/architecture.md`；涉及布局、依赖或打包决策时读 `docs/adr/0001-workspace-and-delivery.md`。
+- 执行开发命令、增加依赖或调整 CI 时读 `docs/agents/development.md`，命令以根目录 `dev.ps1` 为准。
+- 改测试、修复缺陷或验收时读 `tests/AGENTS.md` 与 `docs/agents/testing.md`。
+- 改产品行为时读 `docs/reference/TypeLay_产品规格_v1.0.md`；改 UI 时再打开该目录的两个已确认 HTML 原型。不要以工程整理为由改规格。
+- 查历史决策或旧证据时才读 `docs/history/AGENTS.md`，不要把退休脚本作为当前命令执行。
 
-- 使用中文沟通。
-- 不使用长破折号，使用普通连字符 `-`。
-- 提交信息不自动添加代理署名或 co-author。
-- 不手动修改 `CHANGELOG.md` 或标记为自动生成的文件；需要更新时使用项目生成流程。
-- 技术决策优先考虑质量、简单、健壮、可扩展和长期维护，不以开发成本为主要依据。
-- 一次性或低频操作优先使用直接的端到端路径；只有实际阻塞或重复需求才引入额外工具层。
-- 修复缺陷先在尽可能接近最终用户体验的 E2E 场景复现。
-- 验收同时关注界面质量、lint、测试失败和不稳定性，发现问题应修复。
-- 使用会立即产生大量子代理的工作流前，先解释取舍并取得用户明确同意。
+## Agent skills
+
+按 `docs/agents/skills.md` 的触发规则使用 `.agents/skills/`。model-invoke 的条件成立时读取对应 SKILL.md 及其要求的参考文件；user-invoke 仅在用户明确调用或明确请求该流程时使用。
+
+### Issue tracker
+
+本仓库使用 GitHub Issues。需要读写任务、规格或依赖时读 `docs/agents/issue-tracker.md`。PRs as a request surface: no。
+
+### Triage labels
+
+执行用户请求的 triage 时读 `docs/agents/triage-labels.md`；不要为了整理代码自动创建任务或改变标签。
+
+### Domain docs
+
+单一领域上下文：根目录 `GLOSSARY.md` 与 `docs/adr/`。进行领域探索或命名决策时读 `docs/agents/domain.md`。

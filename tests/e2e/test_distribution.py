@@ -1,0 +1,241 @@
+"""Test the shipped ZIP after relocation. Model inference and physical GUI input are separate gates."""
+
+import json
+import os
+import struct
+import subprocess
+import sys
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path, PurePosixPath
+
+TOKEN = "1" * 64
+MAX_FRAME = 256 * 1024
+
+
+def frame(value: dict) -> bytes:
+    payload = json.dumps(value, ensure_ascii=False).encode("utf-8")
+    return struct.pack("<i", len(payload)) + payload
+
+
+def responses(data: bytes) -> list[dict]:
+    result = []
+    while data:
+        if len(data) < 4:
+            raise AssertionError("Truncated response header")
+        length = struct.unpack("<i", data[:4])[0]
+        if not 0 < length <= MAX_FRAME or len(data) < length + 4:
+            raise AssertionError("Invalid response frame")
+        result.append(json.loads(data[4 : 4 + length]))
+        data = data[4 + length :]
+    return result
+
+
+def request(identifier: int, operation: str, **changes) -> dict:
+    return {"version": 1, "id": identifier, "op": operation, "token": TOKEN, **changes}
+
+
+class DistributionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        archive = os.environ.get("TYPELAY_PACKAGE_ZIP")
+        if not archive or not Path(archive).is_file():
+            raise RuntimeError(
+                "TYPELAY_PACKAGE_ZIP must point at the built archive. Run ./dev.ps1 pack."
+            )
+        cls.temporary = tempfile.TemporaryDirectory(prefix="typelay-e2e-")
+        cls.addClassCleanup(cls.temporary.cleanup)
+        cls.home = Path(cls.temporary.name) / "relocated TypeLay 中"
+        cls.home.mkdir()
+        with zipfile.ZipFile(archive) as zipped:
+            names = [PurePosixPath(info.filename.replace("\\", "/")) for info in zipped.infolist()]
+            roots = {path.parts[0] for path in names if path.parts}
+            if len(roots) != 1:
+                raise AssertionError("Expected one distribution root directory")
+            for info, path in zip(zipped.infolist(), names):
+                relative = PurePosixPath(*path.parts[1:])
+                if path.is_absolute() or ".." in path.parts:
+                    raise AssertionError("Unsafe archive path")
+                target = cls.home.joinpath(*relative.parts)
+                if info.filename.replace("\\", "/").endswith("/"):
+                    target.mkdir(parents=True, exist_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(zipped.read(info))
+
+    def test_distribution_contains_only_the_runtime_surface(self):
+        expected = {
+            "TypeLay.exe",
+            "Start-TypeLay.cmd",
+            "README.md",
+            "THIRD_PARTY_NOTICES.md",
+            "app",
+            "worker",
+            "bootstrap",
+            "assets",
+        }
+        self.assertEqual({p.name for p in self.home.iterdir()}, expected)
+        forbidden = {
+            "src",
+            "tests",
+            "archive",
+            "evidence",
+            ".github",
+            ".git",
+            "__pycache__",
+            "bin",
+            "obj",
+        }
+        for path in self.home.rglob("*"):
+            self.assertFalse(forbidden.intersection(path.relative_to(self.home).parts), str(path))
+
+    def test_runtime_dependencies_and_tutorial_survive_relocation(self):
+        for relative in (
+            "TypeLay.exe",
+            "bootstrap/start.ps1",
+            "app/TypeLay.App.exe",
+            "app/TypeLay.Broker.exe",
+            "app/TypeLay.Core.dll",
+            "app/TypeLay.Protocol.dll",
+            "app/coreclr.dll",
+            "worker/run_worker.py",
+            "worker/typelay_worker/engine.py",
+            "assets/tutorial/index.html",
+        ):
+            with self.subTest(path=relative):
+                self.assertTrue((self.home / relative).is_file(), relative)
+        config = json.loads(
+            (self.home / "app/TypeLay.App.runtimeconfig.json").read_text(encoding="utf-8")
+        )
+        self.assertNotIn("frameworks", config["runtimeOptions"])
+        self.assertNotIn("framework", config["runtimeOptions"])
+
+    def test_redistributed_frameworks_keep_their_exact_version_notices(self):
+        config = json.loads(
+            (self.home / "app/TypeLay.App.runtimeconfig.json").read_text(encoding="utf-8")
+        )
+        for framework in config["runtimeOptions"]["includedFrameworks"]:
+            package = (framework["name"] + ".Runtime.win-x64").lower()
+            folder = self.home / "app/licenses" / package / framework["version"]
+            with self.subTest(framework=framework["name"]):
+                self.assertTrue(folder.is_dir(), str(folder))
+                names = {path.name.upper(): path for path in folder.rglob("*") if path.is_file()}
+                licenses = [path for name, path in names.items() if name.startswith("LICENSE")]
+                notices = [path for name, path in names.items() if "NOTICE" in name]
+                self.assertTrue(licenses, "The upstream license must accompany the runtime")
+                # WindowsDesktop's NuGet pack ships LICENSE but no separate notice file.
+                # Core's pack does ship third-party notices, which must not be dropped.
+                if framework["name"] == "Microsoft.NETCore.App":
+                    self.assertTrue(
+                        notices, "The Core runtime's third-party notices must be retained"
+                    )
+                for path in licenses + notices:
+                    self.assertGreater(path.stat().st_size, 0, str(path))
+
+    def test_packaged_worker_starts_in_isolated_mode_from_an_unrelated_directory(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                str(self.home / "worker/run_worker.py"),
+                "--models",
+                str(self.home / "no-models"),
+                "--self-check",
+            ],
+            cwd=self.temporary.name,
+            capture_output=True,
+            timeout=15,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(
+            json.loads(result.stdout), {"status": "failed", "code": "dependency-or-model-load"}
+        )
+        self.assertEqual(result.stderr, b"")
+
+    @unittest.skipUnless(sys.platform == "win32", "Packaged Windows executable")
+    def test_application_entry_point_rejects_unknown_arguments_without_opening_ui(self):
+        result = subprocess.run(
+            [str(self.home / "app/TypeLay.App.exe"), "--not-a-valid-option"],
+            cwd=self.temporary.name,
+            capture_output=True,
+            timeout=20,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, b"")
+        self.assertEqual(result.stderr, b"")
+
+    def broker(self, data: bytes, token: str | None = TOKEN):
+        environment = os.environ.copy()
+        environment.pop("TYPELAY_TRACE", None)
+        if token is None:
+            environment.pop("TYPELAY_PIPE_TOKEN", None)
+        else:
+            environment["TYPELAY_PIPE_TOKEN"] = token
+        return subprocess.run(
+            [str(self.home / "app/TypeLay.Broker.exe")],
+            input=data,
+            env=environment,
+            cwd=self.temporary.name,
+            capture_output=True,
+            timeout=20,
+        )
+
+    @unittest.skipUnless(sys.platform == "win32", "Production Windows broker")
+    def test_broker_handshake_and_shutdown_use_real_process_pipes(self):
+        result = self.broker(frame(request(1, "hello")) + frame(request(2, "quit")))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [(r["id"], r["status"]) for r in responses(result.stdout)], [(1, "ready"), (2, "bye")]
+        )
+        self.assertEqual(result.stderr, b"")
+
+    @unittest.skipUnless(sys.platform == "win32", "Production Windows broker")
+    def test_broker_unknown_operation_does_not_corrupt_the_next_frame(self):
+        result = self.broker(frame(request(1, "PRIVATE_SENTINEL")) + frame(request(2, "quit")))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([r["status"] for r in responses(result.stdout)], ["unsupported", "bye"])
+        self.assertNotIn(b"PRIVATE_SENTINEL", result.stdout + result.stderr)
+
+    @unittest.skipUnless(sys.platform == "win32", "Production Windows broker")
+    def test_broker_rejects_missing_launch_authentication(self):
+        result = self.broker(b"PRIVATE_SENTINEL", token=None)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout + result.stderr, b"")
+
+    @unittest.skipUnless(sys.platform == "win32", "Production Windows broker")
+    def test_broker_rejects_wrong_authentication_and_version(self):
+        for change in ({"token": "2" * 64}, {"version": 2}):
+            with self.subTest(change=change):
+                result = self.broker(frame(request(1, "hello", **change)))
+                self.assertEqual(result.returncode, 3)
+                self.assertEqual(result.stdout + result.stderr, b"")
+
+    @unittest.skipUnless(sys.platform == "win32", "Production Windows broker")
+    def test_broker_rejects_replayed_request_ids(self):
+        result = self.broker(frame(request(1, "hello")) + frame(request(1, "hello")))
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual([r["status"] for r in responses(result.stdout)], ["ready"])
+        self.assertEqual(result.stderr, b"")
+
+    @unittest.skipUnless(sys.platform == "win32", "Production Windows broker")
+    def test_broker_rejects_null_authentication_without_a_runtime_crash(self):
+        result = self.broker(frame(request(1, "hello", token=None)))
+        self.assertEqual(result.returncode, 3)
+        self.assertEqual(result.stdout + result.stderr, b"")
+
+    @unittest.skipUnless(sys.platform == "win32", "Production Windows broker")
+    def test_broker_rejects_malformed_frames_without_a_trace(self):
+        for data in (
+            struct.pack("<i", -1),
+            struct.pack("<i", 0),
+            struct.pack("<i", MAX_FRAME + 1),
+            b"abc",
+            struct.pack("<i", 8) + b"{}",
+            struct.pack("<i", 1) + b"{",
+        ):
+            with self.subTest(data=data):
+                result = self.broker(data)
+                self.assertEqual(result.returncode, 4)
+                self.assertEqual(result.stdout + result.stderr, b"")

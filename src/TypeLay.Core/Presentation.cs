@@ -1,6 +1,9 @@
 namespace TypeLay.Core;
 
-public enum StatusDot { None, Yellow, Green, Neutral }
+public enum StatusDot
+{
+    None, Yellow, Green, Neutral
+}
 public sealed record OverlayPresentation(bool Visible, string Status, StatusDot Dot, string TabHint,
     bool ShowEscape, bool EditorOwnsText);
 
@@ -22,4 +25,7 @@ public static class Presentation
 
 // The diagnostics boundary deliberately has no arbitrary string, exception, snapshot or text field.
 public sealed record DiagnosticEvent(long MonotonicMs, SessionState State, Denial Reason);
-public interface IDiagnosticSink { void Record(DiagnosticEvent value); }
+public interface IDiagnosticSink
+{
+    void Record(DiagnosticEvent value);
+}

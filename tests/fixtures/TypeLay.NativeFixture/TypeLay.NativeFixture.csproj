@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../support/TypeLay.Platform.Windows/TypeLay.Platform.Windows.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../../../src/TypeLay.App/Windows/KeyboardHook.cs" Link="Product/KeyboardHook.cs" />
+    <Compile Include="../../../src/TypeLay.App/Windows/Native.cs" Link="Product/Native.cs" />
+  </ItemGroup>
+</Project>

@@ -1,4 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWPF>true</UseWPF><ApplicationManifest>../TypeLay.App/app.manifest</ApplicationManifest><EnableWindowsTargeting>true</EnableWindowsTargeting><AllowUnsafeBlocks>true</AllowUnsafeBlocks></PropertyGroup>
-  <ItemGroup><ProjectReference Include="../TypeLay.Core/TypeLay.Core.csproj" /><ProjectReference Include="../TypeLay.Protocol/TypeLay.Protocol.csproj" /></ItemGroup>
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ApplicationManifest>../TypeLay.App/app.manifest</ApplicationManifest>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../TypeLay.Core/TypeLay.Core.csproj" />
+    <ProjectReference Include="../TypeLay.Protocol/TypeLay.Protocol.csproj" />
+  </ItemGroup>
 </Project>

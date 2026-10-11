@@ -37,14 +37,20 @@ public sealed class AcceptanceGate
 
     public TabDecision ProcessTab(bool down, GateContext context)
     {
-        if (context.Injected && !_allowInjectedInput) { Revoke(); return new(false, null); }
+        if (context.Injected && !_allowInjectedInput)
+        {
+            Revoke();
+            return new(false, null);
+        }
         if (!down)
         {
             bool consume = _physicalTabDown && _consumed;
-            _physicalTabDown = false; _consumed = false;
+            _physicalTabDown = false;
+            _consumed = false;
             return new(consume, null);
         }
-        if (_physicalTabDown) return new(_consumed, null); // Never accept on autorepeat, even after a passed Tab.
+        if (_physicalTabDown)
+            return new(_consumed, null); // Never accept on autorepeat, even after a passed Tab.
         _physicalTabDown = true;
         var permit = Interlocked.Exchange(ref _permit, null);
         bool valid = permit is not null && context.SourceFocused && context.ProviderLeaseFresh

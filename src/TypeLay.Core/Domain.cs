@@ -16,9 +16,11 @@ public static class Utf16
         {
             if (char.IsHighSurrogate(text[i]))
             {
-                if (++i == text.Length || !char.IsLowSurrogate(text[i])) return false;
+                if (++i == text.Length || !char.IsLowSurrogate(text[i]))
+                    return false;
             }
-            else if (char.IsLowSurrogate(text[i])) return false;
+            else if (char.IsLowSurrogate(text[i]))
+                return false;
         }
         return true;
     }
@@ -31,15 +33,27 @@ public static class Utf16
 public readonly record struct TargetId(int ProcessId, long ProcessStartUtcTicks,
     long RootHwnd, long ControlHwnd, string Provider, string ElementToken, Guid Lifetime);
 
-public enum ImeState { Unknown, Clear, Composing }
-public enum FieldAccess { Unknown, Supported, Password, Sensitive, ReadOnly, Disabled, Unsupported, Offscreen }
+public enum ImeState
+{
+    Unknown, Clear, Composing
+}
+public enum FieldAccess
+{
+    Unknown, Supported, Password, Sensitive, ReadOnly, Disabled, Unsupported, Offscreen
+}
 public enum SessionState
 {
     NoSession, Translating, ValidTranslation, EditingTranslation, ReturningToSource,
     EditedTranslationPending, Invalid, TranslationFailed, Applying, OutcomeUnknown, Paused, Unsupported
 }
-public enum FocusMember { Source, Overlay, Other }
-public enum TranslationKind { FullOrSelection, AppendToManual }
+public enum FocusMember
+{
+    Source, Overlay, Other
+}
+public enum TranslationKind
+{
+    FullOrSelection, AppendToManual
+}
 public enum Denial
 {
     None, NoCandidate, TargetChanged, SourceChanged, SelectionChanged, InvalidSelection,
@@ -47,7 +61,10 @@ public enum Denial
     Injected, RepeatedKey, StaleObservation, EpochChanged, InvalidText, Multiline,
     BadPlan, Paused, UnknownOutcome, PlatformFailure
 }
-public enum WriteStatus { Verified, RejectedBeforeMutation, OutcomeUnknown }
+public enum WriteStatus
+{
+    Verified, RejectedBeforeMutation, OutcomeUnknown
+}
 
 public sealed record InputSnapshot(TargetId Target, string Text, TextRange? Selection,
     RectPx Bounds, bool Multiline, FieldAccess Access, ImeState Ime,

@@ -14,7 +14,8 @@ internal static class Program
     private static int Main(string[] args)
     {
         bool automationTest = args.Length == 1 && args[0] == "--automation-test";
-        if (args.Length != 0 && !automationTest) return 2;
+        if (args.Length != 0 && !automationTest)
+            return 2;
         string sid = WindowsIdentity.GetCurrent().User?.Value ?? Environment.UserName;
         using var mutex = new Mutex(true, @"Local\TypeLay.Client." + sid, out bool first);
         if (!first)
@@ -30,33 +31,47 @@ internal static class Program
         bool disposed = false;
         void Dispose()
         {
-            if (disposed) return; disposed = true;
-            session?.Dispose(); model?.Dispose();
-            if (tray is not null) { tray.Visible = false; tray.Dispose(); }
+            if (disposed)
+                return;
+            disposed = true;
+            session?.Dispose();
+            model?.Dispose();
+            if (tray is not null)
+            {
+                tray.Visible = false;
+                tray.Dispose();
+            }
             icon?.Dispose();
         }
         app.Exit += (_, _) => Dispose();
         app.DispatcherUnhandledException += (_, e) =>
         {
             // Never serialize exception messages: provider exceptions may contain user input.
-            e.Handled = true; Dispose();
+            e.Handled = true;
+            Dispose();
             MessageBox.Show("TypeLay 已停止，以避免在异常状态下继续读取或写回。请重新启动。错误代码：UI-STOP。", "TypeLay", MessageBoxButton.OK, MessageBoxImage.Error);
             app.Shutdown(2);
         };
         app.Startup += async (_, _) =>
         {
-            var settings = new SettingsStore(); UiTheme.Initialize(settings.Value.Theme);
+            var settings = new SettingsStore();
+            UiTheme.Initialize(settings.Value.Theme);
             model = new ModelClient();
             var overlay = new OverlayWindow(automationTest);
             session = new SessionController(settings, model, overlay, automationTest);
             void Tutorial()
             {
                 session.StopSession();
-                string file = Path.Combine(AppPaths.Home, "fixtures", "browser", "index.html");
+                string file = Path.Combine(AppPaths.Home, "assets", "tutorial", "index.html");
                 // A normal browser form, served from a local file. There is no translation mock.
-                try { Process.Start(new ProcessStartInfo("msedge.exe") { UseShellExecute = true, ArgumentList = { new Uri(file).AbsoluteUri } }); }
+                try
+                {
+                    Process.Start(new ProcessStartInfo("msedge.exe") { UseShellExecute = true, ArgumentList = { new Uri(file).AbsoluteUri } });
+                }
                 catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
-                { Process.Start(new ProcessStartInfo(file) { UseShellExecute = true }); }
+                {
+                    Process.Start(new ProcessStartInfo(file) { UseShellExecute = true });
+                }
             }
             var window = new SettingsWindow(settings, model, Tutorial) { SessionMustEnd = session.StopSession };
             overlay.LanguageRequested = () => window.ShowPage("language");
@@ -75,22 +90,29 @@ internal static class Program
             tray.MouseClick += (_, e) => { if (e.Button == Forms.MouseButtons.Left) app.Dispatcher.Invoke(quick.OpenAtTray); };
             void TrayStatus()
             {
-                if (disposed) return;
+                if (disposed)
+                    return;
                 tray.Text = (settings.Value.Enabled ? "TypeLay · " + model.Status : "TypeLay · 已暂停")
                     + (automationTest ? " · 自动化测试" : "");
                 toggle.Text = settings.Value.Enabled ? "暂停 TypeLay" : "启用 TypeLay";
             }
-            settings.Changed += TrayStatus; model.Changed += TrayStatus;
+            settings.Changed += TrayStatus;
+            model.Changed += TrayStatus;
             UserPreferenceChangedEventHandler themeChanged = (_, _) => app.Dispatcher.BeginInvoke(new Action(() => UiTheme.Apply(settings.Value.Theme)));
             SystemEvents.UserPreferenceChanged += themeChanged;
             app.Exit += (_, _) => SystemEvents.UserPreferenceChanged -= themeChanged;
-            if (!model.Installed) window.ShowPage();
+            if (!model.Installed)
+                window.ShowPage();
             await session.StartAsync();
             await model.StartAsync();
             TrayStatus();
-            if (!model.Ready || !settings.Value.OnboardingComplete) window.ShowPage();
+            if (!model.Ready || !settings.Value.OnboardingComplete)
+                window.ShowPage();
         };
-        try { return app.Run(); }
+        try
+        {
+            return app.Run();
+        }
         finally { Dispose(); mutex.ReleaseMutex(); }
     }
     private static Drawing.Icon MakeTrayIcon()
@@ -102,10 +124,15 @@ internal static class Program
             using var blue = new Drawing.SolidBrush(Drawing.Color.FromArgb(50, 103, 227));
             g.FillEllipse(blue, 1, 1, 30, 30);
             using var white = new Drawing.SolidBrush(Drawing.Color.White);
-            g.FillRectangle(white, 9, 8, 14, 4); g.FillRectangle(white, 14, 11, 4, 14);
+            g.FillRectangle(white, 9, 8, 14, 4);
+            g.FillRectangle(white, 14, 11, 4, 14);
         }
         nint handle = bitmap.GetHicon();
-        try { using var native = Drawing.Icon.FromHandle(handle); return (Drawing.Icon)native.Clone(); }
+        try
+        {
+            using var native = Drawing.Icon.FromHandle(handle);
+            return (Drawing.Icon)native.Clone();
+        }
         finally { DestroyIcon(handle); }
     }
     [DllImport("user32.dll")] private static extern bool DestroyIcon(nint icon);

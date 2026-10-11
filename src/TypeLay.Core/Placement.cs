@@ -23,7 +23,8 @@ public static class OverlayPlacement
         if (!input.IsValid || !work.IsValid || !input.Intersects(work)
             || !double.IsFinite(desiredWidth) || !double.IsFinite(desiredHeight)
             || !double.IsFinite(gap) || !double.IsFinite(minimumHeight)
-            || desiredWidth <= 0 || desiredHeight <= 0 || gap < 0 || minimumHeight <= 0) return null;
+            || desiredWidth <= 0 || desiredHeight <= 0 || gap < 0 || minimumHeight <= 0)
+            return null;
         double width = Math.Min(desiredWidth, work.Width);
         double x = Math.Clamp(input.X, work.X, work.Right - width);
         double above = input.Y - gap - work.Y;

@@ -1,1 +1,5 @@
-<Project Sdk="Microsoft.NET.Sdk"><ItemGroup><ProjectReference Include="../TypeLay.Core/TypeLay.Core.csproj" /></ItemGroup></Project>
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../TypeLay.Core/TypeLay.Core.csproj" />
+  </ItemGroup>
+</Project>

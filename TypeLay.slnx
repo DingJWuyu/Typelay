@@ -1,18 +1,24 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/TypeLay.App/TypeLay.App.csproj" />
+    <Project Path="src/TypeLay.Broker/TypeLay.Broker.csproj" />
     <Project Path="src/TypeLay.Core/TypeLay.Core.csproj" />
-    <Project Path="src/TypeLay.Platform.Windows/TypeLay.Platform.Windows.csproj" />
+    <Project Path="src/TypeLay.Protocol/TypeLay.Protocol.csproj" />
   </Folder>
-  <Folder Name="/fixtures/">
-    <Project Path="fixtures/TypeLay.NativeFixture/TypeLay.NativeFixture.csproj" />
-    <Project Path="fixtures/TypeLay.DesktopFixture/TypeLay.DesktopFixture.csproj" />
+  <Folder Name="/tests/behavior/">
+    <Project Path="tests/behavior/TypeLay.Core.Tests/TypeLay.Core.Tests.csproj" />
   </Folder>
-  <Folder Name="/tests/">
-    <Project Path="tests/TypeLay.Core.Tests/TypeLay.Core.Tests.csproj" />
-    <Project Path="tests/TypeLay.Windows.Tests/TypeLay.Windows.Tests.csproj" />
+  <Folder Name="/tests/contracts/">
+    <Project Path="tests/contracts/TypeLay.Protocol.Tests/TypeLay.Protocol.Tests.csproj" />
   </Folder>
-  <Project Path="src/TypeLay.Protocol/TypeLay.Protocol.csproj" />
-  <Project Path="src/TypeLay.App/TypeLay.App.csproj" />
-  <Project Path="src/TypeLay.Broker/TypeLay.Broker.csproj" />
-  <Project Path="tests/TypeLay.Integration.Tests/TypeLay.Integration.Tests.csproj" />
+  <Folder Name="/tests/e2e/">
+    <Project Path="tests/e2e/TypeLay.Native.Tests/TypeLay.Native.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tests/fixtures/">
+    <Project Path="tests/fixtures/TypeLay.NativeFixture/TypeLay.NativeFixture.csproj" />
+    <Project Path="tests/fixtures/TypeLay.DesktopFixture/TypeLay.DesktopFixture.csproj" />
+  </Folder>
+  <Folder Name="/tests/support/">
+    <Project Path="tests/support/TypeLay.Platform.Windows/TypeLay.Platform.Windows.csproj" />
+  </Folder>
 </Solution>
