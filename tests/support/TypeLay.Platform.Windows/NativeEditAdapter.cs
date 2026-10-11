@@ -1,3 +1,4 @@
+using TypeLay.Windows.Contracts;
 using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Text;
@@ -16,7 +17,7 @@ public sealed record FixtureDescriptor(int ProcessId, long RootHwnd, long Submit
 /// This test backend does not implement production UIA discovery or external IME observation.
 /// </summary>
 [SupportedOSPlatform("windows")]
-public sealed class NativeEditAdapter : IInputAdapter
+public sealed class NativeEditAdapter
 {
     private readonly Process _process;
     private readonly FixtureDescriptor _fixture;
@@ -79,7 +80,7 @@ public sealed class NativeEditAdapter : IInputAdapter
                 || found is null)
                 return null;
             FixtureField field = found;
-            var target = new TargetId(_fixture.ProcessId, _processStart, _fixture.RootHwnd,
+            var target = new WindowsTarget(_fixture.ProcessId, _processStart, _fixture.RootHwnd,
                 field.Hwnd, "native-edit-fixture", field.LifetimeCookie.ToString(), _fixture.Lifetime);
             NativeMethods.GetWindowRect(focus.Control, out NativeMethods.Rect rect);
             var bounds = new RectPx(rect.Left, rect.Top, rect.Right - rect.Left, rect.Bottom - rect.Top);
@@ -89,7 +90,7 @@ public sealed class NativeEditAdapter : IInputAdapter
             bool multiline = (NativeMethods.GetStyle(focus.Control, -16) & 4) != 0;
             ImeState ime = GetFixtureIme(focus.Control);
             InputSnapshot Blocked() => new(target, "", null, bounds, multiline, access, ime,
-                Environment.TickCount64, 0, 0);
+                Environment.TickCount64, 0, 0, WriteSupported: true);
             // Never read a password / PIN / unknown / readonly field, even just for diagnostics.
             if (access != FieldAccess.Supported || ime != ImeState.Clear)
                 return Blocked();
@@ -102,7 +103,7 @@ public sealed class NativeEditAdapter : IInputAdapter
                 || GetFixtureIme(focus.Control) != ImeState.Clear)
                 return null;
             return new(target, text, selection, bounds, multiline, access, ime,
-                Environment.TickCount64, 0, 0);
+                Environment.TickCount64, 0, 0, WriteSupported: true);
         }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
@@ -123,11 +124,11 @@ public sealed class NativeEditAdapter : IInputAdapter
             Denial reason = WriteSafety.Validate(plan, fresh, Environment.TickCount64);
             if (reason != Denial.None)
                 return new(WriteStatus.RejectedBeforeMutation, reason);
-            nint hwnd = (nint)fresh.Target.ControlHwnd;
+            nint hwnd = (nint)fresh.Target.AsWindows().ControlHwnd;
             TextRange range = plan.Scope ?? new TextRange(0, fresh.Text.Length);
             mutationStarted = true; // A timed-out EM_SETSEL may already have changed the selection.
             NativeMethods.Send(hwnd, NativeMethods.EM_SETSEL, (nuint)range.Start, (nint)range.End);
-            if (NativeMethods.Focused() != ((nint)fresh.Target.RootHwnd, hwnd)
+            if (NativeMethods.Focused() != ((nint)fresh.Target.AsWindows().RootHwnd, hwnd)
                 || !Registered(hwnd, out FixtureField? field) || field is null
                 || Classify(hwnd, field) != FieldAccess.Supported || GetFixtureIme(hwnd) != ImeState.Clear
                 || NativeMethods.ReadText(hwnd, Limits.MaxTextUnits) != fresh.Text

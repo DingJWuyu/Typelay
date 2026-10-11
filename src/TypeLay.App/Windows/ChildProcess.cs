@@ -1,8 +1,9 @@
+using TypeLay.Runtime;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 namespace TypeLay.App;
 
-internal sealed class ChildProcess : IDisposable
+internal sealed class ChildProcess : IChildProcess
 {
     private nint _job;
     private int _disposed;

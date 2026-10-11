@@ -1,26 +1,29 @@
-using Microsoft.Win32;
 using System.Text.Json;
 using TypeLay.Core;
-namespace TypeLay.App;
+namespace TypeLay.Runtime;
 
-internal sealed record UserSettings(int Schema = 1, bool Enabled = true, string Source = "auto", string Target = "en",
+public sealed record UserSettings(int Schema = 1, bool Enabled = true, string Source = "auto", string Target = "en",
     string[]? ExcludedApplications = null, bool Startup = false, string Theme = "system", bool OnboardingComplete = false, bool ExperimentalWriteback = false,
     WorkMode Mode = WorkMode.Automatic, string WakeShortcut = "Ctrl+Shift+F9", string DirectShortcut = "Ctrl+Shift+F10")
 {
     public string[] Excluded => ExcludedApplications ?? [];
     public LanguageDirection Direction => new(Source, Target);
 }
-internal sealed class SettingsStore
+public sealed class SettingsStore
 {
     private readonly string _path;
+    private readonly Action<bool> _setStartup;
+    private readonly Func<string, string> _normalizeApplication;
     public UserSettings Value
     {
         get; private set;
     }
     public event Action? Changed;
-    public SettingsStore(string? path = null)
+    public SettingsStore(string path, Action<bool>? setStartup = null, Func<string, string>? normalizeApplication = null)
     {
-        _path = path ?? Path.Combine(AppPaths.Data, "settings.json");
+        _path = path;
+        _setStartup = setStartup ?? (_ => throw new NotSupportedException("startup-unavailable"));
+        _normalizeApplication = normalizeApplication ?? (app => app.Trim());
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(_path))!);
         try
         {
@@ -57,7 +60,7 @@ internal sealed class SettingsStore
             DirectShortcut = direct!.ToString()
         };
         if (settings.Startup != Value.Startup)
-            SetStartup(settings.Startup);
+            _setStartup(settings.Startup);
         string temporary = _path + ".tmp";
         using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None,
                    4096, FileOptions.WriteThrough))
@@ -71,20 +74,12 @@ internal sealed class SettingsStore
     }
     public void Exclude(string app)
     {
-        app = Path.GetFileNameWithoutExtension(app).Trim().ToLowerInvariant();
+        app = _normalizeApplication(app);
         if (app.Length is 0 or > 128 || Value.Excluded.Length >= 256)
             return;
         Update(Value with
         {
             ExcludedApplications = Value.Excluded.Append(app).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
         });
-    }
-    private static void SetStartup(bool enabled)
-    {
-        using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-        if (enabled)
-            key.SetValue("TypeLay", "\"" + Path.Combine(AppPaths.Home, "TypeLay.exe") + "\"");
-        else
-            key.DeleteValue("TypeLay", false);
     }
 }

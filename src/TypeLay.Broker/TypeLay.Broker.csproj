@@ -8,6 +8,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../TypeLay.Windows.Contracts/TypeLay.Windows.Contracts.csproj" />
     <ProjectReference Include="../TypeLay.Core/TypeLay.Core.csproj" />
     <ProjectReference Include="../TypeLay.Protocol/TypeLay.Protocol.csproj" />
   </ItemGroup>

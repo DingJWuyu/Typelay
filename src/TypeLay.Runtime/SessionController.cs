@@ -1,29 +1,26 @@
-using System.Windows.Threading;
 using TypeLay.Core;
-using TypeLay.Protocol;
-namespace TypeLay.App;
+namespace TypeLay.Runtime;
 
-internal sealed class SessionController : IDisposable
+public sealed class SessionController : IDisposable
 {
     private readonly SettingsStore _settings;
-    private readonly ModelClient _model;
-    private readonly OverlayWindow _overlay;
-    private readonly KeyboardHook _hook;
-    private readonly IInputBroker _broker;
+    private readonly ITranslationService _model;
+    private readonly ISessionView _overlay;
+    private readonly IInputMonitor _hook;
+    private readonly IInputService _broker;
     private readonly Session _session;
     private readonly TranslationActivation _activation;
-    private readonly OnDemandHotkeys _hotkeys;
     private DirectTranslation? _pendingDirect;
     private bool _directRunning;
     private long _configurationRevision;
-    private readonly DispatcherTimer _timer;
+    private readonly ISessionLoop _loop;
     private long _generation, _nextCapture, _permitUntil, _editTransitionUntil, _retryBrokerAt;
     private bool _capturing, _writing, _translationRunning, _startingBroker, _disposed;
     private string? _statusOverride;
     private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
     private string? _lastTrace;
     public string ShortcutStatus => _settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand && !_hook.ShortcutsReady
-        ? "快捷键输入观察未就绪，当前不会执行按需命令。" : _hotkeys.Status;
+        ? "快捷键输入观察未就绪，当前不会执行按需命令。" : _hook.ShortcutStatus;
     public bool InputAvailable => _broker.Available && _hook.Ready;
     public string? LastApplication
     {
@@ -35,19 +32,18 @@ internal sealed class SessionController : IDisposable
     }
     public string ServiceStatus { get; private set; } = "正在连接输入服务";
     public event Action? Changed;
-    public SessionController(SettingsStore settings, ModelClient model, OverlayWindow overlay, bool automationTest = false,
-        IInputBroker? broker = null)
+    public SessionController(SettingsStore settings, ITranslationService model, ISessionView overlay,
+        IInputMonitor input, IInputService broker, ISessionLoop loop)
     {
-        _broker = broker ?? new BrokerClient();
+        _broker = broker;
         _settings = settings;
         _model = model;
         _overlay = overlay;
-        _hook = new KeyboardHook(automationTest, overlay.Handle);
+        _hook = input;
+        _loop = loop;
         _session = new Session(settings.Value.Direction);
         _activation = new TranslationActivation(settings.Value.Mode);
-        _hotkeys = new OnDemandHotkeys(overlay.Handle);
-        _timer = new DispatcherTimer(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(20) };
-        _timer.Tick += (_, _) => Tick();
+        _loop.Tick += Tick;
         overlay.BeginEditing = BeginEdit;
         overlay.DraftChanged = text => _session.ChangeDraft(text);
         overlay.ReturnRequested = () => _ = ReturnFromEditor();
@@ -60,7 +56,7 @@ internal sealed class SessionController : IDisposable
     {
         await StartBroker();
         Configure();
-        _timer.Start();
+        _loop.Start();
         Changed?.Invoke();
     }
     private async Task StartBroker()
@@ -83,7 +79,7 @@ internal sealed class SessionController : IDisposable
             if (!_disposed)
             {
                 ServiceStatus = "输入服务连接中断，正在重试";
-                _retryBrokerAt = Environment.TickCount64 + 2000;
+                _retryBrokerAt = _loop.NowMs + 2000;
             }
         }
         finally { _startingBroker = false; if (!_disposed) Changed?.Invoke(); }
@@ -96,17 +92,15 @@ internal sealed class SessionController : IDisposable
         _pendingDirect = null;
         _activation.SetMode(_settings.Value.Mode);
         _activation.End();
-        _hook.SetShortcuts([]);
-        _hotkeys.Configure(_settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand,
+        _hook.ConfigureShortcuts(_settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand,
             _settings.Value.WakeShortcut, _settings.Value.DirectShortcut);
-        _hook.SetShortcuts(_hotkeys.Bindings);
         ClearBrokerSnapshot();
         _generation++;
         _hook.Revoke();
         _permitUntil = 0;
         _session.SetPaused(!_settings.Value.Enabled);
-        _session.SetDirection(_settings.Value.Direction, Environment.TickCount64);
-        UiTheme.Apply(_settings.Value.Theme);
+        _session.SetDirection(_settings.Value.Direction, _loop.NowMs);
+        _overlay.Configure(_settings.Value);
         Render();
         Changed?.Invoke();
     }
@@ -125,7 +119,7 @@ internal sealed class SessionController : IDisposable
             else if (notice?.Permit is not null)
                 _ = Accept(notice);
         }
-        long now = Environment.TickCount64;
+        long now = _loop.NowMs;
         if (_pendingDirect is { } pending && !_directRunning)
         {
             if (!_model.Ready || !_broker.Available || now - pending.TriggeredAtMs > 120_000)
@@ -140,8 +134,7 @@ internal sealed class SessionController : IDisposable
             _ = StartBroker();
         if (_session.Current is { } current)
         {
-            nint foreground = Native.GetForegroundWindow();
-            if (foreground != (nint)current.Target.RootHwnd && foreground != _overlay.Handle)
+            if (_hook.GetFocus(current.Target) == FocusMember.Other)
                 StopSession();
         }
         if (!_hook.Ready || !_broker.Available || !_settings.Value.Enabled)
@@ -153,7 +146,7 @@ internal sealed class SessionController : IDisposable
         // The editor owns focus and its saved source basis until the user returns.
         // Chromium may expose no source selection when another window has focus.
         // Revalidate the source on return instead of polling an unfocused TextPattern.
-        if (_session.State == SessionState.EditingTranslation && Native.GetForegroundWindow() == _overlay.Handle)
+        if (_session.State == SessionState.EditingTranslation && _session.Current is { } editingSource && _hook.GetFocus(editingSource.Target) == FocusMember.Overlay)
         {
             _hook.Revoke();
             _permitUntil = 0;
@@ -186,20 +179,19 @@ internal sealed class SessionController : IDisposable
             Render();
         }
     }
-    private BrokerRequest Request(string operation) => new(Wire.Version, 0, operation, "",
-        _hook.UserEpoch, _hook.ForegroundEpoch, (long)_overlay.Handle, _session.Current?.Target,
-        Excluded: _settings.Value.Excluded, SourceUserEpoch: _hook.SourceUserEpoch,
-        CaptureDirect: _settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand);
+    private InputContext Context() => new(_hook.UserEpoch, _hook.ForegroundEpoch,
+        _hook.SourceUserEpoch, _session.Current?.Target, _settings.Value.Excluded,
+        _settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand);
     private async Task Capture()
     {
         _capturing = true;
         long generation = _generation;
         long windowEpoch = _hook.WindowEpoch;
         long contentEpoch = _hook.ContentEpoch;
-        var request = Request("capture");
+        var request = Context();
         try
         {
-            var result = await _broker.CallAsync(request);
+            var result = await _broker.CaptureAsync(request);
             if (_disposed || generation != _generation)
                 return;
             if (windowEpoch != _hook.WindowEpoch)
@@ -207,14 +199,13 @@ internal sealed class SessionController : IDisposable
                 Trace("capture-window-changed");
                 return;
             }
-            long now = Environment.TickCount64;
+            long now = _loop.NowMs;
             if (result.Snapshot is not { } snapshot || result.Focus == FocusMember.Other)
             {
                 StopSession();
                 return;
             }
-            nint foreground = Native.GetForegroundWindow();
-            if (foreground != (nint)snapshot.Target.RootHwnd && foreground != _overlay.Handle)
+            if (_hook.GetFocus(snapshot.Target) == FocusMember.Other)
                 return;
             if (now < snapshot.ObservedAtMs || now - snapshot.ObservedAtMs > Limits.ObservationMaxAgeMs)
             {
@@ -250,7 +241,7 @@ internal sealed class SessionController : IDisposable
             // must not starve preview capture while the user continues typing.
             bool inputUnchanged = result.UserEpoch == _hook.UserEpoch && result.ForegroundEpoch == _hook.ForegroundEpoch;
             if (inputUnchanged && result.Focus == FocusMember.Source && _model.Ready && _settings.Value.ExperimentalWriteback
-                && snapshot.Target.Provider != "uia-text-preview-v2")
+                && snapshot.WriteSupported && _hook.CanInterceptAcceptance)
             {
                 var context = new AcceptanceContext(FocusMember.Source, false, false, snapshot.Ime,
                     snapshot.InputEpoch, snapshot.FocusEpoch);
@@ -271,7 +262,7 @@ internal sealed class SessionController : IDisposable
         {
             StopSession();
             ServiceStatus = "输入服务连接中断，正在重试";
-            _retryBrokerAt = Environment.TickCount64 + 2000;
+            _retryBrokerAt = _loop.NowMs + 2000;
             Changed?.Invoke();
         }
         finally { _capturing = false; }
@@ -280,7 +271,7 @@ internal sealed class SessionController : IDisposable
     {
         if (!_settings.Value.Enabled || _settings.Value.Mode != WorkMode.OnDemand || notice.Source is not { } source
             || notice.CommandGeneration != _hook.CommandGeneration || notice.ForegroundEpoch != _hook.ForegroundEpoch
-            || Native.GetForegroundWindow() != (nint)source.Target.RootHwnd)
+            || _hook.GetFocus(source.Target) != FocusMember.Source)
             return;
         if (_activation.Wake(source.Target))
         {
@@ -340,12 +331,11 @@ internal sealed class SessionController : IDisposable
                 return;
             }
             // Never route detached work through foreground-only write/return operations.
-            var result = await _broker.CallAsync(new(Wire.Version, 0, "direct-write", "",
-                BoundTarget: plan.Expected.Target, Plan: plan, Excluded: _settings.Value.Excluded), TimeSpan.FromSeconds(2));
+            var result = await _broker.WriteDirectAsync(plan, _settings.Value.Excluded);
             if (_disposed)
                 return;
-            SetServiceStatus(result.Receipt?.Status == WriteStatus.Verified ? "已直接替换原输入框文字。"
-                : result.Receipt?.Reason == Denial.Unsupported ? "当前输入后端尚不支持可靠的直接写回，原文未作替换。"
+            SetServiceStatus(result.Status == WriteStatus.Verified ? "已直接替换原输入框文字。"
+                : result.Reason == Denial.Unsupported ? "当前输入后端尚不支持可靠的直接写回，原文未作替换。"
                 : "直接写回未获确认，请检查原输入框；不会自动重试。");
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -402,7 +392,7 @@ internal sealed class SessionController : IDisposable
         if (!_session.BeginEdit())
             return false;
         _generation++;
-        _editTransitionUntil = Environment.TickCount64 + 500;
+        _editTransitionUntil = _loop.NowMs + 500;
         _hook.Revoke();
         _permitUntil = 0;
         Render();
@@ -418,11 +408,7 @@ internal sealed class SessionController : IDisposable
         Render();
         try
         {
-            if (_broker.ProcessId != 0)
-                Native.AllowSetForegroundWindow((uint)_broker.ProcessId);
-            Native.SetForegroundWindow((nint)source.Target.RootHwnd);
-            var response = await _broker.CallAsync(Request("return"), TimeSpan.FromMilliseconds(800));
-            if (response.Status == "focused")
+            if (await _broker.ReturnToSourceAsync(Context()))
             {
                 _nextCapture = 0;
                 return true;
@@ -438,7 +424,7 @@ internal sealed class SessionController : IDisposable
     {
         _hook.Revoke();
         _permitUntil = 0;
-        if (notice.Permit is not { } permit || Environment.TickCount64 - notice.AcceptedAtMs > Limits.WriteExecutionMaxAgeMs
+        if (notice.Permit is not { } permit || _loop.NowMs - notice.AcceptedAtMs > Limits.WriteExecutionMaxAgeMs
             || notice.UserEpoch != _hook.UserEpoch || notice.ForegroundEpoch != _hook.ForegroundEpoch)
         {
             Render();
@@ -453,14 +439,7 @@ internal sealed class SessionController : IDisposable
         WriteReceipt receipt;
         try
         {
-            var response = await _broker.CallAsync(Request("write") with
-            {
-                Plan = permit.Plan,
-                ExpiresAtMs = notice.AcceptedAtMs + Limits.WriteExecutionMaxAgeMs,
-                OverlayHwnd = 0
-            },
-                TimeSpan.FromSeconds(2));
-            receipt = response.Receipt ?? new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
+            receipt = await _broker.WriteAsync(permit.Plan, Context(), notice.AcceptedAtMs + Limits.WriteExecutionMaxAgeMs);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -499,7 +478,7 @@ internal sealed class SessionController : IDisposable
         _hook.Revoke();
         _permitUntil = 0;
         _statusOverride = null;
-        _session.Retranslate(Environment.TickCount64);
+        _session.Retranslate(_loop.NowMs);
         _nextCapture = 0;
         Render();
     }
@@ -517,16 +496,16 @@ internal sealed class SessionController : IDisposable
     private void ClearBrokerSnapshot()
     {
         if (_broker.Available && _session.Current is { } current)
-            _ = ClearBroker(Request("clear") with
+            _ = ClearBroker(Context() with
             {
                 BoundTarget = current.Target
             });
     }
-    private async Task ClearBroker(BrokerRequest request)
+    private async Task ClearBroker(InputContext request)
     {
         try
         {
-            await _broker.CallAsync(request);
+            await _broker.ClearAsync(request);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException) { }
     }
@@ -536,7 +515,7 @@ internal sealed class SessionController : IDisposable
             return;
         string? status = _session.State == SessionState.Translating && !_model.Ready ? "正在准备翻译"
             : _session.State == SessionState.TranslationFailed ? _statusOverride : null;
-        _overlay.Render(_session, _settings.Value, _permitUntil >= Environment.TickCount64 && _permitUntil != 0, status);
+        _overlay.Render(_session, _settings.Value, _permitUntil >= _loop.NowMs && _permitUntil != 0, status);
     }
     // Opt-in local diagnostics contain counts and state only, never field text,
     // labels, window titles, exception messages, source or translated content.
@@ -564,17 +543,17 @@ internal sealed class SessionController : IDisposable
         _lastTrace = state;
         try
         {
-            File.AppendAllText(_tracePath, "{\"atMs\":" + Environment.TickCount64 + "," + state[1..] + Environment.NewLine);
+            File.AppendAllText(_tracePath, "{\"atMs\":" + _loop.NowMs + "," + state[1..] + Environment.NewLine);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
     public void Dispose()
     {
         _disposed = true;
-        _timer.Stop();
+        _loop.Stop();
+        _loop.Tick -= Tick;
         _pendingDirect = null;
-        _hook.SetShortcuts([]);
-        _hotkeys.Dispose();
+        _hook.ConfigureShortcuts(false, _settings.Value.WakeShortcut, _settings.Value.DirectShortcut);
         _hook.Dispose();
         _broker.Dispose();
         _settings.Changed -= Configure;

@@ -1,3 +1,4 @@
+using TypeLay.Windows.Contracts;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
@@ -72,7 +73,7 @@ internal sealed class WpfFixtureBroker : IInputBroker
     private TargetId Target(Field f)
     {
         using var process = Process.GetCurrentProcess();
-        return new(Environment.ProcessId, process.StartTime.ToUniversalTime().Ticks,
+        return new WindowsTarget(Environment.ProcessId, process.StartTime.ToUniversalTime().Ticks,
             new WindowInteropHelper(_window).Handle, Array.IndexOf(_fields, f) + 1, "WPF-test-fixture", f.Name, f.Lifetime);
     }
 
@@ -99,7 +100,7 @@ internal sealed class WpfFixtureBroker : IInputBroker
         var selection = field.Composing ? new TextRange(0, 0)
             : new TextRange(field.Box.SelectionStart, field.Box.SelectionStart + field.Box.SelectionLength);
         return (new(Target(field), text, selection, bounds, field.Box.AcceptsReturn, FieldAccess.Supported,
-            LastIme, Environment.TickCount64, field.InputEpoch, _focusEpoch), focus);
+            LastIme, Environment.TickCount64, field.InputEpoch, _focusEpoch, WriteSupported: true), focus);
     }
 
     public Task<BrokerResponse> CallAsync(BrokerRequest request, TimeSpan? timeout = null)
@@ -108,7 +109,7 @@ internal sealed class WpfFixtureBroker : IInputBroker
         if (request.Op == "capture")
         {
             var (snapshot, focus) = Capture(request);
-            response = new(Wire.Version, request.Id, snapshot is null ? "silent" : "observed", snapshot, focus,
+            response = new(BrokerProtocol.Version, request.Id, snapshot is null ? "silent" : "observed", snapshot, focus,
                 Application: "desktop-fixture", UserEpoch: request.UserEpoch, ForegroundEpoch: request.ForegroundEpoch);
         }
         else if (request.Op == "return")
@@ -119,17 +120,17 @@ internal sealed class WpfFixtureBroker : IInputBroker
                 _window.Activate();
                 _bound!.Box.Focus();
             }
-            response = new(Wire.Version, request.Id, matches && _bound!.Box.IsKeyboardFocused ? "focused" : "denied");
+            response = new(BrokerProtocol.Version, request.Id, matches && _bound!.Box.IsKeyboardFocused ? "focused" : "denied");
         }
         else if (request.Op == "write")
-            response = new(Wire.Version, request.Id, "receipt", Receipt: Write(request));
+            response = new(BrokerProtocol.Version, request.Id, "receipt", Receipt: Write(request));
         else if (request.Op == "clear")
         {
             _bound = null;
-            response = new(Wire.Version, request.Id, "cleared");
+            response = new(BrokerProtocol.Version, request.Id, "cleared");
         }
         else
-            response = new(Wire.Version, request.Id, "ready");
+            response = new(BrokerProtocol.Version, request.Id, "ready");
         return Task.FromResult(response);
     }
 

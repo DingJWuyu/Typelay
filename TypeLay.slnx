@@ -1,11 +1,14 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/TypeLay.Runtime/TypeLay.Runtime.csproj" />
+    <Project Path="src/TypeLay.Windows.Contracts/TypeLay.Windows.Contracts.csproj" />
     <Project Path="src/TypeLay.App/TypeLay.App.csproj" />
     <Project Path="src/TypeLay.Broker/TypeLay.Broker.csproj" />
     <Project Path="src/TypeLay.Core/TypeLay.Core.csproj" />
     <Project Path="src/TypeLay.Protocol/TypeLay.Protocol.csproj" />
   </Folder>
   <Folder Name="/tests/behavior/">
+    <Project Path="tests/behavior/TypeLay.Runtime.Tests/TypeLay.Runtime.Tests.csproj" />
     <Project Path="tests/behavior/TypeLay.Core.Tests/TypeLay.Core.Tests.csproj" />
   </Folder>
   <Folder Name="/tests/contracts/">

@@ -5,12 +5,12 @@ namespace TypeLay.Core.Tests;
 
 internal static class CoreScenarios
 {
-    internal static readonly TargetId A = new(101, 10000, 10, 11, "test", "a", Guid.Parse("11111111-1111-1111-1111-111111111111"));
-    internal static readonly TargetId B = A with { ControlHwnd = 12, ElementToken = "b" };
+    internal static readonly TargetId A = new("test", "a", Guid.Parse("11111111-1111-1111-1111-111111111111"));
+    internal static readonly TargetId B = A with { Value = "b" };
 
     internal static InputSnapshot Sample(string text = "你好", TextRange? selected = null, long at = 1000)
         => new(A, text, selected ?? new(text.Length, text.Length), new(100, 400, 450, 70), true,
-            FieldAccess.Supported, ImeState.Clear, at, 1, 1);
+            FieldAccess.Supported, ImeState.Clear, at, 1, 1, WriteSupported: true);
     internal static Session NewSession() => new(new("auto", "en"));
     internal static AcceptanceContext Context(InputSnapshot s) => new(FocusMember.Source, false, false, ImeState.Clear, s.InputEpoch, s.FocusEpoch);
     internal static (Session Session, InputSnapshot Snapshot) Ready(string text = "你好", TextRange? range = null, string candidate = "Hello")

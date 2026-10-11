@@ -30,8 +30,9 @@ public static class Utf16
              && char.IsHighSurrogate(text[offset - 1]) && char.IsLowSurrogate(text[offset]));
 }
 
-public readonly record struct TargetId(int ProcessId, long ProcessStartUtcTicks,
-    long RootHwnd, long ControlHwnd, string Provider, string ElementToken, Guid Lifetime);
+// Equality is the only operation the shared product performs on a target identity.
+// Backend-owned bindings are opaque here; native handles never cross into product logic.
+public readonly record struct TargetId(string Backend, string Value, Guid Lifetime);
 
 public enum ImeState
 {
@@ -66,9 +67,10 @@ public enum WriteStatus
     Verified, RejectedBeforeMutation, OutcomeUnknown
 }
 
+// Backends opt into each mutation capability only after verifying their own prerequisites.
 public sealed record InputSnapshot(TargetId Target, string Text, TextRange? Selection,
     RectPx Bounds, bool Multiline, FieldAccess Access, ImeState Ime,
-    long ObservedAtMs, long InputEpoch, long FocusEpoch, bool WriteSupported = true, string? CommittedPrefix = null,
+    long ObservedAtMs, long InputEpoch, long FocusEpoch, bool WriteSupported = false, string? CommittedPrefix = null,
     string? PreviewText = null, bool DirectWriteSupported = false)
 {
     public override string ToString() => "InputSnapshot { content = [redacted] }";
@@ -121,17 +123,3 @@ public sealed record WriteReceipt(WriteStatus Status, Denial Reason, InputSnapsh
 
 public readonly record struct AcceptanceContext(FocusMember Focus, bool Modified, bool Injected,
     ImeState Ime, long InputEpoch, long FocusEpoch);
-
-// Production adapters must return blocked metadata without reading protected text first.
-public interface IInputAdapter
-{
-    InputSnapshot? Capture();
-    WriteReceipt TryWrite(WritePlan plan);
-}
-
-// A worker must not silently return a dictionary/mock or upload text on failure.
-// AppendToManual returns a combined candidate preserving PreservedManualText as an exact prefix.
-public interface ILocalTranslator
-{
-    Task<string> TranslateAsync(TranslationJob job, CancellationToken cancellationToken);
-}

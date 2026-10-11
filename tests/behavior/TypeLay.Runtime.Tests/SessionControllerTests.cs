@@ -1,0 +1,268 @@
+using TypeLay.Core;
+using Xunit;
+
+namespace TypeLay.Runtime.Tests;
+
+public sealed class SessionControllerTests
+{
+    [Fact]
+    public void AutomaticModeDebouncesTranslationWithoutGrantingDefaultWriteback()
+    {
+        using var s = new SessionScenario();
+        s.Tick();
+        Assert.True(s.View.Visible);
+        Assert.Empty(s.Model.Jobs);
+        s.Tick(Limits.DebounceMs - 1);
+        Assert.Empty(s.Model.Jobs);
+        s.Tick(1);
+        Assert.Single(s.Model.Jobs);
+        Assert.Equal("hello", s.Model.Jobs[0].SourceText);
+        s.CompleteTranslation("translated");
+        s.Tick();
+        Assert.Equal("translated", s.View.Preview);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.Input.ShortcutsEnabled);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void PreviewDoesNotRequireAcceptanceKeyOwnershipOrWriteCapability(bool interception, bool writable)
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.Input.CanInterceptAcceptance = interception;
+        s.Source = s.Source with
+        {
+            WriteSupported = writable
+        };
+        s.ReadyCandidate();
+        Assert.Equal("translated", s.View.Preview);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.View.CanAccept);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void UnknownImeRemainsReadOnlyEvenWhenADeviceCanInterceptKeys()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.Source = s.Source with
+        {
+            Ime = ImeState.Unknown,
+            Text = "",
+            Selection = null,
+            PreviewText = "untrusted text"
+        };
+        s.ReadyCandidate();
+        Assert.Equal("untrusted text", s.Model.Jobs.Single().SourceText);
+        Assert.Equal("translated", s.View.Preview);
+        Assert.False(s.View.BeginEditing!());
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void OnDemandIsSilentUntilWakeAndDoesNotFollowFocusIntoAnotherField()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Tick();
+        s.Tick(1000);
+        Assert.False(s.View.Visible);
+        Assert.Empty(s.Model.Jobs);
+        Assert.True(s.Input.ShortcutsEnabled);
+        Assert.NotNull(s.Input.Shortcut);
+        s.Command("wake");
+        s.Tick();
+        Assert.True(s.View.Visible);
+        s.Tick(Limits.DebounceMs);
+        s.CompleteTranslation("translated");
+        s.Tick();
+        Assert.Equal("translated", s.View.Preview);
+        s.FocusAnotherField();
+        s.Tick();
+        s.Tick(1000);
+        Assert.False(s.View.Visible);
+        Assert.Single(s.Model.Jobs);
+        Assert.Equal(WorkMode.OnDemand, s.Settings.Value.Mode);
+    }
+
+    [Fact]
+    public void EscapeRequiresAnotherExplicitWakeInOnDemandMode()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Command("wake");
+        s.Tick();
+        Assert.True(s.View.Visible);
+        s.Command("escape");
+        s.Tick();
+        Assert.False(s.View.Visible);
+        s.Tick(1000);
+        Assert.Empty(s.Model.Jobs);
+        s.Command("wake");
+        s.Tick();
+        Assert.True(s.View.Visible);
+    }
+
+    [Fact]
+    public void DeferredCaptureCannotResurrectAFieldAfterItsFocusEpochChanges()
+    {
+        using var s = new SessionScenario();
+        s.Service.PendingCapture = new();
+        var stale = new InputCapture(s.Fresh, FocusMember.Source, "old", 1, 1);
+        s.Tick();
+        s.FocusAnotherField();
+        s.CompleteCapture(stale);
+        Assert.False(s.View.Visible);
+        Assert.Empty(s.Model.Jobs);
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        Assert.Equal(s.Source.Target, Assert.Single(s.Model.Jobs).Basis.Target);
+    }
+
+    [Fact]
+    public void LateTranslationCannotBecomeAnotherFieldsCandidate()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        s.FocusAnotherField();
+        s.Tick();
+        s.CompleteTranslation("old translation");
+        Assert.NotEqual("old translation", s.View.Preview);
+        Assert.Null(s.Input.Permit);
+        s.Tick(Limits.DebounceMs);
+        s.CompleteTranslation("new translation");
+        s.Tick();
+        Assert.Equal("new translation", s.View.Preview);
+        Assert.Equal(s.Source.Target, s.Input.Permit!.Plan.Expected.Target);
+    }
+
+    [Fact]
+    public void DirectTranslationStaysBoundToTriggerTargetAndUnsupportedWriteDoesNotRetry()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var original = s.Source.Target;
+        s.Command("direct");
+        s.Tick();
+        Assert.Single(s.Model.Jobs);
+        Assert.False(s.View.Visible);
+        s.FocusAnotherField();
+        s.Tick();
+        s.CompleteTranslation("direct result");
+        var write = Assert.Single(s.Service.DirectWrites);
+        Assert.Equal(original, write.Expected.Target);
+        Assert.Equal("direct result", write.ResultText);
+        Assert.Contains("不支持", s.Controller.OperationStatus);
+        s.Tick(5000);
+        Assert.Single(s.Service.DirectWrites);
+        Assert.Empty(s.Service.Writes);
+        Assert.Equal(0, s.Service.Returns);
+    }
+
+    [Fact]
+    public void SettingsChangeCancelsPendingDirectTranslationBeforeMutation()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Command("direct");
+        s.Tick();
+        Assert.Single(s.Model.Jobs);
+        s.Settings.Update(s.Settings.Value with
+        {
+            Target = "zh"
+        });
+        s.CompleteTranslation("cancelled");
+        s.Tick();
+        Assert.Empty(s.Service.DirectWrites);
+        Assert.Contains("设置已改变", s.Controller.OperationStatus);
+    }
+
+    [Fact]
+    public void PreviousShortcutGenerationCannotStartWorkAfterReconfiguration()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Command("direct");
+        s.Settings.Update(s.Settings.Value with
+        {
+            DirectShortcut = "Ctrl+F8"
+        });
+        s.Tick();
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.DirectWrites);
+    }
+
+    [Fact]
+    public void EditingReturnsToSourceWithoutWritingUntilASecondAcceptance()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        Assert.NotNull(s.Input.Permit);
+        Assert.True(s.View.BeginEditing!());
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("manual draft");
+        s.Tick();
+        Assert.Null(s.Input.Permit);
+        s.View.ReturnRequested!();
+        Assert.Equal(1, s.Service.Returns);
+        Assert.Empty(s.Service.Writes);
+        s.Tick();
+        Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+        Assert.Equal("manual draft", s.View.Preview);
+        var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Input.Notices.Enqueue(new("accept", permit, s.Loop.NowMs, s.Input.UserEpoch, s.Input.ForegroundEpoch));
+        s.Tick();
+        Assert.Equal("manual draft", Assert.Single(s.Service.Writes).Replacement);
+        Assert.Equal(SessionState.OutcomeUnknown, s.View.State);
+        s.Tick();
+        Assert.Null(s.Input.Permit);
+    }
+
+    [Fact]
+    public void FailedSourceReturnResumesTheExistingDraftInsteadOfAcceptingIt()
+    {
+        using var s = new SessionScenario();
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!());
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("keep draft");
+        s.Service.ReturnAllowed = false;
+        s.View.ReturnRequested!();
+        Assert.Equal(1, s.View.Resumes);
+        Assert.Equal(SessionState.EditingTranslation, s.View.State);
+        Assert.Equal("keep draft", s.View.Draft);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ExpiredOrInvalidatedAcceptanceDoesNotDispatchAWrite(bool expired)
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        long accepted = expired ? s.Loop.NowMs - Limits.WriteExecutionMaxAgeMs - 1 : s.Loop.NowMs;
+        s.Input.Notices.Enqueue(new("accept", permit, accepted, s.Input.UserEpoch, s.Input.ForegroundEpoch));
+        if (!expired)
+            s.Input.UserEpoch++;
+        s.Tick();
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void DisposingStopsObservationAndDoesNotWriteAPendingDirectResult()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Command("direct");
+        s.Tick();
+        int captures = s.Service.Captures;
+        s.Controller.Dispose();
+        s.CompleteTranslation("late");
+        s.Tick(1000);
+        Assert.False(s.Loop.Running);
+        Assert.True(s.Input.Disposed);
+        Assert.True(s.Service.Disposed);
+        Assert.Empty(s.Service.DirectWrites);
+        Assert.Equal(captures, s.Service.Captures);
+    }
+}

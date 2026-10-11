@@ -1,20 +1,34 @@
 # Architecture constraints
 
-在改模块边界、进程启动、会话或目录时读取本文件。工作区入口是 TypeLay.slnx；架构取舍见 `docs/adr/0001-workspace-and-delivery.md`。
+在改模块边界、进程启动、会话或目录时读取本文件。工作区入口是 TypeLay.slnx；跨平台依赖、宿主契约与扩展取舍见 `docs/adr/0003-cross-platform-runtime.md`；工作区与交付约定见 ADR-0001，按需/直接替换语义见 ADR-0002。
 
 ## 生产边界
 
 `TypeLay.Core` 拥有 Session、AcceptanceGate、WriteSafety、字段安全策略、UTF-16 选区映射和展示状态的纯逻辑。只接收显式快照、时间与结果；不读取操作系统、环境变量、网络或磁盘。回归通过这些公开边界观察，不断言私有字段。
 
-`TypeLay.Protocol` 引用 Core，拥有 Wire 的长度前缀帧及 Messages 数据契约。改变消息结构或大小限制时必须覆盖 C# 契约和真实 Broker 进程回归。
+`TypeLay.Runtime` 引用 Core/Protocol，拥有 SessionController 的时序编排、设置持久化及 ModelClient 的本地模型协议。宿主注入输入服务/输入观察、串行事件循环、视图、数据路径和进程所有权。这里没有 WPF、Win32、UIA、Registry、Windows Broker DTO 或 provider 名称判定。模型、设置、平台事件通过公开端口进入同一会话所有者，不另建线程、服务容器或消息总线。
 
-`TypeLay.App` 引用 Core/Protocol。Application 编排会话；Infrastructure 负责设置、安装和子进程；Windows 包含 hook 和原生调用；UI 只管理 WPF 展示与交互，不直接写目标应用。
+`TypeLay.Protocol` 不引用 Core，拥有长度前缀帧和 worker 消息。`TypeLay.Windows.Contracts` 引用 Core，仅拥有 Windows Broker DTO、协议版本和 WindowsTarget 编解码。它可在普通 .NET 下测试，但不是其它桌面平台必须实现的协议。
 
-`TypeLay.Broker` 引用 Core/Protocol，在单一 MTA 线程上拥有 UIA COM 对象。Input 的 UiaInputProvider 不按应用白名单定义普通输入支持；Interop 只封装平台调用。生产入口是 Program 和标准输入输出管道，而不是 fixtures。
+`TypeLay.App` 是 Windows 宿主。Windows/WindowsRuntime 组装共享运行时与 WPF 视图；WindowsInputService 把类型化输入操作转换为 Broker 请求，持有 HWND、焦点恢复和 IPC 期限。KeyboardHook/OnDemandHotkeys、Job Object、注册表启动项属于 Windows。UI 保持 WPF 展示与编辑，不直接写源字段。Infrastructure 的 AppPaths、ModelInstaller、SingleInstance 仍属于当前 Windows 分发/安装，不把 Windows Python wheel 选择冒充共享安装器。
 
-`TypeLay.Worker` 是独立 Python 进程，拥有本地模型校验和推理。App 的安装流程在用户同意后准备运行时与模型；worker 不自动下载、不监听端口，不向协议输出原始异常或用户文本诊断。
+`TypeLay.Broker` 引用 Core/Protocol/Windows.Contracts，在单一 MTA 线程上拥有 UIA COM 对象。Input 的 UiaInputProvider 不按应用白名单定义普通输入支持；Interop 只封装平台调用。生产入口是 Program 和标准输入输出管道，而不是 fixtures。TypeLay.NativeInput 的系统 Edit 协调写入仍是独立、受限的 Windows x64 路径。
 
-`TypeLay.Launcher` 是小型原生入口。发布时从 C 源码编译，调用发行目录 bootstrap/start.ps1；它不包含 SDK 下载和源码编译功能。
+`TypeLay.Worker` 是独立 Python 进程，拥有本地模型校验、文本结构保护与推理。源码及 worker 协议可共享，原生 Python 依赖的目标平台发行与真实推理必须分别验证。App 的 Windows 安装流程仍在用户同意后准备运行时与模型；worker 不自动下载、不监听端口，不向协议输出原始异常或用户文本诊断。
+
+`TypeLay.Launcher` 是 Windows 原生入口。发布时从 C 源码编译，调用发行目录 bootstrap/start.ps1；它不包含 SDK 下载和源码编译功能。
+
+## 平台边界不变量
+
+Core 的 TargetId 只比较 backend、opaque value 和 lifetime。WindowsTarget 独立保留 PID/进程启动时间、根/控件 HWND、provider、元素令牌与生命周期，禁止共享逻辑解包句柄。表示变化由 Windows Broker 协议 v2 明确隔离，v1 客户端/服务端不能混用；worker 帧与消息不变。
+
+观察就绪不等于拥有 Tab，也不等于能写回。InputSnapshot 的两种写能力默认 false；Windows 生产者在原有校验通过后显式声明原有能力。共享控制器还要求 CanInterceptAcceptance 才发布 Tab 许可。未知 IME、敏感元数据、焦点/输入版本、时效、字段寿命及未知写入结果继续独立否决，不能用单一“支持平台”开关覆盖它们。
+
+IInputService 的实现负责操作前重新确认目标与权限，不能把 WritePlan 当授权。无法安全写入返回明确拒绝；可能已经变更返回 OutcomeUnknown，不换目标、不模拟粘贴、不自动重试。直接写回保持绑定触发源，不通过前台 return/write 组合实现。缺失输入权限、可靠目标或几何信息时安全不可用，不伪造快照。
+
+所有会话回调在宿主串行事件循环执行；平台回调先排队，不直接并发调用 Session。时间映射到 ISessionLoop 的单调毫秒域，输入/源输入/焦点版本分开保留。Windows 的轮询、debounce、许可与执行期限不因分层而改变。Hook 回调不解析不透明 ID：在发布租约时解码并保存本地 HWND。
+
+控制器释放时停止循环并释放其输入服务/观察器；模型客户端、设置和视图由宿主拥有。平台子进程工厂必须保证创建失败无遗留、stderr 不阻塞且不保存正文、退出清理整个自有进程族。Windows 继续使用原 Job Object 实现，不以共享 Process 类型替代生命周期保障。
 
 ## 分发契约
 
@@ -30,7 +44,9 @@
 
 `tests/fixtures/TypeLay.DesktopFixture` 使用生产浮层、SessionController、Hook 和真实 ModelClient，WpfFixtureBroker 仅替换源字段访问。它用于定位 WPF 编辑与焦点问题，不证明生产 Broker 的 UIA 或 IPC 行为。运行方法见 `docs/agents/testing.md`。
 
-共享测试准备仅留在 tests 内，不向生产代码导出额外的“方便测试”接口。
+`tests/behavior/TypeLay.Runtime.Tests` 用确定性串行宿主和受控输入/模型端口执行生产控制器，覆盖激活、异步结果隔离、草稿、直接替换和能力拒绝；设置测试使用真实临时文件。它们不证明桌面、真实模型或原子写入。`shared-check` 在非 Windows 环境构建并运行共享层，完整 Windows check/pack 保留。
+
+共享测试准备仅留在 tests 内，不向生产代码导出额外的“方便测试”接口。平台端口有 Windows 生产使用者；不为未开发平台保留空项目或假实现。
 
 ## 开放风险与安全边界
 
@@ -46,7 +62,7 @@
 
 文本和模型输入/输出限制以 Core 与 worker 的实现为准，超过限制拒绝而非静默截断。结构保护分段保留 URL、邮箱、mention、编号、emoji 和换行，可能影响上下文质量；人工追加保留人工前缀，不保证全文语义重新融合。
 
-子进程使用 Job Object 管理生命周期，私有管道 token 不构成同用户恶意进程隔离。worker 没有网络调用路径不等于 OS 网络沙箱；无正文日志不代表能控制系统崩溃转储或内存分页。发布仍须审查实际组件/模型许可、供应链及签名，见 `THIRD_PARTY_NOTICES.md`。
+Windows 子进程使用 Job Object 管理生命周期，私有管道 token 不构成同用户恶意进程隔离。worker 没有网络调用路径不等于 OS 网络沙箱；无正文日志不代表能控制系统崩溃转储或内存分页。发布仍须审查实际组件/模型许可、供应链及签名，见 `THIRD_PARTY_NOTICES.md`。
 
 ## 修改底层接口时的依据
 

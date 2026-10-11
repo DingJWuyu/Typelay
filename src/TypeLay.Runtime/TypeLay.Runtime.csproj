@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../TypeLay.Core/TypeLay.Core.csproj" />
+    <ProjectReference Include="../TypeLay.Protocol/TypeLay.Protocol.csproj" />
+  </ItemGroup>
+</Project>

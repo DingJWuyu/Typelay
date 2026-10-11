@@ -6,7 +6,6 @@ namespace TypeLay.Protocol;
 // Each process owns its pipe handles. There is no TCP listener or globally named endpoint.
 public static class Wire
 {
-    public const int Version = 1;
     public const int MaxFrameBytes = 256 * 1024;
     public static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
     {

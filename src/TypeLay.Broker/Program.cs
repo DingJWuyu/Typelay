@@ -1,3 +1,4 @@
+using TypeLay.Windows.Contracts;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -24,7 +25,7 @@ internal static class Program
             while (true)
             {
                 var request = Wire.ReadAsync<BrokerRequest>(input).AsTask().GetAwaiter().GetResult();
-                if (request.Version != Wire.Version || request.Id <= last || request.Token is null
+                if (request.Version != BrokerProtocol.Version || request.Id <= last || request.Token is null
                     || !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(token), Encoding.UTF8.GetBytes(request.Token)))
                     return 3;
                 last = request.Id;
@@ -33,15 +34,15 @@ internal static class Program
                 {
                     response = request.Op switch
                     {
-                        "hello" => new(Wire.Version, request.Id, "ready"),
+                        "hello" => new(BrokerProtocol.Version, request.Id, "ready"),
                         "clear" => Clear(provider, request),
                         "direct-clear" => ClearDirect(provider, request),
-                        "write" => new(Wire.Version, request.Id, "receipt", Receipt: provider.Write(request)),
-                        "direct-write" => new(Wire.Version, request.Id, "receipt", Receipt: provider.WriteDirect(request)),
-                        "return" => new(Wire.Version, request.Id, provider.ReturnToSource(request.BoundTarget) ? "focused" : "denied"),
+                        "write" => new(BrokerProtocol.Version, request.Id, "receipt", Receipt: provider.Write(request)),
+                        "direct-write" => new(BrokerProtocol.Version, request.Id, "receipt", Receipt: provider.WriteDirect(request)),
+                        "return" => new(BrokerProtocol.Version, request.Id, provider.ReturnToSource(request.BoundTarget) ? "focused" : "denied"),
                         "capture" => Observe(provider, request),
-                        "quit" => new(Wire.Version, request.Id, "bye"),
-                        _ => new(Wire.Version, request.Id, "unsupported")
+                        "quit" => new(BrokerProtocol.Version, request.Id, "bye"),
+                        _ => new(BrokerProtocol.Version, request.Id, "unsupported")
                     };
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -56,7 +57,7 @@ internal static class Program
                         }
                         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
                     }
-                    response = new(Wire.Version, request.Id, "unavailable");
+                    response = new(BrokerProtocol.Version, request.Id, "unavailable");
                 }
                 Wire.WriteAsync(output, response).AsTask().GetAwaiter().GetResult();
                 if (request.Op == "quit")
@@ -71,17 +72,17 @@ internal static class Program
     private static BrokerResponse ClearDirect(UiaInputProvider provider, BrokerRequest request)
     {
         provider.ClearDirect();
-        return new(Wire.Version, request.Id, "cleared");
+        return new(BrokerProtocol.Version, request.Id, "cleared");
     }
     private static BrokerResponse Clear(UiaInputProvider provider, BrokerRequest request)
     {
         provider.Clear(request.BoundTarget);
-        return new(Wire.Version, request.Id, "cleared");
+        return new(BrokerProtocol.Version, request.Id, "cleared");
     }
     private static BrokerResponse Observe(UiaInputProvider provider, BrokerRequest request)
     {
         var (snapshot, focus) = provider.Capture(request);
-        return new(Wire.Version, request.Id, snapshot is null ? "silent" : "observed", snapshot, focus,
+        return new(BrokerProtocol.Version, request.Id, snapshot is null ? "silent" : "observed", snapshot, focus,
             Application: provider.Application, UserEpoch: request.UserEpoch, ForegroundEpoch: request.ForegroundEpoch);
     }
 }

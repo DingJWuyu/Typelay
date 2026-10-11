@@ -11,13 +11,13 @@
 
 代码变更前运行 `./dev.ps1 check` 获取基线；缺陷修复还须按 tests/AGENTS.md 建立红色回归。代码变更后运行 `./dev.ps1 format`，再运行 `./dev.ps1 check`。发布路径、启动、资源或跨进程变更还须运行 `./dev.ps1 pack`。
 
-纯 Python 回归可跨平台运行：设置 PYTHONPATH 指向 src/TypeLay.Worker，然后执行 `python -m unittest discover -s tests/worker -v`。Core/Protocol 可单独 dotnet test 对应 csproj。不要把这些命令报告为 Windows GUI 验收。
+`./dev.ps1 shared-check` 可跨平台运行 Core、Runtime、协议和 Python worker 回归，无需 Windows SDK、桌面或模型。只需 PowerShell、global.json 的 .NET SDK 和 Python。共享 Runtime 测试以真实编排配合受控系统端口验证时序；不是 Linux/macOS 客户端，也不能报告为 Windows GUI 验收。单项测试仍可直接 dotnet test 对应 csproj；Python 单项需设置 PYTHONPATH 指向 src/TypeLay.Worker。
 
 新增 NuGet 测试依赖在 Directory.Packages.props 统一固定版本；用 dotnet restore 生成相应 packages.lock.json，不手改锁文件。更新后在 locked mode 验证。Python 开发工具只进 eng/requirements.txt，模型运行依赖只进 src/TypeLay.Worker/requirements.txt，并与 ModelInstaller 的实际安装声明保持一致。
 
 ## CI
 
-只保留 .github/workflows/check.yml。它在 windows-preview 的 push/PR 或手动执行时调用相同的 check 和 pack 入口；权限为 contents: read。不运行需求拆票、自动修代码、自动提交、自动合并、模型下载或全平台矩阵。
+只保留 .github/workflows/check.yml。它在 windows-preview 的 push/PR 或手动执行时，Windows job 调用 check/pack，Ubuntu job 调用 shared-check；权限为 contents: read。不运行需求拆票、自动修代码、自动提交、自动合并、模型下载或 Linux/macOS 客户端矩阵。
 
 CI 发布的 artifact 以提交 SHA 命名，包含 TRX、当前运行的 ZIP 和校验和。不要上传 artifacts 的整个目录。工作流日志是对应提交的执行记录，不写回源码树。
 

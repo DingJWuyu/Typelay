@@ -1,0 +1,47 @@
+using TypeLay.Core;
+using TypeLay.Runtime;
+using TypeLay.Windows.Contracts;
+
+namespace TypeLay.App;
+
+internal sealed class WindowsInputService(IInputBroker broker, nint overlay) : IInputService
+{
+    public bool Available => broker.Available;
+    public Task StartAsync() => broker.StartAsync();
+    private BrokerRequest Request(string operation, InputContext context) => new(BrokerProtocol.Version, 0, operation, "",
+        context.UserEpoch, context.ForegroundEpoch, (long)overlay, context.BoundTarget,
+        Excluded: context.Excluded, SourceUserEpoch: context.SourceUserEpoch, CaptureDirect: context.CaptureDirect);
+
+    public async Task<InputCapture> CaptureAsync(InputContext context)
+    {
+        var result = await broker.CallAsync(Request("capture", context));
+        return new(result.Snapshot, result.Focus, result.Application, result.UserEpoch, result.ForegroundEpoch);
+    }
+    public async Task<bool> ReturnToSourceAsync(InputContext context)
+    {
+        if (context.BoundTarget is not { } id || !WindowsTarget.TryDecode(id, out var target))
+            return false;
+        if (broker.ProcessId != 0)
+            Native.AllowSetForegroundWindow((uint)broker.ProcessId);
+        Native.SetForegroundWindow((nint)target.RootHwnd);
+        return (await broker.CallAsync(Request("return", context), TimeSpan.FromMilliseconds(800))).Status == "focused";
+    }
+    public async Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs)
+    {
+        var result = await broker.CallAsync(Request("write", context) with
+        {
+            Plan = plan,
+            ExpiresAtMs = expiresAtMs,
+            OverlayHwnd = 0
+        }, TimeSpan.FromSeconds(2));
+        return result.Receipt ?? new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
+    }
+    public async Task<WriteReceipt> WriteDirectAsync(WritePlan plan, string[] excluded)
+    {
+        var result = await broker.CallAsync(new(BrokerProtocol.Version, 0, "direct-write", "",
+            BoundTarget: plan.Expected.Target, Plan: plan, Excluded: excluded), TimeSpan.FromSeconds(2));
+        return result.Receipt ?? new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
+    }
+    public async Task ClearAsync(InputContext context) => await broker.CallAsync(Request("clear", context));
+    public void Dispose() => broker.Dispose();
+}

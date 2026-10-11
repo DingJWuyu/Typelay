@@ -1,3 +1,4 @@
+using TypeLay.Runtime;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -68,13 +69,13 @@ internal static class ControllerDesktopScenario
             Assert.NotNull(host);
             nint a = (nint)host.Fields.Single(field => field.Name == "a").Hwnd;
             nint b = (nint)host.Fields.Single(field => field.Name == "b").Hwnd;
-            var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
+            var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
             settings.Update(settings.Value with
             {
                 Mode = WorkMode.OnDemand
             });
-            using var model = new ModelClient(); // Empty-field wake needs no model download or fabricated translation.
-            using var controller = new SessionController(settings, model, overlay, automationTest: true);
+            using var model = WindowsRuntime.CreateModel(); // Empty-field wake needs no model download or fabricated translation.
+            using var controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true);
             await controller.StartAsync().WaitAsync(deadline.Token);
             await Until(() => controller.InputAvailable, "The input service must be ready.", deadline.Token);
             async Task Focus(nint field)

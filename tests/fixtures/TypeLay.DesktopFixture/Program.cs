@@ -1,3 +1,4 @@
+using TypeLay.Runtime;
 using System.Text.Json;
 using System.IO;
 using System.Windows;
@@ -18,7 +19,7 @@ internal static class Program
         string artifacts = Path.GetFullPath(args[0]);
         Directory.CreateDirectory(artifacts);
         var app = new Application { ShutdownMode = ShutdownMode.OnMainWindowClose };
-        var settings = new SettingsStore(Path.Combine(artifacts, "fixture-settings.json"));
+        var settings = WindowsRuntime.CreateSettings(Path.Combine(artifacts, "fixture-settings.json"));
         settings.Update(new(Theme: "light", OnboardingComplete: true, ExperimentalWriteback: true));
         UiTheme.Initialize("light");
         var source = new Window
@@ -60,10 +61,10 @@ internal static class Program
         counts.Margin = new(0, 15, 0, 0);
         panel.Children.Add(counts);
         source.Content = panel;
-        using var model = new ModelClient();
+        using var model = WindowsRuntime.CreateModel();
         var overlay = new OverlayWindow(true);
         using var broker = new WpfFixtureBroker(source, a, b);
-        using var controller = new SessionController(settings, model, overlay, true, broker);
+        using var controller = WindowsRuntime.CreateSession(settings, model, overlay, true, broker);
         int submits = 0;
         void RefreshCounts() => counts.Text = $"Writes: {broker.Writes} · Submits: {submits} · Paused: {!settings.Value.Enabled}";
         var reset = UiTheme.Button("Reset", () =>

@@ -33,7 +33,7 @@ TypeLay 是 Windows 上的本地输入翻译工具。自动模式跟随当前文
 
 长期开发分支是 `windows-preview`；`main` 不参与本阶段开发。
 
-Windows x64 开发环境需要 Git、PowerShell 7.2 或更高版本、`global.json` 指定的 .NET SDK、Python 3.13，以及 LLVM 的 `clang` / `lld-link`。把这些工具加入 PATH。只跑 Python 行为测试不需要安装模型；Core 和 Protocol 的测试也不依赖真实桌面。
+Windows x64 开发环境需要 Git、PowerShell 7.2 或更高版本、`global.json` 指定的 .NET SDK、Python 3.13，以及 LLVM 的 `clang` / `lld-link`。把这些工具加入 PATH。只跑 Python 行为测试不需要安装模型；Core、Runtime 和协议测试也不依赖真实桌面。
 
 ```powershell
 git clone --branch windows-preview https://github.com/DingJWuyu/Typelay.git
@@ -48,12 +48,21 @@ python -m pip install -r eng/requirements.txt
 | 命令 | 用途 |
 | --- | --- |
 | `./dev.ps1 check` | 编译、行为与协议回归、Windows 桌面契约、Python 测试、lint 和格式检查 |
+| `./dev.ps1 shared-check` | 在非 Windows 环境运行共享核心、会话编排、协议和 worker 回归，不构建桌面客户端 |
 | `./dev.ps1 format` | 使用统一工具修正格式及可自动修复的 lint |
 | `./dev.ps1 pack` | 生成自包含 Windows 包、校验和，并验证迁移目录后的发布包及进程协议 |
 | `./dev.ps1 e2e` | 对已生成的发布包重跑进程与分发回归 |
 | `./dev.ps1 native-e2e` | 在已解锁桌面验证受控 Win32 fixture 的适配器契约，不代表生产 UIA 验收 |
 
 发布包与测试报告进入 `artifacts/`；.NET 编译中间结果留在各项目的 `bin/`、`obj/`，这些生成物均不提交到 Git。NuGet 包版本集中在 `Directory.Packages.props`。测试使用标准 `dotnet test` 和 Python `unittest`；受控桌面工具的用途与运行方法见 [测试流程](docs/agents/testing.md)。`check` 中的 App 桌面测试需要可交互的 Windows 桌面，会启动并清理独立的测试控件进程；不会下载模型，也不应用于用户正在编辑的窗口。
+
+## 跨平台架构
+
+当前可运行产品仍只有 Windows，未加入 Linux/macOS 客户端。共享产品逻辑已从 Windows 宿主独立出来：Core 管理会话与安全规则，Runtime 管理激活、翻译/编辑/接受时序、设置持久化和本地 worker 客户端，Protocol 管理通用帧与 worker 消息，Python worker 保留模型校验、结构保护与推理实现。
+
+App 负责 Windows 组装和 WPF 界面；UIA Broker、输入 Hook、快捷键注册、原生 Edit 写入、焦点、Job Object、启动项和发行安装仍由 Windows 实现。Windows.Contracts 的 DTO/句柄编码只属于 Windows App 与 Broker，不要求其它平台采用它。
+
+增加平台时实现实际可提供的输入/视图/生命周期适配器并复用 Runtime。无法确认 IME、写权限或按键所有权时仍拒绝相应行为，不能把“可观察”当作“可替换”。CachyOS + niri/Wayland、其它 Linux 桌面和 macOS 的权限、可访问性、几何、快捷键、输入法和可靠写入需要后续分别验证。设计与具体接入契约见 [ADR-0003](docs/adr/0003-cross-platform-runtime.md)。
 
 ## 源码导航
 

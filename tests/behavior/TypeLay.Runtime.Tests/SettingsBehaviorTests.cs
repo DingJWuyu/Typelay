@@ -1,9 +1,8 @@
 using System.IO;
-using TypeLay.App;
 using TypeLay.Core;
 using Xunit;
 
-namespace TypeLay.App.Tests;
+namespace TypeLay.Runtime.Tests;
 
 public sealed class SettingsBehaviorTests : IDisposable
 {
@@ -63,6 +62,51 @@ public sealed class SettingsBehaviorTests : IDisposable
         Assert.Equal(WorkMode.Automatic, settings.Mode);
         Assert.Equal(["private-app"], settings.Excluded);
         Assert.Equal("Ctrl+Shift+F9", settings.WakeShortcut);
+    }
+
+    [Fact]
+    public void ApplicationIdentifiersAreNotTreatedAsWindowsFilenames()
+    {
+        var store = new SettingsStore(SettingsPath);
+        store.Exclude("org.example.Editor.desktop");
+        Assert.Equal(["org.example.Editor.desktop"], new SettingsStore(SettingsPath).Value.Excluded);
+    }
+
+    [Fact]
+    public void HostNormalizesApplicationIdentityBeforeItIsPersisted()
+    {
+        var store = new SettingsStore(SettingsPath, normalizeApplication: app => app.ToLowerInvariant());
+        store.Exclude("ORG.EXAMPLE.EDITOR");
+        Assert.Equal(["org.example.editor"], new SettingsStore(SettingsPath).Value.Excluded);
+    }
+
+    [Fact]
+    public void UnsupportedStartupCannotBeSilentlySavedAsEnabled()
+    {
+        var store = new SettingsStore(SettingsPath);
+        store.Update(store.Value);
+        string before = File.ReadAllText(SettingsPath);
+        Assert.Throws<NotSupportedException>(() => store.Update(store.Value with { Startup = true }));
+        Assert.False(store.Value.Startup);
+        Assert.Equal(before, File.ReadAllText(SettingsPath));
+    }
+
+    [Fact]
+    public void StartupChangeIsDelegatedToTheHostInsteadOfTouchingAnOperatingSystemRegistry()
+    {
+        var changes = new List<bool>();
+        var store = new SettingsStore(SettingsPath, changes.Add);
+        store.Update(store.Value with
+        {
+            Startup = true
+        });
+        Assert.Equal([true], changes);
+        Assert.True(new SettingsStore(SettingsPath).Value.Startup);
+        store.Update(store.Value with
+        {
+            Theme = "dark"
+        });
+        Assert.Single(changes);
     }
 
     public void Dispose()

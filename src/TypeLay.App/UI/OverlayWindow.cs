@@ -1,3 +1,5 @@
+using TypeLay.Runtime;
+using TypeLay.Windows.Contracts;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
@@ -9,7 +11,7 @@ using System.Windows.Media.Effects;
 using TypeLay.Core;
 namespace TypeLay.App;
 
-internal sealed class OverlayWindow : Window
+internal sealed class OverlayWindow : Window, ISessionView
 {
     private readonly TextBox _editor;
     private readonly TextBlock _language, _status, _tabHint;
@@ -23,10 +25,36 @@ internal sealed class OverlayWindow : Window
     private nint _hwnd;
     private (int X, int Y, int Width, int Height)? _placement;
     public nint Handle => _hwnd;
-    public Func<bool>? BeginEditing;
-    public Action<string>? DraftChanged;
-    public Action? ReturnRequested, EscapeRequested, RegenerateRequested, ExcludeRequested, LanguageRequested;
+    public Func<bool>? BeginEditing
+    {
+        get; set;
+    }
+    public Action<string>? DraftChanged
+    {
+        get; set;
+    }
+    public Action? ReturnRequested
+    {
+        get; set;
+    }
+    public Action? EscapeRequested
+    {
+        get; set;
+    }
+    public Action? RegenerateRequested
+    {
+        get; set;
+    }
+    public Action? ExcludeRequested
+    {
+        get; set;
+    }
+    public Action? LanguageRequested
+    {
+        get; set;
+    }
     public bool EditingComposition => _composing;
+    public void Configure(UserSettings settings) => UiTheme.Apply(settings.Theme);
     public OverlayWindow(bool automationTest = false)
     {
         _automationTest = automationTest;
@@ -281,7 +309,7 @@ internal sealed class OverlayWindow : Window
     }
     private void Position(InputSnapshot source, bool idle)
     {
-        double scale = Math.Max(1, Native.GetDpiForWindow((nint)source.Target.RootHwnd) / 96.0);
+        double scale = Math.Max(1, Native.GetDpiForWindow((nint)source.Target.AsWindows().RootHwnd) / 96.0);
         _panelWidth = idle ? 140 : Math.Clamp(source.Bounds.Width / scale, 320, 520);
         _editor.MaxHeight = _expanded ? 360 : 160;
         var measure = new FormattedText(_editor.Text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,

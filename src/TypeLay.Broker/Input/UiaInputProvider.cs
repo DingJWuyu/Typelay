@@ -1,3 +1,4 @@
+using TypeLay.Windows.Contracts;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -57,9 +58,10 @@ internal sealed class UiaInputProvider : IDisposable
             return Unavailable(request);
         nint root = foreground;
         bool inDocument = false, rootSeen = false;
-        bool sameBinding = _previous is { } previous && previous.Target.ProcessId == info.ProcessId
-            && previous.Target.ProcessStartUtcTicks == start && previous.Target.RootHwnd == (long)root
-            && previous.Target.ElementToken == token;
+        var previousTarget = _previous?.Target.AsWindows();
+        bool sameBinding = previousTarget is { } previous && previous.ProcessId == info.ProcessId
+            && previous.ProcessStartUtcTicks == start && previous.RootHwnd == (long)root
+            && previous.ElementToken == token;
         var parent = sameBinding ? null : element;
         rootSeen = sameBinding;
         for (int i = 0; i < 28 && parent is not null; i++)
@@ -100,7 +102,7 @@ internal sealed class UiaInputProvider : IDisposable
                 windowRect.Bottom - windowRect.Top)))
             return Unavailable(request);
         var idBytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{info.ProcessId}/{start}/{root}/{token}"));
-        var id = new TargetId(info.ProcessId, start, (long)root, info.NativeWindowHandle,
+        var id = new WindowsTarget(info.ProcessId, start, (long)root, info.NativeWindowHandle,
             value is null ? "uia-text-preview-v2" : "uia-value-text-v2", token, new Guid(idBytes.AsSpan(0, 16)));
         if (request.CaptureDirect && _edits.Capture(id, bounds, _inputEpoch, _focusEpoch) is { } direct)
         {
@@ -208,6 +210,8 @@ internal sealed class UiaInputProvider : IDisposable
         TraceWrite("start", request, writeAt);
         if (request.Plan is not { } plan || Environment.TickCount64 > request.ExpiresAtMs)
             return new(WriteStatus.RejectedBeforeMutation, Denial.StaleObservation);
+        if (!WindowsTarget.TryDecode(plan.Expected.Target, out var target))
+            return new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged);
         bool mutation = false;
         try
         {
@@ -221,24 +225,24 @@ internal sealed class UiaInputProvider : IDisposable
             Denial reason = WriteSafety.Validate(plan, fresh, Environment.TickCount64);
             if (reason != Denial.None)
                 return new(WriteStatus.RejectedBeforeMutation, reason);
-            if (_element is null || GetForegroundWindow() != (nint)plan.Expected.Target.RootHwnd)
+            if (_element is null || GetForegroundWindow() != (nint)target.RootHwnd)
                 return new(WriteStatus.RejectedBeforeMutation, Denial.EpochChanged);
-            if (plan.Expected.Target.Provider != NativeEditTransactions.Provider
-                && _native.Composition((nint)plan.Expected.Target.RootHwnd) != ImeState.Clear)
+            if (target.Provider != NativeEditTransactions.Provider
+                && _native.Composition((nint)target.RootHwnd) != ImeState.Clear)
                 return new(WriteStatus.RejectedBeforeMutation, Denial.ImeUnclear);
             TraceWrite("ime-checked", request, writeAt);
             if (Environment.TickCount64 > request.ExpiresAtMs)
                 return new(WriteStatus.RejectedBeforeMutation, Denial.StaleObservation);
-            if (string.Join('.', AutomationElement.FocusedElement.GetRuntimeId()) != plan.Expected.Target.ElementToken)
+            if (string.Join('.', AutomationElement.FocusedElement.GetRuntimeId()) != target.ElementToken)
                 return new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged);
-            if (plan.Expected.Target.Provider == NativeEditTransactions.Provider)
+            if (target.Provider == NativeEditTransactions.Provider)
             {
                 var nativeReceipt = _edits.Write(plan);
                 return nativeReceipt.Status == WriteStatus.OutcomeUnknown ? Unknown(plan) : nativeReceipt;
             }
             // Text-only editors can preview but SetValue must never flatten their
             // formatting. Acceptance is granted only to a value-backed target.
-            if (!string.Equals(plan.Expected.Target.Provider, "uia-value-text-v2", StringComparison.Ordinal))
+            if (!string.Equals(target.Provider, "uia-value-text-v2", StringComparison.Ordinal))
                 return new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported);
             // An exact-target UIA operation; no clipboard, SendInput, Enter or select-all keystrokes.
             var value = (ValuePattern)_element.GetCurrentPattern(ValuePattern.Pattern);
@@ -269,7 +273,8 @@ internal sealed class UiaInputProvider : IDisposable
     public WriteReceipt WriteDirect(BrokerRequest request)
     {
         if (request.Plan is not { } plan || request.BoundTarget != plan.Expected.Target
-            || plan.Expected.Target.Provider != NativeEditTransactions.Provider || !plan.Expected.DirectWriteSupported)
+            || !WindowsTarget.TryDecode(plan.Expected.Target, out var target)
+            || target.Provider != NativeEditTransactions.Provider || !plan.Expected.DirectWriteSupported)
             return new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported);
         long now = Environment.TickCount64;
         var basis = plan.Expected with
@@ -279,7 +284,6 @@ internal sealed class UiaInputProvider : IDisposable
         Denial validity = WriteSafety.Validate(plan, basis, now);
         if (validity != Denial.None || plan.Scope != basis.TranslationScope)
             return new(WriteStatus.RejectedBeforeMutation, validity == Denial.None ? Denial.BadPlan : validity);
-        var target = basis.Target;
         bool dispatched = false;
         try
         {
@@ -331,20 +335,21 @@ internal sealed class UiaInputProvider : IDisposable
     }
     private WriteReceipt Unknown(WritePlan plan)
     {
-        var t = plan.Expected.Target;
+        var t = plan.Expected.Target.AsWindows();
         _quarantine.Add((t.ProcessId, t.ProcessStartUtcTicks, t.ElementToken));
         return new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
     }
     public bool ReturnToSource(TargetId? target)
     {
-        if (target is null || _previous?.Target != target || _element is null)
+        if (target is null || _previous?.Target != target || _element is null
+            || !WindowsTarget.TryDecode(target.Value, out var binding))
             return false;
-        if (string.Join('.', _element.GetRuntimeId()) != target.Value.ElementToken)
+        if (string.Join('.', _element.GetRuntimeId()) != binding.ElementToken)
             return false;
-        if (GetForegroundWindow() != (nint)target.Value.RootHwnd && !SetForegroundWindow((nint)target.Value.RootHwnd))
+        if (GetForegroundWindow() != (nint)binding.RootHwnd && !SetForegroundWindow((nint)binding.RootHwnd))
             return false;
         _element.SetFocus();
-        return string.Join('.', AutomationElement.FocusedElement.GetRuntimeId()) == target.Value.ElementToken;
+        return string.Join('.', AutomationElement.FocusedElement.GetRuntimeId()) == binding.ElementToken;
     }
     public void Clear(TargetId? expected = null)
     {

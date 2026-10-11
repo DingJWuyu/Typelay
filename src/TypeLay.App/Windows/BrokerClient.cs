@@ -1,3 +1,4 @@
+using TypeLay.Windows.Contracts;
 using System.Security.Cryptography;
 using TypeLay.Core;
 using TypeLay.Protocol;
@@ -18,7 +19,7 @@ internal sealed class BrokerClient : IInputBroker
         var start = AppPaths.Child("TypeLay.Broker");
         start.Environment["TYPELAY_PIPE_TOKEN"] = _token;
         _child = new ChildProcess(start);
-        var hello = await CallAsync(new(Wire.Version, 0, "hello", ""), TimeSpan.FromSeconds(15));
+        var hello = await CallAsync(new(BrokerProtocol.Version, 0, "hello", ""), TimeSpan.FromSeconds(15));
         if (hello.Status != "ready")
         {
             Stop();
@@ -39,7 +40,7 @@ internal sealed class BrokerClient : IInputBroker
                 Token = _token
             }, cancellation.Token);
             var response = await Wire.ReadAsync<BrokerResponse>(child.Process.StandardOutput.BaseStream, cancellation.Token);
-            if (response.Version != Wire.Version || response.Id != id)
+            if (response.Version != BrokerProtocol.Version || response.Id != id)
                 throw new IOException("broker-sequence");
             return response;
         }

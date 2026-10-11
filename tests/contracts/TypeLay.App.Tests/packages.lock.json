@@ -166,8 +166,9 @@
       "typelay.app": {
         "type": "Project",
         "dependencies": {
-          "TypeLay.Core": "[0.2.0-dev, )",
-          "TypeLay.Protocol": "[0.2.0-dev, )"
+          "TypeLay.Protocol": "[0.2.0-dev, )",
+          "TypeLay.Runtime": "[0.2.0-dev, )",
+          "TypeLay.Windows.Contracts": "[0.2.0-dev, )"
         }
       },
       "typelay.core": {
@@ -176,10 +177,21 @@
       "typelay.platform.windows": {
         "type": "Project",
         "dependencies": {
-          "TypeLay.Core": "[0.2.0-dev, )"
+          "TypeLay.Core": "[0.2.0-dev, )",
+          "TypeLay.Windows.Contracts": "[0.2.0-dev, )"
         }
       },
       "typelay.protocol": {
+        "type": "Project"
+      },
+      "typelay.runtime": {
+        "type": "Project",
+        "dependencies": {
+          "TypeLay.Core": "[0.2.0-dev, )",
+          "TypeLay.Protocol": "[0.2.0-dev, )"
+        }
+      },
+      "typelay.windows.contracts": {
         "type": "Project",
         "dependencies": {
           "TypeLay.Core": "[0.2.0-dev, )"

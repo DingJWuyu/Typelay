@@ -5,6 +5,7 @@
 ## 自动化层级
 
 `dev.ps1 check` 验证构建、标准 xUnit 行为/契约测试、Python 行为/启动测试和格式/lint。
+`dev.ps1 shared-check` 在普通 .NET 与 Python 环境执行共享核心、生产会话编排、协议及 worker 回归，不运行 WPF、UIA、Hook 或模型推理。
 `dev.ps1 pack` 生成真实自包含 ZIP，再运行分发与进程 E2E。该流程不装模型、不打开用户文档、不通过假翻译器伪造 ready 状态。
 `dev.ps1 native-e2e` 需要已解锁桌面，验证受控 Win32 适配器的读写、选区、拒绝与零提交契约。它同时约束 Hook 测试依赖的字段后端；前置条件失败是未执行，不是通过。
 

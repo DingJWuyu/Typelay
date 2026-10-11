@@ -10,7 +10,8 @@
     <AssemblyName>TypeLay.App</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../TypeLay.Core/TypeLay.Core.csproj" />
+    <ProjectReference Include="../TypeLay.Windows.Contracts/TypeLay.Windows.Contracts.csproj" />
+    <ProjectReference Include="../TypeLay.Runtime/TypeLay.Runtime.csproj" />
     <ProjectReference Include="../TypeLay.Protocol/TypeLay.Protocol.csproj" />
   </ItemGroup>
   <ItemGroup>

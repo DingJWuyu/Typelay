@@ -5,7 +5,8 @@
 ## 选择可观察边界
 
 - behavior/TypeLay.Core.Tests：Session/AcceptanceGate/WriteSafety 的公开操作序列，尤其预览与接受资格分离、输入版本、人工草稿、字段策略、UTF-16 选区映射和拒绝条件。时间显式传入，不用 sleep。
-- contracts/TypeLay.Protocol.Tests：真实帧序列化与非法输入拒绝。标准 xUnit Facts/Theories 由 dotnet test 发现，不维护自制注册表或测试执行器。
+- behavior/TypeLay.Runtime.Tests：通过宿主端口驱动生产控制器，覆盖工作模式、直接任务、异步失效、人工草稿和缺失能力；真实临时文件验证设置。确定性时钟不使用 sleep，受控端口不是桌面或真实模型的证据。
+- contracts/TypeLay.Protocol.Tests：真实帧序列化、Windows 不透明目标编解码与非法输入拒绝。标准 xUnit Facts/Theories 由 dotnet test 发现，不维护自制注册表或测试执行器。
 - worker/：协议、文本结构和真实隔离进程的启动失败。无模型依赖；翻译器替身只能验证结构保留，不能证明语言质量或真实推理成功。
 - e2e/test_distribution.py：解压实际 ZIP 到含空格和中文的新目录，再启动真实 App/Broker/worker 入口。通过公开管道验证生命周期、鉴权、拒绝和隐私，不调用 Broker 私有成员。
 - e2e/TypeLay.Native.Tests 与 support/TypeLay.Platform.Windows：验证 Hook 工具依赖的受控 Win32 字段适配器契约，不是生产 UIA、物理按键或真实 IME 验收。

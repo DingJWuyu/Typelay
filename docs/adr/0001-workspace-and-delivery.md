@@ -5,7 +5,7 @@ Scope: workspace boundaries, developer workflow and distribution.
 
 ## Decision
 
-`TypeLay.slnx` 是 .NET 工作区，`src/` 只包含生产组件。App 内按应用编排、基础设施、Windows 和 UI 划分职责，避免为目录或测试便利另建生产项目。
+`TypeLay.slnx` 是 .NET 工作区，`src/` 只包含生产组件。Windows App 保留基础设施、Windows 和 UI；跨平台产品编排已由 ADR-0003 明确迁入 TypeLay.Runtime。仅在有实际职责与依赖隔离需要时建立生产项目，不为目录或测试便利拆分。
 
 `tests/` 按可观察边界划分 behavior、contracts、e2e、fixtures 和 support。纯逻辑使用标准 xUnit；发布包和 Broker 协议通过真实子进程验证；受控桌面工具用于定位 Hook、焦点和编辑问题，但不代替生产 UIA 验收。
 

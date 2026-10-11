@@ -1,11 +1,18 @@
 using System.Diagnostics;
 using TypeLay.Core;
 using TypeLay.Protocol;
-namespace TypeLay.App;
+namespace TypeLay.Runtime;
 
-internal sealed class ModelClient : IDisposable
+public sealed class ModelClient : ITranslationService, IDisposable
 {
-    private ChildProcess? _child;
+    private IChildProcess? _child;
+    private readonly ModelRuntimePaths _paths;
+    private readonly Func<ProcessStartInfo, IChildProcess> _startProcess;
+    public ModelClient(ModelRuntimePaths paths, Func<ProcessStartInfo, IChildProcess> startProcess)
+    {
+        _paths = paths;
+        _startProcess = startProcess;
+    }
     private readonly SemaphoreSlim _serial = new(1, 1);
     private long _id;
     public bool Ready
@@ -18,14 +25,14 @@ internal sealed class ModelClient : IDisposable
     }
     public string Status { get; private set; } = "未安装本地模型";
     public event Action? Changed;
-    public bool Installed => File.Exists(AppPaths.Python) && File.Exists(Path.Combine(AppPaths.Models, "installed.json"));
+    public bool Installed => File.Exists(_paths.Python) && File.Exists(Path.Combine(_paths.Models, "installed.json"));
     public async Task StartAsync()
     {
         if (_child is not null || !Installed)
             return;
         Status = "正在准备翻译";
         Changed?.Invoke();
-        var info = new ProcessStartInfo(AppPaths.Python)
+        var info = new ProcessStartInfo(_paths.Python)
         {
             UseShellExecute = false,
             CreateNoWindow = true,
@@ -35,14 +42,14 @@ internal sealed class ModelClient : IDisposable
         };
         info.ArgumentList.Add("-I");
         info.ArgumentList.Add("-B");
-        info.ArgumentList.Add(AppPaths.Worker);
+        info.ArgumentList.Add(_paths.Worker);
         info.ArgumentList.Add("--models");
-        info.ArgumentList.Add(AppPaths.Models);
+        info.ArgumentList.Add(_paths.Models);
         info.Environment["PYTHONUTF8"] = "1";
         info.Environment["OMP_NUM_THREADS"] = Math.Max(1, Math.Min(4, Environment.ProcessorCount / 2)).ToString();
         try
         {
-            _child = new ChildProcess(info);
+            _child = _startProcess(info);
             var response = await ExchangeAsync(new(0, "hello"), TimeSpan.FromSeconds(120));
             Ready = response.Status == "ready";
             Status = Ready ? "本地翻译已就绪" : "模型无法加载（请检查本地组件）";

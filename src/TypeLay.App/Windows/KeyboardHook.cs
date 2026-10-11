@@ -1,24 +1,26 @@
+using TypeLay.Runtime;
+using TypeLay.Windows.Contracts;
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using TypeLay.Core;
 namespace TypeLay.App;
 
-internal sealed record InputNotice(string Kind, AcceptancePermit? Permit = null, long AcceptedAtMs = 0,
-    long UserEpoch = 0, long ForegroundEpoch = 0, InputSnapshot? Source = null, Guid CommandGeneration = default);
-internal sealed record HookLease(InputSnapshot Source, long UserEpoch, long ForegroundEpoch, bool EscapeAllowed);
 internal sealed record ShortcutConfiguration(Guid Generation, RegisteredShortcut[] Bindings);
-internal sealed record ShortcutLease(InputSnapshot Source, long ContentEpoch, long ForegroundEpoch);
-internal sealed class KeyboardHook : IDisposable
+internal sealed class KeyboardHook : IInputMonitor
 {
     private readonly AcceptanceGate _gate;
+    private readonly OnDemandHotkeys _hotkeys;
     private readonly bool _allowInjectedInput;
     private readonly nint _editorHwnd;
     private readonly ConcurrentQueue<InputNotice> _notices = new();
     private readonly Thread _thread;
     private readonly Native.HookProc _callback, _mouseCallback;
     private readonly Native.WinEventProc _focusCallback;
+    // Decode at the publication boundary, never allocate or parse an identity inside a hook callback.
+    private sealed record HookLease(InputLease Observation, nint RootHwnd);
+    private sealed record HotkeyLease(ShortcutLease Observation, nint RootHwnd);
     private HookLease? _lease;
-    private ShortcutLease? _shortcutLease;
+    private HotkeyLease? _shortcutLease;
     private ShortcutConfiguration _shortcuts = new(Guid.NewGuid(), []);
     private long _contentEpoch;
     private uint _mouseButtons;
@@ -35,10 +37,27 @@ internal sealed class KeyboardHook : IDisposable
     public long WindowEpoch => Interlocked.Read(ref _windowEpoch);
     private volatile bool _ready;
     public bool Ready => _ready;
+    public bool CanInterceptAcceptance => Ready;
+    public string ShortcutStatus => _hotkeys.Status;
+    public void ConfigureShortcuts(bool enabled, string wake, string direct)
+    {
+        SetShortcuts([]);
+        _hotkeys.Configure(enabled, wake, direct);
+        SetShortcuts(_hotkeys.Bindings);
+    }
+    public FocusMember GetFocus(TargetId target)
+    {
+        if (!WindowsTarget.TryDecode(target, out var native))
+            return FocusMember.Other;
+        nint foreground = Native.GetForegroundWindow();
+        return foreground == (nint)native.RootHwnd ? FocusMember.Source
+            : foreground == _editorHwnd && _editorHwnd != 0 ? FocusMember.Overlay : FocusMember.Other;
+    }
     public bool ShortcutsReady => _ready && _mouseHook != 0;
     public KeyboardHook(bool allowInjectedInput = false, nint editorHwnd = 0)
     {
         _editorHwnd = editorHwnd;
+        _hotkeys = new OnDemandHotkeys(editorHwnd);
         _allowInjectedInput = allowInjectedInput;
         _gate = new(allowInjectedInput);
         _callback = OnKey;
@@ -53,15 +72,21 @@ internal sealed class KeyboardHook : IDisposable
         _thread = new Thread(Run) { IsBackground = true, Name = "TypeLay.Input" };
         _thread.Start();
     }
-    public void Publish(HookLease lease, AcceptancePermit? permit)
+    public void Publish(InputLease lease, AcceptancePermit? permit)
     {
-        Interlocked.Exchange(ref _lease, lease);
+        if (!WindowsTarget.TryDecode(lease.Source.Target, out var target))
+        {
+            Revoke();
+            return;
+        }
+        Interlocked.Exchange(ref _lease, new(lease, (nint)target.RootHwnd));
         if (permit is not null)
             _gate.Publish(permit);
         else
             _gate.Revoke();
     }
-    public void PublishShortcut(ShortcutLease lease) => Interlocked.Exchange(ref _shortcutLease, lease);
+    public void PublishShortcut(ShortcutLease lease) => Interlocked.Exchange(ref _shortcutLease,
+        WindowsTarget.TryDecode(lease.Source.Target, out var target) ? new(lease, (nint)target.RootHwnd) : null);
     public void SetShortcuts(RegisteredShortcut[] shortcuts)
     {
         Interlocked.Exchange(ref _shortcuts, new(Guid.NewGuid(), shortcuts));
@@ -123,11 +148,12 @@ internal sealed class KeyboardHook : IDisposable
             TryInvokeShortcut(data.Key, repeated, injected);
             Interlocked.Increment(ref _contentEpoch);
         }
-        var lease = Volatile.Read(ref _lease);
+        var binding = Volatile.Read(ref _lease);
+        var lease = binding?.Observation;
         long now = Environment.TickCount64;
         bool fresh = lease is not null && lease.UserEpoch == UserEpoch && lease.ForegroundEpoch == ForegroundEpoch
             && now >= lease.Source.ObservedAtMs && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
-        bool source = fresh && Native.GetForegroundWindow() == (nint)lease!.Source.Target.RootHwnd;
+        bool source = fresh && Native.GetForegroundWindow() == (nint)binding!.RootHwnd;
         if (data.Key == 9)
         {
             var decision = _gate.ProcessTab(down, new(lease?.Source.Target, source,
@@ -184,11 +210,12 @@ internal sealed class KeyboardHook : IDisposable
     {
         if (!ShortcutsReady || repeated || (injected && !_allowInjectedInput) || _keys[0x5B] || _keys[0x5C])
             return;
-        var lease = Volatile.Read(ref _shortcutLease);
+        var nativeLease = Volatile.Read(ref _shortcutLease);
+        var lease = nativeLease?.Observation;
         long now = Environment.TickCount64;
         if (lease is null || lease.ContentEpoch != ContentEpoch || lease.ForegroundEpoch != ForegroundEpoch
             || now < lease.Source.ObservedAtMs || now - lease.Source.ObservedAtMs > Limits.ObservationMaxAgeMs
-            || Native.GetForegroundWindow() != (nint)lease.Source.Target.RootHwnd
+            || Native.GetForegroundWindow() != (nint)nativeLease!.RootHwnd
             || lease.Source.Access != FieldAccess.Supported)
             return;
         var configuration = Volatile.Read(ref _shortcuts);
@@ -225,6 +252,7 @@ internal sealed class KeyboardHook : IDisposable
     }
     public void Dispose()
     {
+        _hotkeys.Dispose();
         Revoke();
         if (_threadId != 0)
             Native.PostThreadMessageW(_threadId, 0x12, 0, 0);

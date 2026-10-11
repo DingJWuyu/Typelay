@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('help', 'restore', 'build', 'test', 'check', 'format', 'pack', 'run', 'e2e', 'native-e2e')]
+    [ValidateSet('help', 'restore', 'build', 'test', 'check', 'shared-check', 'format', 'pack', 'run', 'e2e', 'native-e2e')]
     [string]$Task = 'help',
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release'
@@ -35,9 +35,17 @@ function Test-Workspace {
         '--logger', 'trx', '--results-directory', (Join-Path $artifacts 'test-results'))
     Invoke-Checked python @('-m', 'unittest', 'discover', '-s', 'tests/worker', '-v')
 }
+function Test-Shared {
+    foreach ($project in @('tests/behavior/TypeLay.Core.Tests', 'tests/behavior/TypeLay.Runtime.Tests',
+            'tests/contracts/TypeLay.Protocol.Tests')) {
+        Invoke-Checked dotnet @('test', $project, '-c', $Configuration, '-p:RestoreLockedMode=true',
+            '--logger', 'trx', '--results-directory', (Join-Path $artifacts 'shared-test-results'))
+    }
+    Invoke-Checked python @('-m', 'unittest', 'discover', '-s', 'tests/worker', '-v')
+}
 function Publish-Distribution([bool]$SelfContained) {
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitProcess) {
-        throw 'Publishing requires Windows x64. Pure Core/Protocol tests can run on other platforms.'
+        throw 'Publishing requires Windows x64. Use shared-check for portable behavior and protocol tests.'
     }
     $base = if ($SelfContained) { 'package' } else { 'dev' }
     $stage = Join-Path $artifacts "$base/TypeLay"
@@ -102,14 +110,16 @@ Push-Location $root
 try {
     switch ($Task) {
         help {
-            Write-Output 'Usage: ./dev.ps1 <restore|build|test|check|format|pack|run|e2e|native-e2e> [-Configuration Debug|Release]'
+            Write-Output 'Usage: ./dev.ps1 <restore|build|test|check|shared-check|format|pack|run|e2e|native-e2e> [-Configuration Debug|Release]'
             Write-Output 'check: build, behavior/contract tests, Python tests, compiler/analyzer checks and formatting.'
+            Write-Output 'shared-check: portable Core/Runtime/Protocol and worker tests; no Windows desktop or model installation.'
             Write-Output 'pack: self-contained Windows distribution, checksum and relocated-package/process E2E.'
             Write-Output 'native-e2e: controlled Win32 fixture adapter contracts; requires an unlocked Windows desktop.'
         }
         restore { Restore-Workspace }
         build { Build-Workspace }
         test { Test-Workspace }
+        shared-check { Test-Shared }
         check {
             Test-Workspace
             Invoke-Checked dotnet @('format', 'TypeLay.slnx', '--verify-no-changes', '--no-restore')

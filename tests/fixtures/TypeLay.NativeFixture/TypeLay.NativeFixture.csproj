@@ -3,6 +3,7 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
+    <ProjectReference Include="../../../src/TypeLay.Runtime/TypeLay.Runtime.csproj" />
     <ProjectReference Include="../../support/TypeLay.Platform.Windows/TypeLay.Platform.Windows.csproj" />
   </ItemGroup>
   <ItemGroup>

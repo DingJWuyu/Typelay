@@ -1,3 +1,5 @@
+using TypeLay.Runtime;
+using TypeLay.Windows.Contracts;
 using System.IO;
 using System.Runtime.ExceptionServices;
 using System.Windows;
@@ -29,22 +31,22 @@ public sealed class SettingsRenderingTests
             {
                 application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
                 UiTheme.Initialize("light");
-                var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
-                using var model = new ModelClient(); // No model is started or downloaded by this UI test.
+                var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
+                using var model = WindowsRuntime.CreateModel(); // No model is started or downloaded by this UI test.
                 var window = new SettingsWindow(settings, model, () => { });
                 window.ShowPage();
                 window.UpdateLayout();
                 var modes = Descendants(window).OfType<ComboBox>()
                     .Single(control => AutomationProperties.GetName(control) == "工作模式");
                 modes.SelectedIndex = 1;
-                Assert.Equal(WorkMode.OnDemand, new SettingsStore(Path.Combine(directory, "settings.json")).Value.Mode);
+                Assert.Equal(WorkMode.OnDemand, WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json")).Value.Mode);
                 window.ShowPage("shortcuts");
                 window.UpdateLayout();
                 Descendants(window).OfType<TextBox>().Single(control => AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键").Text = "Ctrl+Shift+K";
                 Descendants(window).OfType<TextBox>().Single(control => AutomationProperties.GetName(control) == "直接翻译并替换快捷键").Text = "Alt+F8";
                 Descendants(window).OfType<Button>().Single(control => Equals(control.Content, "保存按需快捷键"))
                     .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                var saved = new SettingsStore(Path.Combine(directory, "settings.json")).Value;
+                var saved = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json")).Value;
                 Assert.Equal("Ctrl+Shift+K", saved.WakeShortcut);
                 Assert.Equal("Alt+F8", saved.DirectShortcut);
                 foreach (string theme in new[] { "light", "dark" })
@@ -129,10 +131,10 @@ public sealed class SettingsRenderingTests
 
     private static void VerifyEmptyFieldCapsule(Window sourceWindow, UserSettings settings)
     {
-        var target = new TargetId(Environment.ProcessId, 1, (long)new WindowInteropHelper(sourceWindow).Handle,
+        var target = new WindowsTarget(Environment.ProcessId, 1, (long)new WindowInteropHelper(sourceWindow).Handle,
             1, "rendering-fixture", "empty-field", Guid.NewGuid());
         var source = new InputSnapshot(target, "", new TextRange(0, 0), new RectPx(100, 200, 400, 40),
-            false, FieldAccess.Supported, ImeState.Clear, 1000, 1, 1);
+            false, FieldAccess.Supported, ImeState.Clear, 1000, 1, 1, WriteSupported: true);
         var session = new Session(settings.Direction);
         var overlay = new OverlayWindow();
         try

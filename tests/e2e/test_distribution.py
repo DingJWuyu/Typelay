@@ -33,7 +33,7 @@ def responses(data: bytes) -> list[dict]:
 
 
 def request(identifier: int, operation: str, **changes) -> dict:
-    return {"version": 1, "id": identifier, "op": operation, "token": TOKEN, **changes}
+    return {"version": 2, "id": identifier, "op": operation, "token": TOKEN, **changes}
 
 
 class DistributionTests(unittest.TestCase):
@@ -98,6 +98,9 @@ class DistributionTests(unittest.TestCase):
             "app/TypeLay.Broker.exe",
             "app/TypeLay.Core.dll",
             "app/TypeLay.Protocol.dll",
+            "app/TypeLay.Runtime.dll",
+            "app/TypeLay.Windows.Contracts.dll",
+            "app/TypeLay.NativeInput.dll",
             "app/coreclr.dll",
             "worker/run_worker.py",
             "worker/typelay_worker/engine.py",
@@ -193,8 +196,8 @@ class DistributionTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "win32", "Production Windows broker")
     def test_direct_write_is_rejected_without_falling_back_to_foreground_mutation(self):
-        # The production backend has no coordinated writer. This is a refusal
-        # contract, not evidence of successful UIA or background replacement.
+        # A request without a bound plan must not fall back to the foreground.
+        # Qualified stock Edit targets have a separate coordinated native writer.
         result = self.broker(frame(request(1, "direct-write")) + frame(request(2, "quit")))
         self.assertEqual(result.returncode, 0, result.stderr)
         replies = responses(result.stdout)
@@ -219,7 +222,7 @@ class DistributionTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "win32", "Production Windows broker")
     def test_broker_rejects_wrong_authentication_and_version(self):
-        for change in ({"token": "2" * 64}, {"version": 2}):
+        for change in ({"token": "2" * 64}, {"version": 1}):
             with self.subTest(change=change):
                 result = self.broker(frame(request(1, "hello", **change)))
                 self.assertEqual(result.returncode, 3)

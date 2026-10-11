@@ -167,6 +167,9 @@
         "type": "Project"
       },
       "typelay.protocol": {
+        "type": "Project"
+      },
+      "typelay.windows.contracts": {
         "type": "Project",
         "dependencies": {
           "TypeLay.Core": "[0.2.0-dev, )"

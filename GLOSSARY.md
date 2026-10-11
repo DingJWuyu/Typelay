@@ -4,7 +4,7 @@
 
 ## Language
 
-**源字段 / Source field**：用户当前操作的外部文本输入目标，由进程、窗口、元素令牌和生命周期共同标识。_Avoid_: 仅用应用名表示目标。
+**源字段 / Source field**：用户当前操作的外部文本输入目标，由后端拥有的不透明身份与生命周期共同标识。共享逻辑只比较身份；进程、窗口、元素令牌等绑定由平台解释。_Avoid_: 仅用应用名表示目标。
 
 **只读预览 / Preview**：允许展示但尚未获得接受资格的译文。可能来自较旧输入或未确认的输入法观察。_Avoid_: 可写候选、已确认译文。
 
@@ -16,6 +16,6 @@
 
 **接受许可 / AcceptancePermit**：短期、可撤销且只能消费一次的 Tab 接受资格。焦点、输入版本、输入法状态或时效变化使其失效。_Avoid_: 永久授权。
 
-**生产 Broker**：拥有真实 UI Automation 对象与标准输入输出协议的独立进程。_Avoid_: BrowserProvider、fixture broker。
+**生产 Broker**：Windows 上拥有真实 UI Automation 对象与标准输入输出协议的独立进程。其它平台的输入实现不必复制该进程协议。_Avoid_: BrowserProvider、fixture broker。
 
 **实验写回 / Experimental writeback**：默认关闭、仍受 B-01 竞态限制的写回能力。_Avoid_: 已安全支持通用输入。

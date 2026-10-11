@@ -1,3 +1,4 @@
+using TypeLay.Runtime;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
@@ -54,11 +55,11 @@ internal static class Program
         };
         app.Startup += async (_, _) =>
         {
-            var settings = new SettingsStore();
+            var settings = WindowsRuntime.CreateSettings();
             UiTheme.Initialize(settings.Value.Theme);
-            model = new ModelClient();
+            model = WindowsRuntime.CreateModel();
             var overlay = new OverlayWindow(automationTest);
-            session = new SessionController(settings, model, overlay, automationTest);
+            session = WindowsRuntime.CreateSession(settings, model, overlay, automationTest);
             void Tutorial()
             {
                 session.StopSession();

@@ -1,3 +1,4 @@
+using TypeLay.Windows.Contracts;
 using TypeLay.Protocol;
 namespace TypeLay.App;
 

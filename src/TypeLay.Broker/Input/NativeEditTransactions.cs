@@ -1,3 +1,4 @@
+using TypeLay.Windows.Contracts;
 using System.Diagnostics;
 using System.IO;
 using System.IO.MemoryMappedFiles;
@@ -18,10 +19,10 @@ internal sealed class NativeEditTransactions : IDisposable
     private readonly Dictionary<uint, nint> _hooks = new();
     private nint _library, _procedure;
     private uint _message;
-    private sealed record Binding(TargetId Original, TargetId Target, ulong Cookie, uint Thread, long TouchedAt, bool Initialized = false);
+    private sealed record Binding(WindowsTarget Original, WindowsTarget Target, ulong Cookie, uint Thread, long TouchedAt, bool Initialized = false);
     private sealed record Result(uint Status, Denial Reason, string Text, TextRange Selection, bool Multiline, ImeState Ime);
 
-    public InputSnapshot? Capture(TargetId identity, RectPx bounds, long inputEpoch, long focusEpoch)
+    public InputSnapshot? Capture(WindowsTarget identity, RectPx bounds, long inputEpoch, long focusEpoch)
     {
         Prune();
         var binding = Bind(identity);
@@ -43,12 +44,12 @@ internal sealed class NativeEditTransactions : IDisposable
             return null;
         return new(binding.Target, result.Text, result.Selection, bounds, result.Multiline,
             FieldAccess.Supported, result.Ime, Environment.TickCount64, inputEpoch, focusEpoch,
-            DirectWriteSupported: true);
+            WriteSupported: true, DirectWriteSupported: true);
     }
 
     public WriteReceipt Write(WritePlan plan)
     {
-        if (!_bindings.TryGetValue(plan.Expected.Target.ControlHwnd, out var binding)
+        if (!_bindings.TryGetValue(plan.Expected.Target.AsWindows().ControlHwnd, out var binding)
             || binding.Target != plan.Expected.Target)
             return new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged);
         using var process = Process.GetProcessById(binding.Target.ProcessId);
@@ -68,7 +69,7 @@ internal sealed class NativeEditTransactions : IDisposable
         });
     }
 
-    private Binding? Bind(TargetId identity)
+    private Binding? Bind(WindowsTarget identity)
     {
         if (!Environment.Is64BitProcess || identity.ControlHwnd == 0)
             return null;

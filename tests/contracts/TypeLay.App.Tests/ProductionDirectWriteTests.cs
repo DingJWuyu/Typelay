@@ -1,3 +1,4 @@
+using TypeLay.Windows.Contracts;
 using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
@@ -61,7 +62,7 @@ public sealed class ProductionDirectWriteTests
                 await Focus(a);
                 N.SendString(a, N.WM_SETTEXT, text);
                 N.Send(a, N.EM_SETSEL, (nuint)selection.Start, (nint)selection.End);
-                var reply = await Call(new(Wire.Version, 0, "capture", "", CaptureDirect: true));
+                var reply = await Call(new(BrokerProtocol.Version, 0, "capture", "", CaptureDirect: true));
                 Assert.NotNull(reply.Snapshot);
                 Assert.True(reply.Snapshot.DirectWriteSupported,
                     "The production source must advertise a coordinated writer before direct translation is allowed.");
@@ -78,11 +79,11 @@ public sealed class ProductionDirectWriteTests
             }
             async Task<WriteReceipt> Write(WritePlan plan)
             {
-                var reply = await Call(new(Wire.Version, 0, "direct-write", "", BoundTarget: plan.Expected.Target, Plan: plan));
+                var reply = await Call(new(BrokerProtocol.Version, 0, "direct-write", "", BoundTarget: plan.Expected.Target, Plan: plan));
                 Assert.NotNull(reply.Receipt);
                 return reply.Receipt;
             }
-            await Call(new(Wire.Version, 0, "hello", ""));
+            await Call(new(BrokerProtocol.Version, 0, "hello", ""));
             N.SendString(b, N.WM_SETTEXT, "B must remain unchanged");
             var source = await Capture("A🙂你好Z", new(3, 5));
             var plan = Plan(source, "Hello");
@@ -112,7 +113,7 @@ public sealed class ProductionDirectWriteTests
             source = await Capture("你好", new(2, 2));
             plan = Plan(source, "Hello");
             N.RemoveProp(a, "TypeLay.NativeInput.Lifetime.v1");
-            await Call(new(Wire.Version, 0, "capture", "", CaptureDirect: true));
+            await Call(new(BrokerProtocol.Version, 0, "capture", "", CaptureDirect: true));
             await Focus(b);
             Assert.Equal(WriteStatus.RejectedBeforeMutation, (await Write(plan)).Status);
             Assert.Equal("你好", N.ReadText(a, Limits.MaxTextUnits));
@@ -120,17 +121,17 @@ public sealed class ProductionDirectWriteTests
             Assert.NotEqual(source.Target.Lifetime, renewed.Target.Lifetime);
             plan = Plan(renewed, "Hello");
             await Focus(b);
-            var excluded = await Call(new(Wire.Version, 0, "direct-write", "", BoundTarget: plan.Expected.Target,
+            var excluded = await Call(new(BrokerProtocol.Version, 0, "direct-write", "", BoundTarget: plan.Expected.Target,
                 Plan: plan, Excluded: [fixture.ProcessName.ToLowerInvariant()]));
             Assert.Equal(WriteStatus.RejectedBeforeMutation, excluded.Receipt!.Status);
             Assert.Equal("你好", N.ReadText(a, Limits.MaxTextUnits));
-            await Call(new(Wire.Version, 0, "direct-clear", ""));
+            await Call(new(BrokerProtocol.Version, 0, "direct-clear", ""));
             Assert.Equal(WriteStatus.RejectedBeforeMutation, (await Write(plan)).Status);
             Assert.Equal("你好", N.ReadText(a, Limits.MaxTextUnits));
             Assert.Equal(((nint)host.RootHwnd, b), N.Focused());
             N.Send((nint)host.SubmitButtonHwnd, 0xf5);
             Assert.Equal(1, (long)N.Send((nint)host.RootHwnd, N.FixtureSubmitCount));
-            await Call(new(Wire.Version, 0, "quit", ""));
+            await Call(new(BrokerProtocol.Version, 0, "quit", ""));
             await broker.WaitForExitAsync(deadline.Token);
             Assert.Equal(0, broker.ExitCode);
         }

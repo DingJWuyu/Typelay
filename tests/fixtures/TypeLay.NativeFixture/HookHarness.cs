@@ -1,3 +1,4 @@
+using TypeLay.Windows.Contracts;
 using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Text.Json;
@@ -50,7 +51,7 @@ internal sealed class HookHarness : IDisposable
         }
         long now = Environment.TickCount64;
         var snapshot = _adapter.Capture();
-        string field = snapshot is null ? "other" : _descriptor.Fields.Single(f => f.Hwnd == snapshot.Target.ControlHwnd).Name;
+        string field = snapshot is null ? "other" : _descriptor.Fields.Single(f => f.Hwnd == snapshot.Target.AsWindows().ControlHwnd).Name;
         if (snapshot is null)
         {
             _hook.Revoke();
