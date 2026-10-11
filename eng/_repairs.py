@@ -65,3 +65,23 @@ for path in (root / 'tests/contracts/TypeLay.Protocol.Tests').glob('*Tests.cs'):
     text = re.sub(r'Wire\.WriteAsync\(stream, (request|response|snapshot)\)', r'Wire.WriteAsync(stream, \1, TestContext.Current.CancellationToken)', text)
     path.write_text(text, encoding='utf-8', newline='\n')
 rewrite('README.md', '历史报告、日志和已退休工具', '历史报告和日志')
+
+rewrite('src/TypeLay.Launcher/launcher.c', 'tools/bootstrap/build-launcher.py', 'eng/build-launcher.py')
+rewrite('docs/agents/architecture.md', 'WriteSafety 、', 'WriteSafety、')
+(root / 'docs/history/milestones/M1/workflow.yml').unlink()
+# Active guidance describes the enduring workflow, not a narrative of this migration.
+skills = root / 'docs/agents/skills.md'
+text = skills.read_text(encoding='utf-8').split('\n## 本轮采用的工作纪律')[0].rstrip()
+text = text.replace('用户本轮明确要求 setup 的配置目标已落实到根 AGENTS 的 Agent skills 区块及 issue-tracker/domain/triage-labels 文件', '项目配置位于根 AGENTS 的 Agent skills 区块及 issue-tracker/domain/triage-labels 文件')
+skills.write_text(text + '\n', encoding='utf-8', newline='\n')
+rewrite('tests/AGENTS.md', '真实帧序列化、字段策略和 UTF-16 范围映射', '真实帧序列化与非法输入拒绝')
+rewrite('tests/AGENTS.md', '人工草稿和拒绝条件。', '人工草稿、字段策略、UTF-16 选区映射和拒绝条件。')
+rewrite('src/TypeLay.Broker/Input/UiaInputProvider.cs',
+        'AutomationProperty.LookupById(30102) }) if (property is not null) cache.Add(property);',
+        '''AutomationProperty.LookupById(30102) })
+        {
+            if (property is not null)
+            {
+                cache.Add(property);
+            }
+        }''')
