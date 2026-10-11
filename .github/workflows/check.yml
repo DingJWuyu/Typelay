@@ -12,21 +12,14 @@ concurrency:
   cancel-in-progress: true
 jobs:
   shared:
+    env:
+      DOTNET_INSTALL_DIR: ${{ runner.temp }}/typelay-sdk
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Temporary checkout transfer for this refactor's network-isolated workspace.
-      # Remove these two steps after the working copy has been retrieved.
-      - name: Export tracked checkout
-        run: git archive --format=zip --output="${{ runner.temp }}/typelay-source.zip" HEAD
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: typelay-refactor-source-${{ github.sha }}
-          path: ${{ runner.temp }}/typelay-source.zip
-          retention-days: 1
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
@@ -38,6 +31,20 @@ jobs:
           dotnet test tests/behavior/TypeLay.Core.Tests -c Release -p:RestoreLockedMode=true --logger trx --results-directory artifacts/shared-test-results
           dotnet test tests/contracts/TypeLay.Protocol.Tests -c Release -p:RestoreLockedMode=true --logger trx --results-directory artifacts/shared-test-results
           PYTHONPATH=src/TypeLay.Worker python -m unittest discover -s tests/worker -v
+      # Temporary offline SDK/package transfer; remove after local verification is prepared.
+      - name: Prepare offline verification tools
+        run: |
+          dotnet restore TypeLay.slnx --locked-mode
+          mkdir -p "$RUNNER_TEMP/offline"
+          cp -a "$DOTNET_INSTALL_DIR" "$RUNNER_TEMP/offline/dotnet"
+          cp -a "$HOME/.nuget/packages" "$RUNNER_TEMP/offline/packages"
+          cp -a "$(dirname "$(readlink -f "$(command -v pwsh)")")" "$RUNNER_TEMP/offline/powershell"
+          tar -czf "$RUNNER_TEMP/typelay-toolchain.tar.gz" -C "$RUNNER_TEMP/offline" .
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: typelay-refactor-toolchain-${{ github.sha }}
+          path: ${{ runner.temp }}/typelay-toolchain.tar.gz
+          retention-days: 1
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
