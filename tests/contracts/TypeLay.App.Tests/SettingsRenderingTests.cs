@@ -7,6 +7,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using TypeLay.App;
 using TypeLay.Core;
 using Xunit;
@@ -75,14 +76,19 @@ public sealed class SettingsRenderingTests
                         scroll.ScrollToTop();
                         window.ShowPage("language");
                         window.UpdateLayout();
+                        // UpdateLayout does not dispatch Loaded. WPF deliberately
+                        // keeps a ComboBox closed until that lifecycle event runs.
+                        window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
                         foreach (var selector in Descendants(window).OfType<ComboBox>().ToArray())
                         {
+                            Assert.True(selector.IsLoaded, "The language selector must be loaded before user interaction.");
                             Assert.True(selector.IsEditable);
                             var editor = Assert.IsType<TextBox>(selector.Template.FindName("PART_EditableTextBox", selector));
                             Assert.True(editor.IsVisible);
                             Assert.Equal(selector.Text, editor.Text);
                             selector.IsDropDownOpen = true;
                             window.UpdateLayout();
+                            window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
                             Assert.True(Assert.IsType<Popup>(selector.Template.FindName("PART_Popup", selector)).IsOpen);
                             selector.IsDropDownOpen = false;
                         }
