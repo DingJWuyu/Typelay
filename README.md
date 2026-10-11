@@ -59,7 +59,7 @@ python -m pip install -r eng/requirements.txt
 
 ```text
 src/                  客户端、UIA Broker、核心、协议、worker、原生启动器与输入事务
-a ssets/tutorial/     随产品分发的本地实操教程
+assets/tutorial/      随产品分发的本地实操教程
 tests/                行为、协议、发布包 E2E，以及明确隔离的 fixtures/support
 eng/                  开发工具依赖和原生组件编译工具
 packaging/windows/    发布包入口，不包含源码构建器
