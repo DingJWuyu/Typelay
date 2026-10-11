@@ -6,20 +6,23 @@ namespace TypeLay.Core.Tests;
 
 public sealed class PreviewBehaviorTests
 {
-    [Fact(DisplayName = "empty-field-is-silent")]
-    public void EmptyFieldIsSilent()
+    [Fact(DisplayName = "empty-field-shows-language-without-translating")]
+    public void EmptyFieldShowsLanguageWithoutTranslating()
     {
         var s = NewSession();
         s.Observe(Sample(""), FocusMember.Source, 1000);
-        Check(s.State == SessionState.NoSession && s.TakeTranslationJob(2000) is null);
+        Check(s.State == SessionState.IdleCapsule && Presentation.From(s.State, false).Visible);
+        Check(s.TakeTranslationJob(2000) is null && s.Candidate == "" && s.Preview == "");
+        Check(!s.BeginEdit());
     }
 
-    [Fact(DisplayName = "whitespace-only-is-silent")]
-    public void WhitespaceOnlyIsSilent()
+    [Fact(DisplayName = "whitespace-shows-language-without-translating")]
+    public void WhitespaceShowsLanguageWithoutTranslating()
     {
         var s = NewSession();
         s.Observe(Sample(" \r\n "), FocusMember.Source, 1000);
-        Check(s.State == SessionState.NoSession);
+        Check(s.State == SessionState.IdleCapsule && Presentation.From(s.State, false).Visible);
+        Check(s.TakeTranslationJob(2000) is null && s.Candidate == "" && s.Preview == "");
     }
 
     [Fact(DisplayName = "debounce-no-early-job")]
