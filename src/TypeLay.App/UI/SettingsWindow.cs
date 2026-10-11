@@ -271,8 +271,13 @@ internal sealed class SettingsWindow : Window
             options.Add(new("auto", "Auto"));
         options.Add(new("zh", "中文"));
         options.Add(new("en", "English"));
+        // Searchable language selectors retain WPF's editable template and its
+        // PART_EditableTextBox instead of the compact non-editable selector style.
         var combo = new ComboBox
         {
+            Style = null,
+            Height = 36,
+            VerticalAlignment = VerticalAlignment.Center,
             ItemsSource = options,
             MinWidth = 126,
             IsEditable = true,
