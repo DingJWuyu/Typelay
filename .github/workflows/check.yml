@@ -79,6 +79,8 @@ jobs:
           'C:\Program Files\LLVM\bin' >> $env:GITHUB_PATH
       - name: Build, behavior regressions, contracts and formatting
         shell: pwsh
+        env:
+          TYPELAY_TRACE: ${{ github.workspace }}/artifacts/controller-trace.jsonl
         run: ./dev.ps1 check
       - name: Verify the controlled native adapter
         shell: pwsh
@@ -92,6 +94,7 @@ jobs:
           name: typelay-windows-${{ github.sha }}
           path: |
             artifacts/test-results/
+            artifacts/controller-trace.jsonl
             artifacts/TypeLay-Windows-preview.zip
             artifacts/TypeLay-Windows-preview.zip.sha256
           if-no-files-found: warn
@@ -102,7 +105,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Install target desktop build dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject gtk-layer-shell niri mesa xorg-server-xvfb xdotool dbus
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject gtk-layer-shell niri mesa libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
