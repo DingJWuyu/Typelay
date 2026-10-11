@@ -56,6 +56,9 @@ jobs:
       - name: Build, behavior regressions, contracts and formatting
         shell: pwsh
         run: ./dev.ps1 check
+      - name: Verify the controlled native adapter
+        shell: pwsh
+        run: ./dev.ps1 native-e2e
       - name: Package and test the relocated distribution
         shell: pwsh
         run: ./dev.ps1 pack
