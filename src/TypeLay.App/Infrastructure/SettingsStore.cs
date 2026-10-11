@@ -32,10 +32,17 @@ internal sealed class SettingsStore
             Value = new();
         // New preferences must not discard an existing user's privacy exclusions.
         if (!Enum.IsDefined(Value.Mode))
-            Value = Value with { Mode = WorkMode.Automatic };
+            Value = Value with
+            {
+                Mode = WorkMode.Automatic
+            };
         if (!TranslationShortcut.TryParse(Value.WakeShortcut, out var wake)
             || !TranslationShortcut.TryParse(Value.DirectShortcut, out var direct) || wake == direct)
-            Value = Value with { WakeShortcut = "Ctrl+Shift+F9", DirectShortcut = "Ctrl+Shift+F10" };
+            Value = Value with
+            {
+                WakeShortcut = "Ctrl+Shift+F9",
+                DirectShortcut = "Ctrl+Shift+F10"
+            };
     }
     public void Update(UserSettings settings)
     {
@@ -44,7 +51,11 @@ internal sealed class SettingsStore
             || !TranslationShortcut.TryParse(settings.WakeShortcut, out var wake)
             || !TranslationShortcut.TryParse(settings.DirectShortcut, out var direct) || wake == direct)
             throw new ArgumentException("请选择有效模式和两个不同的快捷键组合。");
-        settings = settings with { WakeShortcut = wake!.ToString(), DirectShortcut = direct!.ToString() };
+        settings = settings with
+        {
+            WakeShortcut = wake!.ToString(),
+            DirectShortcut = direct!.ToString()
+        };
         if (settings.Startup != Value.Startup)
             SetStartup(settings.Startup);
         string temporary = _path + ".tmp";

@@ -28,7 +28,12 @@ public sealed class SettingsBehaviorTests : IDisposable
     public void ModeAndIndependentShortcutsPersistAcrossRestart()
     {
         var store = new SettingsStore(SettingsPath);
-        store.Update(store.Value with { Mode = WorkMode.OnDemand, WakeShortcut = "shift+ctrl+k", DirectShortcut = "alt+F8" });
+        store.Update(store.Value with
+        {
+            Mode = WorkMode.OnDemand,
+            WakeShortcut = "shift+ctrl+k",
+            DirectShortcut = "alt+F8"
+        });
         var reloaded = new SettingsStore(SettingsPath).Value;
         Assert.Equal(WorkMode.OnDemand, reloaded.Mode);
         Assert.Equal("Ctrl+Shift+K", reloaded.WakeShortcut);

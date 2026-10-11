@@ -9,7 +9,10 @@ public enum WorkMode
 public sealed class TranslationActivation
 {
     private TargetId? _awakened;
-    public WorkMode Mode { get; private set; }
+    public WorkMode Mode
+    {
+        get; private set;
+    }
 
     public TranslationActivation(WorkMode mode = WorkMode.Automatic) => SetMode(mode);
 

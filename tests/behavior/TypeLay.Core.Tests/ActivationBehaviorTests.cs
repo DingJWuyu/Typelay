@@ -61,7 +61,10 @@ public sealed class ActivationBehaviorTests
     {
         var activation = new TranslationActivation(WorkMode.OnDemand);
         activation.Wake(A);
-        Assert.False(activation.Observe(A with { Lifetime = Guid.NewGuid() }, FocusMember.Source));
+        Assert.False(activation.Observe(A with
+        {
+            Lifetime = Guid.NewGuid()
+        }, FocusMember.Source));
         Assert.False(activation.Observe(A, FocusMember.Source));
     }
 

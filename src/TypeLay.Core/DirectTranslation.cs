@@ -4,8 +4,14 @@ namespace TypeLay.Core;
 public sealed class DirectTranslation
 {
     private bool _completed;
-    public TranslationJob Job { get; }
-    public long TriggeredAtMs { get; }
+    public TranslationJob Job
+    {
+        get;
+    }
+    public long TriggeredAtMs
+    {
+        get;
+    }
 
     private DirectTranslation(InputSnapshot source, LanguageDirection direction, long triggeredAtMs)
     {
