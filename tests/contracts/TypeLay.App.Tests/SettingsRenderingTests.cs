@@ -65,7 +65,28 @@ public sealed class SettingsRenderingTests
                             Assert.InRange(selector.ActualHeight, 34, 38);
                             Assert.IsType<Popup>(selector.Template.FindName("PART_Popup", selector));
                         }
+                        var scroll = Descendants(window).OfType<ScrollViewer>().First();
+                        scroll.ScrollToTop();
+                        window.UpdateLayout();
                         Render(window, $"settings-general-{theme}-{width}.png");
+                        scroll.ScrollToBottom();
+                        window.UpdateLayout();
+                        Assert.Equal(scroll.ScrollableHeight, scroll.VerticalOffset, precision: 1);
+                        scroll.ScrollToTop();
+                        window.ShowPage("language");
+                        window.UpdateLayout();
+                        foreach (var selector in Descendants(window).OfType<ComboBox>().ToArray())
+                        {
+                            Assert.True(selector.IsEditable);
+                            var editor = Assert.IsType<TextBox>(selector.Template.FindName("PART_EditableTextBox", selector));
+                            Assert.True(editor.IsVisible);
+                            Assert.Equal(selector.Text, editor.Text);
+                            selector.IsDropDownOpen = true;
+                            window.UpdateLayout();
+                            Assert.True(Assert.IsType<Popup>(selector.Template.FindName("PART_Popup", selector)).IsOpen);
+                            selector.IsDropDownOpen = false;
+                        }
+                        Render(window, $"settings-language-{theme}-{width}.png");
                     }
                 }
                 window.Width = 944;
