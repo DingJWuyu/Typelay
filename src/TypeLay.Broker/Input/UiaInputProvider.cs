@@ -115,7 +115,11 @@ internal sealed class UiaInputProvider : IDisposable
             _lastFocus = FocusMember.Source;
             _element = element;
             _application = app;
-            _previous = direct with { InputEpoch = _inputEpoch, FocusEpoch = _focusEpoch };
+            _previous = direct with
+            {
+                InputEpoch = _inputEpoch,
+                FocusEpoch = _focusEpoch
+            };
             return (_previous, FocusMember.Source);
         }
         // Geometry does not participate in writing. Reuse idle line geometry for
@@ -268,7 +272,10 @@ internal sealed class UiaInputProvider : IDisposable
             || plan.Expected.Target.Provider != NativeEditTransactions.Provider || !plan.Expected.DirectWriteSupported)
             return new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported);
         long now = Environment.TickCount64;
-        var basis = plan.Expected with { ObservedAtMs = now };
+        var basis = plan.Expected with
+        {
+            ObservedAtMs = now
+        };
         Denial validity = WriteSafety.Validate(plan, basis, now);
         if (validity != Denial.None || plan.Scope != basis.TranslationScope)
             return new(WriteStatus.RejectedBeforeMutation, validity == Denial.None ? Denial.BadPlan : validity);
