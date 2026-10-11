@@ -1,6 +1,7 @@
 """Real GTK + native module in a nested niri session. Not physical desktop certification."""
 
 import argparse
+import faulthandler
 import json
 import os
 import signal
@@ -44,38 +45,63 @@ class Native:
 
     def capture(self, target=None):
         fields = self.describe(target)
-        result = self.call("capture", {"target": fields["target"], "authority": fields["authority"]})
+        result = self.call(
+            "capture", {"target": fields["target"], "authority": fields["authority"]}
+        )
         assert result is not None, "authorized GTK read unavailable"
         return result
 
 
 def key(value):
-    subprocess.run(["xdotool", "key", "--clearmodifiers", "--delay", "0", value], check=True, timeout=2)
+    subprocess.run(
+        ["xdotool", "key", "--clearmodifiers", "--delay", "0", value], check=True, timeout=2
+    )
     time.sleep(0.025)
 
 
 def snapshot(native, hello, geometry):
     return {
-        "target": {"backend": "linux-gtk3", "value": native["target"], "lifetime": hello["lifetime"]},
-        "text": native["text"], "selection": native["selection"], "bounds": geometry["bounds"],
-        "multiline": native["metadata"]["multiline"], "access": "Supported", "ime": native["ime"],
-        "observedAtMs": native["observedAtMs"], "inputEpoch": native["authority"]["inputRevision"],
-        "focusEpoch": native["authority"]["focusRevision"], "writeSupported": True, "directWriteSupported": True,
+        "target": {
+            "backend": "linux-gtk3",
+            "value": native["target"],
+            "lifetime": hello["lifetime"],
+        },
+        "text": native["text"],
+        "selection": native["selection"],
+        "bounds": geometry["bounds"],
+        "multiline": native["metadata"]["multiline"],
+        "access": "Supported",
+        "ime": native["ime"],
+        "observedAtMs": native["observedAtMs"],
+        "inputEpoch": native["authority"]["inputRevision"],
+        "focusEpoch": native["authority"]["focusRevision"],
+        "writeSupported": True,
+        "directWriteSupported": True,
     }
 
 
 def plan(source, replacement, scope=None):
     text = source["text"].encode("utf-16-le")
     first, last = (scope["start"], scope["end"]) if scope else (0, len(text) // 2)
-    result = (text[: first * 2] + replacement.encode("utf-16-le") + text[last * 2 :]).decode("utf-16-le")
+    result = (text[: first * 2] + replacement.encode("utf-16-le") + text[last * 2 :]).decode(
+        "utf-16-le"
+    )
     return {
-        "id": str(uuid.uuid4()), "sessionId": str(uuid.uuid4()), "revision": 1,
-        "expected": source, "scope": scope, "replacement": replacement,
-        "resultText": result, "caret": first + len(replacement.encode("utf-16-le")) // 2,
+        "id": str(uuid.uuid4()),
+        "sessionId": str(uuid.uuid4()),
+        "revision": 1,
+        "expected": source,
+        "scope": scope,
+        "replacement": replacement,
+        "resultText": result,
+        "caret": first + len(replacement.encode("utf-16-le")) // 2,
     }
 
 
 def inside(arguments):
+    # niri may detach spawned programs from its own diagnostic stream.
+    sys.stdout = sys.stderr = (arguments.output / "inside.log").open("w", buffering=1)
+    faulthandler.dump_traceback_later(15, file=sys.stderr, repeat=False)
     paths = Paths(ROOT)
     paths.native.unlink(missing_ok=True)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -83,13 +109,18 @@ def inside(arguments):
     paths.native.chmod(0o600)
     server.listen(4)
     server.settimeout(10)
-    environment = {**os.environ, "GTK3_MODULES": str(arguments.native / "libtypelay-gtk3.so"), "GDK_BACKEND": "wayland"}
+    environment = {
+        **os.environ,
+        "GTK3_MODULES": str(arguments.native / "libtypelay-gtk3.so"),
+        "GDK_BACKEND": "wayland",
+    }
     environment.pop("TYPELAY_DESKTOP", None)
     fixture = subprocess.Popen([str(arguments.native / "gtk-fixture")], env=environment)
     checks = []
     try:
         connection, _ = server.accept()
         assert peer_credentials(connection)[0] == fixture.pid
+        print("native peer connected", flush=True)
         client = Native(connection)
         windows = []
         deadline = time.monotonic() + 8
@@ -102,16 +133,21 @@ def inside(arguments):
             time.sleep(0.05)
         assert window is not None
         # XTest enters the nested compositor, which sends normal Wayland key events.
-        nested = subprocess.check_output(["xdotool", "search", "--class", "niri"], text=True).splitlines()
+        nested = subprocess.check_output(
+            ["xdotool", "search", "--class", "niri"], text=True
+        ).splitlines()
         assert nested
         subprocess.run(["xdotool", "windowfocus", "--sync", nested[-1]], check=True, timeout=2)
         time.sleep(0.2)
+        print("focused fixture", flush=True)
         native = client.capture()
         assert native["metadata"]["automationId"] == "fixture-first"
         assert native["ime"] == "Clear" and native["writeSupported"]
         outputs = contents(request("Outputs"), "Outputs")
         workspaces = contents(request("Workspaces"), "Workspaces")
-        window = next(item for item in contents(request("Windows"), "Windows") if item["pid"] == fixture.pid)
+        window = next(
+            item for item in contents(request("Windows"), "Windows") if item["pid"] == fixture.pid
+        )
         geometry = place_geometry(window, outputs, workspaces, native["geometry"])
         assert geometry is not None, "GTK frame geometry does not agree with niri"
         checks.append("real GTK metadata, authorized read and niri geometry")
@@ -122,10 +158,16 @@ def inside(arguments):
         key("Tab")
         assert client.describe()["target"] != original_id
         fresh = client.describe(original_id)
-        receipt = client.call("direct", {
-            "target": original_id, "plan": write, "authority": native["authority"],
-            "approved": fresh["authority"], "expiresAtMs": now_ms() + 250,
-        })
+        receipt = client.call(
+            "direct",
+            {
+                "target": original_id,
+                "plan": write,
+                "authority": native["authority"],
+                "approved": fresh["authority"],
+                "expiresAtMs": now_ms() + 250,
+            },
+        )
         assert receipt["status"] == "Verified", receipt["reason"]
         assert client.describe()["target"] != original_id, "direct replacement stole focus"
         assert client.capture(original_id)["text"] == "alpha 😀 你好"
@@ -135,15 +177,21 @@ def inside(arguments):
         current = client.capture()
         assert current["target"] == original_id
         write = plan(snapshot(current, client.hello, geometry), "accepted candidate")
-        client.call("publish", {
-            "target": original_id, "authority": current["authority"],
-            "lease": {"source": write["expected"], "escapeAllowed": True},
-            "permit": {"plan": write, "expiresAtMs": current["observedAtMs"] + 100},
-        })
+        client.call(
+            "publish",
+            {
+                "target": original_id,
+                "authority": current["authority"],
+                "lease": {"source": write["expected"], "escapeAllowed": True},
+                "permit": {"plan": write, "expiresAtMs": current["observedAtMs"] + 100},
+            },
+        )
         key("Tab")
         accepted = client.capture(original_id)
         assert accepted["text"] == "accepted candidate"
-        assert client.describe()["target"] == original_id, "successful Tab leaked to GTK focus navigation"
+        assert client.describe()["target"] == original_id, (
+            "successful Tab leaked to GTK focus navigation"
+        )
         assert any(event.get("event") == "accepted" for event in client.events)
         checks.append("real compositor Tab, synchronous commit and no duplicate focus navigation")
 
@@ -154,24 +202,41 @@ def inside(arguments):
         key("Tab")
         password = client.describe()
         assert password["metadata"]["password"]
-        assert client.call("capture", {"target": password["target"], "authority": password["authority"]}) is None
+        assert (
+            client.call(
+                "capture", {"target": password["target"], "authority": password["authority"]}
+            )
+            is None
+        )
         checks.append("unowned Tab passthrough and password-before-text rejection")
 
         key("shift+Tab")
         key("shift+Tab")
         old = client.capture()
         stale = plan(snapshot(old, client.hello, geometry), "must not replace")
-        subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "0", "new input"], check=True, timeout=2)
+        subprocess.run(
+            ["xdotool", "type", "--clearmodifiers", "--delay", "0", "new input"],
+            check=True,
+            timeout=2,
+        )
         time.sleep(0.05)
         fresh = client.describe(original_id)
-        refused = client.call("direct", {
-            "target": original_id, "plan": stale, "authority": old["authority"],
-            "approved": fresh["authority"], "expiresAtMs": now_ms() + 250,
-        })
+        refused = client.call(
+            "direct",
+            {
+                "target": original_id,
+                "plan": stale,
+                "authority": old["authority"],
+                "approved": fresh["authority"],
+                "expiresAtMs": now_ms() + 250,
+            },
+        )
         assert refused["status"] == "RejectedBeforeMutation"
         assert client.capture(original_id)["text"] != "must not replace"
         checks.append("concurrent source edits rejected before mutation")
-        (arguments.output / "native-result.json").write_text(json.dumps({"passed": checks}, indent=2))
+        (arguments.output / "native-result.json").write_text(
+            json.dumps({"passed": checks}, indent=2)
+        )
     finally:
         fixture.terminate()
         try:
@@ -185,19 +250,37 @@ def inside(arguments):
 
 def outer(arguments):
     arguments.output.mkdir(parents=True, exist_ok=True)
+    (arguments.output / "native-result.json").unlink(missing_ok=True)
     runtime = arguments.output / "runtime"
     runtime.mkdir(mode=0o700, exist_ok=True)
     config = arguments.output / "niri.kdl"
-    command = ["/usr/bin/python3", "-I", str(Path(__file__).resolve()), "--inside", "--native", str(arguments.native), "--output", str(arguments.output)]
+    command = [
+        "/usr/bin/python3",
+        "-I",
+        str(Path(__file__).resolve()),
+        "--inside",
+        "--native",
+        str(arguments.native),
+        "--output",
+        str(arguments.output),
+    ]
     config.write_text("spawn-at-startup " + " ".join(json.dumps(item) for item in command) + "\n")
-    environment = {**os.environ, "XDG_RUNTIME_DIR": str(runtime), "GDK_BACKEND": "wayland", "LIBGL_ALWAYS_SOFTWARE": "1"}
+    environment = {
+        **os.environ,
+        "XDG_RUNTIME_DIR": str(runtime),
+        "GDK_BACKEND": "wayland",
+        "LIBGL_ALWAYS_SOFTWARE": "1",
+    }
     environment.pop("WAYLAND_DISPLAY", None)
     environment.pop("NIRI_SOCKET", None)
     environment.pop("TYPELAY_DESKTOP", None)
     with (arguments.output / "nested-niri.log").open("w") as log:
         compositor = subprocess.Popen(
             ["dbus-run-session", "--", "niri", "--config", str(config)],
-            env=environment, stdout=log, stderr=log, start_new_session=True,
+            env=environment,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
         )
         try:
             deadline = time.monotonic() + 45
@@ -208,7 +291,8 @@ def outer(arguments):
                 raise RuntimeError("nested niri/GTK contract failed; inspect nested-niri.log")
             print(result.read_text())
         finally:
-            os.killpg(compositor.pid, signal.SIGTERM)
+            if compositor.poll() is None:
+                os.killpg(compositor.pid, signal.SIGTERM)
             try:
                 compositor.wait(timeout=3)
             except subprocess.TimeoutExpired:
