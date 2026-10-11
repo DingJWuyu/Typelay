@@ -1,14 +1,14 @@
-name: Windows checks
+name: TypeLay checks
 on:
   push:
-    branches: [windows-preview]
+    branches: [windows-preview, cachyos-preview]
   pull_request:
-    branches: [windows-preview]
+    branches: [windows-preview, cachyos-preview]
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: windows-checks-${{ github.ref }}
+  group: typelay-checks-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   shared:
@@ -18,6 +18,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Archive the exact build source
+        run: |
+          mkdir -p artifacts
+          git archive --format=tar --prefix=typelay/ HEAD > artifacts/TypeLay-source.tar
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
@@ -31,7 +35,9 @@ jobs:
         if: always()
         with:
           name: typelay-shared-${{ github.sha }}
-          path: artifacts/shared-test-results/
+          path: |
+            artifacts/shared-test-results/
+            artifacts/TypeLay-source.tar
           if-no-files-found: warn
           retention-days: 14
   check:
