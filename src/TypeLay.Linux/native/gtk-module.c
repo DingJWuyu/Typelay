@@ -111,7 +111,9 @@ void tl_send_event(const char *event, JsonObject *data) {
 }
 void tl_invalidate(Target *target, gboolean text_changed, gboolean focus_changed) {
     if (target->mutating || target->dead) return;
-    target->input_revision++;
+    /* Focus has its own revision. Entering/returning from our editor must not
+       pretend that the source text or selection was edited. */
+    if (!focus_changed) target->input_revision++;
     if (text_changed) target->content_revision++;
     if (focus_changed) {
         target->focus_revision++;
@@ -179,7 +181,9 @@ static void command(JsonObject *frame) {
             shortcut_authority = tl_copy(data);
         respond(id, NULL);
     } else if (strcmp(operation, "revoke") == 0) {
-        tl_clear_permit(); clear_shortcut(); respond(id, NULL);
+        tl_clear_permit();
+        if (tl_integer(data, "shortcuts", 0)) clear_shortcut();
+        respond(id, NULL);
     } else if (strcmp(operation, "publish") == 0) {
         tl_clear_permit();
         JsonObject *basis = tl_object(data, "authority");
@@ -383,7 +387,8 @@ static void dispatch(GdkEvent *event, gpointer data) {
             Target *target = tl_focused();
             if (target) tl_invalidate(target, FALSE, FALSE);
         }
-    } else if (event->type == GDK_BUTTON_PRESS || event->type == GDK_SCROLL) {
+    } else if ((event->type == GDK_BUTTON_PRESS || event->type == GDK_SCROLL)
+        && !tl_overlay_contains(gtk_get_event_widget(event))) {
         Target *target = tl_focused();
         if (target) tl_invalidate(target, FALSE, FALSE);
     }

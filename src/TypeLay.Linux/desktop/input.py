@@ -136,10 +136,11 @@ class Input:
             return None
         pid = self.niri.focused.get("pid")
         peers = [peer for peer in self.peers if peer.pid == pid and peer.lifetime]
-        # GTK3 does not expose a stable xdg_toplevel identifier to this module.
-        # PID alone cannot disambiguate multiple windows of the same process.
-        windows = [window for window in self.niri.windows if window.get("pid") == pid]
-        return peers[0] if len(peers) == len(windows) == 1 else None
+        # niri chooses the process, not a guessed window-to-widget mapping. The
+        # authenticated native peer then proves which GTK parent actually owns
+        # keyboard focus. Its opaque field and parent-local view identify the
+        # operation even when this process has several compositor windows.
+        return peers[0] if len(peers) == 1 else None
 
     def focus(self):
         if self.bound and self.overlay_focused and self.fresh():
@@ -172,7 +173,7 @@ class Input:
             self.last_focus = identity
             self.foreground_epoch += 1
             self.user_epoch += 1
-            self.revoke()
+            self.revoke(shortcuts=True)
         self.window_epoch += 1
         self.state()
 
@@ -336,11 +337,15 @@ class Input:
                 },
             )
 
-    def revoke(self):
+    def revoke(self, shortcuts=False):
         for peer in list(self.peers):
             if peer.lifetime and peer.link.channel.alive:
-                peer.link.command("revoke")
-                peer.shortcut = None
+                peer.link.command("revoke", {"shortcuts": int(shortcuts)})
+                if shortcuts:
+                    peer.shortcut = None
+        # Hiding/revoking a preview does not suspend the separately approved
+        # on-demand command. Its metadata approval still expires after 150 ms and
+        # native focus/IME/configuration checks remain mandatory at the real key.
         # Retain issued receipts and frozen commands across foreground-session
         # teardown: they belong to already accepted physical input, not the UI.
 

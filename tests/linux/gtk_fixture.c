@@ -3,19 +3,24 @@
 
 /* Only the isolated test executable writes this evidence. Production has no
  * command to dump source text, inject input or change a test model. */
-static GtkWidget *report_window, *report_first, *report_second;
+static GtkWidget *report_window, *report_first, *report_second, *other_window, *other_entry;
 static const char *report_path;
 static char *last_report;
 
 static gboolean report_state(gpointer unused) {
     (void)unused;
-    GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(report_window));
+    GtkWidget *active = other_window && gtk_window_is_active(GTK_WINDOW(other_window)) ? other_window : report_window;
+    GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(active));
     JsonBuilder *builder = json_builder_new();
     json_builder_begin_object(builder);
     json_builder_set_member_name(builder, "first");
     json_builder_add_string_value(builder, gtk_entry_get_text(GTK_ENTRY(report_first)));
     json_builder_set_member_name(builder, "second");
     json_builder_add_string_value(builder, gtk_entry_get_text(GTK_ENTRY(report_second)));
+    if (other_entry) {
+        json_builder_set_member_name(builder, "other");
+        json_builder_add_string_value(builder, gtk_entry_get_text(GTK_ENTRY(other_entry)));
+    }
     json_builder_set_member_name(builder, "focus");
     json_builder_add_string_value(builder, focus ? gtk_buildable_get_name(GTK_BUILDABLE(focus)) : "");
     json_builder_end_object(builder);
@@ -68,6 +73,20 @@ int main(int argc, char **argv) {
     gtk_widget_show_all(window);
     gtk_widget_grab_focus(first);
     gtk_editable_set_position(GTK_EDITABLE(first), -1);
+    if (g_getenv("TYPELAY_FIXTURE_TWO_WINDOWS")) {
+        other_window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+        gtk_window_set_title(GTK_WINDOW(other_window), "TypeLay GTK second window");
+        gtk_window_set_default_size(GTK_WINDOW(other_window), 600, 300);
+        GtkWidget *other_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
+        gtk_container_set_border_width(GTK_CONTAINER(other_box), 32);
+        other_entry = gtk_entry_new();
+        gtk_buildable_set_name(GTK_BUILDABLE(other_entry), "fixture-other-window");
+        gtk_entry_set_text(GTK_ENTRY(other_entry), "The other window is unchanged.");
+        gtk_box_pack_start(GTK_BOX(other_box), other_entry, FALSE, FALSE, 0);
+        gtk_container_add(GTK_CONTAINER(other_window), other_box);
+        g_signal_connect(other_window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+        gtk_widget_show_all(other_window);
+    }
     report_path = g_getenv("TYPELAY_FIXTURE_STATE");
     if (report_path && g_path_is_absolute(report_path)) {
         report_window = window;

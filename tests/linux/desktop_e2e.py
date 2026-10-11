@@ -99,10 +99,17 @@ def run(arguments):
         process = None
         assert not paths.control.exists() and not paths.native.exists()
 
-    def focus(pid):
+    def focus(pid, title=None):
         def select():
             windows = contents(request("Windows"), "Windows")
-            return next((window for window in windows if window.get("pid") == pid), None)
+            return next(
+                (
+                    window
+                    for window in windows
+                    if window.get("pid") == pid and (title is None or window.get("title") == title)
+                ),
+                None,
+            )
 
         window = wait_for(select, "application window did not map")
         request({"Action": {"FocusWindow": {"id": window["id"]}}})
@@ -198,6 +205,42 @@ def run(arguments):
         assert changed["second"] == "second field", "direct translation wrote into the new field"
         assert not status().get("overlayVisible"), "direct translation opened the preview"
         evidence.append("on-demand wake, Escape and direct translation bound to the original field")
+        stop()
+        fixture.terminate()
+        fixture.wait(timeout=3)
+        fixture = None
+        # Two real GTK toplevels owned by one process, not guessed screen origins.
+        settings["Mode"] = 1
+        start()
+        fixture = subprocess.Popen(
+            [str(package / "typelay"), "launch", str(arguments.native / "gtk-fixture")],
+            env={**environment, "TYPELAY_FIXTURE_TWO_WINDOWS": "1"},
+        )
+        focus(fixture.pid, "TypeLay input contracts")
+        key("ctrl+a")
+        typed(original)
+        # Wake uses the selected GTK parent, even though niri reports two windows
+        # with this PID. The original native field identity survives focus changes.
+        key("ctrl+shift+F9")
+        wait_for(ready_to_accept, "multiple windows disabled the focused native field")
+        key("Escape")
+        wait_for(lambda: not status().get("overlayVisible"), "multiwindow Escape did not hide")
+        key("ctrl+shift+F10")
+        focus(fixture.pid, "TypeLay GTK second window")
+        changed = wait_for(changed_fixture, "background translation lost its original window")
+        assert changed["other"] == "The other window is unchanged."
+        assert changed["focus"] == "fixture-other-window", "direct write activated its old window"
+        key("ctrl+shift+F9")
+        wait_for(ready_to_accept, "the second window did not support translation")
+        key("Tab")
+        wait_for(
+            lambda: translated(fixture_state().get("other")), "second window Tab was misrouted"
+        )
+        assert fixture_state()["first"] == changed["first"], "second window write changed the first"
+        assert fixture_state()["focus"] == "fixture-other-window"
+        evidence.append(
+            "same-process windows: focused preview and background direct write without misrouting"
+        )
         stop()
         fixture.terminate()
         fixture.wait(timeout=3)
