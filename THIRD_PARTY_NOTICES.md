@@ -18,6 +18,4 @@
 
 `.agents/skills/` 保留 Matt Pocock 上游技能及参考文件，原始许可证位于 `.agents/MATT-LICENSE`；来源 revision 和安装约束见 `docs/agents/skills.md`，安装器记录位于 `skills-lock.json`。这些文件不进入 Windows 运行包。
 
-.NET SDK、xUnit、Ruff、Clang/LLD 用于构建、测试或格式检查，不作为工具链再分发。原生启动器只导入 Windows 系统 API。冻结的产品规格、原型及历史证据位于 `docs/reference/` 与 `docs/history/`，不作为发布包的一部分。
-
-旧源码交付包的声明保存在 `docs/history/third-party-before-cleanup.md`，不得用于判断当前运行包内容。
+.NET SDK、xUnit、Ruff、Clang/LLD 用于构建、测试或格式检查，不作为工具链再分发。原生启动器只导入 Windows 系统 API。产品规格和已确认原型位于 `docs/reference/`，不作为发布包的一部分。

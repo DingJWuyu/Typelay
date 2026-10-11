@@ -1,3 +1,0 @@
-{"ProcessId":25444,"RootHwnd":2097776,"SubmitButtonHwnd":460784,"Lifetime":"703716c9-a42e-44c0-b6fc-a644fadf8b8c","Fields":[{"Name":"a","Hwnd":13633352,"Classification":1,"LifetimeCookie":520790968},{"Name":"b","Hwnd":329716,"Classification":1,"LifetimeCookie":570963981},{"Name":"password","Hwnd":329722,"Classification":1,"LifetimeCookie":2104834291},{"Name":"readonly","Hwnd":329790,"Classification":1,"LifetimeCookie":1262494887},{"Name":"pin","Hwnd":329836,"Classification":3,"LifetimeCookie":587979179}]}
-{"operation":"replay-start","atMs":4076343,"kind":"committed-text-programmatic-not-physical-ime","total":45}
-{"operation":"replay-finish","status":"completed","atMs":4081296,"elapsedMs":4953,"sourceLength":45,"submitCount":0}

@@ -33,4 +33,4 @@ code-review 若要求独立子代理而当前环境没有该能力，则分别�
 工程：ask-matt、grill-with-docs、triage、improve-codebase-architecture、setup-matt-pocock-skills、to-spec、to-tickets、implement、implement-spec、wayfinder、retro。
 生产力：grill-me、handoff、teach、to-questionnaire、wait-what。
 
-这些技能保留 disable-model-invocation，不因“当前整理相关”自行触发。项目配置位于根 AGENTS 的 Agent skills 区块及 issue-tracker/domain/triage-labels 文件；不会自行发布任务或开启 PR。
+这些技能保留 disable-model-invocation，不因主题相关而自行触发。项目配置位于根 AGENTS 的 Agent skills 区块及 issue-tracker/domain/triage-labels 文件；不会自行发布任务或开启 PR。技能输出同样遵守根 AGENTS 的内容保留规则，不另建历史归档。

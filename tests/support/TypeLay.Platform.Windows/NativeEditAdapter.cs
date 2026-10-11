@@ -11,9 +11,9 @@ public sealed record FixtureDescriptor(int ProcessId, long RootHwnd, long Submit
     Guid Lifetime, FixtureField[] Fields);
 
 /// <summary>
-/// M1 pilot backend: only the process launched by the test runner and explicitly registered
-/// native EDIT HWNDs are accessible. No arbitrary PID mode, browser fallback, or desktop scan.
-/// Production discovery/UIA/IME evidence and hook integration are later milestones.
+/// Controlled Win32 backend for fixture contracts and keyboard-hook regressions.
+/// Only registered native EDIT HWNDs in the supplied fixture process are accessible.
+/// This test backend does not implement production UIA discovery or external IME observation.
 /// </summary>
 [SupportedOSPlatform("windows")]
 public sealed class NativeEditAdapter : IInputAdapter
@@ -27,7 +27,7 @@ public sealed class NativeEditAdapter : IInputAdapter
     public NativeEditAdapter(Process launchedFixture, FixtureDescriptor fixture)
     {
         if (!OperatingSystem.IsWindows() || !Environment.Is64BitProcess)
-            throw new PlatformNotSupportedException("M1 fixture backend requires Windows x64.");
+            throw new PlatformNotSupportedException("Fixture backend requires Windows x64.");
         if (launchedFixture.Id != fixture.ProcessId || launchedFixture.HasExited)
             throw new ArgumentException("Fixture registration does not match the launched process.");
         _process = launchedFixture;

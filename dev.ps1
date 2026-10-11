@@ -105,7 +105,7 @@ try {
             Write-Output 'Usage: ./dev.ps1 <restore|build|test|check|format|pack|run|e2e|native-e2e> [-Configuration Debug|Release]'
             Write-Output 'check: build, behavior/contract tests, Python tests, compiler/analyzer checks and formatting.'
             Write-Output 'pack: self-contained Windows distribution, checksum and relocated-package/process E2E.'
-            Write-Output 'native-e2e: legacy fixture adapter only; requires an unlocked Windows desktop.'
+            Write-Output 'native-e2e: controlled Win32 fixture adapter contracts; requires an unlocked Windows desktop.'
         }
         restore { Restore-Workspace }
         build { Build-Workspace }

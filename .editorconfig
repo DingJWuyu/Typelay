@@ -24,7 +24,7 @@ end_of_line = crlf
 [packaging/windows/*.ps1]
 charset = utf-8-bom
 
-[docs/{history,reference}/**]
+[docs/reference/**]
 trim_trailing_whitespace = false
 insert_final_newline = false
 

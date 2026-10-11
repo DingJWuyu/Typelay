@@ -4,7 +4,6 @@
 *.png binary
 *.jpg binary
 *.zip binary
-# Frozen inputs, historical evidence and upstream skills retain their original bytes.
-docs/history/** -text whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof
+# Product/UI baselines and upstream skills retain their original bytes.
 docs/reference/** -text whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof
 .agents/skills/** -text whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof

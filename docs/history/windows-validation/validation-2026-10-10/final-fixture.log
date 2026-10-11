@@ -1,5 +1,0 @@
-{"ProcessId":5724,"RootHwnd":7276048,"SubmitButtonHwnd":329812,"Lifetime":"8c6fde16-062f-449d-aa9f-20a81fcf8c97","Fields":[{"Name":"a","Hwnd":1378346,"Classification":1,"LifetimeCookie":1982721230},{"Name":"b","Hwnd":329824,"Classification":1,"LifetimeCookie":1110825459},{"Name":"password","Hwnd":460916,"Classification":1,"LifetimeCookie":1958643526},{"Name":"readonly","Hwnd":2295934,"Classification":1,"LifetimeCookie":306944729},{"Name":"pin","Hwnd":6752418,"Classification":3,"LifetimeCookie":490675659}]}
-{"operation":"replay-start","atMs":4303750,"kind":"committed-text-programmatic-not-physical-ime","total":45}
-{"operation":"replay-finish","status":"completed","atMs":4308703,"elapsedMs":4953,"sourceLength":45,"submitCount":0}
-{"operation":"focus-replay-start","atMs":4318968,"kind":"own-window-programmatic-focus-not-physical-keyboard","total":100}
-{"operation":"focus-replay-finish","status":"completed","atMs":4322156,"elapsedMs":3188,"changes":100,"finalField":"a","submitCount":0}

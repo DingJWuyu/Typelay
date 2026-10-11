@@ -8,14 +8,17 @@
 - contracts/TypeLay.Protocol.Tests：真实帧序列化与非法输入拒绝。标准 xUnit Facts/Theories 由 dotnet test 发现，不维护自制注册表或测试执行器。
 - worker/：协议、文本结构和真实隔离进程的启动失败。无模型依赖；翻译器替身只能验证结构保留，不能证明语言质量或真实推理成功。
 - e2e/test_distribution.py：解压实际 ZIP 到含空格和中文的新目录，再启动真实 App/Broker/worker 入口。通过公开管道验证生命周期、鉴权、拒绝和隐私，不调用 Broker 私有成员。
-- e2e/TypeLay.Native.Tests 与 fixtures/support：真实 Win32 fixture 的旧适配器测试。不是生产 UIA，不是物理按键，也不是中文输入法验收。
+- e2e/TypeLay.Native.Tests 与 support/TypeLay.Platform.Windows：验证 Hook 工具依赖的受控 Win32 字段适配器契约，不是生产 UIA、物理按键或真实 IME 验收。
+- fixtures/：NativeFixture 提供生产 Broker 的可重复输入宿主及 Hook 普通/注入模式对照；DesktopFixture 使用真实浮层、会话、Hook 和模型隔离 WPF 编辑问题。具体用途与命令见 docs/agents/testing.md。
+
+测试及辅助代码同样遵循根 AGENTS 的内容保留规则。只验证已退休实现、没有现役消费者或与有效回归完全重复的测试应删除；不能仅靠仍能编译或测试互相引用证明保留价值。
 
 ## 修复顺序
 
 1. 在最接近原用户路径的可用环境运行一次可失败的回归，并记录失败现象。
 2. 提出可证伪的原因；一次只改变一个相关因素。不能先修生产代码再编造“之前必然失败”的结论。
 3. 用同一测试证明修复，再跑受影响的邻近行为与工作区检查。
-4. 删除临时探针，保留回归。测试环境不足时标注未测，不放宽安全条件或静默跳过要求。
+4. 删除临时探针，保留有效回归。测试环境不足时标注未测，不放宽安全条件或静默跳过要求。
 
 端到端测试必须有超时和自身资源清理。不得终止不属于测试的进程、改真实用户设置或下载模型。不能为了通过而增加任意等待、无上限重试或代码关键字断言。
 

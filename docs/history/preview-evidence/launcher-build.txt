@@ -1,5 +1,0 @@
-/mnt/data/TypeLay-0.2.0-dev/TypeLay.exe
-/mnt/data/TypeLay-launcher-rebuild.exe
-Independent second build: byte-identical
-TypeLay.exe: PE32+ executable for MS Windows 6.02 (GUI), x86-64, 3 sections
-f6764ac856a11ee69adca6bf593fe7769ea4d8592bad8333b9634b8fbfeeb244  TypeLay.exe

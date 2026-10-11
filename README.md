@@ -34,9 +34,9 @@ python -m pip install -r eng/requirements.txt
 | `./dev.ps1 format` | 使用统一工具修正格式及可自动修复的 lint |
 | `./dev.ps1 pack` | 生成自包含 Windows 包、校验和，并验证迁移目录后的发布包及进程协议 |
 | `./dev.ps1 e2e` | 对已生成的发布包重跑进程与分发回归 |
-| `./dev.ps1 native-e2e` | 在已解锁桌面运行旧原生 fixture 适配器测试，不代表生产 UIA 验收 |
+| `./dev.ps1 native-e2e` | 在已解锁桌面验证受控 Win32 fixture 的适配器契约，不代表生产 UIA 验收 |
 
-发布包与测试报告进入 `artifacts/`；.NET 编译中间结果留在各项目的 `bin/`、`obj/`，这些生成物均不提交到 Git。NuGet 包版本集中在 `Directory.Packages.props`。测试使用标准 `dotnet test` 和 Python `unittest`，不再依赖源码关键字检查来证明产品行为。
+发布包与测试报告进入 `artifacts/`；.NET 编译中间结果留在各项目的 `bin/`、`obj/`，这些生成物均不提交到 Git。NuGet 包版本集中在 `Directory.Packages.props`。测试使用标准 `dotnet test` 和 Python `unittest`；受控桌面工具的用途与运行方法见 [测试流程](docs/agents/testing.md)。
 
 ## 源码导航
 
@@ -47,16 +47,17 @@ tests/                行为、协议、发布包 E2E，以及明确隔离的 fi
 eng/                  开发工具依赖和启动器编译工具
 packaging/windows/    发布包入口，不包含源码构建器
 docs/agents/          Agent 按任务读取的工程约束与验证流程
-docs/adr/             已作出的工程决策
-docs/reference/       冻结的产品规格与原型，保留原始内容
-docs/history/         历史报告和日志，不参与当前构建
+docs/adr/             当前架构决策及其取舍
+docs/reference/       当前产品规格与已确认 UI 原型
 .agents/skills/       固定版本的 Matt Pocock skills
 ```
 
 不创建空的 benchmarks 或 examples：当前没有通过验收的性能基准；真实推理和 UI 延迟需要在明确的设备、模型与操作序列下测量，不能用假模型报告性能。复杂用例目前由产品教程承担。
 
-## Agent 工作流
+## 维护约定
 
-仓库根目录 `AGENTS.md` 是入口，按当前任务继续读取其中指向的文档。Matt Pocock skills 保留上游的 user-invoke / model-invoke 分类；没有用户请求时，不应自行启动需求问卷、拆票、PR 或大规模子代理流程。分支直接提交约定优先于默认 PR 工作流。
+仓库根目录 `AGENTS.md` 是 Agent 入口，按当前任务继续读取其中指向的文档。仓库仅保留有实际用途的内容，历史追溯使用 Git，不另存旧报告或归档副本。
 
-许可证及第三方组件说明见 `THIRD_PARTY_NOTICES.md`。历史 PoC 和 Windows 验收中的失败、限制与未测项不会因为这次工程整理而变成通过。
+Matt Pocock skills 保留上游的 user-invoke / model-invoke 分类；没有用户请求时，不应自行启动需求问卷、拆票、PR 或大规模子代理流程。分支直接提交约定优先于默认 PR 工作流。
+
+许可证及第三方组件说明见 `THIRD_PARTY_NOTICES.md`。当前开放的 B-01/B-02/B-03 风险及关闭条件见 [架构约束](docs/agents/architecture.md#开放风险与安全边界)。
