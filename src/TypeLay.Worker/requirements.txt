@@ -1,5 +1,5 @@
-# Fixed runtime releases. Installer resolves only Windows CPython 3.13 x64 wheels,
-# checks PyPI-published SHA-256, and records the exact file lock at installation.
+# Fixed CPython 3.13 runtime releases. Platform installers resolve native wheels,
+# verify PyPI-published SHA-256, and record the exact file lock at installation.
 ctranslate2==4.8.2
 sentencepiece==0.2.2
 numpy==2.3.5

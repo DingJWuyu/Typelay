@@ -50,6 +50,8 @@ public sealed class SettingsStore
     public void Update(UserSettings settings)
     {
         settings.Direction.Validate();
+        if (settings.Source is not ("auto" or "zh" or "en") || settings.Target is not ("zh" or "en"))
+            throw new ArgumentException("请选择支持的源语言和目标语言。");
         if (!Enum.IsDefined(settings.Mode)
             || !TranslationShortcut.TryParse(settings.WakeShortcut, out var wake)
             || !TranslationShortcut.TryParse(settings.DirectShortcut, out var direct) || wake == direct)

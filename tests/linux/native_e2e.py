@@ -133,11 +133,12 @@ def inside(arguments):
             time.sleep(0.05)
         assert window is not None
         # XTest enters the nested compositor, which sends normal Wayland key events.
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as compositor:
-            compositor.connect(os.environ["NIRI_SOCKET"])
-            compositor_pid = peer_credentials(compositor)[0]
+        # This is a dedicated Xvfb containing exactly one nested compositor,
+        # not production target identification. niri does not publish an X11
+        # WM_CLASS or _NET_WM_PID on all winit versions, but sets this title.
+        os.environ["DISPLAY"] = os.environ["TYPELAY_TEST_DISPLAY"]
         nested = subprocess.check_output(
-            ["xdotool", "search", "--onlyvisible", "--pid", str(compositor_pid)],
+            ["xdotool", "search", "--onlyvisible", "--name", "^niri$"],
             text=True,
             timeout=2,
         ).splitlines()
@@ -275,6 +276,7 @@ def outer(arguments):
         "XDG_RUNTIME_DIR": str(runtime),
         "GDK_BACKEND": "wayland",
         "LIBGL_ALWAYS_SOFTWARE": "1",
+        "TYPELAY_TEST_DISPLAY": os.environ["DISPLAY"],
     }
     environment.pop("WAYLAND_DISPLAY", None)
     environment.pop("NIRI_SOCKET", None)

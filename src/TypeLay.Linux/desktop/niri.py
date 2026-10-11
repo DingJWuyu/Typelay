@@ -8,6 +8,8 @@ import threading
 import time
 from pathlib import Path
 
+from wire import now_ms
+
 
 def request(command, timeout=0.25):
     path = os.environ.get("NIRI_SOCKET", "")
@@ -125,6 +127,7 @@ class Niri:
         self.focused = None
         self.ready = False
         self.version = ""
+        self.observed_at = 0
         self.stopping = threading.Event()
         self.thread = threading.Thread(target=self._run, name="typelay-niri", daemon=True)
         self.thread.start()
@@ -138,7 +141,14 @@ class Niri:
             self.focused = None
             self.windows = []
         else:
-            self.version, self.windows, self.outputs, self.workspaces, overview = snapshot
+            (
+                self.version,
+                self.windows,
+                self.outputs,
+                self.workspaces,
+                overview,
+                self.observed_at,
+            ) = snapshot
             self.ready = not overview
             self.focused = next(
                 (window for window in self.windows if window.get("is_focused")), None
@@ -151,6 +161,7 @@ class Niri:
         version = ""
         while not self.stopping.is_set():
             start = time.monotonic()
+            observed = now_ms()
             try:
                 if not version:
                     version = contents(request("Version"), "Version")
@@ -158,8 +169,8 @@ class Niri:
                 outputs = contents(request("Outputs"), "Outputs")
                 workspaces = contents(request("Workspaces"), "Workspaces")
                 overview = contents(request("OverviewState"), "OverviewState")["is_open"]
-                snapshot = version, windows, outputs, workspaces, overview
-            except (OSError, ValueError, KeyError, TypeError):
+                snapshot = version, windows, outputs, workspaces, overview, observed
+            except (OSError, EOFError, ValueError, KeyError, TypeError):
                 snapshot = None
             self.glib.idle_add(self._deliver, snapshot)
             # Full geometry must follow scrolling/animation, not only focus events.
@@ -173,7 +184,7 @@ class Niri:
             try:
                 response = request({"Action": {"FocusWindow": {"id": window_id}}}, 0.5)
                 ok = response == "Handled" or response == {"Handled": None}
-            except (OSError, ValueError, TypeError):
+            except (OSError, EOFError, ValueError, TypeError):
                 ok = False
             self.glib.idle_add(lambda: (finished(ok), False)[1])
 

@@ -1,12 +1,14 @@
 # TypeLay
 
+Linux 开发分支 `cachyos-preview` 的构建、安装、功能缺口与验收步骤见 [Linux 客户端说明](docs/linux.md)。下面保留 Windows 客户端的使用和维护入口。
+
 TypeLay 是 Windows 上的本地输入翻译工具。自动模式跟随当前文本输入框显示译文，支持修改候选，并在满足安全条件时用 Tab 接受；按需模式由快捷键唤醒翻译 UI，或执行一次性直接翻译并替换。当前是 Windows 开发预览，不是已完成通用输入支持的稳定版本。
 
 **重要限制：原有实验性 Tab 写回默认关闭。** 当前通用 UI Automation 的读取、校验和写入不能组成原子操作，仍有覆盖并发输入的风险。测试实验写回时，只使用已备份的非敏感文本。新增直接替换使用独立的、范围受限的原生控件事务，不通过开启该实验开关来扩大兼容性。编译和自动化测试通过不等于真实中文输入法、物理 Tab 或所有应用都已验收。
 
 ## 使用 Windows 预览包
 
-在本仓库 Actions 中打开 `Windows checks` 的成功运行，下载对应提交的 artifact，取出其中的 `TypeLay-Windows-preview.zip`，完整解压后双击 `TypeLay.exe`。不要单独移动可执行文件。`Start-TypeLay.cmd` 是备用入口。
+在本仓库 Actions 中打开 `TypeLay checks` 的成功运行，下载对应提交的 artifact，取出其中的 `TypeLay-Windows-preview.zip`，完整解压后双击 `TypeLay.exe`。不要单独移动可执行文件。`Start-TypeLay.cmd` 是备用入口。
 
 预览包自带 .NET 运行时，不需要 SDK、Python 开发环境或源码。第一次使用时，在设置中明确同意安装本地翻译组件与模型。模型安装后，推理在本机 CPU 上运行。组件和设置存放在 `%LOCALAPPDATA%\TypeLay`，不会作为源码或发布包提交。托盘菜单提供设置、实操教程与退出入口。
 
@@ -58,7 +60,7 @@ python -m pip install -r eng/requirements.txt
 
 ## 跨平台架构
 
-当前可运行产品仍只有 Windows，未加入 Linux/macOS 客户端。共享产品逻辑已从 Windows 宿主独立出来：Core 管理会话与安全规则，Runtime 管理激活、翻译/编辑/接受时序、设置持久化和本地 worker 客户端，Protocol 管理通用帧与 worker 消息，Python worker 保留模型校验、结构保护与推理实现。
+Windows 客户端继续保留；`cachyos-preview` 正在开发 CachyOS + niri/Wayland Linux 预览客户端，安装、支持缺口和真实验证要求见 [Linux 客户端说明](docs/linux.md)。尚未交付 macOS 客户端。共享产品逻辑已从 Windows 宿主独立出来：Core 管理会话与安全规则，Runtime 管理激活、翻译/编辑/接受时序、设置持久化和本地 worker 客户端，Protocol 管理通用帧与 worker 消息，Python worker 保留模型校验、结构保护与推理实现。
 
 App 负责 Windows 组装和 WPF 界面；UIA Broker、输入 Hook、快捷键注册、原生 Edit 写入、焦点、Job Object、启动项和发行安装仍由 Windows 实现。Windows.Contracts 的 DTO/句柄编码只属于 Windows App 与 Broker，不要求其它平台采用它。
 

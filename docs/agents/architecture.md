@@ -18,6 +18,8 @@
 
 `TypeLay.Launcher` 是 Windows 原生入口。发布时从 C 源码编译，调用发行目录 bootstrap/start.ps1；它不包含 SDK 下载和源码编译功能。
 
+`TypeLay.Linux` 是 Linux 组合根，直接装配共享 Runtime，不复制会话控制器。其 GTK 桌面进程负责 layer-shell、niri IPC、同用户 socket 和界面；原生 GTK3 模块在目标应用事件线程处理输入、IME 与原子替换。Linux 子进程监督和 XDG 安装路径不进入共享层。当前支持范围、拒绝条件和部署流程见 `docs/linux.md`。
+
 ## 平台边界不变量
 
 Core 的 TargetId 只比较 backend、opaque value 和 lifetime。WindowsTarget 独立保留 PID/进程启动时间、根/控件 HWND、provider、元素令牌与生命周期，禁止共享逻辑解包句柄。表示变化由 Windows Broker 协议 v2 明确隔离，v1 客户端/服务端不能混用；worker 帧与消息不变。

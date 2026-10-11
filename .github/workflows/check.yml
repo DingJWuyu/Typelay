@@ -28,24 +28,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.13'
-      - name: Export offline development tools
-        if: github.ref == 'refs/heads/cachyos-preview'
-        run: |
-          mkdir -p artifacts/development
-          python -m pip download --no-deps --only-binary=:all: ruff==0.14.0 -d artifacts/development
-          archive="$PWD/artifacts/development/dotnet-sdk.tar.gz"
-          cd "$DOTNET_ROOT"
-          set -- dotnet sdk/10.0.401
-          for path in host/fxr/10.* shared/Microsoft.NETCore.App/10.* shared/Microsoft.AspNetCore.App/10.* packs/Microsoft.NETCore.App.Ref/10.* packs/Microsoft.AspNetCore.App.Ref/10.* packs/Microsoft.NETCore.App.Host.linux-x64/10.* packs/NETStandard.Library.Ref/2.1.0; do
-            if [ -e "$path" ]; then set -- "$@" "$path"; fi
-          done
-          tar -czf "$archive" "$@"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: github.ref == 'refs/heads/cachyos-preview'
-        with:
-          name: typelay-development-${{ github.sha }}
-          path: artifacts/development/
-          retention-days: 1
       - name: Verify shared behavior without Windows
         shell: pwsh
         run: ./dev.ps1 shared-check
@@ -105,14 +87,15 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Install target desktop build dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject gtk-layer-shell niri mesa libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject gtk-layer-shell niri mesa uv grim curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Build the native GTK adapter
-        run: |
-          cmake -S src/TypeLay.Linux/native -B artifacts/linux/native -G Ninja -DCMAKE_BUILD_TYPE=Release -DTYPELAY_NATIVE_TESTS=ON
-          cmake --build artifacts/linux/native
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - name: Build the relocatable Linux client
+        run: python eng/build-linux.py --with-test-fixture
       - name: Exercise actual GTK fields in nested niri
         run: |
           Xvfb :99 -screen 0 1280x960x24 -nolisten tcp &
@@ -126,6 +109,8 @@ jobs:
             artifacts/linux/nested/
             artifacts/linux/native/libtypelay-gtk3.so
             artifacts/linux/native/typelay-supervise
+            artifacts/TypeLay-Linux-preview-x86_64.tar.gz
+            artifacts/TypeLay-Linux-preview-x86_64.tar.gz.sha256
           if-no-files-found: warn
           retention-days: 14
 # Passing this job does not certify physical Tab, Chinese IME, visual parity or safe universal writeback.

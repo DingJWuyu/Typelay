@@ -41,8 +41,8 @@ class Paths:
         self.settings = self.config / "settings.json"
         self.module = self.home / "native/libtypelay-gtk3.so"
         self.launcher = self.home / "typelay"
-        self.python = self.data / "runtime/venv/bin/python"
-        self.models = self.data / "models"
+        self.python = self.data / "components/current/runtime/venv/bin/python"
+        self.models = self.data / "components/current/models"
 
     @staticmethod
     def _xdg(name: str, default: Path) -> Path:

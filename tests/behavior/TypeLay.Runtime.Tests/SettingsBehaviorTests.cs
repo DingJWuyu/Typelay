@@ -53,6 +53,27 @@ public sealed class SettingsBehaviorTests : IDisposable
         Assert.Equal(before, File.ReadAllText(SettingsPath));
     }
 
+    [Theory]
+    [InlineData("auto", "invalid")]
+    [InlineData("unsupported", "en")]
+    public void UnsupportedLanguagesDoNotSaveOrChangeStartup(string source, string target)
+    {
+        var changes = new List<bool>();
+        var store = new SettingsStore(SettingsPath, changes.Add);
+        store.Update(store.Value);
+        string before = File.ReadAllText(SettingsPath);
+        Assert.Throws<ArgumentException>(() => store.Update(store.Value with
+        {
+            Source = source,
+            Target = target,
+            Startup = true
+        }));
+        Assert.Empty(changes);
+        Assert.Equal("auto", store.Value.Source);
+        Assert.Equal("en", store.Value.Target);
+        Assert.Equal(before, File.ReadAllText(SettingsPath));
+    }
+
     [Fact]
     public void DamagedNewPreferencesDoNotEraseExistingExclusions()
     {
