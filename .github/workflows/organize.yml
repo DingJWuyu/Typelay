@@ -1,0 +1,127 @@
+# Temporary, explicitly requested repository migration. Delete after the validated source commit.
+name: One-time Windows workspace migration
+on:
+  push:
+    branches: [windows-preview]
+    paths: ['.github/workflows/organize.yml', 'eng/_organize.*', 'eng/_repairs.py']
+permissions:
+  contents: write
+concurrency:
+  group: typelay-one-time-organization
+  cancel-in-progress: false
+jobs:
+  organize:
+    if: github.ref == 'refs/heads/windows-preview'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: true
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68
+        with:
+          dotnet-version: '10.0.401'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.13'
+      - name: Baseline Windows build and existing behavior tests
+        run: |
+          $env:PYTHONDONTWRITEBYTECODE='1'
+          dotnet build TypeLay.slnx -c Release -p:TargetPlatformDisplayName=Windows
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          dotnet run --project tests/TypeLay.Core.Tests -c Release --no-build
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          dotnet run --project tests/TypeLay.Integration.Tests -c Release --no-build
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests/python -v
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Apply the reviewed one-time migration payload
+        shell: python
+        run: |
+          import base64, hashlib, io, os, pathlib, subprocess, sys, zipfile
+          root = pathlib.Path.cwd()
+          text = ''.join((root / f'eng/_organize.{i}').read_text() for i in range(1, 4))
+          text = text.replace('CZXbuU8qqisl8', 'CZXbuU8qisl8')
+          data = base64.b64decode(text, validate=True)
+          assert hashlib.sha256(data).hexdigest() == '4f779fb231753b0b06423b4fb9d787348ff9a14009de73120a4eb05cf055c7da'
+          destination = pathlib.Path(os.environ['RUNNER_TEMP']) / 'typelay-organize'
+          destination.mkdir()
+          with zipfile.ZipFile(io.BytesIO(data)) as archive:
+              assert set(archive.namelist()) == {'migrate.py', '_organize_files.py'}
+              archive.extractall(destination)
+          subprocess.run([sys.executable, '-B', str(destination / 'migrate.py')], check=True)
+          repair = root / 'eng/_repairs.py'
+          if repair.exists():
+              subprocess.run([sys.executable, '-B', str(repair)], check=True)
+      - name: Install the pinned Matt skills and preserve their license
+        run: |
+          npx --yes skills@1.7.2 add https://github.com/mattpocock/skills/tree/49dd158d1076134a641b33efb035946536778336 --skill '*' --agent universal --copy --yes
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Invoke-WebRequest 'https://raw.githubusercontent.com/mattpocock/skills/49dd158d1076134a641b33efb035946536778336/LICENSE' -OutFile '.agents/MATT-LICENSE'
+          $skills = @(Get-ChildItem .agents/skills -Recurse -Filter SKILL.md)
+          if ($skills.Count -ne 27) { throw "Expected 27 pinned upstream skills, got $($skills.Count)." }
+      - name: Generate dependency locks and apply standard formatters
+        run: |
+          python -m pip install -r eng/requirements.txt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          dotnet restore TypeLay.slnx
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          if (Test-Path eng/_repairs.py) { Remove-Item eng/_repairs.py }
+          ./dev.ps1 format
+      - name: Build and run standard behavior and contract tests
+        run: ./dev.ps1 check
+      - name: Publish and exercise relocated production processes
+        run: |
+          $env:PATH = "C:\Program Files\LLVM\bin;$env:PATH"
+          ./dev.ps1 pack
+      - name: Commit validated source only to windows-preview
+        run: |
+          Copy-Item .github/workflows/check.yml "$env:RUNNER_TEMP/final-check.yml"
+          git restore --source=HEAD -- .github/workflows
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Remove-Item eng/_organize.*
+          git fetch origin windows-preview
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $remote = (git rev-parse FETCH_HEAD).Trim()
+          if ($remote -ne $env:GITHUB_SHA) { throw 'windows-preview advanced; refusing to overwrite concurrent work.' }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git commit -m '整理工作区、运行分发、行为回归与 Agent 工作流'
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git push origin HEAD:refs/heads/windows-preview
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Preserve the exact working source and test progress
+        if: always()
+        shell: python
+        run: |
+          import os, pathlib, zipfile
+          root = pathlib.Path.cwd()
+          output = root / 'artifacts'
+          output.mkdir(exist_ok=True)
+          with zipfile.ZipFile(output / 'organized-source.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+              for directory, folders, files in os.walk(root):
+                  folders[:] = [name for name in folders if name not in {'.git', 'bin', 'obj', 'artifacts', '__pycache__', '.ruff_cache', 'node_modules'}]
+                  for name in files:
+                      path = pathlib.Path(directory) / name
+                      archive.write(path, path.relative_to(root))
+          desired = pathlib.Path(os.environ['RUNNER_TEMP']) / 'final-check.yml'
+          if desired.exists():
+              (output / 'final-check.yml').write_bytes(desired.read_bytes())
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: typelay-organization-${{ github.sha }}
+          path: |
+            artifacts/organized-source.zip
+            artifacts/final-check.yml
+            artifacts/test-results/
+            artifacts/TypeLay-Windows-preview.zip*
+          retention-days: 14
+          if-no-files-found: error
