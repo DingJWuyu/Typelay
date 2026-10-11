@@ -26,7 +26,7 @@
 | 浮层 | 原生译文编辑框、两阶段 Tab、按活动行定位；只读预览明确提示并禁止误导选区 | 本轮记事本实际 IME 组合态保留预览，译文编辑及两阶段 Tab 通过；未知状态预览的鼠标隐藏通过 |
 | 接受 | 低层 Hook、短效许可、精确目标/快照/选区检查、写后核验与未知结果隔离 | 本轮记事本正式 Broker 的整框及人工编辑写回均返回 Verified；普通 Win32 Edit 未取得可靠 IME 状态，只预览且 Tab 正常移焦。B-01/B-03 未关闭，不能认领通用写回 |
 | 托盘/设置 | 快速面板、菜单、启停、退出、语言、排除、主题、自启动、模型安装 | Windows 设置和模型准备已运行，其他交互待测 |
-| 工程 | Core/Protocol/Broker/App/worker 分离，逻辑回归和发布脚本 | Release 构建零警告错误，Core 114、Integration 48、NativeFixture 16、Python 36、源码检查 8 项通过；NativeFixture 专用适配器测试不等于生产写回通过；CI 未运行 |
+| 工程 | Core/Protocol/Broker/App/worker 分离，逻辑回归和发布脚本 | 本机 Release 构建零警告错误，Core 114、Integration 48、NativeFixture 16、Python 36、源码检查 8 项通过；[GitHub Actions 构建、逻辑回归和打包通过](https://github.com/DingJWuyu/Typelay/actions/runs/38106663687)。NativeFixture 专用适配器测试与云端 CI 均不等于生产桌面验收 |
 
 ### 当前能力与实现缺口
 

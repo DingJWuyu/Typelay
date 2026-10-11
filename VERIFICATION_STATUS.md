@@ -16,6 +16,8 @@
 
 **未完成的通用能力：** B-01 非原子 UIA 写回与异步拒绝消耗 Tab 仍开放；新增 B-03 明确记录缺少可靠输入法状态或文本写回接口的普通字段目前只有预览，不能实现通用 Tab 接受及完整浮层编辑。未暴露可编辑文本接口的自绘输入框也尚无后端。这些是实现缺口，不能将要求改成让用户选择“合格输入框”。
 
+本项目已上传至 DingJWuyu/Typelay 的长期分支 `windows-preview`，本地跟踪同名远端分支；`main` 保持原提交 `09fe613a606073876483b51446211030a66a9597`。2026-10-10 的 [GitHub Actions 运行](https://github.com/DingJWuyu/Typelay/actions/runs/38106663687) 在提交 `6bd13aa0d5f66890dd21979a8ed051aab8366715` 上通过结构检查、Python 测试、Windows 编译、逻辑回归及自包含打包。工作流已升级到 Node.js 24 并固定官方发布 SHA，旧运行时弃用提示消失；此结果不代表云端执行过真实桌面、物理 Tab、IME 或模型推理。机器记录见 [github-actions-windows-preview.json](evidence/github-actions-windows-preview.json)。
+
 浏览器回归未执行完成：Chrome 连接器不可用，桌面 Chrome 启动又被自动审批拒绝，返回仅为 blocked by policy；没有重试被拒动作。当前测试桌面只暴露一块 1260×840 显示器，真实多屏 DPI 未执行。此前禁止操作某个应用的限制仅影响该测试场景，不限制产品的通用输入目标。
 
 ### 本轮证据索引
