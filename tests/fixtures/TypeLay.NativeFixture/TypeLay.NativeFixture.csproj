@@ -7,6 +7,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../../../src/TypeLay.App/Windows/KeyboardHook.cs" Link="Product/KeyboardHook.cs" />
+    <Compile Include="../../../src/TypeLay.App/Windows/OnDemandHotkeys.cs" Link="Product/OnDemandHotkeys.cs" />
     <Compile Include="../../../src/TypeLay.App/Windows/Native.cs" Link="Product/Native.cs" />
   </ItemGroup>
 </Project>

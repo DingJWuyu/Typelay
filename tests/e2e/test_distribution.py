@@ -192,6 +192,19 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(result.stderr, b"")
 
     @unittest.skipUnless(sys.platform == "win32", "Production Windows broker")
+    def test_direct_write_is_rejected_without_falling_back_to_foreground_mutation(self):
+        # The production backend has no coordinated writer. This is a refusal
+        # contract, not evidence of successful UIA or background replacement.
+        result = self.broker(frame(request(1, "direct-write")) + frame(request(2, "quit")))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        replies = responses(result.stdout)
+        self.assertEqual([reply["status"] for reply in replies], ["receipt", "bye"])
+        self.assertEqual(replies[0]["receipt"]["status"], 1)  # RejectedBeforeMutation
+        self.assertEqual(replies[0]["receipt"]["reason"], 6)  # Unsupported
+        self.assertIsNone(replies[0]["receipt"]["verifiedSnapshot"])
+        self.assertEqual(result.stderr, b"")
+
+    @unittest.skipUnless(sys.platform == "win32", "Production Windows broker")
     def test_broker_unknown_operation_does_not_corrupt_the_next_frame(self):
         result = self.broker(frame(request(1, "PRIVATE_SENTINEL")) + frame(request(2, "quit")))
         self.assertEqual(result.returncode, 0, result.stderr)

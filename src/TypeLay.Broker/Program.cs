@@ -36,6 +36,10 @@ internal static class Program
                         "hello" => new(Wire.Version, request.Id, "ready"),
                         "clear" => Clear(provider, request),
                         "write" => new(Wire.Version, request.Id, "receipt", Receipt: provider.Write(request)),
+                        // The current UIA provider has no atomic, focus-independent writer.
+                        // Experimental foreground SetValue must not become a silent fallback.
+                        "direct-write" => new(Wire.Version, request.Id, "receipt",
+                            Receipt: new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported)),
                         "return" => new(Wire.Version, request.Id, provider.ReturnToSource(request.BoundTarget) ? "focused" : "denied"),
                         "capture" => Observe(provider, request),
                         "quit" => new(Wire.Version, request.Id, "bye"),

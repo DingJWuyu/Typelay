@@ -166,6 +166,12 @@ internal sealed class QuickPanel : Window
         var statusBorder = UiTheme.Border(status, 0);
         statusBorder.BorderThickness = new(0, 1, 0, 1);
         _body.Children.Add(statusBorder);
+        if (_session.OperationStatus is { } operation)
+        {
+            var feedback = UiTheme.Text(operation, 11, true);
+            feedback.Margin = new(14, 10, 14, 10);
+            _body.Children.Add(feedback);
+        }
         var actions = new StackPanel { Margin = new(7) };
         var settingsButton = UiTheme.Button("⚙    设置…", () => { Hide(); _showSettings(); });
         settingsButton.Height = 38;

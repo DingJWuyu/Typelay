@@ -31,6 +31,8 @@ internal static class Native
     {
         public int Size; public Rect Monitor, Work; public uint Flags;
     }
+    [DllImport("user32.dll", SetLastError = true)] public static extern bool RegisterHotKey(nint hwnd, int id, uint modifiers, uint key);
+    [DllImport("user32.dll", SetLastError = true)] public static extern bool UnregisterHotKey(nint hwnd, int id);
     [DllImport("user32.dll")] public static extern nint GetForegroundWindow();
     [DllImport("user32.dll")] public static extern nint GetAncestor(nint hwnd, uint flags);
     [DllImport("user32.dll")] public static extern short GetAsyncKeyState(int key);

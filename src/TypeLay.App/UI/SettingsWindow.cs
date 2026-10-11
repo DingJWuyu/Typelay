@@ -5,6 +5,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
 using Microsoft.Win32;
+using TypeLay.Core;
 namespace TypeLay.App;
 
 internal sealed class SettingsWindow : Window
@@ -15,6 +16,8 @@ internal sealed class SettingsWindow : Window
     private readonly StackPanel _nav;
     private readonly Action _openTutorial;
     private string _page = "general", _setupStatus = "";
+    private string? _settingsError;
+    public Func<string>? ShortcutStatus { get; set; }
     private CancellationTokenSource? _install;
     private ProgressBar? _progress;
     private TextBlock? _progressLabel;
@@ -116,6 +119,8 @@ internal sealed class SettingsWindow : Window
         _content.Children.Clear();
         _progress = null;
         _progressLabel = null;
+        if (_settingsError is { } error)
+            Note("设置未保存", error);
         switch (_page)
         {
             case "general":
@@ -191,11 +196,17 @@ internal sealed class SettingsWindow : Window
     {
         try
         {
+            _settingsError = null;
             _settings.Update(value);
+        }
+        catch (ArgumentException)
+        {
+            _settingsError = "请使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，排除 F12。两个按需快捷键不能相同。";
+            Refresh();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
-            _setupStatus = "设置未保存。请检查当前用户目录与组织策略。";
+            _settingsError = "请检查当前用户目录与组织策略。";
             Refresh();
         }
     }
@@ -205,6 +216,11 @@ internal sealed class SettingsWindow : Window
         if (!_model.Ready)
             InstallCard();
         Row("启用 TypeLay", "暂停后保留托盘入口，输入框旁不显示翻译界面。", UiTheme.Toggle(_settings.Value.Enabled, () => Save(_settings.Value with { Enabled = !_settings.Value.Enabled })));
+        var modes = new ComboBox { MinWidth = 155, ItemsSource = new[] { "自动模式（默认）", "按需模式" },
+            SelectedIndex = _settings.Value.Mode == WorkMode.OnDemand ? 1 : 0 };
+        System.Windows.Automation.AutomationProperties.SetName(modes, "工作模式");
+        modes.SelectionChanged += (_, _) => Save(_settings.Value with { Mode = modes.SelectedIndex == 1 ? WorkMode.OnDemand : WorkMode.Automatic });
+        Row("工作模式", "自动模式保留实时翻译；按需模式保持静默，仅通过快捷键启动。", modes);
         Row("开发版实验：允许 Tab 写回", "默认关闭。跨进程非原子写回尚未完成实机安全验收；仅使用已备份的测试文本。", UiTheme.Toggle(_settings.Value.ExperimentalWriteback, () =>
         {
             if (_settings.Value.ExperimentalWriteback)
@@ -277,12 +293,31 @@ internal sealed class SettingsWindow : Window
     }
     private void Shortcuts()
     {
-        Heading("快捷键", "当前开发版固定使用 Tab 与 Esc；自定义和冲突检测尚未开放。");
+        Heading("快捷键", "Tab 与 Esc 保留原有行为。两个按需快捷键可以分别配置。");
         Row("接受译文", "仅在候选与原文对应、焦点和输入法状态明确时尝试写回。", UiTheme.Text("Tab", 13, bold: true));
         Row("编辑后返回原输入框", "第一次 Tab 返回；确认焦点后，下一次 Tab 接受。", UiTheme.Text("Tab → Tab", 13, bold: true));
         Row("退出当前翻译", "不修改原文，不发送、不提交。组合输入时优先交还输入法。", UiTheme.Text("Esc", 13, bold: true));
         Rule();
+        var wake = ShortcutInput(_settings.Value.WakeShortcut, "唤醒翻译 UI 快捷键");
+        var direct = ShortcutInput(_settings.Value.DirectShortcut, "直接翻译并替换快捷键");
+        Row("唤醒翻译 UI", "为当前输入框开启持续翻译；离开后结束。", wake);
+        Row("直接翻译并替换", "一次性操作，绑定原输入框，不显示预览、不自动发送。", direct);
+        var save = UiTheme.Button("保存按需快捷键", () => Save(_settings.Value with { WakeShortcut = wake.Text, DirectShortcut = direct.Text }));
+        save.HorizontalAlignment = HorizontalAlignment.Right;
+        save.Margin = new(0, 8, 0, 14);
+        _content.Children.Add(save);
+        Note("按需快捷键状态", ShortcutStatus?.Invoke() ?? "仅在启用 TypeLay 的按需模式下生效。自动模式不注册这两个快捷键。");
+        Note("直接替换的当前限制", "一次性本地翻译流程已接通，但现有输入后端尚不支持可靠的后台写回。目前直译会安全拒写，不会修改原文，也不会回退到抢焦点或实验性 Tab 写回。失败原因可在托盘快速面板查看。");
+        Note("组合键格式", "例如 Ctrl+Shift+F9。支持 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24，排除系统保留的 F12。组合键被其他应用占用时，设置仍保存，但对应命令不会启用。");
+        Rule();
         Note("保留原应用快捷键", "Ctrl / Alt / Shift / Win 与 Tab 的组合交还原应用。没有有效候选时，Tab 不执行接受。");
+    }
+    private static TextBox ShortcutInput(string value, string label)
+    {
+        var input = new TextBox { Text = value, Width = 178, MaxLength = 64, Padding = new(9, 8, 9, 8),
+            VerticalAlignment = VerticalAlignment.Center, FontSize = 12 };
+        System.Windows.Automation.AutomationProperties.SetName(input, label);
+        return input;
     }
     private void Applications()
     {

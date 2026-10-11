@@ -15,5 +15,6 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="TypeLay.DesktopFixture" />
+    <InternalsVisibleTo Include="TypeLay.App.Tests" />
   </ItemGroup>
 </Project>

@@ -9,6 +9,7 @@
     <Project Path="tests/behavior/TypeLay.Core.Tests/TypeLay.Core.Tests.csproj" />
   </Folder>
   <Folder Name="/tests/contracts/">
+    <Project Path="tests/contracts/TypeLay.App.Tests/TypeLay.App.Tests.csproj" />
     <Project Path="tests/contracts/TypeLay.Protocol.Tests/TypeLay.Protocol.Tests.csproj" />
   </Folder>
   <Folder Name="/tests/e2e/">

@@ -11,17 +11,25 @@ internal sealed class SessionController : IDisposable
     private readonly KeyboardHook _hook;
     private readonly IInputBroker _broker;
     private readonly Session _session;
+    private readonly TranslationActivation _activation;
+    private readonly OnDemandHotkeys _hotkeys;
+    private DirectTranslation? _pendingDirect;
+    private bool _directRunning;
+    private long _configurationRevision;
     private readonly DispatcherTimer _timer;
     private long _generation, _nextCapture, _permitUntil, _editTransitionUntil, _retryBrokerAt;
     private bool _capturing, _writing, _translationRunning, _startingBroker, _disposed;
     private string? _statusOverride;
     private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
     private string? _lastTrace;
+    public string ShortcutStatus => _settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand && !_hook.ShortcutsReady
+        ? "快捷键输入观察未就绪，当前不会执行按需命令。" : _hotkeys.Status;
     public bool InputAvailable => _broker.Available && _hook.Ready;
     public string? LastApplication
     {
         get; private set;
     }
+    public string? OperationStatus { get; private set; }
     public string ServiceStatus { get; private set; } = "正在连接输入服务";
     public event Action? Changed;
     public SessionController(SettingsStore settings, ModelClient model, OverlayWindow overlay, bool automationTest = false,
@@ -33,6 +41,8 @@ internal sealed class SessionController : IDisposable
         _overlay = overlay;
         _hook = new KeyboardHook(automationTest, overlay.Handle);
         _session = new Session(settings.Value.Direction);
+        _activation = new TranslationActivation(settings.Value.Mode);
+        _hotkeys = new OnDemandHotkeys(overlay.Handle);
         _timer = new DispatcherTimer(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(20) };
         _timer.Tick += (_, _) => Tick();
         overlay.BeginEditing = BeginEdit;
@@ -77,6 +87,16 @@ internal sealed class SessionController : IDisposable
     }
     private void Configure()
     {
+        _configurationRevision++;
+        if (_pendingDirect is not null)
+            SetServiceStatus("设置已改变，未执行本次直接替换。");
+        _pendingDirect = null;
+        _activation.SetMode(_settings.Value.Mode);
+        _activation.End();
+        _hook.SetShortcuts([]);
+        _hotkeys.Configure(_settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand,
+            _settings.Value.WakeShortcut, _settings.Value.DirectShortcut);
+        _hook.SetShortcuts(_hotkeys.Bindings);
         ClearBrokerSnapshot();
         _generation++;
         _hook.Revoke();
@@ -93,12 +113,26 @@ internal sealed class SessionController : IDisposable
             return;
         while (_hook.TryRead(out var notice))
         {
-            if (notice?.Kind == "escape")
+            if (notice?.Kind == "wake")
+                Wake(notice);
+            else if (notice?.Kind == "direct")
+                QueueDirect(notice);
+            else if (notice?.Kind == "escape")
                 _ = Escape();
             else if (notice?.Permit is not null)
                 _ = Accept(notice);
         }
         long now = Environment.TickCount64;
+        if (_pendingDirect is { } pending && !_directRunning)
+        {
+            if (!_model.Ready || !_broker.Available || now - pending.TriggeredAtMs > 120_000)
+            {
+                _pendingDirect = null;
+                SetServiceStatus("本地服务不可用或等待超时，未执行直接替换。");
+            }
+            else if (!_translationRunning && !_model.Busy)
+                _ = TranslateDirect(pending);
+        }
         if (!_broker.Available && !_startingBroker && now >= _retryBrokerAt)
             _ = StartBroker();
         if (_session.Current is { } current)
@@ -137,7 +171,7 @@ internal sealed class SessionController : IDisposable
             _nextCapture = now + 35;
             _ = Capture();
         }
-        if (!_translationRunning && !_model.Busy && _model.Ready && !_writing)
+        if (!_translationRunning && !_directRunning && _pendingDirect is null && !_model.Busy && _model.Ready && !_writing)
         {
             var job = _session.TakeTranslationJob(now);
             if (job is not null)
@@ -157,6 +191,7 @@ internal sealed class SessionController : IDisposable
         _capturing = true;
         long generation = _generation;
         long windowEpoch = _hook.WindowEpoch;
+        long contentEpoch = _hook.ContentEpoch;
         var request = Request("capture");
         try
         {
@@ -190,6 +225,21 @@ internal sealed class SessionController : IDisposable
             if (result.Focus == FocusMember.Overlay)
                 _editTransitionUntil = 0;
             LastApplication = result.Application;
+            bool active = _activation.Observe(snapshot.Target, result.Focus);
+            if (!active)
+            {
+                if (_session.Current is not null)
+                {
+                    _generation++;
+                    _session.LeaveFamily();
+                }
+                _permitUntil = 0;
+                _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, false), null);
+                if (result.Focus == FocusMember.Source)
+                    _hook.PublishShortcut(new(snapshot, contentEpoch, request.ForegroundEpoch));
+                _overlay.HideQuietly();
+                return;
+            }
             _session.Observe(snapshot, result.Focus, now);
             AcceptancePermit? permit = null;
             // A keystroke arriving during a remote read must revoke acceptance, but
@@ -208,6 +258,8 @@ internal sealed class SessionController : IDisposable
             _permitUntil = permit?.ExpiresAtMs ?? 0;
             bool escape = _session.State is not (SessionState.NoSession or SessionState.Paused or SessionState.OutcomeUnknown);
             _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, escape), permit);
+            if (result.Focus == FocusMember.Source)
+                _hook.PublishShortcut(new(snapshot, contentEpoch, request.ForegroundEpoch));
             Render();
             Trace(inputUnchanged ? "capture" : "capture-input-changed");
         }
@@ -219,6 +271,96 @@ internal sealed class SessionController : IDisposable
             Changed?.Invoke();
         }
         finally { _capturing = false; }
+    }
+    private void Wake(InputNotice notice)
+    {
+        if (!_settings.Value.Enabled || _settings.Value.Mode != WorkMode.OnDemand || notice.Source is not { } source
+            || notice.CommandGeneration != _hook.CommandGeneration || notice.ForegroundEpoch != _hook.ForegroundEpoch
+            || Native.GetForegroundWindow() != (nint)source.Target.RootHwnd)
+            return;
+        if (_activation.Wake(source.Target))
+        {
+            // Explicit wake can reopen an Esc-suppressed field; repeated wake must
+            // not erase a live candidate or a user's translation draft.
+            if (_session.State == SessionState.NoSession)
+                _session.LeaveFamily();
+            _generation++;
+            _nextCapture = 0;
+        }
+    }
+    private void QueueDirect(InputNotice notice)
+    {
+        if (!_settings.Value.Enabled || _settings.Value.Mode != WorkMode.OnDemand || notice.Source is not { } source
+            || notice.CommandGeneration != _hook.CommandGeneration)
+            return;
+        if (_pendingDirect is not null || _directRunning)
+        {
+            SetServiceStatus("已有一次直接翻译正在处理，未追加操作。");
+            return;
+        }
+        if (!_model.Ready)
+        {
+            SetServiceStatus("本地模型尚未就绪，未执行直接替换。");
+            return;
+        }
+        var (operation, reason) = DirectTranslation.Start(source, _settings.Value.Direction, notice.AcceptedAtMs);
+        if (operation is null)
+        {
+            SetServiceStatus(reason == Denial.NoCandidate ? "没有需要直接翻译的文本。" : "无法确认原输入内容的安全状态，未执行直接替换。");
+            return;
+        }
+        // The trigger's snapshot, not the currently focused field, owns this operation.
+        // Ending a foreground session never clears a pending direct operation.
+        StopSession();
+        _pendingDirect = operation;
+        SetServiceStatus("正在直接翻译；可以切换输入框，当前操作仍绑定原输入框。");
+    }
+    private async Task TranslateDirect(DirectTranslation operation)
+    {
+        _directRunning = true;
+        long configuration = _configurationRevision;
+        try
+        {
+            var response = await _model.TranslateAsync(operation.Job);
+            if (_disposed || configuration != _configurationRevision)
+                return;
+            if (response.Status != "translated")
+            {
+                SetServiceStatus(response.Status == "no-translation" ? "当前文本无需翻译，未作替换。" : "直接翻译未完成，原文未作替换。");
+                return;
+            }
+            var (plan, _) = operation.Complete(response.Text);
+            if (plan is null)
+            {
+                SetServiceStatus("译文未通过内容校验，未执行直接替换。");
+                return;
+            }
+            // Never route detached work through foreground-only write/return operations.
+            var result = await _broker.CallAsync(new(Wire.Version, 0, "direct-write", "",
+                BoundTarget: plan.Expected.Target, Plan: plan, Excluded: _settings.Value.Excluded), TimeSpan.FromSeconds(2));
+            if (_disposed)
+                return;
+            SetServiceStatus(result.Receipt?.Status == WriteStatus.Verified ? "已直接替换原输入框文字。"
+                : result.Receipt?.Reason == Denial.Unsupported ? "当前输入后端尚不支持可靠的直接写回，原文未作替换。"
+                : "直接写回未获确认，请检查原输入框；不会自动重试。");
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            if (!_disposed)
+                SetServiceStatus("直接翻译或写回服务中断；不会自动重试替换。");
+        }
+        finally
+        {
+            if (ReferenceEquals(_pendingDirect, operation))
+                _pendingDirect = null;
+            _directRunning = false;
+        }
+    }
+    private void SetServiceStatus(string status)
+    {
+        ServiceStatus = status;
+        OperationStatus = status;
+        Changed?.Invoke();
     }
     private async Task Translate(TranslationJob job)
     {
@@ -359,6 +501,7 @@ internal sealed class SessionController : IDisposable
     }
     public void StopSession()
     {
+        _activation.End();
         ClearBrokerSnapshot();
         _generation++;
         _hook.Revoke();
@@ -425,6 +568,9 @@ internal sealed class SessionController : IDisposable
     {
         _disposed = true;
         _timer.Stop();
+        _pendingDirect = null;
+        _hook.SetShortcuts([]);
+        _hotkeys.Dispose();
         _hook.Dispose();
         _broker.Dispose();
         _settings.Changed -= Configure;

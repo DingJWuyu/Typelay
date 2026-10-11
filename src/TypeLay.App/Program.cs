@@ -73,7 +73,11 @@ internal static class Program
                     Process.Start(new ProcessStartInfo(file) { UseShellExecute = true });
                 }
             }
-            var window = new SettingsWindow(settings, model, Tutorial) { SessionMustEnd = session.StopSession };
+            var window = new SettingsWindow(settings, model, Tutorial)
+            {
+                SessionMustEnd = session.StopSession,
+                ShortcutStatus = () => session.ShortcutStatus
+            };
             overlay.LanguageRequested = () => window.ShowPage("language");
             var quick = new QuickPanel(settings, model, session, () => window.ShowPage(), () => app.Shutdown());
             icon = MakeTrayIcon();
