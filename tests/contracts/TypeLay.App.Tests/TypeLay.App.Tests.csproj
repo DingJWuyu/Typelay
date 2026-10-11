@@ -10,6 +10,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../../src/TypeLay.App/TypeLay.App.csproj" />
+    <ProjectReference Include="../../support/TypeLay.Platform.Windows/TypeLay.Platform.Windows.csproj" />
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />

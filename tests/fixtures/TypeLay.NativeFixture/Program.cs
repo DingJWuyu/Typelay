@@ -17,13 +17,14 @@ internal static class Program
             return 2;
         }
         bool hookTest = args.Length == 1 && args[0] is "--hook-test" or "--hook-test-automation";
-        if (args.Length != 0 && !hookTest)
+        bool stockControls = args.Length == 1 && args[0] == "--stock-controls";
+        if (args.Length != 0 && !hookTest && !stockControls)
             return 2;
-        return RunWindows(hookTest, args.Contains("--hook-test-automation", StringComparer.Ordinal));
+        return RunWindows(hookTest, args.Contains("--hook-test-automation", StringComparer.Ordinal), stockControls);
     }
 
     [SupportedOSPlatform("windows")]
-    private static int RunWindows(bool hookTest, bool automation)
+    private static int RunWindows(bool hookTest, bool automation, bool stockControls)
     {
         N.SetProcessDpiAwarenessContext((nint)(-4));
         nint instance = N.GetModuleHandle(null);
@@ -103,6 +104,12 @@ internal static class Program
             if (hwnd == 0)
                 throw new InvalidOperationException("Fixture control creation failed.");
             int cookie = RandomNumberGenerator.GetInt32(1, int.MaxValue);
+            if (stockControls)
+            {
+                StockFields.Add(hwnd);
+                fields.Add(new(name, (long)hwnd, classification, cookie));
+                return; // Unmodified system Edit: no fixture IME or lifetime properties.
+            }
             if (!N.SetProp(hwnd, N.ImeProperty, (nint)1)
                 || !N.SetProp(hwnd, N.LifetimeProperty, (nint)cookie))
                 throw new InvalidOperationException("Fixture metadata initialization failed.");
@@ -123,6 +130,7 @@ internal static class Program
     private static int _submits;
     private static HookHarness? _hookHarness;
     private static readonly Dictionary<nint, nint> PreviousProcedures = new();
+    private static readonly HashSet<nint> StockFields = new();
     // Keep delegates alive as long as the HWNDs exist.
     [SupportedOSPlatform("windows")] private static readonly N.WindowProc RootProc = RootWindowProc;
     [SupportedOSPlatform("windows")] private static readonly N.WindowProc EditProc = EditWindowProc;
@@ -173,7 +181,7 @@ internal static class Program
         }
         if (message == N.FixtureSubmitCount)
             return (nint)_submits;
-        if (message == N.FixtureFocus && PreviousProcedures.ContainsKey((nint)wParam))
+        if (message == N.FixtureFocus && (PreviousProcedures.ContainsKey((nint)wParam) || StockFields.Contains((nint)wParam)))
         {
             N.SetForegroundWindow(hwnd);
             N.SetFocus((nint)wParam);

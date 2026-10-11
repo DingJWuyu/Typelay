@@ -44,7 +44,7 @@ public enum FieldAccess
 public enum SessionState
 {
     NoSession, Translating, ValidTranslation, EditingTranslation, ReturningToSource,
-    EditedTranslationPending, Invalid, TranslationFailed, Applying, OutcomeUnknown, Paused, Unsupported
+    EditedTranslationPending, Invalid, TranslationFailed, Applying, OutcomeUnknown, Paused, Unsupported, IdleCapsule
 }
 public enum FocusMember
 {
@@ -69,7 +69,7 @@ public enum WriteStatus
 public sealed record InputSnapshot(TargetId Target, string Text, TextRange? Selection,
     RectPx Bounds, bool Multiline, FieldAccess Access, ImeState Ime,
     long ObservedAtMs, long InputEpoch, long FocusEpoch, bool WriteSupported = true, string? CommittedPrefix = null,
-    string? PreviewText = null)
+    string? PreviewText = null, bool DirectWriteSupported = false)
 {
     public override string ToString() => "InputSnapshot { content = [redacted] }";
     public bool IsUsable => Access == FieldAccess.Supported && Ime == ImeState.Clear
