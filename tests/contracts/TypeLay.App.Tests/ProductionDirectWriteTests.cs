@@ -27,7 +27,8 @@ public sealed class ProductionDirectWriteTests
         using var broker = Start("dotnet", Path.Combine(root,
             "src/TypeLay.Broker/bin/Release/net10.0-windows/TypeLay.Broker.dll"));
         string token = broker.StartInfo.Environment["TYPELAY_PIPE_TOKEN"]!;
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
         long id = 0;
         try
         {
@@ -108,11 +109,12 @@ public sealed class ProductionDirectWriteTests
         }
         finally
         {
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             foreach (var process in new[] { broker, fixture })
                 if (!process.HasExited)
                 {
                     process.Kill(true);
-                    await process.WaitForExitAsync();
+                    await process.WaitForExitAsync(cleanup.Token);
                 }
         }
     }
