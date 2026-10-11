@@ -15,7 +15,9 @@ static gint connection = -1;
 static guint input_watch, output_watch;
 static GByteArray *incoming, *outgoing;
 static char *lifetime;
-static JsonObject *publication;
+static JsonObject *publication, *shortcut_configuration, *shortcut_authority;
+static guint shortcut_key;
+static gboolean shortcut_consumed;
 static gboolean tab_down, tab_consumed, escape_down, escape_consumed;
 static gboolean initialized;
 static GQueue consumed_ids = G_QUEUE_INIT;
@@ -51,8 +53,14 @@ gint64 tl_now(void) {
     return (gint64)value.tv_sec * 1000 + value.tv_nsec / 1000000;
 }
 void tl_clear_permit(void) { if (publication) { json_object_unref(publication); publication = NULL; } }
+static void clear_shortcut(void) {
+    if (shortcut_authority) { json_object_unref(shortcut_authority); shortcut_authority = NULL; }
+}
 static void disconnect_peer(void) {
     tl_clear_permit();
+    clear_shortcut();
+    if (shortcut_configuration) { json_object_unref(shortcut_configuration); shortcut_configuration = NULL; }
+    shortcut_key = 0; shortcut_consumed = FALSE;
     if (input_watch) { g_source_remove(input_watch); input_watch = 0; }
     if (output_watch) { g_source_remove(output_watch); output_watch = 0; }
     if (connection >= 0) { close(connection); connection = -1; }
@@ -105,6 +113,8 @@ void tl_invalidate(Target *target, gboolean text_changed, gboolean focus_changed
     if (text_changed) target->content_revision++;
     if (focus_changed) {
         target->focus_revision++;
+        clear_shortcut();
+        shortcut_key = 0; shortcut_consumed = FALSE;
         tab_down = escape_down = tab_consumed = escape_consumed = FALSE;
     }
     tl_clear_permit();
@@ -120,6 +130,7 @@ void tl_invalidate(Target *target, gboolean text_changed, gboolean focus_changed
 }
 void tl_forget(Target *target) {
     tl_clear_permit();
+    clear_shortcut();
     JsonObject *event = json_object_new();
     json_object_set_string_member(event, "target", target->id);
     tl_send_event("destroy", event);
@@ -149,14 +160,29 @@ static void command(JsonObject *frame) {
         respond(id, reply);
     } else if (strcmp(operation, "quarantine") == 0) {
         if (target) target->quarantined = TRUE;
-        tl_clear_permit(); respond(id, NULL);
+        tl_clear_permit(); clear_shortcut(); respond(id, NULL);
+    } else if (strcmp(operation, "configure-shortcuts") == 0) {
+        clear_shortcut();
+        if (shortcut_configuration) json_object_unref(shortcut_configuration);
+        shortcut_configuration = data ? tl_copy(data) : NULL;
+        shortcut_key = 0; shortcut_consumed = FALSE;
+        respond(id, NULL);
+    } else if (strcmp(operation, "publish-shortcut") == 0) {
+        clear_shortcut();
+        JsonObject *basis = tl_object(data, "authority");
+        if (target && target == tl_focused() && tl_metadata_matches(target, basis)
+            && g_strcmp0(tl_string(data, "generation"), tl_string(shortcut_configuration, "generation")) == 0)
+            shortcut_authority = tl_copy(data);
+        respond(id, NULL);
     } else if (strcmp(operation, "revoke") == 0) {
-        tl_clear_permit(); respond(id, NULL);
+        tl_clear_permit(); clear_shortcut(); respond(id, NULL);
     } else if (strcmp(operation, "publish") == 0) {
         tl_clear_permit();
         JsonObject *basis = tl_object(data, "authority");
         if (target && target == tl_focused() && tl_metadata_matches(target, basis)) publication = tl_copy(data);
-        respond(id, NULL);
+        JsonObject *reply = json_object_new();
+        json_object_set_boolean_member(reply, "published", publication != NULL);
+        respond(id, reply);
     } else { disconnect_peer(); }
 }
 static gboolean read_input(GIOChannel *channel, GIOCondition condition, gpointer data) {
@@ -244,6 +270,49 @@ static void remember(const char *id) {
     g_queue_push_tail(&consumed_ids, g_strdup(id));
     while (g_queue_get_length(&consumed_ids) > 128) g_free(g_queue_pop_head(&consumed_ids));
 }
+static gboolean shortcut_event(GdkEventKey *event) {
+    gboolean down = event->type == GDK_KEY_PRESS;
+    if (shortcut_key && event->hardware_keycode == shortcut_key) {
+        gboolean consumed = shortcut_consumed;
+        if (!down) { shortcut_key = 0; shortcut_consumed = FALSE; }
+        return consumed;
+    }
+    if (!down || shortcut_key || event->send_event || !shortcut_configuration || !shortcut_authority
+        || !json_object_has_member(shortcut_configuration, "enabled")
+        || !json_object_get_boolean_member(shortcut_configuration, "enabled")) return FALSE;
+    guint modifiers = event->state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_MOD1_MASK | GDK_MOD3_MASK
+        | GDK_MOD4_MASK | GDK_MOD5_MASK | GDK_SUPER_MASK | GDK_HYPER_MASK | GDK_META_MASK);
+    guint key = gdk_keyval_to_upper(event->keyval);
+    const char *kind = NULL;
+    const char *names[] = {"wake", "direct"};
+    for (guint index = 0; index < G_N_ELEMENTS(names); index++) {
+        JsonObject *binding = tl_object(shortcut_configuration, names[index]);
+        if ((gint64)key == tl_integer(binding, "keyval", -1)
+            && (gint64)modifiers == tl_integer(binding, "modifiers", -1)) kind = names[index];
+    }
+    if (!kind) return FALSE;
+    Target *target = tl_focused();
+    JsonObject *approved = tl_object(shortcut_authority, "authority");
+    gint64 age = tl_now() - tl_integer(approved, "observedAtMs", 0);
+    if (!target || !target->ime_known || target->composing || age < 0 || age > 150
+        || !tl_metadata_matches(target, approved)) return FALSE;
+    /* Freeze the actual trigger's text and selection, not a later IPC poll. The
+       metadata-only read approval is revalidated before any text is obtained. */
+    JsonObject *description = tl_describe(target);
+    JsonObject *read = description ? tl_capture(target, tl_object(description, "authority")) : NULL;
+    if (description) json_object_unref(description);
+    if (!read) return FALSE;
+    JsonObject *message = json_object_new();
+    json_object_set_string_member(message, "kind", kind);
+    json_object_set_string_member(message, "generation", tl_string(shortcut_configuration, "generation"));
+    json_object_set_object_member(message, "native", read);
+    json_object_set_int_member(message, "acceptedAtMs", tl_now());
+    tl_clear_permit(); clear_shortcut();
+    tl_send_event("shortcut", message);
+    shortcut_key = event->hardware_keycode;
+    shortcut_consumed = connection >= 0;
+    return shortcut_consumed;
+}
 static gboolean key_event(GdkEventKey *event) {
     gboolean down = event->type == GDK_KEY_PRESS;
     gboolean is_tab = event->keyval == GDK_KEY_Tab || event->keyval == GDK_KEY_ISO_Left_Tab;
@@ -262,7 +331,8 @@ static gboolean key_event(GdkEventKey *event) {
     JsonObject *basis = tl_object(publication, "authority");
     if (g_strcmp0(target->id, tl_string(basis, "target")) != 0
         || (gint64)target->input_revision != tl_integer(basis, "inputRevision", -1)
-        || (gint64)target->focus_revision != tl_integer(basis, "focusRevision", -1)) {
+        || (gint64)target->focus_revision != tl_integer(basis, "focusRevision", -1)
+        || !tl_metadata_matches(target, basis)) {
         tl_clear_permit(); return FALSE;
     }
     if (is_escape) {
@@ -303,7 +373,7 @@ static gboolean key_event(GdkEventKey *event) {
 static void dispatch(GdkEvent *event, gpointer data) {
     (void)data;
     if (event->type == GDK_KEY_PRESS || event->type == GDK_KEY_RELEASE) {
-        if (key_event(&event->key)) return;
+        if (shortcut_event(&event->key) || key_event(&event->key)) return;
         if (event->type == GDK_KEY_PRESS) {
             Target *target = tl_focused();
             if (target) tl_invalidate(target, FALSE, FALSE);
@@ -319,17 +389,25 @@ static gboolean realized(GSignalInvocationHint *hint, guint count, const GValue 
     if (count > 0) tl_discover(g_value_get_object(&values[0]), TRUE);
     return TRUE;
 }
-G_MODULE_EXPORT void gtk_module_init(gint *argc, gchar ***argv) {
-    (void)argc; (void)argv;
-    if (initialized || g_getenv("TYPELAY_DESKTOP")) return;
-    GdkDisplay *display = gdk_display_get_default();
-    if (!display || !GDK_IS_WAYLAND_DISPLAY(display)) return;
-    initialized = TRUE;
-    lifetime = g_uuid_string_random();
+static void initialize_display(GdkDisplay *display) {
+    if (initialized || g_getenv("TYPELAY_DESKTOP") || !display || !GDK_IS_WAYLAND_DISPLAY(display)) return;
+    /* Module loading can precede the first GtkWidget class initialization. Looking
+       up its signal without class-ref used to return zero and disable the module. */
+    gpointer widget_class = g_type_class_ref(GTK_TYPE_WIDGET);
     guint signal_id = g_signal_lookup("realize", GTK_TYPE_WIDGET);
-    if (!signal_id) return;
+    if (!signal_id) { g_type_class_unref(widget_class); return; }
     g_signal_add_emission_hook(signal_id, 0, realized, NULL, NULL);
+    g_type_class_unref(widget_class);
+    lifetime = g_uuid_string_random();
+    initialized = TRUE;
     gdk_event_handler_set(dispatch, NULL, NULL);
     connect_peer(NULL);
     g_timeout_add_seconds(1, connect_peer, NULL);
+}
+G_MODULE_EXPORT void gtk_module_init(gint *argc, gchar ***argv) {
+    (void)argc; (void)argv;
+    initialize_display(gdk_display_get_default());
+}
+G_MODULE_EXPORT void gtk_module_display_init(GdkDisplay *display) {
+    initialize_display(display);
 }
