@@ -3,6 +3,7 @@ using System.Runtime.ExceptionServices;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -57,6 +58,14 @@ public sealed class SettingsRenderingTests
                         foreach (var input in Descendants(window).OfType<TextBox>())
                             Assert.InRange(input.ActualWidth, 150, window.ActualWidth);
                         Render(window, $"settings-shortcuts-{theme}-{width}.png");
+                        window.ShowPage();
+                        window.UpdateLayout();
+                        foreach (var selector in Descendants(window).OfType<ComboBox>())
+                        {
+                            Assert.InRange(selector.ActualHeight, 34, 38);
+                            Assert.IsType<Popup>(selector.Template.FindName("PART_Popup", selector));
+                        }
+                        Render(window, $"settings-general-{theme}-{width}.png");
                     }
                 }
                 window.Width = 944;
@@ -64,7 +73,6 @@ public sealed class SettingsRenderingTests
                 UiTheme.Apply("light");
                 window.ShowPage();
                 window.UpdateLayout();
-                Render(window, "settings-general-light-944.png");
                 VerifyEmptyFieldCapsule(window, settings.Value);
                 window.Hide();
                 ControllerDesktopScenario.Run();
@@ -76,7 +84,10 @@ public sealed class SettingsRenderingTests
                 if (Directory.Exists(directory))
                     Directory.Delete(directory, true);
             }
-        }) { IsBackground = true };
+        })
+        {
+            IsBackground = true
+        };
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         Assert.True(thread.Join(TimeSpan.FromSeconds(40)), "The WPF desktop scenarios exceeded their deadline.");
@@ -109,13 +120,21 @@ public sealed class SettingsRenderingTests
                 Assert.Null(session.TakeTranslationJob(1500));
                 Render(overlay, $"overlay-idle-{theme}.png");
             }
-            var populated = source with { Text = "hello", Selection = new TextRange(5, 5), InputEpoch = 2 };
+            var populated = source with
+            {
+                Text = "hello",
+                Selection = new TextRange(5, 5),
+                InputEpoch = 2
+            };
             session.Observe(populated, FocusMember.Source, 1600);
             overlay.Render(session, settings, false);
             overlay.UpdateLayout();
             Assert.True(Descendants(overlay).OfType<TextBox>().Single().IsVisible);
             Assert.True(overlay.Height > 100);
-            session.Observe(source with { InputEpoch = 3 }, FocusMember.Source, 1700);
+            session.Observe(source with
+            {
+                InputEpoch = 3
+            }, FocusMember.Source, 1700);
             overlay.Render(session, settings, false);
             overlay.UpdateLayout();
             Assert.True(overlay.IsVisible);
@@ -124,7 +143,10 @@ public sealed class SettingsRenderingTests
             session.Escape();
             overlay.Render(session, settings, false);
             Assert.False(overlay.IsVisible);
-            session.Observe(source with { InputEpoch = 3 }, FocusMember.Source, 1800);
+            session.Observe(source with
+            {
+                InputEpoch = 3
+            }, FocusMember.Source, 1800);
             overlay.Render(session, settings, false);
             Assert.False(overlay.IsVisible);
         }
@@ -145,7 +167,9 @@ public sealed class SettingsRenderingTests
     private static void Render(Window window, string name)
     {
         var root = (FrameworkElement)window.Content;
-        var image = new RenderTargetBitmap((int)root.ActualWidth, (int)root.ActualHeight, 96, 96, PixelFormats.Pbgra32);
+        // The root's visual offset includes its margin. Use the window's entire
+        // canvas so rounded borders and shadows are not clipped by the capture.
+        var image = new RenderTargetBitmap((int)Math.Ceiling(window.ActualWidth), (int)Math.Ceiling(window.ActualHeight), 96, 96, PixelFormats.Pbgra32);
         image.Render(root);
         var encoder = new PngBitmapEncoder();
         encoder.Frames.Add(BitmapFrame.Create(image));
