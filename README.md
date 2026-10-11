@@ -36,7 +36,7 @@ python -m pip install -r eng/requirements.txt
 | `./dev.ps1 e2e` | 对已生成的发布包重跑进程与分发回归 |
 | `./dev.ps1 native-e2e` | 在已解锁桌面运行旧原生 fixture 适配器测试，不代表生产 UIA 验收 |
 
-构建结果仅进入 `artifacts/`；NuGet 包版本集中在 `Directory.Packages.props`。测试使用标准 `dotnet test` 和 Python `unittest`，不再依赖源码关键字检查来证明产品行为。
+发布包与测试报告进入 `artifacts/`；.NET 编译中间结果留在各项目的 `bin/`、`obj/`，这些生成物均不提交到 Git。NuGet 包版本集中在 `Directory.Packages.props`。测试使用标准 `dotnet test` 和 Python `unittest`，不再依赖源码关键字检查来证明产品行为。
 
 ## 源码导航
 

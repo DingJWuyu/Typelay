@@ -8,7 +8,7 @@ Scope: repository organization and developer workflow, not product behavior.
 
 原工作区把源码、历史阶段文档、已生成 exe、验收日志与运行分发混在一起。协议/策略测试名为 Integration 但没有跨进程执行；生产源码目录还包含只供旧 fixture 使用的适配器。发布脚本复制整个开发工程，启动器维护另一套私有 SDK 下载和构建流程。
 
-参考 apache/asyncband 与 apache/datasketches-rust 的 workspace / xtask 原则：统一成员与约束，面向用户边界组织测试，按实际需要提供工具和示例。TypeLay 实际采用 .NET/WPF + Python，不引入 Cargo、Rust crates 或对等的空目录。
+参考 [apache/asyncband](https://github.com/apache/asyncband) 与 [apache/datasketches-rust](https://github.com/apache/datasketches-rust) 的 workspace / xtask 原则：统一成员与约束，面向用户边界组织测试，按实际需要提供工具和示例。TypeLay 实际采用 .NET/WPF + Python，不引入 Cargo、Rust crates 或对等的空目录。
 
 ## Decision
 

@@ -1,41 +1,49 @@
-name: Windows compile and deterministic regressions
+name: Windows checks
 on:
-  workflow_dispatch:
   push:
+    branches: [windows-preview]
   pull_request:
+    branches: [windows-preview]
+  workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: windows-checks-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  build:
+  check:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: '10.0.401'
+          global-json-file: global.json
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.13'
-      - name: Source structure and Python protocol tests
+      - name: Install developer tooling
         shell: pwsh
         run: |
-          $env:PYTHONDONTWRITEBYTECODE='1'
-          python tools/verify-source.py
+          python -m pip install -r eng/requirements.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python -m unittest discover -s tests/python -v
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Compile, logic regressions, publish
-        shell: powershell
-        run: ./tools/publish-windows.ps1
+          'C:\Program Files\LLVM\bin' >> $env:GITHUB_PATH
+      - name: Build, behavior regressions, contracts and formatting
+        shell: pwsh
+        run: ./dev.ps1 check
+      - name: Package and test the relocated distribution
+        shell: pwsh
+        run: ./dev.ps1 pack
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: typelay-development-build-and-logs
+          name: typelay-windows-${{ github.sha }}
           path: |
-            artifacts/validation-*/
-            artifacts/TypeLay-Windows-0.2.0-dev-prebuilt.zip
+            artifacts/test-results/
+            artifacts/TypeLay-Windows-preview.zip
+            artifacts/TypeLay-Windows-preview.zip.sha256
           if-no-files-found: warn
-# No CI result here is treated as a physical Tab / Chinese IME / Edge UI acceptance result.
+          retention-days: 14
+# Passing this job does not certify physical Tab, Chinese IME, visual parity or safe universal writeback.
