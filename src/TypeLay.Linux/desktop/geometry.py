@@ -17,8 +17,7 @@ def anchor_geometry(native: dict) -> dict | None:
         bounds = native["bounds"]
         x, y, w, h = (bounds[key] for key in ("x", "y", "width", "height"))
         if not all(
-            type(v) in (int, float) and math.isfinite(v)
-            for v in (scale, width, height, x, y, w, h)
+            type(v) in (int, float) and math.isfinite(v) for v in (scale, width, height, x, y, w, h)
         ):
             return None
         if not 1 <= scale <= 8 or width <= 0 or height <= 0:

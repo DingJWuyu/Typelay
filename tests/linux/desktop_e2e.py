@@ -162,7 +162,9 @@ def run(arguments):
         key("Tab")
         wait_for(lambda: fixture_state().get("first") == manual, "second Tab lost the edited draft")
         assert fixture_state()["focus"] == "fixture-first"
-        evidence.append("native editor click, manual draft, first Tab returns and second Tab accepts")
+        evidence.append(
+            "native editor click, manual draft, first Tab returns and second Tab accepts"
+        )
         # The same public background command must not reopen the settings window.
         subprocess.run([str(package / "typelay"), "--background"], env=environment, check=True)
         assert fixture_state()["focus"] == "fixture-first"
@@ -225,7 +227,8 @@ def run(arguments):
         key("Return")
         output, _ = application.communicate(timeout=5)
         assert application.returncode == 0 and translated(output.decode().strip()), (
-            application.returncode, output.decode(errors="replace")
+            application.returncode,
+            output.decode(errors="replace"),
         )
         application = None
         evidence.append("unmodified YAD application: real entry translation and accepted output")

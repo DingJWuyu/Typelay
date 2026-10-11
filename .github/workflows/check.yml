@@ -120,10 +120,30 @@ jobs:
           test ! -d "$HOME/.nuget/packages" || echo "${HOME#/}/.nuget/packages" >> artifacts/linux/environment-files
           echo "${PWD#/}/artifacts/linux/desktop-data" >> artifacts/linux/environment-files
           tar -C / -I 'zstd -T0 -3' -cf "$PWD/artifacts/TypeLay-linux-reproduction.tar.zst" -T "$PWD/artifacts/linux/environment-files"
+          split -b 400M -d artifacts/TypeLay-linux-reproduction.tar.zst artifacts/TypeLay-linux-reproduction.part-
+          test ! -f artifacts/TypeLay-linux-reproduction.part-04
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: typelay-reproduction-${{ github.sha }}
-          path: artifacts/TypeLay-linux-reproduction.tar.zst
+          name: typelay-reproduction-00-${{ github.sha }}
+          path: artifacts/TypeLay-linux-reproduction.part-00
+          compression-level: 0
+          retention-days: 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: typelay-reproduction-01-${{ github.sha }}
+          path: artifacts/TypeLay-linux-reproduction.part-01
+          compression-level: 0
+          retention-days: 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: typelay-reproduction-02-${{ github.sha }}
+          path: artifacts/TypeLay-linux-reproduction.part-02
+          compression-level: 0
+          retention-days: 1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: typelay-reproduction-03-${{ github.sha }}
+          path: artifacts/TypeLay-linux-reproduction.part-03
           compression-level: 0
           retention-days: 1
       - name: Exercise the production desktop and a real GTK application
