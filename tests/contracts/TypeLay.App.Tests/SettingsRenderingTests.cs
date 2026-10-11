@@ -67,6 +67,7 @@ public sealed class SettingsRenderingTests
                 Render(window, "settings-general-light-944.png");
                 VerifyEmptyFieldCapsule(window, settings.Value);
                 window.Hide();
+                ControllerDesktopScenario.Run();
             }
             catch (Exception error) { failure = error; }
             finally
@@ -78,7 +79,7 @@ public sealed class SettingsRenderingTests
         }) { IsBackground = true };
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(30)), "The WPF settings scenario exceeded its deadline.");
+        Assert.True(thread.Join(TimeSpan.FromSeconds(40)), "The WPF desktop scenarios exceeded their deadline.");
         if (failure is not null)
             ExceptionDispatchInfo.Capture(failure).Throw();
     }
