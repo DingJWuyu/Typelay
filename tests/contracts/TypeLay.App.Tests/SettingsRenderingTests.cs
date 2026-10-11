@@ -86,6 +86,11 @@ public sealed class SettingsRenderingTests
                             var editor = Assert.IsType<TextBox>(selector.Template.FindName("PART_EditableTextBox", selector));
                             Assert.True(editor.IsVisible);
                             Assert.Equal(selector.Text, editor.Text);
+                            Assert.Equal(Assert.IsType<SolidColorBrush>(window.FindResource("Panel")).Color,
+                                Assert.IsType<SolidColorBrush>(selector.Background).Color);
+                            Assert.Equal(Assert.IsType<SolidColorBrush>(window.FindResource("Text")).Color,
+                                Assert.IsType<SolidColorBrush>(editor.Foreground).Color);
+                            Assert.Equal(VerticalAlignment.Center, editor.VerticalContentAlignment);
                             selector.IsDropDownOpen = true;
                             window.UpdateLayout();
                             window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
