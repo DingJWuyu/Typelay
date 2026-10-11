@@ -47,7 +47,12 @@ internal static class UiTheme
                 </Border>
               </ControlTemplate></ToggleButton.Template>
             </ToggleButton>
-            <ContentPresenter IsHitTestVisible="False" Margin="{TemplateBinding Padding}" VerticalAlignment="Center" HorizontalAlignment="Left" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}" ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"/>
+            <ContentPresenter x:Name="selection" IsHitTestVisible="False" Margin="{TemplateBinding Padding}" VerticalAlignment="Center" HorizontalAlignment="Left" Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}" ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"/>
+            <TextBox x:Name="PART_EditableTextBox" Style="{x:Null}" Visibility="Collapsed" Margin="11,1,32,1" Padding="0" Background="Transparent" Foreground="{TemplateBinding Foreground}" CaretBrush="{TemplateBinding Foreground}" FontSize="{TemplateBinding FontSize}" FontFamily="{TemplateBinding FontFamily}" VerticalContentAlignment="Center" IsReadOnly="{TemplateBinding IsReadOnly}" Focusable="True">
+              <TextBox.Template><ControlTemplate TargetType="TextBox">
+                <ScrollViewer x:Name="PART_ContentHost" Focusable="False" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+              </ControlTemplate></TextBox.Template>
+            </TextBox>
             <Popup x:Name="PART_Popup" Placement="Bottom" VerticalOffset="4" AllowsTransparency="True" Focusable="False" IsOpen="{TemplateBinding IsDropDownOpen}">
               <Border Background="{DynamicResource Panel}" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="9" Padding="4" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}" MaxHeight="{TemplateBinding MaxDropDownHeight}">
                 <ScrollViewer CanContentScroll="True" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
@@ -57,6 +62,11 @@ internal static class UiTheme
             </Popup>
           </Grid>
           <ControlTemplate.Triggers>
+            <Trigger Property="IsEditable" Value="True">
+              <Setter Property="IsTabStop" Value="False"/>
+              <Setter TargetName="selection" Property="Visibility" Value="Collapsed"/>
+              <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible"/>
+            </Trigger>
             <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="toggle" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
             <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="toggle" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
             <Trigger Property="IsDropDownOpen" Value="True"><Setter TargetName="toggle" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger>
