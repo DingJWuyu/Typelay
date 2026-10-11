@@ -13,7 +13,7 @@ concurrency:
 jobs:
   shared:
     env:
-      DOTNET_INSTALL_DIR: ${{ runner.temp }}/typelay-sdk
+      DOTNET_INSTALL_DIR: /tmp/typelay-sdk
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
