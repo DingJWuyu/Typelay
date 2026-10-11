@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
-using System.Windows.Controls;
 using System.Windows.Threading;
 using TypeLay.App;
 using TypeLay.Core;
@@ -14,7 +13,8 @@ namespace TypeLay.App.Tests;
 
 // Runs inside the rendering test's single WPF application. Only the keyboard is
 // injected, using the explicit automation-test option. Capture, activation,
-// settings, broker IPC and stock Edit controls are production implementations.
+// settings and broker IPC are production implementations, including the UIA
+// fallback for a control that cannot qualify for native direct replacement.
 internal static class ControllerDesktopScenario
 {
     public static void Run()
@@ -36,7 +36,13 @@ internal static class ControllerDesktopScenario
 
     private static async Task RunAsync()
     {
-        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await RunAsync(stockControls: true);
+        await RunAsync(stockControls: false);
+    }
+
+    private static async Task RunAsync(bool stockControls)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
         var root = new DirectoryInfo(AppContext.BaseDirectory);
         while (root is not null && !File.Exists(Path.Combine(root.FullName, "TypeLay.slnx")))
             root = root.Parent;
@@ -50,7 +56,8 @@ internal static class ControllerDesktopScenario
         };
         start.ArgumentList.Add(Path.Combine(root.FullName,
             "tests/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"));
-        start.ArgumentList.Add("--stock-controls");
+        if (stockControls)
+            start.ArgumentList.Add("--stock-controls");
         using var fixture = Process.Start(start)!;
         Assert.NotNull(fixture);
         var overlay = new OverlayWindow(automationTest: true);
@@ -62,7 +69,10 @@ internal static class ControllerDesktopScenario
             nint a = (nint)host.Fields.Single(field => field.Name == "a").Hwnd;
             nint b = (nint)host.Fields.Single(field => field.Name == "b").Hwnd;
             var settings = new SettingsStore(Path.Combine(directory, "settings.json"));
-            settings.Update(settings.Value with { Mode = WorkMode.OnDemand });
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.OnDemand
+            });
             using var model = new ModelClient(); // Empty-field wake needs no model download or fabricated translation.
             using var controller = new SessionController(settings, model, overlay, automationTest: true);
             await controller.StartAsync().WaitAsync(deadline.Token);
@@ -79,18 +89,26 @@ internal static class ControllerDesktopScenario
             await Task.Delay(200, deadline.Token);
             Assert.False(overlay.IsVisible);
             Keys(0x11, 0x10, 0x78); // Ctrl+Shift+F9, the configured wake shortcut.
-            await Until(() => overlay.IsVisible, "The configured shortcut must wake the empty original field.", deadline.Token);
+            await Until(() => overlay.IsVisible,
+                stockControls ? "The shortcut must wake the qualified native field." : "The shortcut must also wake a preview-only UIA field.", deadline.Token);
             Assert.InRange(overlay.Height, 34, 70);
             Assert.Equal(((nint)host.RootHwnd, a), N.Focused());
             Assert.Equal(WorkMode.OnDemand, settings.Value.Mode);
-            N.SendString(a, N.WM_SETTEXT, "hello");
-            await Until(() => overlay.Height > 100, "Typing after wake must expand the persistent experience.", deadline.Token);
+            if (stockControls)
+            {
+                N.SendString(a, N.WM_SETTEXT, "hello");
+                await Until(() => overlay.Height > 100, "Typing after wake must expand the persistent experience.", deadline.Token);
+            }
             Assert.False(model.Busy);
             await Focus(b);
             await Until(() => !overlay.IsVisible, "Leaving A must end its awakened experience.", deadline.Token);
             await Task.Delay(200, deadline.Token);
             Assert.False(overlay.IsVisible);
             Assert.Equal("B stays unchanged", N.ReadText(b, Limits.MaxTextUnits));
+            Assert.Equal(stockControls ? "hello" : "", N.ReadText(a, Limits.MaxTextUnits));
+            Assert.Equal(0, (long)N.Send((nint)host.RootHwnd, N.FixtureSubmitCount));
+            if (!stockControls)
+                return; // An unobservable IME must not grant physical Esc/Tab or direct-write permission.
             await Focus(a);
             await Task.Delay(200, deadline.Token);
             Assert.False(overlay.IsVisible);
@@ -100,7 +118,10 @@ internal static class ControllerDesktopScenario
             await Until(() => !overlay.IsVisible, "Escape must hide the awakened experience.", deadline.Token);
             await Task.Delay(200, deadline.Token);
             Assert.False(overlay.IsVisible);
-            settings.Update(settings.Value with { Mode = WorkMode.Automatic });
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.Automatic
+            });
             await Task.Delay(200, deadline.Token);
             Assert.Null(controller.OperationStatus);
             Keys(0x11, 0x10, 0x79); // The direct shortcut must be inactive in automatic mode.
