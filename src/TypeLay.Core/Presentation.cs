@@ -11,6 +11,7 @@ public static class Presentation
 {
     public static OverlayPresentation From(SessionState state, bool hasSafePermit, bool hasPreview = false) => state switch
     {
+        SessionState.IdleCapsule => new(true, "", StatusDot.None, "Tab 交还应用", true, false),
         SessionState.Translating => new(true, "正在翻译", StatusDot.Yellow, "Tab 交还应用", true, false),
         SessionState.ValidTranslation or SessionState.EditedTranslationPending =>
             new(true, "译文就绪", StatusDot.Green,

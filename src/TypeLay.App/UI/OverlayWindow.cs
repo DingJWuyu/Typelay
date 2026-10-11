@@ -13,7 +13,7 @@ internal sealed class OverlayWindow : Window
 {
     private readonly TextBox _editor;
     private readonly TextBlock _language, _status, _tabHint;
-    private readonly Border _dot;
+    private readonly Border _dot, _headerBorder, _footerBorder;
     private readonly Border _escapeKeycap;
     private readonly TextBlock _escapeLabel;
     private readonly Grid _surface;
@@ -71,9 +71,9 @@ internal sealed class OverlayWindow : Window
         tag.Children.Add(_status);
         Grid.SetColumn(tag, 1);
         header.Children.Add(tag);
-        var headerBorder = UiTheme.Border(header, 0);
-        headerBorder.BorderThickness = new(0, 0, 0, 1);
-        _surface.Children.Add(headerBorder);
+        _headerBorder = UiTheme.Border(header, 0);
+        _headerBorder.BorderThickness = new(0, 0, 0, 1);
+        _surface.Children.Add(_headerBorder);
         _editor = new TextBox
         {
             IsReadOnly = true,
@@ -143,10 +143,10 @@ internal sealed class OverlayWindow : Window
         DockPanel.SetDock(more, Dock.Right);
         footer.Children.Add(more);
         more.Click += (_, _) => OpenMenu(more);
-        var footerBorder = UiTheme.Border(footer, 0, "Panel2");
-        footerBorder.BorderThickness = new(0, 1, 0, 0);
-        Grid.SetRow(footerBorder, 2);
-        _surface.Children.Add(footerBorder);
+        _footerBorder = UiTheme.Border(footer, 0, "Panel2");
+        _footerBorder.BorderThickness = new(0, 1, 0, 0);
+        Grid.SetRow(_footerBorder, 2);
+        _surface.Children.Add(_footerBorder);
         var outer = UiTheme.Border(_surface, 16);
         outer.ClipToBounds = true;
         outer.Margin = new(12);
@@ -176,7 +176,7 @@ internal sealed class OverlayWindow : Window
         {
             Native.GetCursorPos(out var cursor);
             var local = _editor.PointFromScreen(new(cursor.X, cursor.Y));
-            bool inEditor = local.X >= 0 && local.Y >= 0 && local.X < _editor.ActualWidth && local.Y < _editor.ActualHeight;
+            bool inEditor = _editor.IsVisible && local.X >= 0 && local.Y >= 0 && local.X < _editor.ActualWidth && local.Y < _editor.ActualHeight;
             if (inEditor && (_editing || StartEdit()))
             {
                 handled = true;
@@ -228,6 +228,7 @@ internal sealed class OverlayWindow : Window
             HideQuietly();
             return;
         }
+        bool idle = session.State == SessionState.IdleCapsule;
         if (session.State == SessionState.Invalid && source.Ime == ImeState.Unknown)
             display = display with
             {
@@ -240,6 +241,14 @@ internal sealed class OverlayWindow : Window
         _rendering = true;
         try
         {
+            _editor.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
+            _footerBorder.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
+            _surface.RowDefinitions[2].Height = new(idle ? 0 : 34);
+            _headerBorder.BorderThickness = new(0, 0, 0, idle ? 0 : 1);
+            _status.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
+            _dot.Visibility = display.Dot == StatusDot.None ? Visibility.Collapsed : Visibility.Visible;
+            if (idle)
+                _expanded = false;
             _language.Text = (settings.Source switch
             {
                 "zh" => "中",
@@ -260,20 +269,20 @@ internal sealed class OverlayWindow : Window
                 _editor.Focusable = false;
                 SetNoActivate(true);
                 _editor.SetResourceReference(Control.BackgroundProperty, "Panel");
-                string value = session.Preview.Length > 0 ? session.Preview : statusOverride is not null ? statusOverride + "…" : "正在翻译…";
+                string value = idle ? "" : session.Preview.Length > 0 ? session.Preview : statusOverride is not null ? statusOverride + "…" : "正在翻译…";
                 if (_editor.Text != value)
                     _editor.Text = value;
             }
             _editor.SetResourceReference(Control.ForegroundProperty,
                 session.State is SessionState.Translating or SessionState.TranslationFailed ? "Muted" : "Text");
-            Position(source);
+            Position(source, idle);
         }
         finally { _rendering = false; }
     }
-    private void Position(InputSnapshot source)
+    private void Position(InputSnapshot source, bool idle)
     {
         double scale = Math.Max(1, Native.GetDpiForWindow((nint)source.Target.RootHwnd) / 96.0);
-        _panelWidth = Math.Clamp(source.Bounds.Width / scale, 320, 520);
+        _panelWidth = idle ? 140 : Math.Clamp(source.Bounds.Width / scale, 320, 520);
         _editor.MaxHeight = _expanded ? 360 : 160;
         var measure = new FormattedText(_editor.Text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
             new Typeface(FontFamily, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal), 14, Brushes.Black, scale)
@@ -283,7 +292,7 @@ internal sealed class OverlayWindow : Window
         };
         double bodyHeight = Math.Clamp(measure.Height + 24, 54, _editor.MaxHeight);
         _editor.Height = bodyHeight;
-        double height = 34 + bodyHeight + 34 + 26, width = _panelWidth + 26;
+        double height = idle ? 60 : 34 + bodyHeight + 34 + 26, width = _panelWidth + 26;
         var rect = new Native.Rect
         {
             Left = (int)source.Bounds.X,
@@ -294,7 +303,7 @@ internal sealed class OverlayWindow : Window
         var monitor = new Native.MonitorInfo { Size = System.Runtime.InteropServices.Marshal.SizeOf<Native.MonitorInfo>() };
         Native.GetMonitorInfoW(Native.MonitorFromRect(ref rect, 2), ref monitor);
         var work = new RectPx(monitor.Work.Left, monitor.Work.Top, monitor.Work.Right - monitor.Work.Left, monitor.Work.Bottom - monitor.Work.Top);
-        RectPx? placement = OverlayPlacement.Place(source.Bounds, work, width * scale, height * scale, gap: 0, minimumHeight: 126 * scale);
+        RectPx? placement = OverlayPlacement.Place(source.Bounds, work, width * scale, height * scale, gap: 0, minimumHeight: (idle ? 60 : 126) * scale);
         if (placement is not { } position)
         {
             Hide();
@@ -322,6 +331,7 @@ internal sealed class OverlayWindow : Window
         _composing = false;
         _expanded = false;
         _hasCandidate = false;
+        _hasPreview = false;
         _rendering = true;
         try
         {

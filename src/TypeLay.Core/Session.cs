@@ -158,8 +158,8 @@ public sealed class Session
             if (!continuousSource)
                 ClearPreview();
             State = string.IsNullOrWhiteSpace(next.SourceText)
-                ? SessionState.NoSession : SessionState.Translating;
-            if (State == SessionState.NoSession)
+                ? SessionState.IdleCapsule : SessionState.Translating;
+            if (State == SessionState.IdleCapsule)
             {
                 ClearPreview();
                 _translationPending = false;
@@ -234,7 +234,7 @@ public sealed class Session
         }
         _candidate = text;
         _preview = text;
-        _previewRevision = job.Revision;
+        _previewRevision = _revision;
         _translationPending = false;
         _job = null;
         if (job.Kind == TranslationKind.AppendToManual)
@@ -466,10 +466,11 @@ public sealed class Session
         _suppressed = null;
         _changedAt = nowMs;
         _pendingSince = nowMs;
-        _translationPending = true;
         ClearPreview();
-        State = _current is { IsUsable: true } current && !string.IsNullOrWhiteSpace(current.SourceText)
-            ? SessionState.Translating : SessionState.NoSession;
+        State = _current is { IsUsable: true } current
+            ? string.IsNullOrWhiteSpace(current.SourceText) ? SessionState.IdleCapsule : SessionState.Translating
+            : SessionState.NoSession;
+        _translationPending = State == SessionState.Translating;
     }
 
     public bool CancelSourceReturn()
