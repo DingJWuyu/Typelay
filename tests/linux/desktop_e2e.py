@@ -61,6 +61,10 @@ def run(arguments):
         data = status()
         return data if data.get("viewState") == state and data.get("overlayVisible") else None
 
+    def ready_to_accept(state="ValidTranslation"):
+        data = view(state)
+        return data if data and data.get("acceptanceReady") else None
+
     def fixture_state():
         if state_path.exists():
             return json.loads(state_path.read_text())
@@ -124,7 +128,7 @@ def run(arguments):
         wait_for(lambda: view("IdleCapsule"), "empty field did not show a capsule")
         subprocess.run(["grim", str(arguments.output / "capsule.png")], check=True, timeout=3)
         typed(original)
-        wait_for(lambda: view("ValidTranslation"), "actual translation preview did not appear")
+        wait_for(ready_to_accept, "actual translation and Tab acceptance did not become ready")
         subprocess.run(["grim", str(arguments.output / "translation.png")], check=True, timeout=3)
         assert fixture_state()["first"] == original, "preview changed the source before acceptance"
         key("Tab")
@@ -134,6 +138,31 @@ def run(arguments):
         )
         assert accepted["focus"] == "fixture-first", "Tab also navigated to another field"
         evidence.append("automatic mode: real model preview, physical Wayland Tab and source focus")
+        key("ctrl+a")
+        typed(original)
+        wait_for(ready_to_accept, "second candidate did not become ready")
+        # A real pointer click in the candidate body of this fixed 1280x800
+        # isolated desktop fixture. No command injects a draft or changes focus.
+        subprocess.run(["xdotool", "mousemove", "340", "232", "click", "1"], check=True)
+        wait_for(
+            lambda: fixture_state().get("focus") == "typelay-candidate",
+            "clicking the candidate did not focus the native translation editor",
+        )
+        manual = "Final version, approved."
+        key("ctrl+a")
+        typed(manual)
+        key("Tab")
+        wait_for(
+            lambda: ready_to_accept("EditedTranslationPending"),
+            "first editor Tab did not return with the edited candidate",
+        )
+        assert fixture_state()["first"] == original, "return from editor also accepted the draft"
+        assert fixture_state()["focus"] == "fixture-first"
+        subprocess.run(["grim", str(arguments.output / "edited.png")], check=True, timeout=3)
+        key("Tab")
+        wait_for(lambda: fixture_state().get("first") == manual, "second Tab lost the edited draft")
+        assert fixture_state()["focus"] == "fixture-first"
+        evidence.append("native editor click, manual draft, first Tab returns and second Tab accepts")
         # The same public background command must not reopen the settings window.
         subprocess.run([str(package / "typelay"), "--background"], env=environment, check=True)
         assert fixture_state()["focus"] == "fixture-first"
@@ -190,12 +219,14 @@ def run(arguments):
             stderr=sys.stderr,
         )
         focus(application.pid)
-        wait_for(lambda: view("ValidTranslation"), "real YAD field did not show translation")
+        wait_for(ready_to_accept, "real YAD field did not grant visible Tab acceptance")
         key("Tab")
         time.sleep(0.15)
         key("Return")
         output, _ = application.communicate(timeout=5)
-        assert application.returncode == 0 and translated(output.decode().strip())
+        assert application.returncode == 0 and translated(output.decode().strip()), (
+            application.returncode, output.decode(errors="replace")
+        )
         application = None
         evidence.append("unmodified YAD application: real entry translation and accepted output")
         assert control(paths, "settings") is True

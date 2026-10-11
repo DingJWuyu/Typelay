@@ -47,6 +47,7 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
         var value = new
         {
             presentation,
+            canAccept,
             state = session.State,
             source = new
             {

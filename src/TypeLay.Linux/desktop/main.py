@@ -191,6 +191,7 @@ async def desktop(paths, background, lock):
                     "nativePeers": sum(bool(peer.lifetime) for peer in components["input"].peers),
                     "overlayVisible": components["overlay"].visible,
                     "editing": components["overlay"].editing,
+                    "acceptanceReady": components["overlay"].acceptance_ready,
                     "viewState": (components["overlay"].value or {}).get("state"),
                     "sourceSupported": components["input"].focused_peer() is not None,
                 }

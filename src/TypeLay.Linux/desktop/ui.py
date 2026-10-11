@@ -3,7 +3,6 @@
 import asyncio
 
 import gi
-
 from wire import now_ms
 
 gi.require_version("Gtk", "3.0")
@@ -17,7 +16,7 @@ class Overlay:
         self.host, self.input, self.tasks = host, input_service, tasks
         self.settings_requested = settings_requested
         self.value = self.settings = self.peer = None
-        self.visible = self.editing = False
+        self.visible = self.editing = self.acceptance_ready = False
         self.revision = 0
         self.pending = False
         self.lock = asyncio.Lock()
@@ -77,6 +76,7 @@ class Overlay:
             if self.peer is peer and self.revision == revision:
                 self.visible = bool(reply and reply.get("visible"))
                 self.editing = bool(reply and reply.get("editing"))
+                self.acceptance_ready = self.visible and self.value.get("canAccept", False)
 
     async def update(self):
         try:
@@ -119,7 +119,7 @@ class Overlay:
         if operation == "visible":
             self.visible = value is True
             if not self.visible:
-                self.editing = False
+                self.editing = self.acceptance_ready = False
                 self.input.set_overlay_focus(False)
         elif operation == "focus":
             self.input.set_overlay_focus(value is True and peer is self.input.focused_peer())
@@ -162,7 +162,7 @@ class Overlay:
         if self.peer and self.peer.link.channel.alive:
             self.peer.link.command("overlay-hide")
         self.value = self.peer = None
-        self.visible = self.editing = False
+        self.visible = self.editing = self.acceptance_ready = False
         self.input.set_overlay_focus(False)
 
 

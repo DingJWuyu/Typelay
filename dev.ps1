@@ -124,7 +124,7 @@ try {
             Test-Workspace
             Invoke-Checked dotnet @('format', 'TypeLay.slnx', '--verify-no-changes', '--no-restore')
             Invoke-Checked python @('-m', 'ruff', 'check', '.')
-            Invoke-Checked python @('-m', 'ruff', 'format', '--check', '.')
+            Invoke-Checked python @('-m', 'ruff', 'format', '--check', '--diff', '.')
         }
         format {
             Restore-Workspace

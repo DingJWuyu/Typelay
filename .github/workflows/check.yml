@@ -108,6 +108,24 @@ jobs:
         run: |
           mkdir -p artifacts/linux/desktop-data artifacts/linux/desktop-cache
           python artifacts/linux/package/desktop/setup.py "$PWD/artifacts/linux/package" "$PWD/artifacts/linux/desktop-data/typelay" "$PWD/artifacts/linux/desktop-cache/typelay"
+      # Temporary local reproduction export while the execution container has no
+      # network/toolchain. Only public installed libraries, SDK/packages and test
+      # models are included, never runner files, environment or credentials.
+      - name: Export the desktop reproduction environment
+        if: ${{ !cancelled() && steps.models.outcome == 'success' }}
+        run: |
+          uv pip install --target /opt/typelay-ruff ruff==0.14.0
+          printf '%s\n' usr etc/fonts etc/ssl/certs etc/xdg opt/typelay-ruff > artifacts/linux/environment-files
+          case "$DOTNET_ROOT" in /usr/*) ;; *) echo "${DOTNET_ROOT#/}" >> artifacts/linux/environment-files ;; esac
+          test ! -d "$HOME/.nuget/packages" || echo "${HOME#/}/.nuget/packages" >> artifacts/linux/environment-files
+          echo "${PWD#/}/artifacts/linux/desktop-data" >> artifacts/linux/environment-files
+          tar -C / -I 'zstd -T0 -3' -cf "$PWD/artifacts/TypeLay-linux-reproduction.tar.zst" -T "$PWD/artifacts/linux/environment-files"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: typelay-reproduction-${{ github.sha }}
+          path: artifacts/TypeLay-linux-reproduction.tar.zst
+          compression-level: 0
+          retention-days: 1
       - name: Exercise the production desktop and a real GTK application
         if: ${{ !cancelled() && steps.models.outcome == 'success' }}
         run: |
