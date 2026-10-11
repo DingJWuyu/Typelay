@@ -59,7 +59,8 @@ jobs:
               subprocess.run([sys.executable, '-B', str(repair)], check=True)
       - name: Install the pinned Matt skills and preserve their license
         run: |
-          npx --yes skills@1.7.2 add https://github.com/mattpocock/skills/tree/49dd158d1076134a641b33efb035946536778336 --skill '*' --agent universal --copy --yes
+          $official = @('ask-matt','code-review','codebase-design','diagnosing-bugs','domain-modeling','grill-with-docs','implement','implement-spec','improve-codebase-architecture','pr','prototype','research','retro','setup-matt-pocock-skills','tdd','to-spec','to-tickets','triage','wayfinder','wizard','grill-me','grilling','handoff','teach','to-questionnaire','wait-what','writing-for-agents')
+          npx --yes skills@1.7.2 add https://github.com/mattpocock/skills/tree/49dd158d1076134a641b33efb035946536778336 --skill @official --agent universal --copy --yes
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Invoke-WebRequest 'https://raw.githubusercontent.com/mattpocock/skills/49dd158d1076134a641b33efb035946536778336/LICENSE' -OutFile '.agents/MATT-LICENSE'
           $skills = @(Get-ChildItem .agents/skills -Recurse -Filter SKILL.md)
