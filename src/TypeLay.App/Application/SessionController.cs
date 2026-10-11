@@ -29,7 +29,10 @@ internal sealed class SessionController : IDisposable
     {
         get; private set;
     }
-    public string? OperationStatus { get; private set; }
+    public string? OperationStatus
+    {
+        get; private set;
+    }
     public string ServiceStatus { get; private set; } = "正在连接输入服务";
     public event Action? Changed;
     public SessionController(SettingsStore settings, ModelClient model, OverlayWindow overlay, bool automationTest = false,
@@ -185,7 +188,8 @@ internal sealed class SessionController : IDisposable
     }
     private BrokerRequest Request(string operation) => new(Wire.Version, 0, operation, "",
         _hook.UserEpoch, _hook.ForegroundEpoch, (long)_overlay.Handle, _session.Current?.Target,
-        Excluded: _settings.Value.Excluded, SourceUserEpoch: _hook.SourceUserEpoch);
+        Excluded: _settings.Value.Excluded, SourceUserEpoch: _hook.SourceUserEpoch,
+        CaptureDirect: _settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand);
     private async Task Capture()
     {
         _capturing = true;
