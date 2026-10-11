@@ -29,7 +29,10 @@ internal sealed class NativeEditTransactions : IDisposable
             return null;
         // Only the first capture may install a cookie. Subsequent observations
         // cannot resurrect an old identity on a newly created/reused HWND.
-        _bindings[identity.ControlHwnd] = binding with { Initialized = true };
+        _bindings[identity.ControlHwnd] = binding with
+        {
+            Initialized = true
+        };
         var result = Invoke(binding, binding.Initialized ? 4u : 1u);
         if (result.Reason == Denial.TargetChanged)
         {
@@ -71,9 +74,15 @@ internal sealed class NativeEditTransactions : IDisposable
             return null;
         if (_bindings.TryGetValue(identity.ControlHwnd, out var existing))
         {
-            if (existing.Original with { Lifetime = identity.Lifetime } == identity)
+            if (existing.Original with
             {
-                existing = existing with { TouchedAt = Environment.TickCount64 };
+                Lifetime = identity.Lifetime
+            } == identity)
+            {
+                existing = existing with
+                {
+                    TouchedAt = Environment.TickCount64
+                };
                 _bindings[identity.ControlHwnd] = existing;
                 return existing;
             }
@@ -114,7 +123,11 @@ internal sealed class NativeEditTransactions : IDisposable
             cookie = BitConverter.ToUInt64(RandomNumberGenerator.GetBytes(8)) | 1;
         // Every new binding gets a distinct identity, including after broker
         // restart, expiry or an interrupted initial capture.
-        var target = identity with { Provider = Provider, Lifetime = Guid.NewGuid() };
+        var target = identity with
+        {
+            Provider = Provider,
+            Lifetime = Guid.NewGuid()
+        };
         var binding = new Binding(identity, target, cookie, thread, Environment.TickCount64);
         _bindings.Add(identity.ControlHwnd, binding);
         return binding;
@@ -183,7 +196,10 @@ internal sealed class NativeEditTransactions : IDisposable
     }
     private void Release(Binding binding)
     {
-        try { Invoke(binding, 3); }
+        try
+        {
+            Invoke(binding, 3);
+        }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         _bindings.Remove(binding.Target.ControlHwnd);
         if (!_bindings.Values.Any(value => value.Thread == binding.Thread) && _hooks.Remove(binding.Thread, out nint hook))
@@ -208,6 +224,7 @@ internal sealed class NativeEditTransactions : IDisposable
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern uint RegisterWindowMessageW(string name);
     [DllImport("user32.dll")] private static extern nint SetWindowsHookExW(int type, nint callback, nint module, uint thread);
     [DllImport("user32.dll")] private static extern bool UnhookWindowsHookEx(nint hook);
-    [DllImport("user32.dll")] private static extern nint SendMessageTimeoutW(nint hwnd, uint message, nuint wp, nint lp,
+    [DllImport("user32.dll")]
+    private static extern nint SendMessageTimeoutW(nint hwnd, uint message, nuint wp, nint lp,
         uint flags, uint timeout, out nuint result);
 }
