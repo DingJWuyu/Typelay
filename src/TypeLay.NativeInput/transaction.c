@@ -1,0 +1,226 @@
+// Runs only on a qualified stock Edit control's owning thread. No keyboard
+// synthesis, focus changes, UIA calls or retained user text in the target process.
+#include <stdint.h>
+#include <stddef.h>
+
+typedef void *HANDLE;
+typedef uint16_t WCHAR;
+typedef intptr_t LPARAM;
+typedef uintptr_t WPARAM;
+typedef intptr_t LRESULT;
+typedef LRESULT (*WNDPROC)(HANDLE, uint32_t, WPARAM, LPARAM);
+#define API __declspec(dllimport)
+API LRESULT CallNextHookEx(HANDLE, int, WPARAM, LPARAM);
+API uint32_t RegisterWindowMessageW(const WCHAR *);
+API HANDLE OpenFileMappingW(uint32_t, int, const WCHAR *);
+API void *MapViewOfFile(HANDLE, uint32_t, uint32_t, uint32_t, size_t);
+API int UnmapViewOfFile(const void *);
+API int CloseHandle(HANDLE);
+API HANDLE GetProcessHeap(void);
+API void *HeapAlloc(HANDLE, uint32_t, size_t);
+API int HeapFree(HANDLE, uint32_t, void *);
+API uint64_t GetTickCount64(void);
+API uint32_t GetCurrentThreadId(void);
+API uint32_t GetCurrentProcessId(void);
+API uint32_t GetWindowThreadProcessId(HANDLE, uint32_t *);
+API HANDLE GetAncestor(HANDLE, uint32_t);
+API int IsWindowUnicode(HANDLE);
+API int IsWindowEnabled(HANDLE);
+API intptr_t GetWindowLongPtrW(HANDLE, int);
+API intptr_t GetClassLongPtrW(HANDLE, int);
+typedef struct {
+    uint32_t style; WNDPROC procedure; int class_extra, window_extra;
+    HANDLE instance, icon, cursor, background; const WCHAR *menu, *name;
+} WindowClass;
+API int GetClassInfoW(HANDLE, const WCHAR *, WindowClass *);
+API int GetClassNameW(HANDLE, WCHAR *, int);
+API HANDLE GetPropW(HANDLE, const WCHAR *);
+API int SetPropW(HANDLE, const WCHAR *, HANDLE);
+API HANDLE RemovePropW(HANDLE, const WCHAR *);
+API LRESULT CallWindowProcW(WNDPROC, HANDLE, uint32_t, WPARAM, LPARAM);
+API HANDLE ImmGetContext(HANDLE);
+API int32_t ImmGetCompositionStringW(HANDLE, uint32_t, void *, uint32_t);
+API int ImmReleaseContext(HANDLE, HANDLE);
+
+#define MAX_UNITS 8192
+#define CAPACITY (MAX_UNITS + 1)
+#define VERSION 1
+// Aligned fixed header, followed by three bounded UTF-16 buffers.
+typedef struct {
+    uint32_t version, status, reason, op, pid, thread;
+    uint64_t hwnd, root, cookie, deadline;
+    int32_t length, start, end, replacement_length;
+    int32_t selection_start, selection_end, multiline, ime;
+    WCHAR expected[CAPACITY], replacement[CAPACITY], observed[CAPACITY];
+} Transaction;
+_Static_assert(offsetof(Transaction, expected) == 88, "Protocol header layout");
+_Static_assert(sizeof(Transaction) == 49248, "Protocol mapping length");
+
+typedef struct { LPARAM lparam; WPARAM wparam; uint32_t message; HANDLE hwnd; } CallMessage;
+static const WCHAR property[] = L"TypeLay.NativeInput.Lifetime.v1";
+static const WCHAR message_name[] = L"TypeLay.NativeInput.Transaction.v1";
+
+static void copy(void *destination, const void *source, size_t count) {
+    unsigned char *out = destination;
+    const unsigned char *in = source;
+    while (count--) *out++ = *in++;
+}
+static void wipe(void *value, size_t count) {
+    volatile unsigned char *out = value;
+    while (count--) *out++ = 0;
+}
+static int equal(const WCHAR *a, const WCHAR *b, int count) {
+    for (int i = 0; i < count; i++) if (a[i] != b[i]) return 0;
+    return 1;
+}
+static int valid(const WCHAR *value, int count) {
+    if (count < 0 || count > MAX_UNITS || value[count] != 0) return 0;
+    for (int i = 0; i < count; i++) {
+        if (!value[i]) return 0;
+        if (value[i] >= 0xd800 && value[i] <= 0xdbff) {
+            if (++i == count || value[i] < 0xdc00 || value[i] > 0xdfff) return 0;
+        } else if (value[i] >= 0xdc00 && value[i] <= 0xdfff) return 0;
+    }
+    return 1;
+}
+static int boundary(const WCHAR *value, int count, int offset) {
+    return offset >= 0 && offset <= count && !(offset && offset < count
+        && value[offset - 1] >= 0xd800 && value[offset - 1] <= 0xdbff
+        && value[offset] >= 0xdc00 && value[offset] <= 0xdfff);
+}
+static int ime(HANDLE hwnd) {
+    HANDLE context = ImmGetContext(hwnd);
+    if (!context) return 0; // Unknown, never infer Clear from absent context.
+    int32_t bytes = ImmGetCompositionStringW(context, 8, 0, 0);
+    ImmReleaseContext(hwnd, context);
+    return bytes == 0 ? 1 : bytes > 0 ? 2 : 0;
+}
+static WNDPROC qualify(Transaction *tx) {
+    HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd;
+    uint32_t pid = 0;
+    if (tx->pid != GetCurrentProcessId() || tx->thread != GetCurrentThreadId()
+        || GetWindowThreadProcessId(hwnd, &pid) != tx->thread || pid != tx->pid
+        || GetAncestor(hwnd, 2) != (HANDLE)(uintptr_t)tx->root
+        || !IsWindowUnicode(hwnd) || !IsWindowEnabled(hwnd)) return 0;
+    WCHAR name[32];
+    if (GetClassNameW(hwnd, name, 32) != 4 || !equal(name, (const WCHAR *)L"Edit", 4)) return 0;
+    // Require the unchanged system class AND instance procedure. Superclasses
+    // and subclassed/custom/managed controls remain unsupported.
+    WindowClass stock;
+    if (!GetClassInfoW(0, (const WCHAR *)L"Edit", &stock)) return 0;
+    WNDPROC proc = stock.procedure;
+    if (!proc || GetWindowLongPtrW(hwnd, -4) != (intptr_t)proc
+        || GetClassLongPtrW(hwnd, -24) != (intptr_t)proc) return 0;
+    intptr_t style = GetWindowLongPtrW(hwnd, -16);
+    if ((style & (0x8 | 0x10 | 0x20 | 0x800 | 0x2000)) || CallWindowProcW(proc, hwnd, 0xd2, 0, 0)) return 0;
+    tx->multiline = (style & 4) != 0;
+    return proc;
+}
+static int read_text(Transaction *tx, WNDPROC proc) {
+    HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd;
+    LRESULT length = CallWindowProcW(proc, hwnd, 0x0e, 0, 0);
+    if (length < 0 || length > MAX_UNITS) return 0;
+    LRESULT read = CallWindowProcW(proc, hwnd, 0x0d, CAPACITY, (LPARAM)tx->observed);
+    if (read != length || !valid(tx->observed, (int)read)) return 0;
+    CallWindowProcW(proc, hwnd, 0xb0, (WPARAM)&tx->selection_start, (LPARAM)&tx->selection_end);
+    return (int)read + 1;
+}
+static void execute(Transaction *tx) {
+    tx->status = 2; tx->reason = 6; // RejectedBeforeMutation / Unsupported.
+    if (tx->version != VERSION || !tx->cookie || GetTickCount64() > tx->deadline) return;
+    HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd;
+    if (tx->op == 3) {
+        if ((uint64_t)(uintptr_t)GetPropW(hwnd, property) == tx->cookie) RemovePropW(hwnd, property);
+        tx->status = 1; tx->reason = 0; return;
+    }
+    WNDPROC proc = qualify(tx);
+    if (!proc) return;
+    uint64_t cookie = (uint64_t)(uintptr_t)GetPropW(hwnd, property);
+    if (tx->op == 1 && !cookie) {
+        if (!SetPropW(hwnd, property, (HANDLE)(uintptr_t)tx->cookie)) return;
+        cookie = tx->cookie;
+    }
+    if (cookie != tx->cookie) { tx->reason = 2; return; }
+    tx->ime = ime(hwnd);
+    if (tx->ime != 1) { tx->reason = 9; return; }
+    int observed = read_text(tx, proc) - 1;
+    if (observed < 0) { tx->reason = 16; return; }
+    if (tx->op == 1 || tx->op == 4) {
+        tx->length = observed;
+        tx->status = 1; tx->reason = 0; return;
+    }
+    if (tx->op != 2 || !valid(tx->expected, tx->length)
+        || !valid(tx->replacement, tx->replacement_length) || !tx->replacement_length
+        || !boundary(tx->expected, tx->length, tx->start)
+        || !boundary(tx->expected, tx->length, tx->end) || tx->end < tx->start
+        || tx->length - (tx->end - tx->start) + tx->replacement_length > MAX_UNITS) return;
+    if (observed != tx->length || !equal(tx->observed, tx->expected, observed)) { tx->reason = 3; return; }
+    if (!tx->multiline) for (int i = 0; i < tx->replacement_length; i++)
+        if (tx->replacement[i] == '\r' || tx->replacement[i] == '\n') { tx->reason = 17; return; }
+    LRESULT limit = CallWindowProcW(proc, hwnd, 0xd5, 0, 0); // EM_GETLIMITTEXT.
+    if (limit < tx->length - (tx->end - tx->start) + tx->replacement_length) { tx->reason = 16; return; }
+    // Validation and replacement execute in this one stock-control GUI-thread
+    // invocation, not in a remote read/SetValue race. No focus APIs are called.
+    if (GetTickCount64() > tx->deadline) { tx->reason = 14; return; }
+    CallWindowProcW(proc, hwnd, 0xb1, (WPARAM)tx->start, (LPARAM)tx->end);
+    // Selection changes may cause synchronous accessibility callbacks. Refuse if
+    // any callback changed the source, lifetime, class or composition state.
+    if (!qualify(tx) || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie
+        || ime(hwnd) != 1 || read_text(tx, proc) - 1 != tx->length
+        || !equal(tx->observed, tx->expected, tx->length)
+        || tx->selection_start != tx->start || tx->selection_end != tx->end
+        || GetTickCount64() > tx->deadline) { tx->reason = 3; return; }
+    tx->status = 3; tx->reason = 20; // Unknown once mutation starts; never retry.
+    CallWindowProcW(proc, hwnd, 0xc2, 1, (LPARAM)tx->replacement); // EM_REPLACESEL, undo enabled.
+    if (!qualify(tx) || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie) return;
+    int after = read_text(tx, proc) - 1;
+    int caret = tx->start + tx->replacement_length;
+    int total = tx->length - (tx->end - tx->start) + tx->replacement_length;
+    if (after != total || tx->selection_start != caret || tx->selection_end != caret
+        || !equal(tx->observed, tx->expected, tx->start)
+        || !equal(tx->observed + tx->start, tx->replacement, tx->replacement_length)
+        || !equal(tx->observed + caret, tx->expected + tx->end, tx->length - tx->end)) return;
+    tx->length = after; tx->status = 1; tx->reason = 0;
+}
+__declspec(dllexport) LRESULT TypeLayCallWndProc(int code, WPARAM wp, LPARAM lp) {
+    if (code >= 0) {
+        const CallMessage *msg = (const CallMessage *)lp;
+        if (msg->message == 0x82) RemovePropW(msg->hwnd, property);
+        static uint32_t message;
+        if (!message) message = RegisterWindowMessageW(message_name);
+        if (message && msg->message == message) {
+            WCHAR name[80];
+            const WCHAR prefix[] = L"Local\\TypeLay.Input.";
+            int i = 0;
+            for (; prefix[i]; i++) name[i] = prefix[i];
+            const WCHAR digits[] = L"0123456789abcdef";
+            for (int part = 0; part < 2; part++) {
+                uint64_t bits = part ? (uint64_t)msg->lparam : (uint64_t)msg->wparam;
+                for (int shift = 60; shift >= 0; shift -= 4) name[i++] = digits[(bits >> shift) & 15];
+            }
+            name[i] = 0;
+            HANDLE mapping = OpenFileMappingW(6, 0, name);
+            if (mapping) {
+                Transaction *shared = MapViewOfFile(mapping, 6, 0, 0, sizeof(Transaction));
+                if (shared) {
+                    Transaction *tx = HeapAlloc(GetProcessHeap(), 8, sizeof(Transaction));
+                    if (tx) {
+                        copy(tx, shared, sizeof(Transaction));
+                        if (tx->status == 0 && tx->hwnd == (uint64_t)(uintptr_t)msg->hwnd) {
+                            execute(tx);
+                            copy(shared, tx, sizeof(Transaction));
+                        }
+                        wipe(tx, sizeof(Transaction));
+                        HeapFree(GetProcessHeap(), 0, tx);
+                    }
+                    UnmapViewOfFile(shared);
+                }
+                CloseHandle(mapping);
+            }
+        }
+    }
+    return CallNextHookEx(0, code, wp, lp);
+}
+int DllMain(HANDLE module, uint32_t reason, void *reserved) {
+    (void)module; (void)reason; (void)reserved; return 1;
+}

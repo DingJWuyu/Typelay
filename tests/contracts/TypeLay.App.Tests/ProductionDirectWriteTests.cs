@@ -53,7 +53,7 @@ public sealed class ProductionDirectWriteTests
             async Task<InputSnapshot> Capture(string text, TextRange selection)
             {
                 await Focus(a);
-                N.SendString(a, N.WM_SETTEXT, text); // Test setup only.
+                N.SendString(a, N.WM_SETTEXT, text);
                 N.Send(a, N.EM_SETSEL, (nuint)selection.Start, (nint)selection.End);
                 var reply = await Call(new(Wire.Version, 0, "capture", "", CaptureDirect: true));
                 Assert.NotNull(reply.Snapshot);
@@ -86,7 +86,6 @@ public sealed class ProductionDirectWriteTests
             Assert.Equal("B must remain unchanged", N.ReadText(b, Limits.MaxTextUnits));
             Assert.Equal(((nint)host.RootHwnd, b), N.Focused());
             Assert.Equal(0, (long)N.Send((nint)host.RootHwnd, N.FixtureSubmitCount));
-            // The real Edit undo stack must retain the replacement as one operation.
             N.Send(a, 0xc7);
             Assert.Equal("A🙂你好Z", N.ReadText(a, Limits.MaxTextUnits));
             Assert.Equal(((nint)host.RootHwnd, b), N.Focused());
@@ -103,6 +102,28 @@ public sealed class ProductionDirectWriteTests
             Assert.Equal(WriteStatus.Verified, (await Write(plan)).Status);
             Assert.Equal("Hello", N.ReadText(a, Limits.MaxTextUnits));
             Assert.Equal(0, (long)N.Send((nint)host.RootHwnd, N.FixtureSubmitCount));
+            // Losing the cookie must invalidate old jobs, even at the same HWND.
+            source = await Capture("你好", new(2, 2));
+            plan = Plan(source, "Hello");
+            N.RemoveProp(a, "TypeLay.NativeInput.Lifetime.v1");
+            await Call(new(Wire.Version, 0, "capture", "", CaptureDirect: true));
+            await Focus(b);
+            Assert.Equal(WriteStatus.RejectedBeforeMutation, (await Write(plan)).Status);
+            Assert.Equal("你好", N.ReadText(a, Limits.MaxTextUnits));
+            var renewed = await Capture("你好", new(2, 2));
+            Assert.NotEqual(source.Target.Lifetime, renewed.Target.Lifetime);
+            plan = Plan(renewed, "Hello");
+            await Focus(b);
+            var excluded = await Call(new(Wire.Version, 0, "direct-write", "", BoundTarget: plan.Expected.Target,
+                Plan: plan, Excluded: [fixture.ProcessName.ToLowerInvariant()]));
+            Assert.Equal(WriteStatus.RejectedBeforeMutation, excluded.Receipt!.Status);
+            Assert.Equal("你好", N.ReadText(a, Limits.MaxTextUnits));
+            await Call(new(Wire.Version, 0, "direct-clear", ""));
+            Assert.Equal(WriteStatus.RejectedBeforeMutation, (await Write(plan)).Status);
+            Assert.Equal("你好", N.ReadText(a, Limits.MaxTextUnits));
+            Assert.Equal(((nint)host.RootHwnd, b), N.Focused());
+            N.Send((nint)host.SubmitButtonHwnd, 0xf5);
+            Assert.Equal(1, (long)N.Send((nint)host.RootHwnd, N.FixtureSubmitCount));
             await Call(new(Wire.Version, 0, "quit", ""));
             await broker.WaitForExitAsync(deadline.Token);
             Assert.Equal(0, broker.ExitCode);

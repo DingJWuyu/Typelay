@@ -11,4 +11,12 @@
     <ProjectReference Include="../TypeLay.Core/TypeLay.Core.csproj" />
     <ProjectReference Include="../TypeLay.Protocol/TypeLay.Protocol.csproj" />
   </ItemGroup>
+  <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
+    <None Include="../../artifacts/native/TypeLay.NativeInput.dll" Link="TypeLay.NativeInput.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="BuildNativeInput" BeforeTargets="PrepareForBuild" Condition="'$(OS)' == 'Windows_NT'"
+          Inputs="../../src/TypeLay.NativeInput/transaction.c;../../eng/build-native-input.py"
+          Outputs="../../artifacts/native/TypeLay.NativeInput.dll">
+    <Exec Command="python &quot;$(MSBuildProjectDirectory)/../../eng/build-native-input.py&quot; --output &quot;$(MSBuildProjectDirectory)/../../artifacts/native/TypeLay.NativeInput.dll&quot;" />
+  </Target>
 </Project>

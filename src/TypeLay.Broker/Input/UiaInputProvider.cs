@@ -11,6 +11,7 @@ namespace TypeLay.Broker;
 internal sealed class UiaInputProvider : IDisposable
 {
     private readonly NativeUia _native = new();
+    private readonly NativeEditTransactions _edits = new();
     private readonly CacheRequest _metadataCache = MetadataCache();
     private AutomationElement? _element;
     private InputSnapshot? _previous;
@@ -22,6 +23,7 @@ internal sealed class UiaInputProvider : IDisposable
     private string? _application;
     private readonly HashSet<(int, long, string)> _quarantine = new();
     public string? Application => _application;
+    public void ClearDirect() => _edits.Clear();
 
     public (InputSnapshot?, FocusMember) Capture(BrokerRequest request)
     {
@@ -100,6 +102,22 @@ internal sealed class UiaInputProvider : IDisposable
         var idBytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{info.ProcessId}/{start}/{root}/{token}"));
         var id = new TargetId(info.ProcessId, start, (long)root, info.NativeWindowHandle,
             value is null ? "uia-text-preview-v2" : "uia-value-text-v2", token, new Guid(idBytes.AsSpan(0, 16)));
+        if (request.CaptureDirect && _edits.Capture(id, bounds, _inputEpoch, _focusEpoch) is { } direct)
+        {
+            if (!StillFocused(root, token))
+                return Unavailable(request);
+            if (_previous?.Target != direct.Target || _lastFocus != FocusMember.Source)
+                _focusEpoch++;
+            if (_previous?.Target != direct.Target || _previous.Text != direct.Text
+                || _lastSourceUserEpoch != request.SourceUserEpoch)
+                _inputEpoch++;
+            _lastSourceUserEpoch = request.SourceUserEpoch;
+            _lastFocus = FocusMember.Source;
+            _element = element;
+            _application = app;
+            _previous = direct with { InputEpoch = _inputEpoch, FocusEpoch = _focusEpoch };
+            return (_previous, FocusMember.Source);
+        }
         // Geometry does not participate in writing. Reuse idle line geometry for
         // at most 200 ms, refreshing immediately after typing or field movement.
         // This avoids repeated remote range calls while a Tab permit is live.
@@ -201,13 +219,19 @@ internal sealed class UiaInputProvider : IDisposable
                 return new(WriteStatus.RejectedBeforeMutation, reason);
             if (_element is null || GetForegroundWindow() != (nint)plan.Expected.Target.RootHwnd)
                 return new(WriteStatus.RejectedBeforeMutation, Denial.EpochChanged);
-            if (_native.Composition((nint)plan.Expected.Target.RootHwnd) != ImeState.Clear)
+            if (plan.Expected.Target.Provider != NativeEditTransactions.Provider
+                && _native.Composition((nint)plan.Expected.Target.RootHwnd) != ImeState.Clear)
                 return new(WriteStatus.RejectedBeforeMutation, Denial.ImeUnclear);
             TraceWrite("ime-checked", request, writeAt);
             if (Environment.TickCount64 > request.ExpiresAtMs)
                 return new(WriteStatus.RejectedBeforeMutation, Denial.StaleObservation);
             if (string.Join('.', AutomationElement.FocusedElement.GetRuntimeId()) != plan.Expected.Target.ElementToken)
                 return new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged);
+            if (plan.Expected.Target.Provider == NativeEditTransactions.Provider)
+            {
+                var nativeReceipt = _edits.Write(plan);
+                return nativeReceipt.Status == WriteStatus.OutcomeUnknown ? Unknown(plan) : nativeReceipt;
+            }
             // Text-only editors can preview but SetValue must never flatten their
             // formatting. Acceptance is granted only to a value-backed target.
             if (!string.Equals(plan.Expected.Target.Provider, "uia-value-text-v2", StringComparison.Ordinal))
@@ -238,6 +262,53 @@ internal sealed class UiaInputProvider : IDisposable
             return mutation ? Unknown(plan) : new(WriteStatus.RejectedBeforeMutation, Denial.PlatformFailure);
         }
     }
+    public WriteReceipt WriteDirect(BrokerRequest request)
+    {
+        if (request.Plan is not { } plan || request.BoundTarget != plan.Expected.Target
+            || plan.Expected.Target.Provider != NativeEditTransactions.Provider || !plan.Expected.DirectWriteSupported)
+            return new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported);
+        long now = Environment.TickCount64;
+        var basis = plan.Expected with { ObservedAtMs = now };
+        Denial validity = WriteSafety.Validate(plan, basis, now);
+        if (validity != Denial.None || plan.Scope != basis.TranslationScope)
+            return new(WriteStatus.RejectedBeforeMutation, validity == Denial.None ? Denial.BadPlan : validity);
+        var target = basis.Target;
+        bool dispatched = false;
+        try
+        {
+            using var process = Process.GetProcessById(target.ProcessId);
+            if (process.StartTime.ToUniversalTime().Ticks != target.ProcessStartUtcTicks
+                || _quarantine.Contains((target.ProcessId, target.ProcessStartUtcTicks, target.ElementToken)))
+                return new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged);
+            // Metadata is reacquired for the original HWND, never FocusedElement.
+            // The native transaction subsequently checks its lifetime and text in
+            // the target's GUI thread. There is no UIA SetValue fallback.
+            using (_metadataCache.Activate())
+            {
+                var element = AutomationElement.FromHandle((nint)target.ControlHwnd);
+                var info = element.Cached;
+                if (info.ProcessId != target.ProcessId || info.NativeWindowHandle != target.ControlHwnd
+                    || string.Join('.', element.GetRuntimeId()) != target.ElementToken)
+                    return new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged);
+                var ariaProperty = AutomationProperty.LookupById(30102);
+                string aria = ariaProperty is null ? "" : element.GetCachedPropertyValue(ariaProperty, true) as string ?? "";
+                var metadata = new FieldMetadata(process.ProcessName.ToLowerInvariant(), info.Name ?? "",
+                    info.AutomationId ?? "", info.HelpText ?? "", aria, info.IsPassword, info.IsEnabled,
+                    !element.TryGetCurrentPattern(ValuePattern.Pattern, out object pattern) || ((ValuePattern)pattern).Current.IsReadOnly,
+                    info.IsOffscreen, false, basis.Multiline, true, true);
+                if (!FieldPolicy.Allows(metadata, request.Excluded ?? []))
+                    return new(WriteStatus.RejectedBeforeMutation, Denial.Sensitive);
+            }
+            dispatched = true;
+            var receipt = _edits.Write(plan);
+            return receipt.Status == WriteStatus.OutcomeUnknown ? Unknown(plan) : receipt;
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            return dispatched ? Unknown(plan) : new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged);
+        }
+    }
+
     private static void TraceWrite(string stage, BrokerRequest request, long started)
     {
         string? path = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
@@ -310,7 +381,11 @@ internal sealed class UiaInputProvider : IDisposable
         }
         return cache;
     }
-    public void Dispose() => _native.Dispose();
+    public void Dispose()
+    {
+        _edits.Dispose();
+        _native.Dispose();
+    }
     [StructLayout(LayoutKind.Sequential)]
     private struct Rectangle
     {

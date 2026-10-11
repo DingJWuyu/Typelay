@@ -35,11 +35,9 @@ internal static class Program
                     {
                         "hello" => new(Wire.Version, request.Id, "ready"),
                         "clear" => Clear(provider, request),
+                        "direct-clear" => ClearDirect(provider, request),
                         "write" => new(Wire.Version, request.Id, "receipt", Receipt: provider.Write(request)),
-                        // The current UIA provider has no atomic, focus-independent writer.
-                        // Experimental foreground SetValue must not become a silent fallback.
-                        "direct-write" => new(Wire.Version, request.Id, "receipt",
-                            Receipt: new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported)),
+                        "direct-write" => new(Wire.Version, request.Id, "receipt", Receipt: provider.WriteDirect(request)),
                         "return" => new(Wire.Version, request.Id, provider.ReturnToSource(request.BoundTarget) ? "focused" : "denied"),
                         "capture" => Observe(provider, request),
                         "quit" => new(Wire.Version, request.Id, "bye"),
@@ -69,6 +67,11 @@ internal static class Program
         {
             return 4;
         }
+    }
+    private static BrokerResponse ClearDirect(UiaInputProvider provider, BrokerRequest request)
+    {
+        provider.ClearDirect();
+        return new(Wire.Version, request.Id, "cleared");
     }
     private static BrokerResponse Clear(UiaInputProvider provider, BrokerRequest request)
     {
