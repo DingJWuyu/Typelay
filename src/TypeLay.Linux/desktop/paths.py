@@ -19,7 +19,9 @@ def private_directory(path: Path) -> Path:
 
 class Paths:
     def __init__(self, home: str | Path | None = None):
-        self.home = Path(home or os.environ.get("TYPELAY_HOME", Path(__file__).parent.parent)).resolve()
+        self.home = Path(
+            home or os.environ.get("TYPELAY_HOME", Path(__file__).parent.parent)
+        ).resolve()
         user = Path.home()
         self.config = self._xdg("XDG_CONFIG_HOME", user / ".config") / "typelay"
         self.data = self._xdg("XDG_DATA_HOME", user / ".local/share") / "typelay"
@@ -49,7 +51,9 @@ class Paths:
 
 
 def peer_credentials(connection: socket.socket) -> tuple[int, int, int]:
-    pid, uid, gid = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+    pid, uid, gid = struct.unpack(
+        "3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+    )
     if uid != os.getuid() or pid <= 0:
         raise PermissionError("socket-peer-not-owner")
     return pid, uid, gid

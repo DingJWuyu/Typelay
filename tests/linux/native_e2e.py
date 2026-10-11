@@ -133,11 +133,16 @@ def inside(arguments):
             time.sleep(0.05)
         assert window is not None
         # XTest enters the nested compositor, which sends normal Wayland key events.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as compositor:
+            compositor.connect(os.environ["NIRI_SOCKET"])
+            compositor_pid = peer_credentials(compositor)[0]
         nested = subprocess.check_output(
-            ["xdotool", "search", "--class", "niri"], text=True
+            ["xdotool", "search", "--onlyvisible", "--pid", str(compositor_pid)],
+            text=True,
+            timeout=2,
         ).splitlines()
-        assert nested
-        subprocess.run(["xdotool", "windowfocus", "--sync", nested[-1]], check=True, timeout=2)
+        assert len(nested) == 1, "nested compositor window is not uniquely identified"
+        subprocess.run(["xdotool", "windowfocus", "--sync", nested[0]], check=True, timeout=2)
         time.sleep(0.2)
         print("focused fixture", flush=True)
         native = client.capture()

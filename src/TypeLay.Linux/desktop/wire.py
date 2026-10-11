@@ -15,7 +15,9 @@ def now_ms() -> int:
 
 
 def encode(value: dict) -> bytes:
-    body = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    body = json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode(
+        "utf-8"
+    )
     if not 0 < len(body) <= MAX_FRAME:
         raise ValueError("frame-size")
     return struct.pack("<I", len(body)) + body

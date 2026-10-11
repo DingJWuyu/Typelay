@@ -74,7 +74,14 @@ def place_geometry(window: dict, outputs: dict, workspaces: list, native: dict) 
         x, y, width, height = (rectangle[key] for key in ("x", "y", "width", "height"))
         if not all(isinstance(v, (int, float)) and math.isfinite(v) for v in (x, y, width, height)):
             return None
-        if x < -1 or y < -1 or width <= 0 or height <= 0 or x + width > size[0] + 1 or y + height > size[1] + 1:
+        if (
+            x < -1
+            or y < -1
+            or width <= 0
+            or height <= 0
+            or x + width > size[0] + 1
+            or y + height > size[1] + 1
+        ):
             return None
         bounds = {
             "x": (origin_x + position[0] + offset[0] + x) * scale,
@@ -94,7 +101,13 @@ def place_geometry(window: dict, outputs: dict, workspaces: list, native: dict) 
             return None
         return {
             "bounds": bounds,
-            "geometry": {"workArea": work, "output": output_name, "scale": scale, "originX": origin_x, "originY": origin_y},
+            "geometry": {
+                "workArea": work,
+                "output": output_name,
+                "scale": scale,
+                "originX": origin_x,
+                "originY": origin_y,
+            },
         }
     except (KeyError, TypeError, ValueError, StopIteration):
         return None
@@ -127,7 +140,9 @@ class Niri:
         else:
             self.version, self.windows, self.outputs, self.workspaces, overview = snapshot
             self.ready = not overview
-            self.focused = next((window for window in self.windows if window.get("is_focused")), None)
+            self.focused = next(
+                (window for window in self.windows if window.get("is_focused")), None
+            )
         if old != (self.ready, self.focused, self.windows, self.outputs, self.workspaces):
             self.changed()
         return False
