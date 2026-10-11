@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "gtk-target.h"
+#include "gtk-overlay.h"
 #include <string.h>
 #include <unistd.h>
 
@@ -32,6 +33,7 @@ static void preedit(GtkWidget *widget, const gchar *text, gpointer data) {
 static gboolean focused(GtkWidget *widget, GdkEventFocus *event, gpointer data) {
     (void)widget; (void)event;
     Target *target = data;
+    tl_overlay_sync();
     tl_invalidate(target, FALSE, TRUE);
     return FALSE;
 }
@@ -70,6 +72,7 @@ static void buffer_replaced(GObject *object, GParamSpec *property, gpointer data
     if (!target->dead) attach_buffer(target);
 }
 void tl_discover(GtkWidget *widget, gboolean before_input) {
+    if (tl_overlay_contains(widget)) return;
     if (G_OBJECT_TYPE(widget) != GTK_TYPE_ENTRY && G_OBJECT_TYPE(widget) != GTK_TYPE_TEXT_VIEW) return;
     if (!target_quark) target_quark = g_quark_from_static_string("typelay-gtk3-target");
     if (g_object_get_qdata(G_OBJECT(widget), target_quark) || target_count >= 2048) return;
@@ -134,11 +137,6 @@ static gboolean editable(Target *target) {
     return GTK_IS_ENTRY(target->widget) ? gtk_editable_get_editable(GTK_EDITABLE(target->widget))
         : gtk_text_view_get_editable(GTK_TEXT_VIEW(target->widget));
 }
-static void find_titlebar(GtkWidget *widget, gpointer data) {
-    GtkWidget **titlebar = data;
-    if (gtk_widget_get_visible(widget) && gtk_style_context_has_class(gtk_widget_get_style_context(widget), "titlebar"))
-        *titlebar = widget;
-}
 static JsonObject *rectangle(gint x, gint y, gint width, gint height) {
     JsonObject *value = json_object_new();
     json_object_set_int_member(value, "x", x);
@@ -147,49 +145,33 @@ static JsonObject *rectangle(gint x, gint y, gint width, gint height) {
     json_object_set_int_member(value, "height", height);
     return value;
 }
-static JsonObject *geometry(Target *target) {
+JsonObject *tl_geometry(Target *target) {
+    if (!target || target->dead) return NULL;
     GtkWidget *widget = target->widget;
     GtkWidget *top = gtk_widget_get_toplevel(widget);
     if (!GTK_IS_WINDOW(top) || !gtk_widget_get_mapped(widget)) return NULL;
-    GtkWidget *content = gtk_bin_get_child(GTK_BIN(top)), *titlebar = NULL;
-    if (!content) return NULL;
-    gtk_container_forall(GTK_CONTAINER(top), find_titlebar, &titlebar);
-    gint border = (gint)gtk_container_get_border_width(GTK_CONTAINER(top));
-    GtkAllocation body, header;
-    gtk_widget_get_allocation(content, &body);
-    gint left, upper, frame_width;
-    if (titlebar) {
-        gtk_widget_get_allocation(titlebar, &header);
-        left = header.x - gtk_widget_get_margin_start(titlebar);
-        upper = header.y - gtk_widget_get_margin_top(titlebar);
-        frame_width = header.width + gtk_widget_get_margin_start(titlebar) + gtk_widget_get_margin_end(titlebar);
-    } else {
-        left = body.x - gtk_widget_get_margin_start(content) - border;
-        upper = body.y - gtk_widget_get_margin_top(content) - border;
-        frame_width = body.width + gtk_widget_get_margin_start(content) + gtk_widget_get_margin_end(content) + 2 * border;
-    }
-    gint bottom = body.y + body.height + gtk_widget_get_margin_bottom(content) + border;
-    gint frame_height = bottom - upper;
     gint x, y;
-    if (left < 0 || upper < 0 || frame_width <= 0 || frame_height <= 0
-        || !gtk_widget_translate_coordinates(widget, top, 0, 0, &x, &y)) return NULL;
-    gint width = gtk_widget_get_allocated_width(widget), height = gtk_widget_get_allocated_height(widget);
-    /* Clip through scroll/view containers; never anchor an entirely occluded field. */
-    gint right = x + width, lower = y + height;
+    if (!gtk_widget_translate_coordinates(widget, top, 0, 0, &x, &y)) return NULL;
+    gint width = gtk_widget_get_allocated_width(top), height = gtk_widget_get_allocated_height(top);
+    gint right = x + gtk_widget_get_allocated_width(widget), lower = y + gtk_widget_get_allocated_height(widget);
+    /* These are GTK toplevel-local logical coordinates, NOT desktop positions.
+       Clip through ancestors before allowing either a read or a native anchor. */
     for (GtkWidget *parent = gtk_widget_get_parent(widget); parent && parent != top; parent = gtk_widget_get_parent(parent)) {
         gint px, py;
-        if (!gtk_widget_translate_coordinates(parent, top, 0, 0, &px, &py)) return NULL;
+        if (!gtk_widget_get_mapped(parent) || !gtk_widget_translate_coordinates(parent, top, 0, 0, &px, &py)) return NULL;
         x = MAX(x, px); y = MAX(y, py);
         right = MIN(right, px + gtk_widget_get_allocated_width(parent));
         lower = MIN(lower, py + gtk_widget_get_allocated_height(parent));
     }
-    x = MAX(x, left); y = MAX(y, upper);
-    right = MIN(right, left + frame_width); lower = MIN(lower, upper + frame_height);
+    x = MAX(x, 0); y = MAX(y, 0);
+    right = MIN(right, width); lower = MIN(lower, height);
     if (right <= x || lower <= y) return NULL;
     JsonObject *result = json_object_new();
-    json_object_set_object_member(result, "bounds", rectangle(x - left, y - upper, right - x, lower - y));
-    json_object_set_int_member(result, "frameWidth", frame_width);
-    json_object_set_int_member(result, "frameHeight", frame_height);
+    json_object_set_string_member(result, "space", "gtk-toplevel");
+    json_object_set_object_member(result, "bounds", rectangle(x, y, right - x, lower - y));
+    json_object_set_int_member(result, "frameWidth", width);
+    json_object_set_int_member(result, "frameHeight", height);
+    json_object_set_int_member(result, "scale", gtk_widget_get_scale_factor(widget));
     return result;
 }
 static JsonObject *metadata(Target *target) {
@@ -245,7 +227,7 @@ JsonObject *tl_describe(Target *target) {
     JsonObject *fields = metadata(target);
     if (!fields) return NULL;
     char *key = metadata_key(fields);
-    JsonObject *value = json_object_new(), *bounds = geometry(target);
+    JsonObject *value = json_object_new(), *bounds = tl_geometry(target);
     json_object_set_string_member(value, "target", target->id);
     json_object_set_object_member(value, "metadata", fields);
     json_object_set_object_member(value, "authority", authority(target, key));

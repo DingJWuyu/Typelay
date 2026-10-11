@@ -37,3 +37,5 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct);
 gboolean tl_return(Target *target, JsonObject *authority);
 gboolean tl_metadata_matches(Target *target, JsonObject *authority);
 void tl_clear_permit(void);
+
+JsonObject *tl_geometry(Target *target);

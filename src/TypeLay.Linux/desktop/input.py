@@ -1,16 +1,16 @@
 """Linux target authority. All text policy and product decisions stay in Core.
 
 Only the peer's GTK thread mutates a field. The desktop authenticates its process,
-correlates compositor geometry, obtains Core approval before reading, and accounts
+validates native anchors, obtains Core approval before reading, and accounts
 for one-shot receipts. A late or missing receipt is never interpreted as success.
 """
 
-import asyncio
 import socket
 from collections import OrderedDict
 
+from geometry import anchor_geometry
 from link import Link
-from niri import Niri, place_geometry
+from niri import Niri
 from paths import peer_credentials, process_identity
 from wire import now_ms
 
@@ -63,7 +63,7 @@ class Peer:
         if self.lifetime is None:
             import uuid
 
-            if name != "hello" or data["protocol"] != 1 or data["pid"] != self.pid:
+            if name != "hello" or data["protocol"] != 2 or data["pid"] != self.pid:
                 raise ValueError("native-handshake")
             self.lifetime = str(uuid.UUID(data["lifetime"]))
             if self.hello_timer:
@@ -86,6 +86,7 @@ class Input:
         self.bound = None
         self.bound_observation = None
         self.overlay_focused = False
+        self.ui_event = lambda *_: None
         self.user_epoch = self.source_epoch = self.foreground_epoch = 0
         self.window_epoch = self.content_epoch = 0
         self.last_focus = None
@@ -259,9 +260,7 @@ class Input:
             return None
         if focus == "Source" and (not native["focused"] or self.focused_peer() is not peer):
             return None
-        geometry = place_geometry(
-            window, self.niri.outputs, self.niri.workspaces, native["geometry"]
-        )
+        geometry = anchor_geometry(native["geometry"])
         if geometry is None:
             return None
         snapshot, record = self.remember(peer, native, window, geometry)
@@ -346,7 +345,9 @@ class Input:
         # teardown: they belong to already accepted physical input, not the UI.
 
     def event(self, peer, name, value):
-        if name == "input":
+        if name == "ui":
+            self.ui_event(peer, value)
+        elif name == "input":
             if peer is self.focused_peer() or (
                 self.bound
                 and peer.lifetime == self.bound["lifetime"]
@@ -405,9 +406,7 @@ class Input:
             if native["target"] != record["target"]["value"]:
                 return
             window = record["window"]
-            geometry = place_geometry(
-                window, self.niri.outputs, self.niri.workspaces, native["geometry"]
-            )
+            geometry = anchor_geometry(native["geometry"])
             if geometry is None:
                 return
             snapshot, _ = self.remember(
@@ -467,23 +466,15 @@ class Input:
             return False
         if description["authority"]["contentRevision"] != record["authority"]["contentRevision"]:
             return False
-        result = asyncio.get_running_loop().create_future()
-        self.niri.focus(
-            record["window"]["id"], lambda ok: result.set_result(ok) if not result.done() else None
+        # The nonmodal native editor shares the source's real GTK toplevel.
+        # Return only within that active parent, never activate another window.
+        response = await peer.link.ask(
+            "return", {"target": target, "authority": record["authority"]}
         )
-        if not await asyncio.wait_for(result, 0.7):
-            return False
-        # Compositor focus and the GTK enter event are asynchronous. Only retry
-        # this non-mutating focus operation, never a write or a keystroke.
-        for _ in range(6):
-            response = await peer.link.ask(
-                "return", {"target": target, "authority": record["authority"]}
-            )
-            if response and response.get("returned"):
-                self.overlay_focused = False
-                self.state()
-                return True
-            await asyncio.sleep(0.025)
+        if response and response.get("returned"):
+            self.overlay_focused = False
+            self.state()
+            return True
         return False
 
     async def request(self, operation, value):

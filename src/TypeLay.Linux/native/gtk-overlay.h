@@ -1,0 +1,10 @@
+#pragma once
+#include "gtk-target.h"
+
+/* Presentation is parent-relative; product state and edit authorization stay in Runtime. */
+gboolean tl_overlay_contains(GtkWidget *widget);
+void tl_overlay_hide(void);
+void tl_overlay_forget(Target *target);
+void tl_overlay_sync(void);
+gboolean tl_overlay_event(GdkEvent *event);
+JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject *data);

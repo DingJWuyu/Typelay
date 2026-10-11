@@ -48,19 +48,14 @@ async def desktop(paths, background, lock):
 
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
-    gi.require_version("GtkLayerShell", "0.1")
-    from gi.repository import Gdk, GLib, Gtk, GtkLayerShell
+    from gi.repository import Gdk, GLib, Gtk
     from input import Input
     from link import Link
     from ui import Overlay, Settings
 
     initialized, _ = Gtk.init_check([])
-    if (
-        not initialized
-        or not GtkLayerShell.is_supported()
-        or GtkLayerShell.get_protocol_version() < 4
-    ):
-        raise RuntimeError("wayland-layer-shell-unavailable")
+    if not initialized:
+        raise RuntimeError("wayland-gtk-unavailable")
     stopping = asyncio.Event()
     tasks = set()
     components = {"input": None, "overlay": None, "settings": None}
@@ -194,8 +189,8 @@ async def desktop(paths, background, lock):
                 return {
                     **status,
                     "nativePeers": sum(bool(peer.lifetime) for peer in components["input"].peers),
-                    "overlayVisible": components["overlay"].window.get_visible(),
-                    "editing": components["overlay"].text.get_editable(),
+                    "overlayVisible": components["overlay"].visible,
+                    "editing": components["overlay"].editing,
                     "viewState": (components["overlay"].value or {}).get("state"),
                     "sourceSupported": components["input"].focused_peer() is not None,
                 }

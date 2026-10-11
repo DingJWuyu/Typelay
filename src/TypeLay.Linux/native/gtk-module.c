@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "gtk-target.h"
+#include "gtk-overlay.h"
 #include <gdk/gdkwayland.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -57,13 +58,14 @@ static void clear_shortcut(void) {
     if (shortcut_authority) { json_object_unref(shortcut_authority); shortcut_authority = NULL; }
 }
 static void disconnect_peer(void) {
+    if (connection >= 0) { close(connection); connection = -1; }
+    tl_overlay_hide();
     tl_clear_permit();
     clear_shortcut();
     if (shortcut_configuration) { json_object_unref(shortcut_configuration); shortcut_configuration = NULL; }
     shortcut_key = 0; shortcut_consumed = FALSE;
     if (input_watch) { g_source_remove(input_watch); input_watch = 0; }
     if (output_watch) { g_source_remove(output_watch); output_watch = 0; }
-    if (connection >= 0) { close(connection); connection = -1; }
     if (incoming) g_byte_array_set_size(incoming, 0);
     if (outgoing) g_byte_array_set_size(outgoing, 0);
 }
@@ -129,6 +131,7 @@ void tl_invalidate(Target *target, gboolean text_changed, gboolean focus_changed
     tl_send_event("input", event);
 }
 void tl_forget(Target *target) {
+    tl_overlay_forget(target);
     tl_clear_permit();
     clear_shortcut();
     JsonObject *event = json_object_new();
@@ -150,7 +153,8 @@ static void command(JsonObject *frame) {
     if (!operation) { disconnect_peer(); return; }
     const char *target_id = tl_string(data, "target");
     Target *target = target_id ? tl_lookup(target_id) : tl_focused();
-    if (strcmp(operation, "describe") == 0) respond(id, tl_describe(target));
+    if (g_str_has_prefix(operation, "overlay-")) respond(id, tl_overlay_command(operation, target, data));
+    else if (strcmp(operation, "describe") == 0) respond(id, tl_describe(target));
     else if (strcmp(operation, "capture") == 0)
         respond(id, tl_capture(target, tl_object(data, "authority")));
     else if (strcmp(operation, "direct") == 0) respond(id, tl_write(target, data, TRUE));
@@ -254,7 +258,7 @@ static gboolean connect_peer(gpointer data) {
     input_watch = g_io_add_watch(channel, G_IO_IN | G_IO_HUP | G_IO_ERR | G_IO_NVAL, read_input, NULL);
     g_io_channel_unref(channel);
     JsonObject *hello = json_object_new();
-    json_object_set_int_member(hello, "protocol", 1);
+    json_object_set_int_member(hello, "protocol", 2);
     json_object_set_string_member(hello, "backend", "gtk3");
     json_object_set_string_member(hello, "lifetime", lifetime);
     json_object_set_int_member(hello, "pid", getpid());
@@ -372,6 +376,7 @@ static gboolean key_event(GdkEventKey *event) {
 }
 static void dispatch(GdkEvent *event, gpointer data) {
     (void)data;
+    if (tl_overlay_event(event)) return;
     if (event->type == GDK_KEY_PRESS || event->type == GDK_KEY_RELEASE) {
         if (shortcut_event(&event->key) || key_event(&event->key)) return;
         if (event->type == GDK_KEY_PRESS) {

@@ -14,7 +14,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/TypeLay.Linux/desktop"))
-from niri import contents, place_geometry, request  # noqa: E402
+from geometry import anchor_geometry  # noqa: E402
+from niri import contents, request  # noqa: E402
 from paths import Paths, peer_credentials  # noqa: E402
 from wire import encode, now_ms, receive_sync  # noqa: E402
 
@@ -26,7 +27,7 @@ class Native:
         self.id = 0
         self.events = []
         first = receive_sync(connection)
-        assert first["event"] == "hello" and first["data"]["protocol"] == 1
+        assert first["event"] == "hello" and first["data"]["protocol"] == 2
         self.hello = first["data"]
 
     def call(self, operation, data=None):
@@ -149,27 +150,14 @@ def inside(arguments):
         native = client.capture()
         assert native["metadata"]["automationId"] == "fixture-first"
         assert native["ime"] == "Clear" and native["writeSupported"]
-        outputs = contents(request("Outputs"), "Outputs")
-        workspaces = contents(request("Workspaces"), "Workspaces")
+        geometry = anchor_geometry(native["geometry"])
+        assert geometry is not None, "visible native parent anchor unavailable"
+        assert native["geometry"]["space"] == "gtk-toplevel"
         window = next(
             item for item in contents(request("Windows"), "Windows") if item["pid"] == fixture.pid
         )
-        geometry = place_geometry(window, outputs, workspaces, native["geometry"])
-        if geometry is None:
-            print(
-                json.dumps(
-                    {
-                        "window": window,
-                        "outputs": outputs,
-                        "workspaces": workspaces,
-                        "nativeGeometry": native["geometry"],
-                    },
-                    indent=2,
-                ),
-                flush=True,
-            )
-        assert geometry is not None, "GTK frame geometry does not agree with niri"
-        checks.append("real GTK metadata, authorized read and niri geometry")
+        assert not window["is_floating"], "regression must exercise an ordinary tiled window"
+        checks.append("real GTK metadata, authorized read and tiled-window native anchor")
 
         original_id = native["target"]
         write = plan(snapshot(native, client.hello, geometry), "你好", {"start": 9, "end": 14})
