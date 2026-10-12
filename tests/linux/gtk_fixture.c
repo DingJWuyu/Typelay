@@ -53,7 +53,7 @@ int main(int argc, char **argv) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
     gtk_container_set_border_width(GTK_CONTAINER(box), 32);
     gtk_container_add(GTK_CONTAINER(window), box);
-    GtkWidget *first = gtk_entry_new(), *second = gtk_entry_new(), *password = gtk_entry_new();
+    GtkWidget *first = gtk_entry_new(), *second = gtk_search_entry_new(), *password = gtk_entry_new();
     gtk_buildable_set_name(GTK_BUILDABLE(first), "fixture-first");
     gtk_buildable_set_name(GTK_BUILDABLE(second), "fixture-second");
     gtk_buildable_set_name(GTK_BUILDABLE(password), "fixture-password");

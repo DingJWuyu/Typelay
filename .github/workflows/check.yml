@@ -87,7 +87,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Install target desktop build dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject libayatana-appindicator niri mesa uv grim yad noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject libayatana-appindicator niri mesa uv grim yad noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright qt6-base qt6-wayland
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -107,6 +107,16 @@ jobs:
           Xvfb :99 -screen 0 1280x960x24 -nolisten tcp &
           export DISPLAY=:99
           python tests/linux/native_e2e.py --native artifacts/linux/native --output artifacts/linux/nested
+      - name: Exercise actual Qt6 fields in nested niri
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          export DISPLAY=:99
+          python tests/linux/qt_e2e.py --native artifacts/linux/native --output artifacts/linux/qt
+      - name: Verify ordinary browser fields through the production DOM adapter
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          python tests/linux/browser_e2e.py --chromium /usr/bin/chromium -v
+          python tests/linux/browser_native_e2e.py --package artifacts/linux/package --chromium /usr/bin/chromium -v
       - name: Verify tray controls without downloading models
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
@@ -132,6 +142,7 @@ jobs:
           name: typelay-linux-${{ github.sha }}
           path: |
             artifacts/linux/nested/
+            artifacts/linux/qt/
             artifacts/linux/desktop/
             artifacts/linux/desktop-data/typelay/components/*/self-check.json
             artifacts/linux/native/libtypelay-gtk3.so

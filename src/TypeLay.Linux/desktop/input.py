@@ -11,12 +11,12 @@ from collections import Counter, OrderedDict
 from geometry import anchor_geometry
 from link import Link
 from niri import Niri
-from paths import peer_credentials, process_identity
+from paths import peer_credentials, process_identity, process_lineage
 from wire import now_ms
 
 
 def target_id(peer, value):
-    return {"backend": "linux-gtk3", "value": value, "lifetime": peer.lifetime}
+    return {"backend": f"linux-{peer.backend}", "value": value, "lifetime": peer.lifetime}
 
 
 def target_key(target):
@@ -39,6 +39,8 @@ class Peer:
         self.owner = owner
         self.pid = pid
         self.application = process_identity(pid)
+        self.backend = "gtk3"
+        self.ancestors = {}
         self.lifetime = None
         self.shortcut = None
         self.link = Link(
@@ -65,6 +67,12 @@ class Peer:
 
             if name != "hello" or data["protocol"] != 2 or data["pid"] != self.pid:
                 raise ValueError("native-handshake")
+            self.backend = data.get("backend", "gtk3")
+            if self.backend not in ("gtk3", "browser", "qt6"):
+                raise ValueError("native-backend")
+            if self.backend == "browser":
+                self.ancestors = process_lineage(self.pid)
+                self.ancestors.pop(self.pid, None)
             self.lifetime = str(uuid.UUID(data["lifetime"]))
             if self.hello_timer:
                 self.owner.glib.source_remove(self.hello_timer)
@@ -73,6 +81,25 @@ class Peer:
             self.owner.changed()
         else:
             self.owner.event(self, name, data)
+
+    @property
+    def anchor_space(self):
+        return {"browser": "browser-viewport", "qt6": "qt-toplevel"}.get(
+            self.backend, "gtk-toplevel"
+        )
+
+    def matches_process(self, pid):
+        if self.backend in ("gtk3", "qt6"):
+            return self.pid == pid
+        if pid not in self.ancestors:
+            return False
+        try:
+            if process_lineage(self.pid).get(pid) != self.ancestors[pid]:
+                return False
+            self.application = process_identity(pid)
+            return True
+        except (OSError, ValueError, IndexError):
+            return False
 
 
 class Input:
@@ -137,7 +164,7 @@ class Input:
         if not self.fresh() or not self.niri.focused:
             return None
         pid = self.niri.focused.get("pid")
-        peers = [peer for peer in self.peers if peer.pid == pid and peer.lifetime]
+        peers = [peer for peer in self.peers if peer.lifetime and peer.matches_process(pid)]
         # niri chooses the process, not a guessed window-to-widget mapping. The
         # authenticated native peer then proves which GTK parent actually owns
         # keyboard focus. Its opaque field and parent-local view identify the
@@ -287,7 +314,7 @@ class Input:
             return self.captured("native-disconnected")
         if focus == "Source" and (not native["focused"] or self.focused_peer() is not peer):
             return self.captured("native-focus-changed")
-        geometry = anchor_geometry(native["geometry"])
+        geometry = anchor_geometry(native["geometry"], peer.anchor_space)
         if geometry is None:
             return self.captured("no-visible-anchor")
         snapshot, record = self.remember(peer, native, window, geometry)
@@ -307,6 +334,39 @@ class Input:
     def configure_peer(self, peer):
         peer.link.command("configure-shortcuts", self.shortcut_config)
         peer.shortcut = None
+
+    async def trigger(self, kind, request):
+        """Compositor commands may use only the already-bound native shortcut lease."""
+        if not isinstance(request, dict) or kind not in ("wake", "direct"):
+            return False
+        stamp = request.get("triggeredAtMs")
+        window = self.niri.focused
+        peer = self.focused_peer()
+        if (
+            type(stamp) is not int
+            or not 0 <= now_ms() - stamp <= 150
+            or not self.shortcut_config.get("enabled")
+            or not window
+            or request.get("windowId") != window["id"]
+            or not peer
+            or not peer.shortcut
+            or self.overlay_focused
+        ):
+            return False
+        record = peer.shortcut
+        if record["window"]["id"] != window["id"]:
+            return False
+        response = await peer.link.ask(
+            "trigger-shortcut",
+            {
+                "kind": kind,
+                "target": record["target"]["value"],
+                "authority": record["authority"],
+                "generation": self.shortcut_config.get("generation"),
+                "triggeredAtMs": stamp,
+            },
+        )
+        return bool(response and response.get("triggered"))
 
     def configure(self, value):
         def binding(chord):
@@ -440,7 +500,7 @@ class Input:
             if native["target"] != record["target"]["value"]:
                 return
             window = record["window"]
-            geometry = anchor_geometry(native["geometry"])
+            geometry = anchor_geometry(native["geometry"], peer.anchor_space)
             if geometry is None:
                 return
             snapshot, _ = self.remember(

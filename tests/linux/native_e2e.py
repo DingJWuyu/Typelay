@@ -160,6 +160,42 @@ def inside(arguments):
         checks.append("real GTK metadata, authorized read and tiled-window native anchor")
 
         original_id = native["target"]
+        # The compositor CLI crosses the same native validation/trigger boundary;
+        # it cannot turn a stale field lease into an operation on a newer focus.
+        generation = str(uuid.uuid4())
+        client.call(
+            "configure-shortcuts",
+            {"enabled": True, "generation": generation, "wake": {}, "direct": {}},
+        )
+        for kind in ("wake", "direct"):
+            current = client.capture()
+            lease = {
+                "target": current["target"],
+                "authority": current["authority"],
+                "generation": generation,
+            }
+            client.call("publish-shortcut", lease)
+            rejected = client.call(
+                "trigger-shortcut",
+                {**lease, "kind": kind, "triggeredAtMs": now_ms() - 1000},
+            )
+            assert rejected == {"triggered": False}, "stale compositor trigger was accepted"
+            accepted = client.call(
+                "trigger-shortcut", {**lease, "kind": kind, "triggeredAtMs": now_ms()}
+            )
+            assert accepted == {"triggered": True}, "fresh compositor trigger was rejected"
+            notice = next(
+                event["data"]
+                for event in reversed(client.events)
+                if event.get("event") == "shortcut"
+            )
+            assert notice["native"]["target"] == original_id and notice["kind"] == kind
+            assert notice["native"]["text"] == native["text"]
+            assert client.call(
+                "trigger-shortcut", {**lease, "kind": kind, "triggeredAtMs": now_ms()}
+            ) == {"triggered": False}, "compositor shortcut lease was reusable"
+        checks.append("compositor wake/direct trigger, fixed source, expiration and single use")
+        native = client.capture()
         write = plan(snapshot(native, client.hello, geometry), "你好", {"start": 9, "end": 14})
         # Direct replacement remains bound to the first entry after focus moves away.
         key("Tab")
@@ -255,7 +291,7 @@ def inside(arguments):
         paths.native.unlink(missing_ok=True)
 
 
-def outer(arguments):
+def outer(arguments, script=None):
     arguments.output.mkdir(parents=True, exist_ok=True)
     result_name = "desktop-result.json" if arguments.desktop else "native-result.json"
     (arguments.output / result_name).unlink(missing_ok=True)
@@ -267,7 +303,7 @@ def outer(arguments):
     command = [
         "/usr/bin/python3",
         "-I",
-        str(Path(__file__).resolve()),
+        str(Path(script or __file__).resolve()),
         "--inside",
         "--native",
         str(arguments.native),

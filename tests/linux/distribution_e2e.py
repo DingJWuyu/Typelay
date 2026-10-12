@@ -86,11 +86,42 @@ class DistributionTests(unittest.TestCase):
         state = json.loads(result.stdout)
         self.assertTrue(state["hostInstalled"])
         self.assertTrue(state["gtkModuleInstalled"])
+        self.assertTrue(state["qt6PluginInstalled"])
+        self.assertTrue(state["browserHostInstalled"])
         self.assertFalse(state["wayland"])
         self.assertIsNone(state["session"])
         self.assertFalse(state["workerInstalled"])
         self.assertFalse(state["modelInventoryPresent"])
         self.assertFalse((self.home / "data/typelay/components").exists())
+        launched = subprocess.run(
+            [
+                str(self.command),
+                "launch",
+                sys.executable,
+                "-c",
+                "import json,os;print(json.dumps({key:os.environ.get(key) for key in ['GTK3_MODULES','QT_QPA_GENERIC_PLUGINS','QT_PLUGIN_PATH','QT_IM_MODULE']}))",
+            ],
+            env={
+                **self.env,
+                "GTK3_MODULES": "existing-gtk",
+                "QT_QPA_GENERIC_PLUGINS": "existing-qt",
+                "QT_PLUGIN_PATH": "/existing/plugins",
+                "QT_IM_MODULE": "fcitx",
+            },
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assert_success(launched)
+        inherited = json.loads(launched.stdout)
+        self.assertEqual(inherited["QT_IM_MODULE"], "fcitx")
+        self.assertEqual(inherited["QT_QPA_GENERIC_PLUGINS"], "existing-qt,typelay")
+        self.assertTrue(inherited["GTK3_MODULES"].endswith(":existing-gtk"))
+        self.assertTrue(inherited["QT_PLUGIN_PATH"].endswith(":/existing/plugins"))
+        self.assertTrue(
+            Path(inherited["QT_PLUGIN_PATH"].split(":")[0], "generic/libtypelay-qt6.so").is_file()
+        )
+
         self.assert_success(
             subprocess.run(
                 [str(self.command), "--quit"],
@@ -113,6 +144,34 @@ class DistributionTests(unittest.TestCase):
         for directory in self.state_directories:
             self.assertEqual((directory / "keep.txt").read_text(), "synthetic retained data")
         self.assert_success(self.install_command("uninstall"))
+
+    def test_browser_registration_is_explicit_scoped_and_removed_with_installation(self):
+        self.assert_success(self.install_command("install"))
+        firefox = self.home / ".mozilla/native-messaging-hosts/org.typelay.browser.json"
+        chromium = self.home / "config/chromium/NativeMessagingHosts/org.typelay.browser.json"
+        self.assertFalse(firefox.exists())
+        self.assertFalse(chromium.exists())
+        self.assert_success(self.install_command("browser-install", "--browser", "firefox"))
+        self.assertEqual(
+            json.loads(firefox.read_text())["allowed_extensions"], ["typelay@typelay.local"]
+        )
+        self.assertNotEqual(
+            self.install_command("browser-install", "--browser", "chromium").returncode, 0
+        )
+        extension = "abcdefghijklmnopabcdefghijklmnop"
+        self.assert_success(
+            self.install_command(
+                "browser-install", "--browser", "chromium", "--extension-id", extension
+            )
+        )
+        value = json.loads(chromium.read_text())
+        self.assertEqual(value["allowed_origins"], [f"chrome-extension://{extension}/"])
+        self.assertTrue(os.access(value["path"], os.X_OK))
+        self.assert_success(self.install_command("browser-uninstall", "--browser", "firefox"))
+        self.assertFalse(firefox.exists())
+        self.assertTrue(chromium.exists())
+        self.assert_success(self.install_command("uninstall"))
+        self.assertFalse(chromium.exists())
 
     def test_purge_removes_only_typelay_state(self):
         self.assert_success(self.install_command("install"))

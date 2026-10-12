@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "TypeLay local input",
+  "version": "0.1.0",
+  "description": "Connect ordinary webpage inputs to the local TypeLay client.",
+  "permissions": ["nativeMessaging"],
+  "browser_specific_settings": {"gecko": {"id": "typelay@typelay.local"}},
+  "background": {"scripts": ["background.js"]},
+  "content_scripts": [{"matches": ["http://*/*", "https://*/*"], "js": ["content.js"], "run_at": "document_start", "all_frames": false}]
+}

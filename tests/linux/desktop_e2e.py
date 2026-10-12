@@ -5,7 +5,9 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
+from pathlib import Path
 
 from main import control
 from native_e2e import key
@@ -287,6 +289,104 @@ def run(arguments):
         )
         application = None
         evidence.append("unmodified YAD application: real entry translation and accepted output")
+        # Exercise the real extension, native host, niri PID authority, shared
+        # controller and actual CPU model together, not only a DOM transport seam.
+        from playwright.sync_api import sync_playwright
+
+        with tempfile.TemporaryDirectory(prefix="typelay-browser-desktop-") as temporary:
+            browser_home = Path(temporary)
+            browser_environment = {
+                **environment,
+                "HOME": str(browser_home),
+                "XDG_CONFIG_HOME": str(browser_home / "config"),
+                "XDG_DATA_HOME": str(browser_home / "data"),
+                "XDG_CACHE_HOME": str(browser_home / "cache"),
+            }
+            subprocess.run(
+                [sys.executable, str(package / "install.py"), "install"],
+                env=browser_environment,
+                check=True,
+                timeout=30,
+            )
+            extension = package / "browser/chromium"
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch_persistent_context(
+                    str(browser_home / "config/chromium"),
+                    executable_path="/usr/bin/chromium",
+                    headless=False,
+                    env=browser_environment,
+                    ignore_default_args=["--disable-extensions"],
+                    args=[
+                        "--ozone-platform=wayland",
+                        f"--disable-extensions-except={extension}",
+                        f"--load-extension={extension}",
+                    ],
+                )
+                try:
+                    worker = (
+                        browser.service_workers[0]
+                        if browser.service_workers
+                        else browser.wait_for_event("serviceworker", timeout=15000)
+                    )
+                    subprocess.run(
+                        [
+                            sys.executable,
+                            str(package / "install.py"),
+                            "browser-install",
+                            "--browser",
+                            "chromium",
+                            "--extension-id",
+                            worker.url.split("/")[2],
+                        ],
+                        env=browser_environment,
+                        check=True,
+                        timeout=10,
+                    )
+                    browser.route(
+                        "http://127.0.0.1/typelay-contract",
+                        lambda route: route.fulfill(
+                            content_type="text/html",
+                            body="<!doctype html><title>TypeLay browser contracts</title>"
+                            "<style>textarea{margin:80px;width:500px;height:100px}</style>"
+                            "<label>Message<textarea id='source'></textarea></label><input id='other'>",
+                        ),
+                    )
+                    page = browser.new_page()
+                    page.goto("http://127.0.0.1/typelay-contract")
+                    window = wait_for(
+                        lambda: next(
+                            (
+                                item
+                                for item in contents(request("Windows"), "Windows")
+                                if (item.get("title") or "").startswith("TypeLay browser contracts")
+                            ),
+                            None,
+                        ),
+                        "the real Wayland browser window did not map",
+                    )
+                    request({"Action": {"FocusWindow": {"id": window["id"]}}})
+                    page.locator("#source").focus()
+                    typed(original)
+                    wait_for(
+                        ready_to_accept, "browser native route/model did not grant Tab acceptance"
+                    )
+                    assert page.locator("#source").input_value() == original
+                    subprocess.run(
+                        ["grim", str(arguments.output / "browser.png")], check=True, timeout=3
+                    )
+                    key("Tab")
+                    wait_for(
+                        lambda: translated(page.locator("#source").input_value()),
+                        "browser Tab did not accept the real translation",
+                    )
+                    assert page.evaluate("document.activeElement.id") == "source", (
+                        "browser Tab also navigated"
+                    )
+                    evidence.append(
+                        "Wayland Chromium: real extension, native host, compositor process binding, CPU model and Tab"
+                    )
+                finally:
+                    browser.close()
         assert control(paths, "settings") is True
         time.sleep(0.3)
         subprocess.run(["grim", str(arguments.output / "settings.png")], check=True, timeout=3)

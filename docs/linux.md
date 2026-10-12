@@ -6,20 +6,20 @@
 
 这是正在完成桌面验证的预览客户端，不是已通过完整产品验收的 Linux 正式版。现有产品规格仍是验收依据；下列缺口不是新的产品规格或永久支持名单。
 
-客户端复用 Core、Runtime 和 Python worker，提供自动/按需模式、翻译预览及编辑、原框返回、Tab 接受、按需快捷键、绑定原框的直接替换、应用排除、设置持久化及本地模型安装。Linux 桌面集成使用 GTK3 设置界面、Ayatana 托盘、niri IPC 和绑定源控件的 GTK 原生浮层与输入适配器。是否真正可用由每个控件的元数据、输入法状态、窗口身份、几何、版本和时效共同决定，不能仅凭编译成功判断。
+客户端复用 Core、Runtime 和 Python worker，提供自动/按需模式、翻译预览及编辑、原框返回、Tab 接受、按需快捷键、绑定原框的直接替换、应用排除、设置持久化及本地模型安装。Linux 桌面集成使用 GTK3 设置界面、Ayatana 托盘、niri IPC 和绑定源控件的 GTK3/Qt6 原生浮层与输入适配器。是否真正可用由每个控件的元数据、输入法状态、窗口身份、几何、版本和时效共同决定，不能仅凭编译成功判断。
 
-当前输入后端只实现标准 GTK3 GtkEntry / GtkTextView（普通无富文本标记的缓冲区）。应用必须在启动时加载模块，已经运行的实例不能通过再次打开窗口补加载。GTK4、Qt、Firefox/Chromium 网页、Electron/VS Code、终端尚无输入后端。这是尚未完成的功能覆盖，不可描述成通用输入框支持。
+GTK 原生后端覆盖标准 GTK3 GtkEntry / GtkSearchEntry / GtkTextView（普通无富文本标记的缓冲区）。应用必须在启动时加载模块，已经运行的实例不能通过再次打开窗口补加载。浏览器后端通过单独明确安装的扩展覆盖 Firefox/Chromium 顶层网页普通 input/textarea，详见 [浏览器连接与限制](browser-linux.md)。Qt6 标准 Widgets 通过附加 generic plugin 接入受限非 IME 路径，收到输入法事件的控件会停用至重建，支持边界见 [Qt6 连接与限制](qt6-linux.md)。GTK4、Qt5/Qt Quick、Electron/VS Code、富文本尚无输入后端；终端/命令区按产品策略默认排除。这些缺口仍是未完成的功能覆盖，不可描述成通用输入框支持。
 
 同一 GTK3 进程的多个窗口可分别绑定原生控件；预览和编辑要求活动父窗口，直接替换保持绑定触发时的原控件。浮层使用 GTK 父窗口坐标，不依赖 niri 缺失的平铺窗口绝对位置，也不猜测屏幕坐标。控件身份、父窗口状态、输入法状态或锚点不能确认时拒绝操作。定位契约见源码中的 `docs/adr/0004-linux-native-anchors.md`。
 
-快捷键在当前已连接的 GTK 原生输入适配器中处理，而不是桌面范围的通用快捷键服务。默认 Ctrl+Shift+F9 唤醒、Ctrl+Shift+F10 直接替换，仅按需模式生效。未适配应用中的全局唤醒、所有应用的兼容性、托盘物理桌面视觉一致性仍未完成验收。
+快捷键默认在已连接的输入适配器中处理；也可将 niri 全局按键绑定到下述 --wake/--direct 命令。默认 Ctrl+Shift+F9 唤醒、Ctrl+Shift+F10 直接替换，仅按需模式生效。全局触发不会为没有输入后端的应用伪造读取/写入能力。所有应用的兼容性、物理快捷键与托盘视觉一致性仍需实际验证。
 
 ## 构建
 
 在目标机器安装依赖（fish 可直接运行）：
 
 ```fish
-sudo pacman -Syu --needed git base-devel cmake ninja pkgconf dotnet-sdk gtk3 json-glib python python-gobject libayatana-appindicator niri uv
+sudo pacman -Syu --needed git base-devel cmake ninja pkgconf dotnet-sdk gtk3 json-glib python python-gobject libayatana-appindicator niri uv qt6-base qt6-wayland
 ```
 
 .NET SDK 版本须满足仓库 `global.json`。普通用户使用自包含发行包，不需要 .NET SDK。GTK、PyGObject、Ayatana 等桌面库由系统包管理器维护；翻译 worker 使用独立 CPython，不修改系统 Python。
@@ -30,7 +30,7 @@ cd Typelay
 python eng/build-linux.py
 ```
 
-输出：`artifacts/TypeLay-Linux-preview-x86_64.tar.gz` 及对应 `.sha256`。包内包括自包含 .NET 宿主、GTK 模块、子进程监督程序、桌面代码、共享 worker、安装脚本和文件校验清单。模型不在包内，也不会在首次启动时无提示下载。
+输出：`artifacts/TypeLay-Linux-preview-x86_64.tar.gz` 及对应 `.sha256`。包内包括自包含 .NET 宿主、GTK3/Qt6 模块、浏览器扩展及本地主机、子进程监督程序、桌面代码、共享 worker、安装脚本和文件校验清单。模型不在包内，也不会在首次启动时无提示下载。
 
 构建时的外部 .NET SDK/NuGet 获取仍需要网络。模型安装的原生 Python 依赖固定直接版本，通过 uv 为 CPython 3.13 解析 Linux wheel 并生成带哈希的依赖锁。安装记录保留实际解析版本，不声称不同时间解析出的传递依赖完全相同。
 
@@ -61,7 +61,7 @@ Argos 发布源未提供可用的固定发布者摘要时，安装器记录 HTTP
 
 ## 连接目标应用
 
-先运行 TypeLay，再使用启动器启动一个全新的 GTK3 应用进程：
+先运行 TypeLay，再使用启动器启动一个全新的 GTK3 或 Qt6 Widgets 应用进程：
 
 ```fish
 ~/.local/bin/typelay launch mousepad
@@ -69,13 +69,24 @@ Argos 发布源未提供可用的固定发布者摘要时，安装器记录 HTTP
 
 `mousepad` 是操作示例，不是内置应用白名单，需要自行安装。应先彻底退出原应用；某些应用会通过 D-Bus 把新启动请求转交给旧进程，这样旧进程仍不会加载模块。
 
-启动器只给该应用进程传入 GTK3_MODULES，保留其已有模块；不会全局修改桌面环境、设置 LD_PRELOAD、注入现有进程、模拟粘贴或修改剪贴板。应用退出后该集成自然结束。为已确认兼容的日常应用创建启动项时，可将命令改为 `~/.local/bin/typelay launch 原命令`。
+启动器只给该应用进程传入 GTK3_MODULES 和附加 Qt generic plugin 路径，保留已有模块和 QT_IM_MODULE；不会全局修改桌面环境、设置 LD_PRELOAD、注入现有进程、模拟粘贴或修改剪贴板。应用退出后该集成自然结束。为已确认兼容的日常应用创建启动项时，可将命令改为 `~/.local/bin/typelay launch 原命令`。
 
 自动模式：聚焦支持的输入框后显示胶囊，输入后按共享防抖规则翻译。绿色就绪且底部明确显示“Tab 接受译文”时，Tab 才由 TypeLay 接受；否则仍属于原应用。点击译文编辑，第一次 Tab 返回原输入框，第二次 Tab 才接受。展开/收起、重译、Esc 隐藏和语言方向设置位于浮层。
 
 按需模式：聚焦时不自动显示或翻译。Ctrl+Shift+F9 唤醒当前输入框；Ctrl+Shift+F10 冻结当前选择范围或整段文本并直接翻译替换，不改变工作模式。即使用户随后切换输入框，也不会把结果写入新的焦点；原目标内容改变、关闭或失去写入权限时拒绝写回。
 
 快捷键可在设置中修改。输入法组合中的按键不会被当作 TypeLay 命令。输入法状态不能被确认时，不以“看起来没有候选窗”作为替换许可。
+
+需要合成器级快捷键时，可自行在 niri 配置的 binds 区块加入以下内容，路径替换为自己的绝对路径：
+
+```kdl
+binds {
+    Ctrl+Shift+F9 repeat=false { spawn "/home/你的用户名/.local/bin/typelay" "--wake"; }
+    Ctrl+Shift+F10 repeat=false { spawn "/home/你的用户名/.local/bin/typelay" "--direct"; }
+}
+```
+
+命令只使用触发时窗口对应的已批准目标与短期原生租约，再由目标事件线程核对字段身份、原文/焦点版本及 IME。切焦点、超期、未知输入法或尚无已连接字段时返回非零，不改为读取后来聚焦的控件。此配置由用户决定；程序不改写 niri 配置。更改设置中的应用内快捷键不会自动修改 niri 中的绑定。
 
 ## 托盘与快速操作
 
@@ -108,7 +119,7 @@ spawn-at-startup "/home/你的用户名/.local/bin/typelay" "--background"
 
 ## 验证
 
-CI 将共享测试、Windows 原生/打包检查、Arch 容器中的 Linux 构建、发行包生命周期及嵌套 niri/GTK 测试分开执行。查看当前提交对应 Actions 的实际结果；失败的任务不算通过，旧提交成功也不能证明新提交通过。
+CI 将共享测试、Windows 原生/打包检查、Arch 容器中的 Linux 构建、发行包生命周期及嵌套 niri/GTK3/Qt6 及浏览器测试分开执行。查看当前提交对应 Actions 的实际结果；失败的任务不算通过，旧提交成功也不能证明新提交通过。
 
 本地最小静态检查：
 
@@ -134,7 +145,7 @@ env GDK_BACKEND=x11 dbus-run-session -- xvfb-run -a python tests/linux/tray_e2e.
 
 该回归验证注册、菜单动作、暂停/恢复和持久化，不等同于真实 Waybar、物理鼠标或目标桌面视觉验收。缺少 PyGObject、Ayatana 或显示服务时应报告未执行，不能记为通过。
 
-嵌套测试需要独立 Xvfb、niri、Mesa 软件渲染、D-Bus 和 xdotool。CI 的 XTest 只向独立嵌套合成器注入测试按键，不是生产客户端的输入方案。原生测试验证受控 GTK 控件，不能冒充 Firefox、Qt 或物理键盘实测。
+嵌套测试需要独立 Xvfb、niri、Mesa 软件渲染、D-Bus 和 xdotool。CI 的 XTest 只向独立嵌套合成器注入测试按键，不是生产客户端的输入方案。原生测试验证受控 GTK3/Qt6 控件；Chromium DOM、本地主机与完整桌面链路有独立用例，不能冒充 Firefox 或物理键盘实测。
 
 物理 CachyOS + niri 验收必须记录系统/niri/GTK/PyGObject/输入法版本，并逐项保留结果：
 
@@ -148,7 +159,8 @@ env GDK_BACKEND=x11 dbus-run-session -- xvfb-run -a python tests/linux/tray_e2e.
 | 几何/视觉 | 平铺滚动、浮动、窗口动画、不同缩放屏幕、屏幕边缘 | 无遮挡输入框、无抢焦点、主题一致 |
 | 托盘 | Waybar 启用 tray，测试暂停/恢复、切换模式、交换语言、中键设置、面板重启、退出 | 真实面板点击、主题与图标清晰度 |
 | 完整生命周期 | 模型安装、断网、退出、重复启动、登录启动、卸载 | 无孤儿模型进程、无遗留键盘占用 |
-| 非 GTK3 应用 | Firefox/Chromium、Electron/VS Code、GTK4、Qt | 当前没有后端，不能标记通过 |
+| 网页普通字段 | Firefox/Chromium 扩展安装、input/textarea、切标签页、DOM 重建和框架受控值 | native messaging 路由、真实网页状态与撤销栈；详见浏览器说明 |
+| 其他输入框 | Electron/VS Code、GTK4、Qt5/Qt Quick、富文本 | 当前没有后端，不能标记通过 |
 
 未经实际执行的项目保持未验证。源码中存在实现、单元测试通过和嵌套桌面通过是三个不同层次的证据。
 

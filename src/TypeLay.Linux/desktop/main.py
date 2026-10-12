@@ -11,12 +11,12 @@ import subprocess
 import sys
 
 from paths import Paths, connect_private, peer_credentials
-from wire import encode, receive_sync
+from wire import encode, now_ms, receive_sync
 
 
-def control(paths, operation):
+def control(paths, operation, data=None):
     with connect_private(paths.control, 1.5) as connection:
-        connection.sendall(encode({"id": 1, "op": operation, "data": None}))
+        connection.sendall(encode({"id": 1, "op": operation, "data": data}))
         return receive_sync(connection).get("data")
 
 
@@ -28,6 +28,8 @@ def doctor(paths):
         "wayland": bool(os.environ.get("WAYLAND_DISPLAY")),
         "hostInstalled": (paths.home / "app/TypeLay.Linux").is_file(),
         "gtkModuleInstalled": paths.module.is_file(),
+        "qt6PluginInstalled": (paths.home / "native/qt6/generic/libtypelay-qt6.so").is_file(),
+        "browserHostInstalled": (paths.home / "typelay-browser-host").is_file(),
         "workerInstalled": paths.python.is_file(),
         "modelInventoryPresent": (paths.models / "installed.json").is_file(),
     }
@@ -190,7 +192,9 @@ async def desktop(paths, background, lock):
             components["settings"].report_tray,
         )
 
-        async def command(operation, _value):
+        async def command(operation, value):
+            if operation in ("wake", "direct"):
+                return await components["input"].trigger(operation, value)
             if operation == "settings":
                 components["settings"].show()
                 return True
@@ -302,6 +306,10 @@ def main():
     group.add_argument("--doctor", action="store_true", help="输出不包含输入内容的安装及会话状态")
     group.add_argument("--install-models", action="store_true", help="下载、校验并安装本地翻译组件")
     group.add_argument("--version", action="store_true")
+    group.add_argument("--wake", action="store_true", help="由 niri 快捷键唤醒当前已连接输入框")
+    group.add_argument(
+        "--direct", action="store_true", help="由 niri 快捷键直接翻译当前已连接输入框"
+    )
     parser.add_argument(
         "command", nargs=argparse.REMAINDER, help="launch APPLICATION [ARGUMENT ...]"
     )
@@ -310,6 +318,22 @@ def main():
         print("TypeLay Linux preview 0.2.0")
         return 0
     paths = Paths()
+    if args.wake or args.direct:
+        from niri import contents, request
+
+        stamp = now_ms()
+        window = contents(request("FocusedWindow"), "FocusedWindow")
+        accepted = bool(
+            window
+            and control(
+                paths,
+                "wake" if args.wake else "direct",
+                {"windowId": window["id"], "triggeredAtMs": stamp},
+            )
+        )
+        if not accepted:
+            print("TypeLay: 当前输入框或按需快捷键尚未就绪，未启动新的翻译替换。", file=sys.stderr)
+        return 0 if accepted else 1
     if args.command:
         if len(args.command) < 2 or args.command[0] != "launch":
             parser.error("使用 typelay launch APPLICATION [ARGUMENT ...]")
@@ -320,6 +344,14 @@ def main():
         modules = environment.get("GTK3_MODULES", "").split(":")
         environment["GTK3_MODULES"] = ":".join(
             dict.fromkeys([str(paths.module), *filter(None, modules)])
+        )
+        plugins = environment.get("QT_QPA_GENERIC_PLUGINS", "").split(",")
+        environment["QT_QPA_GENERIC_PLUGINS"] = ",".join(
+            dict.fromkeys([*filter(None, plugins), "typelay"])
+        )
+        plugin_paths = environment.get("QT_PLUGIN_PATH", "").split(":")
+        environment["QT_PLUGIN_PATH"] = ":".join(
+            dict.fromkeys([str(paths.home / "native/qt6"), *filter(None, plugin_paths)])
         )
         os.execvpe(args.command[1], args.command[1:], environment)
     if args.doctor:

@@ -22,6 +22,7 @@ static gboolean shortcut_consumed;
 static gboolean tab_down, tab_consumed, escape_down, escape_consumed;
 static gboolean initialized;
 static GQueue consumed_ids = G_QUEUE_INIT;
+static gboolean trigger_shortcut(const char *kind, Target *target, JsonObject *approved);
 
 const char *tl_string(JsonObject *object, const char *member) {
     if (!object || !json_object_has_member(object, member)) return NULL;
@@ -173,6 +174,20 @@ static void command(JsonObject *frame) {
         shortcut_configuration = data ? tl_copy(data) : NULL;
         shortcut_key = 0; shortcut_consumed = FALSE;
         respond(id, NULL);
+    } else if (strcmp(operation, "trigger-shortcut") == 0) {
+        JsonObject *basis = tl_object(data, "authority");
+        gint64 stamp = tl_integer(data, "triggeredAtMs", 0), age = tl_now() - stamp;
+        gboolean allowed = target && target == tl_focused() && age >= 0 && age <= 150
+            && shortcut_authority
+            && g_strcmp0(tl_string(data, "generation"), tl_string(shortcut_configuration, "generation")) == 0
+            && g_strcmp0(target->id, tl_string(shortcut_authority, "target")) == 0
+            && (gint64)target->content_revision == tl_integer(basis, "contentRevision", -1)
+            && (gint64)target->input_revision == tl_integer(basis, "inputRevision", -1)
+            && (gint64)target->focus_revision == tl_integer(basis, "focusRevision", -1);
+        JsonObject *reply = json_object_new();
+        json_object_set_boolean_member(reply, "triggered", allowed
+            && trigger_shortcut(tl_string(data, "kind"), target, basis));
+        respond(id, reply);
     } else if (strcmp(operation, "publish-shortcut") == 0) {
         clear_shortcut();
         JsonObject *basis = tl_object(data, "authority");
@@ -278,6 +293,26 @@ static void remember(const char *id) {
     g_queue_push_tail(&consumed_ids, g_strdup(id));
     while (g_queue_get_length(&consumed_ids) > 128) g_free(g_queue_pop_head(&consumed_ids));
 }
+static gboolean trigger_shortcut(const char *kind, Target *target, JsonObject *approved) {
+    if (!kind || (strcmp(kind, "wake") != 0 && strcmp(kind, "direct") != 0)
+        || !shortcut_configuration || !json_object_has_member(shortcut_configuration, "enabled")
+        || !json_object_get_boolean_member(shortcut_configuration, "enabled")) return FALSE;
+    gint64 age = tl_now() - tl_integer(approved, "observedAtMs", 0);
+    if (!target || target != tl_focused() || !target->ime_known || target->composing
+        || age < 0 || age > 150 || !tl_metadata_matches(target, approved)) return FALSE;
+    JsonObject *description = tl_describe(target);
+    JsonObject *read = description ? tl_capture(target, tl_object(description, "authority")) : NULL;
+    if (description) json_object_unref(description);
+    if (!read) return FALSE;
+    JsonObject *message = json_object_new();
+    json_object_set_string_member(message, "kind", kind);
+    json_object_set_string_member(message, "generation", tl_string(shortcut_configuration, "generation"));
+    json_object_set_object_member(message, "native", read);
+    json_object_set_int_member(message, "acceptedAtMs", tl_now());
+    tl_clear_permit(); clear_shortcut();
+    tl_send_event("shortcut", message);
+    return connection >= 0;
+}
 static gboolean shortcut_event(GdkEventKey *event) {
     gboolean down = event->type == GDK_KEY_PRESS;
     if (shortcut_key && event->hardware_keycode == shortcut_key) {
@@ -301,24 +336,11 @@ static gboolean shortcut_event(GdkEventKey *event) {
     if (!kind) return FALSE;
     Target *target = tl_focused();
     JsonObject *approved = tl_object(shortcut_authority, "authority");
-    gint64 age = tl_now() - tl_integer(approved, "observedAtMs", 0);
-    if (!target || !target->ime_known || target->composing || age < 0 || age > 150
-        || !tl_metadata_matches(target, approved)) return FALSE;
     /* Freeze the actual trigger's text and selection, not a later IPC poll. The
        metadata-only read approval is revalidated before any text is obtained. */
-    JsonObject *description = tl_describe(target);
-    JsonObject *read = description ? tl_capture(target, tl_object(description, "authority")) : NULL;
-    if (description) json_object_unref(description);
-    if (!read) return FALSE;
-    JsonObject *message = json_object_new();
-    json_object_set_string_member(message, "kind", kind);
-    json_object_set_string_member(message, "generation", tl_string(shortcut_configuration, "generation"));
-    json_object_set_object_member(message, "native", read);
-    json_object_set_int_member(message, "acceptedAtMs", tl_now());
-    tl_clear_permit(); clear_shortcut();
-    tl_send_event("shortcut", message);
+    if (!trigger_shortcut(kind, target, approved)) return FALSE;
     shortcut_key = event->hardware_keycode;
-    shortcut_consumed = connection >= 0;
+    shortcut_consumed = TRUE;
     return shortcut_consumed;
 }
 static gboolean key_event(GdkEventKey *event) {

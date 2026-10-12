@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+TYPELAY_HOME=$(CDPATH= cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)
+export TYPELAY_HOME
+exec /usr/bin/python3 -I -B -c 'import runpy, sys; from pathlib import Path; root = Path(sys.argv.pop(1)); sys.path.insert(0, str(root / "desktop")); runpy.run_path(str(root / "desktop/browser_host.py"), run_name="__main__")' "$TYPELAY_HOME" "$@"

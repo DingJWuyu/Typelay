@@ -3,10 +3,13 @@
 import argparse
 import fcntl
 import hashlib
+import json
 import os
+import re
 import shutil
 import stat
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -25,6 +28,75 @@ def private(path):
         raise OSError("install-directory-owner")
     path.chmod(0o700)
     return path
+
+
+def browser_manifest(browser):
+    home = Path.home()
+    if browser == "firefox":
+        directory = home / ".mozilla/native-messaging-hosts"
+    else:
+        directory = xdg("XDG_CONFIG_HOME", home / ".config") / browser / "NativeMessagingHosts"
+    return directory / "org.typelay.browser.json"
+
+
+def browser_owned(path, root):
+    if path.is_symlink():
+        return False
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return (
+            path.stat().st_uid == os.getuid()
+            and value.get("name") == "org.typelay.browser"
+            and value.get("type") == "stdio"
+            and value.get("path") == str(root / "current/typelay-browser-host")
+        )
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def register_browser(root, browser, extension_id):
+    executable = root / "current/typelay-browser-host"
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise OSError("install-typelay-before-browser")
+    value = {
+        "name": "org.typelay.browser",
+        "description": "TypeLay local browser input adapter",
+        "path": str(executable),
+        "type": "stdio",
+    }
+    if browser == "firefox":
+        if extension_id not in (None, "typelay@typelay.local"):
+            raise ValueError("firefox-extension-id")
+        value["allowed_extensions"] = ["typelay@typelay.local"]
+    else:
+        if not extension_id or not re.fullmatch(r"[a-p]{32}", extension_id):
+            raise ValueError("chromium-extension-id-required")
+        value["allowed_origins"] = [f"chrome-extension://{extension_id}/"]
+    destination = browser_manifest(browser)
+    if (destination.exists() or destination.is_symlink()) and not browser_owned(destination, root):
+        raise OSError("foreign-browser-registration")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # Own the unique temporary file before entering cleanup. A failed exclusive
+    # creation must never remove somebody else's file or symlink.
+    fd, name = tempfile.mkstemp(prefix=".typelay-host-", dir=destination.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+        temporary.chmod(0o600)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    print(f"已注册 {browser} 本地消息通道。请在浏览器中自行加载扩展并确认所需权限。")
+
+
+def unregister_browser(root, browser):
+    destination = browser_manifest(browser)
+    if destination.exists() or destination.is_symlink():
+        if not browser_owned(destination, root):
+            raise OSError("foreign-browser-registration")
+        destination.unlink()
 
 
 def install(root, command, desktop):
@@ -115,6 +187,10 @@ def uninstall(root, command, desktop, config, data, cache, purge):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if root.exists() and (root.is_symlink() or root.stat().st_uid != os.getuid()):
             raise OSError("install-directory-owner")
+        for browser in ("firefox", "chromium", "google-chrome"):
+            destination = browser_manifest(browser)
+            if browser_owned(destination, root):
+                destination.unlink()
         if command.is_symlink() and os.readlink(command) == str(root / "current/typelay"):
             command.unlink()
         desktop.unlink(missing_ok=True)
@@ -138,7 +214,11 @@ def uninstall(root, command, desktop, config, data, cache, purge):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("install", "uninstall"))
+    parser.add_argument(
+        "operation", choices=("install", "uninstall", "browser-install", "browser-uninstall")
+    )
+    parser.add_argument("--browser", choices=("firefox", "chromium", "google-chrome"))
+    parser.add_argument("--extension-id", help="Chromium/Chrome 扩展页面显示的 32 字母 ID")
     parser.add_argument(
         "--purge", action="store_true", help="卸载时同时删除 TypeLay 设置、模型和缓存"
     )
@@ -149,6 +229,16 @@ if __name__ == "__main__":
     data_home = xdg("XDG_DATA_HOME", home / ".local/share")
     desktop = data_home / "applications/typelay.desktop"
     try:
+        if args.operation.startswith("browser-"):
+            if not args.browser or args.purge:
+                parser.error("浏览器注册操作需要 --browser，且不能使用 --purge")
+            if args.operation == "browser-install":
+                register_browser(root, args.browser, args.extension_id)
+            else:
+                unregister_browser(root, args.browser)
+            raise SystemExit(0)
+        if args.browser or args.extension_id:
+            parser.error("--browser 和 --extension-id 仅用于浏览器注册操作")
         if args.operation == "install":
             if args.purge:
                 parser.error("--purge 仅用于卸载")

@@ -1,16 +1,19 @@
-"""Validate GTK's visible parent-local anchor without inventing Wayland screen coordinates."""
+"""Validate the toolkit or browser's visible parent-local anchor without inventing Wayland screen coordinates."""
 
 import math
 
 
-def anchor_geometry(native: dict) -> dict | None:
+def anchor_geometry(native: dict, space: str = "gtk-toplevel") -> dict | None:
     """Core's RectPx uses physical pixels in this target's native parent space.
 
     Only the in-process renderer may place this anchor. It cannot be mixed with
     compositor/output rectangles or used to position a separate desktop window.
     """
     try:
-        if native["space"] != "gtk-toplevel":
+        if (
+            space not in ("gtk-toplevel", "browser-viewport", "qt-toplevel")
+            or native["space"] != space
+        ):
             return None
         scale = native["scale"]
         width, height = native["frameWidth"], native["frameHeight"]
@@ -20,7 +23,8 @@ def anchor_geometry(native: dict) -> dict | None:
             type(v) in (int, float) and math.isfinite(v) for v in (scale, width, height, x, y, w, h)
         ):
             return None
-        if not 1 <= scale <= 8 or width <= 0 or height <= 0:
+        minimum_scale = 1 if space == "gtk-toplevel" else 0.1
+        if not minimum_scale <= scale <= 8 or width <= 0 or height <= 0:
             return None
         if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > width or y + h > height:
             return None

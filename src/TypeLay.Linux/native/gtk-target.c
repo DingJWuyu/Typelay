@@ -73,7 +73,8 @@ static void buffer_replaced(GObject *object, GParamSpec *property, gpointer data
 }
 void tl_discover(GtkWidget *widget, gboolean before_input) {
     if (tl_overlay_contains(widget)) return;
-    if (G_OBJECT_TYPE(widget) != GTK_TYPE_ENTRY && G_OBJECT_TYPE(widget) != GTK_TYPE_TEXT_VIEW) return;
+    if (G_OBJECT_TYPE(widget) != GTK_TYPE_ENTRY && G_OBJECT_TYPE(widget) != GTK_TYPE_SEARCH_ENTRY
+        && G_OBJECT_TYPE(widget) != GTK_TYPE_TEXT_VIEW) return;
     if (!target_quark) target_quark = g_quark_from_static_string("typelay-gtk3-target");
     if (g_object_get_qdata(G_OBJECT(widget), target_quark) || target_count >= 2048) return;
     if (!targets) targets = g_hash_table_new(g_str_hash, g_str_equal);

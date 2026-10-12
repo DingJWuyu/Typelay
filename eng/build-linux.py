@@ -55,6 +55,11 @@ def build(output, fixture=False):
     (output / "native").mkdir()
     for name in ("libtypelay-gtk3.so", "typelay-supervise"):
         shutil.copy2(native / name, output / "native" / name)
+    (output / "native/qt6/generic").mkdir(parents=True)
+    shutil.copy2(
+        native / "qt6/generic/libtypelay-qt6.so", output / "native/qt6/generic/libtypelay-qt6.so"
+    )
+    shutil.copy2(ROOT / "docs/qt6-linux.md", output / "qt6-linux.md")
     shutil.copytree(
         ROOT / "src/TypeLay.Linux/desktop",
         output / "desktop",
@@ -65,7 +70,15 @@ def build(output, fixture=False):
         output / "worker",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
-    for name in ("typelay", "install.py"):
+    for browser in ("chromium", "firefox"):
+        destination = output / "browser" / browser
+        destination.mkdir(parents=True)
+        source = ROOT / "src/TypeLay.Linux/browser"
+        for name in ("content.js", "background.js"):
+            shutil.copy2(source / name, destination / name)
+        shutil.copy2(source / f"manifest.{browser}.json", destination / "manifest.json")
+    shutil.copy2(ROOT / "docs/browser-linux.md", output / "browser-linux.md")
+    for name in ("typelay", "typelay-browser-host", "install.py"):
         shutil.copy2(ROOT / "packaging/linux" / name, output / name)
     for name in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"):
         if (ROOT / name).is_file():

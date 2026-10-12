@@ -18,7 +18,7 @@
 
 `TypeLay.Launcher` 是 Windows 原生入口。发布时从 C 源码编译，调用发行目录 bootstrap/start.ps1；它不包含 SDK 下载和源码编译功能。
 
-`TypeLay.Linux` 是 Linux 组合根，直接装配共享 Runtime，不复制会话控制器。其 GTK 桌面进程负责 niri IPC、同用户 socket、设置界面和 Ayatana 托盘；原生 GTK3 模块在目标应用事件线程处理控件相对浮层、输入、IME 与原子替换。锚点与坐标契约见 `docs/adr/0004-linux-native-anchors.md`。Linux 子进程监督和 XDG 安装路径不进入共享层。当前支持范围、拒绝条件和部署流程见 `docs/linux.md`。
+`TypeLay.Linux` 是 Linux 组合根，直接装配共享 Runtime，不复制会话控制器。其 GTK 桌面进程负责 niri IPC、同用户 socket、设置界面和 Ayatana 托盘；原生 GTK3 模块和 Qt6 附加 generic plugin 在目标应用事件线程处理控件相对浮层、输入、IME 与同步替换，Qt 路径不替换 QT_IM_MODULE。浏览器扩展在真实文档事件线程处理标准 DOM 输入，经浏览器拥有的 native-messaging 子进程进入相同宿主端口；宿主独立验证同用户进程祖先与启动寿命，不接受页面声明的 PID。GTK/Qt 父窗口和浏览器视口坐标明确分开，只有对应的原生 renderer 使用，不能混为屏幕全局坐标。GTK 锚点契约见 `docs/adr/0004-linux-native-anchors.md`，浏览器部署/限制见 `docs/browser-linux.md`，Qt6 标准控件边界见 `docs/qt6-linux.md`。Linux 子进程监督和 XDG 安装路径不进入共享层。当前支持范围、拒绝条件和部署流程见 `docs/linux.md`。
 
 ## 平台边界不变量
 

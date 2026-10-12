@@ -1,0 +1,72 @@
+# Linux 浏览器输入适配器
+
+此适配器通过浏览器扩展连接当前 Wayland 会话中的 TypeLay。代码实现不等于浏览器、真实桌面或物理输入法已经通过验收。本地 native messaging host 不启动模型、不监听网络端口、不保存正文；源文和译文只经过浏览器私有消息管道与 TypeLay 同用户 socket。普通安装不会自动注册 host、安装扩展或授予网页权限。
+
+## 范围与限制
+
+现有实现覆盖顶层 HTTP(S) 网页里的标准 `input[type=text/search]` 和 `textarea`。字段仍须通过共享敏感元数据、应用排除及编辑能力检查。密码、信用卡/一次性验证码元数据字段不读取正文；隐藏、禁用、只读或已经移除的控件被拒绝。
+
+iframe、Shadow DOM 源字段、contenteditable、富文本、自绘编辑器、浏览器地址栏和内部页面没有输入实现。浏览器扩展不会自动为 Electron 或 VS Code 提供支持。普通网页上的标准控件不是应用白名单；网页可能使用自定义事件处理、受控组件、CSS 根变换或私有编辑状态，这些情况必须分别验证，不能凭最终 DOM 字符串宣称兼容。
+
+输入法状态初始为 Unknown。只有可信的非组合键盘/输入事件或 compositionend 才建立明确状态；离开窗口、页面恢复或丢失连接后重新确认。组合期和未知状态不读取正文、不发布可接受候选，不通过“未看到候选窗”推断 Clear。因此刚获焦、尚无可靠输入观察的字段可能暂时没有胶囊。
+
+写回使用浏览器原生 `setRangeText`，在同一 JavaScript 事件循环中核对精确 DOM 对象、生命周期、元数据、内容/输入/焦点版本、选区、原文和短期许可，然后同步替换。不会写剪贴板、模拟粘贴、补发 Tab、自动发送或提交表单。替换后发送标准 input 通知；网页处理器若再次改变值、选区、身份或编辑能力，则回报 OutcomeUnknown 并隔离该字段，绝不重试或覆盖网页的新结果。此机制不保证所有框架的内部状态或撤销栈语义；需要目标网页的实际验收。
+
+浮层使用文档视口坐标，在当前页面的封闭 Shadow Root 中呈现，不推算 Wayland 全局坐标、不推动页面布局。浏览器窗口/标签页失焦、字段隐藏、租约到期或 host 断开时撤下。根元素经过变换而无法可靠映射固定定位时拒绝使用。
+
+## 显式安装
+
+先安装 Linux 发行包并启动 TypeLay。扩展源码随包放在 `browser/firefox` 与 `browser/chromium`，两者均包含对应 `manifest.json`。保持这个发行目录可用；浏览器加载解压扩展后会引用其文件。
+
+Firefox：
+
+```sh
+python install.py browser-install --browser firefox
+```
+
+在 Firefox 的 `about:debugging#/runtime/this-firefox` 选择“临时载入附加组件”，打开发行包 `browser/firefox/manifest.json`。开发模式临时扩展在浏览器退出后失效；这里没有提供已签名的商店扩展，不能承诺稳定 Firefox 中的永久安装。扩展 ID 固定为 `typelay@typelay.local`。
+
+Chromium：先在 `chrome://extensions` 打开开发者模式，加载发行包 `browser/chromium` 文件夹。复制浏览器显示的 32 字母扩展 ID，再执行：
+
+```sh
+python install.py browser-install --browser chromium --extension-id 这里替换为浏览器显示的ID
+```
+
+Google Chrome 使用 `--browser google-chrome`。不会猜测扩展 ID，也不注册通配来源。加载扩展和网页访问权限必须由用户在浏览器中明确批准。安装后重新载入目标网页；浏览器应继承与 TypeLay 相同的 Wayland/niri 会话环境，否则不能连接另一个会话的服务。
+
+扩展连接 host 的名称为 `org.typelay.browser`。host 程序从自身文件位置定位发行根，不依赖浏览器传入 TYPELAY_HOME。若浏览器通过容器、Flatpak 或另外的进程命名空间启动，系统 host 或同用户父进程链可能不可达；这类情况保持不可用，不绕开认证。
+
+## 使用与卸载
+
+翻译模式、语言方向、排除项及原生写回开关沿用 Linux 设置。已确认输入法状态后，自动模式跟随源字段；按需模式使用设置中的快捷键。只有当前有效许可才拦截真实裸 Tab。点击候选先请求编辑授权；编辑后第一次 Tab 只返回原输入框，下一次 Tab 才接受。Ctrl/Alt/Shift/Meta 修饰键、重复键、组合输入和不可信合成按键不发起新的接受。
+
+先在浏览器移除扩展，再注销指定 host：
+
+```sh
+python install.py browser-uninstall --browser firefox
+python install.py browser-uninstall --browser chromium
+python install.py browser-uninstall --browser google-chrome
+```
+
+完整 TypeLay 卸载会清理本安装拥有的 host 注册和 wrapper，不改其他扩展。浏览器中的扩展本身仍需用户移除。连接断开会撤下页面浮层并撤销许可。
+
+## 开发验证
+
+生产内容脚本的真实 DOM 回归只替换扩展消息管道，DOM、选区、事件循环、键盘事件及组合事件由 Chromium 执行。测试使用独立临时 HOME 和浏览器 profile，不安装扩展、不接触用户网页、不下载模型：
+
+```sh
+python -m pip install playwright
+python tests/linux/browser_e2e.py --chromium /usr/bin/chromium -v
+```
+
+真实扩展和发行包 host 的最小链路另行运行：
+
+```sh
+python tests/linux/browser_native_e2e.py --package artifacts/linux/package --chromium /usr/bin/chromium -v
+```
+
+该检查在临时 HOME 安装发行包并注册唯一测试扩展 ID，使用真实后台脚本、native messaging、host wrapper 与 socket，验证握手、跨标签页路由及控件销毁身份；完成后关闭整个测试浏览器并删除临时目录。socket 对端只提供测试用元数据批准，不是假翻译器，也不代表 niri 前台身份或模型链路验收。
+
+DOM 检查覆盖未知 IME、可信输入后的接受、旧原文、DOM 重建、组合撤销、UTF-16 选区、网页重入改写、密码字段和合成 Tab 拒绝。单独的 DOM 检查不验证 Firefox、native messaging 安装路由、niri 前台身份、物理中文 IME、真实键盘、撤销栈或视觉一致性。Chromium 进程无法启动时检查失败，不跳过成成功。上述未覆盖项仍需对应真实环境验证。
+
+底层依据：[native messaging](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_messaging)、[Chrome native messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)、[标准字段 setRangeText](https://developer.mozilla.org/en-US/docs/Web/API/HTMLInputElement/setRangeText)、[compositionstart](https://developer.mozilla.org/en-US/docs/Web/API/Element/compositionstart_event)。

@@ -77,3 +77,22 @@ def connect_private(path: Path, timeout: float = 0.5) -> socket.socket:
 def process_identity(pid: int) -> str:
     # Do not read argv, titles or /proc/environ: they can contain input or credentials.
     return Path(os.readlink(f"/proc/{pid}/exe")).name.lower()
+
+
+def process_lineage(pid: int) -> dict[int, int]:
+    """Bind a native-messaging child to existing same-user browser ancestors.
+
+    Start times prevent a recycled PID from inheriting the connection's authority.
+    Neither command lines nor environments are read or retained.
+    """
+    result = {}
+    for _ in range(32):
+        if pid <= 1 or pid in result:
+            break
+        directory = Path(f"/proc/{pid}")
+        if directory.stat().st_uid != os.getuid():
+            break
+        fields = (directory / "stat").read_text().rsplit(")", 1)[1].split()
+        result[pid] = int(fields[19])
+        pid = int(fields[1])
+    return result
