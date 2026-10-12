@@ -35,7 +35,8 @@ ELEMENT = "element-6066-11e4-a52e-4f735466cecf"
 
 class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = b"""<!doctype html><meta charset='utf-8'><textarea id='source'></textarea>
+        body = b"""<!doctype html><meta charset='utf-8'><title>TypeLay Firefox contracts</title>
+<textarea id='source'></textarea>
 <script>
 window.fixtureEvents = [];
 for (const type of ['focus', 'blur', 'focusin', 'focusout', 'beforeinput', 'input',

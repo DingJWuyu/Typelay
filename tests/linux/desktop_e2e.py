@@ -6,7 +6,11 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import zipfile
+from contextlib import ExitStack
+from http.server import HTTPServer
 from pathlib import Path
 
 from main import control
@@ -205,6 +209,117 @@ def run(arguments):
                     )
                 finally:
                     browser_scope.__exit__(None, None, None)
+        # Observe teardown of the Chromium source before accepting any Firefox
+        # readiness, even though this scenario deliberately uses the same text.
+        wait_for(
+            lambda: (data := status()) and not data.get("overlayVisible"),
+            "Chromium source session did not withdraw before Firefox",
+        )
+        from firefox_native_e2e import Fixture, firefox
+
+        with (
+            tempfile.TemporaryDirectory(prefix="typelay-firefox-desktop-") as temporary,
+            ExitStack() as stack,
+        ):
+            browser_home = Path(temporary)
+            firefox_environment = {
+                **environment,
+                "HOME": str(browser_home),
+                "XDG_CONFIG_HOME": str(browser_home / "config"),
+                "XDG_DATA_HOME": str(browser_home / "data"),
+                "XDG_CACHE_HOME": str(browser_home / "cache"),
+                "MOZ_ENABLE_WAYLAND": "1",
+                "GDK_BACKEND": "wayland",
+            }
+            # Keep the real NIRI_SOCKET, WAYLAND_DISPLAY and XDG_RUNTIME_DIR.
+            for operation in (["install"], ["browser-install", "--browser", "firefox"]):
+                subprocess.run(
+                    [sys.executable, str(package / "install.py"), *operation],
+                    env=firefox_environment,
+                    check=True,
+                    timeout=30,
+                )
+            addon = browser_home / "typelay.xpi"
+            with zipfile.ZipFile(addon, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for name in ("manifest.json", "background.js", "content.js"):
+                    archive.write(package / "browser/firefox" / name, name)
+            server = stack.enter_context(HTTPServer(("127.0.0.1", 0), Fixture))
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            stack.callback(thread.join, 3)
+            stack.callback(server.shutdown)
+            web = stack.enter_context(
+                firefox(
+                    browser_home,
+                    firefox_environment,
+                    "/usr/bin/firefox",
+                    "/usr/bin/geckodriver",
+                    arguments.output / "firefox-geckodriver.log",
+                )
+            )
+            assert (
+                web("POST", "/moz/addon/install", {"path": str(addon), "temporary": True})
+                == "typelay@typelay.local"
+            )
+            web("POST", "/url", {"url": f"http://127.0.0.1:{server.server_port}/desktop"})
+            window = wait_for(
+                lambda: next(
+                    (
+                        item
+                        for item in contents(request("Windows"), "Windows")
+                        if (item.get("title") or "").startswith("TypeLay Firefox contracts")
+                    ),
+                    None,
+                ),
+                "the real Wayland Firefox window did not map",
+            )
+            print(
+                "Firefox compositor binding: "
+                + json.dumps({"id": window["id"], "pid": window.get("pid")})
+            )
+            request({"Action": {"FocusWindow": {"id": window["id"]}}})
+            web(
+                "POST",
+                "/execute/sync",
+                {"script": "document.querySelector('#source').focus();", "args": []},
+            )
+            typed(original)
+            wait_for(ready_to_accept, "Firefox native route/model did not grant Tab acceptance")
+
+            def firefox_value():
+                return web(
+                    "POST",
+                    "/execute/sync",
+                    {
+                        "script": "return document.querySelector('#source').value;",
+                        "args": [],
+                    },
+                )
+
+            assert firefox_value() == original
+            subprocess.run(
+                ["grim", str(arguments.output / "firefox-browser.png")], check=True, timeout=3
+            )
+            wait_for(ready_to_accept, "Firefox acceptance expired while taking evidence")
+            key("Tab")
+            wait_for(
+                lambda: translated(firefox_value()),
+                "Firefox Tab did not accept the real translation",
+            )
+            assert (
+                web(
+                    "POST",
+                    "/execute/sync",
+                    {
+                        "script": "return document.activeElement.id;",
+                        "args": [],
+                    },
+                )
+                == "source"
+            ), "Firefox Tab also navigated"
+            evidence.append(
+                "Wayland Firefox: real extension, native host, compositor process binding, CPU model and Tab"
+            )
         assert control(paths, "settings") is True
         time.sleep(0.3)
         subprocess.run(["grim", str(arguments.output / "settings.png")], check=True, timeout=3)
