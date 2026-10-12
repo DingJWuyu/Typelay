@@ -182,7 +182,9 @@ def run(arguments):
 
     resources = ExitStack()
     try:
-        send_tab = prepare_tab(resources) if arguments.desktop_scope in ("all", "browser") else None
+        send_tab = (
+            prepare_tab(resources) if arguments.desktop_scope in ("all", "browser", "qt") else None
+        )
         start()
         # A duplicate background request must use the existing real session.
         subprocess.run([str(package / "typelay"), "--background"], env=environment, check=True)
@@ -294,7 +296,7 @@ def run(arguments):
                         wait_for(
                             ready_to_accept, "browser acceptance expired while taking evidence"
                         )
-                        key("Tab")
+                        send_tab()
                         wait_for(
                             lambda: translated(page.locator("#source").input_value()),
                             "browser Tab did not accept the real translation",
@@ -436,7 +438,7 @@ def run(arguments):
                     "beforeMs": now_ms(),
                     "reportedRemainingMs": ready.get("acceptanceRemainingMs"),
                 }
-                key("Tab")
+                send_tab()
                 firefox_tab["afterMs"] = now_ms()
                 (arguments.output / "firefox-tab.json").write_text(json.dumps(firefox_tab))
                 wait_for(
@@ -1284,6 +1286,25 @@ def run(arguments):
                             except subprocess.TimeoutExpired:
                                 child.kill()
                                 child.wait()
+        if arguments.desktop_scope == "qt":
+            from qt_desktop import run_qt
+
+            evidence.extend(
+                run_qt(
+                    arguments,
+                    environment,
+                    nested_window=nested[0],
+                    wait_for=wait_for,
+                    status=status,
+                    ready_to_accept=ready_to_accept,
+                    key=key,
+                    typed=typed,
+                    send_tab=send_tab,
+                    trace_checkpoint=trace_checkpoint,
+                    new_write_outcomes=new_write_outcomes,
+                    verified_write=verified_write,
+                )
+            )
         if arguments.desktop_scope == "setup":
             wait_for(
                 lambda: status().get("setup", {}).get("tutorialVisible"),
@@ -1347,7 +1368,7 @@ def run(arguments):
                     "scope": arguments.desktop_scope + "-desktop-and-lifecycle",
                     "passed": evidence,
                     "unsupported": [
-                        "uncooperative GTK inputs, tagged or embedded-object GTK buffers, Qt, nonstandard GTK widgets and generic Electron"
+                        "uncooperative GTK inputs, tagged or embedded-object GTK buffers, uncooperative or nonstandard Qt fields, nonstandard GTK widgets and generic Electron"
                     ],
                 },
                 indent=2,

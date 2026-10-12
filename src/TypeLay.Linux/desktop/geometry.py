@@ -11,7 +11,7 @@ def anchor_geometry(native: dict, space: str = "gtk-toplevel") -> dict | None:
     """
     try:
         if (
-            space not in ("gtk-toplevel", "gtk4-toplevel", "browser-viewport")
+            space not in ("gtk-toplevel", "gtk4-toplevel", "qt-toplevel", "browser-viewport")
             or native["space"] != space
         ):
             return None

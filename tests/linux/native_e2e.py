@@ -304,6 +304,8 @@ def outer(arguments, script=None):
         )
         if arguments.fcitx_cooperative:
             command.extend(["--fcitx-cooperative", str(arguments.fcitx_cooperative)])
+        if arguments.qt_cooperative:
+            command.extend(["--qt-cooperative", str(arguments.qt_cooperative)])
         if arguments.editor_bundle:
             command.extend(["--editor-bundle", str(arguments.editor_bundle)])
     # The compositor's first-run help owns keyboard focus independently of its
@@ -363,7 +365,7 @@ if __name__ == "__main__":
     parser.add_argument("--inside", action="store_true")
     parser.add_argument("--desktop", action="store_true")
     parser.add_argument(
-        "--desktop-scope", choices=("all", "browser", "gtk", "gtk4", "setup"), default="all"
+        "--desktop-scope", choices=("all", "browser", "gtk", "gtk4", "qt", "setup"), default="all"
     )
     parser.add_argument(
         "--gtk-refusal",
@@ -373,6 +375,7 @@ if __name__ == "__main__":
     parser.add_argument("--package", type=Path)
     parser.add_argument("--editor-bundle", type=Path)
     parser.add_argument("--fcitx-cooperative", type=Path)
+    parser.add_argument("--qt-cooperative", type=Path)
     parser.add_argument("--native", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -388,6 +391,10 @@ if __name__ == "__main__":
         parser.error("--desktop requires --package")
     if args.desktop_scope in ("gtk", "gtk4") and not args.fcitx_cooperative:
         parser.error("GTK desktop scopes require --fcitx-cooperative")
+    if args.desktop_scope == "qt" and (not args.fcitx_cooperative or not args.qt_cooperative):
+        parser.error("Qt research requires --fcitx-cooperative and --qt-cooperative")
+    if args.qt_cooperative:
+        args.qt_cooperative = args.qt_cooperative.resolve(strict=True)
     if args.package:
         args.package = args.package.resolve()
     if args.fcitx_cooperative:

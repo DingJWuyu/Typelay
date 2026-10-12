@@ -1,7 +1,6 @@
 --- a/qt5/platforminputcontext/qfcitxplatforminputcontext.cpp
 +++ b/qt5/platforminputcontext/qfcitxplatforminputcontext.cpp
-@@ -5,6 +5,9 @@
-  *
+@@ -6,4 +6,7 @@
   */
  
 +#include <QAbstractEventDispatcher>
@@ -9,29 +8,33 @@
 +#include <qpa/qwindowsysteminterface_p.h>
  #include <QDBusConnection>
  #include <QDebug>
- #include <QInputMethod>
-@@ -21,6 +24,7 @@
- #include <qpa/qwindowsysteminterface.h>
+@@ -22,4 +25,5 @@
  
  #include <cerrno>
 +#include <cstdio>
  #include <csignal>
  #include <unistd.h>
- 
-@@ -41,6 +45,42 @@
- namespace fcitx {
+@@ -42,4 +46,48 @@
  
  namespace {
 +
 +// TypeLay 2026-10-12: research-only queue completion instrumentation. Original IM behavior
 +// is unchanged unless TYPELAY_QT_PROBE is explicitly enabled for this process.
-+bool tlProbe() { return qEnvironmentVariableIsSet("TYPELAY_QT_PROBE"); }
++bool tlCooperate() { return qEnvironmentVariableIsSet("TYPELAY_QT_COOPERATIVE"); }
++bool tlProbe() { return qEnvironmentVariableIsSet("TYPELAY_QT_PROBE") || tlCooperate(); }
++// Private counters are authority; public diagnostic properties are never trusted.
++int tlPendingDbus = 0, tlPendingForward = 0, tlOutputDepth = 0;
++quint64 tlQueueEpoch = 0;
 +bool tlTraceLine() {
 +    static unsigned lines = 0;
 +    return tlProbe() && lines++ < 256;
 +}
 +void tlCount(const char *name, int delta) {
 +    if (!tlProbe() || !qApp) return;
++    if (qstrcmp(name, "tlqtPendingDbus") == 0) tlPendingDbus += delta;
++    if (qstrcmp(name, "tlqtPendingForward") == 0) tlPendingForward += delta;
++    if (qstrcmp(name, "tlqtOutputDepth") == 0) tlOutputDepth += delta;
++    if (delta) ++tlQueueEpoch;
 +    qApp->setProperty(name, qApp->property(name).toInt() + delta);
 +}
 +struct TlScope {
@@ -60,22 +63,57 @@
 +}
  
  template <typename T>
- using XCBReply = std::unique_ptr<T, decltype(&std::free)>;
-@@ -270,6 +310,10 @@
-     // Input context may be created without QApplication with wayland, defer it
+@@ -266,4 +314,11 @@
+                            : nullptr) {
+     registerFcitxQtDBusTypes();
++    if (tlCooperate()) {
++        qApp->installEventFilter(this);
++        connect(qApp, &QGuiApplication::applicationStateChanged, this,
++                [this](Qt::ApplicationState state) {
++            if (state != Qt::ApplicationActive) { tlConsumedKey_ = 0; tlConsumedScan_ = 0; }
++        });
++    }
+     watcher_->setWatchPortal(true);
+ 
+@@ -271,4 +326,8 @@
      // to event loop to ensure event dispatcher is avaiable.
      QTimer::singleShot(0, this, [this]() {
 +        for (const char *name : {"tlqtPendingDbus", "tlqtPendingForward", "tlqtRetired",
 +                                 "tlqtBindingEpoch", "tlqtOutputDepth", "tlqtCommits",
-+                                 "tlqtPreedits", "tlqtMenus", "tlqtSyncReplies", "tlqtContexts"})
++                                 "tlqtPreedits", "tlqtMenus", "tlqtSyncReplies", "tlqtContexts", "tlqtKeyReplies"})
 +            tlCount(name, 0);
          watcher_->watch();
          fcitx4Watcher_->watch();
-     });
-@@ -533,6 +577,11 @@
-     QWindow *window = focusWindowWrapper();
+@@ -277,4 +336,5 @@
+ 
+ QFcitxPlatformInputContext::~QFcitxPlatformInputContext() {
++    tlBind(nullptr);
+     destroy_ = true;
+     watcher_->unwatch();
+@@ -349,4 +409,13 @@
+         return false;
+     }
++    TlScope output("tlqtOutputDepth");
++    if (tlCooperate()) {
++        const uint cause = (!commitPreedit_.isEmpty() || !preedit_.isEmpty()) ? TlQtInput : 0u;
++        ++tlEpoch_;
++        tlProofObject_.clear();
++        if (cause && tlFields_.contains(input)) ++tlFields_[input].inputEpoch;
++        Q_EMIT typelayStateChangedV1(input, cause);
++        if (!input) return false;
++    }
+     QInputMethodEvent e;
+     if (!commitPreedit_.isEmpty()) {
+@@ -365,4 +434,5 @@
+ 
+ void QFcitxPlatformInputContext::reset() {
++    if (tlCooperate()) tlChanged(0);
+     commitPreedit();
+     if (auto *proxy = validIC()) {
+@@ -534,4 +604,10 @@
      lastWindow_ = window;
      lastObject_ = realFocusObject;
++    tlBind(realFocusObject);
 +    if (tlProbe()) {
 +        tlCount("tlqtBindingEpoch", 1);
 +        qApp->setProperty("tlqtFocusObject", QVariant::fromValue(realFocusObject));
@@ -83,55 +121,70 @@
 +    }
      // Always create IC Data for window.
      if (window) {
-         proxy = validICByWindow(window);
-@@ -639,6 +688,7 @@
-     data->rect = QRect();
+@@ -640,4 +716,5 @@
  
      if (proxy->isValid() && !uuid.isEmpty()) {
 +        tlCount("tlqtContexts", 1);
          QWindow *window = focusWindowWrapper();
  #ifdef ENABLE_X11
-         setFocusGroupForX11(uuid);
-@@ -689,6 +739,9 @@
- }
+@@ -690,4 +767,8 @@
  
  void QFcitxPlatformInputContext::commitString(const QString &str) {
 +    TlScope output("tlqtOutputDepth");
++    if (tlCooperate()) tlChanged(str.isEmpty() ? 0u : TlQtInput);
 +    tlCount("tlqtCommits", 1);
 +    if (tlTraceLine()) std::fprintf(stderr, "tlqt-output-commit\n");
      cursorPos_ = 0;
      preeditList_.clear();
-     commitPreedit_.clear();
-@@ -704,6 +757,9 @@
- 
+@@ -705,4 +786,12 @@
  void QFcitxPlatformInputContext::updateFormattedPreedit(
      const FcitxQtFormattedPreeditList &preeditList, int cursorPos) {
 +    TlScope output("tlqtOutputDepth");
++    if (tlCooperate()) {
++        QString nextPreedit;
++        for (const auto &part : preeditList) nextPreedit += part.string();
++        tlChanged(nextPreedit == preedit_ ? 0u : TlQtInput);
++    }
 +    tlCount("tlqtPreedits", 1);
 +    if (tlTraceLine()) std::fprintf(stderr, "tlqt-output-preedit\n");
      QObject *input = qGuiApp->focusObject();
      if (!input) {
-         return;
-@@ -851,6 +907,9 @@
- 
+@@ -792,4 +881,6 @@
+ void QFcitxPlatformInputContext::deleteSurroundingText(int offset,
+                                                        unsigned int _nchar) {
++    TlScope output("tlqtOutputDepth");
++    if (tlCooperate()) tlChanged(TlQtInput);
+     QObject *input = qGuiApp->focusObject();
+     if (!input) {
+@@ -852,4 +943,9 @@
  void QFcitxPlatformInputContext::forwardKey(unsigned int keyval,
                                              unsigned int state, bool type) {
++    TlScope output("tlqtOutputDepth");
++    if (tlCooperate()) tlChanged(TlQtInput);
 +    tlCount("tlqtForwardSignals", 1);
 +    if (tlTraceLine()) std::fprintf(stderr, "tlqt-output-forward release=%d\n", int(type));
 +
      auto *proxy = qobject_cast<HybridInputContext *>(sender());
      if (!proxy) {
-         return;
-@@ -873,6 +932,7 @@
+@@ -873,5 +969,10 @@
                                                   const QString &langCode) {
      Q_UNUSED(name);
-     Q_UNUSED(uniqueName);
+-    Q_UNUSED(uniqueName);
++    if (tlCooperate() && tlEngine_ != uniqueName) {
++        const bool changed = !tlEngine_.isEmpty();
++        tlEngine_ = uniqueName;
++        tlChanged(changed ? TlQtInput : 0u);
++    }
 +    if (tlProbe()) qApp->setProperty("tlqtEngine", uniqueName);
      QLocale newLocale(langCode);
      if (locale_ != newLocale) {
-         locale_ = newLocale;
-@@ -1043,6 +1103,9 @@
-     bool isAutoRepeat = keyEvent.isAutoRepeat();
+@@ -882,4 +983,5 @@
+ 
+ void QFcitxPlatformInputContext::serverSideFocusOut() {
++    if (tlCooperate()) tlChanged(TlQtFocus);
+     if (lastObject_ == focusObjectWrapper()) {
+         commitPreedit();
+@@ -1044,4 +1146,7 @@
      ulong time = keyEvent.timestamp();
      // copied from QXcbKeyboard::handleKeyEvent()
 +    const bool trackedAsync = tlProbe() &&
@@ -139,9 +192,7 @@
 +    TlScope forwarding("tlqtPendingForward");
      if (type == QEvent::KeyPress && qtcode == Qt::Key_Menu) {
          QPoint globalPos;
-         QPoint pos;
-@@ -1050,12 +1113,24 @@
-             globalPos = window->screen()->handle()->cursor()->pos();
+@@ -1051,10 +1156,22 @@
              pos = window->mapFromGlobal(globalPos);
          }
 -        QWindowSystemInterface::handleContextMenuEvent(window, false, pos,
@@ -170,9 +221,14 @@
 +    }
  }
  
- bool QFcitxPlatformInputContext::filterEvent(const QEvent *event) {
-@@ -1099,15 +1174,32 @@
-             // KeyState::Repeat
+@@ -1067,4 +1184,6 @@
+ 
+         const auto *keyEvent = static_cast<const QKeyEvent *>(event);
++        if (tlCooperate() && tlControlKey(keyEvent)) return true;
++        if (tlCooperate()) tlChanged(TlQtInput);
+         quint32 keyval = keyEvent->nativeVirtualKey();
+         quint32 keycode = keyEvent->nativeScanCode();
+@@ -1100,4 +1219,12 @@
              stateToFcitx |= (1U << 31);
          }
 +        if (tlProbe() && syncMode_) {
@@ -185,7 +241,7 @@
 +        TlScope submitting("tlqtPendingDbus");
          auto reply = proxy->processKeyEvent(keyval, keycode, stateToFcitx,
                                              isRelease, keyEvent->timestamp());
- 
+@@ -1105,8 +1232,17 @@
          if (Q_UNLIKELY(syncMode_)) {
              reply.waitForFinished();
 +            tlCount("tlqtSyncReplies", 1);
@@ -204,9 +260,7 @@
 +                if (fallback) {
                      return true;
                  }
-                 break;
-@@ -1117,6 +1209,10 @@
-         }
+@@ -1118,4 +1254,8 @@
          auto *watcher = new ProcessKeyWatcher(*keyEvent, focusWindowWrapper(),
                                                reply, proxy);
 +        tlCount("tlqtPendingDbus", 1);
@@ -215,4 +269,502 @@
 +        });
          connect(watcher, &QDBusPendingCallWatcher::finished, this,
                  &QFcitxPlatformInputContext::processKeyEventFinished);
-         return true;
+@@ -1128,4 +1268,5 @@
+ void QFcitxPlatformInputContext::processKeyEventFinished(
+     QDBusPendingCallWatcher *w) {
++    tlCount("tlqtKeyReplies", 1);
+     auto *watcher = static_cast<ProcessKeyWatcher *>(w);
+     bool filtered = false;
+@@ -1306,3 +1447,161 @@
+ }
+ 
++// TypeLay 2026-10-12: exact-object cooperation for the original async IM path.
++void QFcitxPlatformInputContext::tlChanged(quint32 causes) {
++    ++tlEpoch_;
++    tlProofObject_.clear();
++    if (tlBound_ && (causes & TlQtInput)) ++tlFields_[tlBound_].inputEpoch;
++    Q_EMIT typelayStateChangedV1(tlBound_, causes);
++}
++
++void QFcitxPlatformInputContext::tlBind(QObject *actual) {
++    if (!tlCooperate() || tlBound_ == actual) return;
++    if (tlBound_ && tlBound_->property(TypeLayFcitxQtProviderPropertyV1).value<QObject *>() == this)
++        tlBound_->setProperty(TypeLayFcitxQtProviderPropertyV1, QVariant());
++    tlBound_ = actual;
++    if (actual) {
++        if (!tlFields_.contains(actual)) {
++            tlFields_.insert(actual, {++tlNextGeneration_, 0});
++            connect(actual, &QObject::destroyed, this, [this, actual]() {
++                tlFields_.remove(actual);
++                ++tlEpoch_;
++                tlProofObject_.clear();
++            });
++        }
++        actual->setProperty(TypeLayFcitxQtProviderPropertyV1,
++                            QVariant::fromValue(static_cast<QObject *>(this)));
++    }
++    tlChanged(TlQtFocus);
++}
++
++bool QFcitxPlatformInputContext::tlLocalClear(QObject *actual) const {
++    return tlCooperate() && !syncMode_ && !destroy_ && actual &&
++        QThread::currentThread() == thread() && actual == tlBound_ &&
++        actual == focusObjectWrapper() && lastWindow_ &&
++        lastWindow_ == focusWindowWrapper() && !tlPendingDbus &&
++        !tlPendingForward && !tlOutputDepth && preedit_.isEmpty() &&
++        commitPreedit_.isEmpty() && (!xkbComposeState_ ||
++        xkb_compose_state_get_status(xkbComposeState_.data()) != XKB_COMPOSE_COMPOSING);
++}
++
++bool QFcitxPlatformInputContext::inspect(QObject *actual, TypeLayFcitxQtStateV1 *state) {
++    if (!state || state->size != sizeof(*state) || state->version != 1 ||
++        tlInspecting_ || !tlCooperate() || syncMode_ || destroy_ ||
++        QThread::currentThread() != thread() || !actual || actual != tlBound_ ||
++        actual != focusObjectWrapper() || !lastWindow_ || lastWindow_ != focusWindowWrapper())
++        return false;
++    auto *hybrid = validICByWindow(lastWindow_);
++    auto *proxy = hybrid ? hybrid->typelayProxy() : nullptr;
++    if (!proxy || !proxy->isValid() || proxy->typelayOutputDepth()) return false;
++    QPointer<QObject> object(actual);
++    QPointer<QFcitxPlatformInputContext> self(this);
++    QPointer<FcitxQtInputContextProxy> remote(proxy);
++    const auto epoch = tlEpoch_;
++    const auto queueEpoch = tlQueueEpoch;
++    const auto generation = proxy->typelayGeneration();
++    quint64 serial = 0;
++    bool known = false, pending = false, composing = false, focused = false;
++    tlInspecting_ = true;
++    const bool ok = proxy->typelayProbe(serial, known, pending, composing, focused);
++    if (!self) return false;
++    tlInspecting_ = false;
++    if (!ok || !object || !remote || epoch != tlEpoch_ || queueEpoch != tlQueueEpoch ||
++        actual != tlBound_ || generation != proxy->typelayGeneration()) return false;
++    auto &context = tlContexts_[hybrid];
++    if (context.proxy != proxy || context.remoteGeneration != generation || !context.generation) {
++        const bool newProxy = context.proxy != proxy;
++        context = {proxy, generation, ++tlNextGeneration_};
++        connect(hybrid, &QObject::destroyed, this, [this, hybrid]() { tlContexts_.remove(hybrid); });
++        if (newProxy) connect(proxy, &QObject::destroyed, this, [this]() { tlChanged(TlQtBinding); });
++    }
++    const auto field = tlFields_.value(actual);
++    *state = TypeLayFcitxQtStateV1{};
++    state->contextGeneration = context.generation;
++    state->fieldGeneration = field.generation;
++    state->epoch = tlEpoch_;
++    state->inputEpoch = field.inputEpoch;
++    state->serverSerial = serial;
++    state->appliedSerial = proxy->typelayAppliedSerial();
++    state->flags = (known ? TlQtKnown : 0u) | (focused ? TlQtFocused : 0u) |
++        ((pending || tlPendingDbus || tlPendingForward || tlOutputDepth ||
++          serial != state->appliedSerial) ? TlQtPending : 0u) |
++        ((composing || !preedit_.isEmpty() || !commitPreedit_.isEmpty() ||
++          (xkbComposeState_ && xkb_compose_state_get_status(xkbComposeState_.data()) ==
++           XKB_COMPOSE_COMPOSING)) ? TlQtComposing : 0u);
++    tlProofObject_.clear();
++    if (state->flags == (TlQtKnown | TlQtFocused) && tlLocalClear(actual)) {
++        tlProof_ = *state;
++        tlProofQueueEpoch_ = tlQueueEpoch;
++        tlProofObject_ = actual;
++    }
++    return true;
++}
++
++bool QFcitxPlatformInputContext::validateLocal(QObject *actual, const TypeLayFcitxQtStateV1 *state) {
++    if (!state || state->size != sizeof(*state) || state->version != 1 ||
++        state->flags != (TlQtKnown | TlQtFocused) || actual != tlProofObject_ ||
++        tlInspecting_ || !tlLocalClear(actual) || tlProofQueueEpoch_ != tlQueueEpoch ||
++        state->epoch != tlEpoch_ || state->epoch != tlProof_.epoch ||
++        state->contextGeneration != tlProof_.contextGeneration ||
++        state->fieldGeneration != tlProof_.fieldGeneration ||
++        state->inputEpoch != tlFields_.value(actual).inputEpoch ||
++        state->serverSerial != tlProof_.serverSerial ||
++        state->appliedSerial != tlProof_.appliedSerial) return false;
++    auto *hybrid = validICByWindow(lastWindow_);
++    auto *proxy = hybrid ? hybrid->typelayProxy() : nullptr;
++    return proxy && proxy == tlContexts_.value(hybrid).proxy &&
++        proxy->isValid() && !proxy->typelayOutputDepth() &&
++        proxy->typelayGeneration() == tlContexts_.value(hybrid).remoteGeneration &&
++        proxy->typelayAppliedSerial() == state->appliedSerial;
++}
++
++bool QFcitxPlatformInputContext::prepareCaret(QObject *actual, const TypeLayFcitxQtStateV1 *state) {
++    if (!validateLocal(actual, state)) return false;
++    auto *hybrid = validICByWindow(lastWindow_);
++    auto *proxy = hybrid ? hybrid->typelayProxy() : nullptr;
++    if (!proxy) return false;
++    // Caller must freshly inspect and revalidate source/focus after this output batch.
++    tlProofObject_.clear();
++    return proxy->typelayPrepareCaret(state->serverSerial);
++}
++
++bool QFcitxPlatformInputContext::tlControlKey(const QKeyEvent *event) {
++    const bool release = event->type() == QEvent::KeyRelease;
++    if (tlConsumedKey_ && event->nativeScanCode() == tlConsumedScan_) {
++        if (release && !event->isAutoRepeat()) { tlConsumedKey_ = 0; tlConsumedScan_ = 0; }
++        return true;
++    }
++    // Never overwrite an outstanding pair. A distinct key follows the original
++    // input path; modifiers may change Qt::Key on the matching release.
++    if (tlConsumedKey_ || !event->nativeScanCode() || release ||
++        event->isAutoRepeat() || tlControl_) return false;
++    bool candidate = event->modifiers() == Qt::NoModifier &&
++        (event->key() == Qt::Key_Tab || event->key() == Qt::Key_Escape);
++    for (const auto &key : qApp->property(TypeLayFcitxQtControlKeysPropertyV1).toList()) {
++        if (key.metaType() == QMetaType::fromType<uint>() &&
++            key.toUInt() == event->nativeVirtualKey()) candidate = true;
++    }
++    if (!candidate) return false;
++    QPointer<QObject> actual(focusObjectWrapper());
++    QPointer<QObject> consumer(qApp->property(TypeLayFcitxQtConsumerPropertyV1).value<QObject *>());
++    auto *control = consumer ? qobject_cast<TypeLayFcitxQtControlV1 *>(consumer.data()) : nullptr;
++    if (!actual || actual != tlBound_ || !control) return false;
++    QPointer<QFcitxPlatformInputContext> self(this);
++    tlControl_ = true;
++    const bool consumed = control->filterControlKey(actual, const_cast<QKeyEvent *>(event));
++    if (!self) return consumed;
++    tlControl_ = false;
++    if (consumed) { tlConsumedKey_ = event->key(); tlConsumedScan_ = event->nativeScanCode(); }
++    return consumed;
++}
++
++// Observe actual replay delivery, which bypasses the original IM filter. A key
++// requested by field A may be delivered to field B after a same-window switch.
++bool QFcitxPlatformInputContext::eventFilter(QObject *object, QEvent *event) {
++    if (tlCooperate() && tlPendingForward && object == tlBound_ &&
++        (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease))
++        tlChanged(TlQtInput);
++    return QPlatformInputContext::eventFilter(object, event);
++}
++
+ } // namespace fcitx
+--- a/qt5/platforminputcontext/qfcitxplatforminputcontext.h
++++ b/qt5/platforminputcontext/qfcitxplatforminputcontext.h
+@@ -6,4 +6,5 @@
+  */
+ 
++// TypeLay 2026-10-12: versioned exact-object cooperation for the original IM.
+ #ifndef QFCITXPLATFORMINPUTCONTEXT_H
+ #define QFCITXPLATFORMINPUTCONTEXT_H
+@@ -12,4 +13,6 @@
+ #include "fcitxqtwatcher.h"
+ #include "hybridinputcontext.h"
++#include "typelay-fcitx-qt-v1.h"
++#include <QHash>
+ #include <QDBusConnection>
+ #include <QDBusPendingCallWatcher>
+@@ -104,7 +107,12 @@
+ };
+ 
+-class QFcitxPlatformInputContext : public QPlatformInputContext {
++class QFcitxPlatformInputContext : public QPlatformInputContext, public TypeLayFcitxQtV1 {
+     Q_OBJECT
++    Q_INTERFACES(TypeLayFcitxQtV1)
+ public:
++    bool inspect(QObject *, TypeLayFcitxQtStateV1 *) override;
++    bool validateLocal(QObject *, const TypeLayFcitxQtStateV1 *) override;
++    bool prepareCaret(QObject *, const TypeLayFcitxQtStateV1 *) override;
++    bool eventFilter(QObject *, QEvent *) override;
+     QFcitxPlatformInputContext();
+     ~QFcitxPlatformInputContext() override;
+@@ -160,4 +168,26 @@
+     void processKeyEventFinished(QDBusPendingCallWatcher *);
+ 
++Q_SIGNALS:
++    void typelayStateChangedV1(QObject *actual, uint causes);
++private:
++    struct TlField { quint64 generation = 0; quint64 inputEpoch = 0; };
++    struct TlContext { QPointer<FcitxQtInputContextProxy> proxy; quint64 remoteGeneration = 0; quint64 generation = 0; };
++    QHash<QObject *, TlField> tlFields_;
++    QHash<HybridInputContext *, TlContext> tlContexts_;
++    QPointer<QObject> tlBound_;
++    QPointer<QObject> tlProofObject_;
++    TypeLayFcitxQtStateV1 tlProof_;
++    quint64 tlNextGeneration_ = 0;
++    quint64 tlEpoch_ = 0;
++    quint64 tlProofQueueEpoch_ = 0;
++    bool tlInspecting_ = false;
++    bool tlControl_ = false;
++    quint32 tlConsumedScan_ = 0;
++    int tlConsumedKey_ = 0;
++    QString tlEngine_;
++    void tlBind(QObject *);
++    void tlChanged(quint32);
++    bool tlLocalClear(QObject *) const;
++    bool tlControlKey(const QKeyEvent *);
+ private:
+     bool processCompose(unsigned int keyval, unsigned int state,
+--- a/qt5/platforminputcontext/hybridinputcontext.h
++++ b/qt5/platforminputcontext/hybridinputcontext.h
+@@ -42,4 +42,6 @@
+ 
+     bool isValid() const;
++    // TypeLay 2026-10-12: expose only the actual Fcitx5 proxy; Fcitx4 stays unsupported.
++    FcitxQtInputContextProxy *typelayProxy() const { return proxy_; }
+ 
+     void showVirtualKeyboard();
+--- a/qt6/dbusaddons/fcitxqtinputcontextproxy.cpp
++++ b/qt6/dbusaddons/fcitxqtinputcontextproxy.cpp
+@@ -2,4 +2,5 @@
+  * SPDX-FileCopyrightText: 2012~2017 CSSlayer <wengxt@gmail.com>
+  *
++ * TypeLay modification 2026-10-12: cooperative transaction accounting.
+  * SPDX-License-Identifier: BSD-3-Clause
+  *
+@@ -13,4 +14,5 @@
+ #include <QFileInfo>
+ #include <QTimer>
++#include <QScopeGuard>
+ 
+ namespace fcitx {
+@@ -38,4 +40,124 @@
+ }
+ 
++quint64 FcitxQtInputContextProxy::typelayAppliedSerial() const {
++    Q_D(const FcitxQtInputContextProxy);
++    return d->typelayAppliedSerial_;
++}
++
++quint64 FcitxQtInputContextProxy::typelayGeneration() const {
++    Q_D(const FcitxQtInputContextProxy);
++    return d->typelayGeneration_;
++}
++
++unsigned int FcitxQtInputContextProxy::typelayOutputDepth() const {
++    Q_D(const FcitxQtInputContextProxy);
++    return d->typelayOutputDepth_;
++}
++
++bool FcitxQtInputContextProxy::typelayProbe(quint64 &serial, bool &known,
++                                         bool &pending, bool &composing,
++                                         bool &focused) {
++    serial = 0;
++    known = false;
++    pending = composing = true;
++    focused = false;
++    Q_D(FcitxQtInputContextProxy);
++    if (!d->isValid() || d->typelayOutputDepth_ || d->typelayPreparing_) return false;
++    QPointer<FcitxQtInputContextProxy> alive(this);
++    const auto generation = d->typelayGeneration_;
++    auto *ic = d->icproxy_;
++    auto call = QDBusMessage::createMethodCall(ic->service(), ic->path(),
++        FcitxQtInputContextProxyImpl::staticInterfaceName(), "TypeLayProbeStateV1");
++    const auto reply = ic->connection().call(call, QDBus::Block, 25);
++    if (!alive || generation != d->typelayGeneration_ ||
++        reply.type() != QDBusMessage::ReplyMessage || reply.signature() != "tbbbb") return false;
++    const auto args = reply.arguments();
++    if (args.size() != 5) return false;
++    serial = args[0].toULongLong();
++    known = args[1].toBool();
++    pending = args[2].toBool();
++    composing = args[3].toBool();
++    focused = args[4].toBool();
++    return true;
++}
++
++bool FcitxQtInputContextProxy::typelayPrepareCaret(quint64 expected) {
++    Q_D(FcitxQtInputContextProxy);
++    if (!d->isValid() || d->typelayOutputDepth_ || d->typelayPreparing_ ||
++        d->typelayAppliedSerial_ != expected) return false;
++    QPointer<FcitxQtInputContextProxy> alive(this);
++    const auto generation = d->typelayGeneration_;
++    d->typelayPreparing_ = true;
++    const auto resetPreparing = qScopeGuard([alive, d] {
++        if (alive) d->typelayPreparing_ = false;
++    });
++    auto *ic = d->icproxy_;
++    auto call = QDBusMessage::createMethodCall(ic->service(), ic->path(),
++        FcitxQtInputContextProxyImpl::staticInterfaceName(), "TypeLayPrepareCaretV1");
++    call.setArguments({QVariant::fromValue<qulonglong>(expected)});
++    const auto reply = ic->connection().call(call, QDBus::Block, 25);
++    if (!alive || generation != d->typelayGeneration_ ||
++        reply.type() != QDBusMessage::ReplyMessage || reply.signature() != "a(uv)b") return false;
++    const auto args = reply.arguments();
++    if (args.size() != 2 || !args[1].toBool() ||
++        args[0].metaType() != QMetaType::fromType<QDBusArgument>()) return false;
++
++    // Decode and validate the entire original Fcitx DBus blocked-event batch
++    // before delivering any output. No new exported Qt metatypes are needed.
++    struct Event {
++        uint kind = 0;
++        QString text;
++        FcitxQtFormattedPreeditList preedit;
++        int position = 0;
++        uint first = 0, second = 0;
++        bool release = false;
++    };
++    QList<Event> events;
++    const auto batch = qvariant_cast<QDBusArgument>(args[0]);
++    batch.beginArray();
++    while (!batch.atEnd()) {
++        Event event;
++        QDBusVariant wrapped;
++        batch.beginStructure();
++        batch >> event.kind >> wrapped;
++        batch.endStructure();
++        const auto value = wrapped.variant();
++        if (event.kind == 0) {
++            if (value.metaType() != QMetaType::fromType<QString>()) return false;
++            event.text = value.toString();
++        } else {
++            if (value.metaType() != QMetaType::fromType<QDBusArgument>()) return false;
++            const auto payload = qvariant_cast<QDBusArgument>(value);
++            const auto signature = payload.currentSignature();
++            if (event.kind == 1 && signature == "(a(si)i)") {
++                payload.beginStructure();
++                payload >> event.preedit >> event.position;
++                payload.endStructure();
++            } else if (event.kind == 2 && signature == "(uub)") {
++                payload.beginStructure();
++                payload >> event.first >> event.second >> event.release;
++                payload.endStructure();
++            } else if (event.kind == 3 && signature == "(iu)") {
++                payload.beginStructure();
++                payload >> event.position >> event.first;
++                payload.endStructure();
++            } else return false;
++        }
++        events.append(std::move(event));
++    }
++    batch.endArray();
++    for (const auto &event : events) {
++        if (!d->typelayDeliver(generation, [&] {
++            switch (event.kind) {
++            case 0: Q_EMIT commitString(event.text); break;
++            case 1: Q_EMIT updateFormattedPreedit(event.preedit, event.position); break;
++            case 2: Q_EMIT forwardKey(event.first, event.second, event.release); break;
++            case 3: Q_EMIT deleteSurroundingText(event.position, event.first); break;
++            }
++        })) return false;
++    }
++    return alive && generation == d->typelayGeneration_;
++}
++
+ QDBusPendingReply<> FcitxQtInputContextProxy::focusIn() {
+     Q_D(FcitxQtInputContextProxy);
+--- a/qt6/dbusaddons/fcitxqtinputcontextproxy.h
++++ b/qt6/dbusaddons/fcitxqtinputcontextproxy.h
+@@ -2,4 +2,5 @@
+  * SPDX-FileCopyrightText: 2012~2017 CSSlayer <wengxt@gmail.com>
+  *
++ * TypeLay modification 2026-10-12: cooperative transaction accounting.
+  * SPDX-License-Identifier: BSD-3-Clause
+  *
+@@ -30,4 +31,10 @@
+ 
+     bool isValid() const;
++    bool typelayProbe(quint64 &serial, bool &known, bool &pending,
++                      bool &composing, bool &focused);
++    quint64 typelayAppliedSerial() const;
++    quint64 typelayGeneration() const;
++    unsigned int typelayOutputDepth() const;
++    bool typelayPrepareCaret(quint64 expected);
+     void setDisplay(const QString &display);
+     const QString &display() const;
+--- a/qt6/dbusaddons/fcitxqtinputcontextproxy_p.h
++++ b/qt6/dbusaddons/fcitxqtinputcontextproxy_p.h
+@@ -2,4 +2,5 @@
+  * SPDX-FileCopyrightText: 2012~2017 CSSlayer <wengxt@gmail.com>
+  *
++ * TypeLay modification 2026-10-12: cooperative transaction accounting.
+  * SPDX-License-Identifier: BSD-3-Clause
+  *
+@@ -14,4 +15,5 @@
+ #include <QDBusServiceWatcher>
+ #include <cstddef>
++#include <QPointer>
+ 
+ namespace fcitx {
+@@ -60,5 +62,21 @@
+     }
+ 
++    // Count only completed original deliveries. Slots may destroy this proxy
++    // or recreate its IC; never dereference this after an unguarded emission.
++    template <typename Emit> bool typelayDeliver(quint64 generation, Emit deliver) {
++        if (generation != typelayGeneration_) return false;
++        QPointer<FcitxQtInputContextProxy> alive(q_ptr);
++        ++typelayOutputDepth_;
++        deliver();
++        if (!alive) return false;
++        --typelayOutputDepth_;
++        if (generation != typelayGeneration_) return false;
++        ++typelayAppliedSerial_;
++        return true;
++    }
++
+     void cleanUp() {
++        ++typelayGeneration_;
++        typelayAppliedSerial_ = 0;
+         auto services = watcher_.watchedServices();
+         for (const auto &service : services) {
+@@ -76,6 +94,6 @@
+         delete queryWatcher_;
+         queryWatcher_ = nullptr;
++        supportInvokeAction_ = false;
+         setVirtualKeyboardVisible(false);
+-        supportInvokeAction_ = false;
+     }
+ 
+@@ -154,16 +172,28 @@
+                                                     reply.value().path(),
+                                                     improxy_->connection(), q);
++        ++typelayGeneration_;
++        typelayAppliedSerial_ = 0;
++        const auto generation = typelayGeneration_;
+         QObject::connect(icproxy_, &FcitxQtInputContextProxyImpl::CommitString,
+-                         q, &FcitxQtInputContextProxy::commitString);
++                         q, [this, q, generation](const QString &str) {
++            typelayDeliver(generation, [&] { Q_EMIT q->commitString(str); });
++        });
+         QObject::connect(icproxy_, &FcitxQtInputContextProxyImpl::CurrentIM, q,
+-                         &FcitxQtInputContextProxy::currentIM);
+-        QObject::connect(icproxy_,
+-                         &FcitxQtInputContextProxyImpl::DeleteSurroundingText,
+-                         q, &FcitxQtInputContextProxy::deleteSurroundingText);
++                         [this, q, generation](const QString &name,
++                            const QString &uniqueName, const QString &langCode) {
++            typelayDeliver(generation, [&] { Q_EMIT q->currentIM(name, uniqueName, langCode); });
++        });
++        QObject::connect(icproxy_, &FcitxQtInputContextProxyImpl::DeleteSurroundingText,
++                         q, [this, q, generation](int offset, unsigned int nchar) {
++            typelayDeliver(generation, [&] { Q_EMIT q->deleteSurroundingText(offset, nchar); });
++        });
+         QObject::connect(icproxy_, &FcitxQtInputContextProxyImpl::ForwardKey, q,
+-                         &FcitxQtInputContextProxy::forwardKey);
+-        QObject::connect(icproxy_,
+-                         &FcitxQtInputContextProxyImpl::UpdateFormattedPreedit,
+-                         q, &FcitxQtInputContextProxy::updateFormattedPreedit);
++                         [this, q, generation](unsigned int keyval, unsigned int state, bool release) {
++            typelayDeliver(generation, [&] { Q_EMIT q->forwardKey(keyval, state, release); });
++        });
++        QObject::connect(icproxy_, &FcitxQtInputContextProxyImpl::UpdateFormattedPreedit,
++                         q, [this, q, generation](const FcitxQtFormattedPreeditList &str, int cursor) {
++            typelayDeliver(generation, [&] { Q_EMIT q->updateFormattedPreedit(str, cursor); });
++        });
+         QObject::connect(icproxy_,
+                          &FcitxQtInputContextProxyImpl::UpdateClientSideUI, q,
+@@ -171,5 +201,7 @@
+         QObject::connect(icproxy_,
+                          &FcitxQtInputContextProxyImpl::NotifyFocusOut, q,
+-                         &FcitxQtInputContextProxy::notifyFocusOut);
++                         [this, q, generation]() {
++            typelayDeliver(generation, [&] { Q_EMIT q->notifyFocusOut(); });
++        });
+         QObject::connect(
+             icproxy_,
+@@ -185,5 +217,7 @@
+         delete createInputContextWatcher_;
+         createInputContextWatcher_ = nullptr;
++        QPointer<FcitxQtInputContextProxy> alive(q);
+         Q_EMIT q->inputContextCreated(reply.argumentAt<1>());
++        if (!alive || generation != typelayGeneration_) return;
+ 
+         introspect();
+@@ -266,4 +300,8 @@
+     QDBusPendingCallWatcher *queryWatcher_ = nullptr;
+     QString display_;
++    quint64 typelayAppliedSerial_ = 0;
++    quint64 typelayGeneration_ = 0;
++    unsigned int typelayOutputDepth_ = 0;
++    bool typelayPreparing_ = false;
+ };
+ } // namespace fcitx

@@ -21,6 +21,8 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[2]
+ABI = ROOT / "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-qt-v1.h"
 PIN = "272b6b9eba97f0ed97e8a5caaf0bb22c6123f462"
 SHA = "b2c5f7c47009656ce79eac0c8f047a73b224210d0bc232150349577525fbd0d3"
 
@@ -87,12 +89,27 @@ def build(out, forced_sync_diagnostic=False):
             out / "build/qt6/platforminputcontext/libfcitx5platforminputcontextplugin.so", stock
         )
     run(["patch", "-p1", "-i", HERE / "fcitx5-qt.patch"], cwd=source)
+    shutil.copy2(ABI, source / "common" / ABI.name)
     subprocess.run(["cmake", "--build", out / "build", "--parallel", "2"], check=True, timeout=600)
     plugins = out / "plugins/platforminputcontexts"
     plugins.mkdir(parents=True)
     shutil.copy2(
         out / "build/qt6/platforminputcontext/libfcitx5platforminputcontextplugin.so", plugins
     )
+    subprocess.run(
+        [
+            "cmake",
+            "-S",
+            ROOT / "src/TypeLay.Linux/native/qt6",
+            "-B",
+            out / "native",
+            "-G",
+            "Ninja",
+            "-DTYPELAY_QT_NATIVE_TESTS=ON",
+        ],
+        check=True,
+    )
+    subprocess.run(["cmake", "--build", out / "native", "--parallel", "2"], check=True, timeout=180)
     flags = shlex.split(run(["pkg-config", "--cflags", "--libs", "Qt6Widgets"]))
     run(
         [
@@ -136,6 +153,16 @@ def build(out, forced_sync_diagnostic=False):
                 "fcitx5_qt_source_version": "5.1.15",
                 "source_commit": PIN,
                 "source_sha256": SHA,
+                "build_inputs": {
+                    str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in [
+                        ABI,
+                        HERE / "fcitx5-qt.patch",
+                        ROOT / "tests/linux/qt_native_fixture.cpp",
+                        *sorted((ROOT / "src/TypeLay.Linux/native/qt6").glob("*")),
+                    ]
+                    if path.is_file()
+                },
                 "qt6": qt,
                 "packages": run(["pacman", "-Q", "qt6-base", "qt6-wayland", "fcitx5"]),
                 "plugin_ldd": run(["ldd", plugins / "libfcitx5platforminputcontextplugin.so"]),
