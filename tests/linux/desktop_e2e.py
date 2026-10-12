@@ -102,6 +102,21 @@ def run(arguments):
     def translated(value):
         return bool(value and value != original and re.search(r"[\u3400-\u9fff]", value))
 
+    page_state = """({focused: document.hasFocus(), visible: !document.hidden,
+      active: document.activeElement?.id,
+      sourceLength: document.querySelector('#source')?.value.length})"""
+
+    def browser_evidence(name, inspect):
+        try:
+            (arguments.output / f"{name}-live.json").write_text(
+                json.dumps({"desktop": status(), "page": inspect()}, indent=2)
+            )
+            subprocess.run(
+                ["grim", str(arguments.output / f"{name}-live.png")], check=False, timeout=3
+            )
+        except Exception:
+            pass  # Observability must not replace the original browser failure.
+
     try:
         start()
         # A duplicate background request must use the existing real session.
@@ -185,7 +200,16 @@ def run(arguments):
                     )
                     request({"Action": {"FocusWindow": {"id": window["id"]}}})
                     page.locator("#source").focus()
+                    wait_for(
+                        lambda: page.evaluate(
+                            "document.hasFocus() && document.activeElement.id === 'source'"
+                        ),
+                        "Chromium did not acquire actual Wayland keyboard focus",
+                    )
                     typed(original)
+                    assert page.locator("#source").input_value() == original, (
+                        "XTest input did not reach Chromium source"
+                    )
                     wait_for(
                         ready_to_accept, "browser native route/model did not grant Tab acceptance"
                     )
@@ -207,6 +231,9 @@ def run(arguments):
                     evidence.append(
                         "Wayland Chromium: real extension, native host, compositor process binding, CPU model and Tab"
                     )
+                except BaseException:
+                    browser_evidence("chromium", lambda: page.evaluate(page_state))
+                    raise
                 finally:
                     browser_scope.__exit__(None, None, None)
         # Observe teardown of the Chromium source before accepting any Firefox
@@ -257,6 +284,13 @@ def run(arguments):
                     arguments.output / "firefox-geckodriver.log",
                 )
             )
+            stack.callback(
+                browser_evidence,
+                "firefox",
+                lambda: web(
+                    "POST", "/execute/sync", {"script": "return " + page_state, "args": []}
+                ),
+            )
             assert (
                 web("POST", "/moz/addon/install", {"path": str(addon), "temporary": True})
                 == "typelay@typelay.local"
@@ -283,7 +317,29 @@ def run(arguments):
                 "/execute/sync",
                 {"script": "document.querySelector('#source').focus();", "args": []},
             )
+            wait_for(
+                lambda: web(
+                    "POST",
+                    "/execute/sync",
+                    {
+                        "script": "return document.hasFocus() && document.activeElement.id === 'source';",
+                        "args": [],
+                    },
+                ),
+                "Firefox did not acquire actual Wayland keyboard focus",
+            )
             typed(original)
+            assert (
+                web(
+                    "POST",
+                    "/execute/sync",
+                    {
+                        "script": "return document.querySelector('#source').value;",
+                        "args": [],
+                    },
+                )
+                == original
+            ), "XTest input did not reach Firefox source"
             wait_for(ready_to_accept, "Firefox native route/model did not grant Tab acceptance")
 
             def firefox_value():
