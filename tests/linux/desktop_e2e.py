@@ -1047,7 +1047,13 @@ def run(arguments):
                         if not gtk4 and bundled:
                             # The shipped practice window has no test snapshot or
                             # translator. Observe only its owned accessibility tree.
-                            from gtk_accessibility import bounds, focused, named, text
+                            from gtk_accessibility import (
+                                bounds,
+                                focused,
+                                geometry_evidence,
+                                named,
+                                text,
+                            )
 
                             request({"Action": {"CloseWindow": {"id": window["id"]}}})
                             assert fixture.wait(timeout=5) == 0
@@ -1131,9 +1137,54 @@ def run(arguments):
                                 lambda: named(practice.pid, "TypeLay 译文候选"),
                                 "production candidate lacked its accessible name",
                             )
+                            subprocess.run(
+                                ["grim", str(arguments.output / "practice-preclick.png")],
+                                check=True,
+                                timeout=3,
+                            )
+                            current_window = next(
+                                (
+                                    item
+                                    for item in contents(request("Windows"), "Windows")
+                                    if item.get("pid") == practice.pid
+                                ),
+                                {},
+                            )
+                            current_status = status()
+                            click_evidence = {
+                                "candidate": geometry_evidence(candidate, practice.pid),
+                                "source": geometry_evidence(source, practice.pid),
+                                "window": {
+                                    key: current_window.get(key)
+                                    for key in ("id", "pid", "is_focused", "layout")
+                                },
+                                "status": {
+                                    key: current_status.get(key)
+                                    for key in (
+                                        "viewState",
+                                        "overlayVisible",
+                                        "editing",
+                                        "acceptanceReady",
+                                        "acceptanceRemainingMs",
+                                        "sourceSupported",
+                                    )
+                                },
+                                "inputFocus": current_status.get("input", {}).get("focus"),
+                            }
+                            wait_for(
+                                lambda: focused(source) and ready_to_accept(),
+                                "practice candidate was not ready after collecting evidence",
+                            )
                             area = bounds(candidate)
                             assert (
                                 area.width > 0 and area.height > 0 and area.x >= 0 and area.y >= 0
+                            )
+                            click_evidence["clickWindowCoordinates"] = [
+                                area.x + area.width // 2,
+                                area.y + area.height // 2,
+                            ]
+                            (arguments.output / "practice-preclick.json").write_text(
+                                json.dumps(click_evidence, indent=2)
                             )
                             subprocess.run(
                                 [
