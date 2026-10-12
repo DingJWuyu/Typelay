@@ -87,7 +87,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Install target desktop build dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -122,6 +122,22 @@ jobs:
         run: |
           export DISPLAY=:99
           python tests/linux/firefox_native_e2e.py --package artifacts/linux/package --firefox /usr/bin/firefox --geckodriver /usr/bin/geckodriver -v
+      - name: Probe source-owned VS Code edit transactions
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          export DISPLAY=:99
+          python tests/linux/vscode_e2e.py --code /usr/bin/code
+      - name: Probe real rich-editor transaction reentrancy
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          mkdir -p artifacts/editor-probe
+          cp tests/fixtures/editor/package*.json artifacts/editor-probe/
+          npm ci --prefix artifacts/editor-probe --ignore-scripts --no-audit --no-fund
+          export DISPLAY=:99
+          python tests/linux/editor_probe.py --dependencies artifacts/editor-probe --chromium /usr/bin/chromium -v
+      - name: Probe real Fcitx client requests and candidate selection
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: python tests/linux/fcitx_probe.py
       - name: Verify tray controls without downloading models
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
@@ -149,6 +165,9 @@ jobs:
             artifacts/linux/nested/
             artifacts/linux/desktop/
             artifacts/linux/firefox-native/
+            artifacts/linux/vscode/
+            artifacts/linux/editor-probe/
+            artifacts/linux/fcitx-probe/
             artifacts/linux/desktop-data/typelay/components/*/self-check.json
             artifacts/linux/native/libtypelay-gtk3.so
             artifacts/linux/native/typelay-supervise

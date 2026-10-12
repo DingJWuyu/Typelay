@@ -23,7 +23,6 @@ import tempfile
 import threading
 import time
 import unittest
-import zipfile
 from contextlib import ExitStack, contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -184,10 +183,7 @@ class FirefoxNativeContract(unittest.TestCase):
                     timeout=30,
                     capture_output=True,
                 )
-            addon = root / "typelay.xpi"
-            with zipfile.ZipFile(addon, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                for name in ("manifest.json", "background.js", "content.js"):
-                    archive.write(self.package / "browser/firefox" / name, name)
+            addon = self.package / "browser/typelay-firefox-unsigned.xpi"
 
             listener = stack.enter_context(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM))
             listener.bind(str(session / "native.sock"))

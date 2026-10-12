@@ -24,7 +24,7 @@ Firefox：
 python install.py browser-install --browser firefox
 ```
 
-在 Firefox 的 `about:debugging#/runtime/this-firefox` 选择“临时载入附加组件”，打开发行包 `browser/firefox/manifest.json`。开发模式临时扩展在浏览器退出后失效；这里没有提供已签名的商店扩展，不能承诺稳定 Firefox 中的永久安装。扩展 ID 固定为 `typelay@typelay.local`。
+在 Firefox 的 `about:debugging#/runtime/this-firefox` 选择“临时载入附加组件”，打开发行包 `browser/typelay-firefox-unsigned.xpi`，也可选择 `browser/firefox/manifest.json`。开发模式临时扩展在浏览器退出后失效；XPI 是包含实际发行脚本的可复现未签名包，可用于临时加载或交给 Mozilla 签名流程；这里没有提供已签名的商店扩展，不能承诺稳定 Firefox 中的永久安装，也不会修改浏览器签名校验设置。扩展 ID 固定为 `typelay@typelay.local`。
 
 Chromium：先在 `chrome://extensions` 打开开发者模式，加载发行包 `browser/chromium` 文件夹。复制浏览器显示的 32 字母扩展 ID，再执行：
 

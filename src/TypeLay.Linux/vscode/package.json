@@ -1,0 +1,15 @@
+{
+  "name": "typelay-editor-prototype",
+  "displayName": "TypeLay Editor Transaction Prototype",
+  "description": "Disposable validation of source-bound VS Code edits. No automatic input or IME support.",
+  "version": "0.0.1",
+  "publisher": "typelay-local",
+  "private": true,
+  "engines": { "vscode": "^1.96.0" },
+  "extensionKind": ["ui"],
+  "main": "./extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": { "supported": false },
+    "virtualWorkspaces": { "supported": false }
+  }
+}

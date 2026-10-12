@@ -8,7 +8,6 @@ import sys
 import tempfile
 import threading
 import time
-import zipfile
 from contextlib import ExitStack
 from http.server import HTTPServer
 from pathlib import Path
@@ -266,10 +265,7 @@ def run(arguments):
                     check=True,
                     timeout=30,
                 )
-            addon = browser_home / "typelay.xpi"
-            with zipfile.ZipFile(addon, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                for name in ("manifest.json", "background.js", "content.js"):
-                    archive.write(package / "browser/firefox" / name, name)
+            addon = package / "browser/typelay-firefox-unsigned.xpi"
             server = stack.enter_context(HTTPServer(("127.0.0.1", 0), Fixture))
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
