@@ -50,5 +50,7 @@ gboolean tl_ime_clear(Target *target);
 gboolean tl_widget_ime_clear(GtkWidget *widget);
 gboolean tl_return_ready(Target *target, JsonObject *authority);
 void tl_clear_permit(void);
+/* Cached metadata-only readiness; does not query the IM provider. */
+gboolean tl_acceptance_ready(Target *target);
 
 JsonObject *tl_geometry(Target *target);

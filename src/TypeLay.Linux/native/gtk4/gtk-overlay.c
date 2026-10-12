@@ -28,6 +28,15 @@ static const char *text_or_empty(JsonObject *object, const char *key) {
     const char *text = tl_string(object, key);
     return text ? text : "";
 }
+void tl_overlay_acceptance(void) {
+    if (!overlay.hint || !overlay.view) return;
+    JsonObject *presentation = tl_object(overlay.view, "presentation");
+    const char *hint = text_or_empty(presentation, "tabHint");
+    if (!boolean(presentation, "editorOwnsText")
+        && (strcmp(hint, "Tab 接受译文") == 0 || strcmp(hint, "Tab 交还应用") == 0))
+        hint = tl_acceptance_ready(overlay.target) ? "Tab 接受译文" : "Tab 交还应用";
+    gtk_label_set_text(GTK_LABEL(overlay.hint), hint);
+}
 gboolean tl_overlay_contains(GtkWidget *widget) {
     for (GtkWidget *parent = widget; parent; parent = gtk_widget_get_parent(parent))
         if (g_object_get_data(G_OBJECT(parent), "typelay-overlay")) return TRUE;
@@ -376,7 +385,7 @@ static gboolean render(Target *target, JsonObject *data) {
     select_language(overlay.source, source, TRUE);
     select_language(overlay.destination, destination, FALSE);
     gtk_label_set_text(GTK_LABEL(overlay.status), text_or_empty(value, "status"));
-    gtk_label_set_text(GTK_LABEL(overlay.hint), text_or_empty(presentation, "tabHint"));
+    tl_overlay_acceptance();
     gtk_widget_remove_css_class(overlay.status, "ready"); gtk_widget_remove_css_class(overlay.status, "pending");
     if (g_strcmp0(tl_string(presentation, "dot"), "Green") == 0) gtk_widget_add_css_class(overlay.status, "ready");
     if (g_strcmp0(tl_string(presentation, "dot"), "Yellow") == 0) gtk_widget_add_css_class(overlay.status, "pending");

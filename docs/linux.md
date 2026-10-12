@@ -176,6 +176,8 @@ env GDK_BACKEND=x11 dbus-run-session -- xvfb-run -a python tests/linux/tray_e2e.
 
 嵌套测试需要独立 Xvfb、niri、Mesa 软件渲染、D-Bus 和 xdotool。CI 的 XTest 只向独立嵌套合成器注入测试按键，不是生产客户端的输入方案。原生 --gtk-refusal 测试只验证未知 GTK 输入法的拒绝与透传，不验证 GTK 翻译功能；Chromium DOM、本地主机与完整桌面链路有独立用例，不能冒充 Firefox 或物理键盘实测。
 
+Qt 协作仍处于输入事件边界研究阶段，尚无 TypeLay Qt 正文捕获、浮层或写回产品能力。独立 `tests/linux/qt_cooperative/run.py --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22` 在临时 D-Bus/Xvfb 中构建固定官方 Fcitx Qt 源码，验证原异步/同步输入、同窗口字段切换和已转发按键的真实交付完成；记录实际 Qt 版本。该测试依赖 Qt 私有头，不进入用户合作包，构建机成功不能证明用户 Qt ABI 兼容。
+
 物理 CachyOS + niri 验收必须记录系统/niri/GTK/PyGObject/输入法版本，并逐项保留结果：
 
 | 项目 | 操作与预期 | 尚需验证的范围 |

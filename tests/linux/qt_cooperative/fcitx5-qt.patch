@@ -1,0 +1,174 @@
+--- a/qt5/platforminputcontext/qfcitxplatforminputcontext.cpp
++++ b/qt5/platforminputcontext/qfcitxplatforminputcontext.cpp
+@@ -5,6 +5,9 @@
+  *
+  */
+ 
++#include <QAbstractEventDispatcher>
++#include <QThread>
++#include <qpa/qwindowsysteminterface_p.h>
+ #include <QDBusConnection>
+ #include <QDebug>
+ #include <QInputMethod>
+@@ -41,6 +44,38 @@
+ namespace fcitx {
+ 
+ namespace {
++
++// TypeLay 2026-10-12: research queue instrumentation. Original IM behavior
++// is unchanged unless TYPELAY_QT_PROBE is explicitly enabled for this process.
++bool tlProbe() { return qEnvironmentVariableIsSet("TYPELAY_QT_PROBE"); }
++void tlCount(const char *name, int delta) {
++    if (!tlProbe() || !qApp) return;
++    qApp->setProperty(name, qApp->property(name).toInt() + delta);
++}
++struct TlScope {
++    const char *name;
++    explicit TlScope(const char *n) : name(n) { tlCount(name, 1); }
++    ~TlScope() { tlCount(name, -1); }
++};
++template<class Base> class TlQueued final : public Base {
++    QPointer<QObject> application_;
++public:
++    template<class... Args> explicit TlQueued(Args&&... args)
++        : Base(std::forward<Args>(args)...), application_(qApp) {
++        tlCount("tlqtPendingForward", 1);
++    }
++    ~TlQueued() override {
++        if (application_) {
++            tlCount("tlqtPendingForward", -1);
++            tlCount("tlqtRetired", 1);
++        }
++    }
++};
++void tlEnqueue(QWindowSystemInterfacePrivate::WindowSystemEvent *event) {
++    Q_ASSERT(QThread::currentThread() == qApp->thread());
++    QWindowSystemInterfacePrivate::windowSystemEventQueue.append(event);
++    if (auto *dispatcher = QAbstractEventDispatcher::instance()) dispatcher->wakeUp();
++}
+ 
+ template <typename T>
+ using XCBReply = std::unique_ptr<T, decltype(&std::free)>;
+@@ -270,6 +305,10 @@
+     // Input context may be created without QApplication with wayland, defer it
+     // to event loop to ensure event dispatcher is avaiable.
+     QTimer::singleShot(0, this, [this]() {
++        for (const char *name : {"tlqtPendingDbus", "tlqtPendingForward", "tlqtRetired",
++                                 "tlqtBindingEpoch", "tlqtOutputDepth", "tlqtCommits",
++                                 "tlqtPreedits", "tlqtMenus", "tlqtSyncReplies", "tlqtContexts"})
++            tlCount(name, 0);
+         watcher_->watch();
+         fcitx4Watcher_->watch();
+     });
+@@ -533,6 +572,11 @@
+     QWindow *window = focusWindowWrapper();
+     lastWindow_ = window;
+     lastObject_ = realFocusObject;
++    if (tlProbe()) {
++        tlCount("tlqtBindingEpoch", 1);
++        qApp->setProperty("tlqtFocusObject", QVariant::fromValue(realFocusObject));
++        qApp->setProperty("tlqtFocusWindow", QVariant::fromValue(static_cast<QObject *>(window)));
++    }
+     // Always create IC Data for window.
+     if (window) {
+         proxy = validICByWindow(window);
+@@ -639,6 +683,7 @@
+     data->rect = QRect();
+ 
+     if (proxy->isValid() && !uuid.isEmpty()) {
++        tlCount("tlqtContexts", 1);
+         QWindow *window = focusWindowWrapper();
+ #ifdef ENABLE_X11
+         setFocusGroupForX11(uuid);
+@@ -689,6 +734,8 @@
+ }
+ 
+ void QFcitxPlatformInputContext::commitString(const QString &str) {
++    TlScope output("tlqtOutputDepth");
++    tlCount("tlqtCommits", 1);
+     cursorPos_ = 0;
+     preeditList_.clear();
+     commitPreedit_.clear();
+@@ -704,6 +751,8 @@
+ 
+ void QFcitxPlatformInputContext::updateFormattedPreedit(
+     const FcitxQtFormattedPreeditList &preeditList, int cursorPos) {
++    TlScope output("tlqtOutputDepth");
++    tlCount("tlqtPreedits", 1);
+     QObject *input = qGuiApp->focusObject();
+     if (!input) {
+         return;
+@@ -873,6 +922,7 @@
+                                                  const QString &langCode) {
+     Q_UNUSED(name);
+     Q_UNUSED(uniqueName);
++    if (tlProbe()) qApp->setProperty("tlqtEngine", uniqueName);
+     QLocale newLocale(langCode);
+     if (locale_ != newLocale) {
+         locale_ = newLocale;
+@@ -1043,6 +1093,9 @@
+     bool isAutoRepeat = keyEvent.isAutoRepeat();
+     ulong time = keyEvent.timestamp();
+     // copied from QXcbKeyboard::handleKeyEvent()
++    const bool trackedAsync = tlProbe() &&
++        !QWindowSystemInterfacePrivate::synchronousWindowSystemEvents;
++    TlScope forwarding("tlqtPendingForward");
+     if (type == QEvent::KeyPress && qtcode == Qt::Key_Menu) {
+         QPoint globalPos;
+         QPoint pos;
+@@ -1050,12 +1103,24 @@
+             globalPos = window->screen()->handle()->cursor()->pos();
+             pos = window->mapFromGlobal(globalPos);
+         }
+-        QWindowSystemInterface::handleContextMenuEvent(window, false, pos,
+-                                                       globalPos, modifiers);
+-    }
+-    QWindowSystemInterface::handleExtendedKeyEvent(window, time, type, qtcode,
+-                                                   modifiers, code, sym, state,
+-                                                   string, isAutoRepeat);
++        if (trackedAsync) {
++            tlEnqueue(new TlQueued<QWindowSystemInterfacePrivate::ContextMenuEvent>(
++                window, false, pos, globalPos, modifiers));
++        } else {
++            QWindowSystemInterface::handleContextMenuEvent(window, false, pos,
++                                                           globalPos, modifiers);
++        }
++        tlCount("tlqtMenus", 1);
++    }
++    if (trackedAsync) {
++        tlEnqueue(new TlQueued<QWindowSystemInterfacePrivate::KeyEvent>(
++            window, time, type, qtcode, modifiers, code, sym, state,
++            string, isAutoRepeat, ushort(1)));
++    } else {
++        QWindowSystemInterface::handleExtendedKeyEvent(window, time, type, qtcode,
++                                                       modifiers, code, sym, state,
++                                                       string, isAutoRepeat);
++    }
+ }
+ 
+ bool QFcitxPlatformInputContext::filterEvent(const QEvent *event) {
+@@ -1099,11 +1164,13 @@
+             // KeyState::Repeat
+             stateToFcitx |= (1U << 31);
+         }
++        TlScope submitting("tlqtPendingDbus");
+         auto reply = proxy->processKeyEvent(keyval, keycode, stateToFcitx,
+                                             isRelease, keyEvent->timestamp());
+ 
+         if (Q_UNLIKELY(syncMode_)) {
+             reply.waitForFinished();
++            tlCount("tlqtSyncReplies", 1);
+ 
+             if (reply.isError() ||
+                 !HybridInputContext::processKeyEventResult(reply)) {
+@@ -1117,6 +1184,10 @@
+         }
+         auto *watcher = new ProcessKeyWatcher(*keyEvent, focusWindowWrapper(),
+                                               reply, proxy);
++        tlCount("tlqtPendingDbus", 1);
++        connect(watcher, &QObject::destroyed, qApp, [] {
++            tlCount("tlqtPendingDbus", -1);
++        });
+         connect(watcher, &QDBusPendingCallWatcher::finished, this,
+                 &QFcitxPlatformInputContext::processKeyEventFinished);
+         return true;

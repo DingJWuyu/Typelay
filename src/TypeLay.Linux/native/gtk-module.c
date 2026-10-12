@@ -13,7 +13,7 @@
 #include <unistd.h>
 
 static gint connection = -1;
-static guint input_watch, output_watch;
+static guint input_watch, output_watch, publication_timer;
 static GByteArray *incoming, *outgoing;
 static char *lifetime;
 static JsonObject *publication, *shortcut_configuration, *shortcut_authority;
@@ -24,6 +24,7 @@ static gboolean initialized;
 static guint64 connection_generation, return_generation;
 static GQueue consumed_ids = G_QUEUE_INIT;
 static gboolean trigger_shortcut(const char *kind, Target *target, JsonObject *approved);
+static gboolean already_consumed(const char *id);
 
 const char *tl_string(JsonObject *object, const char *member) {
     if (!object || !json_object_has_member(object, member)) return NULL;
@@ -55,7 +56,11 @@ gint64 tl_now(void) {
     if (clock_gettime(CLOCK_BOOTTIME, &value) != 0) return G_MAXINT64;
     return (gint64)value.tv_sec * 1000 + value.tv_nsec / 1000000;
 }
-void tl_clear_permit(void) { if (publication) { json_object_unref(publication); publication = NULL; } }
+void tl_clear_permit(void) {
+    if (publication_timer) { g_source_remove(publication_timer); publication_timer = 0; }
+    if (publication) { json_object_unref(publication); publication = NULL; }
+    tl_overlay_acceptance();
+}
 static void clear_shortcut(void) {
     if (shortcut_authority) { json_object_unref(shortcut_authority); shortcut_authority = NULL; }
 }
@@ -179,6 +184,96 @@ static gboolean await_return(gpointer data) {
     respond(pending->id, reply);
     return G_SOURCE_REMOVE;
 }
+/* Call only after the command/key path's IME observation. This check reads
+   metadata and revisions, never source text or a second provider RPC. */
+static const char *publication_failure(Target *target, JsonObject *current) {
+    if (!current || publication != current) return "not-published";
+    if (!target || target->dead || target != tl_focused()) return "focus";
+    if (target->quarantined || target->mutating || target->im_probing) return "unavailable";
+    if (!target->ime_known || target->composing) return "ime";
+    JsonObject *basis = tl_object(current, "authority"), *permit = tl_object(current, "permit");
+    JsonObject *plan = tl_object(permit, "plan"), *expected = tl_object(plan, "expected");
+    const char *id = tl_string(plan, "id");
+    if (!id || !*id || strlen(id) > 256) return "no-permit";
+    if (already_consumed(id)) return "consumed";
+    if (g_strcmp0(target->id, tl_string(current, "target")) != 0
+        || g_strcmp0(target->id, tl_string(basis, "target")) != 0
+        || g_strcmp0(target->id, tl_string(tl_object(expected, "target"), "value")) != 0)
+        return "target";
+    if ((gint64)target->content_revision != tl_integer(basis, "contentRevision", -1)
+        || (gint64)target->input_revision != tl_integer(basis, "inputRevision", -1)
+        || (gint64)target->focus_revision != tl_integer(basis, "focusRevision", -1)) return "revision";
+    JsonObject *stamp = tl_object(basis, "contextStamp");
+    if (!stamp || !target->im_observed
+        || (gint64)target->im_state.context_generation != tl_integer(stamp, "context", -1)
+        || (gint64)target->im_state.epoch != tl_integer(stamp, "epoch", -1)
+        || (gint64)target->im_state.input_epoch != tl_integer(stamp, "input", -1)
+        || (gint64)target->im_state.server_serial != tl_integer(stamp, "server", -1)
+        || (gint64)target->im_state.applied_serial != tl_integer(stamp, "applied", -1)
+        || (gint64)target->im_state.flags != tl_integer(stamp, "flags", -1)) return "ime-stamp";
+    if (!tl_metadata_matches(target, basis)) return "metadata";
+    /* The provider call may have used most or all of the original deadline. */
+    gint64 now = tl_now(), until = tl_integer(permit, "expiresAtMs", 0);
+    if (now >= until || until - now > 100) return "stale";
+    return publication == current ? NULL : "not-published";
+}
+gboolean tl_acceptance_ready(Target *target) {
+    JsonObject *current = publication ? json_object_ref(publication) : NULL;
+    gboolean ready = publication_failure(target, current) == NULL;
+    if (current) json_object_unref(current);
+    return ready;
+}
+static void refresh_acceptance(void);
+static gboolean acceptance_expired(gpointer data) {
+    (void)data;
+    publication_timer = 0;
+    /* Keep the independently timed Escape lease; only Tab readiness expires. */
+    refresh_acceptance();
+    return G_SOURCE_REMOVE;
+}
+static void refresh_acceptance(void) {
+    if (publication_timer) { g_source_remove(publication_timer); publication_timer = 0; }
+    tl_overlay_acceptance();
+    gint64 now = tl_now(), until = tl_integer(tl_object(publication, "permit"), "expiresAtMs", 0);
+    if (until > now && until - now <= 100)
+        publication_timer = g_timeout_add((guint)(until - now), acceptance_expired, NULL);
+}
+static JsonObject *publication_state(Target *target) {
+    JsonObject *state = json_object_new();
+    JsonObject *current = publication ? json_object_ref(publication) : NULL;
+    gboolean ready = publication_failure(target, current) == NULL;
+    json_object_set_boolean_member(state, "ready", ready);
+    if (ready) {
+        JsonObject *permit = tl_object(current, "permit");
+        json_object_set_string_member(state, "planId", tl_string(tl_object(permit, "plan"), "id"));
+        json_object_set_int_member(state, "readyUntilHostMs", tl_integer(permit, "expiresAtMs", 0));
+    } else {
+        json_object_set_null_member(state, "planId");
+        json_object_set_null_member(state, "readyUntilHostMs");
+    }
+    if (current) json_object_unref(current);
+    return state;
+}
+static void trace_tab(const char *reason, Target *target, JsonObject *current, JsonObject *reply) {
+    if (!g_getenv("TYPELAY_TRACE")) return;
+    JsonObject *permit = tl_object(current, "permit"), *basis = tl_object(current, "authority");
+    const char *id = tl_string(tl_object(permit, "plan"), "id");
+    const char *receipt_reason = tl_string(reply, "reason"), *safe_receipt = "none";
+    const char *reasons[] = {"BadPlan", "ImeUnclear", "StaleObservation", "Sensitive", "EpochChanged",
+        "SourceChanged", "SelectionChanged", "InvalidText"};
+    for (guint index = 0; index < G_N_ELEMENTS(reasons); index++)
+        if (g_strcmp0(receipt_reason, reasons[index]) == 0) safe_receipt = reasons[index];
+    gint64 now = tl_now(), until = MAX((gint64)0, tl_integer(permit, "expiresAtMs", 0));
+    gint64 observed = tl_integer(basis, "observedAtMs", -1);
+    /* Only opaque UUIDs and fixed reasons are logged, never arbitrary strings
+       from the plan, field metadata, or the receipt. */
+    g_printerr("TypeLay GTK Tab check=%s planId=%s remainingMs=%" G_GINT64_FORMAT
+        " authorityAgeMs=%" G_GINT64_FORMAT " inputRevision=%" G_GUINT64_FORMAT
+        " expectedInputRevision=%" G_GINT64_FORMAT " receiptReason=%s\n", reason,
+        id && g_uuid_string_is_valid(id) ? id : id ? "invalid" : "none", permit ? until - now : -1,
+        observed >= 0 ? now - observed : -1, target ? target->input_revision : 0,
+        tl_integer(basis, "inputRevision", -1), safe_receipt);
+}
 static void command(JsonObject *frame) {
     const char *operation = tl_string(frame, "op");
     gint64 id = tl_integer(frame, "id", 0);
@@ -187,8 +282,11 @@ static void command(JsonObject *frame) {
     const char *target_id = tl_string(data, "target");
     Target *target = target_id ? tl_lookup(target_id) : tl_focused();
     if (g_str_has_prefix(operation, "overlay-")) respond(id, tl_overlay_command(operation, target, data));
-    else if (strcmp(operation, "describe") == 0) respond(id, tl_describe(target));
-    else if (strcmp(operation, "capture") == 0)
+    else if (strcmp(operation, "describe") == 0) {
+        JsonObject *description = tl_describe(target);
+        if (description) json_object_set_object_member(description, "publication", publication_state(target));
+        respond(id, description);
+    } else if (strcmp(operation, "capture") == 0)
         respond(id, tl_capture(target, tl_object(data, "authority")));
     else if (strcmp(operation, "direct") == 0) respond(id, tl_write(target, data, TRUE));
     else if (strcmp(operation, "return") == 0) {
@@ -246,8 +344,16 @@ static void command(JsonObject *frame) {
         tl_clear_permit();
         JsonObject *basis = tl_object(data, "authority");
         if (target && target == tl_focused() && tl_metadata_matches(target, basis)) publication = tl_copy(data);
-        JsonObject *reply = json_object_new();
-        json_object_set_boolean_member(reply, "published", publication != NULL);
+        /* The observation may revoke publication; reacquire it only afterwards. */
+        if (publication) (void)tl_ime_clear(target);
+        refresh_acceptance();
+        JsonObject *state = publication_state(target), *reply = json_object_new();
+        json_object_set_boolean_member(reply, "published", publication
+            && (!tl_object(data, "permit") || json_object_get_boolean_member(state, "ready")));
+        if (target) {
+            json_object_set_string_member(state, "target", target->id);
+            tl_send_event("publication", state);
+        } else json_object_unref(state);
         respond(id, reply);
     } else { disconnect_peer(); }
 }
@@ -397,10 +503,14 @@ static gboolean key_event(GdkEventKey *event) {
     if (*held) return *consumed;
     *held = TRUE; *consumed = FALSE;
     Target *target = tl_focused();
+    JsonObject *current = publication ? json_object_ref(publication) : NULL;
     gboolean clear = tl_ime_clear(target);
     guint modified = event->state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_MOD1_MASK | GDK_MOD3_MASK
         | GDK_MOD4_MASK | GDK_MOD5_MASK | GDK_SUPER_MASK | GDK_HYPER_MASK | GDK_META_MASK);
     if (!clear || !publication || modified || event->send_event) {
+        if (is_tab) trace_tab(!clear ? "ime" : !publication ? "not-published"
+            : modified ? "modified" : "nonphysical", target, current, NULL);
+        if (current) json_object_unref(current);
         tl_clear_permit(); return FALSE;
     }
     JsonObject *basis = tl_object(publication, "authority");
@@ -408,6 +518,8 @@ static gboolean key_event(GdkEventKey *event) {
         || (gint64)target->input_revision != tl_integer(basis, "inputRevision", -1)
         || (gint64)target->focus_revision != tl_integer(basis, "focusRevision", -1)
         || !tl_metadata_matches(target, basis)) {
+        if (is_tab) trace_tab("authority", target, current, NULL);
+        json_object_unref(current);
         tl_clear_permit(); return FALSE;
     }
     if (is_escape) {
@@ -416,13 +528,19 @@ static gboolean key_event(GdkEventKey *event) {
         gint64 age = tl_now() - tl_integer(source, "observedAtMs", 0);
         gboolean allowed = lease && json_object_has_member(lease, "escapeAllowed")
             && json_object_get_boolean_member(lease, "escapeAllowed") && age >= 0 && age <= 150;
+        json_object_unref(current);
         tl_clear_permit();
         if (allowed) { tl_send_event("escape", json_object_new()); *consumed = TRUE; }
         return *consumed;
     }
     JsonObject *permit = tl_object(publication, "permit"), *plan = tl_object(permit, "plan");
     const char *id = tl_string(plan, "id");
-    if (!permit || !plan || !id || already_consumed(id)) { tl_clear_permit(); return FALSE; }
+    const char *failure = publication_failure(target, current);
+    if (failure) {
+        trace_tab(failure, target, current, NULL);
+        json_object_unref(current);
+        tl_clear_permit(); return FALSE;
+    }
     JsonObject *request = json_object_new();
     json_object_set_object_member(request, "plan", tl_copy(plan));
     json_object_set_object_member(request, "authority", tl_copy(basis));
@@ -441,7 +559,11 @@ static gboolean key_event(GdkEventKey *event) {
         json_object_set_object_member(message, "receipt", reply);
         tl_send_event("accepted", message);
         *consumed = TRUE;
-    } else json_object_unref(reply);
+    } else {
+        trace_tab("write-rejected", target, current, reply);
+        json_object_unref(reply);
+    }
+    json_object_unref(current);
     g_free(plan_id);
     return *consumed;
 }

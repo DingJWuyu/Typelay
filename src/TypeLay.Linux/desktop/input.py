@@ -126,7 +126,7 @@ class Input:
         self.capture_started_at = 0
         self.capture_failures = []
         self.browser_diagnostics = {}
-        self.browser_publication = None
+        self.native_publication = None
         self.publication_generation = 0
         self.published_plan = None
         self.publication_epochs = None
@@ -346,9 +346,9 @@ class Input:
 
     def invalidate_publication(self):
         self.publication_generation += 1
-        self.browser_publication = self.published_plan = self.publication_epochs = None
+        self.native_publication = self.published_plan = self.publication_epochs = None
 
-    def remember_browser_publication(self, peer, description, generation):
+    def remember_publication(self, peer, description, generation):
         # A rendered candidate is not proof that its one-shot permit arrived.
         # Only recognize this peer's report of a permit issued by this host.
         if generation != self.publication_generation or self.publication_epochs != (
@@ -370,12 +370,12 @@ class Input:
         ):
             return
         if value.get("ready") is not True:
-            self.browser_publication = None
+            self.native_publication = None
             return
         plan_id = value.get("planId")
         if not isinstance(plan_id, str) or current != (peer, plan_id):
             return
-        self.browser_publication = None
+        self.native_publication = None
         until = value.get("readyUntilHostMs")
         if (
             type(until) not in (int, float)
@@ -383,7 +383,7 @@ class Input:
             or not now_ms() < until <= issued["permit"]["expiresAtMs"]
         ):
             return
-        self.browser_publication = {
+        self.native_publication = {
             "peer": peer,
             "planId": plan_id,
             "until": until,
@@ -395,9 +395,7 @@ class Input:
         peer = self.focused_peer()
         if not peer:
             return 0
-        if peer.backend != "browser":
-            return None
-        value = self.browser_publication
+        value = self.native_publication
         if (
             not value
             or value["peer"] is not peer
@@ -448,7 +446,7 @@ class Input:
             return self.captured("no-native-field")
         if peer.backend == "browser":
             self.remember_browser_diagnostics(description.get("diagnostics"))
-            self.remember_browser_publication(peer, description, publication_generation)
+        self.remember_publication(peer, description, publication_generation)
         if not await self.approve(peer, description):
             return self.captured("excluded-or-sensitive")
         native = await peer.link.ask(
@@ -558,11 +556,10 @@ class Input:
             )
         else:
             permit = value.get("permit")
-            if peer.backend == "browser":
-                self.invalidate_publication()
-                if permit:
-                    self.published_plan = (peer, permit["plan"]["id"])
-                    self.publication_epochs = (self.window_epoch, self.user_epoch)
+            self.invalidate_publication()
+            if permit:
+                self.published_plan = (peer, permit["plan"]["id"])
+                self.publication_epochs = (self.window_epoch, self.user_epoch)
             if permit:
                 self.issued[permit["plan"]["id"]] = {
                     "peer": peer,
@@ -643,9 +640,9 @@ class Input:
                 print("typelay-tab " + json.dumps(detail, separators=(",", ":")), file=sys.stderr)
             except OSError:
                 pass  # Diagnostic output cannot interrupt the native event channel.
-        elif name == "publication" and peer.backend == "browser":
+        elif name == "publication":
             if isinstance(value, dict) and isinstance(value.get("target"), str):
-                self.remember_browser_publication(
+                self.remember_publication(
                     peer,
                     {"target": value["target"], "publication": value},
                     self.publication_generation,

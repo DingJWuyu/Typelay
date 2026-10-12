@@ -95,7 +95,7 @@ jobs:
       CCACHE_MAXSIZE: 512MiB
     steps:
       - name: Install target desktop build dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 gtk4 at-spi2-core json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols ccache opencc procps-ng zstd
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 gtk4 at-spi2-core json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols ccache opencc procps-ng zstd qt6-base qt6-wayland libxkbcommon libxcb
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -167,6 +167,9 @@ jobs:
         id: fcitx
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: python tests/linux/fcitx_cooperative/run.py --core-version 5.1.22
+      - name: Probe original Fcitx Qt input delivery boundaries
+        if: ${{ !cancelled() && steps.fcitx.outcome == 'success' }}
+        run: python tests/linux/qt_cooperative/run.py --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: ${{ !cancelled() && (steps.fcitx.outcome == 'success' || steps.fcitx.outcome == 'failure') && steps.fcitx-cache.outputs.cache-hit != 'true' }}
         with:

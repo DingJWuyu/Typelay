@@ -8,4 +8,4 @@
 docs/reference/** -text whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof
 .agents/skills/** -text whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof
 # Unified patches require a single context prefix on otherwise empty lines.
-tests/linux/fcitx_cooperative/*.patch whitespace=-blank-at-eol
+tests/linux/*_cooperative/*.patch whitespace=-blank-at-eol
