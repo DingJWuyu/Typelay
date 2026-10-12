@@ -38,9 +38,12 @@ static gboolean active(void) {
         && gtk_window_is_active(GTK_WINDOW(overlay.top));
 }
 gboolean tl_overlay_can_return(Target *target) {
+    const char *state = tl_string(overlay.view, "state");
+    gboolean editor_owner = boolean(tl_object(overlay.view, "presentation"), "editorOwnsText")
+        && (g_strcmp0(state, "EditingTranslation") == 0 || g_strcmp0(state, "ReturningToSource") == 0);
     if (overlay.target != target || !active() || !overlay.popover || !overlay.text
         || !gtk_widget_get_visible(overlay.popover) || tl_now() > overlay.expires
-        || !gtk_text_view_get_editable(GTK_TEXT_VIEW(overlay.text))) return FALSE;
+        || !editor_owner) return FALSE;
     GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(overlay.top));
     return focus && (focus == overlay.text || gtk_widget_is_ancestor(focus, overlay.text));
 }
@@ -473,6 +476,8 @@ gboolean tl_overlay_event(GdkEvent *event) {
         return FALSE;
     if (keyval == GDK_KEY_Tab && gtk_text_view_get_editable(GTK_TEXT_VIEW(overlay.text))) {
         overlay.held_key = keycode;
+        if (g_getenv("TYPELAY_TRACE"))
+            g_printerr("TypeLay GTK4 editor key check=return atMs=%" G_GINT64_FORMAT "\n", tl_now());
         emit("return", NULL);
         return TRUE;
     }

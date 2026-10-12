@@ -723,23 +723,38 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
 }
 static gboolean return_authorized(Target *target, JsonObject *basis) {
     JsonObject *stamp = tl_object(basis, "contextStamp");
-    return target && !target->mutating && !target->im_probing && !target->quarantined
-        && target->thread == g_thread_self() && g_main_depth() == 1
-        && bind_context(target) && target->im_observed && stamp
-        && (gint64)target->im_state.context_generation == tl_integer(stamp, "context", -1)
-        && (gint64)target->input_revision == tl_integer(basis, "inputRevision", -1)
-        && (gint64)target->content_revision == tl_integer(basis, "contentRevision", -1)
-        && tl_metadata_matches(target, basis);
+    const char *failure = NULL;
+    gboolean allowed = write_check(target && !target->dead, "target", &failure)
+        && write_check(!target->mutating && !target->im_probing && !target->quarantined, "busy", &failure)
+        && write_check(target->thread == g_thread_self() && g_main_depth() == 1, "dispatch", &failure)
+        && write_check(bind_context(target) && target->im_observed && stamp, "binding", &failure)
+        && write_check((gint64)target->im_state.context_generation == tl_integer(stamp, "context", -1), "context", &failure)
+        && write_check((gint64)target->input_revision == tl_integer(basis, "inputRevision", -1), "input", &failure)
+        && write_check((gint64)target->content_revision == tl_integer(basis, "contentRevision", -1), "content", &failure)
+        && write_check(tl_metadata_matches(target, basis), "metadata", &failure);
+    if (!allowed && g_getenv("TYPELAY_TRACE"))
+        g_printerr("TypeLay GTK4 return check=%s input=%" G_GUINT64_FORMAT " expectedInput=%" G_GINT64_FORMAT
+            " atMs=%" G_GINT64_FORMAT "\n", failure, target ? target->input_revision : 0,
+            tl_integer(basis, "inputRevision", -1), tl_now());
+    return allowed;
 }
 gboolean tl_return_ready(Target *target, JsonObject *basis) {
     return return_authorized(target, basis) && tl_focused() == target && tl_ime_clear(target)
         && return_authorized(target, basis);
 }
 gboolean tl_return(Target *target, JsonObject *basis) {
+    if (g_getenv("TYPELAY_TRACE"))
+        g_printerr("TypeLay GTK4 return check=request atMs=%" G_GINT64_FORMAT "\n", tl_now());
     if (!return_authorized(target, basis)) return FALSE;
     GtkWidget *top = GTK_WIDGET(gtk_widget_get_root(target->widget));
-    if (!GTK_IS_WINDOW(top) || !gtk_window_is_active(GTK_WINDOW(top))) return FALSE;
-    if (tl_focused() != target && !tl_overlay_can_return(target)) return FALSE;
+    if (!GTK_IS_WINDOW(top) || !gtk_window_is_active(GTK_WINDOW(top))) {
+        if (g_getenv("TYPELAY_TRACE")) g_printerr("TypeLay GTK4 return check=window\n");
+        return FALSE;
+    }
+    if (tl_focused() != target && !tl_overlay_can_return(target)) {
+        if (g_getenv("TYPELAY_TRACE")) g_printerr("TypeLay GTK4 return check=editor-owner\n");
+        return FALSE;
+    }
     /* Restore only the saved permitted widget. Its IM may be unknown while the
        overlay owns focus; no body is read here. The caller awaits real Clear
        before reporting return completion and allowing the next capture. */
