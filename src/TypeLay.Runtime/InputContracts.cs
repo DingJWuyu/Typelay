@@ -2,8 +2,11 @@ using TypeLay.Core;
 
 namespace TypeLay.Runtime;
 
+// CompletedReceipt is only for a platform that already executed the issued plan
+// on its native UI thread. It reports a terminal result, never permission to write.
 public sealed record InputNotice(string Kind, AcceptancePermit? Permit = null, long AcceptedAtMs = 0,
-    long UserEpoch = 0, long ForegroundEpoch = 0, InputSnapshot? Source = null, Guid CommandGeneration = default);
+    long UserEpoch = 0, long ForegroundEpoch = 0, InputSnapshot? Source = null, Guid CommandGeneration = default,
+    WriteReceipt? CompletedReceipt = null);
 public sealed record InputLease(InputSnapshot Source, long UserEpoch, long ForegroundEpoch, bool EscapeAllowed);
 public sealed record ShortcutLease(InputSnapshot Source, long ContentEpoch, long ForegroundEpoch);
 

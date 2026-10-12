@@ -111,7 +111,6 @@ class Input:
         self.observations = OrderedDict()
         self.frozen = OrderedDict()
         self.issued = OrderedDict()
-        self.receipts = OrderedDict()
         self.bound = None
         self.bound_observation = None
         self.overlay_focused = False
@@ -227,7 +226,6 @@ class Input:
             (self.observations, 2000),
             (self.frozen, 120_000),
             (self.issued, 1000),
-            (self.receipts, 1000),
         ):
             for key, value in list(collection.items()):
                 if stamp - value["time"] > age:
@@ -686,12 +684,12 @@ class Input:
                 )
                 return
             receipt = value["receipt"]
-            self.receipts[value["planId"]] = {"value": receipt, "time": now_ms()}
             self.host.send(
                 "notice",
                 {
                     "kind": "accept",
                     "permit": issued["permit"],
+                    "completedReceipt": receipt,
                     "acceptedAtMs": value["acceptedAtMs"],
                     "userEpoch": issued["lease"]["userEpoch"],
                     "foregroundEpoch": issued["lease"]["foregroundEpoch"],
@@ -793,9 +791,6 @@ class Input:
             return await self.direct(value)
         if operation == "return":
             return await self.return_to_source(value)
-        if operation == "receipt":
-            receipt = self.receipts.pop(value["id"], None)
-            return receipt["value"] if receipt else refused(True)
         return None
 
     def notification(self, operation, value):
@@ -818,4 +813,3 @@ class Input:
         self.observations.clear()
         self.frozen.clear()
         self.issued.clear()
-        self.receipts.clear()

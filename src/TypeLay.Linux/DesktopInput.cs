@@ -50,16 +50,11 @@ internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMoni
         var reply = await link.Ask("return", context);
         return reply.ValueKind == JsonValueKind.True;
     }
-    public async Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs)
+    public Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs)
     {
-        // The target's GUI thread already committed synchronously at the physical Tab.
-        // Obtain its one-shot receipt only; never request a second mutation.
-        var reply = await link.Ask("receipt", new
-        {
-            plan.Id
-        });
-        return reply.ValueKind == JsonValueKind.Null ? new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome)
-            : DesktopLink.Decode<WriteReceipt>(reply);
+        // Native Tab supplies a completed one-shot receipt in its input notice.
+        // This platform never executes an additional deferred acceptance write.
+        return Task.FromResult(new WriteReceipt(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome));
     }
     public async Task<WriteReceipt> WriteDirectAsync(WritePlan plan, string[] excluded)
     {

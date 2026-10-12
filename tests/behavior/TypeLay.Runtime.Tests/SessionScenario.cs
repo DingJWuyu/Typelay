@@ -73,6 +73,13 @@ internal sealed class SessionScenario : IDisposable
         pending.SetResult(capture);
         _context.Drain();
     }
+    public void FailCapture()
+    {
+        var pending = Service.PendingCapture ?? throw new InvalidOperationException("No pending capture.");
+        Service.PendingCapture = null;
+        pending.SetException(new IOException("controlled capture failure"));
+        _context.Drain();
+    }
     public InputSnapshot Fresh => Source with { ObservedAtMs = Loop.NowMs };
     public void Command(string kind) => Input.Notices.Enqueue(new(kind, AcceptedAtMs: Loop.NowMs,
         UserEpoch: Input.UserEpoch, ForegroundEpoch: Input.ForegroundEpoch,

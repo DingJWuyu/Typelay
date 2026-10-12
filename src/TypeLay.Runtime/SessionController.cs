@@ -104,13 +104,13 @@ public sealed class SessionController : IDisposable
         Render();
         Changed?.Invoke();
     }
-    private void Tick()
+    private void DrainInputNotices()
     {
-        if (_disposed)
-            return;
         while (_hook.TryRead(out var notice))
         {
-            if (notice?.Kind == "wake")
+            if (notice?.CompletedReceipt is not null && notice.Permit is not null)
+                CompleteNativeWrite(notice);
+            else if (notice?.Kind == "wake")
                 Wake(notice);
             else if (notice?.Kind == "direct")
                 QueueDirect(notice);
@@ -119,6 +119,12 @@ public sealed class SessionController : IDisposable
             else if (notice?.Permit is not null)
                 _ = Accept(notice);
         }
+    }
+    private void Tick()
+    {
+        if (_disposed)
+            return;
+        DrainInputNotices();
         long now = _loop.NowMs;
         if (_pendingDirect is { } pending && !_directRunning)
         {
@@ -200,6 +206,10 @@ public sealed class SessionController : IDisposable
         try
         {
             var result = await _broker.CaptureAsync(request);
+            // Input already queued before this read completed owns the earlier action.
+            // Accepting it advances generation before an obsolete read can clear it.
+            if (!_disposed)
+                DrainInputNotices();
             if (_disposed || generation != _generation)
                 return;
             if (windowEpoch != _hook.WindowEpoch)
@@ -268,6 +278,8 @@ public sealed class SessionController : IDisposable
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
+            if (!_disposed)
+                DrainInputNotices();
             if (_disposed || generation != _generation)
                 return;
             StopSession("capture-failed");
@@ -436,6 +448,34 @@ public sealed class SessionController : IDisposable
         Render();
         return false;
     }
+    private void CompleteNativeWrite(InputNotice notice)
+    {
+        var plan = notice.Permit!.Plan;
+        var receipt = notice.CompletedReceipt!;
+        if (receipt.Status == WriteStatus.Verified
+            && (receipt.VerifiedSnapshot is not { } after || !after.IsUsable
+                || after.Target != plan.Expected.Target || after.Text != plan.ResultText
+                || after.Selection != new TextRange(plan.Caret, plan.Caret)))
+            receipt = new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
+        // The native UI thread has already written. Never issue another write,
+        // nor discard its terminal receipt because a later observation won a race.
+        // Only the original session/plan may consume it as its current UI result.
+        if (!_writing && _session.BeginWrite(plan))
+        {
+            _generation++;
+            _hook.Revoke();
+            _permitUntil = 0;
+            _session.FinishWrite(plan, receipt);
+            _nextCapture = 0;
+            Render();
+        }
+        Trace("write-" + receipt.Status + "-" + receipt.Reason, plan.Id);
+        if (receipt.Status != WriteStatus.Verified)
+        {
+            ServiceStatus = receipt.Status == WriteStatus.OutcomeUnknown ? "写回结果未确认，原目标已隔离" : "写回前安全校验拒绝了本次操作";
+            Changed?.Invoke();
+        }
+    }
     private async Task Accept(InputNotice notice)
     {
         _hook.Revoke();
@@ -550,13 +590,14 @@ public sealed class SessionController : IDisposable
     }
     // Opt-in local diagnostics contain counts and state only, never field text,
     // labels, window titles, exception messages, source or translated content.
-    private void Trace(string operation)
+    private void Trace(string operation, Guid? planId = null)
     {
         if (string.IsNullOrWhiteSpace(_tracePath))
             return;
         string state = System.Text.Json.JsonSerializer.Serialize(new
         {
             operation,
+            planId,
             state = _session.State.ToString(),
             sourceLength = _session.Current?.Text.Length ?? 0,
             previewLength = _session.Preview.Length,

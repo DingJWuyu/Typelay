@@ -259,6 +259,78 @@ public sealed class SessionControllerTests
     }
 
     [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void QueuedAcceptanceSettlesBeforeAnOlderCaptureCanReplaceItsSession(int completion)
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.Input.Notices.Enqueue(new("accept", permit, s.Loop.NowMs, s.Input.UserEpoch, s.Input.ForegroundEpoch));
+        var changed = s.Fresh with
+        {
+            Text = "new observation",
+            Selection = new(15, 15)
+        };
+        if (completion == 2)
+            s.FailCapture();
+        else
+            s.CompleteCapture(completion == 0 ? new(null) : new(changed, FocusMember.Source, "controlled", s.Input.UserEpoch, s.Input.ForegroundEpoch));
+        Assert.Equal(permit.Plan.Id, Assert.Single(s.Service.Writes).Id);
+        Assert.Equal(SessionState.OutcomeUnknown, s.View.State);
+        s.Tick();
+        Assert.Single(s.Service.Writes);
+    }
+
+    [Fact]
+    public void CompletedNativeWriteUsesItsReceiptWithoutExecutingAnotherWrite()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        var after = s.Fresh with
+        {
+            Text = permit.Plan.ResultText,
+            Selection = new(permit.Plan.Caret, permit.Plan.Caret)
+        };
+        s.Input.Notices.Enqueue(new("accept", permit, CompletedReceipt:
+            new(WriteStatus.Verified, Denial.None, after)));
+        s.Source = after;
+        s.Tick();
+        Assert.Empty(s.Service.Writes);
+        Assert.Equal(SessionState.NoSession, s.View.State);
+    }
+
+    [Fact]
+    public void LateNativeReceiptCannotReplaceANewerFieldsDraft()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null));
+        s.FocusAnotherField();
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!());
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("keep newer draft");
+        s.Input.Notices.Enqueue(new("accept", permit, CompletedReceipt:
+            new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome)));
+        s.Tick();
+        Assert.Empty(s.Service.Writes);
+        Assert.Equal(SessionState.EditingTranslation, s.View.State);
+        Assert.Contains("原目标已隔离", s.Controller.ServiceStatus);
+        s.View.ReturnRequested!();
+        s.Tick();
+        Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+        Assert.Equal("keep newer draft", s.View.Preview);
+    }
+
+    [Theory]
     [InlineData(true)]
     [InlineData(false)]
     public void ExpiredOrInvalidatedAcceptanceDoesNotDispatchAWrite(bool expired)
