@@ -1,6 +1,8 @@
 """GTK settings and a source-bound native view for the shared session controller."""
 
 import asyncio
+import os
+import sys
 
 import gi
 from wire import now_ms
@@ -55,8 +57,8 @@ class Overlay:
         async with self.lock:
             record = self.current_record()
             if record is None:
-                self.hide()
-                return
+                self.conceal("observation-unavailable")
+                return False
             peer = record["peer"]
             revision = self.revision
             if self.peer and self.peer is not peer and self.peer.link.channel.alive:
@@ -77,23 +79,25 @@ class Overlay:
                 self.visible = bool(reply and reply.get("visible"))
                 self.editing = bool(reply and reply.get("editing"))
                 self.acceptance_ready = self.visible and self.value.get("canAccept", False)
+            return True
 
     async def update(self):
         try:
             while self.value:
                 revision = self.revision
-                await self.send_view()
+                if not await self.send_view():
+                    break
                 if revision == self.revision:
                     break
         except (OSError, EOFError, TimeoutError):
-            self.hide()
+            self.conceal("transport-unavailable")
         finally:
             self.pending = False
 
     def renew(self):
         record = self.current_record()
-        if self.value and record and self.peer is record["peer"]:
-            if self.visible:
+        if self.value and record:
+            if self.peer is record["peer"] and self.visible:
                 self.peer.link.command(
                     "overlay-renew",
                     {
@@ -105,7 +109,7 @@ class Overlay:
             elif not self.pending:
                 self.schedule()
         elif self.value:
-            self.hide()
+            self.conceal("observation-unavailable")
         return not self.input.closing
 
     def event(self, peer, event):
@@ -137,12 +141,29 @@ class Overlay:
             self.host.send(operation, value)
 
     async def begin_edit(self, peer, target):
-        allowed = await self.host.ask("beginEdit")
-        if self.value and self.peer is peer and self.value["source"]["target"]["value"] == target:
+        try:
+            allowed = await self.host.ask("beginEdit")
+            if (
+                allowed is not True
+                or not self.value
+                or self.peer is not peer
+                or self.value["source"]["target"]["value"] != target
+                or self.value.get("state") != "EditingTranslation"
+            ):
+                return
             # The state transition's render precedes the reply on the host channel;
             # flush it before asking GTK to focus its editor. No source text is changed.
-            await self.send_view()
-            peer.link.command("overlay-edit", {"target": target, "allowed": allowed is True})
+            value, revision = self.value, self.revision
+            if (
+                await self.send_view()
+                and self.value is value
+                and self.revision == revision
+                and self.peer is peer
+                and self.visible
+            ):
+                peer.link.command("overlay-edit", {"target": target, "allowed": True})
+        except (OSError, EOFError, TimeoutError):
+            self.conceal("transport-unavailable")
 
     async def set_languages(self, value):
         if self.settings and isinstance(value, dict):
@@ -157,13 +178,23 @@ class Overlay:
                 "overlay-resume", {"target": self.value["source"]["target"]["value"]}
             )
 
-    def hide(self):
+    def conceal(self, reason):
+        # A transient missing/stale native observation must hide the actual UI,
+        # but cannot discard the host's desired view: DesktopView deduplicates
+        # unchanged renders. Renew retries only after this same target regains
+        # a current, focused native observation, with a new display authority.
+        if self.value and self.peer and os.environ.get("TYPELAY_TRACE"):
+            print(f"typelay-overlay conceal reason={reason} atMs={now_ms()}", file=sys.stderr)
         self.revision += 1
         if self.peer and self.peer.link.channel.alive:
             self.peer.link.command("overlay-hide")
-        self.value = self.peer = None
+        self.peer = None
         self.visible = self.editing = self.acceptance_ready = False
         self.input.set_overlay_focus(False)
+
+    def hide(self):
+        self.conceal("host-hide")
+        self.value = None
 
 
 class Settings:

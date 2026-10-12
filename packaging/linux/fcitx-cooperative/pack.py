@@ -26,6 +26,7 @@ LIBRARIES = (
     "libpinyinhelper.so",
     "libchttrans.so",
     "libfullwidth.so",
+    "libcloudpinyin.so",
     "libFcitx5GClient.so",
     "im-fcitx5.so",
 )

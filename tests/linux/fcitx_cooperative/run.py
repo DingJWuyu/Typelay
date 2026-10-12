@@ -164,6 +164,7 @@ def build(out: Path, core_version: str):
         "-I/usr/include/LibIME",
         "-I" + str(chinese / "modules/punctuation"),
         "-I" + str(chinese / "modules/pinyinhelper"),
+        "-I" + str(chinese / "modules/cloudpinyin"),
     ]
     module_root = (
         Path(run(["pkg-config", "--variable=includedir", "Fcitx5Core"])).parent
@@ -203,7 +204,7 @@ def build(out: Path, core_version: str):
     executable = out / "fcitx5"
     executable.unlink(missing_ok=True)
     executable.symlink_to(prefix / "bin/fcitx5")
-    for addon in ("punctuation", "pinyinhelper", "chttrans", "fullwidth"):
+    for addon in ("punctuation", "pinyinhelper", "chttrans", "fullwidth", "cloudpinyin"):
         run(
             [
                 *common,
@@ -217,6 +218,7 @@ def build(out: Path, core_version: str):
                 *flags("Fcitx5Core", "Fcitx5Config", "Fcitx5Utils", "fmt"),
                 "-lIMECore",
                 *(flags("opencc") if addon == "chttrans" else []),
+                *(flags("libcurl") if addon == "cloudpinyin" else []),
                 "-pthread",
             ]
         )
@@ -425,7 +427,7 @@ def session(out: Path, core_version: str):
                         [
                             str(out / "fcitx5"),
                             "--disable=all",
-                            "--enable=dbus,dbusfrontend,pinyin,punctuation,pinyinhelper,keyboard,spell,quickphrase,clipboard,unicode,imselector",
+                            "--enable=dbus,dbusfrontend,pinyin,punctuation,pinyinhelper,keyboard,spell,quickphrase,clipboard,unicode,imselector,cloudpinyin",
                         ],
                         env=env,
                         stdout=framework_log,

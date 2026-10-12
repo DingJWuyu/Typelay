@@ -78,7 +78,7 @@ python /完整路径/TypeLay-Fcitx-cooperative/fcitx-cooperative.py launch ~/.lo
 
 守卫检查实际 `loadedAddonNames()`，不是配置中列出的可用插件。每个已加载模块必须同时满足已审计的名称、官方 type/library/version，以及 loader 成功加载的真实库路径。私有启动器明确传入私有库目录；缺少来源声明、系统同名回退库或不匹配模块都会使 TypeLay 返回 Unknown。路径查询只读取 loader 已有成功结果，不改变插件加载、回退或普通输入。
 
-当前审计版本固定为 Core 5.1.22、Chinese Addons 5.1.15。已审计组件：dbus、dbusfrontend、keyboard、pinyin、punctuation、pinyinhelper、spell、quickphrase、classicui、wayland、waylandim、xcb、xim、notifications、notificationitem、clipboard、unicode、imselector、chttrans、fullwidth、emoji、fcitx4frontend、kimpanel、virtualkeyboard。其他插件不因“属于官方包”或同名而自动继承结论。
+当前审计版本固定为 Core 5.1.22、Chinese Addons 5.1.15。已审计组件：dbus、dbusfrontend、keyboard、pinyin、punctuation、pinyinhelper、spell、quickphrase、classicui、wayland、waylandim、xcb、xim、notifications、notificationitem、clipboard、unicode、imselector、chttrans、fullwidth、cloudpinyin、emoji、fcitx4frontend、kimpanel、virtualkeyboard。其他插件不因“属于官方包”或同名而自动继承结论。
 
 维护时必须核对对应上游实际路径：
 
@@ -88,6 +88,7 @@ python /完整路径/TypeLay-Fcitx-cooperative/fcitx-cooperative.py launch ~/.lo
 - `src/modules/clipboard/xcbclipboard.cpp` 与 `waylandclipboard.cpp` 的异步接收只更新剪贴板历史；真正提交发生在新按键或当前候选选择中。剪贴板活动模式仍必须拒绝。
 - `src/frontend/waylandim/` 和 `src/frontend/xim/xim.cpp` 向各自 IC 路由输入，不赋予这些前端本身 TypeLay 字段权限。本包仍只开放已绑定的 GTK3 DBus context。
 - Chinese `modules/chttrans` 与 `modules/fullwidth` 为同步输出过滤，保留用户繁简/全角偏好；chttrans 构建保留 OpenCC。
+- Chinese `modules/cloudpinyin/cloudpinyin_public.h` 的网络结果只回填受 `watch()` 生命周期保护的候选，并刷新当前候选 UI；未完成候选的 select 直接返回，不登记迟到提交。实际提交只发生在已有结果后的真实选词中。私有包同源重编 cloudpinyin 并核实际来源，保留原云拼音开关，不启用或关闭云服务。该模块可在读取拼音配置时加载，加载本身不代表用户开启了网络查询。
 
 源码更新、模块替换或增加新的输入/输出插件都需要重新核对这些行为。部署测试必须使用搬迁后的实际包和未被清空的正常配置；白名单隔离测试不能代替日常默认组件组合验证。
 
