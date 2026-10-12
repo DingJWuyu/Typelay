@@ -48,6 +48,12 @@ public:
         state.insert("focus", field(QApplication::focusWidget()));
         state.insert("actualFocusObject", field(QGuiApplication::focusObject()));
         state.insert("quitting", quitting);
+        state.insert("firstHasFocus", first_->hasFocus());
+        state.insert("rootActive", root_->isActiveWindow());
+        state.insert("applicationActiveWindow", QApplication::activeWindow() == root_);
+        state.insert("windowHandleActive", root_->windowHandle() && root_->windowHandle()->isActive());
+        state.insert("activePopup", QApplication::activePopupWidget() != nullptr);
+        state.insert("activeModal", QApplication::activeModalWidget() != nullptr);
         static const char *properties[] = {
             "tlqtPendingDbus", "tlqtPendingForward", "tlqtRetired", "tlqtBindingEpoch",
             "tlqtOutputDepth", "tlqtCommits", "tlqtPreedits", "tlqtMenus", "tlqtSyncReplies",
@@ -83,21 +89,27 @@ public:
     }
 
     bool eventFilter(QObject *object, QEvent *event) override {
-        if (!field(object)) return false;
         const auto type = event->type();
         const bool keyPress = type == QEvent::KeyPress;
         const bool keyRelease = type == QEvent::KeyRelease;
         const bool ime = type == QEvent::InputMethod;
         const bool menu = type == QEvent::ContextMenu;
-        if (!keyPress && !keyRelease && !ime && !menu) return false;
+        const bool lifecycle = type == QEvent::FocusIn || type == QEvent::FocusOut
+            || type == QEvent::WindowActivate || type == QEvent::WindowDeactivate;
+        if (!keyPress && !keyRelease && !ime && !menu && !lifecycle && type != QEvent::ShortcutOverride)
+            return false;
 
         if (qEnvironmentVariable("FCITX_QT_USE_SYNC") == "1" && traceLines_++ < 128) {
             const auto *key = keyPress || keyRelease ? static_cast<QKeyEvent *>(event) : nullptr;
             std::fprintf(stderr,
-                "tlqt-widget field=%d event=%d sync-key-seq=%d f24=%d modifiers=%d\n",
-                field(object), int(type), qApp->property("tlqtSyncKeySeq").toInt(),
-                int(key && key->key() == Qt::Key_F24), key ? int(key->modifiers()) : 0);
+                "tlqt-receiver role=%d event=%d sync-key-seq=%d f24=%d modifiers=%d focus=%d active=%d popup=%d modal=%d\n",
+                field(object) ? field(object) : object == root_->windowHandle() ? 3 : object == root_ ? 4 : 0,
+                int(type), qApp->property("tlqtSyncKeySeq").toInt(),
+                int(key && key->key() == Qt::Key_F24), key ? int(key->modifiers()) : 0,
+                field(QApplication::focusWidget()), int(QApplication::activeWindow() == root_),
+                int(QApplication::activePopupWidget() != nullptr), int(QApplication::activeModalWidget() != nullptr));
         }
+        if (!field(object) || (!keyPress && !keyRelease && !ime && !menu)) return false;
         increment("widgetCallbacks");
         increment(field(object) == 1 ? "firstCallbacks" : "secondCallbacks");
         if (keyPress) increment("widgetKeyPresses");
@@ -182,8 +194,7 @@ int main(int argc, char **argv) {
     layout.addWidget(&second);
     root.resize(560, 130);
     Observer observer(&first, &second, &root, statePath);
-    first.installEventFilter(&observer);
-    second.installEventFilter(&observer);
+    app.installEventFilter(&observer);
 
     const int stdinFlags = fcntl(STDIN_FILENO, F_GETFL);
     if (stdinFlags < 0 || fcntl(STDIN_FILENO, F_SETFL, stdinFlags | O_NONBLOCK) < 0) {

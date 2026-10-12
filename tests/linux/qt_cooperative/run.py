@@ -60,7 +60,6 @@ def build(out):
         raise RuntimeError("Use a fresh output directory; never silently reuse modified source")
     with tarfile.open(archive) as tar:
         tar.extractall(out, filter="data")
-    run(["patch", "-p1", "-i", HERE / "fcitx5-qt.patch"], cwd=source)
     subprocess.run(
         [
             "cmake",
@@ -78,6 +77,13 @@ def build(out):
         ],
         check=True,
     )
+    subprocess.run(["cmake", "--build", out / "build", "--parallel", "2"], check=True, timeout=600)
+    stock = out / "stock-plugins/platforminputcontexts"
+    stock.mkdir(parents=True)
+    shutil.copy2(
+        out / "build/qt6/platforminputcontext/libfcitx5platforminputcontextplugin.so", stock
+    )
+    run(["patch", "-p1", "-i", HERE / "fcitx5-qt.patch"], cwd=source)
     subprocess.run(["cmake", "--build", out / "build", "--parallel", "2"], check=True, timeout=600)
     plugins = out / "plugins/platforminputcontexts"
     plugins.mkdir(parents=True)
@@ -137,6 +143,130 @@ def build(out):
     )
 
 
+def active_field(state):
+    return (
+        state.get("focus") == 1
+        and state.get("actualFocusObject") == 1
+        and state.get("firstHasFocus") is True
+        and state.get("rootActive") is True
+        and state.get("applicationActiveWindow") is True
+        and state.get("windowHandleActive") is True
+        and state.get("activePopup") is False
+        and state.get("activeModal") is False
+    )
+
+
+def stock_sync(out, env, children):
+    """One unmodified-plugin comparison, not an IME-clear authority test."""
+    state_file = out / "stock-sync-state.json"
+    profile = out / "stock-sync-dbus.log"
+
+    def state():
+        try:
+            return json.loads(state_file.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def calls(member):
+        return sum(
+            line.split()[:1] == ["mc"] and member in line.split()
+            for line in profile.read_text(errors="replace").splitlines()
+        )
+
+    result = {"passed": False}
+    with profile.open("w") as trace, (out / "stock-sync-client.log").open("w") as log:
+        monitor = subprocess.Popen(
+            [
+                "stdbuf",
+                "-oL",
+                "dbus-monitor",
+                "--session",
+                "--profile",
+                "interface='org.fcitx.Fcitx.InputContext1'",
+            ],
+            env=env,
+            stdout=trace,
+            stderr=subprocess.STDOUT,
+        )
+        children.append(monitor)
+        client = None
+        try:
+            wait(lambda: profile.stat().st_size > 0, "D-Bus header monitor startup")
+            client = subprocess.Popen(
+                [str(out / "fixture")],
+                stdin=subprocess.PIPE,
+                text=True,
+                env=env
+                | {
+                    "QT_PLUGIN_PATH": str(out / "stock-plugins"),
+                    "FCITX_QT_USE_SYNC": "1",
+                    "TYPELAY_QT_STATE": str(state_file),
+                },
+                stdout=log,
+                stderr=subprocess.STDOUT,
+            )
+            children.append(client)
+
+            def mapped():
+                if client.poll() is not None:
+                    raise RuntimeError(f"Stock Qt fixture exited: {client.returncode}")
+                return subprocess.run(
+                    ["xdotool", "search", "--onlyvisible", "--pid", str(client.pid)],
+                    env=env,
+                    text=True,
+                    capture_output=True,
+                    timeout=5,
+                ).stdout.split()
+
+            window = wait(mapped, "stock Qt mapped window")[0]
+            run(["xdotool", "windowfocus", "--sync", window], env=env)
+            wait(
+                lambda: active_field(state()) and calls("FocusIn") > 0,
+                "stock actual active field and Fcitx FocusIn call",
+            )
+            run(["fcitx5-remote", "-o"], env=env)
+            run(["fcitx5-remote", "-s", "keyboard-us"], env=env)
+            result["engine_for_typing"] = run(["fcitx5-remote", "-n"], env=env)
+            before = state()["modifierSamples"]
+            client.stdin.write("sample-modifiers\n")
+            client.stdin.flush()
+            wait(
+                lambda: counter_exceeds(state(), "modifierSamples", before), "stock modifier sample"
+            )
+            result["modifiers_for_typing"] = state()["queriedKeyboardModifiers"]
+            result["preflight"] = state()
+            assert result["engine_for_typing"] == "keyboard-us"
+            before = state()["widgetF24Releases"]
+            run(["xdotool", "type", "--window", window, "--delay", "1", "hello"], env=env)
+            run(["xdotool", "key", "--window", window, "F24"], env=env)
+            wait(
+                lambda: counter_exceeds(state(), "widgetF24Releases", before),
+                "stock actual F24 release",
+            )
+            wait(lambda: calls("ProcessKeyEvent") >= 12, "stock twelve actual Fcitx key requests")
+            result["key_requests"] = calls("ProcessKeyEvent")
+            result["observations"] = state()
+            result["passed"] = (
+                result["key_requests"] == 12
+                and state()["firstLength"] == 5
+                and state()["secondLength"] == 0
+            )
+        except (AssertionError, RuntimeError, OSError, subprocess.SubprocessError) as error:
+            result["error"] = str(error)
+            result["observations"] = state()
+        finally:
+            for child in (client, monitor):
+                if child is not None and child.poll() is None:
+                    child.terminate()
+                    try:
+                        child.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        child.kill()
+                        child.wait()
+    (out / "stock-sync-result.json").write_text(json.dumps(result, indent=2) + "\n")
+    return result
+
+
 def session(out, fcitx):
     children = []
     with tempfile.TemporaryDirectory(prefix="typelay-qt-research-") as temporary:
@@ -190,6 +320,7 @@ def session(out, fcitx):
                     [out / "qpa_ack"],
                     env=env | {"QT_IM_MODULE": "compose", "QT_QPA_PLATFORM": "offscreen"},
                 )
+                baseline = stock_sync(out, env, children)
                 for mode in ("async", "sync"):
                     state_file = out / f"{mode}-state.json"
 
@@ -248,7 +379,8 @@ def session(out, fcitx):
                         run(["xdotool", "windowfocus", "--sync", window], env=env)
                         wait(
                             lambda: counter_exceeds(state(), "tlqtContexts")
-                            and state().get("tlqtFocusObject") == 1,
+                            and state().get("tlqtFocusObject") == 1
+                            and active_field(state()),
                             "actual Fcitx IC and first field binding",
                         )
 
@@ -362,6 +494,9 @@ def session(out, fcitx):
                         client.stdin.write("quit\n")
                         client.stdin.flush()
                         assert client.wait(timeout=10) == 0
+                assert baseline["passed"], (
+                    "Unmodified Qt sync comparison failed; see stock-sync-result.json"
+                )
                 (out / "result.json").write_text(
                     json.dumps(
                         {

@@ -12,6 +12,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   shared:
+    if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/cachyos-preview' && startsWith(github.event.head_commit.message, 'research(qt-only):')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -41,6 +42,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   check:
+    if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/cachyos-preview' && startsWith(github.event.head_commit.message, 'research(qt-only):')) }}
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -82,6 +84,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   linux:
+    if: ${{ !(github.event_name == 'push' && github.ref == 'refs/heads/cachyos-preview' && startsWith(github.event.head_commit.message, 'research(qt-only):')) }}
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
@@ -281,3 +284,74 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 # Passing this job does not certify physical Tab, Chinese IME, visual parity or safe universal writeback.
+
+  qt-research-only:
+    name: Qt research only (no product acceptance)
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/cachyos-preview' && startsWith(github.event.head_commit.message, 'research(qt-only):') }}
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+      options: --shm-size=1g
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Install isolated Qt research dependencies
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf python curl unzip patch qt6-base qt6-wayland extra-cmake-modules libxkbcommon libxcb fcitx5 fcitx5-chinese-addons boost-libs opencc xorg-server-xvfb xdotool dbus
+      - name: Initialize the disposable container D-Bus identity
+        run: dbus-uuidgen --ensure=/etc/machine-id
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Reject changes outside the explicit research scope
+        shell: bash
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$BEFORE" != 0000000000000000000000000000000000000000
+          git merge-base --is-ancestor "$BEFORE" "$AFTER"
+          # Inspect every changed path in the entire push, including changes
+          # later reverted by another commit. A forbidden change stays red.
+          git log --format= --name-only "$BEFORE..$AFTER" | sed '/^$/d' > /tmp/qt-research-paths
+          test -s /tmp/qt-research-paths
+          if grep -v '^tests/linux/qt_cooperative/' /tmp/qt-research-paths; then
+            echo 'Qt-only scope rejected; use a normal commit for full product checks.' >&2
+            exit 1
+          fi
+      - name: Reuse the exact verified cooperation runtime
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/qt-runtime artifacts/qt-probe-root
+          curl --fail --location --retry 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            https://api.github.com/repos/DingJWuyu/Typelay/actions/artifacts/11772722198/zip \
+            -o artifacts/qt-runtime/evidence.zip
+          echo 'd575dd0bd71263bc247274b982d6503e4b6bf63d0088d72b1b745b21c9781099  artifacts/qt-runtime/evidence.zip' | sha256sum -c -
+          unzip -p artifacts/qt-runtime/evidence.zip TypeLay-Fcitx-cooperative.tar.gz > artifacts/qt-runtime/runtime.tar.gz
+          echo 'af714f91e6c45ea58ee9796af3b4f74a4882d5988b8a6a06151ece617765ae09  artifacts/qt-runtime/runtime.tar.gz' | sha256sum -c -
+          tar -xzf artifacts/qt-runtime/runtime.tar.gz -C artifacts/qt-runtime
+          prefix="$PWD/artifacts/qt-runtime/TypeLay-Fcitx-cooperative/core"
+          ln -s "$prefix/bin/fcitx5" artifacts/qt-probe-root/fcitx5
+          ln -s "$prefix" artifacts/qt-probe-root/core-prefix
+          ln -s "$prefix/lib/fcitx5" artifacts/qt-probe-root/lib
+          printf '%s\n' 'sourceCommit=fcaee7c6fcdc2eb446c62371b466e6f68fc0dbcb' 'artifactId=11772722198' > artifacts/qt-runtime/provenance.txt
+      - name: Probe the original Qt input path
+        run: python tests/linux/qt_cooperative/run.py --fcitx-root artifacts/qt-probe-root
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: typelay-qt-research-${{ github.sha }}
+          path: |
+            artifacts/linux/qt-cooperative/*.json
+            artifacts/linux/qt-cooperative/*.log
+            artifacts/qt-runtime/provenance.txt
+          if-no-files-found: warn
+          retention-days: 14
