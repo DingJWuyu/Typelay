@@ -291,10 +291,47 @@ public sealed class SessionController : IDisposable
     }
     private void Wake(InputNotice notice)
     {
-        if (!_settings.Value.Enabled || _settings.Value.Mode != WorkMode.OnDemand || notice.Source is not { } source
-            || notice.CommandGeneration != _hook.CommandGeneration || notice.ForegroundEpoch != _hook.ForegroundEpoch
-            || _hook.GetFocus(source.Target) != FocusMember.Source)
+        void Record(string reason, bool? generationMatches = null, bool? foregroundMatches = null, bool? focusMatches = null)
+        {
+            if (!string.IsNullOrWhiteSpace(_tracePath))
+                Trace("wake-" + reason, detail: new
+                {
+                    ageMs = _loop.NowMs - notice.AcceptedAtMs,
+                    generationMatches,
+                    foregroundMatches,
+                    focusMatches
+                });
+        }
+        if (!_settings.Value.Enabled)
+        {
+            Record("disabled");
             return;
+        }
+        if (_settings.Value.Mode != WorkMode.OnDemand)
+        {
+            Record("mode");
+            return;
+        }
+        if (notice.Source is not { } source)
+        {
+            Record("source-missing");
+            return;
+        }
+        if (notice.CommandGeneration != _hook.CommandGeneration)
+        {
+            Record("generation", false);
+            return;
+        }
+        if (notice.ForegroundEpoch != _hook.ForegroundEpoch)
+        {
+            Record("foreground-epoch", true, false);
+            return;
+        }
+        if (_hook.GetFocus(source.Target) != FocusMember.Source)
+        {
+            Record("focus", true, true, false);
+            return;
+        }
         if (_activation.Wake(source.Target))
         {
             // Explicit wake can reopen an Esc-suppressed field; repeated wake must
@@ -303,7 +340,10 @@ public sealed class SessionController : IDisposable
                 _session.LeaveFamily();
             _generation++;
             _nextCapture = 0;
+            Record("awakened", true, true, true);
         }
+        else
+            Record("already-awake", true, true, true);
     }
     private void QueueDirect(InputNotice notice)
     {
@@ -590,7 +630,7 @@ public sealed class SessionController : IDisposable
     }
     // Opt-in local diagnostics contain counts and state only, never field text,
     // labels, window titles, exception messages, source or translated content.
-    private void Trace(string operation, Guid? planId = null)
+    private void Trace(string operation, Guid? planId = null, object? detail = null)
     {
         if (string.IsNullOrWhiteSpace(_tracePath))
             return;
@@ -598,6 +638,7 @@ public sealed class SessionController : IDisposable
         {
             operation,
             planId,
+            detail,
             state = _session.State.ToString(),
             sourceLength = _session.Current?.Text.Length ?? 0,
             previewLength = _session.Preview.Length,
@@ -620,7 +661,7 @@ public sealed class SessionController : IDisposable
         {
             File.AppendAllText(_tracePath, "{\"atMs\":" + _loop.NowMs + "," + state[1..] + Environment.NewLine);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { }
     }
     public void Dispose()
     {

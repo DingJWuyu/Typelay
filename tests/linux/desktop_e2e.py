@@ -54,7 +54,7 @@ def run(arguments):
         "Enabled": True,
         "Source": "en",
         "Target": "zh",
-        "OnboardingComplete": True,
+        "OnboardingComplete": arguments.desktop_scope != "setup",
         "ExperimentalWriteback": True,
         "Mode": 0,
     }
@@ -148,7 +148,7 @@ def run(arguments):
         # A duplicate background request must use the existing real session.
         subprocess.run([str(package / "typelay"), "--background"], env=environment, check=True)
         assert process.poll() is None
-        if arguments.desktop_scope not in ("gtk", "gtk4"):
+        if arguments.desktop_scope in ("all", "browser"):
             # Exercise the real extension, native host, niri PID authority, shared
             # controller and actual CPU model together, not only a DOM transport seam.
             from browser_process import chromium_context
@@ -471,7 +471,7 @@ def run(arguments):
                     evidence.append(
                         "Wayland Firefox rich editor: selected-range CPU translation, native transaction, preserved surrounding marks and one Tab"
                     )
-        if arguments.fcitx_cooperative and arguments.desktop_scope != "browser":
+        if arguments.fcitx_cooperative and arguments.desktop_scope in ("all", "gtk", "gtk4"):
             gtk4 = arguments.desktop_scope == "gtk4"
             cooperation = arguments.fcitx_cooperative
             bundle_launcher = cooperation / "fcitx-cooperative.py"
@@ -1053,6 +1053,58 @@ def run(arguments):
                             except subprocess.TimeoutExpired:
                                 child.kill()
                                 child.wait()
+        if arguments.desktop_scope == "setup":
+            wait_for(
+                lambda: status().get("setup", {}).get("tutorialVisible"),
+                "first-run tutorial did not open after the actual model became ready",
+            )
+            wait_for(
+                lambda: (contents(request("FocusedWindow"), "FocusedWindow") or {}).get("title")
+                == "TypeLay 首次使用",
+                "tutorial did not gain real compositor focus before typing",
+            )
+            assert not status()["setup"]["onboardingComplete"]
+            key("ctrl+a")
+            typed("Please send me the final version.")
+            key("alt+g")
+            wait_for(
+                lambda: status().get("setup", {}).get("tutorialState") == "preview",
+                "explicit tutorial preview did not use the actual local model",
+                125,
+            )
+            subprocess.run(
+                ["grim", str(arguments.output / "tutorial-preview.png")], check=True, timeout=3
+            )
+            assert not status()["setup"]["onboardingComplete"]
+            key("alt+d")
+            wait_for(
+                lambda: status().get("setup", {}).get("onboardingComplete")
+                and not status()["setup"]["tutorialVisible"],
+                "explicit tutorial completion was not saved",
+            )
+            settings = json.loads(paths.settings.read_text())
+            assert settings["OnboardingComplete"] is True
+            stop()
+            start()
+            assert not status().get("setup", {}).get("tutorialVisible")
+            assert control(paths, "tutorial") is True
+            wait_for(
+                lambda: status().get("setup", {}).get("tutorialVisible"),
+                "completed tutorial could not be reopened explicitly",
+            )
+            wait_for(
+                lambda: (contents(request("FocusedWindow"), "FocusedWindow") or {}).get("title")
+                == "TypeLay 首次使用",
+                "reopened tutorial did not gain real compositor focus",
+            )
+            key("alt+s")
+            wait_for(
+                lambda: not status().get("setup", {}).get("tutorialVisible"),
+                "explicit tutorial skip did not close the practice window",
+            )
+            evidence.append(
+                "First-run tutorial: real local-model preview, explicit completion, persisted restart and optional reopening without intercepting target-app Tab"
+            )
         assert control(paths, "settings") is True
         time.sleep(0.3)
         subprocess.run(["grim", str(arguments.output / "settings.png")], check=True, timeout=3)

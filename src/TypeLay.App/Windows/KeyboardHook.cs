@@ -13,6 +13,9 @@ internal sealed class KeyboardHook : IInputMonitor
     private readonly bool _allowInjectedInput;
     private readonly nint _editorHwnd;
     private readonly ConcurrentQueue<InputNotice> _notices = new();
+    private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
+    private readonly ConcurrentQueue<object> _shortcutTrace = new();
+    private int _shortcutTraceCount, _shortcutTraceDropped;
     private readonly Thread _thread;
     private readonly Native.HookProc _callback, _mouseCallback;
     private readonly Native.WinEventProc _focusCallback;
@@ -85,20 +88,110 @@ internal sealed class KeyboardHook : IInputMonitor
         else
             _gate.Revoke();
     }
-    public void PublishShortcut(ShortcutLease lease) => Interlocked.Exchange(ref _shortcutLease,
-        WindowsTarget.TryDecode(lease.Source.Target, out var target) ? new(lease, (nint)target.RootHwnd) : null);
+    public void PublishShortcut(ShortcutLease lease)
+    {
+        bool decoded = WindowsTarget.TryDecode(lease.Source.Target, out var target);
+        Interlocked.Exchange(ref _shortcutLease, decoded ? new(lease, (nint)target.RootHwnd) : null);
+        QueueShortcutTrace("publish", decoded ? "published" : "target-decode", lease);
+    }
     public void SetShortcuts(RegisteredShortcut[] shortcuts)
     {
         Interlocked.Exchange(ref _shortcuts, new(Guid.NewGuid(), shortcuts));
         Interlocked.Exchange(ref _shortcutLease, null);
+        QueueShortcutTrace("configure", "configured", wakeRegistered: shortcuts.Any(binding => binding.Action == "wake"),
+            directRegistered: shortcuts.Any(binding => binding.Action == "direct"));
     }
     public void Revoke()
     {
         _gate.Revoke();
         Interlocked.Exchange(ref _lease, null);
-        Interlocked.Exchange(ref _shortcutLease, null);
+        if (Interlocked.Exchange(ref _shortcutLease, null) is { } old)
+            QueueShortcutTrace("revoke", "revoked", old.Observation);
     }
-    public bool TryRead(out InputNotice? notice) => _notices.TryDequeue(out notice);
+    public bool TryRead(out InputNotice? notice)
+    {
+        FlushShortcutTrace();
+        return _notices.TryDequeue(out notice);
+    }
+    private void QueueShortcutTrace(string operation, string reason, ShortcutLease? lease = null, string? action = null,
+        bool? wakeRegistered = null, bool? directRegistered = null, long? contentEpoch = null, long? foregroundEpoch = null,
+        long? evaluatedAtMs = null)
+    {
+        if (string.IsNullOrWhiteSpace(_tracePath))
+            return;
+        if (Interlocked.Increment(ref _shortcutTraceCount) > 64)
+        {
+            Interlocked.Decrement(ref _shortcutTraceCount);
+            Interlocked.Increment(ref _shortcutTraceDropped);
+            return;
+        }
+        long now = evaluatedAtMs ?? Environment.TickCount64;
+        // No field text, key values, target identities or configuration text.
+        // The low-level hook only queues primitives; serialization and I/O belong to TryRead.
+        _shortcutTrace.Enqueue(new
+        {
+            atMs = now,
+            operation = "shortcut-" + operation,
+            reason,
+            action,
+            ageMs = lease is null ? (long?)null : now - lease.Source.ObservedAtMs,
+            leaseContentEpoch = lease?.ContentEpoch,
+            contentEpoch = contentEpoch ?? ContentEpoch,
+            leaseForegroundEpoch = lease?.ForegroundEpoch,
+            foregroundEpoch = foregroundEpoch ?? ForegroundEpoch,
+            ime = lease?.Source.Ime.ToString(),
+            hasPreview = lease is null ? (bool?)null : lease.Source.PreviewText is not null,
+            wakeRegistered,
+            directRegistered
+        });
+    }
+    private void TraceShortcutKey(string reason, uint key, ShortcutLease? lease = null,
+        long? contentEpoch = null, long? foregroundEpoch = null, long? evaluatedAtMs = null)
+    {
+        if (string.IsNullOrWhiteSpace(_tracePath))
+            return;
+        // Observe only a configured shortcut's main key, never arbitrary typing.
+        bool configuredKey = false;
+        string? action = null;
+        foreach (var binding in Volatile.Read(ref _shortcuts).Bindings)
+            if (binding.Key == key)
+            {
+                configuredKey = true;
+                if (binding.Modifiers == CurrentModifiers)
+                {
+                    action = binding.Action is "wake" or "direct" ? binding.Action : "unknown";
+                    break;
+                }
+            }
+        if (configuredKey)
+            QueueShortcutTrace("key", reason, lease, action, contentEpoch: contentEpoch,
+                foregroundEpoch: foregroundEpoch, evaluatedAtMs: evaluatedAtMs);
+    }
+    private void FlushShortcutTrace()
+    {
+        if (string.IsNullOrWhiteSpace(_tracePath))
+            return;
+        try
+        {
+            var lines = new System.Text.StringBuilder();
+            for (int i = 0; i < 64 && _shortcutTrace.TryDequeue(out var entry); i++)
+            {
+                Interlocked.Decrement(ref _shortcutTraceCount);
+                lines.AppendLine(System.Text.Json.JsonSerializer.Serialize(entry));
+            }
+            int dropped = Interlocked.Exchange(ref _shortcutTraceDropped, 0);
+            if (dropped != 0)
+                lines.AppendLine(System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    atMs = Environment.TickCount64,
+                    operation = "shortcut-trace-overflow",
+                    dropped
+                }));
+            if (lines.Length != 0)
+                File.AppendAllText(_tracePath, lines.ToString());
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { }
+    }
     private void Run()
     {
         _threadId = Native.GetCurrentThreadId();
@@ -208,16 +301,61 @@ internal sealed class KeyboardHook : IInputMonitor
         | (_keys[0x10] || _keys[0xA0] || _keys[0xA1] ? ShortcutModifiers.Shift : ShortcutModifiers.None);
     private void TryInvokeShortcut(uint key, bool repeated, bool injected)
     {
-        if (!ShortcutsReady || repeated || (injected && !_allowInjectedInput) || _keys[0x5B] || _keys[0x5C])
+        if (!ShortcutsReady)
+        {
+            TraceShortcutKey("not-ready", key);
             return;
+        }
+        if (repeated)
+        {
+            TraceShortcutKey("repeat", key);
+            return;
+        }
+        if (injected && !_allowInjectedInput)
+        {
+            TraceShortcutKey("injected", key);
+            return;
+        }
+        if (_keys[0x5B] || _keys[0x5C])
+        {
+            TraceShortcutKey("windows-key", key);
+            return;
+        }
         var nativeLease = Volatile.Read(ref _shortcutLease);
         var lease = nativeLease?.Observation;
         long now = Environment.TickCount64;
-        if (lease is null || lease.ContentEpoch != ContentEpoch || lease.ForegroundEpoch != ForegroundEpoch
-            || now < lease.Source.ObservedAtMs || now - lease.Source.ObservedAtMs > Limits.ObservationMaxAgeMs
-            || Native.GetForegroundWindow() != (nint)nativeLease!.RootHwnd
-            || lease.Source.Access != FieldAccess.Supported)
+        if (lease is null)
+        {
+            TraceShortcutKey("no-lease", key, evaluatedAtMs: now);
             return;
+        }
+        long contentEpoch = ContentEpoch;
+        if (lease.ContentEpoch != contentEpoch)
+        {
+            TraceShortcutKey("content-epoch", key, lease, contentEpoch, evaluatedAtMs: now);
+            return;
+        }
+        long foregroundEpoch = ForegroundEpoch;
+        if (lease.ForegroundEpoch != foregroundEpoch)
+        {
+            TraceShortcutKey("foreground-epoch", key, lease, contentEpoch, foregroundEpoch, now);
+            return;
+        }
+        if (now < lease.Source.ObservedAtMs || now - lease.Source.ObservedAtMs > Limits.ObservationMaxAgeMs)
+        {
+            TraceShortcutKey("future-or-stale", key, lease, contentEpoch, foregroundEpoch, now);
+            return;
+        }
+        if (Native.GetForegroundWindow() != (nint)nativeLease!.RootHwnd)
+        {
+            TraceShortcutKey("root", key, lease, contentEpoch, foregroundEpoch, now);
+            return;
+        }
+        if (lease.Source.Access != FieldAccess.Supported)
+        {
+            TraceShortcutKey("access", key, lease, contentEpoch, foregroundEpoch, now);
+            return;
+        }
         var configuration = Volatile.Read(ref _shortcuts);
         foreach (var binding in configuration.Bindings)
         {
@@ -228,12 +366,21 @@ internal sealed class KeyboardHook : IInputMonitor
                 bool previewWake = binding.Action == "wake" && lease.Source.Ime == ImeState.Unknown
                     && lease.Source.PreviewText is not null;
                 if (lease.Source.Ime != ImeState.Clear && !previewWake)
+                {
+                    QueueShortcutTrace("key", "ime", lease,
+                        binding.Action is "wake" or "direct" ? binding.Action : "unknown",
+                        contentEpoch: contentEpoch, foregroundEpoch: foregroundEpoch, evaluatedAtMs: now);
                     return;
+                }
                 _notices.Enqueue(new(binding.Action, AcceptedAtMs: now, ForegroundEpoch: ForegroundEpoch, Source: lease.Source,
                     CommandGeneration: configuration.Generation));
-                break;
+                QueueShortcutTrace("key", "notice-enqueued", lease,
+                    binding.Action is "wake" or "direct" ? binding.Action : "unknown",
+                    contentEpoch: contentEpoch, foregroundEpoch: foregroundEpoch, evaluatedAtMs: now);
+                return;
             }
         }
+        TraceShortcutKey("modifiers", key, lease, contentEpoch, foregroundEpoch, now);
     }
     private nint OnMouse(int code, nint wParam, nint lParam)
     {

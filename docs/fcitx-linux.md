@@ -1,6 +1,6 @@
 # Fcitx 合作组件预览
 
-这套可选组件让 TypeLay 与实际 Fcitx 输入事务协作。已验证范围包括 GTK3、GTK4 的标准 GtkEntry 和原生 GtkEntryBuffer；新增标准纯文本 TextView 使用原生 TextBuffer，GTK4 已有模型/选区/undo/IME 实证，GTK3 复用实现以当前提交 CI 为准。GTK4 须单独以 --gtk4 启动。Qt、非纯文本/自定义控件、通用 Electron 尚未开放。普通 TypeLay 安装不会安装或启用这些组件。
+这套可选组件让 TypeLay 与实际 Fcitx 输入事务协作。已验证范围包括 GTK3、GTK4 的标准 GtkEntry 和原生 GtkEntryBuffer；标准纯文本 TextView 使用原生 TextBuffer，两代已有多行选区、真实模型、Tab 和 IME 实证；GTK3 验证宿主 user-action 分组，GTK4 另验原生 undo/redo。GTK4 须单独以 --gtk4 启动。Qt、非纯文本/自定义控件、通用 Electron 尚未开放。普通 TypeLay 安装不会安装或启用这些组件。
 
 当前固定 Core 5.1.22、Chinese Addons 5.1.14、GTK IM 5.1.7、完整私有 LibIME 1.1.16。对应组件已在隔离环境完整构建，实际库、模型路径与同版官方包均有校验。搬迁后的私有包已通过默认组件会话、配置/前台重启、原 session bus，以及嵌套 niri 的实际 CPU 模型、自动预览、一次 Tab 写回、编辑后两阶段 Tab 与拼音组合保护。实际按键由隔离桌面自动化送入，不能代替用户 CachyOS 桌面的物理输入验收。
 

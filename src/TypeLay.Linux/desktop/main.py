@@ -7,11 +7,13 @@ import json
 import os
 import signal
 import socket
+import struct
 import subprocess
 import sys
+import uuid
 
 from paths import Paths, connect_private, peer_credentials
-from wire import encode, now_ms, receive_sync
+from wire import MAX_FRAME, encode, now_ms, receive_sync
 
 
 def control(paths, operation, data=None):
@@ -44,7 +46,66 @@ def doctor(paths):
     return 0 if result["wayland"] and result["niriVersion"] and result["hostInstalled"] else 1
 
 
-async def desktop(paths, background, lock):
+async def tutorial_preview(paths, text):
+    """Use the production shared ModelClient through its existing one-shot port."""
+    identity = str(uuid.uuid4())
+    selection = {"start": 0, "length": len(text.encode("utf-16-le")) // 2}
+    request = {
+        "id": 1,
+        "operation": "translateEditorSnapshot",
+        "data": {
+            "documentId": identity,
+            "version": 1,
+            "selection": selection,
+            "text": text,
+            "languageId": "plaintext",
+        },
+    }
+    process = await asyncio.create_subprocess_exec(
+        str(paths.home / "native/typelay-supervise"),
+        str(paths.home / "app/TypeLay.Linux"),
+        "--editor-host",
+        str(paths.home),
+        str(paths.config),
+        str(paths.data),
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        async with asyncio.timeout(140):
+            process.stdin.write(encode(request))
+            await process.stdin.drain()
+            process.stdin.close()
+            length = struct.unpack("<I", await process.stdout.readexactly(4))[0]
+            if not 0 < length <= MAX_FRAME:
+                raise ValueError("tutorial-response-size")
+            value = json.loads(await process.stdout.readexactly(length))
+            code = await process.wait()
+        result = value.get("data") if isinstance(value, dict) else None
+        if (
+            code
+            or not isinstance(value, dict)
+            or value.get("id") != 1
+            or not isinstance(result, dict)
+            or result.get("documentId") != identity
+            or result.get("version") != 1
+            or result.get("selection") != selection
+            or not isinstance(result.get("translation"), str)
+            or not result["translation"].strip()
+            or "\0" in result["translation"]
+        ):
+            raise ValueError("tutorial-translation-unavailable")
+        return result["translation"]
+    except asyncio.IncompleteReadError:
+        raise EOFError("tutorial-host-closed") from None
+    finally:
+        if process.returncode is None:
+            process.terminate()
+            await process.wait()
+
+
+async def desktop(paths, background, lock, tutorial=False):
     import gi
 
     gi.require_version("Gtk", "3.0")
@@ -64,6 +125,7 @@ async def desktop(paths, background, lock):
     status = {"modelReady": False}
     installer = None
     install_task = None
+    pause_installation = False
 
     def task(coroutine):
         if len(tasks) >= 64:
@@ -91,7 +153,7 @@ async def desktop(paths, background, lock):
             settings.configure(value)
             overlay.configure(value)
             components["tray"].configure(value)
-            if not value["onboardingComplete"]:
+            if not value["onboardingComplete"] and not settings.tutorial.window.get_visible():
                 settings.show()
         elif operation == "render":
             overlay.render(value)
@@ -133,10 +195,11 @@ async def desktop(paths, background, lock):
     async def install():
         nonlocal installer
         settings = components["settings"]
-        settings.message.set_text("正在安装组件，完成自检后才会启用新版本。")
+        settings.installation(
+            "running", "正在安装组件，完成自检后才会启用新版本；可暂停并保留已验证的下载进度。"
+        )
         try:
             installer = await asyncio.create_subprocess_exec(
-                str(paths.home / "native/typelay-supervise"),
                 "/usr/bin/python3",
                 "-I",
                 "-B",
@@ -147,20 +210,33 @@ async def desktop(paths, background, lock):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
+            if pause_installation:
+                installer.terminate()
             while line := await installer.stdout.readline():
                 if len(line) > 1024:
                     raise ValueError("setup-output-size")
                 settings.message.set_text(line.decode("utf-8", errors="replace").strip())
             code = await installer.wait()
-            if code != 0:
-                settings.message.set_text(
-                    "组件安装失败，原版本保持不变。可用 typelay --install-models 重试。"
+            if pause_installation or code == 75:
+                settings.installation(
+                    "paused", "下载已暂停。已验证的进度保留；点击继续，原可用版本不受影响。"
+                )
+            elif code != 0:
+                settings.installation(
+                    "failed", "组件安装失败，原版本保持不变。可重试安装并复用已验证的下载进度。"
                 )
             else:
                 ready = await host.ask("reloadModel", timeout=125)
-                settings.message.set_text(
-                    "本地翻译组件已就绪" if ready else "组件已安装，但翻译服务启动失败。"
+                settings.installation(
+                    "ready" if ready else "failed",
+                    "本地翻译组件已就绪"
+                    if ready
+                    else "组件已安装，但翻译服务启动失败；请退出并重新启动 TypeLay。",
                 )
+        except (OSError, ValueError, EOFError, TimeoutError):
+            settings.installation(
+                "failed", "组件安装未完成，请检查网络和磁盘空间；原可用版本不受影响。"
+            )
         finally:
             if installer and installer.returncode is None:
                 installer.terminate()
@@ -168,16 +244,32 @@ async def desktop(paths, background, lock):
             installer = None
 
     def install_requested():
-        nonlocal install_task
+        nonlocal install_task, pause_installation
         if install_task is None or install_task.done():
+            pause_installation = False
             install_task = task(install())
+
+    def pause_requested():
+        nonlocal pause_installation
+        if install_task and not install_task.done() and not pause_installation:
+            pause_installation = True
+            components["settings"].installation("pausing", "正在暂停，保留已验证的下载进度…")
+            if installer and installer.returncode is None:
+                installer.terminate()
 
     peers = set()
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server_watch = 0
     try:
         components["input"] = Input(GLib, Gdk, paths, host, task)
-        components["settings"] = Settings(host, task, stopping.set, install_requested)
+        components["settings"] = Settings(
+            host,
+            task,
+            stopping.set,
+            install_requested,
+            pause_requested,
+            lambda text: tutorial_preview(paths, text),
+        )
         components["overlay"] = Overlay(
             host, components["input"], task, components["settings"].show
         )
@@ -197,6 +289,9 @@ async def desktop(paths, background, lock):
             if operation == "settings":
                 components["settings"].show()
                 return True
+            if operation == "tutorial":
+                components["settings"].open_tutorial()
+                return True
             if operation == "quit":
                 GLib.timeout_add(50, lambda: (stopping.set(), False)[1])
                 return True
@@ -215,6 +310,7 @@ async def desktop(paths, background, lock):
                     "viewState": (components["overlay"].value or {}).get("state"),
                     "sourceSupported": components["input"].focused_peer() is not None,
                     "input": components["input"].diagnostics(),
+                    "setup": components["settings"].diagnostics(),
                 }
             return False
 
@@ -259,7 +355,9 @@ async def desktop(paths, background, lock):
             )
         )
         await host.ask("start", timeout=5)
-        if not background:
+        if tutorial:
+            components["settings"].open_tutorial()
+        elif not background and not components["settings"].tutorial.window.get_visible():
             components["settings"].show()
         await stopping.wait()
     finally:
@@ -279,6 +377,7 @@ async def desktop(paths, background, lock):
         if components["tray"]:
             components["tray"].close()
         if components["settings"]:
+            components["settings"].tutorial.window.destroy()
             components["settings"].window.destroy()
         if host.channel.alive:
             host.send("quit")
@@ -304,6 +403,7 @@ def main():
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--background", action="store_true", help="启动后台会话，不主动打开设置")
     group.add_argument("--settings", action="store_true", help="打开设置")
+    group.add_argument("--tutorial", action="store_true", help="打开本地试译与实际输入框练习指南")
     group.add_argument("--quit", action="store_true", help="退出当前 Wayland 会话的 TypeLay")
     group.add_argument("--doctor", action="store_true", help="输出不包含输入内容的安装及会话状态")
     group.add_argument(
@@ -374,7 +474,15 @@ def main():
                 str(paths.cache),
             ],
         )
-    operation = "quit" if args.quit else "status" if args.background else "settings"
+    operation = (
+        "quit"
+        if args.quit
+        else "tutorial"
+        if args.tutorial
+        else "status"
+        if args.background
+        else "settings"
+    )
     try:
         if control(paths, operation):
             return 0
@@ -399,7 +507,7 @@ def main():
     loop = GLibEventLoop(GLib.MainContext.default())
     try:
         with loop:
-            loop.run_until_complete(desktop(paths, args.background, lock))
+            loop.run_until_complete(desktop(paths, args.background, lock, args.tutorial))
     finally:
         loop.close()
     return 0

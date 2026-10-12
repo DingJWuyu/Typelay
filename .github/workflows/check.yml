@@ -119,6 +119,11 @@ jobs:
         env:
           TYPELAY_LINUX_PACKAGE: ${{ github.workspace }}/artifacts/TypeLay-Linux-preview-x86_64.tar.gz
         run: python tests/linux/distribution_e2e.py -v
+      - name: Verify resumable model downloads over isolated HTTP
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          python tests/linux/setup_e2e.py --http -v
+          python tests/linux/setup_e2e.py --supervisor artifacts/linux/package/native/typelay-supervise -v
       - name: Verify GTK unknown-IME refusal and key pass-through
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
@@ -200,6 +205,14 @@ jobs:
         run: |
           mkdir -p artifacts/linux/desktop-data artifacts/linux/desktop-cache
           python artifacts/linux/package/desktop/setup.py "$PWD/artifacts/linux/package" "$PWD/artifacts/linux/desktop-data/typelay" "$PWD/artifacts/linux/desktop-cache/typelay"
+      - name: Verify first-run tutorial with the real local model
+        if: ${{ !cancelled() && steps.models.outcome == 'success' }}
+        run: |
+          export DISPLAY=:99
+          export XDG_CONFIG_HOME="$PWD/artifacts/linux/setup-desktop-config"
+          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
+          export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
+          python tests/linux/native_e2e.py --desktop --desktop-scope setup --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/setup-desktop
       - name: Exercise the production desktop and real browser input
         if: ${{ !cancelled() && steps.models.outcome == 'success' }}
         run: |
@@ -240,6 +253,7 @@ jobs:
             artifacts/linux/desktop/
             artifacts/linux/gtk-desktop/
             artifacts/linux/gtk4-desktop/
+            artifacts/linux/setup-desktop/
             artifacts/linux/firefox-native/
             artifacts/linux/vscode/
             artifacts/linux/vscode-model/

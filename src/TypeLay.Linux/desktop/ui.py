@@ -197,10 +197,162 @@ class Overlay:
         self.value = None
 
 
+class Tutorial:
+    """Explicit local-model preview; the external app keeps ownership of Tab/IME."""
+
+    def __init__(self, owner, preview):
+        self.owner, self.preview = owner, preview
+        self.pending = None
+        self.revision = 0
+        self.state = "idle"
+        self.window = Gtk.Window(title="TypeLay 首次使用")
+        self.window.set_transient_for(owner.window)
+        self.window.set_default_size(650, 580)
+        self.window.set_border_width(24)
+        self.window.connect("delete-event", self.dismiss)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        self.window.add(outer)
+        content = Gtk.ScrolledWindow()
+        content.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        outer.pack_start(content, True, True, 0)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        box.set_margin_end(10)
+        content.add(box)
+
+        def note(text):
+            label = Gtk.Label(label=text, xalign=0)
+            label.set_line_wrap(True)
+            label.set_max_width_chars(70)
+            box.pack_start(label, False, False, 0)
+            return label
+
+        note("1. 在本机试译")
+        note(
+            "翻译全部在本机运行，不保存翻译历史。请只输入非敏感练习文字，"
+            "先完成输入法候选，再点“生成本地译文”。本窗仅预览，不向其他应用写入，也不拦截 Tab。"
+        )
+        self.source = Gtk.Entry()
+        self.source.set_max_length(2048)
+        self.source.set_placeholder_text("例如：你好，我们明天下午见。")
+        self.source.get_accessible().set_name("教程练习原文")
+        self.source.connect("changed", self.changed)
+        box.pack_start(self.source, False, False, 0)
+        self.generate = Gtk.Button.new_with_mnemonic("生成本地译文(_G)")
+        self.generate.set_sensitive(False)
+        self.generate.connect("clicked", lambda *_: self.start())
+        box.pack_start(self.generate, False, False, 0)
+        self.result = Gtk.TextView(editable=False, cursor_visible=False)
+        self.result.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.result.get_accessible().set_name("教程本地译文")
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_min_content_height(85)
+        scroll.add(self.result)
+        box.pack_start(scroll, True, True, 0)
+        self.message = note("")
+        note("2. 在已启用 TypeLay 的真实输入框练习")
+        note(
+            "先按发行包说明手动安装浏览器扩展并批准网页权限，或逐应用启用 Fcitx 合作组件。"
+            "普通安装不会自动改变浏览器、输入法或个人配置。"
+        )
+        note(
+            "开启设置中的原生输入框替换后，仅用非敏感测试文字：\n"
+            "• 正常输入，等待胶囊展开并生成真实译文；在原框按 Tab，只替换、不发送。\n"
+            "• 点击译文并修改；第一次 Tab 回到原框，第二次 Tab 接受修改。\n"
+            "• 输入法候选未完成时，Tab 应交给输入法；未知状态不会读取或替换。"
+        )
+        note(
+            "本窗试译不证明跨应用、自动浮层、物理 Tab 或真实输入法已通过验收。"
+            "需要设置或稍后练习时可以关闭此窗；也可明确跳过，之后从设置重新打开。"
+        )
+        actions = Gtk.Box(spacing=8)
+        outer.pack_end(actions, False, False, 0)
+        self.complete = Gtk.Button.new_with_mnemonic("我已完成练习(_D)")
+        self.complete.connect("clicked", lambda *_: owner.tasks(self.finish()))
+        actions.pack_start(self.complete, False, False, 0)
+        self.skip = Gtk.Button.new_with_mnemonic("跳过教程(_S)")
+        self.skip.connect("clicked", lambda *_: owner.tasks(self.finish()))
+        actions.pack_start(self.skip, False, False, 0)
+
+    def changed(self, *_):
+        self.revision += 1
+        if self.pending and not self.pending.done():
+            self.pending.cancel()
+        self.result.get_buffer().set_text("")
+        self.state = "idle"
+        self.message.set_text("原文改变后请重新生成。")
+        self.generate.set_sensitive(self.owner.model_ready and bool(self.source.get_text().strip()))
+
+    def start(self):
+        if self.pending and not self.pending.done():
+            return
+        if not self.owner.model_ready or not self.source.get_text().strip():
+            return
+        self.pending = self.owner.tasks(self.translate())
+
+    async def translate(self):
+        revision, source = self.revision, self.source.get_text()
+        self.state = "translating"
+        self.generate.set_sensitive(False)
+        self.message.set_text("正在使用本机模型生成译文…")
+        try:
+            translation = await self.preview(source)
+            if revision == self.revision and self.window.get_visible():
+                self.result.get_buffer().set_text(translation)
+                self.state = "preview"
+                self.message.set_text(
+                    "本地译文已生成。请确认含义；Tab 练习请在下面说明的实际输入框完成。"
+                )
+        except (OSError, ValueError, EOFError, TimeoutError):
+            if revision == self.revision:
+                self.state = "failed"
+                self.message.set_text(
+                    "本地试译未完成。请检查模型已就绪、TypeLay 已启用，以及原文不是目标语言。"
+                )
+        finally:
+            self.generate.set_sensitive(
+                self.owner.model_ready and bool(self.source.get_text().strip())
+            )
+
+    async def finish(self):
+        if self.owner.value is None:
+            return
+        self.complete.set_sensitive(False)
+        self.skip.set_sensitive(False)
+        try:
+            if await self.owner.host.ask(
+                "settings", {**self.owner.value, "onboardingComplete": True}
+            ):
+                self.dismiss()
+                self.owner.message.set_text("首次使用设置已完成；可随时重新打开教程。")
+            else:
+                self.message.set_text("完成状态未保存，请重试。")
+        finally:
+            self.complete.set_sensitive(True)
+            self.skip.set_sensitive(True)
+
+    def dismiss(self, *_):
+        self.window.hide()
+        self.source.set_text("")
+        self.changed()
+        return True
+
+    def show(self):
+        self.window.show_all()
+        self.window.present()
+        self.source.grab_focus()
+        self.generate.set_sensitive(self.owner.model_ready and bool(self.source.get_text().strip()))
+        if not self.owner.model_ready:
+            self.message.set_text("请先在设置中明确同意安装本地翻译组件，完成自检后再试译。")
+
+
 class Settings:
-    def __init__(self, host, tasks, quit_requested, install_requested):
+    def __init__(self, host, tasks, quit_requested, install_requested, pause_requested, preview):
         self.host, self.tasks = host, tasks
         self.value = None
+        self.model_ready = False
+        self.tutorial_presented = False
+        self.installation_state = "idle"
+        self.install_requested, self.pause_requested = install_requested, pause_requested
         self.window = Gtk.Window(title="TypeLay 设置")
         self.window.set_default_size(660, 640)
         self.window.set_border_width(24)
@@ -210,6 +362,12 @@ class Settings:
         heading = Gtk.Label(xalign=0)
         heading.set_markup('<span size="xx-large" weight="bold">TypeLay</span>')
         outer.pack_start(heading, False, False, 0)
+        privacy = Gtk.Label(
+            label="翻译全部在本机执行，输入和译文不会上传。首次使用：选择并保存语言 → 安装组件 → 实操教程。",
+            xalign=0,
+        )
+        privacy.set_line_wrap(True)
+        outer.pack_start(privacy, False, False, 0)
         self.status = Gtk.Label(xalign=0)
         self.status.set_line_wrap(True)
         outer.pack_start(self.status, False, False, 0)
@@ -264,7 +422,7 @@ class Settings:
         grid.attach(exclusions, 1, row, 1, 1)
         note = Gtk.Label(
             label="快捷键仅在按需模式启用。输入适配器必须随目标应用启动。\n"
-            "网页普通输入需安装扩展。GTK3 因输入法状态不可确认已禁用；GTK4 / Qt 尚不支持。\n"
+            "网页输入需安装扩展。GTK3/GTK4 标准单行输入框需另行启用 Fcitx 合作组件；Qt 尚未实现。\n"
             "密码、敏感字段及无法确认输入法状态的控件不会读取或替换。",
             xalign=0,
         )
@@ -275,9 +433,12 @@ class Settings:
         outer.pack_start(self.message, False, False, 0)
         buttons = Gtk.Box(spacing=8)
         outer.pack_end(buttons, False, False, 0)
-        install = Gtk.Button(label="安装本地翻译组件…")
-        install.connect("clicked", lambda *_: self.confirm_install(install_requested))
-        buttons.pack_start(install, False, False, 0)
+        self.install_button = Gtk.Button(label="安装本地翻译组件…")
+        self.install_button.connect("clicked", self.install_clicked)
+        buttons.pack_start(self.install_button, False, False, 0)
+        tutorial_button = Gtk.Button(label="实操教程")
+        tutorial_button.connect("clicked", lambda *_: self.open_tutorial())
+        buttons.pack_start(tutorial_button, False, False, 0)
         quit_button = Gtk.Button(label="退出 TypeLay")
         quit_button.connect("clicked", lambda *_: quit_requested())
         buttons.pack_start(quit_button, False, False, 0)
@@ -285,6 +446,7 @@ class Settings:
         save.get_style_context().add_class("suggested-action")
         save.connect("clicked", lambda *_: self.tasks(self.save()))
         buttons.pack_end(save, False, False, 0)
+        self.tutorial = Tutorial(self, preview)
 
     def configure(self, value):
         self.value = value
@@ -296,11 +458,12 @@ class Settings:
             else:
                 widget.set_text(value[key])
         self.excluded.get_buffer().set_text("\n".join(value.get("excludedApplications") or []))
+        self.offer_tutorial()
 
     async def save(self):
         if self.value is None:
             return
-        value = {**self.value, "onboardingComplete": True}
+        value = dict(self.value)
         for key, widget in self.controls.items():
             if isinstance(widget, Gtk.Switch):
                 value[key] = widget.get_active()
@@ -318,11 +481,57 @@ class Settings:
         self.message.set_text("设置已保存" if ok else "未保存：请检查语言方向、快捷键及应用列表。")
 
     def report(self, value):
+        self.model_ready = value.get("modelReady", False)
+        self.tutorial.generate.set_sensitive(
+            self.model_ready
+            and self.tutorial.state != "translating"
+            and bool(self.tutorial.source.get_text().strip())
+        )
+        self.offer_tutorial()
         pieces = [
             value.get(key)
             for key in ("model", "serviceStatus", "operationStatus", "shortcutStatus")
         ]
         self.status.set_text("\n".join(piece for piece in pieces if piece))
+
+    def offer_tutorial(self):
+        if (
+            self.value
+            and not self.value["onboardingComplete"]
+            and self.model_ready
+            and not self.tutorial_presented
+        ):
+            self.open_tutorial()
+
+    def open_tutorial(self):
+        self.tutorial_presented = True
+        self.tutorial.show()
+
+    def install_clicked(self, *_):
+        if self.installation_state == "running":
+            self.pause_requested()
+        elif self.installation_state == "paused":
+            self.install_requested()
+        elif self.installation_state != "pausing":
+            self.confirm_install(self.install_requested)
+
+    def installation(self, state, message):
+        self.installation_state = state
+        self.message.set_text(message)
+        self.install_button.set_label(
+            {"running": "暂停下载", "pausing": "正在暂停…", "paused": "继续下载"}.get(
+                state, "安装 / 修复组件…"
+            )
+        )
+        self.install_button.set_sensitive(state != "pausing")
+
+    def diagnostics(self):
+        return {
+            "installation": self.installation_state,
+            "onboardingComplete": bool(self.value and self.value["onboardingComplete"]),
+            "tutorialVisible": self.tutorial.window.get_visible(),
+            "tutorialState": self.tutorial.state,
+        }
 
     def report_tray(self, available, connected):
         if connected:

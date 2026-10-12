@@ -362,7 +362,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inside", action="store_true")
     parser.add_argument("--desktop", action="store_true")
-    parser.add_argument("--desktop-scope", choices=("all", "browser", "gtk", "gtk4"), default="all")
+    parser.add_argument(
+        "--desktop-scope", choices=("all", "browser", "gtk", "gtk4", "setup"), default="all"
+    )
     parser.add_argument(
         "--gtk-refusal",
         action="store_true",

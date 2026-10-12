@@ -364,13 +364,18 @@ class FirefoxNativeContract(unittest.TestCase):
                 )
                 self.assertEqual(history["redone"], actual["after"])
 
-            # Remove every matching document, exercising this end's explicit
-            # native Port.disconnect(), then require a genuinely fresh host.
+            # Navigation can retain content-script ports in Firefox's bfcache
+            # (Mozilla bug 1370368). Close the actual browsing contexts, including
+            # their histories, while keeping one unmatched blank tab alive.
             old_lifetime = hello["data"]["lifetime"]
-            web("POST", "/window", {"handle": first})
-            web("POST", "/url", {"url": "about:blank"})
-            web("POST", "/window", {"handle": second})
-            web("POST", "/url", {"url": "about:blank"})
+            blank = web("POST", "/window/new", {"type": "tab"})["handle"]
+            web("POST", "/window", {"handle": blank})
+            self.assertEqual(web("GET", "/url"), "about:blank")
+            for handle in (first, second):
+                web("POST", "/window", {"handle": handle})
+                web("DELETE", "/window")
+            web("POST", "/window", {"handle": blank})
+            self.assertEqual(web("GET", "/window/handles"), [blank])
             deadline = time.monotonic() + 10
             while True:
                 remaining = deadline - time.monotonic()
