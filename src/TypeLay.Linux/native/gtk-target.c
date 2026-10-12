@@ -26,7 +26,8 @@ static void mark_changed(GtkTextBuffer *buffer, GtkTextIter *where, GtkTextMark 
 static void preedit(GtkWidget *widget, const gchar *text, gpointer data) {
     (void)widget;
     Target *target = data;
-    target->ime_known = TRUE;
+    /* An empty preedit signal does not expose asynchronous IM requests. */
+    target->ime_known = FALSE;
     target->composing = text != NULL && *text != '\0';
     tl_invalidate(target, FALSE, FALSE);
 }
@@ -84,7 +85,12 @@ void tl_discover(GtkWidget *widget, gboolean before_input) {
     target->content_revision = 1;
     target->input_revision = 1;
     target->focus_revision = 1;
-    target->ime_known = before_input;
+    /* GTK exposes neither the actual embedded IM context nor pending async
+       requests. The im-module property is only a request and can stay unchanged
+       when the built-in input-method menu changes the real context. Never infer
+       Clear from early discovery, an empty preedit, or a timer. */
+    (void)before_input;
+    target->ime_known = FALSE;
     g_object_set_qdata(G_OBJECT(widget), target_quark, target);
     g_hash_table_insert(targets, target->id, target);
     target_count++;
@@ -293,6 +299,7 @@ static char *read_text(Target *target, gint *start, gint *end) {
     return text;
 }
 JsonObject *tl_capture(Target *target, JsonObject *approved) {
+    if (!target || !target->ime_known || target->composing) return NULL;
     gint64 age = tl_now() - tl_integer(approved, "observedAtMs", 0);
     if (age < 0 || age > 150 || !tl_metadata_matches(target, approved)) return NULL;
     gint start, end;

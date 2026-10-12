@@ -1,4 +1,4 @@
-"""Real installed desktop, real CPU model, real GTK fields and an unmodified YAD app."""
+"""Real desktop/model/browser acceptance and lifecycle; GTK translation is unsupported."""
 
 import json
 import os
@@ -37,10 +37,9 @@ def run(arguments):
     subprocess.run(["xdotool", "windowfocus", "--sync", nested[0]], check=True, timeout=2)
     package = arguments.package
     paths = Paths(package)
-    state_path = arguments.output / "fixture.json"
-    environment = {**os.environ, "TYPELAY_FIXTURE_STATE": str(state_path)}
+    environment = dict(os.environ)
     environment["TYPELAY_TRACE"] = str(arguments.output / "controller.jsonl")
-    process = fixture = application = None
+    process = None
     evidence = []
     original = "Please send me the final version."
     settings = {
@@ -66,11 +65,6 @@ def run(arguments):
     def ready_to_accept(state="ValidTranslation"):
         data = view(state)
         return data if data and data.get("acceptanceReady") else None
-
-    def fixture_state():
-        if state_path.exists():
-            return json.loads(state_path.read_text())
-        return {}
 
     def typed(text):
         subprocess.run(
@@ -101,194 +95,14 @@ def run(arguments):
         process = None
         assert not paths.control.exists() and not paths.native.exists()
 
-    def focus(pid, title=None):
-        def select():
-            windows = contents(request("Windows"), "Windows")
-            return next(
-                (
-                    window
-                    for window in windows
-                    if window.get("pid") == pid and (title is None or window.get("title") == title)
-                ),
-                None,
-            )
-
-        window = wait_for(select, "application window did not map")
-        request({"Action": {"FocusWindow": {"id": window["id"]}}})
-        time.sleep(0.2)
-
     def translated(value):
         return bool(value and value != original and re.search(r"[\u3400-\u9fff]", value))
 
-    def changed_fixture():
-        value = fixture_state()
-        return value if translated(value.get("first")) else None
-
     try:
         start()
-        fixture = subprocess.Popen(
-            [str(package / "typelay"), "launch", str(arguments.native / "gtk-fixture")],
-            env=environment,
-        )
-        focus(fixture.pid)
-        wait_for(lambda: fixture_state().get("focus") == "fixture-first", "fixture focus")
-        key("ctrl+a")
-        key("BackSpace")
-        wait_for(lambda: view("IdleCapsule"), "empty field did not show a capsule")
-        subprocess.run(["grim", str(arguments.output / "capsule.png")], check=True, timeout=3)
-        typed(original)
-        wait_for(ready_to_accept, "actual translation and Tab acceptance did not become ready")
-        subprocess.run(["grim", str(arguments.output / "translation.png")], check=True, timeout=3)
-        assert fixture_state()["first"] == original, "preview changed the source before acceptance"
-        key("Tab")
-        accepted = wait_for(
-            changed_fixture,
-            "compositor-delivered Tab did not accept the real candidate",
-        )
-        assert accepted["focus"] == "fixture-first", "Tab also navigated to another field"
-        evidence.append(
-            "automatic mode: real model preview, compositor-delivered Tab and source focus"
-        )
-        key("ctrl+a")
-        typed(original)
-        wait_for(ready_to_accept, "second candidate did not become ready")
-        # A real pointer click in the candidate body of this fixed 1280x800
-        # isolated desktop fixture. No command injects a draft or changes focus.
-        subprocess.run(["xdotool", "mousemove", "340", "232", "click", "1"], check=True)
-        wait_for(
-            lambda: fixture_state().get("focus") == "typelay-candidate",
-            "clicking the candidate did not focus the native translation editor",
-        )
-        manual = "Final version, approved."
-        key("ctrl+a")
-        typed(manual)
-        key("Tab")
-
-        def returned_draft():
-            # The controller renders the pending draft before its asynchronous
-            # native focus request completes. Observe the field itself as well.
-            current = fixture_state()
-            assert current.get("first") == original, "return from editor also accepted the draft"
-            return (
-                current
-                if (
-                    current.get("focus") == "fixture-first"
-                    and ready_to_accept("EditedTranslationPending")
-                )
-                else None
-            )
-
-        wait_for(returned_draft, "first editor Tab did not return with the edited candidate")
-        subprocess.run(["grim", str(arguments.output / "edited.png")], check=True, timeout=3)
-        key("Tab")
-        wait_for(lambda: fixture_state().get("first") == manual, "second Tab lost the edited draft")
-        assert fixture_state()["focus"] == "fixture-first"
-        evidence.append(
-            "native editor click, manual draft, first Tab returns and second Tab accepts"
-        )
-        # The same public background command must not reopen the settings window.
+        # A duplicate background request must use the existing real session.
         subprocess.run([str(package / "typelay"), "--background"], env=environment, check=True)
-        assert fixture_state()["focus"] == "fixture-first"
-        stop()
-        settings["Mode"] = 1
-        fixture.terminate()
-        fixture.wait(timeout=3)
-        fixture = None
-        state_path.unlink(missing_ok=True)
-        start()
-        fixture = subprocess.Popen(
-            [str(package / "typelay"), "launch", str(arguments.native / "gtk-fixture")],
-            env=environment,
-        )
-        focus(fixture.pid)
-        key("ctrl+a")
-        typed(original)
-        time.sleep(1)
-        assert not status().get("overlayVisible"), "on-demand mode translated before activation"
-        key("ctrl+shift+F9")
-        wait_for(lambda: view("ValidTranslation"), "wake shortcut did not activate translation")
-        key("Escape")
-        wait_for(lambda: not status().get("overlayVisible"), "Escape did not hide translation")
-        key("ctrl+shift+F10")
-        key("Tab")
-        changed = wait_for(
-            changed_fixture,
-            "direct translation did not replace its original field",
-        )
-        assert changed["focus"] == "fixture-second", "direct translation stole keyboard focus"
-        assert changed["second"] == "second field", "direct translation wrote into the new field"
-        assert not status().get("overlayVisible"), "direct translation opened the preview"
-        evidence.append("on-demand wake, Escape and direct translation bound to the original field")
-        stop()
-        fixture.terminate()
-        fixture.wait(timeout=3)
-        fixture = None
-        # Two real GTK toplevels owned by one process, not guessed screen origins.
-        settings["Mode"] = 1
-        start()
-        fixture = subprocess.Popen(
-            [str(package / "typelay"), "launch", str(arguments.native / "gtk-fixture")],
-            env={**environment, "TYPELAY_FIXTURE_TWO_WINDOWS": "1"},
-        )
-        focus(fixture.pid, "TypeLay input contracts")
-        key("ctrl+a")
-        typed(original)
-        # Wake uses the selected GTK parent, even though niri reports two windows
-        # with this PID. The original native field identity survives focus changes.
-        key("ctrl+shift+F9")
-        wait_for(ready_to_accept, "multiple windows disabled the focused native field")
-        key("Escape")
-        wait_for(lambda: not status().get("overlayVisible"), "multiwindow Escape did not hide")
-        key("ctrl+shift+F10")
-        focus(fixture.pid, "TypeLay GTK second window")
-        changed = wait_for(changed_fixture, "background translation lost its original window")
-        assert changed["other"] == "The other window is unchanged."
-        assert changed["focus"] == "fixture-other-window", "direct write activated its old window"
-        key("ctrl+shift+F9")
-        wait_for(ready_to_accept, "the second window did not support translation")
-        key("Tab")
-        wait_for(
-            lambda: translated(fixture_state().get("other")), "second window Tab was misrouted"
-        )
-        assert fixture_state()["first"] == changed["first"], "second window write changed the first"
-        assert fixture_state()["focus"] == "fixture-other-window"
-        evidence.append(
-            "same-process windows: focused preview and background direct write without misrouting"
-        )
-        stop()
-        fixture.terminate()
-        fixture.wait(timeout=3)
-        fixture = None
-        # An independently packaged real application, without a test backend.
-        settings["Mode"] = 0
-        start()
-        application = subprocess.Popen(
-            [
-                str(package / "typelay"),
-                "launch",
-                "yad",
-                "--entry",
-                "--title=TypeLay actual application",
-                "--text=Message",
-                "--button=OK:0",
-                "--entry-text=" + original,
-            ],
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=sys.stderr,
-        )
-        focus(application.pid)
-        wait_for(ready_to_accept, "real YAD field did not grant visible Tab acceptance")
-        key("Tab")
-        time.sleep(0.15)
-        key("Return")
-        output, _ = application.communicate(timeout=5)
-        assert application.returncode == 0 and translated(output.decode().strip()), (
-            application.returncode,
-            output.decode(errors="replace"),
-        )
-        application = None
-        evidence.append("unmodified YAD application: real entry translation and accepted output")
+        assert process.poll() is None
         # Exercise the real extension, native host, niri PID authority, shared
         # controller and actual CPU model together, not only a DOM transport seam.
         from browser_process import chromium_context
@@ -394,7 +208,14 @@ def run(arguments):
         stop()
         evidence.append("settings, duplicate background start and graceful desktop shutdown")
         (arguments.output / "desktop-result.json").write_text(
-            json.dumps({"passed": evidence}, indent=2)
+            json.dumps(
+                {
+                    "scope": "browser-desktop-and-lifecycle",
+                    "passed": evidence,
+                    "unsupported": ["GTK translation and GTK/YAD positive acceptance"],
+                },
+                indent=2,
+            )
         )
     except BaseException:
         try:
@@ -404,7 +225,7 @@ def run(arguments):
             pass  # Diagnostic failures must not replace the original assertion.
         raise
     finally:
-        for child in (application, fixture, process):
+        for child in (process,):
             if child is not None and child.poll() is None:
                 child.terminate()
                 try:

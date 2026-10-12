@@ -233,7 +233,7 @@ class Settings:
         grid.attach(exclusions, 1, row, 1, 1)
         note = Gtk.Label(
             label="快捷键仅在按需模式启用。输入适配器必须随目标应用启动。\n"
-            "GTK3 / Qt6 Widgets 应用通过 launch 连接；网页输入需安装浏览器扩展。GTK4 / Qt Quick 尚不支持。\n"
+            "网页普通输入需安装扩展。GTK3 因输入法状态不可确认已禁用；GTK4 / Qt 尚不支持。\n"
             "密码、敏感字段及无法确认输入法状态的控件不会读取或替换。",
             xalign=0,
         )

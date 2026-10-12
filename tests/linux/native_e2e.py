@@ -1,4 +1,4 @@
-"""Real GTK + native module in a nested niri session. Not physical desktop certification."""
+"""Real GTK Unknown-IME refusal in niri; GTK translation remains unsupported."""
 
 import argparse
 import faulthandler
@@ -42,14 +42,6 @@ class Native:
     def describe(self, target=None):
         result = self.call("describe", {"target": target} if target else {})
         assert result is not None, "real focused GTK field unavailable"
-        return result
-
-    def capture(self, target=None):
-        fields = self.describe(target)
-        result = self.call(
-            "capture", {"target": fields["target"], "authority": fields["authority"]}
-        )
-        assert result is not None, "authorized GTK read unavailable"
         return result
 
 
@@ -116,8 +108,12 @@ def inside(arguments):
         "GDK_BACKEND": "wayland",
     }
     environment.pop("TYPELAY_DESKTOP", None)
+    state_path = arguments.output / "fixture.json"
+    state_path.unlink(missing_ok=True)
+    environment["TYPELAY_FIXTURE_STATE"] = str(state_path)
     fixture = subprocess.Popen([str(arguments.native / "gtk-fixture")], env=environment)
     checks = []
+    connection = None
     try:
         connection, _ = server.accept()
         assert peer_credentials(connection)[0] == fixture.pid
@@ -147,138 +143,119 @@ def inside(arguments):
         subprocess.run(["xdotool", "windowfocus", "--sync", nested[0]], check=True, timeout=2)
         time.sleep(0.2)
         print("focused fixture", flush=True)
-        native = client.capture()
-        assert native["metadata"]["automationId"] == "fixture-first"
-        assert native["ime"] == "Clear" and native["writeSupported"]
-        geometry = anchor_geometry(native["geometry"])
-        assert geometry is not None, "visible native parent anchor unavailable"
-        assert native["geometry"]["space"] == "gtk-toplevel"
-        window = next(
-            item for item in contents(request("Windows"), "Windows") if item["pid"] == fixture.pid
-        )
-        assert not window["is_floating"], "regression must exercise an ordinary tiled window"
-        checks.append("real GTK metadata, authorized read and tiled-window native anchor")
 
-        original_id = native["target"]
-        # The compositor CLI crosses the same native validation/trigger boundary;
-        # it cannot turn a stale field lease into an operation on a newer focus.
+        def state():
+            return json.loads(state_path.read_text()) if state_path.exists() else {}
+
+        def wait_state(predicate):
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                value = state()
+                if predicate(value):
+                    return value
+                time.sleep(0.025)
+            raise AssertionError("fixture state did not reach the expected input/focus")
+
+        initial = wait_state(lambda value: value.get("focus") == "fixture-first")
+        original = initial["first"]
+        description = client.describe()
+        assert description["metadata"]["automationId"] == "fixture-first"
+        assert description["metadata"]["hasTextEdit"] is False
+        assert "text" not in description and "selection" not in description
+        assert original not in json.dumps(description, ensure_ascii=False)
+        target = description["target"]
+        geometry = anchor_geometry(description["geometry"])
+        assert geometry is not None, "refusal must exercise a visible ordinary GTK field"
+        assert (
+            client.call("capture", {"target": target, "authority": description["authority"]})
+            is None
+        ), "Unknown IME exposed source text"
+        checks.append("visible GTK metadata excludes body; Unknown IME capture returns no snapshot")
+
+        # This intentionally dishonest request uses fixture-owned text, never a
+        # successful native capture. Even a caller claiming Clear cannot grant IME authority.
+        caret = len(original.encode("utf-16-le")) // 2
+        forged = {
+            **description,
+            "text": original,
+            "selection": {"start": caret, "end": caret},
+            "ime": "Clear",
+            "observedAtMs": now_ms(),
+        }
+        write = plan(snapshot(forged, client.hello, geometry), "must not replace")
+        rejected = client.call(
+            "direct",
+            {
+                "target": target,
+                "plan": write,
+                "authority": description["authority"],
+                "approved": description["authority"],
+                "expiresAtMs": now_ms() + 250,
+            },
+        )
+        assert rejected == {"status": "RejectedBeforeMutation", "reason": "ImeUnclear"}, rejected
         generation = str(uuid.uuid4())
         client.call(
             "configure-shortcuts",
-            {"enabled": True, "generation": generation, "wake": {}, "direct": {}},
-        )
-        for kind in ("wake", "direct"):
-            current = client.capture()
-            lease = {
-                "target": current["target"],
-                "authority": current["authority"],
-                "generation": generation,
-            }
-            client.call("publish-shortcut", lease)
-            rejected = client.call(
-                "trigger-shortcut",
-                {**lease, "kind": kind, "triggeredAtMs": now_ms() - 1000},
-            )
-            assert rejected == {"triggered": False}, "stale compositor trigger was accepted"
-            accepted = client.call(
-                "trigger-shortcut", {**lease, "kind": kind, "triggeredAtMs": now_ms()}
-            )
-            assert accepted == {"triggered": True}, "fresh compositor trigger was rejected"
-            notice = next(
-                event["data"]
-                for event in reversed(client.events)
-                if event.get("event") == "shortcut"
-            )
-            assert notice["native"]["target"] == original_id and notice["kind"] == kind
-            assert notice["native"]["text"] == native["text"]
-            assert client.call(
-                "trigger-shortcut", {**lease, "kind": kind, "triggeredAtMs": now_ms()}
-            ) == {"triggered": False}, "compositor shortcut lease was reusable"
-        checks.append("compositor wake/direct trigger, fixed source, expiration and single use")
-        native = client.capture()
-        write = plan(snapshot(native, client.hello, geometry), "你好", {"start": 9, "end": 14})
-        # Direct replacement remains bound to the first entry after focus moves away.
-        key("Tab")
-        assert client.describe()["target"] != original_id
-        fresh = client.describe(original_id)
-        receipt = client.call(
-            "direct",
             {
-                "target": original_id,
-                "plan": write,
-                "authority": native["authority"],
-                "approved": fresh["authority"],
-                "expiresAtMs": now_ms() + 250,
+                "enabled": True,
+                "generation": generation,
+                "wake": {},
+                "direct": {},
             },
         )
-        assert receipt["status"] == "Verified", receipt["reason"]
-        assert client.describe()["target"] != original_id, "direct replacement stole focus"
-        assert client.capture(original_id)["text"] == "alpha 😀 你好"
-        checks.append("background direct replacement, UTF-16 scope and focus preservation")
+        for kind in ("wake", "direct"):
+            current = client.describe(target)
+            lease = {"target": target, "authority": current["authority"], "generation": generation}
+            client.call("publish-shortcut", lease)
+            assert client.call(
+                "trigger-shortcut",
+                {
+                    **lease,
+                    "kind": kind,
+                    "triggeredAtMs": now_ms(),
+                },
+            ) == {"triggered": False}, "Unknown IME allowed a shortcut read"
+        checks.append("caller-supplied Clear cannot authorize direct write or wake/direct reads")
 
-        key("shift+Tab")
-        current = client.capture()
-        assert current["target"] == original_id
-        write = plan(snapshot(current, client.hello, geometry), "accepted candidate")
+        current = client.describe(target)
+        write = plan(snapshot({**forged, **current}, client.hello, geometry), "must not replace")
         client.call(
             "publish",
             {
-                "target": original_id,
+                "target": target,
                 "authority": current["authority"],
                 "lease": {"source": write["expected"], "escapeAllowed": True},
-                "permit": {"plan": write, "expiresAtMs": current["observedAtMs"] + 100},
+                "permit": {"plan": write, "expiresAtMs": now_ms() + 100},
             },
         )
         key("Tab")
-        accepted = client.capture(original_id)
-        assert accepted["text"] == "accepted candidate"
-        assert client.describe()["target"] == original_id, (
-            "successful Tab leaked to GTK focus navigation"
-        )
-        assert any(event.get("event") == "accepted" for event in client.events)
-        checks.append("real compositor Tab, synchronous commit and no duplicate focus navigation")
-
-        # Without a permit, Tab must retain GTK's ordinary focus behavior.
-        client.call("revoke")
-        key("Tab")
-        assert client.describe()["target"] != original_id
-        key("Tab")
-        password = client.describe()
-        assert password["metadata"]["password"]
-        assert (
-            client.call(
-                "capture", {"target": password["target"], "authority": password["authority"]}
-            )
-            is None
-        )
-        checks.append("unowned Tab passthrough and password-before-text rejection")
-
+        after_tab = wait_state(lambda value: value.get("focus") == "fixture-second")
+        assert after_tab["first"] == original and after_tab["second"] == initial["second"]
+        client.describe()  # Drain events through a subsequent real protocol response.
+        assert not any(event.get("event") in ("accepted", "shortcut") for event in client.events)
         key("shift+Tab")
-        key("shift+Tab")
-        old = client.capture()
-        stale = plan(snapshot(old, client.hello, geometry), "must not replace")
-        subprocess.run(
-            ["xdotool", "type", "--clearmodifiers", "--delay", "0", "new input"],
-            check=True,
-            timeout=2,
+        wait_state(lambda value: value.get("focus") == "fixture-first")
+        key("End")
+        subprocess.run(["xdotool", "type", "--clearmodifiers", "x"], check=True, timeout=2)
+        wait_state(lambda value: value.get("first") == original + "x")
+        current = client.describe(target)
+        assert current["metadata"]["hasTextEdit"] is False
+        assert client.call("capture", {"target": target, "authority": current["authority"]}) is None
+        checks.append(
+            "Tab belongs to GTK, text remains unchanged by TypeLay, ordinary typing stays Unknown"
         )
-        time.sleep(0.05)
-        fresh = client.describe(original_id)
-        refused = client.call(
-            "direct",
-            {
-                "target": original_id,
-                "plan": stale,
-                "authority": old["authority"],
-                "approved": fresh["authority"],
-                "expiresAtMs": now_ms() + 250,
-            },
-        )
-        assert refused["status"] == "RejectedBeforeMutation"
-        assert client.capture(original_id)["text"] != "must not replace"
-        checks.append("concurrent source edits rejected before mutation")
         (arguments.output / "native-result.json").write_text(
-            json.dumps({"passed": checks}, indent=2)
+            json.dumps(
+                {
+                    "scope": "gtk-unknown-ime-refusal-only",
+                    "passed": checks,
+                    "unsupported": [
+                        "GTK source capture, translation, overlay editing and acceptance"
+                    ],
+                },
+                indent=2,
+            )
         )
     finally:
         fixture.terminate()
@@ -287,6 +264,9 @@ def inside(arguments):
         except subprocess.TimeoutExpired:
             fixture.kill()
             fixture.wait()
+        if connection is not None:
+            connection.close()
+        faulthandler.cancel_dump_traceback_later()
         server.close()
         paths.native.unlink(missing_ok=True)
 
@@ -310,6 +290,8 @@ def outer(arguments, script=None):
         "--output",
         str(arguments.output),
     ]
+    if getattr(arguments, "gtk_refusal", False):
+        command.append("--gtk-refusal")
     if arguments.desktop:
         command.extend(["--desktop", "--package", str(arguments.package)])
     config.write_text("spawn-at-startup " + " ".join(json.dumps(item) for item in command) + "\n")
@@ -361,12 +343,23 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inside", action="store_true")
     parser.add_argument("--desktop", action="store_true")
+    parser.add_argument(
+        "--gtk-refusal",
+        action="store_true",
+        help="verify GTK Unknown-IME refusal only, not translation support",
+    )
     parser.add_argument("--package", type=Path)
     parser.add_argument("--native", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.native = args.native.resolve()
     args.output = args.output.resolve()
+    if not args.desktop and not args.gtk_refusal:
+        parser.error(
+            "GTK translation is unsupported; use --gtk-refusal for safety refusal or --desktop for the browser path"
+        )
+    if args.desktop and args.gtk_refusal:
+        parser.error("--gtk-refusal and --desktop verify different capability scopes")
     if args.desktop and not args.package:
         parser.error("--desktop requires --package")
     if args.package:

@@ -19,5 +19,3 @@ if(TYPELAY_NATIVE_TESTS)
   target_link_libraries(gtk-fixture PRIVATE PkgConfig::GTK)
   target_compile_options(gtk-fixture PRIVATE -Wall -Wextra -Werror)
 endif()
-
-add_subdirectory(qt6)

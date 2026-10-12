@@ -55,11 +55,6 @@ def build(output, fixture=False):
     (output / "native").mkdir()
     for name in ("libtypelay-gtk3.so", "typelay-supervise"):
         shutil.copy2(native / name, output / "native" / name)
-    (output / "native/qt6/generic").mkdir(parents=True)
-    shutil.copy2(
-        native / "qt6/generic/libtypelay-qt6.so", output / "native/qt6/generic/libtypelay-qt6.so"
-    )
-    shutil.copy2(ROOT / "docs/qt6-linux.md", output / "qt6-linux.md")
     shutil.copytree(
         ROOT / "src/TypeLay.Linux/desktop",
         output / "desktop",

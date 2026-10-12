@@ -68,7 +68,7 @@ class Peer:
             if name != "hello" or data["protocol"] != 2 or data["pid"] != self.pid:
                 raise ValueError("native-handshake")
             self.backend = data.get("backend", "gtk3")
-            if self.backend not in ("gtk3", "browser", "qt6"):
+            if self.backend not in ("gtk3", "browser"):
                 raise ValueError("native-backend")
             if self.backend == "browser":
                 self.ancestors = process_lineage(self.pid)
@@ -84,12 +84,10 @@ class Peer:
 
     @property
     def anchor_space(self):
-        return {"browser": "browser-viewport", "qt6": "qt-toplevel"}.get(
-            self.backend, "gtk-toplevel"
-        )
+        return "browser-viewport" if self.backend == "browser" else "gtk-toplevel"
 
     def matches_process(self, pid):
-        if self.backend in ("gtk3", "qt6"):
+        if self.backend == "gtk3":
             return self.pid == pid
         if pid not in self.ancestors:
             return False

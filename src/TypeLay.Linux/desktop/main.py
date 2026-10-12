@@ -28,7 +28,6 @@ def doctor(paths):
         "wayland": bool(os.environ.get("WAYLAND_DISPLAY")),
         "hostInstalled": (paths.home / "app/TypeLay.Linux").is_file(),
         "gtkModuleInstalled": paths.module.is_file(),
-        "qt6PluginInstalled": (paths.home / "native/qt6/generic/libtypelay-qt6.so").is_file(),
         "browserHostInstalled": (paths.home / "typelay-browser-host").is_file(),
         "workerInstalled": paths.python.is_file(),
         "modelInventoryPresent": (paths.models / "installed.json").is_file(),
@@ -344,14 +343,6 @@ def main():
         modules = environment.get("GTK3_MODULES", "").split(":")
         environment["GTK3_MODULES"] = ":".join(
             dict.fromkeys([str(paths.module), *filter(None, modules)])
-        )
-        plugins = environment.get("QT_QPA_GENERIC_PLUGINS", "").split(",")
-        environment["QT_QPA_GENERIC_PLUGINS"] = ",".join(
-            dict.fromkeys([*filter(None, plugins), "typelay"])
-        )
-        plugin_paths = environment.get("QT_PLUGIN_PATH", "").split(":")
-        environment["QT_PLUGIN_PATH"] = ":".join(
-            dict.fromkeys([str(paths.home / "native/qt6"), *filter(None, plugin_paths)])
         )
         os.execvpe(args.command[1], args.command[1:], environment)
     if args.doctor:

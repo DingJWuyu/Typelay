@@ -87,7 +87,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Install target desktop build dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject libayatana-appindicator niri mesa uv grim yad noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright qt6-base qt6-wayland
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject libayatana-appindicator niri mesa uv grim yad noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -101,17 +101,12 @@ jobs:
         env:
           TYPELAY_LINUX_PACKAGE: ${{ github.workspace }}/artifacts/TypeLay-Linux-preview-x86_64.tar.gz
         run: python tests/linux/distribution_e2e.py -v
-      - name: Exercise actual GTK fields in nested niri
+      - name: Verify GTK unknown-IME refusal and key pass-through
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           Xvfb :99 -screen 0 1280x960x24 -nolisten tcp &
           export DISPLAY=:99
-          python tests/linux/native_e2e.py --native artifacts/linux/native --output artifacts/linux/nested
-      - name: Exercise actual Qt6 fields in nested niri
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: |
-          export DISPLAY=:99
-          python tests/linux/qt_e2e.py --native artifacts/linux/native --output artifacts/linux/qt
+          python tests/linux/native_e2e.py --gtk-refusal --native artifacts/linux/native --output artifacts/linux/nested
       - name: Verify ordinary browser fields through the production DOM adapter
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
@@ -133,7 +128,7 @@ jobs:
         run: |
           mkdir -p artifacts/linux/desktop-data artifacts/linux/desktop-cache
           python artifacts/linux/package/desktop/setup.py "$PWD/artifacts/linux/package" "$PWD/artifacts/linux/desktop-data/typelay" "$PWD/artifacts/linux/desktop-cache/typelay"
-      - name: Exercise the production desktop and a real GTK application
+      - name: Exercise the production desktop and real browser input
         if: ${{ !cancelled() && steps.models.outcome == 'success' }}
         run: |
           export DISPLAY=:99
@@ -147,7 +142,6 @@ jobs:
           name: typelay-linux-${{ github.sha }}
           path: |
             artifacts/linux/nested/
-            artifacts/linux/qt/
             artifacts/linux/desktop/
             artifacts/linux/desktop-data/typelay/components/*/self-check.json
             artifacts/linux/native/libtypelay-gtk3.so

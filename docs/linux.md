@@ -6,11 +6,11 @@
 
 这是正在完成桌面验证的预览客户端，不是已通过完整产品验收的 Linux 正式版。现有产品规格仍是验收依据；下列缺口不是新的产品规格或永久支持名单。
 
-客户端复用 Core、Runtime 和 Python worker，提供自动/按需模式、翻译预览及编辑、原框返回、Tab 接受、按需快捷键、绑定原框的直接替换、应用排除、设置持久化及本地模型安装。Linux 桌面集成使用 GTK3 设置界面、Ayatana 托盘、niri IPC 和绑定源控件的 GTK3/Qt6 原生浮层与输入适配器。是否真正可用由每个控件的元数据、输入法状态、窗口身份、几何、版本和时效共同决定，不能仅凭编译成功判断。
+客户端复用 Core、Runtime 和 Python worker，提供设置、托盘、本地模型安装及浏览器普通输入框的自动/按需翻译、预览编辑、两阶段 Tab 和绑定原框的直接替换。浏览器后端需另行明确安装扩展，范围是顶层 HTTP(S) 网页普通 input/textarea，详见 [浏览器连接与限制](browser-linux.md)。Chromium 有真实 DOM、本地主机和完整桌面链路验证；Firefox 发行资产尚未经过实际浏览器验收。
 
-GTK 原生后端覆盖标准 GTK3 GtkEntry / GtkSearchEntry / GtkTextView（普通无富文本标记的缓冲区）。应用必须在启动时加载模块，已经运行的实例不能通过再次打开窗口补加载。浏览器后端通过单独明确安装的扩展覆盖 Firefox/Chromium 顶层网页普通 input/textarea，详见 [浏览器连接与限制](browser-linux.md)。Qt6 标准 Widgets 通过附加 generic plugin 接入受限非 IME 路径，收到输入法事件的控件会停用至重建，支持边界见 [Qt6 连接与限制](qt6-linux.md)。GTK4、Qt5/Qt Quick、Electron/VS Code、富文本尚无输入后端；终端/命令区按产品策略默认排除。这些缺口仍是未完成的功能覆盖，不可描述成通用输入框支持。
+通用 GTK3 输入适配器当前处于安全禁用状态：只描述非正文元数据，不捕获正文、不授予写入能力、不拦截 Tab。公开 GTK API 不能确定实际嵌入输入法的异步请求是否结束；空 preedit、提前监听和 im-module 配置值都不能证明 Clear。默认配置与显式 Simple 请求同样不被当作证据。此前 GTK 正向测试不再构成安全可用性证明，当前回归只验证明确拒绝与按键透传。
 
-同一 GTK3 进程的多个窗口可分别绑定原生控件；预览和编辑要求活动父窗口，直接替换保持绑定触发时的原控件。浮层使用 GTK 父窗口坐标，不依赖 niri 缺失的平铺窗口绝对位置，也不猜测屏幕坐标。控件身份、父窗口状态、输入法状态或锚点不能确认时拒绝操作。定位契约见源码中的 `docs/adr/0004-linux-native-anchors.md`。
+GTK3 输入法事务能力、GTK4、Qt、Electron/VS Code、富文本仍是未完成的开发项；终端/命令区按产品策略默认排除。当前交付未达到通用 Linux 输入框移植目标，不能把这些开发缺口留作“只需真机验证”。GTK 父窗口/浏览器视口定位契约见 `docs/adr/0004-linux-native-anchors.md`。
 
 快捷键默认在已连接的输入适配器中处理；也可将 niri 全局按键绑定到下述 --wake/--direct 命令。默认 Ctrl+Shift+F9 唤醒、Ctrl+Shift+F10 直接替换，仅按需模式生效。全局触发不会为没有输入后端的应用伪造读取/写入能力。所有应用的兼容性、物理快捷键与托盘视觉一致性仍需实际验证。
 
@@ -19,7 +19,7 @@ GTK 原生后端覆盖标准 GTK3 GtkEntry / GtkSearchEntry / GtkTextView（普�
 在目标机器安装依赖（fish 可直接运行）：
 
 ```fish
-sudo pacman -Syu --needed git base-devel cmake ninja pkgconf dotnet-sdk gtk3 json-glib python python-gobject libayatana-appindicator niri uv qt6-base qt6-wayland
+sudo pacman -Syu --needed git base-devel cmake ninja pkgconf dotnet-sdk gtk3 json-glib python python-gobject libayatana-appindicator niri uv
 ```
 
 .NET SDK 版本须满足仓库 `global.json`。普通用户使用自包含发行包，不需要 .NET SDK。GTK、PyGObject、Ayatana 等桌面库由系统包管理器维护；翻译 worker 使用独立 CPython，不修改系统 Python。
@@ -30,7 +30,7 @@ cd Typelay
 python eng/build-linux.py
 ```
 
-输出：`artifacts/TypeLay-Linux-preview-x86_64.tar.gz` 及对应 `.sha256`。包内包括自包含 .NET 宿主、GTK3/Qt6 模块、浏览器扩展及本地主机、子进程监督程序、桌面代码、共享 worker、安装脚本和文件校验清单。模型不在包内，也不会在首次启动时无提示下载。
+输出：`artifacts/TypeLay-Linux-preview-x86_64.tar.gz` 及对应 `.sha256`。包内包括自包含 .NET 宿主、GTK3 模块、浏览器扩展及本地主机、子进程监督程序、桌面代码、共享 worker、安装脚本和文件校验清单。模型不在包内，也不会在首次启动时无提示下载。
 
 构建时的外部 .NET SDK/NuGet 获取仍需要网络。模型安装的原生 Python 依赖固定直接版本，通过 uv 为 CPython 3.13 解析 Linux wheel 并生成带哈希的依赖锁。安装记录保留实际解析版本，不声称不同时间解析出的传递依赖完全相同。
 
@@ -61,15 +61,9 @@ Argos 发布源未提供可用的固定发布者摘要时，安装器记录 HTTP
 
 ## 连接目标应用
 
-先运行 TypeLay，再使用启动器启动一个全新的 GTK3 或 Qt6 Widgets 应用进程：
+当前实际输入路径请按 [浏览器连接说明](browser-linux.md) 安装扩展并注册本地主机，再运行 TypeLay。
 
-```fish
-~/.local/bin/typelay launch mousepad
-```
-
-`mousepad` 是操作示例，不是内置应用白名单，需要自行安装。应先彻底退出原应用；某些应用会通过 D-Bus 把新启动请求转交给旧进程，这样旧进程仍不会加载模块。
-
-启动器只给该应用进程传入 GTK3_MODULES 和附加 Qt generic plugin 路径，保留已有模块和 QT_IM_MODULE；不会全局修改桌面环境、设置 LD_PRELOAD、注入现有进程、模拟粘贴或修改剪贴板。应用退出后该集成自然结束。为已确认兼容的日常应用创建启动项时，可将命令改为 `~/.local/bin/typelay launch 原命令`。
+`typelay launch 原命令` 仍可用于 GTK 模块诊断，但不会使 GTK 字段获得读取或替换能力，不应配置成日常应用的翻译启动项。启动器仅为子进程添加 GTK3_MODULES，保留已有模块与输入法配置，不全局更改桌面环境或替换用户输入法。
 
 自动模式：聚焦支持的输入框后显示胶囊，输入后按共享防抖规则翻译。绿色就绪且底部明确显示“Tab 接受译文”时，Tab 才由 TypeLay 接受；否则仍属于原应用。点击译文编辑，第一次 Tab 返回原输入框，第二次 Tab 才接受。展开/收起、重译、Esc 隐藏和语言方向设置位于浮层。
 
@@ -119,7 +113,7 @@ spawn-at-startup "/home/你的用户名/.local/bin/typelay" "--background"
 
 ## 验证
 
-CI 将共享测试、Windows 原生/打包检查、Arch 容器中的 Linux 构建、发行包生命周期及嵌套 niri/GTK3/Qt6 及浏览器测试分开执行。查看当前提交对应 Actions 的实际结果；失败的任务不算通过，旧提交成功也不能证明新提交通过。
+CI 将共享测试、Windows 原生/打包检查、Arch 容器中的 Linux 构建、发行包生命周期及嵌套 niri/GTK3 及浏览器测试分开执行。查看当前提交对应 Actions 的实际结果；失败的任务不算通过，旧提交成功也不能证明新提交通过。
 
 本地最小静态检查：
 
@@ -145,13 +139,13 @@ env GDK_BACKEND=x11 dbus-run-session -- xvfb-run -a python tests/linux/tray_e2e.
 
 该回归验证注册、菜单动作、暂停/恢复和持久化，不等同于真实 Waybar、物理鼠标或目标桌面视觉验收。缺少 PyGObject、Ayatana 或显示服务时应报告未执行，不能记为通过。
 
-嵌套测试需要独立 Xvfb、niri、Mesa 软件渲染、D-Bus 和 xdotool。CI 的 XTest 只向独立嵌套合成器注入测试按键，不是生产客户端的输入方案。原生测试验证受控 GTK3/Qt6 控件；Chromium DOM、本地主机与完整桌面链路有独立用例，不能冒充 Firefox 或物理键盘实测。
+嵌套测试需要独立 Xvfb、niri、Mesa 软件渲染、D-Bus 和 xdotool。CI 的 XTest 只向独立嵌套合成器注入测试按键，不是生产客户端的输入方案。原生 --gtk-refusal 测试只验证未知 GTK 输入法的拒绝与透传，不验证 GTK 翻译功能；Chromium DOM、本地主机与完整桌面链路有独立用例，不能冒充 Firefox 或物理键盘实测。
 
 物理 CachyOS + niri 验收必须记录系统/niri/GTK/PyGObject/输入法版本，并逐项保留结果：
 
 | 项目 | 操作与预期 | 尚需验证的范围 |
 | --- | --- | --- |
-| 自动/按需模式 | 同一普通字段分别聚焦、输入、唤醒，按需模式不得自行翻译 | 真实 GTK3 应用与长期运行 |
+| 自动/按需模式 | 同一普通字段分别聚焦、输入、唤醒，按需模式不得自行翻译 | 浏览器普通字段与长期运行 |
 | 原文读取 | 单行、多行、emoji、选区、删除和粘贴；密码/排除项不被读取 | 实际应用敏感元数据 |
 | Tab 语义 | 有许可才写回；编辑后一次 Tab 只返回，第二次才接受 | 物理键盘、重复键、快速切焦点 |
 | 直接替换 | 触发后立即换框、改原文、关原窗口 | 原控件身份、取消及无误写 |
@@ -160,7 +154,7 @@ env GDK_BACKEND=x11 dbus-run-session -- xvfb-run -a python tests/linux/tray_e2e.
 | 托盘 | Waybar 启用 tray，测试暂停/恢复、切换模式、交换语言、中键设置、面板重启、退出 | 真实面板点击、主题与图标清晰度 |
 | 完整生命周期 | 模型安装、断网、退出、重复启动、登录启动、卸载 | 无孤儿模型进程、无遗留键盘占用 |
 | 网页普通字段 | Firefox/Chromium 扩展安装、input/textarea、切标签页、DOM 重建和框架受控值 | native messaging 路由、真实网页状态与撤销栈；详见浏览器说明 |
-| 其他输入框 | Electron/VS Code、GTK4、Qt5/Qt Quick、富文本 | 当前没有后端，不能标记通过 |
+| 其他输入框 | GTK3、Electron/VS Code、GTK4、Qt、富文本 | 尚未安全实现，不能标记通过 |
 
 未经实际执行的项目保持未验证。源码中存在实现、单元测试通过和嵌套桌面通过是三个不同层次的证据。
 
@@ -182,6 +176,10 @@ python install.py uninstall --purge
 
 ## 设计依据
 
-niri IPC 提供合成器的前台状态；非模态 GTK 原生浮层绑定真实源控件，在父窗口内定位，不占用独立平铺窗口。观察文本不等于可以安全改写，裸 Tab 的所有权和 IME 状态也不是 GlobalShortcuts portal 提供的文本事务，因此未使用“AT-SPI 能读文本”推导“可以通用模拟粘贴”。当前 GTK3 后端在目标应用事件线程同步校验并写入，返回一次性回执，共享控制器不会重复执行已经完成的写入。
+niri IPC 提供合成器的前台状态。浏览器在文档事件线程维护目标身份、组合生命周期和同步写入事务。GTK 原生父窗口浮层的定位机制不解决输入法事务可观察性，因此通用 GTK 路径保持 Unknown。
+
+后续原生实现需要输入框与实际输入法框架共同提供可验证的事务状态，包括已发出尚未完成的异步请求，以及最终读取/写入的原子边界。例如 Fcitx 协作插件需要关联输入上下文、请求序号、异步响应与客户端提交；仅查询“当前是否有候选”仍不够。这仍需接口设计、实现和真实框架回归，不能只靠最终用户手工确认来消除。
+
+GTK 的 [输入法菜单](https://github.com/GNOME/gtk/blob/gtk-3-24/gtk/gtkimmulticontext.c) 可直接切换内部上下文，而控件的 im-module 属性只表示请求配置。[Fcitx GTK 实现](https://github.com/fcitx/fcitx5-gtk/blob/master/gtk4/fcitximcontext.cpp) 包含异步按键请求。不能通过强制 Simple、模拟粘贴或放宽 IME 断言隐藏这个缺口。
 
 参考：[niri IPC](https://niri-wm.github.io/niri/IPC.html)、[niri 集成](https://niri-wm.github.io/niri/Integrating-niri.html)、[Ayatana AppIndicator](https://github.com/AyatanaIndicators/libayatana-appindicator)、[Waybar tray](https://github.com/Alexays/Waybar/wiki/Module:-Tray)、[GTK3 输入法](https://docs.gtk.org/gtk3/class.IMContext.html)、[uv Python 安装](https://docs.astral.sh/uv/guides/install-python/)。

@@ -86,7 +86,6 @@ class DistributionTests(unittest.TestCase):
         state = json.loads(result.stdout)
         self.assertTrue(state["hostInstalled"])
         self.assertTrue(state["gtkModuleInstalled"])
-        self.assertTrue(state["qt6PluginInstalled"])
         self.assertTrue(state["browserHostInstalled"])
         self.assertFalse(state["wayland"])
         self.assertIsNone(state["session"])
@@ -115,13 +114,9 @@ class DistributionTests(unittest.TestCase):
         self.assert_success(launched)
         inherited = json.loads(launched.stdout)
         self.assertEqual(inherited["QT_IM_MODULE"], "fcitx")
-        self.assertEqual(inherited["QT_QPA_GENERIC_PLUGINS"], "existing-qt,typelay")
+        self.assertEqual(inherited["QT_QPA_GENERIC_PLUGINS"], "existing-qt")
         self.assertTrue(inherited["GTK3_MODULES"].endswith(":existing-gtk"))
-        self.assertTrue(inherited["QT_PLUGIN_PATH"].endswith(":/existing/plugins"))
-        self.assertTrue(
-            Path(inherited["QT_PLUGIN_PATH"].split(":")[0], "generic/libtypelay-qt6.so").is_file()
-        )
-
+        self.assertEqual(inherited["QT_PLUGIN_PATH"], "/existing/plugins")
         self.assert_success(
             subprocess.run(
                 [str(self.command), "--quit"],
