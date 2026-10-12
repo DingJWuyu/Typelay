@@ -275,7 +275,7 @@
 +    tlCount("tlqtKeyReplies", 1);
      auto *watcher = static_cast<ProcessKeyWatcher *>(w);
      bool filtered = false;
-@@ -1306,3 +1447,161 @@
+@@ -1306,3 +1447,178 @@
  }
  
 +// TypeLay 2026-10-12: exact-object cooperation for the original async IM path.
@@ -399,30 +399,47 @@
 +
 +bool QFcitxPlatformInputContext::tlControlKey(const QKeyEvent *event) {
 +    const bool release = event->type() == QEvent::KeyRelease;
++    bool traceCandidate = event->key() == Qt::Key_Tab || event->key() == Qt::Key_Escape;
++    for (const auto &key : qApp->property(TypeLayFcitxQtControlKeysPropertyV1).toList())
++        traceCandidate = traceCandidate || (key.metaType() == QMetaType::fromType<uint>() &&
++                                            key.toUInt() == event->nativeVirtualKey());
++    const auto trace = [&](const char *phase, int result) {
++        static unsigned lines = 0;
++        if (!traceCandidate || !qEnvironmentVariableIsSet("TYPELAY_TRACE") || lines++ >= 96) return;
++        auto *owner = qApp->property(TypeLayFcitxQtConsumerPropertyV1).value<QObject *>();
++        std::fprintf(stderr, "typelay-qt-control phase=%s release=%d candidate=%d bound=%d consumer=%d result=%d scanZero=%d dbus=%d forward=%d output=%d\n",
++            phase, int(release), int(traceCandidate), int(tlBound_ && tlBound_ == focusObjectWrapper()),
++            int(owner && qobject_cast<TypeLayFcitxQtControlV1 *>(owner)), result,
++            int(!event->nativeScanCode()), tlPendingDbus, tlPendingForward, tlOutputDepth);
++    };
++    trace("entry", -1);
 +    if (tlConsumedKey_ && event->nativeScanCode() == tlConsumedScan_) {
 +        if (release && !event->isAutoRepeat()) { tlConsumedKey_ = 0; tlConsumedScan_ = 0; }
++        trace("paired", 1);
 +        return true;
 +    }
 +    // Never overwrite an outstanding pair. A distinct key follows the original
 +    // input path; modifiers may change Qt::Key on the matching release.
 +    if (tlConsumedKey_ || !event->nativeScanCode() || release ||
-+        event->isAutoRepeat() || tlControl_) return false;
++        event->isAutoRepeat() || tlControl_) { trace("precheck", 0); return false; }
 +    bool candidate = event->modifiers() == Qt::NoModifier &&
 +        (event->key() == Qt::Key_Tab || event->key() == Qt::Key_Escape);
 +    for (const auto &key : qApp->property(TypeLayFcitxQtControlKeysPropertyV1).toList()) {
 +        if (key.metaType() == QMetaType::fromType<uint>() &&
 +            key.toUInt() == event->nativeVirtualKey()) candidate = true;
 +    }
-+    if (!candidate) return false;
++    if (!candidate) { trace("not-candidate", 0); return false; }
 +    QPointer<QObject> actual(focusObjectWrapper());
 +    QPointer<QObject> consumer(qApp->property(TypeLayFcitxQtConsumerPropertyV1).value<QObject *>());
 +    auto *control = consumer ? qobject_cast<TypeLayFcitxQtControlV1 *>(consumer.data()) : nullptr;
-+    if (!actual || actual != tlBound_ || !control) return false;
++    if (!actual || actual != tlBound_ || !control) { trace("binding", 0); return false; }
 +    QPointer<QFcitxPlatformInputContext> self(this);
 +    tlControl_ = true;
++    trace("consumer-call", -1);
 +    const bool consumed = control->filterControlKey(actual, const_cast<QKeyEvent *>(event));
 +    if (!self) return consumed;
 +    tlControl_ = false;
++    trace("consumer-result", int(consumed));
 +    if (consumed) { tlConsumedKey_ = event->key(); tlConsumedScan_ = event->nativeScanCode(); }
 +    return consumed;
 +}

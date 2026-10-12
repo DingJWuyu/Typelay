@@ -27,6 +27,7 @@
 #include <QtEndian>
 #include <cerrno>
 #include <cstring>
+#include <cstdio>
 #include <limits>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -142,7 +143,11 @@ public:
     bool filterControlKey(QObject *actualField, QEvent *inputEvent) override {
         if (!inputEvent || inputEvent->type() != QEvent::KeyPress) return false;
         const auto *event = static_cast<QKeyEvent *>(inputEvent);
-        if (handlingKey_ || event->isAutoRepeat() || !onThread()) return false;
+        traceGate("hook-enter", targets_.value(actualField, nullptr), publication_.value("authority").toObject(),
+            integer(publication_.value("permit").toObject(), "expiresAtMs", 0));
+        if (handlingKey_ || event->isAutoRepeat() || !onThread()) {
+            traceGate("hook-busy-repeat-thread", targets_.value(actualField, nullptr), {}, 0); return false;
+        }
         const auto shortcut = shortcutKind(event);
         if (shortcut.isEmpty() && (event->modifiers() != Qt::NoModifier
             || (event->key() != Qt::Key_Tab && event->key() != Qt::Key_Escape))) return false;
@@ -169,10 +174,18 @@ public:
             return false;
         }
         auto *target = discover(qobject_cast<QWidget *>(actualField));
-        if (!target || target != focused() || publication_.isEmpty() || !inspect(target)) return false;
+        if (!target || target != focused() || publication_.isEmpty()) {
+            traceGate("source-unavailable", target, publication_.value("authority").toObject(), 0); return false;
+        }
+        if (!inspect(target)) {
+            traceGate("source-inspect", target, publication_.value("authority").toObject(), 0); return false;
+        }
         const auto current = publication_;
         const auto basis = current.value("authority").toObject();
-        if (!authorityMatches(target, basis, true) || !clear(target->state)) { clearPermit(); return false; }
+        if (!authorityMatches(target, basis, true) || !clear(target->state)) {
+            traceGate("source-authority", target, basis, integer(current.value("permit").toObject(), "expiresAtMs", 0));
+            clearPermit(); return false;
+        }
         if (event->key() == Qt::Key_Escape) {
             const auto lease = current.value("lease").toObject();
             const qint64 age = now() - integer(lease.value("source").toObject(), "observedAtMs");
@@ -182,7 +195,10 @@ public:
             }
             return false;
         }
-        if (event->key() != Qt::Key_Tab || !ready(target, current)) { clearPermit(); return false; }
+        if (event->key() != Qt::Key_Tab || !ready(target, current)) {
+            traceGate("source-permit", target, basis, integer(current.value("permit").toObject(), "expiresAtMs", 0));
+            clearPermit(); return false;
+        }
         const auto permit = current.value("permit").toObject();
         const auto plan = permit.value("plan").toObject();
         const auto id = plan.value("id").toString();
@@ -192,7 +208,10 @@ public:
         clearPermit();
         const auto result = write(target, {{"plan", plan}, {"authority", basis},
             {"expiresAtMs", permit.value("expiresAtMs")}}, false);
-        if (result.value("status").toString() == "RejectedBeforeMutation") return false;
+        if (result.value("status").toString() == "RejectedBeforeMutation") {
+            traceGate("source-write-rejected", target, basis, integer(permit, "expiresAtMs", 0)); return false;
+        }
+        traceGate("source-consumed", target, basis, integer(permit, "expiresAtMs", 0));
         sendEvent("accepted", {{"planId", id}, {"acceptedAtMs", accepted}, {"receipt", result}});
         return true;
     }
@@ -208,6 +227,33 @@ private slots:
 
 private:
     bool onThread() const { return QThread::currentThread() == thread(); }
+    void traceGate(const char *phase, Target *target, const QJsonObject &basis, qint64 until,
+                   const char *reason = "none") const {
+        static unsigned traceLines = 0;
+        if (!qEnvironmentVariableIsSet("TYPELAY_TRACE") || traceLines >= 128) return;
+        ++traceLines;
+        const auto expected = basis.value("contextStamp").toObject();
+        const bool field = target && target->field;
+        const bool observed = target && target->observed;
+        // Fixed phases/reasons and numeric/boolean guards only. Never print
+        // field body, labels, metadata hashes, plan strings or target IDs.
+        std::fprintf(stderr, "TypeLay Qt6 phase=%s reason=%s remainingMs=%lld field=%d provider=%d focused=%d "
+            "published=%d mutating=%d probing=%d flags=%u contentSame=%d inputSame=%d focusSame=%d "
+            "contextSame=%d fieldSame=%d epochSame=%d imeInputSame=%d serverSame=%d appliedSame=%d\n",
+            phase, reason, static_cast<long long>(until - now()), int(field), int(target && target->provider),
+            int(field && QApplication::focusWidget() == target->field && QGuiApplication::focusObject() == target->field),
+            int(!publication_.isEmpty()), int(target && target->mutating), int(target && target->probing),
+            observed ? target->state.flags : 0u,
+            int(target && integer(basis, "contentRevision") == qint64(target->content)),
+            int(target && integer(basis, "inputRevision") == qint64(target->input)),
+            int(target && integer(basis, "focusRevision") == qint64(target->focus)),
+            int(observed && integer(expected, "context") == qint64(target->state.contextGeneration)),
+            int(observed && integer(expected, "field") == qint64(target->state.fieldGeneration)),
+            int(observed && integer(expected, "epoch") == qint64(target->state.epoch)),
+            int(observed && integer(expected, "input") == qint64(target->state.inputEpoch)),
+            int(observed && integer(expected, "server") == qint64(target->state.serverSerial)),
+            int(observed && integer(expected, "applied") == qint64(target->state.appliedSerial)));
+    }
     bool insideOverlay(QObject *object) const {
         for (auto *parent = object; parent; parent = parent->parent()) if (parent == card_) return true;
         return false;
@@ -478,25 +524,30 @@ private:
         const auto basis = request.value("authority").toObject();
         const auto approved = direct ? request.value("approved").toObject() : basis;
         const auto identity = expected.value("target").toObject();
+        auto reject = [&](const char *phase, const char *reason) {
+            traceGate(phase, target, basis, integer(request, "expiresAtMs", 0), reason);
+            return receipt("RejectedBeforeMutation", reason);
+        };
+        traceGate("write-enter", target, basis, integer(request, "expiresAtMs", 0));
         if (!target || plan.isEmpty() || expected.isEmpty() || basis.isEmpty() || approved.isEmpty()
             || identity.value("backend").toString() != "linux-qt6" || identity.value("value").toString() != target->id
             || identity.value("lifetime").toString() != lifetime_)
-            return receipt("RejectedBeforeMutation", "BadPlan");
+            return reject("write-header", "BadPlan");
         if (target->mutating || target->quarantined || !inspect(target) || !clear(target->state))
-            return receipt("RejectedBeforeMutation", "ImeUnclear");
+            return reject("write-inspect", "ImeUnclear");
         const qint64 until = integer(request, "expiresAtMs", 0), current = now();
         if (until <= current || until - current > (direct ? 250 : 100))
-            return receipt("RejectedBeforeMutation", "StaleObservation");
+            return reject("write-deadline", "StaleObservation");
         if (!metadataMatches(target, approved) || !authorityMatches(target, basis, true))
-            return receipt("RejectedBeforeMutation", "EpochChanged");
+            return reject("write-authority", "EpochChanged");
         QPointer<QLineEdit> field = target->field;
         QPointer<QObject> provider = target->provider;
         const auto text = field->text();
         const auto selected = selection(target);
         if (!expected.value("text").isString() || text != expected.value("text").toString())
-            return receipt("RejectedBeforeMutation", "SourceChanged");
+            return reject("write-source", "SourceChanged");
         if (selected != expected.value("selection").toObject())
-            return receipt("RejectedBeforeMutation", "SelectionChanged");
+            return reject("write-selection", "SelectionChanged");
         const auto replacement = plan.value("replacement").toString();
         const auto result = plan.value("resultText").toString();
         const auto scope = plan.value("scope").toObject();
@@ -507,7 +558,7 @@ private:
             || !boundary(text, from) || !boundary(text, to) || to < from || (!scope.isEmpty() && to == from)
             || integer(plan, "caret") != from + replacement.size() || result.size() > field->maxLength()
             || result != text.left(qsizetype(from)) + replacement + text.mid(qsizetype(to)))
-            return receipt("RejectedBeforeMutation", "InvalidText");
+            return reject("write-text", "InvalidText");
         const auto initialState = target->state;
         const auto connection = connectionGeneration_;
         const auto authorization = authorizationGeneration_;
@@ -523,20 +574,20 @@ private:
         };
         auto *capability = qobject_cast<TypeLayFcitxQtV1 *>(provider);
         if (!capability || !local(target, initialState))
-            return receipt("RejectedBeforeMutation", "ImeUnclear");
+            return reject("write-local-before-prepare", "ImeUnclear");
         // Prepare against the real provider while the original body is intact,
         // then inspect again. Standard Clear QLineEdit selection has no pending
         // preedit to commit; any unexpected reset/output still invalidates proof.
         {
             QScopedValueRollback<bool> probing(target->probing, true);
             if (!capability->prepareCaret(field, &initialState))
-                return receipt("RejectedBeforeMutation", "ImeUnclear");
+                return reject("write-prepare", "ImeUnclear");
         }
         if (!unchanged() || !inspect(target) || !clear(target->state)
             || target->state.contextGeneration != initialState.contextGeneration
             || target->state.fieldGeneration != initialState.fieldGeneration
             || target->state.inputEpoch != initialState.inputEpoch || !unchanged())
-            return receipt("RejectedBeforeMutation", "EpochChanged");
+            return reject("write-after-prepare", "EpochChanged");
         const auto baseline = target->state;
         QScopedValueRollback<bool> mutation(target->mutating, true);
         field->setSelection(int(from), int(to - from));
@@ -544,7 +595,7 @@ private:
         // condition after them and immediately before the first body mutation.
         const auto preparedSelection = QJsonObject{{"start", from}, {"end", to}};
         if (!unchanged() || selection(target) != preparedSelection || !local(target, baseline) || now() >= until)
-            return receipt("RejectedBeforeMutation", "EpochChanged");
+            return reject("write-after-selection", "EpochChanged");
         field->insert(replacement); // Native one-edit replacement and native undo.
         const bool verified = field && provider && target->field == field && target->provider == provider
             && focused() == target && target->input == input && target->focus == focus
@@ -556,6 +607,7 @@ private:
         clearPermit();
         if (!verified) {
             target->quarantined = true;
+            traceGate("write-readback", target, basis, until, "UnknownOutcome");
             return receipt("OutcomeUnknown", "UnknownOutcome");
         }
         auto verifiedSnapshot = expected;
@@ -566,6 +618,7 @@ private:
         verifiedSnapshot.insert("access", "Supported");
         auto outcome = receipt("Verified", "None");
         outcome.insert("verifiedSnapshot", verifiedSnapshot);
+        traceGate("write-verified", target, basis, until, "None");
         return outcome;
     }
 
