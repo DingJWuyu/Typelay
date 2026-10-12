@@ -61,6 +61,35 @@ def drive_preview_ui(port, process, output, confirmation):
                 except TimeoutError:
                     if time.monotonic() >= deadline:
                         page.screenshot(path=str(output / "ui-failure.png"))
+                        (output / "dialog-roles.json").write_text(
+                            json.dumps(
+                                page.locator(
+                                    '[role="dialog"], [role="alertdialog"]'
+                                ).all_inner_texts(),
+                                ensure_ascii=False,
+                            ),
+                            encoding="utf-8",
+                        )
+                        windows = subprocess.run(
+                            ["xdotool", "search", "--onlyvisible", "--name", "."],
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                            timeout=5,
+                        )
+                        titles = []
+                        for window in windows.stdout.splitlines():
+                            title_result = subprocess.run(
+                                ["xdotool", "getwindowname", window],
+                                capture_output=True,
+                                text=True,
+                                check=False,
+                                timeout=5,
+                            )
+                            titles.append(title_result.stdout.strip())
+                        (output / "window-titles.json").write_text(
+                            json.dumps(titles, ensure_ascii=False), encoding="utf-8"
+                        )
                         raise
             content = dialog.inner_text()
             if title == "TypeLay 翻译预览":

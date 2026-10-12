@@ -111,11 +111,11 @@ static void save_state(void) {
     State s = state();
     gchar *json = g_strdup_printf(
         "{\"request\":%u,\"result\":\"%s\",\"ready\":%s,\"known\":%s,"
-        "\"pending\":%s,\"composing\":%s,\"settled\":%s,\"serial\":%" G_GUINT64_FORMAT ","
+        "\"probe_valid\":%s,\"pending\":%s,\"composing\":%s,\"settled\":%s,\"serial\":%" G_GUINT64_FORMAT ","
         "\"delivered\":%" G_GUINT64_FORMAT ",\"length\":%u,\"replacement\":%s,"
         "\"nested_refused\":%s,\"nested_depth\":%u,\"epoch\":%" G_GUINT64_FORMAT ",\"unchanged_capture\":%s}\n",
         request, result, gtk_widget_get_mapped(window) ? "true" : "false",
-        s.valid && s.known ? "true" : "false", s.pending ? "true" : "false", s.composing ? "true" : "false",
+        s.valid && s.known ? "true" : "false", s.valid ? "true" : "false", s.pending ? "true" : "false", s.composing ? "true" : "false",
         settled(s) ? "true" : "false", s.serial, s.delivered,
         gtk_entry_buffer_get_length(gtk_entry_get_buffer(GTK_ENTRY(entry))),
         !strcmp(gtk_entry_get_text(GTK_ENTRY(entry)), replacement) ? "true" : "false",

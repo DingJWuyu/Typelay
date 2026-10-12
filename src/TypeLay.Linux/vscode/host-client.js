@@ -62,7 +62,7 @@ function translateSnapshot(hostPath, snapshot, cancellation) {
                 if (buffer.length !== length + 4) return;
                 try {
                     const response = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(4)));
-                    if (response?.id === 1 && ['disabled', 'not-ready', 'no-translation'].includes(response.error)) {
+                    if (response?.id === 1 && ['invalid-request', 'disabled', 'not-ready', 'no-translation', 'translation-failed', 'host-failed'].includes(response.error)) {
                         return finish(new Error(response.error));
                     }
                     if (!response || response.id !== 1 || response.error || !response.data) {

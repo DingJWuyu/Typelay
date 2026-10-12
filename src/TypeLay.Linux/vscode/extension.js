@@ -10,24 +10,24 @@ function activate(context) {
     context.subscriptions.push({ dispose: () => activeCancellation?.cancel() });
     async function translate(wholeDocument) {
         if (busy) {
-            await vscode.window.showInformationMessage('TypeLay：请先完成或取消当前翻译。');
-            return;
+            void vscode.window.showInformationMessage('TypeLay：请先完成或取消当前翻译。');
+            return { status: 'Busy' };
         }
         const editor = vscode.window.activeTextEditor;
         if (!vscode.workspace.isTrusted || process.platform !== 'linux') {
-            await vscode.window.showWarningMessage('TypeLay 编辑器命令仅支持本机 Linux 的受信任工作区。');
-            return;
+            void vscode.window.showWarningMessage('TypeLay 编辑器命令仅支持本机 Linux 的受信任工作区。');
+            return { status: 'Failed', reason: 'unsupported-environment' };
         }
         if (!editor || (!wholeDocument && editor.selection.isEmpty)) {
-            await vscode.window.showInformationMessage('请先选择要翻译的文字，或运行“TypeLay: 翻译整篇文档”。');
-            return;
+            void vscode.window.showInformationMessage('请先选择要翻译的文字，或运行“TypeLay: 翻译整篇文档”。');
+            return { status: 'Failed', reason: 'selection-required' };
         }
         // Only a user/machine choice may select executable code. Workspace and
         // folder settings must never choose a program to run on this machine.
         const hostPath = vscode.workspace.getConfiguration('typelay').inspect('hostPath')?.globalValue;
         if (typeof hostPath !== 'string' || !hostPath.startsWith('/')) {
-            await vscode.window.showWarningMessage('请在用户设置 typelay.hostPath 中填写已安装 TypeLay 启动器的绝对路径。');
-            return;
+            void vscode.window.showWarningMessage('请在用户设置 typelay.hostPath 中填写已安装 TypeLay 启动器的绝对路径。');
+            return { status: 'Failed', reason: 'host-not-configured' };
         }
         busy = true;
         let transaction;
@@ -38,7 +38,8 @@ function activate(context) {
                     modal: true,
                     detail: '请先完成输入法候选。整篇正文只交给本机 TypeLay；翻译后仍需预览并确认，不会自动替换。',
                 }, '翻译整篇文档');
-                if (choice !== '翻译整篇文档' || vscode.window.activeTextEditor !== editor) return;
+                if (choice !== '翻译整篇文档') return { status: 'Cancelled' };
+                if (vscode.window.activeTextEditor !== editor) return { status: 'RejectedBeforeMutation', reason: 'StaleObservation' };
             }
             transaction = new EditorTransaction(editor, { wholeDocument });
             const snapshot = transaction.snapshot();
@@ -50,20 +51,21 @@ function activate(context) {
                 finally { subscription.dispose(); }
             });
             if (!transaction.isCurrent()) {
-                await vscode.window.showInformationMessage('原文、选区或编辑器已变化，译文已作废，请重新翻译。');
-                return;
+                void vscode.window.showInformationMessage('原文、选区或编辑器已变化，译文已作废，请重新翻译。');
+                return { status: 'RejectedBeforeMutation', reason: 'StaleObservation' };
             }
             const choice = await vscode.window.showInformationMessage('TypeLay 翻译预览', {
                 modal: true,
                 detail: `原文：\n${snapshot.text}\n\n译文：\n${reply.translation}\n\n请核对原文完整，输入法候选已完成。确认只替换本次范围，不会发送或保存文档。`,
             }, '确认替换');
-            if (choice !== '确认替换') return;
+            if (choice !== '确认替换') return { status: 'Cancelled' };
             const status = await transaction.apply(reply);
             if (status === 'RejectedBeforeMutation') {
-                await vscode.window.showInformationMessage('原文、选区或编辑器已变化，未执行替换。');
+                void vscode.window.showInformationMessage('原文、选区或编辑器已变化，未执行替换。');
             } else if (status === 'OutcomeUnknown') {
-                await vscode.window.showWarningMessage('无法确认编辑结果。请检查原文；TypeLay 不会自动重试。');
+                void vscode.window.showWarningMessage('无法确认编辑结果。请检查原文；TypeLay 不会自动重试。');
             }
+            return { status };
         } catch (error) {
             if (error.message !== 'cancelled') {
                 const messages = {
@@ -75,8 +77,13 @@ function activate(context) {
                 };
                 const message = messages[error.message]
                     || '本机翻译未完成。请检查 TypeLay 启动器和已安装模型；原文未由此命令替换。';
-                await vscode.window.showWarningMessage(`TypeLay：${message}`);
+                void vscode.window.showWarningMessage(`TypeLay：${message}`);
+                const reasons = ['unsupported-editor', 'invalid-text', 'disabled', 'not-ready', 'no-translation',
+                    'host-not-configured', 'invalid-frame', 'host-timeout', 'host-unavailable', 'host-stopped',
+                    'translation-unavailable', 'invalid-request', 'translation-failed', 'host-failed'];
+                return { status: 'Failed', reason: reasons.includes(error.message) ? error.message : 'unexpected-error' };
             }
+            return { status: 'Cancelled' };
         } finally {
             transaction?.dispose();
             activeCancellation.dispose();

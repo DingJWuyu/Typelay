@@ -289,7 +289,7 @@ def session(out: Path):
                     except (FileNotFoundError, json.JSONDecodeError):
                         return {}
 
-                wait(lambda: state().get("ready"), "real GTK/Fcitx context")
+                wait(lambda: state().get("ready"), "mapped GTK fixture")
                 windows = wait(
                     lambda: subprocess.run(
                         ["xdotool", "search", "--onlyvisible", "--pid", str(children[-1].pid)],
@@ -302,8 +302,11 @@ def session(out: Path):
                 )
                 window = windows[0]
                 run(["xdotool", "windowfocus", "--sync", window], env=env)
+                wait(lambda: state().get("probe_valid"), "actual bound Fcitx IC handshake")
+                (out / "engine-before.txt").write_text(run(["fcitx5-remote", "-n"], env=env) + "\n")
                 run(["fcitx5-remote", "-o"], env=env)
                 run(["fcitx5-remote", "-s", "pinyin"], env=env)
+                (out / "engine-after.txt").write_text(run(["fcitx5-remote", "-n"], env=env) + "\n")
                 wait(lambda: state().get("known"), "patched engine cooperation")
                 request = 0
 

@@ -54,31 +54,45 @@
          if (blocked_) {
              blockedEvents_.emplace_back(
                  BATCHED_FORWARD_KEY,
-@@ -294,6 +302,23 @@
+@@ -294,6 +302,37 @@
      if (currentMessage()->sender() != name_)                                   \
      return
  
 +    // Feasibility RPC, not a universal IM-idle contract. Caller must compare
 +    // serial against outputs it has actually applied and bind field lifecycle.
-+    std::tuple<uint64_t, bool, bool, bool> typelayProbeStateV1() {
++    std::tuple<uint64_t, bool, bool, bool, bool> typelayProbeStateV1() {
 +        CHECK_SENDER_OR_RETURN {};
 +        auto *engine = im_->instance()->inputMethodEngine(this);
-+        if (!engine || !hasFocus()) return {typelayOutputSerial_, false, true, true};
++        const auto *entry = im_->instance()->inputMethodEntry(this);
++        auto report = [&](const char *reason) {
++            const std::string diagnostic = std::string(reason) + " engine="
++                + (entry ? entry->uniqueName() : "none");
++            if (diagnostic != typelayLastDiagnostic_) {
++                typelayLastDiagnostic_ = diagnostic;
++                FCITX_INFO() << "TypeLay probe " << path_.path() << " " << diagnostic;
++            }
++        };
++        if (!engine || !hasFocus()) {
++            report(!engine ? "no-engine" : "no-focus");
++            return {typelayOutputSerial_, false, true, true, hasFocus()};
++        }
 +        try {
 +            bool pending = engine->call<IPinyinEngine::typelayHasPendingCommitV1>(this);
++            report("known");
 +            bool composing = im_->instance()->isComposing(this)
 +                || !inputPanel().clientPreedit().empty()
 +                || !inputPanel().preedit().empty() || bool(inputPanel().candidateList());
-+            return {typelayOutputSerial_, true, pending, composing};
++            return {typelayOutputSerial_, true, pending, composing, hasFocus()};
 +        } catch (const std::exception &) {
-+            return {typelayOutputSerial_, false, true, true};
++            report("missing-pinyin-capability");
++            return {typelayOutputSerial_, false, true, true, hasFocus()};
 +        }
 +    }
 +
      void focusInDBus() {
          CHECK_SENDER_OR_RETURN;
          focusIn();
-@@ -467,9 +492,10 @@
+@@ -467,9 +506,10 @@
          blockedEvents_.clear();
      }
  
@@ -86,19 +100,20 @@
 +    void sendFocusOut() { ++typelayOutputSerial_; notifyFocusOutTo(name_); }
  
  private:
-+    FCITX_OBJECT_VTABLE_METHOD(typelayProbeStateV1, "TypeLayProbeStateV1", "", "tbbb");
++    FCITX_OBJECT_VTABLE_METHOD(typelayProbeStateV1, "TypeLayProbeStateV1", "", "tbbbb");
      FCITX_OBJECT_VTABLE_METHOD(focusInDBus, "FocusIn", "", "");
      FCITX_OBJECT_VTABLE_METHOD(focusOutDBus, "FocusOut", "", "");
      FCITX_OBJECT_VTABLE_METHOD(resetDBus, "Reset", "", "");
-@@ -529,6 +555,7 @@
+@@ -529,6 +569,8 @@
      std::string name_;
      CapabilityFlags rawCapabilityFlags_;
      std::optional<uint64_t> supportedCapability_;
 +    uint64_t typelayOutputSerial_ = 0;
++    std::string typelayLastDiagnostic_;
      bool blocked_ = false;
      std::vector<DBusBlockedEvent> blockedEvents_;
      std::unique_ptr<HandlerTableEntry<EventHandler>> vkVisibilityChanged_;
-@@ -653,3 +680,4 @@
+@@ -653,3 +695,4 @@
  } // namespace fcitx
  
  FCITX_ADDON_FACTORY_V2(dbusfrontend, fcitx::DBusFrontendModuleFactory);

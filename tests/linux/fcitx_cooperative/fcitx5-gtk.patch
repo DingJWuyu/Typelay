@@ -71,7 +71,7 @@
      }
  }
  
-@@ -1205,3 +1214,22 @@
+@@ -1205,3 +1214,23 @@
  }
  
  // kate: indent-mode cstyle; replace-tabs on;
@@ -85,14 +85,15 @@
 +    GVariant *reply = g_dbus_proxy_call_sync(self->priv->icproxy,
 +        "TypeLayProbeStateV1", NULL, G_DBUS_CALL_FLAGS_NONE, 1000, NULL, error);
 +    if (!reply) return FALSE;
-+    if (!g_variant_is_of_type(reply, G_VARIANT_TYPE("(tbbb)"))) {
++    if (!g_variant_is_of_type(reply, G_VARIANT_TYPE("(tbbbb)"))) {
 +        g_variant_unref(reply);
 +        return FALSE;
 +    }
-+    g_variant_get(reply, "(tbbb)", server_serial, known, pending, composing);
++    gboolean focused = FALSE;
++    g_variant_get(reply, "(tbbbb)", server_serial, known, pending, composing, &focused);
 +    *delivered = self->priv->typelayDelivered;
 +    g_variant_unref(reply);
-+    return TRUE;
++    return focused;
 +}
 --- a/fcitx-gclient/fcitxgclient.h
 +++ b/fcitx-gclient/fcitxgclient.h
