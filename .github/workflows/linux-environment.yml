@@ -16,23 +16,16 @@ jobs:
           pacman -Syu --noconfirm cmake ninja pkgconf gtk3 json-glib python python-gobject gtk-layer-shell niri mesa grim yad qt6-base qt6-wayland qt6-tools xorg-server-xvfb xdotool dbus xdg-desktop-portal-gtk
           mkdir -p output
           tar -C / -I 'zstd -T0 -6' --exclude=usr/share/doc --exclude=usr/share/man --exclude=usr/share/info --exclude=usr/share/locale -cf output/arch-desktop.tar.zst usr etc/fonts
+          split -b 400M output/arch-desktop.tar.zst output/arch.part.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: typelay-local-arch
-          path: output/arch-desktop.tar.zst
+          name: typelay-local-arch-a
+          path: output/arch.part.aa
           compression-level: 0
           retention-days: 1
-  execution:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Collect public userspace execution packages
-        run: |
-          mkdir -p output
-          cd output
-          apt-get download proot libtalloc2
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: typelay-local-execution
-          path: output/*.deb
+          name: typelay-local-arch-b
+          path: output/arch.part.ab
+          compression-level: 0
           retention-days: 1
