@@ -1,6 +1,6 @@
 # Fcitx 合作组件预览
 
-这套可选组件让 TypeLay 与实际 Fcitx 输入事务协作。已验证范围是 GTK3、GTK4 的标准 GtkEntry 和原生 GtkEntryBuffer；GTK4 须单独以 --gtk4 启动。Qt、GtkTextView、通用 Electron 尚未开放。普通 TypeLay 安装不会安装或启用这些组件。
+这套可选组件让 TypeLay 与实际 Fcitx 输入事务协作。已验证范围包括 GTK3、GTK4 的标准 GtkEntry 和原生 GtkEntryBuffer；新增标准纯文本 TextView 使用原生 TextBuffer，GTK4 已有模型/选区/undo/IME 实证，GTK3 复用实现以当前提交 CI 为准。GTK4 须单独以 --gtk4 启动。Qt、非纯文本/自定义控件、通用 Electron 尚未开放。普通 TypeLay 安装不会安装或启用这些组件。
 
 当前固定 Core 5.1.22、Chinese Addons 5.1.14、GTK IM 5.1.7、完整私有 LibIME 1.1.16。对应组件已在隔离环境完整构建，实际库、模型路径与同版官方包均有校验。搬迁后的私有包已通过默认组件会话、配置/前台重启、原 session bus，以及嵌套 niri 的实际 CPU 模型、自动预览、一次 Tab 写回、编辑后两阶段 Tab 与拼音组合保护。实际按键由隔离桌面自动化送入，不能代替用户 CachyOS 桌面的物理输入验收。
 
@@ -92,7 +92,7 @@ GTK4 应用使用 `python fcitx-cooperative.py launch --gtk4 应用命令`。只
 - pinyin 的延后标点提交在原输入法切换后仍可能存活，因此同一 IC 查询已加载 pinyin 的真实 pending 状态，同时保留当前 keyboard/pinyin 与 Core compose 检查。
 - `src/ui/classicui/inputwindow.cpp` 点击时重新读取当前 candidateList。classicui/notificationitem 的延迟菜单 action 只按已审计组件的实际动作处理，不缓存旧正文提交，不能仅因有 timer 就拒绝。
 - `src/modules/clipboard/xcbclipboard.cpp` 与 `waylandclipboard.cpp` 的异步接收只更新剪贴板历史；真正提交发生在新按键或当前候选选择中。剪贴板活动模式仍必须拒绝。
-- `src/frontend/waylandim/` 和 `src/frontend/xim/xim.cpp` 向各自 IC 路由输入，不赋予这些前端本身 TypeLay 字段权限。本包仅开放已绑定的 GTK3/GTK4 标准 Entry DBus context。
+- `src/frontend/waylandim/` 和 `src/frontend/xim/xim.cpp` 向各自 IC 路由输入，不赋予这些前端本身 TypeLay 字段权限。本包仅开放已绑定的 GTK3/GTK4 标准 Entry 或纯文本 TextView DBus context。
 - Chinese `modules/chttrans` 与 `modules/fullwidth` 为同步输出过滤，保留用户繁简/全角偏好；chttrans 构建保留 OpenCC。
 - Chinese `modules/cloudpinyin/cloudpinyin_public.h` 的网络结果只回填受 `watch()` 生命周期保护的候选，并刷新当前候选 UI；未完成候选的 select 直接返回，不登记迟到提交。实际提交只发生在已有结果后的真实选词中。私有包同源重编 cloudpinyin 并核实际来源，保留原云拼音开关，不启用或关闭云服务。该模块可在读取拼音配置时加载，加载本身不代表用户开启了网络查询。
 

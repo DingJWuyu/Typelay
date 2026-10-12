@@ -122,6 +122,7 @@ def build_inputs():
             for file in [
                 *files,
                 ABI,
+                ROOT / "src/TypeLay.Linux/native/common/gtk-textbuffer-write.inc",
                 *sorted(
                     path
                     for path in GTK4_NATIVE.iterdir()

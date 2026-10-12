@@ -10,6 +10,7 @@ typedef struct Target Target;
 struct Target {
     GtkWidget *widget; /* weak; removed in the widget's destroy handler */
     GObject *buffer;
+    GObject *tag_table;
     GtkIMContext *im_context;
     GThread *thread;
     gulong im_handler;

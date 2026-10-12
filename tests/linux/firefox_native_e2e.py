@@ -364,6 +364,44 @@ class FirefoxNativeContract(unittest.TestCase):
                 )
                 self.assertEqual(history["redone"], actual["after"])
 
+            # Remove every matching document, exercising this end's explicit
+            # native Port.disconnect(), then require a genuinely fresh host.
+            old_lifetime = hello["data"]["lifetime"]
+            web("POST", "/window", {"handle": first})
+            web("POST", "/url", {"url": "about:blank"})
+            web("POST", "/window", {"handle": second})
+            web("POST", "/url", {"url": "about:blank"})
+            deadline = time.monotonic() + 10
+            while True:
+                remaining = deadline - time.monotonic()
+                self.assertGreater(remaining, 0, "Old native connection never closed")
+                connection.settimeout(remaining)
+                if not connection.recv(65536):
+                    break
+            web("POST", "/url", {"url": url + "/reconnected"})
+            self.type_source(web, "Fresh document")
+            fresh_connection, _ = listener.accept()
+            fresh_connection = stack.enter_context(fresh_connection)
+            fresh_connection.settimeout(10)
+            fresh_hello = native.receive(fresh_connection)
+            self.assertEqual(fresh_hello["event"], "hello")
+            self.assertNotEqual(fresh_hello["data"]["lifetime"], old_lifetime)
+            fresh_description = native.focused_description(fresh_connection)
+            self.assertNotEqual(fresh_description["target"], current["target"])
+            fresh_snapshot = native.request(
+                fresh_connection,
+                "capture",
+                {
+                    "target": fresh_description["target"],
+                    "authority": fresh_description["authority"],
+                },
+            )
+            self.assertIsNotNone(fresh_snapshot)
+            self.assertEqual(fresh_snapshot["text"], "Fresh document")
+            self.assertIsNone(
+                native.request(fresh_connection, "describe", {"target": current["target"]})
+            )
+
     def capture(self, native, connection, description, web):
         # Match production observation polling: each read gets a NEW metadata
         # approval for this exact target. Never replay expired authority or a write.

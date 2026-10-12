@@ -57,6 +57,7 @@ BUILD_INPUTS = (
     "tests/linux/fcitx_cooperative/fixture.c",
     *(f"tests/linux/fcitx_cooperative/{project}.patch" for project in PATCHED_UPSTREAM),
     "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-v1.h",
+    "src/TypeLay.Linux/native/common/gtk-textbuffer-write.inc",
     *(
         str(p.relative_to(ROOT))
         for p in sorted((ROOT / "src/TypeLay.Linux/native/gtk4").iterdir())

@@ -181,26 +181,37 @@ class BrowserContract(unittest.TestCase):
         self.assertLessEqual(result["snapshot"]["observedAtMs"], result["hostUpperAtReturn"])
 
     def test_unrelated_clock_rebase_cannot_extend_published_deadline(self):
-        snapshot = self.type_source()
-        data = {
-            "target": snapshot["target"],
-            "authority": snapshot["authority"],
-            "permit": {"plan": self.plan(snapshot)},
-        }
+        self.page.keyboard.insert_text("Hello")
+        template = self.plan({"target": "", "text": "", "selection": {}, "observedAtMs": 0})
+        # This transport contract does not model Python/CDP round-trip latency.
+        # Establish the one approved capture and initial permit in one browser turn.
         published = self.page.evaluate(
-            """data => {
-              const command = {id: 920, op: 'publish', data};
+            """plan => {
+              const started = performance.now();
+              const description = fixtureCommand({id: 918, op: 'describe'});
+              const snapshot = description && fixtureCommand({id: 919, op: 'capture', data: {
+                target: description.target, authority: description.authority}});
+              if (!snapshot) return {captured: false, diagnostic: description?.diagnostics};
+              plan.expected = {...plan.expected, target: {...plan.expected.target, value: snapshot.target},
+                text: snapshot.text, selection: snapshot.selection, observedAtMs: snapshot.observedAtMs};
+              const command = {id: 920, op: 'publish', data: {
+                target: snapshot.target, authority: snapshot.authority, permit: {plan}}};
               const result = fixtureCommand(command);
               window.fixtureOriginalDeadline = command.data.permit.expiresAtMs - 1000000;
-              return {...result, publication: fixtureCommand({id: 922, op: 'describe'}).publication,
+              const observed = fixtureCommand({id: 922, op: 'describe'});
+              return {...result, captured: true, publication: observed?.publication,
                 acknowledged: fixtureMessages.findLast(item => item.event === 'publication')?.data,
-                expiresAtMs: command.data.permit.expiresAtMs};
+                expiresAtMs: command.data.permit.expiresAtMs,
+                diagnostic: {...observed?.diagnostics, elapsedMs: performance.now() - started,
+                  focused: document.hasFocus(), activeIsSource: document.activeElement.id === 'source'}};
             }""",
-            data,
+            template,
         )
-        self.assertTrue(published["published"])
-        self.assertTrue(published["publication"]["ready"])
-        self.assertTrue(published["acknowledged"]["ready"])
+        diagnostic = str(published.get("diagnostic"))
+        self.assertTrue(published["captured"], diagnostic)
+        self.assertTrue(published["published"], diagnostic)
+        self.assertTrue(published["publication"]["ready"], diagnostic)
+        self.assertTrue(published["acknowledged"]["ready"], diagnostic)
         self.assertEqual(published["acknowledged"]["planId"], "test-plan")
         self.assertEqual(published["publication"]["planId"], "test-plan")
         self.assertLessEqual(published["publication"]["readyUntilHostMs"], published["expiresAtMs"])

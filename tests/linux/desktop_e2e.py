@@ -892,57 +892,63 @@ def run(arguments):
                             evidence.append(
                                 "GTK4 actual Unicode composition blocks TypeLay and commits through the original input method"
                             )
-                            multiline = gtk_state()["multiline"]
-                            multiline_source = multiline["text"]
-                            prefix, suffix = "Before 😀\n", "\nAfter untouched"
-                            subprocess.run(
-                                [
-                                    "xdotool",
-                                    "mousemove",
-                                    "--sync",
-                                    str(round(multiline["x"] + 12)),
-                                    str(round(multiline["y"] + 12)),
-                                    "click",
-                                    "1",
-                                ],
-                                check=True,
-                                timeout=3,
-                            )
-                            wait_for(
-                                lambda: gtk_state().get("focus") == "fixture-multiline"
-                                and gtk_state().get("focusedImeClear"),
-                                "GTK4 multiline input did not acquire its actual clear IM context",
-                            )
-                            key("ctrl+Home")
-                            key("Down")
-                            key("Home")
-                            key("shift+Down")
-                            key("shift+End")
-                            wait_for(
-                                lambda: gtk_state()["multiline"]["start"] == len(prefix)
-                                and gtk_state()["multiline"]["end"]
-                                == len(multiline_source) - len(suffix)
-                                and ready_to_accept(),
-                                "GTK4 multiline selected range did not receive a candidate",
-                            )
-                            before_write = trace_checkpoint()
-                            key("Tab")
-                            multiline_after = wait_for(
-                                lambda: value
-                                if (value := gtk_state()["multiline"]["text"]) != multiline_source
-                                else None,
-                                "GTK4 multiline Tab did not replace the selected range",
-                            )
-                            wait_for(
-                                lambda: verified_write(before_write),
-                                "GTK4 multiline write lacked a verified receipt",
-                            )
-                            assert multiline_after.startswith(prefix) and multiline_after.endswith(
-                                suffix
-                            )
-                            middle = multiline_after[len(prefix) : -len(suffix)]
-                            assert "\n" in middle and re.search(r"[\u3400-\u9fff]", middle)
-                            assert gtk_state()["focus"] == "fixture-multiline"
+                        switch_im("keyboard-us")
+                        multiline = gtk_state()["multiline"]
+                        multiline_source = multiline["text"]
+                        prefix, suffix = "Before 😀\n", "\nAfter untouched"
+                        subprocess.run(
+                            [
+                                "xdotool",
+                                "mousemove",
+                                "--sync",
+                                str(round(multiline["x"] + 12)),
+                                str(round(multiline["y"] + 12)),
+                                "click",
+                                "1",
+                            ],
+                            check=True,
+                            timeout=3,
+                        )
+                        wait_for(
+                            lambda: gtk_state().get("focus") == "fixture-multiline"
+                            and gtk_state().get("focusedImeClear"),
+                            "GTK multiline input did not acquire its actual clear IM context",
+                        )
+                        key("ctrl+Home")
+                        key("Down")
+                        key("Home")
+                        key("shift+Down")
+                        key("shift+End")
+                        wait_for(
+                            lambda: gtk_state()["multiline"]["start"] == len(prefix)
+                            and gtk_state()["multiline"]["end"]
+                            == len(multiline_source) - len(suffix)
+                            and ready_to_accept(),
+                            "GTK multiline selected range did not receive a candidate",
+                        )
+                        before_write = trace_checkpoint()
+                        before_actions = gtk_state().get("userActionsStarted", 0)
+                        key("Tab")
+                        multiline_after = wait_for(
+                            lambda: value
+                            if (value := gtk_state()["multiline"]["text"]) != multiline_source
+                            else None,
+                            "GTK multiline Tab did not replace the selected range",
+                        )
+                        wait_for(
+                            lambda: verified_write(before_write),
+                            "GTK multiline write lacked a verified receipt",
+                        )
+                        assert multiline_after.startswith(prefix) and multiline_after.endswith(
+                            suffix
+                        )
+                        middle = multiline_after[len(prefix) : -len(suffix)]
+                        assert "\n" in middle and re.search(r"[\u3400-\u9fff]", middle)
+                        assert gtk_state()["focus"] == "fixture-multiline"
+                        if not gtk4:
+                            assert gtk_state()["userActionsStarted"] == before_actions + 1
+                            assert gtk_state()["userActionsFinished"] == before_actions + 1
+                        if gtk4:
                             assert gtk_state()["multiline"]["canUndo"]
                             key("ctrl+z")
                             wait_for(
@@ -954,51 +960,57 @@ def run(arguments):
                                 lambda: gtk_state()["multiline"]["text"] == multiline_after,
                                 "GTK4 native redo did not restore the translated range",
                             )
-                            switch_im("pinyin")
-                            key("ctrl+End")
-                            typed("nihao")
+                        switch_im("pinyin")
+                        key("ctrl+End")
+                        typed("nihao")
+                        wait_for(
+                            lambda: gtk_state().get("focusedImeComposing")
+                            and not status().get("acceptanceReady"),
+                            "GTK multiline real pinyin did not revoke acceptance",
+                        )
+                        assert gtk_state()["multiline"]["text"] == multiline_after
+                        key("space")
+                        wait_for(
+                            lambda: gtk_state()["multiline"]["text"] != multiline_after
+                            and gtk_state().get("focusedImeClear"),
+                            "GTK multiline pinyin did not commit normally",
+                        )
+                        switch_im("keyboard-us")
+                        evidence.append(
+                            "GTK plain TextView: selected multiline CPU translation, UTF-16 emoji surroundings, one Tab and real pinyin protection"
+                            + (
+                                "; GTK4 native undo/redo"
+                                if gtk4
+                                else "; GTK3 host user-action grouping"
+                            )
+                        )
+                        for field in gtk_state()["excludedTextViews"]:
+                            before_write = trace_checkpoint()
+                            subprocess.run(
+                                [
+                                    "xdotool",
+                                    "mousemove",
+                                    "--sync",
+                                    str(round(field["x"] + 12)),
+                                    str(round(field["y"] + 12)),
+                                    "click",
+                                    "1",
+                                ],
+                                check=True,
+                                timeout=3,
+                            )
                             wait_for(
-                                lambda: gtk_state().get("focusedImeComposing")
+                                lambda: gtk_state().get("focus") == field["name"]
+                                and status().get("input", {}).get("captureStatus")
+                                in ("excluded-or-sensitive", "no-native-field")
                                 and not status().get("acceptanceReady"),
-                                "GTK4 multiline real pinyin did not revoke acceptance",
+                                "GTK non-plain TextView was not refused before capture",
                             )
-                            assert gtk_state()["multiline"]["text"] == multiline_after
-                            key("space")
-                            wait_for(
-                                lambda: gtk_state()["multiline"]["text"] != multiline_after
-                                and gtk_state().get("focusedImeClear"),
-                                "GTK4 multiline pinyin did not commit normally",
-                            )
-                            switch_im("keyboard-us")
-                            evidence.append(
-                                "GTK4 plain TextView: selected multiline CPU translation, UTF-16 emoji surroundings, one Tab, native undo/redo and real pinyin protection"
-                            )
-                            for field in gtk_state()["excludedTextViews"]:
-                                before_write = trace_checkpoint()
-                                subprocess.run(
-                                    [
-                                        "xdotool",
-                                        "mousemove",
-                                        "--sync",
-                                        str(round(field["x"] + 12)),
-                                        str(round(field["y"] + 12)),
-                                        "click",
-                                        "1",
-                                    ],
-                                    check=True,
-                                    timeout=3,
-                                )
-                                wait_for(
-                                    lambda: gtk_state().get("focus") == field["name"]
-                                    and status().get("input", {}).get("captureStatus")
-                                    in ("excluded-or-sensitive", "no-native-field")
-                                    and not status().get("acceptanceReady"),
-                                    "GTK4 non-plain TextView was not refused before capture",
-                                )
-                                assert not new_write_outcomes(before_write)
-                            evidence.append(
-                                "GTK4 tagged, embedded-object and readonly TextViews: refused before source capture"
-                            )
+                            assert not new_write_outcomes(before_write)
+                        evidence.append(
+                            "GTK tagged, embedded-object and readonly TextViews: refused before source capture"
+                        )
+                        if gtk4:
                             source_before = gtk_state()["first"]
                             for field in gtk_state()["protectedFields"]:
                                 before_write = trace_checkpoint()
@@ -1052,7 +1064,7 @@ def run(arguments):
                     "scope": arguments.desktop_scope + "-desktop-and-lifecycle",
                     "passed": evidence,
                     "unsupported": [
-                        "uncooperative GTK inputs, GTK3 TextView, tagged or embedded-object GTK4 buffers, Qt, nonstandard GTK4 widgets and generic Electron"
+                        "uncooperative GTK inputs, tagged or embedded-object GTK buffers, Qt, nonstandard GTK widgets and generic Electron"
                     ],
                 },
                 indent=2,

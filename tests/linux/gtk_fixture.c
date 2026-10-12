@@ -5,8 +5,16 @@
 /* Only the isolated test executable writes this evidence. Production has no
  * command to dump source text, inject input or change a test model. */
 static GtkWidget *report_window, *report_first, *report_second, *other_window, *other_entry;
+static GtkWidget *report_multiline, *excluded_views[3];
 static const char *report_path;
 static char *last_report;
+static guint user_actions_started, user_actions_finished;
+static void action_started(GtkTextBuffer *buffer, gpointer data) {
+    (void)buffer; (void)data; user_actions_started++;
+}
+static void action_finished(GtkTextBuffer *buffer, gpointer data) {
+    (void)buffer; (void)data; user_actions_finished++;
+}
 
 static gboolean inspect_ime(GtkWidget *widget, TlFcitxStateV1 *state) {
     GtkIMContext *context = widget ? g_object_get_data(G_OBJECT(widget), TL_FCITX_CONTEXT_V1) : NULL;
@@ -61,6 +69,8 @@ static gboolean report_state(gpointer unused) {
         valid = inspect_ime(focus, &state);
         json_builder_set_member_name(builder, "focusedImeClear");
         json_builder_add_boolean_value(builder, valid && ime_clear(&state));
+        json_builder_set_member_name(builder, "focusedImeComposing");
+        json_builder_add_boolean_value(builder, valid && (state.flags & TL_FCITX_COMPOSING));
         json_builder_set_member_name(builder, "fullscreen");
         json_builder_add_boolean_value(builder,
             (gdk_window_get_state(gtk_widget_get_window(report_window)) & GDK_WINDOW_STATE_FULLSCREEN) != 0);
@@ -92,6 +102,37 @@ static gboolean report_state(gpointer unused) {
             json_builder_end_object(builder);
         } else json_builder_add_null_value(builder);
     }
+    json_builder_set_member_name(builder, "userActionsStarted"); json_builder_add_int_value(builder, user_actions_started);
+    json_builder_set_member_name(builder, "userActionsFinished"); json_builder_add_int_value(builder, user_actions_finished);
+    json_builder_set_member_name(builder, "multiline");
+    json_builder_begin_object(builder);
+    GtkTextBuffer *multiline = gtk_text_view_get_buffer(GTK_TEXT_VIEW(report_multiline));
+    GtkTextIter begin, end, selected_begin, selected_end;
+    gtk_text_buffer_get_bounds(multiline, &begin, &end);
+    char *body = gtk_text_buffer_get_text(multiline, &begin, &end, TRUE);
+    json_builder_set_member_name(builder, "text"); json_builder_add_string_value(builder, body);
+    g_free(body);
+    gtk_text_buffer_get_selection_bounds(multiline, &selected_begin, &selected_end);
+    json_builder_set_member_name(builder, "start"); json_builder_add_int_value(builder, gtk_text_iter_get_offset(&selected_begin));
+    json_builder_set_member_name(builder, "end"); json_builder_add_int_value(builder, gtk_text_iter_get_offset(&selected_end));
+    gint x, y;
+    if (gtk_widget_translate_coordinates(report_multiline, report_window, 0, 0, &x, &y)) {
+        json_builder_set_member_name(builder, "x"); json_builder_add_int_value(builder, x);
+        json_builder_set_member_name(builder, "y"); json_builder_add_int_value(builder, y);
+    }
+    json_builder_end_object(builder);
+    json_builder_set_member_name(builder, "excludedTextViews");
+    json_builder_begin_array(builder);
+    for (guint i = 0; i < G_N_ELEMENTS(excluded_views); i++) {
+        if (gtk_widget_translate_coordinates(excluded_views[i], report_window, 0, 0, &x, &y)) {
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "name"); json_builder_add_string_value(builder, gtk_buildable_get_name(GTK_BUILDABLE(excluded_views[i])));
+            json_builder_set_member_name(builder, "x"); json_builder_add_int_value(builder, x);
+            json_builder_set_member_name(builder, "y"); json_builder_add_int_value(builder, y);
+            json_builder_end_object(builder);
+        }
+    }
+    json_builder_end_array(builder);
     json_builder_end_object(builder);
     JsonNode *node = json_builder_get_root(builder);
     JsonGenerator *generator = json_generator_new();
@@ -137,8 +178,32 @@ int main(int argc, char **argv) {
     gtk_box_pack_start(GTK_BOX(box), password, FALSE, FALSE, 0);
     GtkWidget *view = gtk_text_view_new();
     gtk_buildable_set_name(GTK_BUILDABLE(view), "fixture-multiline");
-    gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(view)), "first line\nsecond line", -1);
-    gtk_box_pack_start(GTK_BOX(box), view, TRUE, TRUE, 0);
+    gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(view)), "Before 😀\nPlease review this note.\nPlease send me the final version.\nAfter untouched", -1);
+    gtk_widget_set_size_request(view, -1, 100);
+    report_multiline = view;
+    g_signal_connect(gtk_text_view_get_buffer(GTK_TEXT_VIEW(view)), "begin-user-action", G_CALLBACK(action_started), NULL);
+    g_signal_connect(gtk_text_view_get_buffer(GTK_TEXT_VIEW(view)), "end-user-action", G_CALLBACK(action_finished), NULL);
+    gtk_box_pack_start(GTK_BOX(box), view, FALSE, FALSE, 0);
+    const char *names[] = {"fixture-tagged", "fixture-object", "fixture-readonly"};
+    for (guint i = 0; i < G_N_ELEMENTS(excluded_views); i++) {
+        GtkWidget *excluded = gtk_text_view_new();
+        excluded_views[i] = excluded;
+        gtk_buildable_set_name(GTK_BUILDABLE(excluded), names[i]);
+        GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(excluded));
+        gtk_text_buffer_set_text(buffer, "Excluded fixture content", -1);
+        GtkTextIter first, last;
+        gtk_text_buffer_get_bounds(buffer, &first, &last);
+        if (i == 0) {
+            GtkTextTag *tag = gtk_text_buffer_create_tag(buffer, "fixture-tag", "weight", PANGO_WEIGHT_BOLD, NULL);
+            gtk_text_buffer_apply_tag(buffer, tag, &first, &last);
+        } else if (i == 1) {
+            GtkTextChildAnchor *anchor = gtk_text_buffer_create_child_anchor(buffer, &first);
+            gtk_text_view_add_child_at_anchor(GTK_TEXT_VIEW(excluded), gtk_label_new("Embedded object"), anchor);
+        } else gtk_text_view_set_editable(GTK_TEXT_VIEW(excluded), FALSE);
+        gtk_widget_set_size_request(excluded, -1, 32);
+        gtk_box_pack_start(GTK_BOX(box), excluded, FALSE, FALSE, 0);
+    }
+
     g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
     gtk_widget_show_all(window);
     if (g_getenv("TYPELAY_FIXTURE_FULLSCREEN")) gtk_window_fullscreen(GTK_WINDOW(window));

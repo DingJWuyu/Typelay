@@ -445,7 +445,7 @@
          } else {
              fcitx_g_client_process_key(
                  fcitxcontext->client, event->keyval, event->hardware_keycode,
-@@ -1772,3 +1881,127 @@
+@@ -1772,3 +1881,130 @@
  }
  
  // kate: indent-mode cstyle; replace-tabs on;
@@ -563,13 +563,16 @@
 +
 +static gboolean typelay_prepare_caret(GtkIMContext *context, GtkWidget *widget,
 +                                      const TlFcitxStateV1 *baseline) {
-+    if (!GTK_IS_ENTRY(widget) || !typelay_validate_local(context, widget, baseline)) return FALSE;
++    if (!widget || !typelay_validate_local(context, widget, baseline)) return FALSE;
++    const gboolean text_view = G_OBJECT_TYPE(widget) == GTK_TYPE_TEXT_VIEW;
++    if (!text_view && !GTK_IS_ENTRY(widget)) return FALSE;
 +    auto *self = FCITX_IM_CONTEXT(context);
 +    if (self->typelay_preparing) return FALSE;
 +    self->typelay_preparing = TRUE;
 +    self->typelay_prepare_ok = TRUE;
 +    self->typelay_prepare_serial = baseline->server_serial;
-+    gtk_entry_reset_im_context(GTK_ENTRY(widget));
++    if (text_view) gtk_text_view_reset_im_context(GTK_TEXT_VIEW(widget));
++    else gtk_entry_reset_im_context(GTK_ENTRY(widget));
 +    self->typelay_preparing = FALSE;
 +    return self->typelay_prepare_ok;
 +}

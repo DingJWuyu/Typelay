@@ -8,18 +8,31 @@ let active = null;
 let configuration = null;
 let lastConnect = 0;
 
-function disconnect() {
+function disconnect(connection, close = false) {
+  if (native !== connection) return;
+  // Our own Port.disconnect() does not notify this end of the port.
+  // Retire its identity before closing, including during document navigation.
   native = null;
   pending.clear();
   active = null;
-  for (const port of documents.values()) port.postMessage({op: "disconnect"});
+  for (const port of documents.values()) {
+    try { port.postMessage({op: "disconnect"}); } catch { /* Document already closed. */ }
+  }
+  if (close) connection.disconnect();
+}
+function postNative(connection, message) {
+  if (native !== connection) return;
+  try { connection.postMessage(message); }
+  catch { disconnect(connection, true); } // Revoke; never replay a failed request.
 }
 function connect() {
   if (native || Date.now() - lastConnect < 2000) return;
   lastConnect = Date.now();
-  native = api.runtime.connectNative("org.typelay.browser");
-  native.onDisconnect.addListener(disconnect);
-  native.onMessage.addListener(message => {
+  const connection = api.runtime.connectNative("org.typelay.browser");
+  native = connection;
+  connection.onDisconnect.addListener(() => disconnect(connection));
+  connection.onMessage.addListener(message => {
+    if (native !== connection) return;
     const data = message.data || {};
     if (message.op === "configure-shortcuts") configuration = message;
     if (["revoke", "configure-shortcuts", "overlay-hide"].includes(message.op)) {
@@ -32,12 +45,12 @@ function connect() {
     const target = data.target;
     const port = target ? documents.get(target.split(":")[0]) : active;
     if (!port) {
-      if (message.id) native.postMessage({id: message.id, data: null});
+      if (message.id) postNative(connection, {id: message.id, data: null});
       return;
     }
     if (message.id) {
       if (pending.size >= 32) {
-        native.postMessage({id: message.id, data: null});
+        postNative(connection, {id: message.id, data: null});
         return;
       }
       pending.set(message.id, {port, expires: Date.now() + 1000});
@@ -68,7 +81,7 @@ api.runtime.onConnect.addListener(port => {
       if (pending.get(message.id)?.port !== port) return;
       pending.delete(message.id);
     }
-    native.postMessage(message);
+    postNative(native, message);
   });
   port.onDisconnect.addListener(() => {
     if (documentId) documents.delete(documentId);
@@ -76,9 +89,9 @@ api.runtime.onConnect.addListener(port => {
     for (const [id, owner] of pending) {
       if (owner.port === port) {
         pending.delete(id);
-        if (native) native.postMessage({id, data: null});
+        if (native) postNative(native, {id, data: null});
       }
     }
-    if (!documents.size && native) native.disconnect();
+    if (!documents.size && native) disconnect(native, true);
   });
 });
