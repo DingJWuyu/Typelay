@@ -34,6 +34,25 @@ ELEMENT = "element-6066-11e4-a52e-4f735466cecf"
 
 class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
+        bundle = getattr(self.server, "editor_bundle", None)
+        if bundle and self.path in ("/rich", "/editor.js"):
+            body = (
+                bundle.read_bytes()
+                if self.path == "/editor.js"
+                else (
+                    b"<!doctype html><meta charset=utf-8><div id=mount></div>"
+                    b"<script src='/editor.js'></script>"
+                )
+            )
+            self.send_response(200)
+            self.send_header(
+                "Content-Type",
+                "application/javascript" if self.path == "/editor.js" else "text/html",
+            )
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         body = b"""<!doctype html><meta charset='utf-8'><title>TypeLay Firefox contracts</title>
 <textarea id='source'></textarea>
 <script>
@@ -148,6 +167,7 @@ class FirefoxNativeContract(unittest.TestCase):
     package = None
     executable = "/usr/bin/firefox"
     driver = "/usr/bin/geckodriver"
+    editor_bundle = None
 
     def test_real_extension_host_write_and_document_identity(self):
         with (
@@ -191,6 +211,7 @@ class FirefoxNativeContract(unittest.TestCase):
             listener.listen(1)
             listener.settimeout(15)
             server = stack.enter_context(HTTPServer(("127.0.0.1", 0), Fixture))
+            server.editor_bundle = self.editor_bundle
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             stack.callback(thread.join, 3)
@@ -270,6 +291,78 @@ class FirefoxNativeContract(unittest.TestCase):
             )
             web("POST", "/window", {"handle": second})
             self.assertEqual(self.source_value(web), "Second document")
+            if self.editor_bundle:
+                web("POST", "/url", {"url": url + "/rich"})
+                web(
+                    "POST",
+                    "/execute/sync",
+                    {"script": "return editorProbeSetup('guarded');", "args": []},
+                )
+                # A real non-composing key establishes the isolated adapter's
+                # initial observation; page code never asserts IME authority.
+                web(
+                    "POST",
+                    "/actions",
+                    {
+                        "actions": [
+                            {
+                                "type": "key",
+                                "id": "keyboard",
+                                "actions": [
+                                    {"type": "keyDown", "value": "\ue008"},
+                                    {"type": "keyUp", "value": "\ue008"},
+                                ],
+                            }
+                        ]
+                    },
+                )
+                rich = native.focused_description(connection, previous=current["target"])
+                snapshot = self.capture(native, connection, rich, web)
+                self.assertEqual(snapshot["text"], "Before hello world after untouched")
+                receipt = native.request(
+                    connection,
+                    "direct",
+                    {
+                        "target": rich["target"],
+                        "authority": snapshot["authority"],
+                        "approved": snapshot["authority"],
+                        "expiresAtMs": time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000
+                        + 240,
+                        "plan": {
+                            "id": "firefox-rich-write",
+                            "expected": {
+                                "target": {
+                                    "backend": "linux-browser",
+                                    "value": rich["target"],
+                                    "lifetime": hello["data"]["lifetime"],
+                                },
+                                "text": snapshot["text"],
+                                "selection": snapshot["selection"],
+                            },
+                            "scope": {"start": 7, "end": 12},
+                            "replacement": "bonjour",
+                            "resultText": "Before bonjour world after untouched",
+                            "caret": 14,
+                        },
+                    },
+                )
+                self.assertEqual(receipt["status"], "Verified")
+                actual = web(
+                    "POST", "/execute/sync", {"script": "return editorProbeInspect();", "args": []}
+                )
+                self.assertEqual(
+                    actual["after"],
+                    "<p>Before <strong>bonjour world</strong> after <em>untouched</em></p>",
+                )
+                self.assertTrue(actual["preserved"])
+                history = web(
+                    "POST", "/execute/sync", {"script": "return editorProbeHistory();", "args": []}
+                )
+                self.assertEqual(
+                    history["undone"],
+                    "<p>Before <strong>hello world</strong> after <em>untouched</em></p>",
+                )
+                self.assertEqual(history["redone"], actual["after"])
 
     def capture(self, native, connection, description, web):
         # Match production observation polling: each read gets a NEW metadata
@@ -397,6 +490,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument("--firefox", default=shutil.which("firefox") or "/usr/bin/firefox")
+    parser.add_argument("--editor-bundle", type=Path)
     parser.add_argument(
         "--geckodriver", default=shutil.which("geckodriver") or "/usr/bin/geckodriver"
     )
@@ -404,4 +498,7 @@ if __name__ == "__main__":
     FirefoxNativeContract.package = arguments.package.resolve()
     FirefoxNativeContract.executable = arguments.firefox
     FirefoxNativeContract.driver = arguments.geckodriver
+    FirefoxNativeContract.editor_bundle = (
+        arguments.editor_bundle.resolve(strict=True) if arguments.editor_bundle else None
+    )
     unittest.main(argv=[__file__, *remaining])

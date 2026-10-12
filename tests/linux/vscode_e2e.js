@@ -3,6 +3,8 @@
 // Runs inside a real disposable VS Code extension host; never supplies a fake
 // TextDocument/editor.edit implementation or a translation model substitute.
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const vscode = require('vscode');
 const { EditorTransaction } = require('../../src/TypeLay.Linux/vscode/transaction');
 
@@ -11,7 +13,7 @@ async function editor(text = '你好 🌍\n保留原文', language = 'plaintext'
     return vscode.window.showTextDocument(document, { preview: false });
 }
 
-async function run() {
+async function runTests() {
     const source = await editor();
     source.selection = new vscode.Selection(0, 0, 0, 2);
     let transaction = new EditorTransaction(source, { wholeDocument: true });
@@ -93,6 +95,23 @@ async function run() {
     const large = await editor('字'.repeat(8193));
     assert.throws(() => new EditorTransaction(large, { wholeDocument: true }), /invalid-text/);
     console.log('TypeLay VS Code real editor transaction tests passed.');
+}
+
+async function run() {
+    const resultPath = process.env.TYPELAY_VSCODE_RESULT;
+    assert.ok(resultPath && path.isAbsolute(resultPath), 'The isolated runner must provide a result path');
+    const report = (status, detail = '') => fs.writeFileSync(resultPath,
+        JSON.stringify({ status, detail, vscodeVersion: vscode.version }), { encoding: 'utf8' });
+    report('started');
+    try {
+        await runTests();
+        // Only the real extension host reaching the end of every assertion can
+        // produce this evidence; CLI exit codes and stdout are not sufficient.
+        report('passed');
+    } catch (error) {
+        report('failed', String(error.stack || error));
+        throw error;
+    }
 }
 
 module.exports = { run };

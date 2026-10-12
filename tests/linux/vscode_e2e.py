@@ -6,7 +6,9 @@ extension, fetch software/models, read a workspace, or change the user profile.
 """
 
 import argparse
+import json
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -24,12 +26,14 @@ def main():
     log = output / "extension-host.log"
     with tempfile.TemporaryDirectory(prefix="typelay-vscode-") as temporary:
         profile = Path(temporary)
+        result_file = profile / "test-result.json"
         home = profile / "home"
         home.mkdir()
         command = [
             str(code),
             "--no-sandbox",
             "--wait",
+            "--verbose",
             "--disable-gpu",
             "--disable-workspace-trust",
             "--skip-welcome",
@@ -49,6 +53,7 @@ def main():
             XDG_CONFIG_HOME=str(profile / "config"),
             XDG_DATA_HOME=str(profile / "share"),
             XDG_CACHE_HOME=str(profile / "cache"),
+            TYPELAY_VSCODE_RESULT=str(result_file),
         )
         # Never inherit Node startup injection into the isolated editor process.
         environment.pop("NODE_OPTIONS", None)
@@ -75,11 +80,20 @@ def main():
                 except subprocess.TimeoutExpired:
                     os.killpg(process.pid, signal.SIGKILL)
                     process.wait(timeout=5)
+                # CLI output is not the extension host log. Preserve evidence
+                # before TemporaryDirectory cleanup, including startup failures.
+                profile_logs = profile / "data" / "logs"
+                if profile_logs.exists():
+                    shutil.copytree(profile_logs, output / "profile-logs", dirs_exist_ok=True)
+                if result_file.exists():
+                    shutil.copyfile(result_file, output / "test-result.json")
         if exit_code:
             raise RuntimeError(f"VS Code exited {exit_code}; see {log}")
-        result = log.read_text(encoding="utf-8", errors="replace")
-        if "TypeLay VS Code real editor transaction tests passed." not in result:
-            raise RuntimeError(f"VS Code did not report completed transaction tests; see {log}")
+        if not result_file.exists():
+            raise RuntimeError(f"VS Code did not start the transaction test runner; see {output}")
+        result = json.loads(result_file.read_text(encoding="utf-8"))
+        if result.get("status") != "passed":
+            raise RuntimeError(f"VS Code transaction assertions did not pass; see {output}")
         print("TypeLay VS Code real editor transaction tests passed.")
 
 

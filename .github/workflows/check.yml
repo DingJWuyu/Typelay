@@ -117,11 +117,6 @@ jobs:
         run: |
           export DISPLAY=:99
           python tests/linux/browser_native_e2e.py --package artifacts/linux/package --chromium /usr/bin/chromium -v
-      - name: Verify Firefox temporary extension and native messaging
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: |
-          export DISPLAY=:99
-          python tests/linux/firefox_native_e2e.py --package artifacts/linux/package --firefox /usr/bin/firefox --geckodriver /usr/bin/geckodriver -v
       - name: Probe source-owned VS Code edit transactions
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
@@ -135,6 +130,11 @@ jobs:
           npm ci --prefix artifacts/editor-probe --ignore-scripts --no-audit --no-fund
           export DISPLAY=:99
           python tests/linux/editor_probe.py --dependencies artifacts/editor-probe --chromium /usr/bin/chromium -v
+      - name: Verify Firefox temporary extension and native messaging
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          export DISPLAY=:99
+          python tests/linux/firefox_native_e2e.py --package artifacts/linux/package --firefox /usr/bin/firefox --geckodriver /usr/bin/geckodriver --editor-bundle artifacts/editor-probe/fixture.js -v
       - name: Probe real Fcitx client requests and candidate selection
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: python tests/linux/fcitx_probe.py

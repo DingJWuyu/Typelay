@@ -58,6 +58,7 @@ def session(output: Path) -> None:
         }
         if shutil.which("pacman"):
             versions["chinese_addons"] = run("pacman", "-Q", "fcitx5-chinese-addons")
+            versions["gtk_integration_package"] = run("pacman", "-Q", "fcitx5-gtk")
         elif shutil.which("dpkg-query"):
             versions["chinese_addons"] = run("dpkg-query", "-W", "fcitx5-chinese-addons")
         else:
@@ -95,9 +96,29 @@ def session(output: Path) -> None:
                     return (output / "client.log").read_text()
 
                 wait_for(lambda: "event=connected" in trace(), "Fcitx client connection")
-                window = run(
-                    "xdotool", "search", "--name", "^TypeLay GTK contract fixture$", env=env
-                ).splitlines()[0]
+                windows: list[str] = []
+
+                def mapped_fixture() -> bool:
+                    search = subprocess.run(
+                        ["xdotool", "search", "--onlyvisible", "--pid", str(children[-1].pid)],
+                        env=env,
+                        text=True,
+                        capture_output=True,
+                        timeout=5,
+                        check=False,
+                    )
+                    if search.returncode not in (0, 1):
+                        raise RuntimeError(search.stderr)
+                    windows[:] = search.stdout.splitlines()
+                    return bool(windows)
+
+                wait_for(mapped_fixture, "the owned GTK fixture window is mapped")
+                names = {
+                    window: run("xdotool", "getwindowname", window, env=env) for window in windows
+                }
+                (output / "windows.json").write_text(json.dumps(names, indent=2) + "\n")
+                assert len(windows) == 1, f"Expected one owned fixture window: {names}"
+                window = windows[0]
                 run("xdotool", "windowfocus", "--sync", window, env=env)
                 run("fcitx5-remote", "-s", "pinyin", env=env)
                 run("fcitx5-remote", "-o", env=env)

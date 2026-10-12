@@ -70,13 +70,19 @@ def build(output, fixture=False):
         destination = output / "browser" / browser
         destination.mkdir(parents=True)
         source = ROOT / "src/TypeLay.Linux/browser"
-        for name in ("content.js", "background.js"):
+        for name in ("content.js", "background.js", "editor-bridge.js", "editor-adapter.js"):
             shutil.copy2(source / name, destination / name)
         shutil.copy2(source / f"manifest.{browser}.json", destination / "manifest.json")
     # Firefox stable requires Mozilla signing for permanent installation. Ship
     # the exact unsigned payload for temporary loading or an explicit signing step.
     with zipfile.ZipFile(output / "browser/typelay-firefox-unsigned.xpi", "w") as addon:
-        for name in ("manifest.json", "background.js", "content.js"):
+        for name in (
+            "manifest.json",
+            "background.js",
+            "content.js",
+            "editor-bridge.js",
+            "editor-adapter.js",
+        ):
             entry = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
             entry.compress_type = zipfile.ZIP_DEFLATED
             entry.external_attr = 0o100644 << 16

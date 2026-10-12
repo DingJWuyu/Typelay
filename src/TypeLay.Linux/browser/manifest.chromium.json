@@ -3,7 +3,37 @@
   "name": "TypeLay local input",
   "version": "0.1.0",
   "description": "Connect ordinary webpage inputs to the local TypeLay client.",
-  "permissions": ["nativeMessaging"],
-  "background": {"service_worker": "background.js"},
-  "content_scripts": [{"matches": ["http://*/*", "https://*/*"], "js": ["content.js"], "run_at": "document_start", "all_frames": false}]
+  "permissions": [
+    "nativeMessaging"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "editor-bridge.js",
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "editor-adapter.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "minimum_chrome_version": "111"
 }

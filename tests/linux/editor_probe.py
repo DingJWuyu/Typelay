@@ -6,6 +6,7 @@ This is not extension bridge, physical IME, or complete desktop acceptance.
 """
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -13,11 +14,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import browser_e2e
 from browser_process import chromium_context
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests/fixtures/editor"
+ADAPTER = ROOT / "src/TypeLay.Linux/browser/editor-adapter.js"
+BRIDGE = ROOT / "src/TypeLay.Linux/browser/editor-bridge.js"
+CONTENT = ROOT / "src/TypeLay.Linux/browser/content.js"
 INITIAL = "<p>Before <strong>hello world</strong> after <em>untouched</em></p>"
 TRANSLATED = "<p>Before <strong>bonjour world</strong> after <em>untouched</em></p>"
 NEW_SOURCE = "<p>NEW Before <strong>hello world</strong> after <em>untouched</em></p>"
@@ -38,7 +43,7 @@ class EditorProbe(unittest.TestCase):
         # node_modules. The lockfile and npm ci own dependency verification.
         entry = cls.dependencies / "entry.js"
         shutil.copy2(FIXTURE / "entry.js", entry)
-        cls.bundle = cls.home / "editor.js"
+        cls.bundle = cls.dependencies / "fixture.js"
         subprocess.run(
             [
                 "node",
@@ -73,14 +78,93 @@ class EditorProbe(unittest.TestCase):
             ),
         )
         self.page.goto("http://127.0.0.1/editor-probe")
+        self.page.add_script_tag(content=ADAPTER.read_text())
         self.page.add_script_tag(content=self.bundle.read_text())
+        self.cdp = context.new_cdp_session(self.page)
+        frame = self.cdp.send("Page.getFrameTree")["frameTree"]["frame"]["id"]
+        self.world = self.cdp.send(
+            "Page.createIsolatedWorld", {"frameId": frame, "worldName": "typelay-editor-probe"}
+        )["executionContextId"]
+        self.isolated(BRIDGE.read_text())
 
-    def probe(self, kind):
-        return self.page.evaluate("kind => window.editorProbe(kind)", kind)
+    def isolated(self, expression):
+        response = self.cdp.send(
+            "Runtime.evaluate",
+            {"expression": expression, "contextId": self.world, "returnByValue": True},
+        )
+        if response.get("exceptionDetails"):
+            self.fail(str(response["exceptionDetails"]))
+        return response["result"].get("value")
+
+    def probe(self, kind, baseline=False, allowed=True, nested=False):
+        before = self.page.evaluate("kind => window.editorProbeSetup(kind)", kind)
+        if baseline:
+            self.page.evaluate("window.editorProbeUnsafe()")
+            receipt = {"status": "baseline"}
+        else:
+            guard = (
+                "TypeLayEditorBridge.probe(root) === null && "
+                "TypeLayEditorBridge.capture(root) === null && "
+                "TypeLayEditorBridge.selection(root)?.start === 7"
+                if nested
+                else json.dumps(allowed)
+            )
+            receipt = self.isolated(
+                "(() => { const root = document.querySelector('#editor-source');"
+                "const capture = TypeLayEditorBridge.capture(root);"
+                "if (!capture) return {status: 'Unavailable'};"
+                "return TypeLayEditorBridge.replace(root, {version: capture.version,"
+                "expectedText: capture.text, selection: capture.selection, start: 7, end: 12,"
+                "replacement: 'bonjour', direct: false}, () => " + guard + "); })()"
+            )
+        result = self.page.evaluate("window.editorProbeInspect()")
+        # Capture the DOM before undo/redo can flush a pending page-owned edit.
+        history = self.page.evaluate("window.editorProbeHistory()")
+        return {**before, **receipt, **result, **history}
+
+    def test_production_capture_publish_and_single_tab_acceptance(self):
+        self.isolated(browser_e2e.TRANSPORT + "\n" + CONTENT.read_text())
+        self.page.evaluate("window.editorProbeSetup('guarded')")
+        self.page.keyboard.press("Shift")  # Trusted non-composing state evidence.
+        sequence = 0
+
+        def command(operation, data=None):
+            nonlocal sequence
+            sequence += 1
+            message = {"id": sequence, "op": operation, "data": data or {}}
+            return self.isolated("fixtureCommand(" + json.dumps(message) + ")")
+
+        description = command("describe")
+        self.assertIsNotNone(description)
+        snapshot = command(
+            "capture", {"target": description["target"], "authority": description["authority"]}
+        )
+        self.assertIsNotNone(snapshot)
+        plan = browser_e2e.BrowserContract.plan(snapshot, "bonjour", {"start": 7, "end": 12})
+        plan["resultText"] = "Before bonjour world after untouched"
+        plan["caret"] = 14
+        command(
+            "publish",
+            {
+                "target": snapshot["target"],
+                "authority": snapshot["authority"],
+                "permit": {"plan": plan},
+                "lease": {"source": {"observedAtMs": snapshot["observedAtMs"]}},
+            },
+        )
+        self.page.keyboard.press("Tab")
+        result = self.page.evaluate("window.editorProbeInspect()")
+        self.assertEqual(result["after"], TRANSLATED)
+        self.assertTrue(result["preserved"])
+        accepted = self.isolated("fixtureMessages.filter(message => message.event === 'accepted')")
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(accepted[0]["data"]["receipt"]["status"], "Verified")
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "editor-source")
+        self.assertEqual(self.page.evaluate("window.editorProbeHistory()")["undone"], INITIAL)
 
     def test_transaction_preserves_rich_spans_selection_and_native_undo(self):
         result = self.probe("guarded")
-        self.assertEqual(result["status"], "written")
+        self.assertEqual(result["status"], "Applied")
         self.assertEqual(result["after"], TRANSLATED)
         self.assertTrue(result["preserved"])
         self.assertEqual(result["selection"], {"from": 15, "to": 15})
@@ -89,7 +173,7 @@ class EditorProbe(unittest.TestCase):
         self.assertEqual(result["redone"], TRANSLATED)
 
     def test_unguarded_tiptap_overwrites_reentrant_source_change(self):
-        result = self.probe("reentrant-unguarded")
+        result = self.probe("reentrant-unguarded", baseline=True)
         self.assertTrue(result["reentered"])
         # This is an explicit unsafe counterexample, not an acceptance pass.
         self.assertEqual(result["after"], TRANSLATED)
@@ -97,7 +181,7 @@ class EditorProbe(unittest.TestCase):
 
     def test_guard_preserves_reentrant_change_and_its_native_undo(self):
         result = self.probe("reentrant-guarded")
-        self.assertEqual(result["status"], "source-changed")
+        self.assertEqual(result["status"], "OutcomeUnknown")
         self.assertTrue(result["reentered"])
         self.assertEqual(result["after"], NEW_SOURCE)
         self.assertEqual(result["undone"], INITIAL)
@@ -105,29 +189,55 @@ class EditorProbe(unittest.TestCase):
 
     def test_guard_survives_callback_listener_removal_and_addition(self):
         result = self.probe("listener-change")
-        self.assertEqual(result["status"], "source-changed")
+        self.assertEqual(result["status"], "OutcomeUnknown")
         self.assertEqual(result["after"], NEW_SOURCE)
         self.assertEqual(result["undone"], INITIAL)
 
     def test_guard_rejects_dom_change_before_model_commit(self):
         result = self.probe("dom-change")
-        self.assertEqual(result["status"], "source-changed")
+        self.assertEqual(result["status"], "OutcomeUnknown")
         self.assertEqual(result["domAfter"], "Before NEW world after untouched")
 
     def test_guard_rejects_dom_selection_change_before_model_commit(self):
         result = self.probe("dom-selection-change")
-        self.assertEqual(result["status"], "source-changed")
+        self.assertEqual(result["status"], "OutcomeUnknown")
         self.assertEqual(result["after"], INITIAL)
+
+    def test_guard_rechecks_after_page_observes_the_bridge_check(self):
+        result = self.probe("bridge-check-change")
+        self.assertEqual(result["status"], "OutcomeUnknown")
+        self.assertTrue(result["reentered"])
+        self.assertEqual(result["after"], NEW_SOURCE)
+        self.assertEqual(result["undone"], INITIAL)
+
+    def test_final_isolated_guard_can_veto_the_page_transaction(self):
+        result = self.probe("guarded", allowed=False)
+        self.assertEqual(result["status"], "OutcomeUnknown")
+        self.assertEqual(result["after"], INITIAL)
+
+    def test_final_guard_keeps_dom_selection_but_rejects_nested_rpc(self):
+        result = self.probe("guarded", nested=True)
+        self.assertEqual(result["status"], "Applied")
+        self.assertEqual(result["after"], TRANSLATED)
+
+    def test_native_history_grouping_matches_the_unmodified_editor(self):
+        baseline = self.probe("adjacent", baseline=True)
+        adapted = self.probe("adjacent")
+        self.assertEqual(adapted["status"], "Applied")
+        for key in ["after", "undone", "undoSelection", "redone"]:
+            self.assertEqual(adapted[key], baseline[key], key)
+        self.assertEqual(adapted["undone"], INITIAL)
+        self.assertIn("bonjour! world", adapted["redone"])
 
     def test_known_composition_is_refused_without_replacement(self):
         # Synthetic composition proves refusal only, not trusted IME readiness.
         result = self.probe("composing")
-        self.assertEqual(result["status"], "unsupported")
+        self.assertEqual(result["status"], "Unavailable")
         self.assertEqual(result["after"], INITIAL)
 
     def test_guard_rejects_selection_change_before_outer_commit(self):
         result = self.probe("selection-change")
-        self.assertEqual(result["status"], "source-changed")
+        self.assertEqual(result["status"], "OutcomeUnknown")
         self.assertEqual(result["after"], INITIAL)
         self.assertEqual(result["selection"], {"from": 1, "to": 1})
 

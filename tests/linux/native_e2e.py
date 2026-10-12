@@ -294,7 +294,14 @@ def outer(arguments, script=None):
         command.append("--gtk-refusal")
     if arguments.desktop:
         command.extend(["--desktop", "--package", str(arguments.package)])
-    config.write_text("spawn-at-startup " + " ".join(json.dumps(item) for item in command) + "\n")
+    # The compositor's first-run help owns keyboard focus independently of its
+    # focused-window IPC state. This disposable test session has no help UI.
+    config.write_text(
+        "hotkey-overlay { skip-at-startup; }\n"
+        + "spawn-at-startup "
+        + " ".join(json.dumps(item) for item in command)
+        + "\n"
+    )
     environment = {
         **os.environ,
         "XDG_RUNTIME_DIR": str(runtime),

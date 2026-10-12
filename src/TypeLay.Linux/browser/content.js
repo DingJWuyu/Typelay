@@ -1,8 +1,9 @@
-/* Standard top-level DOM fields only. Everything from validation through mutation
- * runs synchronously in this isolated-world document event loop. */
+/* Top-level standard fields and source-owned single-paragraph rich editors.
+ * Approval and final mutation guards stay in this isolated document event loop. */
 (() => {
   "use strict";
   const api = globalThis.browser || chrome;
+  const rich = globalThis.TypeLayEditorBridge;
   const port = api.runtime.connect({name: "typelay-document"});
   const random = crypto.getRandomValues(new Uint8Array(16));
   random[6] = (random[6] & 15) | 64;
@@ -52,14 +53,21 @@
       || element instanceof HTMLInputElement && ["text", "search"].includes(element.type);
   }
   function fieldFor(element) {
-    if (!allowedElement(element) || element.getRootNode() !== document) return null;
+    let richText = false;
+    if (!allowedElement(element)) {
+      element = rich?.root(element);
+      if (!element || rich.probe(element)?.supported !== true) return null;
+      richText = true;
+    }
+    if (element.getRootNode() !== document) return null;
     let field = fields.get(element);
     if (!field || field.dead) {
-      field = {element, id: `${documentId}:${++counter}`, content: 0, input: 0, focus: 0,
+      field = {element, richText, id: `${documentId}:${++counter}`, content: 0, input: 0, focus: 0,
         ime: "Unknown", quarantined: false, dead: false,
         selectionStart: element.selectionStart, selectionEnd: element.selectionEnd};
       fields.set(element, field);
       targets.set(field.id, field);
+      rememberSelection(field);
     }
     return field;
   }
@@ -92,7 +100,9 @@
   }
   function metadata(field) {
     const element = field.element;
-    if (field.dead || !allowedElement(element) || element.getRootNode() !== document || !element.isConnected) return null;
+    if (field.dead || !(field.richText ? rich?.root(element) === element
+      && (mutating || rich.probe(element)?.supported === true) : allowedElement(element))
+      || element.getRootNode() !== document || !element.isConnected) return null;
     let ancestors = "";
     let parent = element.parentElement;
     for (let depth = 0; parent && depth < 8; depth++, parent = parent.parentElement) {
@@ -111,8 +121,8 @@
       help: element.getAttribute("placeholder") || "", aria: attributes,
       password: /(?:^|\s)(?:current-password|new-password|one-time-code|cc-\S+)(?:\s|$)/i.test(attributes),
       enabled: !element.disabled && !element.matches(":disabled") && !element.closest("[inert]"),
-      readOnly: element.readOnly || element.getAttribute("aria-readonly") === "true",
-      offscreen: !geometry(field), inDocument: true, multiline: element instanceof HTMLTextAreaElement,
+      readOnly: !!element.readOnly || element.getAttribute("aria-readonly") === "true",
+      offscreen: !geometry(field), inDocument: true, multiline: field.richText || element instanceof HTMLTextAreaElement,
       hasValue: true, hasTextEdit: field.ime !== "Unknown"};
     // Oversized metadata is rejected, not truncated into an apparently safe label.
     return JSON.stringify(result).length <= 8192 ? result : null;
@@ -135,7 +145,12 @@
       && basis?.target === field.id && basis.metadataKey === JSON.stringify(meta);
   }
   function read(field) {
+    if (field.richText) return rich.read(field.element);
     return (field.element instanceof HTMLTextAreaElement ? areaValue : inputValue).call(field.element);
+  }
+  function selection(field) {
+    return field.richText ? rich.selection(field.element)
+      : {start: field.element.selectionStart, end: field.element.selectionEnd};
   }
   function validText(text) {
     if (typeof text !== "string" || text.length > MAX_TEXT || text.includes("\0")) return false;
@@ -153,11 +168,19 @@
     if (!approved(field, basis) || !fresh(basis.observedAtMs, 150) || field.ime !== "Clear") return null;
     // Body access occurs only after the desktop's metadata approval. Unknown or
     // composing input is not shipped even for preview: there is no committed range API.
-    const text = read(field);
+    const captured = field.richText ? rich.capture(field.element) : null;
+    if (field.richText && !captured) return null;
+    const text = captured ? captured.text : read(field);
     if (!validText(text)) return null;
+    if (captured) {
+      // A page model can change without an input event or visible text change.
+      // Never silently rebind an already published plan to a new immutable state.
+      if (field.richVersion && field.richVersion !== captured.version) changed(field, true, false);
+      field.richVersion = captured.version;
+    }
     const result = describe(field);
     if (!result || !approved(field, basis)) return null;
-    return {...result, text, selection: {start: field.element.selectionStart, end: field.element.selectionEnd},
+    return {...result, text, selection: captured?.selection || selection(field),
       ime: field.ime, observedAtMs: now(), writeSupported: !field.quarantined};
   }
   const rejection = reason => ({status: "RejectedBeforeMutation", reason});
@@ -175,7 +198,8 @@
     if (!direct && (!focused(field) || field.input !== basis.inputRevision || field.focus !== basis.focusRevision)) return rejection("EpochChanged");
     const element = field.element, text = read(field);
     if (text !== expected.text) return rejection("SourceChanged");
-    if (!direct && (element.selectionStart !== expected.selection?.start || element.selectionEnd !== expected.selection?.end)) return rejection("SelectionChanged");
+    const selected = selection(field);
+    if (!direct && (selected?.start !== expected.selection?.start || selected?.end !== expected.selection?.end)) return rejection("SelectionChanged");
     const start = plan.scope?.start ?? 0, end = plan.scope?.end ?? text.length;
     const replacement = plan.replacement;
     if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end > text.length
@@ -185,6 +209,7 @@
     const result = text.slice(0, start) + replacement + text.slice(end);
     if (!validText(result) || result !== plan.resultText || plan.caret !== start + replacement.length
       || element.maxLength >= 0 && result.length > element.maxLength) return rejection("BadPlan");
+    if (field.richText) return writeRich(field, request, direct, text, start, end, result);
     publication = null;
     mutating = true;
     let mutated = false;
@@ -215,7 +240,50 @@
       mutating = false; ownInputEvent = null;
     }
   }
+  function writeRich(field, request, direct, text, start, end, result) {
+    const basis = request.authority, approval = direct ? request.approved : basis;
+    const plan = request.plan;
+    const guard = () => {
+      drainMutations();
+      const current = selection(field);
+      return !field.dead && !field.quarantined && field.ime === "Clear"
+        && approved(field, approval) && approved(field, basis)
+        && Number.isFinite(now()) && now() <= request.expiresAtMs
+        && field.content === basis.contentRevision && read(field) === text
+        && (direct || focused(field) && field.input === basis.inputRevision && field.focus === basis.focusRevision
+          && current?.start === plan.expected.selection?.start && current?.end === plan.expected.selection?.end);
+    };
+    if (!guard() || !field.richVersion) return rejection("SourceChanged");
+    publication = shortcut = null;
+    mutating = true;
+    try {
+      const receipt = rich.replace(field.element, {version: field.richVersion, expectedText: text,
+        selection: plan.expected.selection, start, end, replacement: plan.replacement, direct}, guard);
+      drainMutations();
+      if (receipt?.status === "RejectedBeforeMutation") return rejection(receipt.reason || "SourceChanged");
+      const current = selection(field);
+      if (receipt?.status !== "Applied" || field.dead || field.ime !== "Clear" || !approved(field, approval)
+        || read(field) !== result || field.content !== basis.contentRevision || (!direct && !focused(field))
+        || current?.start !== plan.caret || current?.end !== plan.caret) {
+        field.quarantined = true;
+        return {status: "OutcomeUnknown", reason: "UnknownOutcome"};
+      }
+      field.content++;
+      field.richVersion = receipt.version;
+      return {status: "Verified", reason: "None", verifiedSnapshot: {...plan.expected, text: result,
+        selection: {start: plan.caret, end: plan.caret}, observedAtMs: now(), ime: "Clear", access: "Supported"}};
+    } catch (_) {
+      field.quarantined = true;
+      return {status: "OutcomeUnknown", reason: "UnknownOutcome"};
+    } finally { rememberSelection(field); mutating = false; }
+  }
   function rememberSelection(field) {
+    if (field.richText) {
+      const current = rich.selectionIdentity(field.element), previous = field.domSelection;
+      field.domSelection = current;
+      return !!current !== !!previous || !!current && ["anchorNode", "anchorOffset", "focusNode", "focusOffset"]
+        .some(key => current[key] !== previous[key]);
+    }
     const start = field.element.selectionStart, end = field.element.selectionEnd;
     const different = start !== field.selectionStart || end !== field.selectionEnd;
     field.selectionStart = start; field.selectionEnd = end;
@@ -238,6 +306,13 @@
   }
   function mutations(records) {
     for (const record of records) {
+      if (!mutating) {
+        for (const field of targets.values()) {
+          if (field.richText && (record.target === field.element || field.element.contains(record.target))) {
+            changed(field, true, false);
+          }
+        }
+      }
       if (record.type !== "childList") continue;
       for (const node of record.removedNodes) {
         for (const field of targets.values()) {
@@ -253,7 +328,7 @@
     }
   }
   const observer = new MutationObserver(mutations);
-  observer.observe(document, {subtree: true, childList: true});
+  observer.observe(document, {subtree: true, childList: true, characterData: true});
   function drainMutations() { mutations(observer.takeRecords()); }
   function hide() {
     if (!overlay) return;
