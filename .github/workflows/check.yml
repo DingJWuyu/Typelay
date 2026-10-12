@@ -110,8 +110,11 @@ jobs:
         with:
           path: artifacts/ccache
           key: fcitx-ccache-${{ steps.native-sdk.outputs.digest }}-${{ hashFiles('tests/linux/fcitx_cooperative/*.patch', 'tests/linux/fcitx_cooperative/run.py') }}
+          # ccache validates compiler content, flags and source/header hashes;
+          # added unrelated SDK packages must not discard usable compile entries.
           restore-keys: |
             fcitx-ccache-${{ steps.native-sdk.outputs.digest }}-
+            fcitx-ccache-
       - name: Build the relocatable Linux client
         id: build
         run: python eng/build-linux.py --with-test-fixture
@@ -262,6 +265,8 @@ jobs:
             artifacts/linux/vscode-model/
             artifacts/linux/editor-probe/
             artifacts/linux/fcitx-probe/
+            artifacts/linux/qt-cooperative/*.json
+            artifacts/linux/qt-cooperative/*.log
             artifacts/linux/fcitx-cooperative-5.1.22/*.json
             artifacts/linux/fcitx-cooperative-5.1.22/*.log
             artifacts/TypeLay-Fcitx-cooperative.tar.gz

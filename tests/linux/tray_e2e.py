@@ -88,9 +88,13 @@ def main():
             )
             child.close()
             state = {}
+            enabled_notifications = []
+            request_results = []
+            settled_jobs = []
 
             def notification(operation, value):
                 if operation == "settings":
+                    enabled_notifications.append(value["enabled"])
                     state.update(value)
                     tray.configure(value)
                 elif operation == "status":
@@ -105,8 +109,30 @@ def main():
                 pending = list(jobs)
                 await asyncio.wait_for(asyncio.gather(*pending), 3)
                 jobs.difference_update(pending)
+                settled_jobs.append(len(pending))
 
-            host = Link(GLib, parent.fileno(), parent.fileno(), notification, None, lambda: None)
+            class ObservedLink(Link):
+                async def ask(self, operation, data=None, **options):
+                    started = asyncio.get_running_loop().time()
+                    record = {"operation": operation, "acknowledged": False}
+                    request_results.append(record)
+                    try:
+                        result = await super().ask(operation, data, **options)
+                        record["acknowledged"] = result is True
+                        return result
+                    except BaseException as error:
+                        record["failure"] = (
+                            "timeout" if isinstance(error, TimeoutError) else "request-failed"
+                        )
+                        raise
+                    finally:
+                        record["elapsedMs"] = int(
+                            (asyncio.get_running_loop().time() - started) * 1000
+                        )
+
+            host = ObservedLink(
+                GLib, parent.fileno(), parent.fileno(), notification, None, lambda: None
+            )
             actions = []
             connected = asyncio.Event()
 
@@ -161,7 +187,20 @@ def main():
             assert await host.ask("allowField", metadata) is True
             items["启用 TypeLay"].activate()
             await settled()
-            assert state["enabled"] is False
+            assert state["enabled"] is False, {
+                "trayStatus": tray.status.get_label(),
+                "trayMessage": tray.model.get_label(),
+                "pending": tray.pending,
+                "checked": tray.enabled.get_active(),
+                "hostAlive": host.channel.alive,
+                "hostExit": process.poll(),
+                "settingsEnabled": enabled_notifications,
+                "settledJobs": settled_jobs,
+                "requests": request_results,
+                "savedEnabled": json.loads((directory / "config/settings.json").read_text()).get(
+                    "Enabled"
+                ),
+            }
             assert await host.ask("allowField", metadata) is False
             assert tray.indicator.get_status() == tray.backend.IndicatorStatus.ACTIVE
             assert tray.indicator.get_icon() == "typelay-paused", "pause removed the restore entry"

@@ -214,15 +214,31 @@ def session(out, fcitx):
                             stderr=subprocess.STDOUT,
                         )
                         children.append(client)
-                        window = wait(
-                            lambda: subprocess.run(
+
+                        def mapped_windows():
+                            code = client.poll()
+                            if code is not None:
+                                tail = (out / f"{mode}-client.log").read_text(errors="replace")[
+                                    -4096:
+                                ]
+                                raise RuntimeError(
+                                    f"Qt fixture exited before mapping: code={code}\n{tail}"
+                                )
+                            return subprocess.run(
                                 ["xdotool", "search", "--onlyvisible", "--pid", str(client.pid)],
                                 env=env,
                                 text=True,
                                 capture_output=True,
-                            ).stdout.split(),
-                            "mapped Qt window",
-                        )[0]
+                                timeout=5,
+                            ).stdout.split()
+
+                        try:
+                            window = wait(mapped_windows, "mapped Qt window")[0]
+                        except AssertionError as error:
+                            tail = (out / f"{mode}-client.log").read_text(errors="replace")[-4096:]
+                            raise AssertionError(
+                                f"{error}; child_status={client.poll()}\n{tail}"
+                            ) from error
                         run(["xdotool", "windowfocus", "--sync", window], env=env)
                         wait(
                             lambda: state().get("tlqtContexts", 0) > 0

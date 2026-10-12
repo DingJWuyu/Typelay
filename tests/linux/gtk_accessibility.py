@@ -31,7 +31,9 @@ def text(node):
     node.clear_cache()
     interface = node.get_text_iface()
     assert interface is not None, "owned GTK field did not expose its actual text interface"
-    return interface.get_text(0, -1)
+    # Accessible.get_text is the deprecated interface getter with no offsets.
+    # GI returns the same proxy object, so select the Text interface explicitly.
+    return Atspi.Text.get_text(interface, 0, -1)
 
 
 def focused(node):
