@@ -7,16 +7,17 @@
  /*
   * SPDX-FileCopyrightText: 2016-2016 CSSlayer <wengxt@gmail.com>
   *
-@@ -6,6 +7,8 @@
+@@ -6,6 +7,9 @@
   */
  
  #include "dbusfrontend.h"
 +#include "typelay-pinyin-public.h"
++#include "keyboard_public.h"
 +#include "fcitx/inputmethodengine.h"
  #include <cassert>
  #include <cstdint>
  #include <memory>
-@@ -173,11 +176,13 @@
+@@ -173,11 +177,13 @@
      const dbus::ObjectPath &path() const { return path_; }
  
      void updateIM(const InputMethodEntry *entry) {
@@ -30,7 +31,7 @@
          if (blocked_) {
              blockedEvents_.emplace_back(BATCHED_COMMIT_STRING, text);
          } else {
-@@ -186,6 +191,7 @@
+@@ -186,6 +192,7 @@
      }
  
      void updatePreeditImpl() override {
@@ -38,7 +39,7 @@
          auto preedit =
              im_->instance()->outputFilter(this, inputPanel().clientPreedit());
          std::vector<dbus::DBusStruct<std::string, int>> strs =
-@@ -202,6 +208,7 @@
+@@ -202,6 +209,7 @@
      }
  
      void deleteSurroundingTextImpl(int offset, unsigned int size) override {
@@ -46,7 +47,7 @@
          if (blocked_) {
              blockedEvents_.emplace_back(
                  BATCHED_DELETE_SURROUNDING,
-@@ -275,6 +282,7 @@
+@@ -275,6 +283,7 @@
      }
  
      void forwardKeyImpl(const ForwardKeyEvent &key) override {
@@ -54,7 +55,7 @@
          if (blocked_) {
              blockedEvents_.emplace_back(
                  BATCHED_FORWARD_KEY,
-@@ -294,6 +302,37 @@
+@@ -294,6 +303,42 @@
      if (currentMessage()->sender() != name_)                                   \
      return
  
@@ -77,14 +78,19 @@
 +            return {typelayOutputSerial_, false, true, true, hasFocus()};
 +        }
 +        try {
-+            bool pending = engine->call<IPinyinEngine::typelayHasPendingCommitV1>(this);
++            bool pending = true;
++            try {
++                pending = engine->call<IPinyinEngine::typelayHasPendingCommitV1>(this);
++            } catch (const std::exception &) {
++                pending = engine->call<IKeyboardEngine::typelayHasPendingCommitV1>(this);
++            }
 +            report("known");
 +            bool composing = im_->instance()->isComposing(this)
 +                || !inputPanel().clientPreedit().empty()
 +                || !inputPanel().preedit().empty() || bool(inputPanel().candidateList());
 +            return {typelayOutputSerial_, true, pending, composing, hasFocus()};
 +        } catch (const std::exception &) {
-+            report("missing-pinyin-capability");
++            report("missing-transaction-capability");
 +            return {typelayOutputSerial_, false, true, true, hasFocus()};
 +        }
 +    }
@@ -92,7 +98,7 @@
      void focusInDBus() {
          CHECK_SENDER_OR_RETURN;
          focusIn();
-@@ -467,9 +506,10 @@
+@@ -467,9 +512,10 @@
          blockedEvents_.clear();
      }
  
@@ -104,7 +110,7 @@
      FCITX_OBJECT_VTABLE_METHOD(focusInDBus, "FocusIn", "", "");
      FCITX_OBJECT_VTABLE_METHOD(focusOutDBus, "FocusOut", "", "");
      FCITX_OBJECT_VTABLE_METHOD(resetDBus, "Reset", "", "");
-@@ -529,6 +569,8 @@
+@@ -529,6 +575,8 @@
      std::string name_;
      CapabilityFlags rawCapabilityFlags_;
      std::optional<uint64_t> supportedCapability_;
@@ -113,8 +119,51 @@
      bool blocked_ = false;
      std::vector<DBusBlockedEvent> blockedEvents_;
      std::unique_ptr<HandlerTableEntry<EventHandler>> vkVisibilityChanged_;
-@@ -653,3 +695,4 @@
+@@ -653,3 +701,4 @@
  } // namespace fcitx
  
  FCITX_ADDON_FACTORY_V2(dbusfrontend, fcitx::DBusFrontendModuleFactory);
 +
+--- a/src/im/keyboard/keyboard.h
++++ b/src/im/keyboard/keyboard.h
+@@ -1,3 +1,4 @@
++/* TypeLay development-only transaction cooperation changes, 2026-10-12. */
+ /*
+  * SPDX-FileCopyrightText: 2016-2016 CSSlayer <wengxt@gmail.com>
+  *
+@@ -189,6 +190,17 @@
+ 
+     auto factory() { return &factory_; }
+ 
++    // TypeLay development-only cooperation changes, 2026-10-12.
++    // Report actual state, including the newer per-engine compose path.
++    bool typelayHasPendingCommitV1(InputContext *inputContext) {
++        auto *state = inputContext->propertyFor(&factory_);
++        return bool(cancelLastEvent_) || !state->buffer_.empty()
++            || state->compose_.isComposing() || state->mode_ != CandidateMode::Hint
++            || state->repeatStarted_ || !state->origKeyString_.empty();
++    }
++    FCITX_ADDON_EXPORT_FUNCTION(KeyboardEngine, typelayHasPendingCommitV1);
++
++
+     bool
+     foreachLayout(const std::function<bool(
+                       const std::string &layout, const std::string &description,
+--- a/src/im/keyboard/keyboard_public.h
++++ b/src/im/keyboard/keyboard_public.h
+@@ -1,3 +1,4 @@
++/* TypeLay development-only transaction cooperation changes, 2026-10-12. */
+ /*
+  * SPDX-FileCopyrightText: 2017-2017 CSSlayer <wengxt@gmail.com>
+  *
+@@ -11,6 +12,10 @@
+ #include <string>
+ #include <vector>
+ #include <fcitx/addoninstance.h>
++#include <fcitx/inputcontext.h>
++
++// TypeLay development-only cooperation changes, 2026-10-12.
++FCITX_ADDON_DECLARE_FUNCTION(KeyboardEngine, typelayHasPendingCommitV1, bool(fcitx::InputContext *));
+ 
+ FCITX_ADDON_DECLARE_FUNCTION(
+     KeyboardEngine, foreachLayout,

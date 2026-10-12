@@ -297,8 +297,12 @@ static gboolean render(Target *target, JsonObject *data) {
     JsonObject *value = tl_object(data, "view"), *presentation = tl_object(value, "presentation");
     JsonObject *authority = tl_object(data, "authority");
     gint64 until = tl_integer(data, "expiresAtMs", 0), now = tl_now();
+    gboolean retained_editor = overlay.target == target && boolean(presentation, "editorOwnsText")
+        && target && !target->dead
+        && (gint64)target->content_revision == tl_integer(authority, "contentRevision", -1)
+        && (gint64)target->input_revision == tl_integer(authority, "inputRevision", -1);
     if (!target || !boolean(presentation, "visible") || !tl_metadata_matches(target, authority)
-        || until < now || until - now > 1000 || !target->ime_known || target->composing) return FALSE;
+        || until < now || until - now > 1000 || (!retained_editor && !tl_ime_clear(target))) return FALSE;
     GtkWidget *top = gtk_widget_get_toplevel(target->widget);
     if (!GTK_IS_WINDOW(top) || !gtk_window_is_active(GTK_WINDOW(top))) return FALSE;
     if (tl_focused() != target && !(overlay.target == target && overlay.focused)) return FALSE;
@@ -386,6 +390,13 @@ JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject
         tl_overlay_sync();
     } else if (strcmp(operation, "overlay-resume") == 0 && overlay.target == target && active()) {
         gtk_label_set_text(GTK_LABEL(overlay.status), "无法返回原输入框，请点击译文继续编辑");
+        if (tl_focused() == target || overlay.focused) {
+            gtk_text_view_set_editable(GTK_TEXT_VIEW(overlay.text), TRUE);
+            gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(overlay.text), TRUE);
+            gtk_widget_set_can_focus(overlay.text, TRUE);
+            gtk_widget_grab_focus(overlay.text);
+            tl_overlay_sync();
+        }
     }
     JsonObject *reply = json_object_new();
     json_object_set_boolean_member(reply, "visible", visible || (overlay.popover && gtk_widget_get_visible(overlay.popover)));
@@ -403,6 +414,10 @@ gboolean tl_overlay_event(GdkEvent *event) {
     }
     if (!overlay.focused || event->type != GDK_KEY_PRESS || key->send_event || overlay.composing
         || (key->state & (GDK_CONTROL_MASK | GDK_MOD1_MASK | GDK_SHIFT_MASK | GDK_SUPER_MASK))) return FALSE;
+    /* The local GtkTextView is an IM client too. Empty preedit alone cannot
+       authorize stealing Tab/Escape from a pending candidate or async commit. */
+    if ((key->keyval == GDK_KEY_Tab || key->keyval == GDK_KEY_Escape) && !tl_widget_ime_clear(overlay.text))
+        return FALSE;
     if (key->keyval == GDK_KEY_Tab && gtk_text_view_get_editable(GTK_TEXT_VIEW(overlay.text))) {
         overlay.held_key = key->hardware_keycode;
         emit("return", NULL);

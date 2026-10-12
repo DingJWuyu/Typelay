@@ -17,10 +17,11 @@ import time
 from pathlib import Path
 
 
-def drive_preview_ui(port, process, output, confirmation):
-    """Click the actual custom Code dialogs; no extension API/UI substitutes."""
+def drive_preview_ui(port, process, output, source):
+    """Exercise the installed extension in normal Code, not extension-test mode."""
     from playwright.sync_api import Error, TimeoutError, sync_playwright
 
+    original = "你好，世界。\n保留原文"
     with sync_playwright() as playwright:
         deadline = time.monotonic() + 45
         while True:
@@ -44,20 +45,31 @@ def drive_preview_ui(port, process, output, confirmation):
             if process.poll() is not None or time.monotonic() >= deadline:
                 raise RuntimeError("Code did not expose its workbench page")
             time.sleep(0.1)
-        actions = [
-            ("TypeLay 翻译预览", "确认替换", "selected-preview.png"),
-            ("翻译整篇文档？", "翻译整篇文档", "whole-choice.png"),
-            ("TypeLay 翻译预览", "取消", "whole-preview.png"),
-        ]
-        for title, button, screenshot in actions:
-            dialog = page.get_by_role("dialog").filter(has_text=title)
+
+        def quick_input(shortcut, value):
+            page.keyboard.press(shortcut)
+            box = page.locator(".quick-input-widget input").first
+            box.wait_for(state="visible", timeout=10000)
+            box.fill(value)
+            return box
+
+        def command(title):
+            box = quick_input("Control+Shift+P", ">" + title)
+            page.locator(".quick-input-list .monaco-list-row").filter(
+                has_text=title
+            ).first.wait_for(state="visible", timeout=10000)
+            box.press("Enter")
+            box.wait_for(state="hidden", timeout=10000)
+
+        def dialog(title):
+            value = page.get_by_role("dialog").filter(has_text=title)
             deadline = time.monotonic() + 215
             while True:
                 if process.poll() is not None:
                     raise RuntimeError("Code exited before the expected preview interaction")
                 try:
-                    dialog.wait_for(state="visible", timeout=1000)
-                    break
+                    value.wait_for(state="visible", timeout=1000)
+                    return value
                 except TimeoutError:
                     if time.monotonic() >= deadline:
                         page.screenshot(path=str(output / "ui-failure.png"))
@@ -70,40 +82,58 @@ def drive_preview_ui(port, process, output, confirmation):
                             ),
                             encoding="utf-8",
                         )
-                        windows = subprocess.run(
-                            ["xdotool", "search", "--onlyvisible", "--name", "."],
-                            capture_output=True,
-                            text=True,
-                            check=False,
-                            timeout=5,
-                        )
-                        titles = []
-                        for window in windows.stdout.splitlines():
-                            title_result = subprocess.run(
-                                ["xdotool", "getwindowname", window],
-                                capture_output=True,
-                                text=True,
-                                check=False,
-                                timeout=5,
-                            )
-                            titles.append(title_result.stdout.strip())
-                        (output / "window-titles.json").write_text(
-                            json.dumps(titles, ensure_ascii=False), encoding="utf-8"
-                        )
                         raise
-            content = dialog.inner_text()
-            if title == "TypeLay 翻译预览":
-                assert "你好，世界。" in content and "译文" in content
-                if screenshot == "whole-preview.png":
-                    assert "保留原文" in content, (
-                        "Whole-document preview must include the full source"
-                    )
-            page.screenshot(path=str(output / screenshot))
-            if button == "确认替换":
-                confirmation.write_text("user-confirmation", encoding="utf-8")
-            label = re.compile(r"^(?:Cancel|取消)$") if button == "取消" else button
-            dialog.get_by_role("button", name=label, exact=True).click()
-            dialog.wait_for(state="hidden", timeout=10000)
+
+        def save_and_expect(check):
+            page.keyboard.press("Control+s")
+            deadline = time.monotonic() + 10
+            while True:
+                text = source.read_text(encoding="utf-8")
+                if check(text):
+                    return text
+                if process.poll() is not None or time.monotonic() >= deadline:
+                    page.screenshot(path=str(output / "ui-failure.png"))
+                    raise AssertionError("Saved source did not match the expected editor operation")
+                time.sleep(0.05)
+
+        box = quick_input("Control+p", str(source))
+        box.press("Enter")
+        box.wait_for(state="hidden", timeout=10000)
+        editor = page.locator(".monaco-editor .view-lines").first
+        editor.wait_for(state="visible", timeout=10000)
+        page.keyboard.press("Control+Home")
+        page.keyboard.press("Shift+End")
+        command("TypeLay: 翻译所选文字（先完成输入法候选）")
+        preview = dialog("TypeLay 翻译预览")
+        assert "你好，世界。" in preview.inner_text() and "译文" in preview.inner_text()
+        assert "你好，世界。" in editor.inner_text() and "保留原文" in editor.inner_text()
+        assert source.read_text(encoding="utf-8") == original
+        page.screenshot(path=str(output / "selected-preview.png"))
+        preview.get_by_role("button", name="确认替换", exact=True).click()
+        preview.wait_for(state="hidden", timeout=10000)
+        translated = save_and_expect(
+            lambda text: text.endswith("\n保留原文")
+            and bool(re.search(r"[A-Za-z]", text.split("\n")[0]))
+        )
+        assert translated != original
+        page.screenshot(path=str(output / "selected-replaced.png"))
+        page.keyboard.press("Control+z")
+        save_and_expect(lambda text: text == original)
+
+        page.keyboard.press("Control+Home")
+        page.keyboard.press("Shift+ArrowRight")
+        command("TypeLay: 翻译整篇文档")
+        choice = dialog("翻译整篇文档？")
+        page.screenshot(path=str(output / "whole-choice.png"))
+        choice.get_by_role("button", name="翻译整篇文档", exact=True).click()
+        choice.wait_for(state="hidden", timeout=10000)
+        preview = dialog("TypeLay 翻译预览")
+        assert "你好，世界。" in preview.inner_text() and "保留原文" in preview.inner_text()
+        page.screenshot(path=str(output / "whole-preview.png"))
+        preview.get_by_role("button", name=re.compile(r"^(?:Cancel|取消)$")).click()
+        preview.wait_for(state="hidden", timeout=10000)
+        save_and_expect(lambda text: text == original)
+        assert "你好，世界。" in editor.inner_text() and "保留原文" in editor.inner_text()
 
 
 def main():
@@ -130,6 +160,8 @@ def main():
     arguments = parser.parse_args()
     if bool(arguments.vsix) != bool(arguments.code_cli):
         parser.error("--vsix and --code-cli must be supplied together")
+    if arguments.host and not arguments.vsix:
+        parser.error("--host UI testing requires --vsix installation")
     if bool(arguments.host) != bool(arguments.model_data):
         parser.error("--host and --model-data must be supplied together")
     root = Path(__file__).resolve().parents[2]
@@ -155,8 +187,9 @@ def main():
         runtime = profile / "runtime"
         runtime.mkdir(mode=0o700)
         port = None
-        confirmation = profile / "confirmed.txt"
+        source = profile / "source.txt"
         if arguments.host:
+            source.write_text("你好，世界。\n保留原文", encoding="utf-8")
             model_data = arguments.model_data.resolve(strict=True)
             data = profile / "share" / "typelay"
             data.mkdir(parents=True)
@@ -170,6 +203,7 @@ def main():
                         "window.dialogStyle": "custom",
                         "workbench.startupEditor": "none",
                         "telemetry.telemetryLevel": "off",
+                        "files.autoSave": "off",
                     }
                 ),
                 encoding="utf-8",
@@ -207,13 +241,9 @@ def main():
             XDG_CACHE_HOME=str(profile / "cache"),
             XDG_RUNTIME_DIR=str(runtime),
             TYPELAY_VSCODE_RESULT=str(result_file),
-            TYPELAY_VSCODE_CONFIRM=str(confirmation),
         )
         # Never inherit Node startup injection into the isolated editor process.
-        if arguments.host:
-            environment["TYPELAY_EDITOR_HOST"] = str(arguments.host.resolve(strict=True))
-        else:
-            environment.pop("TYPELAY_EDITOR_HOST", None)
+        environment.pop("TYPELAY_EDITOR_HOST", None)
         environment.pop("NODE_OPTIONS", None)
         environment.pop("ELECTRON_RUN_AS_NODE", None)
         environment.pop("VSCODE_CLI", None)
@@ -254,6 +284,15 @@ def main():
                 else argument
                 for argument in command
             ]
+        if arguments.host:
+            # DialogService deliberately refuses prompts in extension-test mode.
+            # Use the normal installed extension and real Command Palette instead.
+            command = [
+                argument
+                for argument in command
+                if not argument.startswith(("--extensionDevelopmentPath=", "--extensionTestsPath="))
+            ]
+            command.append(str(source))
         with log.open("w", encoding="utf-8") as stream:
             process = subprocess.Popen(
                 command,
@@ -264,8 +303,31 @@ def main():
             )
             try:
                 if port:
-                    drive_preview_ui(port, process, output, confirmation)
-                exit_code = process.wait(timeout=300 if arguments.host else 150)
+                    drive_preview_ui(port, process, output, source)
+                    if process.poll() not in (None, 0):
+                        raise RuntimeError("Code exited abnormally during the real UI test")
+                    result_file.write_text(
+                        json.dumps(
+                            {
+                                "status": "passed",
+                                "mode": "normal-ui",
+                                "modelHostTest": True,
+                                "checks": [
+                                    "installed-vsix",
+                                    "local-model",
+                                    "preview-before-write",
+                                    "selected-replacement",
+                                    "single-undo",
+                                    "explicit-whole-document",
+                                    "cancel-no-write",
+                                ],
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
+                    exit_code = 0  # The normal GUI is deliberately closed by the cleanup below.
+                else:
+                    exit_code = process.wait(timeout=150)
             finally:
                 import signal
 

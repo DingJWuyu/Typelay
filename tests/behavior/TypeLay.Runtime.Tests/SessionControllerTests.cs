@@ -236,6 +236,31 @@ public sealed class SessionControllerTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
+    public void PendingSourceReturnRetainsDraftAndResumesCaptureAfterCompletion(bool returned)
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!());
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("retained draft");
+        var pending = s.Service.PendingReturn = new();
+        int captures = s.Service.Captures;
+        s.View.ReturnRequested!();
+        s.Tick(200);
+        Assert.Equal(captures, s.Service.Captures);
+        Assert.Null(s.Input.Permit);
+        Assert.Equal("retained draft", s.View.Draft);
+        pending.SetResult(returned);
+        s.Tick();
+        s.Tick();
+        Assert.Equal(returned ? SessionState.EditedTranslationPending : SessionState.EditingTranslation, s.View.State);
+        Assert.Equal("retained draft", returned ? s.View.Preview : s.View.Draft);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
     public void ExpiredOrInvalidatedAcceptanceDoesNotDispatchAWrite(bool expired)
     {
         using var s = new SessionScenario(experimental: true);

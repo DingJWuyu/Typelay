@@ -27,6 +27,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+ABI = ROOT / "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-v1.h"
 PINS = {
     "fcitx5": (
         "27cca6e0239938b2d53937061d0980c087856b22",
@@ -73,21 +74,47 @@ def build(out: Path):
     core, chinese, gtk = (sources / name for name in PINS)
     lib = out / "lib"
     lib.mkdir(exist_ok=True)
-    (core / "config.h").write_text("#pragma once\n#define HAVE_PIPE2 1\n")
+    xkbbase = run(["pkg-config", "--variable=xkb_base", "xkeyboard-config"])
+    xkbdata = run(["pkg-config", "--variable=datadir", "xkeyboard-config"])
+    iso_prefix = run(["pkg-config", "--variable=prefix", "iso-codes"])
+    (core / "config.h").write_text(
+        "#pragma once\n#define HAVE_PIPE2 1\n#define HAVE_SYS_WAIT_H 1\n"
+        "#define ENABLE_KEYBOARD 1\n#define ENABLE_X11 1\n"
+        '#define DEFAULT_XKB_RULES "evdev"\n#define FCITX_VERSION_STRING "5.1.23"\n'
+        '#define FCITX_INSTALL_LOCALEDIR "/usr/share/locale"\n#define FCITX_GETTEXT_DOMAIN "fcitx5"\n'
+        f'#define XKEYBOARDCONFIG_XKBBASE "{xkbbase}"\n'
+        f'#define XKEYBOARDCONFIG_DATADIR "{xkbdata}"\n'
+        f'#define ISOCODES_ISO639_JSON "{iso_prefix}/share/iso-codes/json/iso_639-3.json"\n'
+    )
+    shutil.copyfile(ABI, gtk / ABI.name)
     (chinese / "config.h").write_text(
         '#pragma once\n#define LIBIME_INSTALL_PKGDATADIR "/usr/share/libime"\n'
     )
     (gtk / "config.h").write_text(
         '#pragma once\n#define LOCALEDIR "/usr/share/locale"\n#define NO_SNOOPER_APPS ".*chrome.*,.*chromium.*,firefox.*,Do.*"\n#define NO_PREEDIT_APPS "gvim.*"\n#define SYNC_MODE_APPS "firefox.*"\n#define _ENABLE_SNOOPER 1\n'
     )
-    includes = ["-I" + str(chinese), "-I" + str(chinese / "im/pinyin"), "-I/usr/include/LibIME"]
+    includes = [
+        "-I" + str(core / "src/im/keyboard"),
+        "-I" + str(chinese),
+        "-I" + str(chinese / "im/pinyin"),
+        "-I/usr/include/LibIME",
+    ]
     module_root = (
         Path(run(["pkg-config", "--variable=includedir", "Fcitx5Core"])).parent
         / "Module/fcitx-module"
     )
     includes += [
         "-I" + str(module_root / name)
-        for name in ("dbus", "punctuation", "pinyinhelper", "notifications", "spell", "quickphrase")
+        for name in (
+            "dbus",
+            "punctuation",
+            "pinyinhelper",
+            "notifications",
+            "spell",
+            "quickphrase",
+            "xcb",
+            "emoji",
+        )
     ]
     common = ["c++", "-std=c++20", "-O0", "-g", "-fPIC", "-shared"]
     run(
@@ -115,6 +142,27 @@ def build(out: Path):
             "-lIMEPinyin",
             "-lIMECore",
             "-lboost_iostreams",
+            "-pthread",
+        ]
+    )
+    # Keyboard is an upstream static addon in the official server executable.
+    run(
+        [
+            "c++",
+            "-std=c++20",
+            "-O0",
+            "-g",
+            "-I" + str(core),
+            "-I" + str(core / "src/lib"),
+            *includes,
+            "-include",
+            str(core / "config.h"),
+            core / "src/server/main.cpp",
+            core / "src/server/errorhandler.cpp",
+            *sorted((core / "src/im/keyboard").glob("*.cpp")),
+            "-o",
+            out / "fcitx5",
+            *flags("Fcitx5Core", "Fcitx5Config", "Fcitx5Utils", "fmt", "xkbcommon", "expat"),
             "-pthread",
         ]
     )
@@ -192,6 +240,7 @@ def build(out: Path):
             "-Wextra",
             "-Werror",
             "-g",
+            "-I" + str(ABI.parent),
             HERE / "fixture.c",
             "-o",
             out / "fixture",
@@ -242,12 +291,21 @@ def session(out: Path):
             GTK_IM_MODULE_FILE=str(out / "immodules.cache"),
             GDK_BACKEND="x11",
             TYPELAY_FCITX_PROBE="1",
+            TYPELAY_FCITX_COOPERATIVE="1",
             TYPELAY_COOPERATIVE_DIR=str(out),
         )
         (out / "versions.json").write_text(
             json.dumps(
                 {
-                    "fcitx5": run(["fcitx5", "--version"], env=env, stderr=subprocess.STDOUT),
+                    "server_source_version": "5.1.23",
+                    "server_source_commit": PINS["fcitx5"][0],
+                    "server_runtime_version": run(
+                        [out / "fcitx5", "--version"], env=env, stderr=subprocess.STDOUT
+                    ),
+                    "linked_core_development_version": run(
+                        ["pkg-config", "--modversion", "Fcitx5Core"]
+                    ),
+                    "dynamic_libraries": run(["ldd", out / "fcitx5"], env=env),
                     "gtk3": run(["pkg-config", "--modversion", "gtk+-3.0"]),
                     "packages": run(
                         ["pacman", "-Q", "fcitx5", "fcitx5-chinese-addons", "fcitx5-gtk", "libime"]
@@ -268,7 +326,7 @@ def session(out: Path):
                 children.append(
                     subprocess.Popen(
                         [
-                            "fcitx5",
+                            str(out / "fcitx5"),
                             "--disable=all",
                             "--enable=dbus,dbusfrontend,pinyin,punctuation,pinyinhelper,keyboard,spell,quickphrase",
                         ],
@@ -374,11 +432,53 @@ def session(out: Path):
                 assert command("capture")["result"] == "captured"
                 changed = command("accept-reentrant-mutation")
                 assert changed["result"] == "outcome-unknown" and changed["nested_refused"]
+                assert command("clear")["result"] == "cleared"
+                before_engine = state()["input_epoch"]
+                run(["fcitx5-remote", "-s", "keyboard-us"], env=env)
+                wait(
+                    lambda: state().get("input_epoch", 0) > before_engine,
+                    "actual engine change delivered",
+                )
+                wait(lambda: state().get("settled"), "actual keyboard engine cooperation")
+                assert run(["fcitx5-remote", "-n"], env=env) == "keyboard-us"
+                (out / "engine-keyboard.txt").write_text("keyboard-us\n")
+                run(["xdotool", "type", "--window", window, "--delay", "15", "hello"], env=env)
+                wait(
+                    lambda: state().get("settled") and state().get("length") == 5,
+                    "keyboard ordinary input",
+                )
+                assert command("capture")["result"] == "captured"
+                assert command("accept")["result"] == "accepted"
+                before_focus = command("capture")
+                assert before_focus["result"] == "captured"
+                assert command("focus")["result"] == "focused-other"
+                assert command("refocus")["result"] == "focused-original"
+                after_focus = wait(
+                    lambda: s if (s := state()).get("settled") else None, "keyboard focus return"
+                )
+                assert after_focus["input_epoch"] == before_focus["input_epoch"]
+                assert after_focus["generation"] == before_focus["generation"]
+                assert after_focus["epoch"] > before_focus["epoch"]
+                assert command("accept")["result"] == "refused-input"
+                assert command("capture")["result"] == "captured"
+                assert command("accept")["result"] == "accepted"
+                run(["xdotool", "key", "--window", window, "dead_acute"], env=env)
+                wait(
+                    lambda: state().get("composing") or state().get("pending"),
+                    "keyboard compose pending",
+                )
+                assert command("capture")["result"] == "refused-ime"
+                run(["xdotool", "key", "--window", window, "e"], env=env)
+                wait(lambda: state().get("settled"), "keyboard compose commit")
                 (out / "result.json").write_text(
                     json.dumps(
                         {
                             "passed": True,
                             "actual_gtk_compare_write": True,
+                            "keyboard_us_compare_write": True,
+                            "keyboard_compose_refusal": True,
+                            "focus_preserves_input_epoch": True,
+                            "actual_context_public_abi": True,
                             "preedit_refusal": True,
                             "core_compose_refusal": True,
                             "unchanged_text_input_invalidates_capture": True,

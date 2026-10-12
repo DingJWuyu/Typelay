@@ -31,8 +31,9 @@ TRANSPORT = """(() => {
     onDisconnect: {addListener: () => {}}
   })}};
   window.fixtureMessages = output;
+  window.fixtureHostClock = () => ({wallTimeMs: Date.now(), boottimeMs: Math.floor(performance.now()) + 1000000});
   window.fixtureCommand = message => {
-    message.clock = {wallTimeMs: Date.now(), boottimeMs: Math.floor(performance.now()) + 1000000};
+    message.clock = fixtureHostClock();
     if (message.data?.permit) message.data.permit.expiresAtMs = message.clock.boottimeMs + 90;
     if (message.op === 'direct') message.data.expiresAtMs = message.clock.boottimeMs + 240;
     if (['overlay-render', 'overlay-renew'].includes(message.op))
@@ -71,7 +72,16 @@ class BrowserContract(unittest.TestCase):
         )
         self.context = self.browser_scope.__enter__()
         self.addCleanup(self.browser_scope.__exit__, None, None, None)
-        self.context.add_init_script(TRANSPORT + "\n" + CONTENT.read_text())
+        clock_setup = ""
+        if self._testMethodName == "test_coarse_privacy_timer_refuses_capture":
+            # Capability fault in the real browser, before production caches its
+            # clock. A 100ms privacy clock cannot grant a 90ms write permit.
+            clock_setup = """(() => {
+              const nativeNow = performance.now.bind(performance);
+              Object.defineProperty(performance, 'now', {
+                value: () => Math.floor(nativeNow() / 100) * 100});
+            })();"""
+        self.context.add_init_script(clock_setup + TRANSPORT + "\n" + CONTENT.read_text())
         self.page = self.context.new_page()
         self.page.route(
             "http://127.0.0.1/fixture",
@@ -145,6 +155,67 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.accepted()[0]["data"]["receipt"]["status"], "Verified")
         self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
         self.assertEqual(self.page.evaluate("window.submitted"), 0)
+
+    def test_capture_authority_survives_host_wall_quantization_rebase(self):
+        self.page.keyboard.insert_text("Hello")
+        result = self.page.evaluate("""() => {
+          fixtureHostClock = () => ({wallTimeMs: Date.now() - 2, boottimeMs: 1000403});
+          const description = fixtureCommand({id: 910, op: 'describe'});
+          fixtureHostClock = () => ({wallTimeMs: Date.now(), boottimeMs: 1000404});
+          const snapshot = fixtureCommand({id: 911, op: 'capture', data: {
+            target: description.target, authority: description.authority}});
+          return {snapshot, descriptionStamp: description.authority.observedAtMs};
+        }""")
+        self.assertEqual(result["descriptionStamp"], 1000403)
+        self.assertIsNotNone(result["snapshot"])
+        self.assertEqual(result["snapshot"]["text"], "Hello")
+        self.assertLessEqual(result["snapshot"]["observedAtMs"], 1000404)
+
+    def test_unrelated_clock_rebase_cannot_extend_published_deadline(self):
+        snapshot = self.type_source()
+        data = {
+            "target": snapshot["target"],
+            "authority": snapshot["authority"],
+            "permit": {"plan": self.plan(snapshot)},
+        }
+        published = self.page.evaluate(
+            """data => {
+              const command = {id: 920, op: 'publish', data};
+              const result = fixtureCommand(command);
+              window.fixtureOriginalDeadline = command.data.permit.expiresAtMs - 1000000;
+              return result;
+            }""",
+            data,
+        )
+        self.assertTrue(published["published"])
+        # Wait on the actual issued host deadline, never on an arbitrary sleep.
+        self.page.wait_for_function("performance.now() > fixtureOriginalDeadline + 2", timeout=1000)
+        self.page.evaluate("""() => {
+          const original = fixtureHostClock;
+          fixtureHostClock = () => { const clock = original(); clock.boottimeMs -= 30; return clock; };
+          fixtureCommand({id: 921, op: 'describe'});
+        }""")
+        self.page.keyboard.press("Tab")
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "other")
+
+    def test_modified_authority_token_cannot_establish_clock(self):
+        self.page.keyboard.insert_text("Hello")
+        description = self.command("describe")
+        self.assertIsNotNone(description)
+        description["authority"]["contentRevision"] += 1
+        self.assertIsNone(
+            self.command(
+                "capture", {"target": description["target"], "authority": description["authority"]}
+            )
+        )
+
+    def test_coarse_privacy_timer_refuses_capture(self):
+        self.page.keyboard.insert_text("Hello")
+        self.assertIsNone(self.capture())
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
 
     def test_stale_value_and_dom_replacement_are_rejected_without_consuming_tab(self):
         snapshot = self.type_source()

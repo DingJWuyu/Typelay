@@ -11,6 +11,7 @@
   let serial = 0;
   const MAX = 8192;
   const monotonic = performance.now.bind(performance);
+  const wallNow = Date.now.bind(Date);
   const computedStyle = window.getComputedStyle.bind(window);
   const clientRects = Element.prototype.getClientRects;
   const boundingRect = Element.prototype.getBoundingClientRect;
@@ -86,7 +87,9 @@
   }
   function replace(root, current, data, id) {
     const remaining = data.expiresAtPerformanceMs - monotonic();
-    if (!Number.isFinite(remaining) || remaining < 0 || remaining > 250) return rejected("StaleObservation");
+    const wallRemaining = data.expiresAtWallMs - wallNow();
+    if (!Number.isFinite(remaining) || remaining < 0 || remaining > 250
+      || !Number.isFinite(wallRemaining) || wallRemaining < 0 || wallRemaining > 250) return rejected("StaleObservation");
     if (current.view.composing) return rejected("ImeUnclear");
     const captured = capture(root, current);
     if (!captured || data.version !== captured.version || data.expectedText !== captured.text) return rejected("SourceChanged");
@@ -139,7 +142,7 @@
       && !mutations.takeRecords().some(relevantMutation)
       && selected && selected.anchorNode === anchor[0] && selected.anchorOffset === anchor[1]
       && selected.focusNode === anchor[2] && selected.focusOffset === anchor[3]
-      && monotonic() <= data.expiresAtPerformanceMs;
+      && monotonic() <= data.expiresAtPerformanceMs && wallNow() <= data.expiresAtWallMs;
     const wrappedUpdate = function (incomingState) {
       // Preserve nested application transactions. Only the outer transaction's
       // exact computed nextState gets the final check at its actual commit.

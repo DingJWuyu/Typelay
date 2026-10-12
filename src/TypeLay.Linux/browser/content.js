@@ -16,7 +16,7 @@
   const held = new Map();
   const MAX_TEXT = 8192;
   let counter = 0, publication = null, shortcut = null, configuration = null;
-  let clock = null, alive = true, overlay = null, mutating = false, ownInputEvent = null;
+  let clock = null, commandClock = null, lastHostStamp = NaN, alive = true, overlay = null, mutating = false, ownInputEvent = null;
   // Cache native methods in the extension's isolated world, never invoke a
   // page-overridden setter or a page-supplied replacement function.
   const inputReplace = HTMLInputElement.prototype.setRangeText;
@@ -27,23 +27,78 @@
   const ui = (operation, value) => {
     if (overlay) send("ui", {target: overlay.field.id, operation, value});
   };
-  function syncClock(value) {
-    const wall = Date.now(), mono = performance.now();
-    const age = wall - value?.wallTimeMs;
-    if (!Number.isFinite(value?.boottimeMs) || !Number.isFinite(age) || age < 0 || age > 150) {
-      clock = null;
+  const monoNow = performance.now.bind(performance);
+  // Firefox StaticPrefList.yaml currently uses 1000us plus bounded jitter;
+  // Chromium non-isolated performance.now() is quantized at 100us (MDN).
+  // Require an observed <=1ms clock tick, including on each calibration. Four
+  // milliseconds conservatively cover two local 1ms errors + host floor(1ms).
+  // Coarse privacy timers are unsupported, not assigned a longer permit.
+  // Sources: mozilla-firefox/firefox modules/libpref/init/StaticPrefList.yaml
+  // and toolkit/components/resistfingerprinting/nsRFPService.cpp;
+  // https://developer.mozilla.org/en-US/docs/Web/API/Performance/now
+  const CLOCK_MARGIN = 4;
+  function fineClock() {
+    const first = monoNow();
+    for (let index = 0; index < 32768; index++) {
+      const delta = monoNow() - first;
+      if (delta > 0) return delta <= 1;
+    }
+    return false;
+  }
+  function clockValid() {
+    if (!clock) return false;
+    const elapsed = monoNow() - clock.mono;
+    if (elapsed < 0 || Math.abs(Date.now() - clock.wall - elapsed) > 20) {
+      observationInterrupted();
       return false;
     }
-    clock = {wall, mono, boot: value.boottimeMs + age};
+    if (elapsed > 1500) { clock = publication = shortcut = null; return false; }
     return true;
   }
-  function now() {
-    if (!clock) return NaN;
-    const elapsed = performance.now() - clock.mono;
-    if (elapsed < 0 || elapsed > 1500 || Math.abs(Date.now() - clock.wall - elapsed) > 20) return NaN;
-    return Math.floor(clock.boot + elapsed);
+  function now(upper = false) {
+    return clockValid() ? (upper ? clock.upper + monoNow() : Math.floor(clock.lower + monoNow())) : NaN;
   }
-  const fresh = (stamp, age) => Number.isFinite(now()) && now() >= stamp && now() - stamp <= age;
+  function issued(field, basis) {
+    const record = field?.authorities?.get(basis?.token);
+    if (!record || record.key !== JSON.stringify(basis)) return null;
+    const elapsed = monoNow() - record.mono;
+    if (elapsed < 0 || elapsed + CLOCK_MARGIN > 150
+      || Math.abs(Date.now() - record.wall - elapsed) > 20) return null;
+    return record;
+  }
+  function calibrate(field, basis) {
+    if (clock && !clockValid()) return false;
+    const record = issued(field, basis);
+    if (!record || !commandClock || commandClock.boottimeMs < basis.observedAtMs
+      || commandClock.boottimeMs - basis.observedAtMs > 150 || !fineClock()
+      || !issued(field, basis)) return false;
+    const mono = monoNow(), wall = Date.now(), host = commandClock.boottimeMs;
+    // The echoed, locally issued token proves the host sampled H after t0 and
+    // before this receipt t1. No wall-clock subtraction grants freshness.
+    let lower = host - mono - CLOCK_MARGIN, upper = host - record.mono + CLOCK_MARGIN;
+    if (clock) {
+      if (!clockValid()) return false;
+      lower = Math.max(lower, clock.lower);
+      upper = Math.min(upper, clock.upper);
+      if (lower > upper) { observationInterrupted(); return false; }
+    }
+    // Keep a separate wall bound solely to veto a deadline after short Linux
+    // suspend intervals that performance.now() does not include.
+    clock = {lower, upper, upperWall: host - record.wall + CLOCK_MARGIN, mono, wall};
+    return true;
+  }
+  function deadline(expires, duration) {
+    if (!clockValid() || !commandClock || !Number.isFinite(expires)
+      || expires < commandClock.boottimeMs || expires - commandClock.boottimeMs > duration) return NaN;
+    return expires - clock.upper;
+  }
+  function liveDeadline(request) {
+    return clockValid() && Number.isFinite(request.expiresAtPerformanceMs)
+      && Number.isFinite(request.expiresAtWallMs)
+      && monoNow() <= request.expiresAtPerformanceMs && Date.now() <= request.expiresAtWallMs;
+  }
+  const fresh = (stamp, age) => Number.isFinite(stamp) && stamp <= lastHostStamp
+    && Number.isFinite(now(true)) && now(true) >= stamp && now(true) - stamp <= age;
   function focused(field) {
     return document.visibilityState === "visible" && document.hasFocus()
       && document.activeElement === field.element && field.element.isConnected;
@@ -133,12 +188,19 @@
     return JSON.stringify(result).length <= 8192 ? result : null;
   }
   function authority(field, meta) {
-    return {target: field.id, metadataKey: JSON.stringify(meta), contentRevision: field.content,
-      inputRevision: field.input, focusRevision: field.focus, observedAtMs: now()};
+    const mono = monoNow(), token = crypto.randomUUID();
+    const result = {target: field.id, metadataKey: JSON.stringify(meta), contentRevision: field.content,
+      inputRevision: field.input, focusRevision: field.focus,
+      observedAtMs: commandClock?.boottimeMs ?? now(), token};
+    field.authorities ||= new Map();
+    for (const [id, record] of field.authorities) if (mono - record.mono > 150) field.authorities.delete(id);
+    if (field.authorities.size >= 8) field.authorities.delete(field.authorities.keys().next().value);
+    field.authorities.set(token, {mono, wall: Date.now(), key: JSON.stringify(result)});
+    return result;
   }
   function describe(field) {
     drainMutations();
-    if (!field || !Number.isFinite(now())) return null;
+    if (!field || (!commandClock && !clockValid())) return null;
     const meta = metadata(field);
     if (!meta || meta.password || !meta.enabled || meta.readOnly || meta.offscreen) return null;
     return {target: field.id, metadata: meta, authority: authority(field, meta),
@@ -170,7 +232,9 @@
   }
   function capture(field, basis) {
     drainMutations();
-    if (!approved(field, basis) || !fresh(basis.observedAtMs, 150) || field.ime !== "Clear") return null;
+    if (!approved(field, basis) || field.ime !== "Clear") return null;
+    if (!(commandClock ? calibrate(field, basis) : issued(field, basis) && clockValid())
+      || field.ime !== "Clear") return null;
     // Body access occurs only after the desktop's metadata approval. Unknown or
     // composing input is not shipped even for preview: there is no committed range API.
     const captured = field.richText ? rich.capture(field.element) : null;
@@ -184,7 +248,8 @@
       field.richVersion = captured.version;
     }
     const result = describe(field);
-    if (!result || !approved(field, basis) || field.ime !== "Clear") return null;
+    if (!result || !approved(field, basis) || field.ime !== "Clear"
+      || !issued(field, basis) || !clockValid()) return null;
     return {...result, text, selection: captured?.selection || selection(field),
       ime: field.ime, observedAtMs: now(), writeSupported: !field.quarantined};
   }
@@ -194,9 +259,7 @@
     const plan = request.plan, basis = request.authority, approval = direct ? request.approved : basis;
     const expected = plan?.expected;
     if (!field || !expected || expected.target?.value !== field.id || !basis || !approval) return rejection("BadPlan");
-    const stamp = now();
-    if (!Number.isFinite(stamp) || !Number.isFinite(request.expiresAtMs) || request.expiresAtMs < stamp
-      || request.expiresAtMs - stamp > (direct ? 250 : 100)) return rejection("StaleObservation");
+    if (!liveDeadline(request)) return rejection("StaleObservation");
     if (!approved(field, approval) || !approved(field, basis)) return rejection("Sensitive");
     if (field.ime !== "Clear" || field.quarantined) return rejection("ImeUnclear");
     if (field.content !== basis.contentRevision) return rejection("SourceChanged");
@@ -215,6 +278,7 @@
     if (!validText(result) || result !== plan.resultText || plan.caret !== start + replacement.length
       || element.maxLength >= 0 && result.length > element.maxLength) return rejection("BadPlan");
     if (field.richText) return writeRich(field, request, direct, text, start, end, result);
+    if (!liveDeadline(request)) return rejection("StaleObservation");
     publication = null;
     mutating = true;
     let mutated = false;
@@ -253,7 +317,7 @@
       const current = selection(field);
       return !field.dead && !field.quarantined && field.ime === "Clear"
         && approved(field, approval) && approved(field, basis)
-        && Number.isFinite(now()) && now() <= request.expiresAtMs
+        && liveDeadline(request)
         && field.content === basis.contentRevision && read(field) === text
         && (direct || focused(field) && field.input === basis.inputRevision && field.focus === basis.focusRevision
           && current?.start === plan.expected.selection?.start && current?.end === plan.expected.selection?.end);
@@ -264,7 +328,8 @@
     try {
       const receipt = rich.replace(field.element, {version: field.richVersion, expectedText: text,
         selection: plan.expected.selection, start, end, replacement: plan.replacement, direct,
-        expiresAtPerformanceMs: clock.mono + request.expiresAtMs - clock.boot}, guard);
+        expiresAtPerformanceMs: request.expiresAtPerformanceMs,
+        expiresAtWallMs: request.expiresAtWallMs}, guard);
       drainMutations();
       if (receipt?.status === "RejectedBeforeMutation") return rejection(receipt.reason || "SourceChanged");
       const current = selection(field);
@@ -301,7 +366,7 @@
   function observationInterrupted() {
     publication = shortcut = clock = null;
     held.clear(); hide();
-    for (const field of targets.values()) field.ime = "Unknown";
+    for (const field of targets.values()) { field.ime = "Unknown"; field.authorities?.clear(); }
   }
   function changed(field, textChanged, focusChanged) {
     publication = shortcut = null;
@@ -455,16 +520,23 @@
     switch (message.op) {
       case "describe": return describe(field);
       case "capture": return capture(field, data.authority);
-      case "publish": publication = data; return {published: true};
-      case "publish-shortcut": shortcut = data; return null;
+      case "publish": {
+        const expiresAtPerformanceMs = data.permit ? deadline(data.permit.expiresAtMs, 100) : NaN;
+        publication = {...data, expiresAtPerformanceMs,
+          expiresAtWallMs: data.permit?.expiresAtMs - clock?.upperWall};
+        return {published: !data.permit || liveDeadline(publication)};
+      }
+      case "publish-shortcut": shortcut = calibrate(field, data.authority) ? data : null; return null;
       case "configure-shortcuts": configuration = data; shortcut = null; return null;
       case "revoke": publication = null; if (data.shortcuts) shortcut = null; return null;
       case "direct": {
         if (!data.plan?.id || consumed.has(data.plan.id)) return rejection("BadPlan");
-        for (const [id, expiry] of consumed) if (now() > expiry) consumed.delete(id);
+        for (const [id, expiry] of consumed) if (monoNow() > expiry) consumed.delete(id);
         if (consumed.size >= 128) return rejection("BadPlan");
-        consumed.set(data.plan.id, data.expiresAtMs);
-        return write(field, data, true);
+        consumed.set(data.plan.id, monoNow() + 250);
+        if (!calibrate(field, data.approved)) return rejection("StaleObservation");
+        return write(field, {...data, expiresAtPerformanceMs: deadline(data.expiresAtMs, 250),
+          expiresAtWallMs: data.expiresAtMs - clock?.upperWall}, true);
       }
       case "trigger-shortcut": {
         if (!field || !focused(field) || !configuration?.enabled || !shortcut
@@ -508,13 +580,22 @@
   }
   port.onMessage.addListener(message => {
     if (message.op === "disconnect") { observationInterrupted(); return; }
-    const synced = syncClock(message.clock);
+    const value = message.clock;
+    let synced = Number.isSafeInteger(value?.boottimeMs) && value.boottimeMs >= 0;
+    // Unrelated host messages never rebase an established clock or permit.
+    // A host send cannot be later than our proved receipt upper bound.
+    if (synced && clockValid() && value.boottimeMs > now(true)) {
+      observationInterrupted(); synced = false;
+    }
+    commandClock = synced ? value : null;
+    if (synced) lastHostStamp = Math.max(Number.isFinite(lastHostStamp) ? lastHostStamp : 0, value.boottimeMs);
     let result = null;
     try {
       if (synced || message.op === "configure-shortcuts") result = command(message);
       else { publication = shortcut = null; hide(); }
     }
     catch (_) { publication = shortcut = null; hide(); }
+    commandClock = null;
     if (message.id) port.postMessage({id: message.id, data: result});
   });
   port.onDisconnect.addListener(() => { alive = false; observationInterrupted(); });
@@ -582,7 +663,7 @@
     if (field.ime === "Unknown") { field.ime = "Clear"; changed(field, false, false); return; }
     if (field.ime !== "Clear") return;
     if (configuration?.enabled && shortcut && shortcut.generation === configuration.generation
-      && approved(field, shortcut.authority) && fresh(shortcut.authority.observedAtMs, 150)) {
+      && approved(field, shortcut.authority) && issued(field, shortcut.authority)) {
       const kind = shortcutMatches(event, configuration.wake) ? "wake" : shortcutMatches(event, configuration.direct) ? "direct" : null;
       if (kind) {
         const snapshot = capture(field, shortcut.authority);
@@ -602,11 +683,12 @@
     }
     const permit = publication.permit;
     if (event.key !== "Tab" || !permit?.plan?.id || consumed.has(permit.plan.id)) return;
-    for (const [id, expiry] of consumed) if (now() > expiry) consumed.delete(id);
+    for (const [id, expiry] of consumed) if (monoNow() > expiry) consumed.delete(id);
     if (consumed.size >= 128) { publication = null; return; }
-    consumed.set(permit.plan.id, permit.expiresAtMs);
+    consumed.set(permit.plan.id, monoNow() + 100);
+    const {expiresAtPerformanceMs, expiresAtWallMs} = publication;
     const acceptedAtMs = now();
-    const receipt = write(field, {plan: permit.plan, authority: basis, expiresAtMs: permit.expiresAtMs}, false);
+    const receipt = write(field, {plan: permit.plan, authority: basis, expiresAtPerformanceMs, expiresAtWallMs}, false);
     publication = null;
     if (receipt.status !== "RejectedBeforeMutation") {
       consume(event);

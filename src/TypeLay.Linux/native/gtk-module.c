@@ -21,6 +21,7 @@ static guint shortcut_key;
 static gboolean shortcut_consumed;
 static gboolean tab_down, tab_consumed, escape_down, escape_consumed;
 static gboolean initialized;
+static guint64 connection_generation, return_generation;
 static GQueue consumed_ids = G_QUEUE_INIT;
 static gboolean trigger_shortcut(const char *kind, Target *target, JsonObject *approved);
 
@@ -59,6 +60,7 @@ static void clear_shortcut(void) {
     if (shortcut_authority) { json_object_unref(shortcut_authority); shortcut_authority = NULL; }
 }
 static void disconnect_peer(void) {
+    connection_generation++;
     if (connection >= 0) { close(connection); connection = -1; }
     tl_overlay_hide();
     tl_clear_permit();
@@ -111,7 +113,7 @@ void tl_send_event(const char *event, JsonObject *data) {
     send_frame(frame);
 }
 void tl_invalidate(Target *target, gboolean text_changed, gboolean focus_changed) {
-    if (target->mutating || target->dead) return;
+    if (target->dead) return;
     /* Focus has its own revision. Entering/returning from our editor must not
        pretend that the source text or selection was edited. */
     if (!focus_changed) target->input_revision++;
@@ -123,6 +125,9 @@ void tl_invalidate(Target *target, gboolean text_changed, gboolean focus_changed
         tab_down = escape_down = tab_consumed = escape_consumed = FALSE;
     }
     tl_clear_permit();
+    /* Input dispatched by an application's nested loop must still invalidate
+       an in-progress transaction, even though its own storage signals are quiet. */
+    if (target->mutating) return;
     JsonObject *event = json_object_new();
     json_object_set_string_member(event, "target", target->id);
     json_object_set_boolean_member(event, "textChanged", text_changed);
@@ -149,6 +154,31 @@ static void respond(gint64 id, JsonObject *data) {
     else json_object_set_null_member(frame, "data");
     send_frame(frame);
 }
+typedef struct {
+    Target *target;
+    JsonObject *basis;
+    gint64 id, until;
+    guint64 connection, generation;
+} PendingReturn;
+static void free_return(gpointer data) {
+    PendingReturn *pending = data;
+    json_object_unref(pending->basis);
+    g_free(pending);
+}
+static gboolean await_return(gpointer data) {
+    PendingReturn *pending = data;
+    if (connection < 0 || pending->connection != connection_generation) return G_SOURCE_REMOVE;
+    gboolean same = pending->generation == return_generation && !pending->target->dead
+        && tl_focused() == pending->target && tl_metadata_matches(pending->target, pending->basis)
+        && (gint64)pending->target->content_revision == tl_integer(pending->basis, "contentRevision", -1)
+        && (gint64)pending->target->input_revision == tl_integer(pending->basis, "inputRevision", -1);
+    gboolean ready = same && tl_now() <= pending->until && tl_return_ready(pending->target, pending->basis);
+    if (!ready && same && tl_now() < pending->until) return G_SOURCE_CONTINUE;
+    JsonObject *reply = json_object_new();
+    json_object_set_boolean_member(reply, "returned", ready);
+    respond(pending->id, reply);
+    return G_SOURCE_REMOVE;
+}
 static void command(JsonObject *frame) {
     const char *operation = tl_string(frame, "op");
     gint64 id = tl_integer(frame, "id", 0);
@@ -162,8 +192,21 @@ static void command(JsonObject *frame) {
         respond(id, tl_capture(target, tl_object(data, "authority")));
     else if (strcmp(operation, "direct") == 0) respond(id, tl_write(target, data, TRUE));
     else if (strcmp(operation, "return") == 0) {
+        return_generation++;
+        JsonObject *basis = tl_object(data, "authority");
+        gboolean focused = tl_return(target, basis);
+        gboolean ready = focused && tl_return_ready(target, basis);
+        if (focused && !ready) {
+            PendingReturn *pending = g_new0(PendingReturn, 1);
+            *pending = (PendingReturn){.target = target, .basis = tl_copy(basis), .id = id,
+                .until = tl_now() + 450, .connection = connection_generation, .generation = return_generation};
+            /* Poll a real bounded provider observation, never infer Clear from
+               elapsed time. Leave room inside the host's 600 ms RPC deadline. */
+            g_timeout_add_full(G_PRIORITY_DEFAULT, 10, await_return, pending, free_return);
+            return;
+        }
         JsonObject *reply = json_object_new();
-        json_object_set_boolean_member(reply, "returned", tl_return(target, tl_object(data, "authority")));
+        json_object_set_boolean_member(reply, "returned", ready);
         respond(id, reply);
     } else if (strcmp(operation, "quarantine") == 0) {
         if (target) target->quarantined = TRUE;
@@ -335,6 +378,7 @@ static gboolean shortcut_event(GdkEventKey *event) {
     }
     if (!kind) return FALSE;
     Target *target = tl_focused();
+    if (!tl_ime_clear(target) || !shortcut_authority) return FALSE;
     JsonObject *approved = tl_object(shortcut_authority, "authority");
     /* Freeze the actual trigger's text and selection, not a later IPC poll. The
        metadata-only read approval is revalidated before any text is obtained. */
@@ -353,9 +397,10 @@ static gboolean key_event(GdkEventKey *event) {
     if (*held) return *consumed;
     *held = TRUE; *consumed = FALSE;
     Target *target = tl_focused();
+    gboolean clear = tl_ime_clear(target);
     guint modified = event->state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_MOD1_MASK | GDK_MOD3_MASK
         | GDK_MOD4_MASK | GDK_MOD5_MASK | GDK_SUPER_MASK | GDK_HYPER_MASK | GDK_META_MASK);
-    if (!target || !publication || modified || event->send_event || !target->ime_known || target->composing) {
+    if (!clear || !publication || modified || event->send_event) {
         tl_clear_permit(); return FALSE;
     }
     JsonObject *basis = tl_object(publication, "authority");

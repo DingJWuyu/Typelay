@@ -48,7 +48,7 @@ DISPLAY=:99 python tests/linux/vscode_e2e.py \
   --model-data /绝对路径/测试数据/typelay
 ```
 
-测试只往临时 HOME、用户数据和扩展目录安装 VSIX，模型 components 只链接到已准备的测试数据。Playwright 通过仅供该测试使用的本机调试端口操作真实预览按钮，不替换消息 API 或模型。源码事务和安装包事务均通过同一公开接口验证；日志、实际 UI 截图和 `test-result.json` 进入 `artifacts/linux/vscode/`。只有真实运行全部断言后产生的 `passed` 被接受；缺少模型、未启动、超时或测试失败都不算通过。结束后清理临时 profile 和自有进程。
+测试只往临时 HOME、用户数据和扩展目录安装 VSIX，模型 components 只链接到已准备的测试数据。Playwright 通过仅供该测试使用的本机调试端口操作真实预览按钮，不替换消息 API 或模型。完整 UI 模式启动普通 Code，不启用 extensionTestsPath 或扩展开发模式，因为 VS Code 的 DialogService 明确禁止扩展测试模式弹出模态提示。它通过命令面板触发已安装扩展，并检查临时文件的实际保存、一次撤销和取消结果；独立 Extension Host 回归保留版本竞争等事务检查。日志、实际 UI 截图和 `test-result.json` 进入 `artifacts/linux/vscode/`。只有真实运行全部断言后产生的 `passed` 被接受；缺少模型、未启动、超时或测试失败都不算通过。结束后清理临时 profile 和自有进程。
 
 这些检查仍不代表物理中文输入法、niri 多窗口体验或自动浮层产品验收。
 
@@ -57,6 +57,7 @@ DISPLAY=:99 python tests/linux/vscode_e2e.py \
 - [VS Code TextEditor 与 TextEditorEdit](https://code.visualstudio.com/api/references/vscode-api#TextEditor)提供版本约束编辑和 undo stop。
 - [扩展端版本绑定](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/api/common/extHostTextEditor.ts)与[主线程应用](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/api/browser/mainThreadEditor.ts)说明版本事务边界。
 - [原生文本区组合状态处理](https://github.com/microsoft/vscode/blob/main/src/vs/editor/browser/controller/editContext/textArea/textAreaEditContextInput.ts)说明 blur 不能当作正常输入法提交证明。
+- [DialogService 的扩展测试模式限制](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/services/dialogs/common/dialogService.ts)要求实际模态 UI 回归使用普通启动。
 - [官方 vsce 打包实现](https://github.com/microsoft/vscode-vsce/blob/main/src/package.ts)定义 VSIX manifest 和内容类型。
 
 Microsoft 的 VS Code、扩展示例和 vsce 源码采用 MIT 许可。此实现调用公开 API，没有复制上游实现或引入第三方翻译插件。

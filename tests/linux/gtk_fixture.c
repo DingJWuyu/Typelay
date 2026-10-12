@@ -1,5 +1,6 @@
 #include <gtk/gtk.h>
 #include <json-glib/json-glib.h>
+#include "../../src/TypeLay.Linux/native/fcitx5/typelay-fcitx-v1.h"
 
 /* Only the isolated test executable writes this evidence. Production has no
  * command to dump source text, inject input or change a test model. */
@@ -23,6 +24,28 @@ static gboolean report_state(gpointer unused) {
     }
     json_builder_set_member_name(builder, "focus");
     json_builder_add_string_value(builder, focus ? gtk_buildable_get_name(GTK_BUILDABLE(focus)) : "");
+    if (g_getenv("TYPELAY_FIXTURE_COOPERATIVE")) {
+        TlFcitxStateV1 state = { .size = sizeof(state), .version = TL_FCITX_ABI_V1 };
+        GtkIMContext *context = g_object_get_data(G_OBJECT(report_first), TL_FCITX_CONTEXT_V1);
+        gboolean valid = FALSE;
+        if (context && GTK_IS_IM_CONTEXT(context)) {
+            g_object_ref(context);
+            const TlFcitxCapabilityV1 *cap = g_object_get_data(G_OBJECT(context), TL_FCITX_CAPABILITY_V1);
+            if (cap && cap->size == sizeof(*cap) && cap->version == TL_FCITX_ABI_V1 && cap->inspect)
+                valid = cap->inspect(context, report_first, &state);
+            g_object_unref(context);
+        }
+        json_builder_set_member_name(builder, "cooperative");
+        json_builder_add_boolean_value(builder, valid);
+        json_builder_set_member_name(builder, "imeFocused");
+        json_builder_add_boolean_value(builder, valid && (state.flags & TL_FCITX_FOCUSED));
+        json_builder_set_member_name(builder, "imeClear");
+        json_builder_add_boolean_value(builder, valid && (state.flags & TL_FCITX_KNOWN)
+            && (state.flags & TL_FCITX_FOCUSED) && !(state.flags & (TL_FCITX_PENDING | TL_FCITX_COMPOSING))
+            && state.server_serial == state.applied_serial);
+        json_builder_set_member_name(builder, "imeComposing");
+        json_builder_add_boolean_value(builder, valid && (state.flags & TL_FCITX_COMPOSING));
+    }
     json_builder_end_object(builder);
     JsonNode *node = json_builder_get_root(builder);
     JsonGenerator *generator = json_generator_new();
@@ -57,7 +80,8 @@ int main(int argc, char **argv) {
     gtk_buildable_set_name(GTK_BUILDABLE(first), "fixture-first");
     gtk_buildable_set_name(GTK_BUILDABLE(second), "fixture-second");
     gtk_buildable_set_name(GTK_BUILDABLE(password), "fixture-password");
-    gtk_entry_set_text(GTK_ENTRY(first), "alpha 😀 omega");
+    const char *initial = g_getenv("TYPELAY_FIXTURE_INITIAL_TEXT");
+    gtk_entry_set_text(GTK_ENTRY(first), initial ? initial : "alpha 😀 omega");
     gtk_entry_set_text(GTK_ENTRY(second), "second field");
     gtk_entry_set_visibility(GTK_ENTRY(password), FALSE);
     gtk_entry_set_text(GTK_ENTRY(password), "fixture-only-private");

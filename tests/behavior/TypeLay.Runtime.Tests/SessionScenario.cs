@@ -190,6 +190,10 @@ internal sealed class SessionScenario : IDisposable
             get; private set;
         }
         public bool ReturnAllowed { get; set; } = true;
+        public TaskCompletionSource<bool>? PendingReturn
+        {
+            get; set;
+        }
         public int Captures
         {
             get; private set;
@@ -216,12 +220,13 @@ internal sealed class SessionScenario : IDisposable
             return PendingCapture?.Task ?? Task.FromResult(new InputCapture(host.Fresh,
                 host.Input.GetFocus(host.Source.Target), "org.typelay.ControlledApp", context.UserEpoch, context.ForegroundEpoch));
         }
-        public Task<bool> ReturnToSourceAsync(InputContext context)
+        public async Task<bool> ReturnToSourceAsync(InputContext context)
         {
             Returns++;
-            if (ReturnAllowed)
+            bool returned = PendingReturn is { } pending ? await pending.Task : ReturnAllowed;
+            if (returned)
                 host.Input.InEditor = false;
-            return Task.FromResult(ReturnAllowed);
+            return returned;
         }
         public Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs)
         {

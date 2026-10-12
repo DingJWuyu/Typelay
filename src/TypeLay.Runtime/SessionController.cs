@@ -15,7 +15,7 @@ public sealed class SessionController : IDisposable
     private long _configurationRevision;
     private readonly ISessionLoop _loop;
     private long _generation, _nextCapture, _permitUntil, _editTransitionUntil, _retryBrokerAt;
-    private bool _capturing, _writing, _translationRunning, _startingBroker, _disposed;
+    private bool _capturing, _writing, _translationRunning, _startingBroker, _returningToSource, _disposed;
     private string? _statusOverride;
     private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
     private string? _lastTrace;
@@ -143,6 +143,14 @@ public sealed class SessionController : IDisposable
             _overlay.HideQuietly();
             return;
         }
+        // Focus restoration may await the real input context. A concurrent read
+        // before that operation completes must not discard the saved editor draft.
+        if (_returningToSource)
+        {
+            _hook.Revoke();
+            _permitUntil = 0;
+            return;
+        }
         // The editor owns focus and its saved source basis until the user returns.
         // Chromium may expose no source selection when another window has focus.
         // Revalidate the source on return instead of polling an unfocused TextPattern.
@@ -260,6 +268,8 @@ public sealed class SessionController : IDisposable
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
+            if (_disposed || generation != _generation)
+                return;
             StopSession("capture-failed");
             ServiceStatus = "输入服务连接中断，正在重试";
             _retryBrokerAt = _loop.NowMs + 2000;
@@ -400,21 +410,27 @@ public sealed class SessionController : IDisposable
     }
     private async Task<bool> ReturnFromEditor()
     {
-        if (_overlay.EditingComposition || !_session.RequestSourceReturn() || _session.Current is not { } source)
+        if (_returningToSource || _overlay.EditingComposition || !_session.RequestSourceReturn() || _session.Current is not { } source)
             return false;
-        _generation++;
+        long generation = ++_generation;
         _hook.Revoke();
         _permitUntil = 0;
         Render();
+        _returningToSource = true;
+        bool returned = false;
         try
         {
-            if (await _broker.ReturnToSourceAsync(Context()))
-            {
-                _nextCapture = 0;
-                return true;
-            }
+            returned = await _broker.ReturnToSourceAsync(Context());
         }
         catch (Exception ex) when (ex is not OutOfMemoryException) { }
+        finally { _returningToSource = false; }
+        if (_disposed || generation != _generation)
+            return false;
+        if (returned)
+        {
+            _nextCapture = 0;
+            return true;
+        }
         _session.CancelSourceReturn();
         _overlay.ResumeEditor();
         Render();
@@ -461,7 +477,13 @@ public sealed class SessionController : IDisposable
         if (_overlay.EditingComposition)
             return;
         if (_session.State == SessionState.EditingTranslation)
-            await ReturnFromEditor();
+        {
+            long expectedGeneration = _generation + 1;
+            if (!await ReturnFromEditor() || _disposed || _generation != expectedGeneration)
+                return;
+        }
+        if (_disposed)
+            return;
         _generation++;
         _hook.Revoke();
         _permitUntil = 0;
@@ -472,7 +494,13 @@ public sealed class SessionController : IDisposable
     {
         if (_overlay.EditingComposition)
             return;
-        if (_session.State == SessionState.EditingTranslation && !await ReturnFromEditor())
+        if (_session.State == SessionState.EditingTranslation)
+        {
+            long expectedGeneration = _generation + 1;
+            if (!await ReturnFromEditor() || _disposed || _generation != expectedGeneration)
+                return;
+        }
+        if (_disposed)
             return;
         _generation++;
         _hook.Revoke();

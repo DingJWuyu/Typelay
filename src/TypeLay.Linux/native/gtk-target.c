@@ -8,11 +8,142 @@ static GHashTable *targets;
 static GQuark target_quark;
 static guint target_count;
 
+static gboolean standard_entry(Target *target) {
+    return target && !target->dead && target->widget && target->buffer
+        && G_OBJECT_TYPE(target->widget) == GTK_TYPE_ENTRY
+        && G_OBJECT_TYPE(target->buffer) == GTK_TYPE_ENTRY_BUFFER;
+}
+static const TlFcitxCapabilityV1 *im_capability(GtkIMContext *context) {
+    if (!context || !GTK_IS_IM_CONTEXT(context)) return NULL;
+    const TlFcitxCapabilityV1 *value = g_object_get_data(G_OBJECT(context), TL_FCITX_CAPABILITY_V1);
+    return value && value->size >= sizeof *value && value->version == TL_FCITX_ABI_V1
+        && value->inspect ? value : NULL;
+}
+static GtkIMContext *published_context(Target *target) {
+    GtkIMContext *context = standard_entry(target)
+        ? g_object_get_data(G_OBJECT(target->widget), TL_FCITX_CONTEXT_V1) : NULL;
+    return im_capability(context) ? context : NULL;
+}
+static void im_invalidated(Target *target, guint causes) {
+    target->ime_known = FALSE;
+    tl_clear_permit();
+    if (target->dead) return;
+    gboolean input = (causes & (TL_FCITX_CHANGE_INPUT | TL_FCITX_CHANGE_BINDING)) != 0;
+    gboolean focus = (causes & TL_FCITX_CHANGE_FOCUS) != 0;
+    if (!input && !focus) return;
+    /* A callback during mutation is still an invalidation. The ordinary GTK
+       text notifications are suppressed then, but IM/focus changes are not. */
+    if (target->mutating) {
+        if (input) target->input_revision++;
+        if (focus) target->focus_revision++;
+    } else {
+        if (input) tl_invalidate(target, FALSE, FALSE);
+        if (focus) tl_invalidate(target, FALSE, TRUE);
+    }
+}
+static void im_changed(GtkIMContext *context, guint causes, gpointer data) {
+    Target *target = data;
+    if (context == target->im_context) im_invalidated(target, causes);
+}
+static gboolean bind_context(Target *target) {
+    GtkIMContext *context = published_context(target);
+    if (target->im_context != context) {
+        if (target->im_context && target->im_handler)
+            g_signal_handler_disconnect(target->im_context, target->im_handler);
+        target->im_handler = 0;
+        g_clear_object(&target->im_context);
+        if (context) {
+            target->im_context = g_object_ref(context);
+            guint signal = g_signal_lookup(TL_FCITX_CHANGED_V1, G_OBJECT_TYPE(context));
+            GSignalQuery query = {0};
+            if (signal) g_signal_query(signal, &query);
+            if (query.return_type == G_TYPE_NONE && query.n_params == 1
+                && query.param_types[0] == G_TYPE_UINT)
+                target->im_handler = g_signal_connect(context, TL_FCITX_CHANGED_V1, G_CALLBACK(im_changed), target);
+            else g_clear_object(&target->im_context);
+        }
+        target->im_observed = FALSE;
+        im_invalidated(target, TL_FCITX_CHANGE_BINDING);
+    }
+    return target->im_context != NULL;
+}
+static gboolean same_state(const TlFcitxStateV1 *a, const TlFcitxStateV1 *b) {
+    return a->context_generation == b->context_generation && a->epoch == b->epoch
+        && a->input_epoch == b->input_epoch && a->server_serial == b->server_serial
+        && a->applied_serial == b->applied_serial && a->flags == b->flags;
+}
+static gboolean read_ime(GtkWidget *widget, GtkIMContext *context, TlFcitxStateV1 *state) {
+    const TlFcitxCapabilityV1 *capability = im_capability(context);
+    return g_main_depth() == 1 && capability && capability->inspect(context, widget, state)
+        && !gtk_widget_in_destruction(widget)
+        && g_object_get_data(G_OBJECT(widget), TL_FCITX_CONTEXT_V1) == context
+        && state->size == sizeof *state && state->version == TL_FCITX_ABI_V1
+        && state->context_generation != 0
+        && !(state->flags & (guint32)~(TL_FCITX_KNOWN | TL_FCITX_FOCUSED | TL_FCITX_PENDING | TL_FCITX_COMPOSING));
+}
+static gboolean state_clear(const TlFcitxStateV1 *state) {
+    return state->flags == (TL_FCITX_KNOWN | TL_FCITX_FOCUSED)
+        && state->server_serial == state->applied_serial;
+}
+gboolean tl_widget_ime_clear(GtkWidget *widget) {
+    if (!widget || !gtk_widget_has_focus(widget)) return FALSE;
+    GtkIMContext *context = g_object_get_data(G_OBJECT(widget), TL_FCITX_CONTEXT_V1);
+    if (!im_capability(context)) return FALSE;
+    g_object_ref(widget); g_object_ref(context);
+    TlFcitxStateV1 state = {.size = sizeof state, .version = TL_FCITX_ABI_V1};
+    gboolean clear = read_ime(widget, context, &state) && state_clear(&state);
+    g_object_unref(context); g_object_unref(widget);
+    return clear;
+}
+static gboolean inspect_ime(Target *target) {
+    if (!target || target->dead || target->thread != g_thread_self() || target->im_probing
+        || g_main_depth() != 1 || !bind_context(target)) return FALSE;
+    TlFcitxStateV1 state = {.size = sizeof state, .version = TL_FCITX_ABI_V1};
+    GtkIMContext *context = g_object_ref(target->im_context);
+    target->im_probing = TRUE;
+    GtkWidget *widget = g_object_ref(target->widget);
+    gboolean valid = read_ime(widget, context, &state);
+    target->im_probing = FALSE;
+    valid = valid && !target->dead && target->im_context == context;
+    g_object_unref(context); g_object_unref(widget);
+    if (!valid) {
+        im_invalidated(target, 0);
+        return FALSE;
+    }
+    if (target->im_observed && !same_state(&target->im_state, &state)) {
+        guint causes = 0;
+        if (target->im_state.context_generation != state.context_generation)
+            causes |= TL_FCITX_CHANGE_BINDING;
+        if (target->im_state.input_epoch != state.input_epoch) causes |= TL_FCITX_CHANGE_INPUT;
+        if ((target->im_state.flags ^ state.flags) & TL_FCITX_FOCUSED) causes |= TL_FCITX_CHANGE_FOCUS;
+        im_invalidated(target, causes);
+    }
+    target->im_state = state;
+    target->im_observed = TRUE;
+    target->ime_known = (state.flags & (TL_FCITX_KNOWN | TL_FCITX_FOCUSED | TL_FCITX_PENDING))
+        == (TL_FCITX_KNOWN | TL_FCITX_FOCUSED) && state.server_serial == state.applied_serial;
+    target->composing = (state.flags & TL_FCITX_COMPOSING) != 0;
+    return TRUE;
+}
+gboolean tl_ime_clear(Target *target) {
+    return target && !target->mutating && inspect_ime(target) && target->ime_known && !target->composing;
+}
+
 static void changed(Target *target) {
     if (!target->mutating) tl_invalidate(target, TRUE, FALSE);
 }
 static void entry_changed(GtkEditable *editable, gpointer data) { (void)editable; changed(data); }
 static void buffer_changed(GtkTextBuffer *buffer, gpointer data) { (void)buffer; changed(data); }
+static void entry_inserted(GtkEntryBuffer *buffer, guint position, const gchar *text, guint count, gpointer data) {
+    (void)buffer; (void)position; (void)text; (void)count;
+    Target *target = data;
+    target->storage_revision++;
+}
+static void entry_deleted(GtkEntryBuffer *buffer, guint position, guint count, gpointer data) {
+    (void)buffer; (void)position; (void)count;
+    Target *target = data;
+    target->storage_revision++;
+}
 static void selection_changed(GObject *object, GParamSpec *property, gpointer data) {
     (void)object; (void)property;
     Target *target = data;
@@ -26,6 +157,9 @@ static void mark_changed(GtkTextBuffer *buffer, GtkTextIter *where, GtkTextMark 
 static void preedit(GtkWidget *widget, const gchar *text, gpointer data) {
     (void)widget;
     Target *target = data;
+    /* The cooperating context classifies actual composition transitions and
+       empty focus/reset notifications. Do not misclassify focus as source input. */
+    if (bind_context(target)) return;
     /* An empty preedit signal does not expose asynchronous IM requests. */
     target->ime_known = FALSE;
     target->composing = text != NULL && *text != '\0';
@@ -34,6 +168,7 @@ static void preedit(GtkWidget *widget, const gchar *text, gpointer data) {
 static gboolean focused(GtkWidget *widget, GdkEventFocus *event, gpointer data) {
     (void)widget; (void)event;
     Target *target = data;
+    target->ime_known = FALSE;
     tl_overlay_sync();
     tl_invalidate(target, FALSE, TRUE);
     return FALSE;
@@ -43,6 +178,10 @@ static void destroyed(GtkWidget *widget, gpointer data) {
     Target *target = data;
     target->dead = TRUE;
     target->widget = NULL;
+    if (target->im_context && target->im_handler)
+        g_signal_handler_disconnect(target->im_context, target->im_handler);
+    target->im_handler = 0;
+    g_clear_object(&target->im_context);
     if (target->buffer) {
         g_signal_handlers_disconnect_by_data(target->buffer, target);
         g_clear_object(&target->buffer);
@@ -61,6 +200,11 @@ static void attach_buffer(Target *target) {
         g_object_unref(target->buffer);
     }
     target->buffer = g_object_ref(buffer);
+    target->storage_revision++;
+    if (GTK_IS_ENTRY_BUFFER(buffer)) {
+        g_signal_connect(buffer, "inserted-text", G_CALLBACK(entry_inserted), target);
+        g_signal_connect(buffer, "deleted-text", G_CALLBACK(entry_deleted), target);
+    }
     if (GTK_IS_TEXT_BUFFER(buffer)) {
         g_signal_connect(buffer, "changed", G_CALLBACK(buffer_changed), target);
         g_signal_connect(buffer, "mark-set", G_CALLBACK(mark_changed), target);
@@ -81,6 +225,7 @@ void tl_discover(GtkWidget *widget, gboolean before_input) {
     if (!targets) targets = g_hash_table_new(g_str_hash, g_str_equal);
     Target *target = g_new0(Target, 1);
     target->widget = widget;
+    target->thread = g_thread_self();
     target->id = g_uuid_string_random();
     target->content_revision = 1;
     target->input_revision = 1;
@@ -208,7 +353,7 @@ static JsonObject *metadata(Target *target) {
     json_object_set_boolean_member(value, "inDocument", FALSE);
     json_object_set_boolean_member(value, "multiline", GTK_IS_TEXT_VIEW(widget));
     json_object_set_boolean_member(value, "hasValue", TRUE);
-    json_object_set_boolean_member(value, "hasTextEdit", target->ime_known);
+    json_object_set_boolean_member(value, "hasTextEdit", published_context(target) != NULL);
     g_string_free(labels, TRUE); g_free(tooltip);
     return value;
 }
@@ -227,10 +372,22 @@ static JsonObject *authority(Target *target, const char *key) {
     json_object_set_int_member(value, "contentRevision", (gint64)target->content_revision);
     json_object_set_int_member(value, "inputRevision", (gint64)target->input_revision);
     json_object_set_int_member(value, "focusRevision", (gint64)target->focus_revision);
+    if (target->im_observed) {
+        JsonObject *stamp = json_object_new();
+        json_object_set_int_member(stamp, "context", (gint64)target->im_state.context_generation);
+        json_object_set_int_member(stamp, "epoch", (gint64)target->im_state.epoch);
+        json_object_set_int_member(stamp, "input", (gint64)target->im_state.input_epoch);
+        json_object_set_int_member(stamp, "server", (gint64)target->im_state.server_serial);
+        json_object_set_int_member(stamp, "applied", (gint64)target->im_state.applied_serial);
+        json_object_set_int_member(stamp, "flags", target->im_state.flags);
+        json_object_set_object_member(value, "contextStamp", stamp);
+    }
     json_object_set_int_member(value, "observedAtMs", tl_now());
     return value;
 }
 JsonObject *tl_describe(Target *target) {
+    if (!target || target->mutating || target->im_probing || target->thread != g_thread_self()) return NULL;
+    (void)inspect_ime(target);
     JsonObject *fields = metadata(target);
     if (!fields) return NULL;
     char *key = metadata_key(fields);
@@ -279,34 +436,39 @@ static gint utf16_to_char(const char *text, gint offset) {
     return units == offset ? count : -1;
 }
 static char *read_text(Target *target, gint *start, gint *end) {
-    char *text;
-    if (GTK_IS_ENTRY(target->widget)) {
-        text = g_strdup(gtk_entry_get_text(GTK_ENTRY(target->widget)));
-        if (!gtk_editable_get_selection_bounds(GTK_EDITABLE(target->widget), start, end))
-            *start = *end = gtk_editable_get_position(GTK_EDITABLE(target->widget));
-    } else {
-        GtkTextBuffer *buffer = GTK_TEXT_BUFFER(target->buffer);
-        GtkTextIter first, last;
-        if (gtk_text_buffer_get_char_count(buffer) > TL_MAX_TEXT) return NULL;
-        gtk_text_buffer_get_bounds(buffer, &first, &last);
-        text = gtk_text_buffer_get_text(buffer, &first, &last, TRUE);
-        gtk_text_buffer_get_selection_bounds(buffer, &first, &last);
-        *start = gtk_text_iter_get_offset(&first); *end = gtk_text_iter_get_offset(&last);
-    }
+    if (!standard_entry(target)) return NULL;
+    char *text = g_strdup(gtk_entry_buffer_get_text(GTK_ENTRY_BUFFER(target->buffer)));
+    if (!gtk_editable_get_selection_bounds(GTK_EDITABLE(target->widget), start, end))
+        *start = *end = gtk_editable_get_position(GTK_EDITABLE(target->widget));
     if (utf16_length(text) < 0) { g_free(text); return NULL; }
     *start = char_to_utf16(text, *start); *end = char_to_utf16(text, *end);
     if (*start < 0 || *end < 0) { g_free(text); return NULL; }
     return text;
 }
+static gboolean stamp_matches(Target *target, JsonObject *approved) {
+    JsonObject *stamp = tl_object(approved, "contextStamp");
+    return stamp && target->im_observed
+        && (gint64)target->im_state.context_generation == tl_integer(stamp, "context", -1)
+        && (gint64)target->im_state.epoch == tl_integer(stamp, "epoch", -1)
+        && (gint64)target->im_state.input_epoch == tl_integer(stamp, "input", -1)
+        && (gint64)target->im_state.server_serial == tl_integer(stamp, "server", -1)
+        && (gint64)target->im_state.applied_serial == tl_integer(stamp, "applied", -1)
+        && (gint64)target->im_state.flags == tl_integer(stamp, "flags", -1);
+}
 JsonObject *tl_capture(Target *target, JsonObject *approved) {
-    if (!target || !target->ime_known || target->composing) return NULL;
+    if (!tl_ime_clear(target) || target != tl_focused() || !stamp_matches(target, approved)) return NULL;
     gint64 age = tl_now() - tl_integer(approved, "observedAtMs", 0);
     if (age < 0 || age > 150 || !tl_metadata_matches(target, approved)) return NULL;
+    guint64 storage = target->storage_revision, input = target->input_revision, focus = target->focus_revision;
     gint start, end;
     char *text = read_text(target, &start, &end);
     if (!text) return NULL;
     JsonObject *description = tl_describe(target);
-    if (!description || !tl_metadata_matches(target, approved)) {
+    age = tl_now() - tl_integer(approved, "observedAtMs", 0);
+    if (!description || !target->ime_known || target->composing || !stamp_matches(target, approved)
+        || age < 0 || age > 150 || target != tl_focused() || target->storage_revision != storage
+        || target->input_revision != input || target->focus_revision != focus
+        || !tl_metadata_matches(target, approved)) {
         if (description) json_object_unref(description);
         g_free(text); return NULL;
     }
@@ -314,8 +476,8 @@ JsonObject *tl_capture(Target *target, JsonObject *approved) {
     JsonObject *selection = json_object_new();
     json_object_set_int_member(selection, "start", start); json_object_set_int_member(selection, "end", end);
     json_object_set_object_member(description, "selection", selection);
-    json_object_set_string_member(description, "ime", !target->ime_known ? "Unknown" : target->composing ? "Composing" : "Clear");
-    json_object_set_boolean_member(description, "writeSupported", target->ime_known && !target->composing && !target->quarantined);
+    json_object_set_string_member(description, "ime", "Clear");
+    json_object_set_boolean_member(description, "writeSupported", !target->quarantined);
     json_object_set_int_member(description, "observedAtMs", tl_now());
     g_free(text);
     return description;
@@ -332,18 +494,18 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     JsonObject *expected = tl_object(plan, "expected");
     if (!target || !plan || !expected || !basis || !approved)
         return receipt("RejectedBeforeMutation", "BadPlan");
+    if (target->mutating || !tl_ime_clear(target) || target->quarantined)
+        return receipt("RejectedBeforeMutation", "ImeUnclear");
     gint64 now = tl_now(), until = tl_integer(request, "expiresAtMs", 0);
     if (until < now || until - now > (direct ? 250 : 100))
         return receipt("RejectedBeforeMutation", "StaleObservation");
     if (!tl_metadata_matches(target, approved) || !tl_metadata_matches(target, basis))
         return receipt("RejectedBeforeMutation", "Sensitive");
-    if (!target->ime_known || target->composing || target->quarantined)
-        return receipt("RejectedBeforeMutation", "ImeUnclear");
+    if (!stamp_matches(target, basis)) return receipt("RejectedBeforeMutation", "EpochChanged");
     if ((gint64)target->content_revision != tl_integer(basis, "contentRevision", -1))
         return receipt("RejectedBeforeMutation", "SourceChanged");
-    if (!direct && (tl_focused() != target
-        || (gint64)target->input_revision != tl_integer(basis, "inputRevision", -1)
-        || (gint64)target->focus_revision != tl_integer(basis, "focusRevision", -1)))
+    if (tl_focused() != target || (gint64)target->input_revision != tl_integer(basis, "inputRevision", -1)
+        || (gint64)target->focus_revision != tl_integer(basis, "focusRevision", -1))
         return receipt("RejectedBeforeMutation", "EpochChanged");
     gint start, end;
     char *text = read_text(target, &start, &end);
@@ -353,7 +515,7 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
         g_free(text); return receipt("RejectedBeforeMutation", "SourceChanged");
     }
     JsonObject *selection = tl_object(expected, "selection");
-    if (!direct && (start != tl_integer(selection, "start", -1) || end != tl_integer(selection, "end", -1))) {
+    if (start != tl_integer(selection, "start", -1) || end != tl_integer(selection, "end", -1)) {
         g_free(text); return receipt("RejectedBeforeMutation", "SelectionChanged");
     }
     gint units = utf16_length(text), replacement_units = utf16_length(replacement);
@@ -379,50 +541,71 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     gboolean matches = strcmp(computed->str, result) == 0 && utf16_length(computed->str) >= 0;
     g_string_free(computed, TRUE);
     if (!matches) { g_free(after_delete); g_free(text); return receipt("RejectedBeforeMutation", "BadPlan"); }
-    if (GTK_IS_ENTRY(target->widget)) {
-        gint limit = gtk_entry_get_max_length(GTK_ENTRY(target->widget));
-        if (limit > 0 && g_utf8_strlen(result, -1) > limit) {
-            g_free(after_delete); g_free(text); return receipt("RejectedBeforeMutation", "InvalidText");
-        }
+    gint limit = gtk_entry_buffer_get_max_length(GTK_ENTRY_BUFFER(target->buffer));
+    if (limit > 0 && g_utf8_strlen(result, -1) > limit) {
+        g_free(after_delete); g_free(text); return receipt("RejectedBeforeMutation", "InvalidText");
     }
-    /* All validation and the mutation execute in the target's GTK thread. No RPC,
-       event-loop iteration, focus change, clipboard paste or retry belongs here. */
+    /* Validation and mutation stay in the target's GTK thread. Only the bounded
+       non-dispatching IM query crosses processes; no event-loop iteration,
+       focus change, clipboard paste or retry belongs to this transaction. */
     GtkWidget *widget = g_object_ref(target->widget);
     GObject *buffer = g_object_ref(target->buffer);
+    guint64 storage = target->storage_revision, input = target->input_revision, focus = target->focus_revision;
+    gint old_cursor = gtk_editable_get_position(GTK_EDITABLE(widget)), old_bound = 0;
+    g_object_get(widget, "selection-bound", &old_bound, NULL);
+    gint deleted_cursor = old_cursor - CLAMP(old_cursor - from, 0, to - from);
+    gint deleted_bound = old_bound - CLAMP(old_bound - from, 0, to - from);
+    TlFcitxStateV1 state = target->im_state;
+    if (tl_now() > until) {
+        g_object_unref(buffer); g_object_unref(widget); g_free(after_delete); g_free(text);
+        return receipt("RejectedBeforeMutation", "StaleObservation");
+    }
     target->mutating = TRUE;
     tl_clear_permit();
-    if (GTK_IS_ENTRY(widget)) {
-        gtk_editable_delete_text(GTK_EDITABLE(widget), from, to);
-        if (!target->dead && target->buffer == buffer
-            && strcmp(gtk_entry_get_text(GTK_ENTRY(widget)), after_delete) == 0
-            && tl_metadata_matches(target, approved) && !target->composing) {
-            gint position = from;
-            gtk_editable_insert_text(GTK_EDITABLE(widget), replacement, -1, &position);
-            gtk_editable_set_position(GTK_EDITABLE(widget), position);
+    /* GtkEditable has a pre-mutation insert signal. Standard GtkEntryBuffer
+       mutates storage before notifying the application, making callback changes
+       observable without subsequently overwriting them. Custom buffers and
+       GtkTextView deliberately have no write path here. */
+    guint removed = gtk_entry_buffer_delete_text(GTK_ENTRY_BUFFER(buffer), (guint)from, to - from);
+    gint after_bound = -1;
+    if (!target->dead) g_object_get(widget, "selection-bound", &after_bound, NULL);
+    guint64 expected_storage = storage + (to > from ? 1u : 0u);
+    gboolean intermediate = removed == (guint)(to - from) && !target->dead && target->buffer == buffer
+        && target->storage_revision == expected_storage && inspect_ime(target)
+        && target->ime_known && !target->composing && same_state(&state, &target->im_state)
+        && target->input_revision == input && target->focus_revision == focus && tl_focused() == target
+        && gtk_editable_get_position(GTK_EDITABLE(widget)) == deleted_cursor && after_bound == deleted_bound
+        && tl_now() <= until && tl_metadata_matches(target, approved)
+        && strcmp(gtk_entry_buffer_get_text(GTK_ENTRY_BUFFER(buffer)), after_delete) == 0;
+    guint inserted = 0;
+    gboolean positioned = FALSE;
+    gint replacement_chars = (gint)g_utf8_strlen(replacement, -1);
+    if (intermediate) {
+        inserted = gtk_entry_buffer_insert_text(GTK_ENTRY_BUFFER(buffer), (guint)from, replacement, replacement_chars);
+        expected_storage++;
+        gint inserted_bound = -1;
+        if (!target->dead) g_object_get(widget, "selection-bound", &inserted_bound, NULL);
+        gint expected_cursor = deleted_cursor + (deleted_cursor > from ? replacement_chars : 0);
+        gint expected_bound = deleted_bound + (deleted_bound > from ? replacement_chars : 0);
+        if (!target->dead && target->buffer == buffer && target->storage_revision == expected_storage
+            && inserted == (guint)replacement_chars && inspect_ime(target)
+            && target->ime_known && !target->composing && same_state(&state, &target->im_state)
+            && target->input_revision == input && target->focus_revision == focus && tl_focused() == target
+            && gtk_editable_get_position(GTK_EDITABLE(widget)) == expected_cursor && inserted_bound == expected_bound
+            && tl_now() <= until && tl_metadata_matches(target, approved)) {
+            positioned = TRUE;
+            gtk_editable_set_position(GTK_EDITABLE(widget), from + replacement_chars);
         }
-    } else {
-        GtkTextBuffer *text_buffer = GTK_TEXT_BUFFER(buffer);
-        GtkTextIter a, b;
-        gtk_text_buffer_begin_user_action(text_buffer);
-        gtk_text_buffer_get_iter_at_offset(text_buffer, &a, from);
-        gtk_text_buffer_get_iter_at_offset(text_buffer, &b, to);
-        gtk_text_buffer_delete(text_buffer, &a, &b);
-        gint intermediate_start, intermediate_end;
-        char *intermediate = target->dead ? NULL : read_text(target, &intermediate_start, &intermediate_end);
-        if (intermediate && target->buffer == buffer && strcmp(intermediate, after_delete) == 0
-            && tl_metadata_matches(target, approved) && !target->composing) {
-            gtk_text_buffer_get_iter_at_offset(text_buffer, &a, from);
-            gtk_text_buffer_insert(text_buffer, &a, replacement, -1);
-            gtk_text_buffer_place_cursor(text_buffer, &a);
-        }
-        g_free(intermediate);
-        gtk_text_buffer_end_user_action(text_buffer);
     }
+    gboolean clear = positioned && inspect_ime(target)
+        && target->ime_known && !target->composing && same_state(&state, &target->im_state)
+        && target->input_revision == input && target->focus_revision == focus && tl_focused() == target
+        && target->buffer == buffer && target->storage_revision == expected_storage
+        && tl_now() <= until && tl_metadata_matches(target, approved);
+    char *after = clear ? read_text(target, &start, &end) : NULL;
+    gboolean verified = after && strcmp(after, result) == 0 && start == caret && end == caret;
     target->mutating = FALSE;
     target->content_revision++;
-    char *after = target->dead ? NULL : read_text(target, &start, &end);
-    gboolean verified = after && target->buffer == buffer && strcmp(after, result) == 0 && start == caret && end == caret
-        && target->ime_known && !target->composing && tl_metadata_matches(target, approved);
     JsonObject *reply = receipt(verified ? "Verified" : "OutcomeUnknown", verified ? "None" : "UnknownOutcome");
     if (verified) {
         JsonObject *snapshot = tl_copy(expected);
@@ -438,12 +621,27 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     g_free(after_delete); g_free(after); g_free(text); g_object_unref(buffer); g_object_unref(widget);
     return reply;
 }
+static gboolean return_authorized(Target *target, JsonObject *basis) {
+    JsonObject *stamp = tl_object(basis, "contextStamp");
+    return target && !target->mutating && !target->im_probing && !target->quarantined
+        && target->thread == g_thread_self() && g_main_depth() == 1
+        && bind_context(target) && target->im_observed && stamp
+        && (gint64)target->im_state.context_generation == tl_integer(stamp, "context", -1)
+        && (gint64)target->input_revision == tl_integer(basis, "inputRevision", -1)
+        && (gint64)target->content_revision == tl_integer(basis, "contentRevision", -1)
+        && tl_metadata_matches(target, basis);
+}
+gboolean tl_return_ready(Target *target, JsonObject *basis) {
+    return return_authorized(target, basis) && tl_focused() == target && tl_ime_clear(target)
+        && return_authorized(target, basis);
+}
 gboolean tl_return(Target *target, JsonObject *basis) {
-    if (!tl_metadata_matches(target, basis) || target->composing || !target->ime_known
-        || (gint64)target->content_revision != tl_integer(basis, "contentRevision", -1)) return FALSE;
+    if (!return_authorized(target, basis)) return FALSE;
     GtkWidget *top = gtk_widget_get_toplevel(target->widget);
     if (!GTK_IS_WINDOW(top) || !gtk_window_is_active(GTK_WINDOW(top))) return FALSE;
-    if (GTK_IS_ENTRY(target->widget)) gtk_entry_grab_focus_without_selecting(GTK_ENTRY(target->widget));
-    else gtk_widget_grab_focus(target->widget);
-    return tl_focused() == target;
+    /* Restore only the saved permitted widget. Its IM may be unknown while the
+       overlay owns focus; no body is read here. The caller awaits real Clear
+       before reporting return completion and allowing the next capture. */
+    gtk_entry_grab_focus_without_selecting(GTK_ENTRY(target->widget));
+    return return_authorized(target, basis) && tl_focused() == target;
 }

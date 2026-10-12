@@ -426,6 +426,142 @@ def run(arguments):
                 evidence.append(
                     "Wayland Firefox rich editor: selected-range CPU translation, native transaction, preserved surrounding marks and one Tab"
                 )
+        if arguments.fcitx_cooperative:
+            cooperation = arguments.fcitx_cooperative
+            with tempfile.TemporaryDirectory(prefix="typelay-gtk-cooperative-") as temporary:
+                home = Path(temporary)
+                config = home / "config/fcitx5"
+                config.mkdir(parents=True)
+                (config / "profile").write_text(
+                    "[Groups/0]\nName=Default\nDefault Layout=us\nDefaultIM=pinyin\n"
+                    "[Groups/0/Items/0]\nName=keyboard-us\nLayout=\n"
+                    "[Groups/0/Items/1]\nName=pinyin\nLayout=\n[GroupOrder]\n0=Default\n"
+                )
+                state_path = arguments.output / "gtk-cooperative-state.json"
+                gtk_environment = {
+                    **environment,
+                    "HOME": str(home),
+                    "XDG_CONFIG_HOME": str(home / "config"),
+                    "XDG_DATA_HOME": str(home / "data"),
+                    "XDG_CACHE_HOME": str(home / "cache"),
+                    "FCITX_CONFIG_HOME": str(config),
+                    "FCITX_DATA_HOME": str(home / "data/fcitx5"),
+                    "FCITX_DATA_DIRS": "/usr/share/fcitx5",
+                    "FCITX_ADDON_DIRS": str(cooperation / "lib") + ":/usr/lib/fcitx5",
+                    "LD_LIBRARY_PATH": str(cooperation / "lib"),
+                    "GTK_IM_MODULE": "fcitx",
+                    "GTK_IM_MODULE_FILE": str(cooperation / "immodules.cache"),
+                    "GDK_BACKEND": "wayland",
+                    "GTK3_MODULES": str(arguments.native / "libtypelay-gtk3.so"),
+                    "TYPELAY_FIXTURE_STATE": str(state_path),
+                    "TYPELAY_FIXTURE_INITIAL_TEXT": original,
+                    "TYPELAY_FIXTURE_COOPERATIVE": "1",
+                    "TYPELAY_FCITX_COOPERATIVE": "1",
+                }
+                gtk_environment.pop("TYPELAY_DESKTOP", None)
+                daemon = fixture = None
+                try:
+                    with (arguments.output / "gtk-cooperative-framework.log").open("w") as log:
+                        daemon = subprocess.Popen(
+                            [
+                                str(cooperation / "fcitx5"),
+                                "--disable=all",
+                                "--enable=dbus,dbusfrontend,pinyin,punctuation,pinyinhelper,keyboard,spell,quickphrase",
+                            ],
+                            env=gtk_environment,
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                        )
+                        fixture = subprocess.Popen(
+                            [str(arguments.native / "gtk-fixture")],
+                            env=gtk_environment,
+                            stdout=sys.stdout,
+                            stderr=sys.stderr,
+                        )
+
+                        def gtk_state():
+                            assert daemon.poll() is None and fixture.poll() is None
+                            try:
+                                return json.loads(state_path.read_text())
+                            except (FileNotFoundError, json.JSONDecodeError):
+                                return {}
+
+                        window = wait_for(
+                            lambda: next(
+                                (
+                                    item
+                                    for item in contents(request("Windows"), "Windows")
+                                    if item.get("pid") == fixture.pid
+                                ),
+                                None,
+                            ),
+                            "cooperative GTK window did not map under niri",
+                        )
+                        request({"Action": {"FocusWindow": {"id": window["id"]}}})
+                        wait_for(
+                            lambda: gtk_state().get("imeFocused"),
+                            "real cooperating input context did not focus",
+                        )
+                        subprocess.run(["fcitx5-remote", "-o"], env=gtk_environment, check=True)
+                        subprocess.run(
+                            ["fcitx5-remote", "-s", "pinyin"], env=gtk_environment, check=True
+                        )
+                        wait_for(
+                            lambda: gtk_state().get("imeClear"),
+                            "pinyin capability did not become clear",
+                        )
+                        wait_for(
+                            ready_to_accept,
+                            "cooperative GTK source did not receive a real model candidate",
+                        )
+                        assert gtk_state()["first"] == original
+                        subprocess.run(
+                            ["grim", str(arguments.output / "gtk-cooperative.png")],
+                            check=True,
+                            timeout=3,
+                        )
+                        wait_for(ready_to_accept, "GTK acceptance expired while taking evidence")
+                        key("Tab")
+                        wait_for(
+                            lambda: translated(gtk_state().get("first")),
+                            "GTK Tab did not apply the real translation",
+                        )
+                        assert gtk_state()["focus"] == "fixture-first"
+                        key("ctrl+a")
+                        key("BackSpace")
+                        wait_for(
+                            lambda: gtk_state().get("first") == "" and gtk_state().get("imeClear"),
+                            "source clearing did not settle",
+                        )
+                        typed("nihao")
+                        wait_for(
+                            lambda: gtk_state().get("imeComposing"),
+                            "real pinyin composition was not observed",
+                        )
+                        wait_for(
+                            lambda: not status().get("acceptanceReady"),
+                            "composition retained a write permit",
+                        )
+                        assert gtk_state()["first"] == ""
+                        key("space")
+                        wait_for(
+                            lambda: bool(
+                                re.search(r"[\u3400-\u9fff]", gtk_state().get("first", ""))
+                            ),
+                            "pinyin candidate did not commit normally",
+                        )
+                        evidence.append(
+                            "Wayland GTK Entry with opt-in Fcitx cooperation: CPU model, native overlay, one Tab and preserved real pinyin composition"
+                        )
+                finally:
+                    for child in (fixture, daemon):
+                        if child is not None and child.poll() is None:
+                            child.terminate()
+                            try:
+                                child.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                child.kill()
+                                child.wait()
         assert control(paths, "settings") is True
         time.sleep(0.3)
         subprocess.run(["grim", str(arguments.output / "settings.png")], check=True, timeout=3)
@@ -436,7 +572,9 @@ def run(arguments):
                 {
                     "scope": "browser-desktop-and-lifecycle",
                     "passed": evidence,
-                    "unsupported": ["GTK translation and GTK/YAD positive acceptance"],
+                    "unsupported": [
+                        "uncooperative GTK inputs, GTK TextView, Qt, GTK4 and generic Electron"
+                    ],
                 },
                 indent=2,
             )

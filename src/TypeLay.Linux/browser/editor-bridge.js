@@ -8,6 +8,7 @@
   const textValue = Object.getOwnPropertyDescriptor(Node.prototype, "textContent").get;
   const pending = new WeakSet();
   const monotonic = performance.now.bind(performance);
+  const wallNow = Date.now.bind(Date);
   function root(element) {
     if (!(element instanceof HTMLElement)) return null;
     const candidate = element.closest(".ProseMirror[contenteditable='true']");
@@ -118,7 +119,9 @@
     },
     replace(element, data, finalGuard) {
       const remaining = data?.expiresAtPerformanceMs - monotonic();
-      if (!Number.isFinite(remaining) || remaining < 0 || remaining > 250) {
+      const wallRemaining = data?.expiresAtWallMs - wallNow();
+      if (!Number.isFinite(remaining) || remaining < 0 || remaining > 250
+        || !Number.isFinite(wallRemaining) || wallRemaining < 0 || wallRemaining > 250) {
         return {status: "RejectedBeforeMutation", reason: "StaleObservation"};
       }
       return invoke(element, "replace", data, finalGuard);

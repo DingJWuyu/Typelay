@@ -1,6 +1,7 @@
 #pragma once
 #include <gtk/gtk.h>
 #include <json-glib/json-glib.h>
+#include "fcitx5/typelay-fcitx-v1.h"
 
 #define TL_MAX_FRAME (256 * 1024)
 #define TL_MAX_TEXT 8192
@@ -9,11 +10,18 @@ typedef struct Target Target;
 struct Target {
     GtkWidget *widget; /* weak; removed in the widget's destroy handler */
     GObject *buffer;
+    GtkIMContext *im_context;
+    GThread *thread;
+    gulong im_handler;
+    TlFcitxStateV1 im_state;
     char *id;
+    guint64 storage_revision;
     guint64 content_revision;
     guint64 input_revision;
     guint64 focus_revision;
     gboolean ime_known;
+    gboolean im_observed;
+    gboolean im_probing;
     gboolean composing;
     gboolean quarantined;
     gboolean mutating;
@@ -36,6 +44,9 @@ JsonObject *tl_capture(Target *target, JsonObject *authority);
 JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct);
 gboolean tl_return(Target *target, JsonObject *authority);
 gboolean tl_metadata_matches(Target *target, JsonObject *authority);
+gboolean tl_ime_clear(Target *target);
+gboolean tl_widget_ime_clear(GtkWidget *widget);
+gboolean tl_return_ready(Target *target, JsonObject *authority);
 void tl_clear_permit(void);
 
 JsonObject *tl_geometry(Target *target);

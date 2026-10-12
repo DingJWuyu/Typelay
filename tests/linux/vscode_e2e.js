@@ -15,22 +15,6 @@ async function editor(text = '你好 🌍\n保留原文', language = 'plaintext'
     return vscode.window.showTextDocument(document, { preview: false });
 }
 
-async function select(editor, selection) {
-    await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => { subscription.dispose(); reject(new Error('Renderer did not acknowledge selection')); }, 5000);
-        const subscription = vscode.window.onDidChangeTextEditorSelection(event => {
-            if (event.textEditor === editor && event.selections.length === 1
-                && event.selections[0].anchor.isEqual(selection.anchor)
-                && event.selections[0].active.isEqual(selection.active)) {
-                clearTimeout(timer);
-                subscription.dispose();
-                resolve();
-            }
-        });
-        editor.selection = selection;
-    });
-}
-
 async function runTests() {
     const extension = vscode.extensions.getExtension('typelay-local.typelay-editor');
     assert.ok(extension, 'The real optional TypeLay extension must load');
@@ -124,32 +108,6 @@ async function runTests() {
     assert.throws(() => new EditorTransaction(code), /unsupported-editor/);
     const large = await editor('字'.repeat(8193));
     assert.throws(() => new EditorTransaction(large, { wholeDocument: true }), /invalid-text/);
-    if (process.env.TYPELAY_EDITOR_HOST) {
-        const modelSource = await editor('你好，世界。\n保留原文');
-        await select(modelSource, new vscode.Selection(0, 0, 0, 6));
-        let changedBeforeConfirmation = false;
-        const observation = vscode.workspace.onDidChangeTextDocument(event => {
-            if (event.document === modelSource.document && !fs.existsSync(process.env.TYPELAY_VSCODE_CONFIRM)) {
-                changedBeforeConfirmation = true;
-            }
-        });
-        try {
-            assert.deepEqual(await vscode.commands.executeCommand('typelay.translateSelection'), { status: 'Applied' });
-        }
-        finally { observation.dispose(); }
-        assert.equal(changedBeforeConfirmation, false, 'Preview must not mutate the source before actual UI confirmation');
-        assert.notEqual(modelSource.document.lineAt(0).text, '你好，世界。');
-        assert.match(modelSource.document.lineAt(0).text, /[A-Za-z]/);
-        assert.equal(modelSource.document.lineAt(1).text, '保留原文');
-        await vscode.commands.executeCommand('undo');
-        assert.equal(modelSource.document.getText(), '你好，世界。\n保留原文');
-        console.log('PASS real command, model, preview confirmation, selected replacement and undo');
-
-        await select(modelSource, new vscode.Selection(0, 0, 0, 1));
-        assert.deepEqual(await vscode.commands.executeCommand('typelay.translateDocument'), { status: 'Cancelled' });
-        assert.equal(modelSource.document.getText(), '你好，世界。\n保留原文', 'Canceling the whole-document preview must leave source unchanged');
-        console.log('PASS explicit whole-document choice and actual preview cancellation');
-    }
     console.log('TypeLay VS Code real editor transaction tests passed.');
 }
 
@@ -157,7 +115,7 @@ async function run() {
     const resultPath = process.env.TYPELAY_VSCODE_RESULT;
     assert.ok(resultPath && path.isAbsolute(resultPath), 'The isolated runner must provide a result path');
     const report = (status, detail = '') => fs.writeFileSync(resultPath,
-        JSON.stringify({ status, detail, vscodeVersion: vscode.version, modelHostTest: Boolean(process.env.TYPELAY_EDITOR_HOST) }), { encoding: 'utf8' });
+        JSON.stringify({ status, detail, vscodeVersion: vscode.version, mode: 'extension-host', modelHostTest: false }), { encoding: 'utf8' });
     report('started');
     try {
         await runTests();

@@ -116,9 +116,8 @@ class EditorProbe(unittest.TestCase):
                 "const deadline = performance.now() + 240; root.dataset.probeDeadline = String(deadline);"
                 "return TypeLayEditorBridge.replace(root, {version: capture.version,"
                 "expectedText: capture.text, selection: capture.selection, start: 7, end: 12,"
-                "replacement: 'bonjour', direct: false, expiresAtPerformanceMs: deadline}, () => "
-                + guard
-                + "); })()"
+                "replacement: 'bonjour', direct: false, expiresAtPerformanceMs: deadline,"
+                "expiresAtWallMs: Date.now() + 240}, () => " + guard + "); })()"
             )
         result = self.page.evaluate("window.editorProbeInspect()")
         # Capture the DOM before undo/redo can flush a pending page-owned edit.

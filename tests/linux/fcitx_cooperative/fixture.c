@@ -1,18 +1,15 @@
 /* Real GTK3 field/IM-context cooperation experiment; synthetic text only.
  * No application text is written to the evidence log. */
 #include <gtk/gtk.h>
-#include <gmodule.h>
+#include "typelay-fcitx-v1.h"
 #include <stdio.h>
 #include <string.h>
 
-typedef gboolean (*Inspect)(GtkWidget *, guint64 *, guint64 *, guint64 *, gboolean *, gboolean *, gboolean *);
 typedef gboolean (*Select)(GtkWidget *);
-static Inspect inspect;
-static Select select_candidate;
 static GtkWidget *window, *entry, *other;
 static gchar *directory, *captured;
 static GtkEntryBuffer *captured_buffer;
-static guint64 revision, captured_revision, captured_epoch, captured_serial;
+static guint64 revision, captured_revision, captured_epoch, captured_serial, captured_generation;
 static guint request;
 static const char *result = "starting";
 static gboolean writing, nested_refused, nested_done, nested_mutate;
@@ -22,13 +19,41 @@ static const char *replacement = "translated fixture";
 
 typedef struct {
     gboolean valid, known, pending, composing;
-    guint64 epoch, serial, delivered;
+    guint64 epoch, input_epoch, generation, serial, delivered;
 } State;
+
+static GtkIMContext *bound_context(void) {
+    gpointer object = g_object_get_data(G_OBJECT(entry), TL_FCITX_CONTEXT_V1);
+    return object && GTK_IS_IM_CONTEXT(object) ? g_object_ref(object) : NULL;
+}
 
 static State state(void) {
     State s = {0};
-    s.valid = inspect(entry, &s.epoch, &s.serial, &s.delivered, &s.known, &s.pending, &s.composing);
+    GtkIMContext *context = bound_context();
+    if (!context) return s;
+    const TlFcitxCapabilityV1 *cap = g_object_get_data(G_OBJECT(context), TL_FCITX_CAPABILITY_V1);
+    TlFcitxStateV1 actual = {.size = sizeof(actual), .version = TL_FCITX_ABI_V1};
+    if (cap && cap->size == sizeof(*cap) && cap->version == TL_FCITX_ABI_V1 && cap->inspect)
+        s.valid = cap->inspect(context, entry, &actual);
+    if (s.valid) {
+        s.epoch = actual.epoch; s.input_epoch = actual.input_epoch; s.generation = actual.context_generation;
+        s.serial = actual.server_serial; s.delivered = actual.applied_serial;
+        s.known = !!(actual.flags & TL_FCITX_KNOWN);
+        s.pending = !!(actual.flags & TL_FCITX_PENDING);
+        s.composing = !!(actual.flags & TL_FCITX_COMPOSING);
+        s.valid = !!(actual.flags & TL_FCITX_FOCUSED);
+    }
+    g_object_unref(context);
     return s;
+}
+
+static gboolean select_candidate(GtkWidget *widget) {
+    GtkIMContext *context = bound_context();
+    if (!context) return FALSE;
+    Select select = (Select)g_object_get_data(G_OBJECT(context), "typelay.fcitx.select-fixture.v1");
+    gboolean result = select && select(widget);
+    g_object_unref(context);
+    return result;
 }
 
 static gboolean settled(State s) {
@@ -54,6 +79,7 @@ static const char *capture(void) {
     captured_revision = revision;
     captured_epoch = s.epoch;
     captured_serial = s.serial;
+    captured_generation = s.generation;
     return "captured";
 }
 
@@ -63,7 +89,7 @@ static const char *accept(void) {
     State s = state();
     if (!settled(s)) return "refused-ime";
     if (gtk_entry_get_buffer(GTK_ENTRY(entry)) != captured_buffer) return "refused-focus";
-    if (s.epoch != captured_epoch || s.serial != captured_serial) return "refused-input";
+    if (s.generation != captured_generation || s.epoch != captured_epoch || s.serial != captured_serial) return "refused-input";
     if (revision != captured_revision || strcmp(gtk_entry_buffer_get_text(captured_buffer), captured))
         return "refused-stale";
     writing = TRUE;
@@ -71,7 +97,7 @@ static const char *accept(void) {
      * a callback changes the field, focus, context, or intermediate text. */
     gtk_entry_buffer_delete_text(captured_buffer, 0, -1);
     State after_delete = state();
-    if (!settled(after_delete) || after_delete.epoch != captured_epoch || after_delete.serial != captured_serial ||
+    if (!settled(after_delete) || after_delete.generation != captured_generation || after_delete.epoch != captured_epoch || after_delete.serial != captured_serial ||
         !gtk_widget_has_focus(entry) || gtk_entry_get_buffer(GTK_ENTRY(entry)) != captured_buffer ||
         revision != captured_revision + (captured[0] ? 1u : 0u) ||
         gtk_entry_buffer_get_length(captured_buffer) != 0) {
@@ -80,7 +106,7 @@ static const char *accept(void) {
     }
     gtk_entry_buffer_insert_text(captured_buffer, 0, replacement, -1);
     State after_insert = state();
-    gboolean exact = settled(after_insert) && after_insert.epoch == captured_epoch &&
+    gboolean exact = settled(after_insert) && after_insert.generation == captured_generation && after_insert.epoch == captured_epoch &&
         after_insert.serial == captured_serial &&
         gtk_widget_has_focus(entry) && gtk_entry_get_buffer(GTK_ENTRY(entry)) == captured_buffer &&
         revision == captured_revision + (captured[0] ? 2u : 1u) &&
@@ -113,14 +139,14 @@ static void save_state(void) {
         "{\"request\":%u,\"result\":\"%s\",\"ready\":%s,\"known\":%s,"
         "\"probe_valid\":%s,\"pending\":%s,\"composing\":%s,\"settled\":%s,\"serial\":%" G_GUINT64_FORMAT ","
         "\"delivered\":%" G_GUINT64_FORMAT ",\"length\":%u,\"replacement\":%s,"
-        "\"nested_refused\":%s,\"nested_depth\":%u,\"epoch\":%" G_GUINT64_FORMAT ",\"unchanged_capture\":%s}\n",
+        "\"nested_refused\":%s,\"nested_depth\":%u,\"epoch\":%" G_GUINT64_FORMAT ",\"unchanged_capture\":%s,\"input_epoch\":%" G_GUINT64_FORMAT ",\"generation\":%" G_GUINT64_FORMAT "}\n",
         request, result, gtk_widget_get_mapped(window) ? "true" : "false",
         s.valid && s.known ? "true" : "false", s.valid ? "true" : "false", s.pending ? "true" : "false", s.composing ? "true" : "false",
         settled(s) ? "true" : "false", s.serial, s.delivered,
         gtk_entry_buffer_get_length(gtk_entry_get_buffer(GTK_ENTRY(entry))),
         !strcmp(gtk_entry_get_text(GTK_ENTRY(entry)), replacement) ? "true" : "false",
         nested_refused ? "true" : "false", nested_depth, s.epoch,
-        captured && !strcmp(gtk_entry_get_text(GTK_ENTRY(entry)), captured) ? "true" : "false");
+        captured && !strcmp(gtk_entry_get_text(GTK_ENTRY(entry)), captured) ? "true" : "false", s.input_epoch, s.generation);
     gchar *path = g_build_filename(directory, "state.json", NULL);
     GError *error = NULL;
     if (!g_file_set_contents(path, json, -1, &error)) g_error("state write: %s", error->message);
@@ -147,6 +173,9 @@ static gboolean commands(gpointer unused) {
             } else if (!strcmp(name, "mutate")) {
                 gtk_entry_set_text(GTK_ENTRY(entry), "new application text");
                 result = "mutated";
+            } else if (!strcmp(name, "clear")) {
+                gtk_entry_buffer_delete_text(gtk_entry_get_buffer(GTK_ENTRY(entry)), 0, -1);
+                result = "cleared";
             } else if (!strcmp(name, "focus") || !strcmp(name, "refocus")) {
                 gboolean original = !strcmp(name, "refocus");
                 gtk_widget_grab_focus(original ? entry : other);
@@ -172,11 +201,6 @@ int main(int argc, char **argv) {
     gtk_init(&argc, &argv);
     directory = g_strdup(g_getenv("TYPELAY_COOPERATIVE_DIR"));
     if (!directory) return 2;
-    gchar *module_path = g_build_filename(directory, "lib/im-fcitx5.so", NULL);
-    GModule *module = g_module_open(module_path, G_MODULE_BIND_LAZY);
-    if (!module || !g_module_symbol(module, "typelay_fcitx_probe_inspect_v1", (gpointer *)&inspect) ||
-        !g_module_symbol(module, "typelay_fcitx_probe_select_v1", (gpointer *)&select_candidate)) g_error("patched module: %s", g_module_error());
-    g_free(module_path);
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(window), "TypeLay Fcitx cooperative fixture");
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);

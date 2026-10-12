@@ -294,6 +294,8 @@ def outer(arguments, script=None):
         command.append("--gtk-refusal")
     if arguments.desktop:
         command.extend(["--desktop", "--package", str(arguments.package)])
+        if arguments.fcitx_cooperative:
+            command.extend(["--fcitx-cooperative", str(arguments.fcitx_cooperative)])
         if arguments.editor_bundle:
             command.extend(["--editor-bundle", str(arguments.editor_bundle)])
     # The compositor's first-run help owns keyboard focus independently of its
@@ -359,6 +361,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--package", type=Path)
     parser.add_argument("--editor-bundle", type=Path)
+    parser.add_argument("--fcitx-cooperative", type=Path)
     parser.add_argument("--native", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -374,6 +377,8 @@ if __name__ == "__main__":
         parser.error("--desktop requires --package")
     if args.package:
         args.package = args.package.resolve()
+    if args.fcitx_cooperative:
+        args.fcitx_cooperative = args.fcitx_cooperative.resolve(strict=True)
     if args.editor_bundle:
         args.editor_bundle = args.editor_bundle.resolve(strict=True)
     if args.inside:

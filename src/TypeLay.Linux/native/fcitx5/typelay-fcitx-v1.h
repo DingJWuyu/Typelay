@@ -1,0 +1,48 @@
+#pragma once
+#include <gtk/gtk.h>
+
+/* The actual GtkIMContext publishes itself on its owning widget. The widget's
+ * qdata owns a reference; the context owns only a static capability table.
+ * Consumers must retain the context while calling inspect. Neither a requested
+ * im-module name nor loading a library establishes this binding. */
+#define TL_FCITX_CONTEXT_V1 "typelay.fcitx.context.v1"
+#define TL_FCITX_CAPABILITY_V1 "typelay.fcitx.capability.v1"
+#define TL_FCITX_CHANGED_V1 "typelay-state-changed-v1"
+#define TL_FCITX_ABI_V1 1u
+
+enum {
+    TL_FCITX_KNOWN = 1u << 0,
+    TL_FCITX_FOCUSED = 1u << 1,
+    TL_FCITX_PENDING = 1u << 2,
+    TL_FCITX_COMPOSING = 1u << 3
+};
+enum {
+    TL_FCITX_CHANGE_INPUT = 1u << 0,
+    TL_FCITX_CHANGE_FOCUS = 1u << 1,
+    TL_FCITX_CHANGE_BINDING = 1u << 2
+};
+
+typedef struct {
+    guint32 size;
+    guint32 version;
+    guint64 context_generation;
+    guint64 epoch;
+    /* Pure focus transitions do not change input_epoch. Real input, composition
+     * and an actual engine change do, even when the field text is unchanged. */
+    guint64 input_epoch;
+    guint64 server_serial;
+    guint64 applied_serial;
+    guint32 flags;
+} TlFcitxStateV1;
+
+typedef struct {
+    guint32 size;
+    guint32 version;
+    /* UI thread only, outside nested dispatch and IM callbacks. Fill the entire
+     * state, prove the live context still belongs to expected_widget and query
+     * the actual server. FALSE, unknown flags, pending output or unequal serials
+     * never authorize a body read or write. No reset or focus change is allowed.
+     * The context emits TL_FCITX_CHANGED_V1(guint causes) before state changes
+     * become externally observable, so consumers immediately revoke permits. */
+    gboolean (*inspect)(GtkIMContext *context, GtkWidget *expected_widget, TlFcitxStateV1 *state);
+} TlFcitxCapabilityV1;
