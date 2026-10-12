@@ -30,7 +30,7 @@ public:
             "callbacksDuringForward", "callbacksDuringOutput", "imeDuringOutput", "nestedPumpChecks",
             "nestedForwardChecks", "pendingHeldDuringNestedPump", "pendingDroppedDuringNestedPump",
             "forwardHeldDuringNestedPump", "forwardDroppedDuringNestedPump",
-            "outputHeldDuringNestedPump", "outputDroppedDuringNestedPump", "unknownCommands"
+            "outputHeldDuringNestedPump", "outputDroppedDuringNestedPump", "unknownCommands", "modifierSamples"
         };
         for (const char *key : counters) counts_.insert(QString::fromLatin1(key), 0);
     }
@@ -50,7 +50,7 @@ public:
         static const char *properties[] = {
             "tlqtPendingDbus", "tlqtPendingForward", "tlqtRetired", "tlqtBindingEpoch",
             "tlqtOutputDepth", "tlqtCommits", "tlqtPreedits", "tlqtMenus", "tlqtSyncReplies",
-            "tlqtContexts", "tlqtEngine"
+            "tlqtContexts", "tlqtEngine", "tlqtSyncKeySeq", "tlqtForwardSignals"
         };
         for (const char *name : properties) {
             const QVariant value = qApp->property(name);
@@ -72,6 +72,11 @@ public:
         }
     }
 
+    void sampleModifiers() {
+        counts_.insert("queriedKeyboardModifiers", int(QGuiApplication::queryKeyboardModifiers()));
+        increment("modifierSamples");
+    }
+
     void increment(const char *key) {
         counts_.insert(QString::fromLatin1(key), counts_.value(key).toInteger() + 1);
     }
@@ -85,6 +90,13 @@ public:
         const bool menu = type == QEvent::ContextMenu;
         if (!keyPress && !keyRelease && !ime && !menu) return false;
 
+        if (qEnvironmentVariable("FCITX_QT_USE_SYNC") == "1" && traceLines_++ < 128) {
+            const auto *key = keyPress || keyRelease ? static_cast<QKeyEvent *>(event) : nullptr;
+            qInfo() << "tlqt-widget" << "field" << field(object) << "event" << int(type)
+                    << "sync-key-seq" << qApp->property("tlqtSyncKeySeq").toInt()
+                    << "f24" << (key && key->key() == Qt::Key_F24)
+                    << "modifiers" << (key ? int(key->modifiers()) : 0);
+        }
         increment("widgetCallbacks");
         increment(field(object) == 1 ? "firstCallbacks" : "secondCallbacks");
         if (keyPress) increment("widgetKeyPresses");
@@ -145,6 +157,7 @@ private:
     QWidget *root_;
     QString path_;
     QJsonObject counts_;
+    unsigned traceLines_ = 0;
 };
 
 int main(int argc, char **argv) {
@@ -193,6 +206,7 @@ int main(int argc, char **argv) {
             commands.remove(0, newline + 1);
             if (command == "focus1") first.setFocus(Qt::OtherFocusReason);
             else if (command == "focus2") second.setFocus(Qt::OtherFocusReason);
+            else if (command == "sample-modifiers") observer.sampleModifiers();
             else if (command == "quit") { observer.quitting = true; app.quit(); }
             else if (!command.isEmpty()) observer.increment("unknownCommands");
         }

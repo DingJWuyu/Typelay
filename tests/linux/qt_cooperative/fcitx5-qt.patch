@@ -10,14 +10,18 @@
  #include <QDBusConnection>
  #include <QDebug>
  #include <QInputMethod>
-@@ -41,6 +44,38 @@
+@@ -41,6 +44,42 @@
  namespace fcitx {
  
  namespace {
 +
-+// TypeLay 2026-10-12: research queue instrumentation. Original IM behavior
++// TypeLay 2026-10-12: research-only queue completion instrumentation. Original IM behavior
 +// is unchanged unless TYPELAY_QT_PROBE is explicitly enabled for this process.
 +bool tlProbe() { return qEnvironmentVariableIsSet("TYPELAY_QT_PROBE"); }
++bool tlTraceLine() {
++    static unsigned lines = 0;
++    return tlProbe() && lines++ < 256;
++}
 +void tlCount(const char *name, int delta) {
 +    if (!tlProbe() || !qApp) return;
 +    qApp->setProperty(name, qApp->property(name).toInt() + delta);
@@ -49,7 +53,7 @@
  
  template <typename T>
  using XCBReply = std::unique_ptr<T, decltype(&std::free)>;
-@@ -270,6 +305,10 @@
+@@ -270,6 +309,10 @@
      // Input context may be created without QApplication with wayland, defer it
      // to event loop to ensure event dispatcher is avaiable.
      QTimer::singleShot(0, this, [this]() {
@@ -60,7 +64,7 @@
          watcher_->watch();
          fcitx4Watcher_->watch();
      });
-@@ -533,6 +572,11 @@
+@@ -533,6 +576,11 @@
      QWindow *window = focusWindowWrapper();
      lastWindow_ = window;
      lastObject_ = realFocusObject;
@@ -72,7 +76,7 @@
      // Always create IC Data for window.
      if (window) {
          proxy = validICByWindow(window);
-@@ -639,6 +683,7 @@
+@@ -639,6 +687,7 @@
      data->rect = QRect();
  
      if (proxy->isValid() && !uuid.isEmpty()) {
@@ -80,25 +84,37 @@
          QWindow *window = focusWindowWrapper();
  #ifdef ENABLE_X11
          setFocusGroupForX11(uuid);
-@@ -689,6 +734,8 @@
+@@ -689,6 +738,9 @@
  }
  
  void QFcitxPlatformInputContext::commitString(const QString &str) {
 +    TlScope output("tlqtOutputDepth");
 +    tlCount("tlqtCommits", 1);
++    if (tlTraceLine()) qInfo() << "tlqt-output-commit";
      cursorPos_ = 0;
      preeditList_.clear();
      commitPreedit_.clear();
-@@ -704,6 +751,8 @@
+@@ -704,6 +756,9 @@
  
  void QFcitxPlatformInputContext::updateFormattedPreedit(
      const FcitxQtFormattedPreeditList &preeditList, int cursorPos) {
 +    TlScope output("tlqtOutputDepth");
 +    tlCount("tlqtPreedits", 1);
++    if (tlTraceLine()) qInfo() << "tlqt-output-preedit";
      QObject *input = qGuiApp->focusObject();
      if (!input) {
          return;
-@@ -873,6 +922,7 @@
+@@ -851,6 +906,9 @@
+ 
+ void QFcitxPlatformInputContext::forwardKey(unsigned int keyval,
+                                             unsigned int state, bool type) {
++    tlCount("tlqtForwardSignals", 1);
++    if (tlTraceLine()) qInfo() << "tlqt-output-forward" << "release" << type;
++
+     auto *proxy = qobject_cast<HybridInputContext *>(sender());
+     if (!proxy) {
+         return;
+@@ -873,6 +931,7 @@
                                                   const QString &langCode) {
      Q_UNUSED(name);
      Q_UNUSED(uniqueName);
@@ -106,7 +122,7 @@
      QLocale newLocale(langCode);
      if (locale_ != newLocale) {
          locale_ = newLocale;
-@@ -1043,6 +1093,9 @@
+@@ -1043,6 +1102,9 @@
      bool isAutoRepeat = keyEvent.isAutoRepeat();
      ulong time = keyEvent.timestamp();
      // copied from QXcbKeyboard::handleKeyEvent()
@@ -116,7 +132,7 @@
      if (type == QEvent::KeyPress && qtcode == Qt::Key_Menu) {
          QPoint globalPos;
          QPoint pos;
-@@ -1050,12 +1103,24 @@
+@@ -1050,12 +1112,24 @@
              globalPos = window->screen()->handle()->cursor()->pos();
              pos = window->mapFromGlobal(globalPos);
          }
@@ -147,10 +163,18 @@
  }
  
  bool QFcitxPlatformInputContext::filterEvent(const QEvent *event) {
-@@ -1099,11 +1164,13 @@
+@@ -1099,15 +1173,32 @@
              // KeyState::Repeat
              stateToFcitx |= (1U << 31);
          }
++        if (tlProbe() && syncMode_) {
++            tlCount("tlqtSyncKeySeq", 1);
++            if (tlTraceLine()) qInfo() << "tlqt-sync-submit"
++                << qApp->property("tlqtSyncKeySeq").toInt() << "release" << isRelease
++                << "repeat" << keyEvent->isAutoRepeat() << "modifiers" << state
++                << "f24" << (keyEvent->key() == Qt::Key_F24)
++                << "engine" << qApp->property("tlqtEngine").toString();
++        }
 +        TlScope submitting("tlqtPendingDbus");
          auto reply = proxy->processKeyEvent(keyval, keycode, stateToFcitx,
                                              isRelease, keyEvent->timestamp());
@@ -158,10 +182,22 @@
          if (Q_UNLIKELY(syncMode_)) {
              reply.waitForFinished();
 +            tlCount("tlqtSyncReplies", 1);
++            if (tlTraceLine()) qInfo() << "tlqt-sync-reply"
++                << qApp->property("tlqtSyncKeySeq").toInt()
++                << "error" << reply.isError()
++                << "handled" << (!reply.isError() && HybridInputContext::processKeyEventResult(reply));
  
              if (reply.isError() ||
                  !HybridInputContext::processKeyEventResult(reply)) {
-@@ -1117,6 +1184,10 @@
+-                if (filterEventFallback(keyval, keycode, state, isRelease)) {
++                const bool fallback = filterEventFallback(keyval, keycode, state, isRelease);
++                if (tlTraceLine()) qInfo() << "tlqt-sync-fallback"
++                    << qApp->property("tlqtSyncKeySeq").toInt() << "consumed" << fallback;
++                if (fallback) {
+                     return true;
+                 }
+                 break;
+@@ -1117,6 +1208,10 @@
          }
          auto *watcher = new ProcessKeyWatcher(*keyEvent, focusWindowWrapper(),
                                                reply, proxy);

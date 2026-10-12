@@ -251,11 +251,38 @@ def session(out, fcitx):
                             and state().get("tlqtFocusObject") == 1,
                             "actual Fcitx IC and first field binding",
                         )
+
+                        def sample_modifiers():
+                            before = state().get("modifierSamples")
+                            assert type(before) is int
+                            client.stdin.write("sample-modifiers\n")
+                            client.stdin.flush()
+                            wait(
+                                lambda: counter_exceeds(state(), "modifierSamples", before),
+                                "actual X11 keyboard modifier sample",
+                            )
+                            return state().get("queriedKeyboardModifiers")
+
+                        transition = {
+                            "engine_before": run(["fcitx5-remote", "-n"], env=env),
+                            "modifiers_before": sample_modifiers(),
+                        }
+                        (out / f"{mode}-transition.json").write_text(
+                            json.dumps(transition, indent=2) + "\n"
+                        )
                         run(["fcitx5-remote", "-o"], env=env)
                         run(["fcitx5-remote", "-s", "keyboard-us"], env=env)
                         wait(
                             lambda: state().get("tlqtEngine") == "keyboard-us",
                             "actual keyboard engine",
+                        )
+
+                        transition.update(
+                            engine_for_typing=run(["fcitx5-remote", "-n"], env=env),
+                            modifiers_for_typing=sample_modifiers(),
+                        )
+                        (out / f"{mode}-transition.json").write_text(
+                            json.dumps(transition, indent=2) + "\n"
                         )
 
                         def barrier():
@@ -321,6 +348,17 @@ def session(out, fcitx):
                         else:
                             assert counter_exceeds(s, "tlqtSyncReplies")
                         results[mode] = s
+                        transition.update(
+                            engine_after=run(["fcitx5-remote", "-n"], env=env),
+                            modifiers_after=sample_modifiers(),
+                        )
+                        (out / f"{mode}-transition.json").write_text(
+                            json.dumps(transition, indent=2) + "\n"
+                        )
+                        (out / f"{mode}-result.json").write_text(
+                            json.dumps({"passed": True, "mode": mode, "observations": s}, indent=2)
+                            + "\n"
+                        )
                         client.stdin.write("quit\n")
                         client.stdin.flush()
                         assert client.wait(timeout=10) == 0

@@ -441,10 +441,32 @@ def run(arguments):
                     subprocess.run(
                         ["grim", str(arguments.output / "firefox-rich.png")], check=True, timeout=3
                     )
-                    wait_for(
-                        ready_to_accept, "rich editor acceptance expired while taking evidence"
+                    # Use this run's measured key call, including its settling
+                    # time, as a test precondition, not a hard real-time guarantee.
+                    key_budget_ms = firefox_tab["afterMs"] - firefox_tab["beforeMs"]
+
+                    def rich_ready_to_accept():
+                        started = now_ms()
+                        candidate = ready_to_accept()
+                        status_elapsed_ms = now_ms() - started
+                        if not candidate:
+                            return None
+                        if candidate["acceptanceRemainingMs"] - status_elapsed_ms <= key_budget_ms:
+                            return None
+                        return {**candidate, "statusElapsedMs": status_elapsed_ms}
+
+                    ready = wait_for(
+                        rich_ready_to_accept, "rich editor acceptance expired while taking evidence"
                     )
+                    rich_tab = {
+                        "beforeMs": now_ms(),
+                        "reportedRemainingMs": ready.get("acceptanceRemainingMs"),
+                        "keyBudgetMs": key_budget_ms,
+                        "statusElapsedMs": ready["statusElapsedMs"],
+                    }
                     key("Tab")
+                    rich_tab["afterMs"] = now_ms()
+                    (arguments.output / "rich-tab.json").write_text(json.dumps(rich_tab))
 
                     def rich_value():
                         return web(
