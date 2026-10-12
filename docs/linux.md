@@ -12,9 +12,9 @@
 
 另有可选 [VS Code 手动翻译命令](vscode-linux.md)：选择文字或明确选择整篇文档，经本地模型翻译、原文/译文预览并确认后替换。它不监听通用输入框、不接管 Tab，安装 VSIX 与配置启动器均由用户明确执行。
 
-可选 [Fcitx 合作组件](fcitx-linux.md) 通过实际 IM context 提供在途提交、组合、输出序号与字段绑定，仅为标准 GTK3 GtkEntry/原生 EntryBuffer 开放能力。当前固定完整私有 Fcitx 5.1.22、Chinese Addons 5.1.14、GTK IM 5.1.7 与 LibIME 1.1.16，实际库及模型路径均有校验。隔离 niri 已通过搬迁后的默认组件会话、拒绝重复 daemon、配置/重启、实际按键输入、本地模型、浮层、一次 Tab 和编辑后两阶段 Tab；框架回归覆盖组合、活动临时模式、在途旧提交与重入拒绝。使用需要用户明确切换到私有 daemon 并逐应用启动，普通安装不替换系统输入法。用户个人配置、第三方 addon、真实物理输入和恢复操作仍需目标机器验证；未知组件不会被自动授予 TypeLay 能力。
+可选 [Fcitx 合作组件](fcitx-linux.md) 通过实际 IM context 提供在途提交、组合、输出序号与字段绑定，为标准 GTK3/GTK4 GtkEntry/原生 EntryBuffer 开放能力；GTK4 通过合作启动器的 --gtk4 显式启用。当前固定完整私有 Fcitx 5.1.22、Chinese Addons 5.1.14、GTK IM 5.1.7 与 LibIME 1.1.16，实际库及模型路径均有校验。隔离 niri 已通过搬迁后的默认组件会话、拒绝重复 daemon、配置/重启、实际按键输入、本地模型、浮层、一次 Tab 和编辑后两阶段 Tab；框架回归覆盖组合、活动临时模式、在途旧提交与重入拒绝。使用需要用户明确切换到私有 daemon 并逐应用启动，普通安装不替换系统输入法。用户个人配置、第三方 addon、真实物理输入和恢复操作仍需目标机器验证；未知组件不会被自动授予 TypeLay 能力。
 
-GTK3 更广的输入法事务能力、GTK4、Qt、Electron/VS Code 自动浮层和更广的富文本结构仍是未完成的开发项；终端/命令区按产品策略默认排除。当前交付未达到通用 Linux 输入框移植目标，不能把这些开发缺口留作“只需真机验证”。GTK 父窗口/浏览器视口定位契约见 `docs/adr/0004-linux-native-anchors.md`。
+GTK 多行与非标准控件、更广的输入法事务能力、Qt、Electron/VS Code 自动浮层和更广的富文本结构仍是未完成的开发项；终端/命令区按产品策略默认排除。当前交付未达到通用 Linux 输入框移植目标，不能把这些开发缺口留作“只需真机验证”。GTK 父窗口/浏览器视口定位契约见 `docs/adr/0004-linux-native-anchors.md`。
 
 快捷键默认在已连接的输入适配器中处理；也可将 niri 全局按键绑定到下述 --wake/--direct 命令。默认 Ctrl+Shift+F9 唤醒、Ctrl+Shift+F10 直接替换，仅按需模式生效。全局触发不会为没有输入后端的应用伪造读取/写入能力。所有应用的兼容性、物理快捷键与托盘视觉一致性仍需实际验证。
 
@@ -34,7 +34,7 @@ cd Typelay
 python eng/build-linux.py
 ```
 
-输出：`artifacts/TypeLay-Linux-preview-x86_64.tar.gz` 及对应 `.sha256`。包内包括自包含 .NET 宿主、GTK3 模块、浏览器扩展及本地主机、可选 VS Code VSIX、子进程监督程序、桌面代码、共享 worker、安装脚本和文件校验清单。模型不在包内，也不会在首次启动时无提示下载。
+输出：`artifacts/TypeLay-Linux-preview-x86_64.tar.gz` 及对应 `.sha256`。包内包括自包含 .NET 宿主、GTK3/GTK4 原生模块、浏览器扩展及本地主机、可选 VS Code VSIX、子进程监督程序、桌面代码、共享 worker、安装脚本和文件校验清单。模型不在包内，也不会在首次启动时无提示下载。
 
 构建时的外部 .NET SDK/NuGet 获取仍需要网络。模型安装的原生 Python 依赖固定直接版本，通过 uv 为 CPython 3.13 解析 Linux wheel 并生成带哈希的依赖锁。安装记录保留实际解析版本，不声称不同时间解析出的传递依赖完全相同。
 
@@ -117,7 +117,7 @@ spawn-at-startup "/home/你的用户名/.local/bin/typelay" "--background"
 
 ## 验证
 
-CI 将共享测试、Windows 原生/打包检查、Arch 容器中的 Linux 构建、发行包生命周期及嵌套 niri/GTK3 及浏览器测试分开执行。查看当前提交对应 Actions 的实际结果；失败的任务不算通过，旧提交成功也不能证明新提交通过。
+CI 将共享测试、Windows 原生/打包检查、Arch 容器中的 Linux 构建、发行包生命周期及嵌套 niri/GTK3/GTK4 及浏览器测试分开执行。查看当前提交对应 Actions 的实际结果；失败的任务不算通过，旧提交成功也不能证明新提交通过。
 
 本地最小静态检查：
 
@@ -159,7 +159,8 @@ env GDK_BACKEND=x11 dbus-run-session -- xvfb-run -a python tests/linux/tray_e2e.
 | 完整生命周期 | 模型安装、断网、退出、重复启动、登录启动、卸载 | 无孤儿模型进程、无遗留键盘占用 |
 | 网页普通字段 | Firefox/Chromium 扩展安装、input/textarea、切标签页、DOM 重建和框架受控值 | native messaging 路由、真实网页状态与撤销栈；详见浏览器说明 |
 | 富文本 | Tiptap 单段选区替换，保留范围外 marks 与原生撤销语义 | 其他版本、自定义 dispatcher、多段/列表/mention 尚未覆盖 |
-| 其他输入框 | GTK3、Electron/VS Code、GTK4、Qt | 尚未安全实现，不能标记通过 |
+| 合作 GTK Entry | GTK3/GTK4 标准单行控件，模型、编辑回源、组合和敏感字段拒绝 | 隔离 niri 已验证；实际应用及物理输入仍需验收 |
+| 其他输入框 | GTK TextView/非标准控件、Electron/VS Code 自动浮层、Qt | 尚未实现，不能标记通过 |
 
 未经实际执行的项目保持未验证。源码中存在实现、单元测试通过和嵌套桌面通过是三个不同层次的证据。
 
