@@ -6,7 +6,7 @@ for one-shot receipts. A late or missing receipt is never interpreted as success
 """
 
 import socket
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 
 from geometry import anchor_geometry
 from link import Link
@@ -91,6 +91,8 @@ class Input:
         self.window_epoch = self.content_epoch = 0
         self.last_focus = None
         self.last_state = None
+        self.capture_status = "not-started"
+        self.capture_counts = Counter()
         self.shortcut_config = {"enabled": False}
         self.closing = False
         self.niri = Niri(glib, self.changed)
@@ -231,6 +233,23 @@ class Input:
         metadata = {**description["metadata"], "process": peer.application}
         return await self.host.ask("allowField", metadata) is True
 
+    def captured(self, reason, result=None):
+        # Fixed reason codes and counts only: no source, title or field metadata.
+        self.capture_status = reason
+        self.capture_counts[reason] = min(self.capture_counts[reason] + 1, 2**31 - 1)
+        return result
+
+    def diagnostics(self):
+        return {
+            "captureStatus": self.capture_status,
+            "captureCounts": dict(self.capture_counts),
+            "compositorReady": self.niri.ready,
+            "compositorAgeMs": max(0, now_ms() - self.niri.observed_at),
+            "focus": self.focus(),
+            "windowEpoch": self.window_epoch,
+            "foregroundEpoch": self.foreground_epoch,
+        }
+
     async def capture(self, context):
         window_epoch = self.window_epoch
         focus = "Overlay" if self.overlay_focused else "Source"
@@ -244,36 +263,46 @@ class Input:
             target = self.bound["value"]
         else:
             peer, window, target = self.focused_peer(), self.niri.focused, None
-        if peer not in self.peers or window is None or not self.fresh():
-            return None
+        if not self.fresh():
+            return self.captured("compositor-stale")
+        if window is None:
+            return self.captured("no-window")
+        if peer not in self.peers:
+            return self.captured("unsupported-application")
         description = await peer.link.ask("describe", {"target": target} if target else {})
+        if not description:
+            return self.captured("no-native-field")
         if not await self.approve(peer, description):
-            return None
+            return self.captured("excluded-or-sensitive")
         native = await peer.link.ask(
             "capture", {"target": description["target"], "authority": description["authority"]}
         )
-        if (
-            not native
-            or not self.fresh()
-            or window_epoch != self.window_epoch
-            or peer not in self.peers
-        ):
-            return None
+        if not native:
+            return self.captured("native-read-declined")
+        if not self.fresh():
+            return self.captured("compositor-stale")
+        if window_epoch != self.window_epoch:
+            return self.captured("window-changing")
+        if peer not in self.peers:
+            return self.captured("native-disconnected")
         if focus == "Source" and (not native["focused"] or self.focused_peer() is not peer):
-            return None
+            return self.captured("native-focus-changed")
         geometry = anchor_geometry(native["geometry"])
         if geometry is None:
-            return None
+            return self.captured("no-visible-anchor")
         snapshot, record = self.remember(peer, native, window, geometry)
         self.bound, self.bound_observation = snapshot["target"], record
         self.state()
-        return {
-            "snapshot": snapshot,
-            "focus": focus,
-            "application": peer.application,
-            "userEpoch": self.user_epoch,
-            "foregroundEpoch": self.foreground_epoch,
-        }
+        return self.captured(
+            "supported",
+            {
+                "snapshot": snapshot,
+                "focus": focus,
+                "application": peer.application,
+                "userEpoch": self.user_epoch,
+                "foregroundEpoch": self.foreground_epoch,
+            },
+        )
 
     def configure_peer(self, peer):
         peer.link.command("configure-shortcuts", self.shortcut_config)

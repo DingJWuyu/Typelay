@@ -295,6 +295,13 @@ def run(arguments):
         (arguments.output / "desktop-result.json").write_text(
             json.dumps({"passed": evidence}, indent=2)
         )
+    except BaseException:
+        try:
+            (arguments.output / "failure-status.json").write_text(json.dumps(status(), indent=2))
+            subprocess.run(["grim", str(arguments.output / "failure.png")], check=False, timeout=3)
+        except (OSError, subprocess.SubprocessError):
+            pass  # Diagnostic failures must not replace the original assertion.
+        raise
     finally:
         for child in (application, fixture, process):
             if child is not None and child.poll() is None:

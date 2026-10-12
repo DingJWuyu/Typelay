@@ -135,7 +135,7 @@ public sealed class SessionController : IDisposable
         if (_session.Current is { } current)
         {
             if (_hook.GetFocus(current.Target) == FocusMember.Other)
-                StopSession();
+                StopSession("focus-left");
         }
         if (!_hook.Ready || !_broker.Available || !_settings.Value.Enabled)
         {
@@ -202,7 +202,7 @@ public sealed class SessionController : IDisposable
             long now = _loop.NowMs;
             if (result.Snapshot is not { } snapshot || result.Focus == FocusMember.Other)
             {
-                StopSession();
+                StopSession("capture-empty");
                 return;
             }
             if (_hook.GetFocus(snapshot.Target) == FocusMember.Other)
@@ -260,7 +260,7 @@ public sealed class SessionController : IDisposable
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            StopSession();
+            StopSession("capture-failed");
             ServiceStatus = "输入服务连接中断，正在重试";
             _retryBrokerAt = _loop.NowMs + 2000;
             Changed?.Invoke();
@@ -482,8 +482,11 @@ public sealed class SessionController : IDisposable
         _nextCapture = 0;
         Render();
     }
-    public void StopSession()
+    public void StopSession() => StopSession("stop-session");
+    private void StopSession(string reason)
     {
+        if (_session.Current is not null)
+            Trace(reason);
         _activation.End();
         ClearBrokerSnapshot();
         _generation++;
@@ -535,6 +538,9 @@ public sealed class SessionController : IDisposable
             ime = _session.Current?.Ime.ToString(),
             userEpoch = _hook.UserEpoch,
             sourceUserEpoch = _hook.SourceUserEpoch,
+            inputReady = _hook.Ready,
+            focus = _session.Current is { } current ? _hook.GetFocus(current.Target).ToString() : "Other",
+            windowEpoch = _hook.WindowEpoch,
             focusEpoch = _hook.ForegroundEpoch,
             writeSupported = _session.Current?.WriteSupported ?? false
         });

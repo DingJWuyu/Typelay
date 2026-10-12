@@ -208,6 +208,7 @@ async def desktop(paths, background, lock):
                     "acceptanceReady": components["overlay"].acceptance_ready,
                     "viewState": (components["overlay"].value or {}).get("state"),
                     "sourceSupported": components["input"].focused_peer() is not None,
+                    "input": components["input"].diagnostics(),
                 }
             return False
 
