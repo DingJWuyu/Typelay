@@ -112,12 +112,23 @@ jobs:
       # No home directories, runner configuration or credentials are included.
       - name: Prepare additional native desktop applications
         run: |
-          pacman -Q | sort > /tmp/typelay-packages-before
           pacman -S --noconfirm --needed gtk4 qt6-base qt6-wayland qt6-tools chromium firefox waybar fcitx5 fcitx5-gtk fcitx5-qt fcitx5-chinese-addons python-atspi
-          pacman -Q | sort > /tmp/typelay-packages-after
-          comm -13 /tmp/typelay-packages-before /tmp/typelay-packages-after | cut -d ' ' -f 1 | xargs pacman -Qlq | sort -u > /tmp/typelay-package-files
+          # NoExtract removes manuals listed in pacman's inventory. Export only
+          # installed /usr files, never runner configuration or home directories.
+          pacman -Qlq | sort -u > /tmp/typelay-package-inventory
+          python - <<'PY'
+          from pathlib import Path
+          files = set(Path('/tmp/typelay-package-inventory').read_text().splitlines())
+          for root in ('/usr/share/dotnet',):
+              files.update(str(path) for path in Path(root).rglob('*'))
+          with open('/tmp/typelay-package-files', 'w') as manifest:
+              for name in sorted(files):
+                  path = Path(name)
+                  if name.startswith('/usr/') and (path.is_file() or path.is_symlink()):
+                      manifest.write(name + '\n')
+          PY
           tar --no-recursion -I 'zstd -T0 -3' -cf artifacts/TypeLay-linux-additional-packages.tar.zst -T /tmp/typelay-package-files
-          test $(stat -c %s artifacts/TypeLay-linux-additional-packages.tar.zst) -lt 500000000
+          test $(stat -c %s artifacts/TypeLay-linux-additional-packages.tar.zst) -lt 1500000000
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: typelay-additional-desktop-${{ github.sha }}
