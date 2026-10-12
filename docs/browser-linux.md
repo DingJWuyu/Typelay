@@ -65,6 +65,14 @@ xvfb-run -a python tests/linux/browser_e2e.py --chromium /usr/bin/chromium -v
 xvfb-run -a python tests/linux/browser_native_e2e.py --package artifacts/linux/package --chromium /usr/bin/chromium -v
 ```
 
+Firefox 的真实临时扩展与本地主机检查使用官方 Firefox/geckodriver，不依赖 Playwright 的 Firefox 扩展支持：
+
+```sh
+xvfb-run -a python tests/linux/firefox_native_e2e.py --package artifacts/linux/package --firefox /usr/bin/firefox --geckodriver /usr/bin/geckodriver -v
+```
+
+它使用独立临时 HOME/profile，通过 WebDriver 安装本次测试的临时附加组件，并连接发行包原生 host。该范围是实际加载、协议、字段读写与身份校验，不等于 Firefox+niri+真实模型完整链路或物理输入法验收。
+
 该检查在临时 HOME 安装发行包并注册唯一测试扩展 ID，使用真实后台脚本、native messaging、host wrapper 与 socket，验证握手、跨标签页路由及控件销毁身份；完成后关闭整个测试浏览器并删除临时目录。socket 对端只提供测试用元数据批准，不是假翻译器，也不代表 niri 前台身份或模型链路验收。
 
 DOM 检查覆盖未知 IME、可信输入后的接受、旧原文、DOM 重建、组合撤销、UTF-16 选区、网页重入改写、密码字段和合成 Tab 拒绝。单独的 DOM 检查不验证 Firefox、native messaging 安装路由、niri 前台身份、物理中文 IME、真实键盘、撤销栈或视觉一致性。Chromium 进程无法启动时检查失败，不跳过成成功。上述未覆盖项仍需对应真实环境验证。

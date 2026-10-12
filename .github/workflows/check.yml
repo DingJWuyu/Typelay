@@ -87,7 +87,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Install target desktop build dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -117,6 +117,11 @@ jobs:
         run: |
           export DISPLAY=:99
           python tests/linux/browser_native_e2e.py --package artifacts/linux/package --chromium /usr/bin/chromium -v
+      - name: Verify Firefox temporary extension and native messaging
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          export DISPLAY=:99
+          python tests/linux/firefox_native_e2e.py --package artifacts/linux/package --firefox /usr/bin/firefox --geckodriver /usr/bin/geckodriver -v
       - name: Verify tray controls without downloading models
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
@@ -143,6 +148,7 @@ jobs:
           path: |
             artifacts/linux/nested/
             artifacts/linux/desktop/
+            artifacts/linux/firefox-native/
             artifacts/linux/desktop-data/typelay/components/*/self-check.json
             artifacts/linux/native/libtypelay-gtk3.so
             artifacts/linux/native/typelay-supervise
