@@ -10,7 +10,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from main import control
 from niri import contents, request
+from paths import Paths, connect_private, peer_credentials
 
 
 def run_qt(
@@ -206,7 +208,7 @@ def run_qt(
                         "Qt source clearing did not settle and revoke its old candidate",
                     )
 
-                def enter_source(text):
+                def type_source(text):
                     clear_source()
                     typed(text)
                     wait_for(
@@ -214,6 +216,9 @@ def run_qt(
                         and settled(value),
                         "actual keyboard input did not reach the Qt source",
                     )
+
+                def enter_source(text):
+                    type_source(text)
                     wait_for(
                         ready_to_accept, "typed Qt source did not receive a real model candidate"
                     )
@@ -221,6 +226,78 @@ def run_qt(
                     assert value["overlayVisible"] and value["editorReadOnly"]
                     assert re.search(r"[\u3400-\u9fff]", value["editorText"])
                     return value["editorText"]
+
+                def set_mode(mode):
+                    from gtk_accessibility import Atspi, named
+
+                    paths = Paths(arguments.package)
+                    with connect_private(paths.control, 1.5) as connection:
+                        host_pid = peer_credentials(connection)[0]
+                    assert control(paths, "settings") is True
+                    settings_window = wait_for(
+                        lambda: next(
+                            (
+                                item
+                                for item in contents(request("Windows"), "Windows")
+                                if item.get("pid") == host_pid
+                                and item.get("title") == "TypeLay 设置"
+                            ),
+                            None,
+                        ),
+                        "owned production settings window did not map",
+                    )
+                    request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
+                    names = ("自动模式", "按需模式")
+
+                    def mode_combo():
+                        root = named(host_pid, "TypeLay 设置")
+                        pending = [root] if root else []
+                        for _ in range(256):
+                            if not pending:
+                                return None
+                            node = pending.pop()
+                            node.clear_cache()
+                            if node.get_role() == Atspi.Role.COMBO_BOX:
+                                selection = node.get_selection_iface()
+                                if selection and Atspi.Selection.get_n_selected_children(selection):
+                                    selected = Atspi.Selection.get_selected_child(selection, 0)
+                                    if selected and selected.get_name() in names:
+                                        return node
+                            pending.extend(
+                                node.get_child_at_index(i) for i in range(node.get_child_count())
+                            )
+                        raise AssertionError(
+                            "production settings accessibility tree exceeds its bound"
+                        )
+
+                    combo = wait_for(mode_combo, "real work-mode combo was not accessible")
+                    assert Atspi.Selection.select_child(combo.get_selection_iface(), mode)
+                    wait_for(
+                        lambda: Atspi.Selection.get_selected_child(
+                            combo.get_selection_iface(), 0
+                        ).get_name()
+                        == names[mode],
+                        "real settings combo did not change work mode",
+                    )
+                    save = wait_for(
+                        lambda: named(host_pid, "保存设置"), "real settings Save was unavailable"
+                    )
+                    assert Atspi.Action.do_action(save.get_action_iface(), 0)
+                    wait_for(
+                        lambda: json.loads(paths.settings.read_text()).get("Mode") == mode,
+                        "production settings did not persist the selected work mode",
+                    )
+                    request({"Action": {"CloseWindow": {"id": settings_window["id"]}}})
+                    request({"Action": {"FocusWindow": {"id": window["id"]}}})
+                    wait_for(
+                        lambda: (contents(request("FocusedWindow"), "FocusedWindow") or {}).get(
+                            "id"
+                        )
+                        == window["id"]
+                        and state()["first"]["focused"]
+                        and status().get("sourceSupported"),
+                        "source did not regain real focus after saving settings",
+                    )
 
                 window = wait_for(
                     lambda: next(
@@ -349,6 +426,110 @@ def run_qt(
                 )
 
                 clear_source()
+                prefix, selected, suffix = "前🙂 [", "Please review this note.", "] 后🚀"
+                selection_source = prefix + selected + suffix
+                start = len(prefix.encode("utf-16-le")) // 2
+                length = len(selected.encode("utf-16-le")) // 2
+                command("set", text=selection_source)
+                command("select", start=start, length=length)
+                wait_for(
+                    lambda: (value := state())["first"]["text"] == selection_source
+                    and value["first"]["selectionStart"] == start
+                    and value["first"]["selectionLength"] == length
+                    and settled(value),
+                    "actual Qt UTF-16 source selection did not settle",
+                )
+                wait_for(ready_to_accept, "Qt source selection did not receive a model candidate")
+                selection_candidate = state()["editorText"]
+                assert re.search(r"[\u3400-\u9fff]", selection_candidate)
+                before_write = trace_checkpoint()
+                wait_for(ready_to_accept, "Qt selected candidate lost its fresh permit")
+                send_tab()
+                wait_for(
+                    lambda: state()["first"]["text"] == prefix + selection_candidate + suffix
+                    and verified_write(before_write),
+                    "Qt selection acceptance changed Unicode surroundings or lacked a verified receipt",
+                )
+                assert state()["second"]["text"] == other and state()["first"]["undoAvailable"]
+                key("ctrl+z")
+                wait_for(
+                    lambda: state()["first"]["text"] == selection_source,
+                    "native Qt undo did not restore the full Unicode selection source",
+                )
+                evidence.append(
+                    "Qt6 UTF-16 selection: CPU translation replaces only the selected source, "
+                    "preserves Chinese/emoji surroundings and the other field, and native undo restores it"
+                )
+
+                set_mode(1)
+                wake_source = "Please send this message today."
+                type_source(wake_source)
+                captures = status().get("input", {}).get("captureCounts", {}).get("supported", 0)
+                wait_for(
+                    lambda: not status().get("overlayVisible")
+                    and status().get("input", {}).get("captureStatus") == "supported"
+                    and status().get("input", {}).get("captureCounts", {}).get("supported", 0)
+                    > captures,
+                    "OnDemand source did not remain dormant before the wake shortcut",
+                )
+                key("ctrl+shift+F9")
+                wait_for(
+                    ready_to_accept, "real Qt wake shortcut did not request a CPU model candidate"
+                )
+                wake_candidate = state()["editorText"]
+                assert re.search(r"[\u3400-\u9fff]", wake_candidate)
+                assert state()["first"]["text"] == wake_source
+                before_write = trace_checkpoint()
+                wait_for(ready_to_accept, "Qt wake candidate lost its fresh permit")
+                send_tab()
+                wait_for(
+                    lambda: state()["first"]["text"] == wake_candidate
+                    and verified_write(before_write),
+                    "woken Qt source did not accept the real translation once",
+                )
+                captures = status().get("input", {}).get("captureCounts", {}).get("supported", 0)
+                command("focus", field="second")
+                wait_for(
+                    lambda: state()["second"]["focused"]
+                    and not status().get("overlayVisible")
+                    and status().get("input", {}).get("captureCounts", {}).get("supported", 0)
+                    > captures,
+                    "direct preparation did not leave the source",
+                )
+                command("focus", field="first")
+                wait_for(lambda: state()["first"]["focused"], "direct source did not regain focus")
+                direct_source = "Please send me the final version."
+                type_source(direct_source)
+                captures = status().get("input", {}).get("captureCounts", {}).get("supported", 0)
+                wait_for(
+                    lambda: not status().get("overlayVisible")
+                    and status().get("input", {}).get("captureStatus") == "supported"
+                    and status().get("input", {}).get("captureCounts", {}).get("supported", 0)
+                    > captures,
+                    "direct source did not become dormant and supported",
+                )
+                before_changes = state()["first"]["changes"]
+                key("ctrl+shift+F10")
+                wait_for(
+                    lambda: status().get("serviceStatus") == "已直接替换原输入框文字。"
+                    and state()["first"]["text"] != direct_source
+                    and re.search(r"[\u3400-\u9fff]", state()["first"]["text"]),
+                    "real Qt direct shortcut did not verify a CPU translation without Tab",
+                )
+                assert state()["first"]["changes"] == before_changes + 1
+                assert state()["second"]["text"] == other and state()["first"]["undoAvailable"]
+                key("ctrl+z")
+                wait_for(
+                    lambda: state()["first"]["text"] == direct_source,
+                    "native undo lost direct source",
+                )
+                evidence.append(
+                    "Qt6 OnDemand: real settings save, default wake shortcut and verified Tab; "
+                    "default direct shortcut verifies one native edit without Tab and preserves native undo"
+                )
+                set_mode(0)
+
+                clear_source()
                 switch_im("pinyin")
                 typed("nihao")
                 wait_for(
@@ -434,6 +615,74 @@ def run_qt(
                     assert not new_write_outcomes(before_write)
                 evidence.append(
                     "Qt6 sensitive metadata, password, validator and input mask: before-body refusal and ordinary Tab navigation"
+                )
+
+                command("input-mask", text="")
+                command("metadata", text="")
+                command("buddy-label", text="API key")
+                wait_for(
+                    lambda: state()["first"]["accessibleName"] == ""
+                    and state()["first"]["buddyBound"]
+                    and state()["first"]["buddyLabel"] == "API key",
+                    "real sensitive buddy label did not bind to the Qt source",
+                )
+                before_refusals = (
+                    status()
+                    .get("input", {})
+                    .get("captureCounts", {})
+                    .get("excluded-or-sensitive", 0)
+                )
+                before_write = trace_checkpoint()
+                command("focus", field="first")
+                wait_for(
+                    lambda: state()["first"]["focused"]
+                    and status().get("input", {}).get("captureStatus") == "excluded-or-sensitive"
+                    and status()
+                    .get("input", {})
+                    .get("captureCounts", {})
+                    .get("excluded-or-sensitive", 0)
+                    > before_refusals
+                    and not status().get("acceptanceReady"),
+                    "sensitive Qt buddy label was not refused before body capture",
+                )
+                assert state()["first"]["text"] == "123456" and not new_write_outcomes(before_write)
+                command("buddy-label", text="Message one")
+                command("metadata", text="Message one")
+                wait_for(
+                    lambda: state()["first"]["buddyLabel"] == "Message one"
+                    and status().get("input", {}).get("captureStatus") == "supported",
+                    "ordinary Qt source did not recover from the sensitive buddy label",
+                )
+                before_refusals = (
+                    status()
+                    .get("input", {})
+                    .get("captureCounts", {})
+                    .get("excluded-or-sensitive", 0)
+                )
+                command("offscreen", enabled=True)
+                wait_for(
+                    lambda: (value := state())["first"]["visible"]
+                    and value["first"]["focused"]
+                    and value["first"]["geometry"]["x"] >= value["width"]
+                    and status().get("input", {}).get("captureStatus") == "excluded-or-sensitive"
+                    and status()
+                    .get("input", {})
+                    .get("captureCounts", {})
+                    .get("excluded-or-sensitive", 0)
+                    > before_refusals
+                    and not status().get("acceptanceReady"),
+                    "focused but fully clipped Qt source was not refused before body capture",
+                )
+                assert state()["first"]["text"] == "123456" and not new_write_outcomes(before_write)
+                assert state()["second"]["text"] == other
+                command("offscreen", enabled=False)
+                wait_for(
+                    lambda: (value := state())["first"]["geometry"]["x"] < value["width"]
+                    and status().get("input", {}).get("captureStatus") == "supported",
+                    "restored Qt source did not regain ordinary capture capability",
+                )
+                evidence.append(
+                    "Qt6 buddy-only sensitive label and focused offscreen source: before-body refusal without mutation"
                 )
                 return evidence
             finally:

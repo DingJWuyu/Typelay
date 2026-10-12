@@ -306,12 +306,16 @@ private:
         const bool password = field->echoMode() != QLineEdit::Normal
             || (hints & (Qt::ImhHiddenText | Qt::ImhSensitiveData)) != 0;
         const bool constrained = (hints & (Qt::ImhExclusiveInputMask | Qt::ImhDate | Qt::ImhTime)) != 0;
-        return {{"process", ""}, {"label", field->accessibleName()},
+        QString labels = field->accessibleName();
+        for (const auto *label : field->window()->findChildren<QLabel *>()) {
+            if (label->buddy() == field) labels += ' ' + label->text();
+        }
+        return {{"process", ""}, {"label", labels},
             {"automationId", field->objectName()},
             {"help", (field->accessibleDescription() + ' ' + field->toolTip() + ' ' + field->placeholderText())},
             {"aria", "QLineEdit"}, {"password", password}, {"enabled", field->isEnabled()},
             {"readOnly", field->isReadOnly() || field->validator() || !field->inputMask().isEmpty() || constrained},
-            {"offscreen", !field->isVisible()}, {"inDocument", false}, {"multiline", false},
+            {"offscreen", geometry(target).isEmpty()}, {"inDocument", false}, {"multiline", false},
             {"hasValue", true}, {"hasTextEdit", bool(target->provider)},
             {"maximumLength", field->maxLength()}, {"inputMethodHints", qint64(hints)}};
     }

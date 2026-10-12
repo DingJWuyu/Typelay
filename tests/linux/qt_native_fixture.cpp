@@ -3,6 +3,7 @@
 #include <QIntValidator>
 #include <QInputMethodEvent>
 #include <QEventLoop>
+#include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeyEvent>
@@ -53,9 +54,13 @@ int main(int argc, char **argv) {
     second->setObjectName(QStringLiteral("second"));
     first->setAccessibleName(QStringLiteral("Message one"));
     second->setAccessibleName(QStringLiteral("Message two"));
-    layout->addWidget(new QLabel(QStringLiteral("Message one"), &window));
+    auto *firstLabel = new QLabel(QStringLiteral("Message one"), &window);
+    auto *secondLabel = new QLabel(QStringLiteral("Message two"), &window);
+    firstLabel->setBuddy(first);
+    secondLabel->setBuddy(second);
+    layout->addWidget(firstLabel);
     layout->addWidget(first);
-    layout->addWidget(new QLabel(QStringLiteral("Message two"), &window));
+    layout->addWidget(secondLabel);
     layout->addWidget(second);
     layout->addStretch();
     window.resize(700, 500);
@@ -87,12 +92,14 @@ int main(int argc, char **argv) {
     auto publish = [&] {
         if (path.isEmpty()) return;
         auto field = [&](QLineEdit *edit, int changes, int edits) {
+            const auto *label = edit == first ? firstLabel : secondLabel;
             return QJsonObject{{"text", edit->text()}, {"cursor", edit->cursorPosition()},
                 {"selectionStart", edit->selectionStart()}, {"selectionLength", edit->selectionLength()},
                 {"undoAvailable", edit->isUndoAvailable()}, {"focused", edit->hasFocus()},
                 {"echoMode", int(edit->echoMode())}, {"readOnly", edit->isReadOnly()},
                 {"validator", bool(edit->validator())}, {"inputMask", edit->inputMask()},
                 {"accessibleName", edit->accessibleName()}, {"inputMethodHints", int(edit->inputMethodHints())},
+                {"buddyLabel", label->text()}, {"buddyBound", label->buddy() == edit}, {"visible", edit->isVisible()},
                 {"changes", changes}, {"edits", edits}, {"geometry", rectangle(edit)}};
         };
         auto *overlay = window.findChild<QWidget *>(QStringLiteral("typelay-overlay"));
@@ -121,6 +128,7 @@ int main(int argc, char **argv) {
             app.exit(3);
     };
     QByteArray input;
+    QHash<QLineEdit *, QPoint> clippedPositions;
     fcntl(STDIN_FILENO, F_SETFL, fcntl(STDIN_FILENO, F_GETFL) | O_NONBLOCK);
     QSocketNotifier stdinNotifier(STDIN_FILENO, QSocketNotifier::Read);
     QObject::connect(&stdinNotifier, &QSocketNotifier::activated, [&] {
@@ -146,6 +154,17 @@ int main(int argc, char **argv) {
             else if (op == "validator") field->setValidator(command.value("enabled").toBool() ? &validator : nullptr);
             else if (op == "input-hints") field->setInputMethodHints(Qt::InputMethodHints(command.value("value").toInt()));
             else if (op == "metadata") field->setAccessibleName(command.value("text").toString());
+            else if (op == "buddy-label") (field == first ? firstLabel : secondLabel)->setText(command.value("text").toString());
+            else if (op == "offscreen") {
+                if (command.value("enabled").toBool()) {
+                    if (!clippedPositions.contains(field)) clippedPositions.insert(field, field->pos());
+                    layout->setEnabled(false);
+                    field->move(window.width() + 16, field->y());
+                } else if (clippedPositions.contains(field)) {
+                    field->move(clippedPositions.take(field));
+                    if (clippedPositions.isEmpty()) { layout->setEnabled(true); layout->invalidate(); layout->activate(); }
+                }
+            }
             else if (op == "on-selection") selectionAction = command.value("action").toString();
             else if (op == "on-text") textAction = command.value("action").toString();
             else if (op == "editor-set" && window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor")))
