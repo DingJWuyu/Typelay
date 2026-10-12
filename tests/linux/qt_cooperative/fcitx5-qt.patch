@@ -275,7 +275,7 @@
 +    tlCount("tlqtKeyReplies", 1);
      auto *watcher = static_cast<ProcessKeyWatcher *>(w);
      bool filtered = false;
-@@ -1306,3 +1447,178 @@
+@@ -1306,3 +1447,179 @@
  }
  
 +// TypeLay 2026-10-12: exact-object cooperation for the original async IM path.
@@ -319,6 +319,7 @@
 +bool QFcitxPlatformInputContext::inspect(QObject *actual, TypeLayFcitxQtStateV1 *state) {
 +    if (!state || state->size != sizeof(*state) || state->version != 1 ||
 +        tlInspecting_ || !tlCooperate() || syncMode_ || destroy_ ||
++        tlPendingDbus || tlPendingForward || tlOutputDepth ||
 +        QThread::currentThread() != thread() || !actual || actual != tlBound_ ||
 +        actual != focusObjectWrapper() || !lastWindow_ || lastWindow_ != focusWindowWrapper())
 +        return false;
