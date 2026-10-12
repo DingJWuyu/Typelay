@@ -59,15 +59,20 @@ public sealed class ModelClient : ITranslationService, IDisposable
         catch { Stop(); Status = "模型无法加载（请检查本地组件）"; }
         Changed?.Invoke();
     }
-    public async Task<ModelResponse> TranslateAsync(TranslationJob job)
+    public Task<ModelResponse> TranslateAsync(TranslationJob job) => TranslateRequestAsync(
+        new(0, "translate", job.SourceText, job.Direction.Source, job.Direction.Target, job.PreservedManualText));
+    // Explicit editor snapshots are user-approved text, not observed input
+    // fields. They must not manufacture an IME/focus InputSnapshot to use a model.
+    public Task<ModelResponse> TranslateTextAsync(string text, LanguageDirection direction) => TranslateRequestAsync(
+        new(0, "translate", text, direction.Source, direction.Target));
+    private async Task<ModelResponse> TranslateRequestAsync(ModelRequest request)
     {
         if (!Ready)
             return new(0, "error", Code: "not-ready");
         Busy = true;
         try
         {
-            return await ExchangeAsync(new(0, "translate", job.SourceText, job.Direction.Source, job.Direction.Target,
-                    job.PreservedManualText), TimeSpan.FromSeconds(90));
+            return await ExchangeAsync(request, TimeSpan.FromSeconds(90));
         }
         catch { Stop(); Status = "本地翻译进程已停止"; Changed?.Invoke(); return new(0, "error", Code: "worker-stopped"); }
         finally { Busy = false; }

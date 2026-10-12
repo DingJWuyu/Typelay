@@ -303,6 +303,9 @@ def main():
     group.add_argument("--settings", action="store_true", help="打开设置")
     group.add_argument("--quit", action="store_true", help="退出当前 Wayland 会话的 TypeLay")
     group.add_argument("--doctor", action="store_true", help="输出不包含输入内容的安装及会话状态")
+    group.add_argument(
+        "--editor-host", action="store_true", help="处理一次明确发起的编辑器翻译快照"
+    )
     group.add_argument("--install-models", action="store_true", help="下载、校验并安装本地翻译组件")
     group.add_argument("--version", action="store_true")
     group.add_argument("--wake", action="store_true", help="由 niri 快捷键唤醒当前已连接输入框")
@@ -317,6 +320,14 @@ def main():
         print("TypeLay Linux preview 0.2.0")
         return 0
     paths = Paths()
+    if args.editor_host:
+        if args.command:
+            parser.error("--editor-host does not accept application arguments")
+        host = paths.home / "app/TypeLay.Linux"
+        os.execv(
+            str(host),
+            [str(host), "--editor-host", str(paths.home), str(paths.config), str(paths.data)],
+        )
     if args.wake or args.direct:
         from niri import contents, request
 

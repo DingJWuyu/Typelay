@@ -4,6 +4,17 @@ const vscode = require('vscode');
 const { randomUUID } = require('node:crypto');
 const MAX_TEXT_UNITS = 8192;
 
+function wellFormed(text) {
+    for (let index = 0; index < text.length; index++) {
+        const unit = text.charCodeAt(index);
+        if (unit >= 0xD800 && unit <= 0xDBFF) {
+            const next = text.charCodeAt(++index);
+            if (!(next >= 0xDC00 && next <= 0xDFFF)) return false;
+        } else if (unit >= 0xDC00 && unit <= 0xDFFF) return false;
+    }
+    return true;
+}
+
 // An explicit document command, not an automatic input/IME backend. Never maps
 // editor change events to an asserted composition state.
 class EditorTransaction {
@@ -15,8 +26,11 @@ class EditorTransaction {
             throw new Error('unsupported-editor');
         }
         const document = editor.document;
+        if (document.offsetAt(document.positionAt(Number.MAX_SAFE_INTEGER)) > MAX_TEXT_UNITS) {
+            throw new Error('invalid-text');
+        }
         const text = document.getText();
-        if (!text.trim() || text.length > MAX_TEXT_UNITS || text.includes('\0')) {
+        if (!text.trim() || text.length > MAX_TEXT_UNITS || text.includes('\0') || !wellFormed(text)) {
             throw new Error('invalid-text');
         }
         this.editor = editor;
@@ -27,8 +41,8 @@ class EditorTransaction {
         this.valid = true;
         this.used = false;
         this.documentId = randomUUID();
-        const start = this.selection.isEmpty ? 0 : document.offsetAt(this.selection.start);
-        const end = this.selection.isEmpty ? text.length : document.offsetAt(this.selection.end);
+        const start = wholeDocument ? 0 : document.offsetAt(this.selection.start);
+        const end = wholeDocument ? text.length : document.offsetAt(this.selection.end);
         this.scope = Object.freeze({ start, length: end - start });
         this.subscriptions = [
             vscode.workspace.onDidChangeTextDocument(event => {
@@ -67,13 +81,20 @@ class EditorTransaction {
         };
     }
 
+    isCurrent() {
+        return this.valid && !this.used && !this.document.isClosed
+            && vscode.window.state.focused && vscode.window.activeTextEditor === this.editor
+            && this.editor.document === this.document && this.document.version === this.version
+            && this.document.getText() === this.text && this.sameSelection();
+    }
+
     async apply(reply) {
         if (this.used) return 'RejectedBeforeMutation';
         this.used = true;
         if (!reply || reply.documentId !== this.documentId || reply.version !== this.version
             || reply.selection?.start !== this.scope.start || reply.selection?.length !== this.scope.length
             || typeof reply.translation !== 'string' || !reply.translation.trim()
-            || reply.translation.includes('\0')) return 'RejectedBeforeMutation';
+            || reply.translation.includes('\0') || !wellFormed(reply.translation)) return 'RejectedBeforeMutation';
         const replacement = reply.translation.replace(/\r\n|\r|\n/g,
             this.document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n');
         const result = this.text.slice(0, this.scope.start) + replacement

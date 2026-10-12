@@ -14,6 +14,9 @@ internal static class Program
             Console.WriteLine("TypeLay Linux preview 0.2.0");
             return 0;
         }
+        if (OperatingSystem.IsLinux() && args is ["--editor-host", var editorHome, var editorConfig, var editorData]
+            && args.Skip(1).All(Path.IsPathFullyQualified))
+            return EditorHost.Run(editorHome, editorConfig, editorData).GetAwaiter().GetResult();
         if (!OperatingSystem.IsLinux() || args.Length != 3 || args.Any(path => !Path.IsPathFullyQualified(path)))
         {
             Console.Error.WriteLine("TypeLay: start the desktop using the typelay launcher.");

@@ -10,7 +10,9 @@
 
 通用 GTK3 输入适配器当前处于安全禁用状态：只描述非正文元数据，不捕获正文、不授予写入能力、不拦截 Tab。公开 GTK API 不能确定实际嵌入输入法的异步请求是否结束；空 preedit、提前监听和 im-module 配置值都不能证明 Clear。默认配置与显式 Simple 请求同样不被当作证据。此前 GTK 正向测试不再构成安全可用性证明，当前回归只验证明确拒绝与按键透传。
 
-GTK3 输入法事务能力、GTK4、Qt、Electron/VS Code 和更广的富文本结构仍是未完成的开发项；终端/命令区按产品策略默认排除。当前交付未达到通用 Linux 输入框移植目标，不能把这些开发缺口留作“只需真机验证”。GTK 父窗口/浏览器视口定位契约见 `docs/adr/0004-linux-native-anchors.md`。
+另有可选 [VS Code 手动翻译命令](vscode-linux.md)：选择文字或明确选择整篇文档，经本地模型翻译、原文/译文预览并确认后替换。它不监听通用输入框、不接管 Tab，安装 VSIX 与配置启动器均由用户明确执行。
+
+GTK3 输入法事务能力、GTK4、Qt、Electron/VS Code 自动浮层和更广的富文本结构仍是未完成的开发项；终端/命令区按产品策略默认排除。当前交付未达到通用 Linux 输入框移植目标，不能把这些开发缺口留作“只需真机验证”。GTK 父窗口/浏览器视口定位契约见 `docs/adr/0004-linux-native-anchors.md`。
 
 快捷键默认在已连接的输入适配器中处理；也可将 niri 全局按键绑定到下述 --wake/--direct 命令。默认 Ctrl+Shift+F9 唤醒、Ctrl+Shift+F10 直接替换，仅按需模式生效。全局触发不会为没有输入后端的应用伪造读取/写入能力。所有应用的兼容性、物理快捷键与托盘视觉一致性仍需实际验证。
 
@@ -30,7 +32,7 @@ cd Typelay
 python eng/build-linux.py
 ```
 
-输出：`artifacts/TypeLay-Linux-preview-x86_64.tar.gz` 及对应 `.sha256`。包内包括自包含 .NET 宿主、GTK3 模块、浏览器扩展及本地主机、子进程监督程序、桌面代码、共享 worker、安装脚本和文件校验清单。模型不在包内，也不会在首次启动时无提示下载。
+输出：`artifacts/TypeLay-Linux-preview-x86_64.tar.gz` 及对应 `.sha256`。包内包括自包含 .NET 宿主、GTK3 模块、浏览器扩展及本地主机、可选 VS Code VSIX、子进程监督程序、桌面代码、共享 worker、安装脚本和文件校验清单。模型不在包内，也不会在首次启动时无提示下载。
 
 构建时的外部 .NET SDK/NuGet 获取仍需要网络。模型安装的原生 Python 依赖固定直接版本，通过 uv 为 CPython 3.13 解析 Linux wheel 并生成带哈希的依赖锁。安装记录保留实际解析版本，不声称不同时间解析出的传递依赖完全相同。
 

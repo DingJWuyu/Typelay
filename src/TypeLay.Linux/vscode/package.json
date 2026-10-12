@@ -1,15 +1,46 @@
 {
-  "name": "typelay-editor-prototype",
-  "displayName": "TypeLay Editor Transaction Prototype",
-  "description": "Disposable validation of source-bound VS Code edits. No automatic input or IME support.",
+  "name": "typelay-editor",
+  "displayName": "TypeLay Editor",
+  "description": "本机翻译所选文字，预览确认后以原文版本保护替换。请先完成输入法候选。",
   "version": "0.0.1",
   "publisher": "typelay-local",
   "private": true,
-  "engines": { "vscode": "^1.96.0" },
-  "extensionKind": ["ui"],
+  "engines": {
+    "vscode": "^1.96.0"
+  },
+  "extensionKind": [
+    "ui"
+  ],
   "main": "./extension.js",
   "capabilities": {
-    "untrustedWorkspaces": { "supported": false },
-    "virtualWorkspaces": { "supported": false }
+    "untrustedWorkspaces": {
+      "supported": false
+    },
+    "virtualWorkspaces": {
+      "supported": false
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "typelay.translateSelection",
+        "title": "TypeLay: 翻译所选文字（先完成输入法候选）"
+      },
+      {
+        "command": "typelay.translateDocument",
+        "title": "TypeLay: 翻译整篇文档"
+      }
+    ],
+    "configuration": {
+      "title": "TypeLay",
+      "properties": {
+        "typelay.hostPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "已安装 TypeLay 启动器的绝对路径，仅使用用户设置，不执行工作区配置。"
+        }
+      }
+    }
   }
 }

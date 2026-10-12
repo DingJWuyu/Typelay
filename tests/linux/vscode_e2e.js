@@ -6,7 +6,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vscode = require('vscode');
-const { EditorTransaction } = require('../../src/TypeLay.Linux/vscode/transaction');
+const extensionPath = vscode.extensions.getExtension('typelay-local.typelay-editor')?.extensionPath;
+assert.ok(extensionPath, 'TypeLay must be available in this isolated extension host');
+const { EditorTransaction } = require(path.join(extensionPath, 'transaction'));
 
 async function editor(text = '你好 🌍\n保留原文', language = 'plaintext') {
     const document = await vscode.workspace.openTextDocument({ content: text, language });
@@ -14,9 +16,15 @@ async function editor(text = '你好 🌍\n保留原文', language = 'plaintext'
 }
 
 async function runTests() {
+    const extension = vscode.extensions.getExtension('typelay-local.typelay-editor');
+    assert.ok(extension, 'The real optional TypeLay extension must load');
+    await extension.activate();
+    const commands = await vscode.commands.getCommands(true);
+    assert.ok(commands.includes('typelay.translateSelection'));
+    assert.ok(commands.includes('typelay.translateDocument'));
     const source = await editor();
     source.selection = new vscode.Selection(0, 0, 0, 2);
-    let transaction = new EditorTransaction(source, { wholeDocument: true });
+    let transaction = new EditorTransaction(source);
     let snapshot = transaction.snapshot();
     assert.equal(snapshot.text, '你好', 'Only explicitly selected content crosses the model seam');
     assert.deepEqual(snapshot.selection, { start: 0, length: 2 });
@@ -61,8 +69,14 @@ async function runTests() {
     assert.equal(await transaction.apply({ ...snapshot, selection: { start: 1, length: 1 }, translation: 'Wrong scope' }), 'RejectedBeforeMutation');
     transaction.dispose();
 
+    transaction = new EditorTransaction(other, { wholeDocument: true });
+    snapshot = transaction.snapshot();
+    assert.equal(await transaction.apply({ ...snapshot, translation: '\ud800' }), 'RejectedBeforeMutation');
+    assert.equal(other.document.getText(), '另一个文档');
+    transaction.dispose();
+
     const whole = await editor('第一行\n第二行');
-    whole.selection = new vscode.Selection(0, 0, 0, 0);
+    whole.selection = new vscode.Selection(0, 0, 0, 1);
     transaction = new EditorTransaction(whole, { wholeDocument: true });
     snapshot = transaction.snapshot();
     assert.deepEqual(snapshot.selection, { start: 0, length: 7 });
@@ -94,6 +108,30 @@ async function runTests() {
     assert.throws(() => new EditorTransaction(code), /unsupported-editor/);
     const large = await editor('字'.repeat(8193));
     assert.throws(() => new EditorTransaction(large, { wholeDocument: true }), /invalid-text/);
+    if (process.env.TYPELAY_EDITOR_HOST) {
+        const modelSource = await editor('你好，世界。\n保留原文');
+        modelSource.selection = new vscode.Selection(0, 0, 0, 6);
+        let changedBeforeConfirmation = false;
+        const observation = vscode.workspace.onDidChangeTextDocument(event => {
+            if (event.document === modelSource.document && !fs.existsSync(process.env.TYPELAY_VSCODE_CONFIRM)) {
+                changedBeforeConfirmation = true;
+            }
+        });
+        try { await vscode.commands.executeCommand('typelay.translateSelection'); }
+        finally { observation.dispose(); }
+        assert.equal(changedBeforeConfirmation, false, 'Preview must not mutate the source before actual UI confirmation');
+        assert.notEqual(modelSource.document.lineAt(0).text, '你好，世界。');
+        assert.match(modelSource.document.lineAt(0).text, /[A-Za-z]/);
+        assert.equal(modelSource.document.lineAt(1).text, '保留原文');
+        await vscode.commands.executeCommand('undo');
+        assert.equal(modelSource.document.getText(), '你好，世界。\n保留原文');
+        console.log('PASS real command, model, preview confirmation, selected replacement and undo');
+
+        modelSource.selection = new vscode.Selection(0, 0, 0, 1);
+        await vscode.commands.executeCommand('typelay.translateDocument');
+        assert.equal(modelSource.document.getText(), '你好，世界。\n保留原文', 'Canceling the whole-document preview must leave source unchanged');
+        console.log('PASS explicit whole-document choice and actual preview cancellation');
+    }
     console.log('TypeLay VS Code real editor transaction tests passed.');
 }
 
@@ -101,7 +139,7 @@ async function run() {
     const resultPath = process.env.TYPELAY_VSCODE_RESULT;
     assert.ok(resultPath && path.isAbsolute(resultPath), 'The isolated runner must provide a result path');
     const report = (status, detail = '') => fs.writeFileSync(resultPath,
-        JSON.stringify({ status, detail, vscodeVersion: vscode.version }), { encoding: 'utf8' });
+        JSON.stringify({ status, detail, vscodeVersion: vscode.version, modelHostTest: Boolean(process.env.TYPELAY_EDITOR_HOST) }), { encoding: 'utf8' });
     report('started');
     try {
         await runTests();

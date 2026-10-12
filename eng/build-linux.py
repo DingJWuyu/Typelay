@@ -2,6 +2,7 @@
 
 import argparse
 import hashlib
+import json
 import os
 import platform
 import shutil
@@ -9,6 +10,7 @@ import subprocess
 import tarfile
 import zipfile
 from pathlib import Path
+from xml.etree import ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -87,6 +89,7 @@ def build(output, fixture=False):
             entry.compress_type = zipfile.ZIP_DEFLATED
             entry.external_attr = 0o100644 << 16
             addon.writestr(entry, (output / "browser/firefox" / name).read_bytes())
+    package_editor(output)
     shutil.copy2(ROOT / "docs/browser-linux.md", output / "browser-linux.md")
     for name in ("typelay", "typelay-browser-host", "install.py"):
         shutil.copy2(ROOT / "packaging/linux" / name, output / name)
@@ -108,6 +111,75 @@ def build(output, fixture=False):
         checksum = hashlib.file_digest(stream, "sha256").hexdigest()
     archive.with_suffix(archive.suffix + ".sha256").write_text(f"{checksum}  {archive.name}\n")
     print(f"Built {archive.relative_to(ROOT)}")
+
+
+def package_editor(output):
+    # Standard VS Code VSIX schema; installation remains an explicit user action.
+    destination = output / "vscode"
+    destination.mkdir()
+    names = ("package.json", "extension.js", "transaction.js", "host-client.js")
+    for name in names:
+        shutil.copy2(ROOT / "src/TypeLay.Linux/vscode" / name, destination / name)
+    metadata = json.loads((destination / "package.json").read_text(encoding="utf-8"))
+    manifest = ET.Element(
+        "PackageManifest",
+        {"Version": "2.0.0", "xmlns": "http://schemas.microsoft.com/developer/vsx-schema/2011"},
+    )
+    details = ET.SubElement(manifest, "Metadata")
+    ET.SubElement(
+        details,
+        "Identity",
+        {
+            "Id": metadata["name"],
+            "Version": metadata["version"],
+            "Publisher": metadata["publisher"],
+            "Language": "en-US",
+        },
+    )
+    ET.SubElement(details, "DisplayName").text = metadata["displayName"]
+    ET.SubElement(details, "Description").text = metadata["description"]
+    properties = ET.SubElement(details, "Properties")
+    for name, value in (
+        ("Microsoft.VisualStudio.Code.Engine", metadata["engines"]["vscode"]),
+        ("Microsoft.VisualStudio.Code.ExtensionKind", "ui"),
+        ("Microsoft.VisualStudio.Code.ExecutesCode", "true"),
+    ):
+        ET.SubElement(properties, "Property", {"Id": name, "Value": value})
+    installation = ET.SubElement(manifest, "Installation")
+    ET.SubElement(installation, "InstallationTarget", {"Id": "Microsoft.VisualStudio.Code"})
+    ET.SubElement(manifest, "Dependencies")
+    assets = ET.SubElement(manifest, "Assets")
+    ET.SubElement(
+        assets,
+        "Asset",
+        {
+            "Type": "Microsoft.VisualStudio.Code.Manifest",
+            "Path": "extension/package.json",
+            "Addressable": "true",
+        },
+    )
+    types = ET.Element(
+        "Types", {"xmlns": "http://schemas.openxmlformats.org/package/2006/content-types"}
+    )
+    for extension, content in (
+        ("json", "application/json"),
+        ("js", "text/javascript"),
+        ("vsixmanifest", "text/xml"),
+        ("txt", "text/plain"),
+    ):
+        ET.SubElement(types, "Default", {"Extension": extension, "ContentType": content})
+    payload = {
+        "extension.vsixmanifest": ET.tostring(manifest, encoding="utf-8", xml_declaration=True),
+        "[Content_Types].xml": ET.tostring(types, encoding="utf-8", xml_declaration=True),
+    }
+    payload.update({f"extension/{name}": (destination / name).read_bytes() for name in names})
+    with zipfile.ZipFile(destination / "typelay-editor.vsix", "w") as archive:
+        for name, content in sorted(payload.items()):
+            entry = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            entry.compress_type = zipfile.ZIP_DEFLATED
+            entry.external_attr = 0o100644 << 16
+            archive.writestr(entry, content)
+    shutil.copy2(ROOT / "docs/vscode-linux.md", output / "vscode-linux.md")
 
 
 def normalize_owner(info):

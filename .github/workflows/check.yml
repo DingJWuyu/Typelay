@@ -90,7 +90,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Install target desktop build dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -165,6 +165,13 @@ jobs:
           export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
           python tests/linux/native_e2e.py --desktop --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/desktop --editor-bundle artifacts/editor-probe/fixture.js
+      - name: Verify installed VS Code command with the real local model
+        if: ${{ !cancelled() && steps.models.outcome == 'success' }}
+        run: |
+          export DISPLAY=:99
+          set -- /usr/lib/electron*/electron
+          test "$#" -eq 1
+          python tests/linux/vscode_e2e.py --code "$1" --app /usr/lib/code --vsix "$PWD/artifacts/linux/package/vscode/typelay-editor.vsix" --code-cli /usr/bin/code --host "$PWD/artifacts/linux/package/typelay" --model-data "$PWD/artifacts/linux/desktop-data/typelay" --output artifacts/linux/vscode-model
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -174,6 +181,7 @@ jobs:
             artifacts/linux/desktop/
             artifacts/linux/firefox-native/
             artifacts/linux/vscode/
+            artifacts/linux/vscode-model/
             artifacts/linux/editor-probe/
             artifacts/linux/fcitx-probe/
             artifacts/linux/fcitx-cooperative/

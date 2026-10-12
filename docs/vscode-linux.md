@@ -1,31 +1,62 @@
-# VS Code 编辑事务验证
+# VS Code 可选本机翻译命令
 
-当前目录 `src/TypeLay.Linux/vscode/` 是可由真实 Extension Host 加载的开发验证扩展。没有命令注册、激活事件、模型进程或网络调用，不包含在默认 Linux 安装流程内，不向用户编辑器永久安装。它不是可用的 TypeLay 翻译后端。
+这是额外的手动工作流，不替代 TypeLay 自动浮层、Tab 接受或普通输入框目标。扩展只处理本地 `plaintext` / `markdown` 文档。代码、终端、远程/虚拟文档、多个选区和未受信任工作区不启用正文读取。
 
-## 验证范围
+## 手动安装和使用
 
-`EditorTransaction` 保存原始 TextEditor 和 TextDocument 对象、文档版本、UTF-16 选区与正文。不同编辑器、关闭文档、修改正文、改变选区、失去窗口焦点均拒绝旧结果。只有 `plaintext` / `markdown` 的本地文件或未保存文档允许进入此实验；没有选区必须由调用者明确选择整文。传给未来模型入口的快照只含已选择范围，不包含文件名、路径或范围外正文。整个源文档仍受 Core 的 8192 UTF-16 单位限制，不截断。
+先安装 Linux TypeLay 及本地模型。在 VS Code 的扩展视图中选择“从 VSIX 安装”，手动选择发行包提供的 `vscode/typelay-editor.vsix`。TypeLay 的普通安装不会替你安装或启用编辑器扩展。
 
-编辑使用 `TextEditor.edit`，保持前后 undo stop，成功可以一次撤销。版本比较后的编辑请求携带原文档版本，由 VS Code renderer 在应用时再次拒绝过期编辑；异常视为结果未知，不重试、不剪贴板粘贴、不补偿回写。选区/窗口事件在 Extension Host 异步到达，因此本地校验不能证明 renderer 当前焦点或输入法状态。
+在 VS Code 用户设置中配置 `typelay.hostPath`，值为已安装 TypeLay 启动器的绝对路径，例如 `/home/你的用户名/.local/bin/typelay`。请以实际安装位置为准，不使用 shell 命令、参数或 `~` 缩写。该设置为机器级；扩展仅使用用户配置，工作区和文件夹无法指定执行程序。
 
-VS Code 公开扩展 API 未提供 IME composition 生命周期或同步的物理 Tab 接受仲裁。文档版本和内容事件不能证明输入法空闲。这个原型没有声明 Clear、没有自动捕获源字段，也没有实现胶囊、人工译文编辑或 Tab 接受。特别不能据此声称 Fcitx5 5.1.22 的组合输入已经安全支持。命令式快照工作流不同于冻结产品交互，交付前需用户明确选择。
+1. 先完成输入法候选，再选择要翻译的文字。
+2. 运行命令“TypeLay: 翻译所选文字（先完成输入法候选）”。没有选区会提示选择，不会悄悄翻译整篇。
+3. 等待本机推理，核对预览中的完整原文和译文。
+4. 点击“确认替换”才写回。取消不改原文；成功后可用编辑器的一次撤销恢复。
 
-## 真实 Extension Host 回归
+如需整篇，明确运行“TypeLay: 翻译整篇文档”，先确认整篇范围，再预览和确认译文。已有选区不会改变这个明确整篇命令的范围。扩展不自动发送消息、不保存文件、不设置默认快捷键，也不占用 Tab。当前预览只供核对；需要调整译文时可取消或替换后在编辑器内继续修改。
 
-先准备官方 VS Code 或发行版 Code OSS 和独立显示环境。以下命令创建临时 HOME、用户数据和扩展目录，不读取现有工作区；退出时删除临时目录并清理自有进程组：
+翻译使用现有 TypeLay 的启用状态、语言方向和已安装模型。关闭 TypeLay 全局启用或模型未就绪时拒绝请求，不自动下载组件。推理进度通知可以取消；源文档、选区、编辑器或窗口焦点发生变化时旧结果作废，请重新翻译。
+
+## 隐私和写回边界
+
+扩展只在明确命令后读取允许的文档。内部保存原始 TextEditor、TextDocument 对象、版本、UTF-16 选区和正文用于核验；传给本地主机的只有选中范围、随机身份、版本和范围，不包含文件路径或范围外文本。整篇源文档上限为 8192 UTF-16 单位，超限拒绝，不截断。
+
+扩展以参数数组、无 shell 的方式启动已配置的 `typelay --editor-host`，通过继承的有界标准输入/输出处理一次请求。没有网络端点、剪贴板、远程翻译或正文日志。主机复用现有 ModelClient 和本机 worker；超时、取消和退出清理自有进程。
+
+确认时使用 `TextEditor.edit` 的文档版本事务，保留前后 undo stop。异常视为结果未知，不自动重试或补偿回写。选区和焦点观察在 Extension Host 异步到达，因此不能宣称与同步物理按键仲裁等价。
+
+VS Code 的公开扩展 API 不提供 IME composition 生命周期。文档版本不是输入法空闲证明；Command Palette 也不是可靠提交屏障，上游在缺失原生 compositionend 的 blur 路径会人工结束内部状态。请先提交输入法候选并核对预览原文，再确认替换。这条手动命令不能证明 Fcitx5 组合输入、自动胶囊或物理 Tab 已安全支持。
+
+## 开发回归
+
+使用官方 VS Code 原生二进制，或发行版拆分的 Electron + Code 应用目录。`--code` 必须是真实 ELF，而非 `/usr/bin/code` CLI 包装器；Arch 的 Electron 版本目录按实际安装确认。容器应给字体共享内存足够容量，例如 1 GiB `/dev/shm`。
 
 ```sh
-DISPLAY=:99 python tests/linux/vscode_e2e.py --code /usr/lib/electron42/electron --app /usr/lib/code
+DISPLAY=:99 python tests/linux/vscode_e2e.py \
+  --code /usr/lib/electron42/electron --app /usr/lib/code
 ```
 
-这里的 `--code` 必须指向真实 ELF 可执行文件，不使用 `/usr/bin/code` CLI 包装器。Arch 的 Electron 版本目录应按实际安装包确认；官方 VS Code 完整包可传包内 `code` 二进制并省略 `--app`。CLI 的 `--wait` 等待文件关闭，不是 Extension Host 生命周期，不能作为测试完成证据。启动日志、临时 profile 的日志以及真实测试入口产生的 `test-result.json` 保存到 `artifacts/linux/vscode/`；仅所有断言完成后的 `passed` 结果被接受。
+该回归使用真实 Extension Host，覆盖 UTF-16 范围、显式整篇、一次 undo/redo、旧版本、选区改变、编辑器切换、文档关闭、重复接受、renderer 并发版本拒绝与不支持区域。没有编辑器对象替身。
 
-测试覆盖选区范围外文本、UTF-16 emoji、显式整文、一次 undo/redo、旧版本拒绝、选区变化、编辑器切换、文档关闭、重复接受、并发 renderer 版本拒绝、代码区与超长文档拒绝。未使用编辑器对象替身或翻译模型替身。缺少 Code 可执行文件、显示环境或运行超时是失败，不能跳过为通过。
+验证完整发行 VSIX、本机模型和实际确认/取消对话框时，额外提供测试发行包和已经安装好模型的测试数据目录：
 
-这些回归只验证编辑事务，不能证明真实模型、niri 聚焦、物理中文输入法或产品视觉交互。当前可调用的翻译集成、命令 UI、模型生命周期和包安装均尚未提供。
+```sh
+DISPLAY=:99 python tests/linux/vscode_e2e.py \
+  --code /usr/lib/electron42/electron --app /usr/lib/code \
+  --vsix /绝对路径/typelay-editor.vsix --code-cli /usr/bin/code \
+  --host /绝对路径/发行包/typelay \
+  --model-data /绝对路径/测试数据/typelay
+```
 
-## API 与复用边界
+测试只往临时 HOME、用户数据和扩展目录安装 VSIX，模型 components 只链接到已准备的测试数据。Playwright 通过仅供该测试使用的本机调试端口操作真实预览按钮，不替换消息 API 或模型。源码事务和安装包事务均通过同一公开接口验证；日志、实际 UI 截图和 `test-result.json` 进入 `artifacts/linux/vscode/`。只有真实运行全部断言后产生的 `passed` 被接受；缺少模型、未启动、超时或测试失败都不算通过。结束后清理临时 profile 和自有进程。
 
-实现使用 [VS Code 的 TextEditor.edit 与 TextEditorEdit 公共 API](https://code.visualstudio.com/api/references/vscode-api#TextEditor)。[上游扩展端](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/api/common/extHostTextEditor.ts)保存 documentVersionId，[主线程编辑器](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/api/browser/mainThreadEditor.ts)负责核验与应用。
+这些检查仍不代表物理中文输入法、niri 多窗口体验或自动浮层产品验收。
 
-[Microsoft 扩展示例](https://github.com/microsoft/vscode-extension-samples)与 [VS Code 源码](https://github.com/microsoft/vscode)采用 MIT 许可。此实现只调用公开 API，没有复制上游代码；没有引入第三方翻译插件、远程翻译服务或额外运行时依赖。
+## API 依据
+
+- [VS Code TextEditor 与 TextEditorEdit](https://code.visualstudio.com/api/references/vscode-api#TextEditor)提供版本约束编辑和 undo stop。
+- [扩展端版本绑定](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/api/common/extHostTextEditor.ts)与[主线程应用](https://github.com/microsoft/vscode/blob/main/src/vs/workbench/api/browser/mainThreadEditor.ts)说明版本事务边界。
+- [原生文本区组合状态处理](https://github.com/microsoft/vscode/blob/main/src/vs/editor/browser/controller/editContext/textArea/textAreaEditContextInput.ts)说明 blur 不能当作正常输入法提交证明。
+- [官方 vsce 打包实现](https://github.com/microsoft/vscode-vsce/blob/main/src/package.ts)定义 VSIX manifest 和内容类型。
+
+Microsoft 的 VS Code、扩展示例和 vsce 源码采用 MIT 许可。此实现调用公开 API，没有复制上游实现或引入第三方翻译插件。
