@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from browser_process import chromium_context
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,36 +50,29 @@ class BrowserContract(unittest.TestCase):
     def setUpClass(cls):
         cls.playwright = sync_playwright().start()
         cls.home = tempfile.TemporaryDirectory(prefix="typelay-browser-test-")
-        try:
-            environment = dict(
-                os.environ,
-                HOME=cls.home.name,
-                XDG_CONFIG_HOME=str(Path(cls.home.name) / "config"),
-                XDG_CACHE_HOME=str(Path(cls.home.name) / "cache"),
-            )
-            cls.browser = cls.playwright.chromium.launch(
-                executable_path=cls.executable, headless=False, env=environment
-            )
-        except BaseException:
-            cls.playwright.stop()
-            cls.home.cleanup()
-            raise
 
     @classmethod
     def tearDownClass(cls):
-        cls.browser.close()
         cls.playwright.stop()
         cls.home.cleanup()
 
     def setUp(self):
-        self.context = self.browser.new_context()
+        temporary = tempfile.TemporaryDirectory(dir=self.home.name)
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        environment = {
+            **os.environ,
+            "HOME": str(root),
+            "XDG_CONFIG_HOME": str(root / "config"),
+            "XDG_CACHE_HOME": str(root / "cache"),
+        }
+        self.browser_scope = chromium_context(
+            self.playwright, self.executable, root / "profile", environment
+        )
+        self.context = self.browser_scope.__enter__()
+        self.addCleanup(self.browser_scope.__exit__, None, None, None)
         self.context.add_init_script(TRANSPORT + "\n" + CONTENT.read_text())
         self.page = self.context.new_page()
-        # Playwright enables focus emulation for every page by default. Turn it
-        # off so background-tab assertions observe Chromium's real focus.
-        self.context.new_cdp_session(self.page).send(
-            "Emulation.setFocusEmulationEnabled", {"enabled": False}
-        )
         self.page.route(
             "http://127.0.0.1/fixture",
             lambda route: route.fulfill(body=FIXTURE, content_type="text/html"),
@@ -86,9 +80,6 @@ class BrowserContract(unittest.TestCase):
         self.page.goto("http://127.0.0.1/fixture")
         self.sequence = 0
         self.page.locator("#source").focus()
-
-    def tearDown(self):
-        self.context.close()
 
     def command(self, operation, data=None):
         self.sequence += 1
@@ -219,9 +210,6 @@ class BrowserContract(unittest.TestCase):
 
     def another_tab(self):
         second = self.context.new_page()
-        self.context.new_cdp_session(second).send(
-            "Emulation.setFocusEmulationEnabled", {"enabled": False}
-        )
         second.route(
             "http://127.0.0.1/second",
             lambda route: route.fulfill(body=FIXTURE, content_type="text/html"),

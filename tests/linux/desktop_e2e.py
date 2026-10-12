@@ -291,6 +291,7 @@ def run(arguments):
         evidence.append("unmodified YAD application: real entry translation and accepted output")
         # Exercise the real extension, native host, niri PID authority, shared
         # controller and actual CPU model together, not only a DOM transport seam.
+        from browser_process import chromium_context
         from playwright.sync_api import sync_playwright
 
         with tempfile.TemporaryDirectory(prefix="typelay-browser-desktop-") as temporary:
@@ -310,18 +311,18 @@ def run(arguments):
             )
             extension = package / "browser/chromium"
             with sync_playwright() as playwright:
-                browser = playwright.chromium.launch_persistent_context(
-                    str(browser_home / "config/chromium"),
-                    executable_path="/usr/bin/chromium",
-                    headless=False,
-                    env=browser_environment,
-                    ignore_default_args=["--disable-extensions"],
-                    args=[
+                browser_scope = chromium_context(
+                    playwright,
+                    "/usr/bin/chromium",
+                    browser_home / "config/chromium",
+                    browser_environment,
+                    [
                         "--ozone-platform=wayland",
                         f"--disable-extensions-except={extension}",
                         f"--load-extension={extension}",
                     ],
                 )
+                browser = browser_scope.__enter__()
                 try:
                     worker = (
                         browser.service_workers[0]
@@ -352,9 +353,6 @@ def run(arguments):
                         ),
                     )
                     page = browser.new_page()
-                    browser.new_cdp_session(page).send(
-                        "Emulation.setFocusEmulationEnabled", {"enabled": False}
-                    )
                     page.goto("http://127.0.0.1/typelay-contract")
                     window = wait_for(
                         lambda: next(
@@ -389,7 +387,7 @@ def run(arguments):
                         "Wayland Chromium: real extension, native host, compositor process binding, CPU model and Tab"
                     )
                 finally:
-                    browser.close()
+                    browser_scope.__exit__(None, None, None)
         assert control(paths, "settings") is True
         time.sleep(0.3)
         subprocess.run(["grim", str(arguments.output / "settings.png")], check=True, timeout=3)

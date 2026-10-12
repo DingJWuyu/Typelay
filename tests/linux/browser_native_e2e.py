@@ -18,6 +18,7 @@ import time
 import unittest
 from pathlib import Path
 
+from browser_process import chromium_context
 from playwright.sync_api import sync_playwright
 
 
@@ -60,17 +61,17 @@ class NativeBrowserContract(unittest.TestCase):
                 listener.listen(1)
                 listener.settimeout(15)
                 with sync_playwright() as playwright:
-                    context = playwright.chromium.launch_persistent_context(
-                        str(root / "config/chromium"),
-                        executable_path=self.executable,
-                        headless=False,
-                        env=environment,
-                        ignore_default_args=["--disable-extensions"],
-                        args=[
+                    scope = chromium_context(
+                        playwright,
+                        self.executable,
+                        root / "config/chromium",
+                        environment,
+                        [
                             f"--disable-extensions-except={extension}",
                             f"--load-extension={extension}",
                         ],
                     )
+                    context = scope.__enter__()
                     try:
                         worker = (
                             context.service_workers[0]
@@ -101,9 +102,6 @@ class NativeBrowserContract(unittest.TestCase):
                             ),
                         )
                         first = context.new_page()
-                        context.new_cdp_session(first).send(
-                            "Emulation.setFocusEmulationEnabled", {"enabled": False}
-                        )
                         first.goto("http://127.0.0.1/first")
                         first.locator("#source").focus()
                         first.keyboard.insert_text("First document")
@@ -129,9 +127,6 @@ class NativeBrowserContract(unittest.TestCase):
                             )
                             self.assertEqual(snapshot["text"], "First document")
                             second = context.new_page()
-                            context.new_cdp_session(second).send(
-                                "Emulation.setFocusEmulationEnabled", {"enabled": False}
-                            )
                             second.goto("http://127.0.0.1/second")
                             second.bring_to_front()
                             second.locator("#source").focus()
@@ -164,7 +159,7 @@ class NativeBrowserContract(unittest.TestCase):
                                 second.locator("#source").input_value(), "Second document"
                             )
                     finally:
-                        context.close()
+                        scope.__exit__(None, None, None)
 
     def focused_description(self, connection, previous=None):
         deadline = time.monotonic() + 3
