@@ -739,18 +739,34 @@
     const modifiers = (event.ctrlKey ? 4 : 0) | (event.altKey ? 8 : 0) | (event.shiftKey ? 1 : 0);
     return !event.metaKey && binding && binding.keyval === keyval && binding.modifiers === modifiers;
   }
+  function tabDiagnostic(event, field) {
+    if (!configuration?.trace || event.key !== "Tab" || event.ctrlKey || event.altKey
+      || event.shiftKey || event.metaKey) return () => {};
+    const current = publication, basis = current?.authority, mono = monoNow();
+    const detail = {publication: !!current, imeClear: field?.ime === "Clear",
+      targetMatches: !!field && current?.target === field.id,
+      inputMatches: !!field && field.input === basis?.inputRevision,
+      focusMatches: !!field && field.focus === basis?.focusRevision,
+      remainingMs: current ? Math.min(current.expiresAtPerformanceMs - mono,
+        current.expiresAtWallMs - Date.now()) : null};
+    return reason => {
+      try { send("tab-diagnostic", {...detail, reason}); }
+      catch (_) { /* A diagnostic channel failure cannot change key handling. */ }
+    };
+  }
   window.addEventListener("keydown", event => {
     if (!event.isTrusted) return;
-    if (held.has(event.code)) { if (held.get(event.code)) consume(event); return; }
-    if (event.repeat) return;
+    if (held.has(event.code)) { tabDiagnostic(event, fields.get(event.target))("held"); if (held.get(event.code)) consume(event); return; }
+    if (event.repeat) { tabDiagnostic(event, fields.get(event.target))("repeat"); return; }
     held.set(event.code, false);
     const field = fieldFor(event.target);
-    if (!field || !focused(field)) return;
-    if (event.isComposing || event.keyCode === 229) { field.ime = "Composing"; publication = shortcut = null; refreshHint(); return; }
+    const reportTab = tabDiagnostic(event, field);
+    if (!field || !focused(field)) { reportTab("target-unfocused"); return; }
+    if (event.isComposing || event.keyCode === 229) { reportTab("composing"); field.ime = "Composing"; publication = shortcut = null; refreshHint(); return; }
     // A trusted non-composing keyboard event provides positive state evidence;
     // it does not retroactively make a previously issued unknown-state plan valid.
-    if (field.ime === "Unknown") { field.ime = "Clear"; changed(field, false, false); return; }
-    if (field.ime !== "Clear") return;
+    if (field.ime === "Unknown") { reportTab("ime-unknown"); field.ime = "Clear"; changed(field, false, false); return; }
+    if (field.ime !== "Clear") { reportTab("composing"); return; }
     if (configuration?.enabled && shortcut && shortcut.generation === configuration.generation
       && approved(field, shortcut.authority) && issued(field, shortcut.authority)) {
       const kind = shortcutMatches(event, configuration.wake) ? "wake" : shortcutMatches(event, configuration.direct) ? "direct" : null;
@@ -764,20 +780,21 @@
         }
       }
     }
-    if (!publication || event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return;
+    if (!publication || event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) { reportTab("no-publication"); return; }
     const basis = publication.authority;
-    if (!approved(field, basis) || field.input !== basis.inputRevision || field.focus !== basis.focusRevision) { publication = null; refreshHint(); return; }
+    if (!approved(field, basis) || field.input !== basis.inputRevision || field.focus !== basis.focusRevision) { reportTab("authority-changed"); publication = null; refreshHint(); return; }
     if (event.key === "Escape" && publication.lease?.escapeAllowed && fresh(publication.lease.source.observedAtMs, 150)) {
       publication = null; refreshHint(); consume(event); send("escape", {}); return;
     }
     const permit = publication.permit;
-    if (event.key !== "Tab" || !permit?.plan?.id || consumed.has(permit.plan.id)) return;
+    if (event.key !== "Tab" || !permit?.plan?.id || consumed.has(permit.plan.id)) { reportTab("no-permit"); return; }
     for (const [id, expiry] of consumed) if (monoNow() > expiry) consumed.delete(id);
-    if (consumed.size >= 128) { publication = null; refreshHint(); return; }
+    if (consumed.size >= 128) { reportTab("capacity"); publication = null; refreshHint(); return; }
     consumed.set(permit.plan.id, monoNow() + 100);
     const {expiresAtPerformanceMs, expiresAtWallMs} = publication;
     const acceptedAtMs = now();
     const receipt = write(field, {plan: permit.plan, authority: basis, expiresAtPerformanceMs, expiresAtWallMs}, false);
+    reportTab(receipt.reason);
     publication = null; refreshHint();
     if (receipt.status !== "RejectedBeforeMutation") {
       consume(event);

@@ -528,6 +528,7 @@ class Input:
             **value,
             "wake": binding(value["wake"]),
             "direct": binding(value["direct"]),
+            "trace": bool(os.environ.get("TYPELAY_TRACE")),
         }
         self.frozen.clear()
         self.revoke()
@@ -595,7 +596,54 @@ class Input:
         # teardown: they belong to already accepted physical input, not the UI.
 
     def event(self, peer, name, value):
-        if name == "publication" and peer.backend == "browser":
+        if name == "tab-diagnostic" and peer.backend == "browser":
+            if not os.environ.get("TYPELAY_TRACE") or not isinstance(value, dict):
+                return
+            reasons = {
+                "target-unfocused",
+                "composing",
+                "ime-unknown",
+                "no-publication",
+                "authority-changed",
+                "no-permit",
+                "capacity",
+                "held",
+                "repeat",
+                "BadPlan",
+                "StaleObservation",
+                "Sensitive",
+                "ImeUnclear",
+                "SourceChanged",
+                "EpochChanged",
+                "SelectionChanged",
+                "InvalidText",
+                "UnknownOutcome",
+                "None",
+            }
+            remaining = value.get("remainingMs")
+            reason = value.get("reason")
+            detail = {
+                "receivedAtMs": now_ms(),
+                "reason": reason if isinstance(reason, str) and reason in reasons else "unknown",
+                "remainingMs": max(-1000, min(1000, remaining))
+                if type(remaining) in (int, float) and math.isfinite(remaining)
+                else None,
+                **{
+                    key: value.get(key) is True
+                    for key in (
+                        "publication",
+                        "imeClear",
+                        "targetMatches",
+                        "inputMatches",
+                        "focusMatches",
+                    )
+                },
+            }
+            try:
+                print("typelay-tab " + json.dumps(detail, separators=(",", ":")), file=sys.stderr)
+            except OSError:
+                pass  # Diagnostic output cannot interrupt the native event channel.
+        elif name == "publication" and peer.backend == "browser":
             if isinstance(value, dict) and isinstance(value.get("target"), str):
                 self.remember_browser_publication(
                     peer,

@@ -390,8 +390,13 @@ def run(arguments):
                 subprocess.run(
                     ["grim", str(arguments.output / "firefox-browser.png")], check=True, timeout=3
                 )
-                wait_for(ready_to_accept, "Firefox acceptance expired while taking evidence")
-                firefox_tab = {"beforeMs": now_ms()}
+                ready = wait_for(
+                    ready_to_accept, "Firefox acceptance expired while taking evidence"
+                )
+                firefox_tab = {
+                    "beforeMs": now_ms(),
+                    "reportedRemainingMs": ready.get("acceptanceRemainingMs"),
+                }
                 key("Tab")
                 firefox_tab["afterMs"] = now_ms()
                 (arguments.output / "firefox-tab.json").write_text(json.dumps(firefox_tab))
