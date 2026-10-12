@@ -352,6 +352,9 @@ def run(arguments):
                         ),
                     )
                     page = browser.new_page()
+                    browser.new_cdp_session(page).send(
+                        "Emulation.setFocusEmulationEnabled", {"enabled": False}
+                    )
                     page.goto("http://127.0.0.1/typelay-contract")
                     window = wait_for(
                         lambda: next(

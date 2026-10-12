@@ -74,6 +74,11 @@ class BrowserContract(unittest.TestCase):
         self.context = self.browser.new_context()
         self.context.add_init_script(TRANSPORT + "\n" + CONTENT.read_text())
         self.page = self.context.new_page()
+        # Playwright enables focus emulation for every page by default. Turn it
+        # off so background-tab assertions observe Chromium's real focus.
+        self.context.new_cdp_session(self.page).send(
+            "Emulation.setFocusEmulationEnabled", {"enabled": False}
+        )
         self.page.route(
             "http://127.0.0.1/fixture",
             lambda route: route.fulfill(body=FIXTURE, content_type="text/html"),
@@ -214,6 +219,9 @@ class BrowserContract(unittest.TestCase):
 
     def another_tab(self):
         second = self.context.new_page()
+        self.context.new_cdp_session(second).send(
+            "Emulation.setFocusEmulationEnabled", {"enabled": False}
+        )
         second.route(
             "http://127.0.0.1/second",
             lambda route: route.fulfill(body=FIXTURE, content_type="text/html"),

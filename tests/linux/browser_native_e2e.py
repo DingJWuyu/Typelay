@@ -101,6 +101,9 @@ class NativeBrowserContract(unittest.TestCase):
                             ),
                         )
                         first = context.new_page()
+                        context.new_cdp_session(first).send(
+                            "Emulation.setFocusEmulationEnabled", {"enabled": False}
+                        )
                         first.goto("http://127.0.0.1/first")
                         first.locator("#source").focus()
                         first.keyboard.insert_text("First document")
@@ -126,6 +129,9 @@ class NativeBrowserContract(unittest.TestCase):
                             )
                             self.assertEqual(snapshot["text"], "First document")
                             second = context.new_page()
+                            context.new_cdp_session(second).send(
+                                "Emulation.setFocusEmulationEnabled", {"enabled": False}
+                            )
                             second.goto("http://127.0.0.1/second")
                             second.bring_to_front()
                             second.locator("#source").focus()
