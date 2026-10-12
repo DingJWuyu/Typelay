@@ -531,7 +531,7 @@ def run(arguments):
                     gtk_environment["TYPELAY_FCITX_AUDITED_ADDON_DIRS"] = (
                         f"{cooperation / 'lib'}:{core / 'lib/fcitx5'}"
                     )
-                daemon = fixture = None
+                daemon = fixture = practice = None
                 try:
                     with (arguments.output / "gtk-cooperative-framework.log").open("w") as log:
                         daemon_command = (
@@ -1044,8 +1044,153 @@ def run(arguments):
                             evidence.append(
                                 "GTK4 hidden Entry and GtkPasswordEntry: refused capture, unchanged source and ordinary Tab navigation"
                             )
+                        if not gtk4 and bundled:
+                            # The shipped practice window has no test snapshot or
+                            # translator. Observe only its owned accessibility tree.
+                            from gtk_accessibility import bounds, focused, named, text
+
+                            request({"Action": {"CloseWindow": {"id": window["id"]}}})
+                            assert fixture.wait(timeout=5) == 0
+                            stop()
+                            settings["OnboardingComplete"] = False
+                            start()
+                            assert not status()["setup"]["onboardingComplete"]
+                            practice_environment = dict(gtk_environment)
+                            practice_environment.pop("GTK3_MODULES", None)
+                            practice = subprocess.Popen(
+                                [
+                                    sys.executable,
+                                    str(bundle_launcher),
+                                    "launch",
+                                    str(package / "typelay"),
+                                    "--practice",
+                                ],
+                                env=practice_environment,
+                                stdout=sys.stdout,
+                                stderr=sys.stderr,
+                            )
+                            practice_window = wait_for(
+                                lambda: next(
+                                    (
+                                        item
+                                        for item in contents(request("Windows"), "Windows")
+                                        if item.get("pid") == practice.pid
+                                    ),
+                                    None,
+                                ),
+                                "shipped practice window did not map",
+                            )
+                            request({"Action": {"FocusWindow": {"id": practice_window["id"]}}})
+                            request({"Action": {"FullscreenWindow": {"id": practice_window["id"]}}})
+                            source = wait_for(
+                                lambda: named(practice.pid, "练习输入框"),
+                                "practice source was not accessible",
+                            )
+                            wait_for(
+                                lambda: focused(source) and status().get("sourceSupported"),
+                                "real practice source did not focus and connect",
+                            )
+                            subprocess.run(
+                                ["fcitx5-remote", "-s", "keyboard-us"],
+                                env=gtk_environment,
+                                check=True,
+                                timeout=3,
+                            )
+                            typed("Please review this note.")
+                            wait_for(
+                                lambda: text(source) == "Please review this note.",
+                                "practice did not receive actual keyboard input",
+                            )
+                            wait_for(
+                                ready_to_accept,
+                                "practice did not receive a production model candidate",
+                            )
+                            before_write = trace_checkpoint()
+                            key("Tab")
+                            wait_for(
+                                lambda: re.search(r"[\u3400-\u9fff]", text(source)),
+                                "practice Tab did not write the actual model translation",
+                            )
+                            wait_for(
+                                lambda: verified_write(before_write),
+                                "practice acceptance did not verify",
+                            )
+                            assert focused(source)
+                            key("alt+r")
+                            wait_for(
+                                lambda: text(source) == "" and focused(source),
+                                "explicit practice reset did not clear and focus its own field",
+                            )
+                            editing_source = "Please send me the final version."
+                            typed(editing_source)
+                            wait_for(
+                                lambda: text(source) == editing_source and ready_to_accept(),
+                                "second practice source did not become ready",
+                            )
+                            candidate = wait_for(
+                                lambda: named(practice.pid, "TypeLay 译文候选"),
+                                "production candidate lacked its accessible name",
+                            )
+                            area = bounds(candidate)
+                            assert (
+                                area.width > 0 and area.height > 0 and area.x >= 0 and area.y >= 0
+                            )
+                            subprocess.run(
+                                [
+                                    "xdotool",
+                                    "mousemove",
+                                    "--window",
+                                    nested[0],
+                                    str(area.x + area.width // 2),
+                                    str(area.y + area.height // 2),
+                                    "click",
+                                    "1",
+                                ],
+                                check=True,
+                                timeout=3,
+                            )
+                            wait_for(
+                                lambda: focused(candidate) and view("EditingTranslation"),
+                                "actual practice candidate click did not enter editing",
+                            )
+                            draft = "Practice edited candidate."
+                            key("ctrl+a")
+                            typed(draft)
+                            wait_for(
+                                lambda: text(candidate) == draft,
+                                "practice draft did not receive real keyboard input",
+                            )
+                            assert text(source) == editing_source
+                            before_return = trace_checkpoint()
+                            key("Tab")
+                            wait_for(
+                                lambda: focused(source)
+                                and ready_to_accept("EditedTranslationPending"),
+                                "practice first Tab did not return without writing",
+                            )
+                            assert text(source) == editing_source and not new_write_outcomes(
+                                before_return
+                            )
+                            before_write = trace_checkpoint()
+                            key("Tab")
+                            wait_for(
+                                lambda: text(source) == draft and verified_write(before_write),
+                                "practice second Tab did not verify the exact draft",
+                            )
+                            subprocess.run(
+                                ["grim", str(arguments.output / "practice.png")],
+                                check=True,
+                                timeout=3,
+                            )
+                            key("alt+d")
+                            assert practice.wait(timeout=5) == 0
+                            assert status()["setup"]["onboardingComplete"]
+                            assert not status()["setup"]["tutorialVisible"]
+                            evidence.append(
+                                "Shipped GTK practice window: production CPU model and one Tab, actual candidate editing and two-stage Tab, explicit completion; accessibility readback without a tutorial controller"
+                            )
                 finally:
-                    for child in (fixture, daemon):
+                    for child in (practice, fixture, daemon):
                         if child is not None and child.poll() is None:
                             child.terminate()
                             try:

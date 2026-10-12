@@ -236,6 +236,7 @@ static void create(Target *target) {
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(overlay.scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     overlay.text = gtk_text_view_new();
     gtk_widget_set_name(overlay.text, "typelay-candidate");
+    atk_object_set_name(gtk_widget_get_accessible(overlay.text), "TypeLay 译文候选");
     gtk_buildable_set_name(GTK_BUILDABLE(overlay.text), "typelay-candidate");
     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(overlay.text), GTK_WRAP_WORD_CHAR);
     gtk_text_view_set_left_margin(GTK_TEXT_VIEW(overlay.text), 14);

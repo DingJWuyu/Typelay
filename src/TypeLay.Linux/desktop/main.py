@@ -292,6 +292,23 @@ async def desktop(paths, background, lock, tutorial=False):
             if operation == "tutorial":
                 components["settings"].open_tutorial()
                 return True
+            if operation == "finishOnboarding":
+                if (
+                    not isinstance(value, dict)
+                    or set(value) != {"outcome"}
+                    or value["outcome"] not in ("completed", "skipped")
+                    or components["settings"].value is None
+                ):
+                    return False
+                saved = bool(
+                    await host.ask(
+                        "settings",
+                        {**components["settings"].value, "onboardingComplete": True},
+                    )
+                )
+                if saved:
+                    components["settings"].tutorial.dismiss()
+                return saved
             if operation == "quit":
                 GLib.timeout_add(50, lambda: (stopping.set(), False)[1])
                 return True
@@ -404,6 +421,9 @@ def main():
     group.add_argument("--background", action="store_true", help="启动后台会话，不主动打开设置")
     group.add_argument("--settings", action="store_true", help="打开设置")
     group.add_argument("--tutorial", action="store_true", help="打开本地试译与实际输入框练习指南")
+    group.add_argument(
+        "--practice", action="store_true", help="在当前输入法环境打开真实 GTK 实操窗口"
+    )
     group.add_argument("--quit", action="store_true", help="退出当前 Wayland 会话的 TypeLay")
     group.add_argument("--doctor", action="store_true", help="输出不包含输入内容的安装及会话状态")
     group.add_argument(
@@ -447,6 +467,16 @@ def main():
         if not accepted:
             print("TypeLay: 当前输入框或按需快捷键尚未就绪，未启动新的翻译替换。", file=sys.stderr)
         return 0 if accepted else 1
+    if args.practice:
+        if args.command:
+            parser.error("--practice 不接受应用参数")
+        args.command = [
+            "launch",
+            "/usr/bin/python3",
+            "-I",
+            "-B",
+            str(paths.home / "desktop/practice.py"),
+        ]
     if args.command:
         if len(args.command) < 2 or args.command[0] != "launch":
             parser.error("使用 typelay launch APPLICATION [ARGUMENT ...]")
