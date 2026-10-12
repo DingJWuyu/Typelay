@@ -293,7 +293,15 @@ def outer(arguments, script=None):
     if getattr(arguments, "gtk_refusal", False):
         command.append("--gtk-refusal")
     if arguments.desktop:
-        command.extend(["--desktop", "--package", str(arguments.package)])
+        command.extend(
+            [
+                "--desktop",
+                "--package",
+                str(arguments.package),
+                "--desktop-scope",
+                arguments.desktop_scope,
+            ]
+        )
         if arguments.fcitx_cooperative:
             command.extend(["--fcitx-cooperative", str(arguments.fcitx_cooperative)])
         if arguments.editor_bundle:
@@ -354,6 +362,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inside", action="store_true")
     parser.add_argument("--desktop", action="store_true")
+    parser.add_argument("--desktop-scope", choices=("all", "browser", "gtk"), default="all")
     parser.add_argument(
         "--gtk-refusal",
         action="store_true",
@@ -375,6 +384,8 @@ if __name__ == "__main__":
         parser.error("--gtk-refusal and --desktop verify different capability scopes")
     if args.desktop and not args.package:
         parser.error("--desktop requires --package")
+    if args.desktop_scope == "gtk" and not args.fcitx_cooperative:
+        parser.error("--desktop-scope gtk requires --fcitx-cooperative")
     if args.package:
         args.package = args.package.resolve()
     if args.fcitx_cooperative:

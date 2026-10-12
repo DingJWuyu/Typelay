@@ -8,6 +8,28 @@ static GtkWidget *report_window, *report_first, *report_second, *other_window, *
 static const char *report_path;
 static char *last_report;
 
+static gboolean inspect_ime(GtkWidget *widget, TlFcitxStateV1 *state) {
+    GtkIMContext *context = widget ? g_object_get_data(G_OBJECT(widget), TL_FCITX_CONTEXT_V1) : NULL;
+    if (!context || !GTK_IS_IM_CONTEXT(context)) return FALSE;
+    g_object_ref(context);
+    const TlFcitxCapabilityV1 *cap = g_object_get_data(G_OBJECT(context), TL_FCITX_CAPABILITY_V1);
+    gboolean valid = cap && cap->size == sizeof(*cap) && cap->version == TL_FCITX_ABI_V1
+        && cap->inspect && cap->inspect(context, widget, state);
+    g_object_unref(context);
+    return valid;
+}
+static gboolean ime_clear(const TlFcitxStateV1 *state) {
+    return state->flags == (TL_FCITX_KNOWN | TL_FCITX_FOCUSED)
+        && state->server_serial == state->applied_serial;
+}
+static void find_candidate(GtkWidget *widget, gpointer data) {
+    GtkWidget **candidate = data;
+    if (GTK_IS_TEXT_VIEW(widget)
+        && g_strcmp0(gtk_buildable_get_name(GTK_BUILDABLE(widget)), "typelay-candidate") == 0)
+        *candidate = widget;
+    else if (GTK_IS_CONTAINER(widget)) gtk_container_forall(GTK_CONTAINER(widget), find_candidate, data);
+}
+
 static gboolean report_state(gpointer unused) {
     (void)unused;
     GtkWidget *active = other_window && gtk_window_is_active(GTK_WINDOW(other_window)) ? other_window : report_window;
@@ -26,25 +48,49 @@ static gboolean report_state(gpointer unused) {
     json_builder_add_string_value(builder, focus ? gtk_buildable_get_name(GTK_BUILDABLE(focus)) : "");
     if (g_getenv("TYPELAY_FIXTURE_COOPERATIVE")) {
         TlFcitxStateV1 state = { .size = sizeof(state), .version = TL_FCITX_ABI_V1 };
-        GtkIMContext *context = g_object_get_data(G_OBJECT(report_first), TL_FCITX_CONTEXT_V1);
-        gboolean valid = FALSE;
-        if (context && GTK_IS_IM_CONTEXT(context)) {
-            g_object_ref(context);
-            const TlFcitxCapabilityV1 *cap = g_object_get_data(G_OBJECT(context), TL_FCITX_CAPABILITY_V1);
-            if (cap && cap->size == sizeof(*cap) && cap->version == TL_FCITX_ABI_V1 && cap->inspect)
-                valid = cap->inspect(context, report_first, &state);
-            g_object_unref(context);
-        }
+        gboolean valid = inspect_ime(report_first, &state);
         json_builder_set_member_name(builder, "cooperative");
         json_builder_add_boolean_value(builder, valid);
         json_builder_set_member_name(builder, "imeFocused");
         json_builder_add_boolean_value(builder, valid && (state.flags & TL_FCITX_FOCUSED));
         json_builder_set_member_name(builder, "imeClear");
-        json_builder_add_boolean_value(builder, valid && (state.flags & TL_FCITX_KNOWN)
-            && (state.flags & TL_FCITX_FOCUSED) && !(state.flags & (TL_FCITX_PENDING | TL_FCITX_COMPOSING))
-            && state.server_serial == state.applied_serial);
+        json_builder_add_boolean_value(builder, valid && ime_clear(&state));
         json_builder_set_member_name(builder, "imeComposing");
         json_builder_add_boolean_value(builder, valid && (state.flags & TL_FCITX_COMPOSING));
+        state = (TlFcitxStateV1){ .size = sizeof(state), .version = TL_FCITX_ABI_V1 };
+        valid = inspect_ime(focus, &state);
+        json_builder_set_member_name(builder, "focusedImeClear");
+        json_builder_add_boolean_value(builder, valid && ime_clear(&state));
+        json_builder_set_member_name(builder, "fullscreen");
+        json_builder_add_boolean_value(builder,
+            (gdk_window_get_state(gtk_widget_get_window(report_window)) & GDK_WINDOW_STATE_FULLSCREEN) != 0);
+        json_builder_set_member_name(builder, "width");
+        json_builder_add_int_value(builder, gtk_widget_get_allocated_width(report_window));
+        json_builder_set_member_name(builder, "height");
+        json_builder_add_int_value(builder, gtk_widget_get_allocated_height(report_window));
+        json_builder_set_member_name(builder, "scale");
+        json_builder_add_int_value(builder, gtk_widget_get_scale_factor(report_window));
+        GtkWidget *candidate = NULL;
+        gtk_container_forall(GTK_CONTAINER(report_window), find_candidate, &candidate);
+        gint x, y;
+        json_builder_set_member_name(builder, "candidate");
+        if (candidate && gtk_widget_get_mapped(candidate)
+            && gtk_widget_translate_coordinates(candidate, report_window, 0, 0, &x, &y)) {
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "x"); json_builder_add_int_value(builder, x);
+            json_builder_set_member_name(builder, "y"); json_builder_add_int_value(builder, y);
+            json_builder_set_member_name(builder, "width");
+            json_builder_add_int_value(builder, gtk_widget_get_allocated_width(candidate));
+            json_builder_set_member_name(builder, "height");
+            json_builder_add_int_value(builder, gtk_widget_get_allocated_height(candidate));
+            GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(candidate));
+            GtkTextIter first, last;
+            gtk_text_buffer_get_bounds(buffer, &first, &last);
+            char *text = gtk_text_buffer_get_text(buffer, &first, &last, TRUE);
+            json_builder_set_member_name(builder, "text"); json_builder_add_string_value(builder, text);
+            g_free(text);
+            json_builder_end_object(builder);
+        } else json_builder_add_null_value(builder);
     }
     json_builder_end_object(builder);
     JsonNode *node = json_builder_get_root(builder);
@@ -95,6 +141,7 @@ int main(int argc, char **argv) {
     gtk_box_pack_start(GTK_BOX(box), view, TRUE, TRUE, 0);
     g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
     gtk_widget_show_all(window);
+    if (g_getenv("TYPELAY_FIXTURE_FULLSCREEN")) gtk_window_fullscreen(GTK_WINDOW(window));
     gtk_widget_grab_focus(first);
     gtk_editable_set_position(GTK_EDITABLE(first), -1);
     if (g_getenv("TYPELAY_FIXTURE_TWO_WINDOWS")) {

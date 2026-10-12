@@ -87,10 +87,10 @@ jobs:
       image: archlinux:base-devel
       # Electron's font service exceeds Docker's default 64 MiB /dev/shm.
       options: --shm-size=1g
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Install target desktop build dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -145,7 +145,7 @@ jobs:
         run: python tests/linux/fcitx_probe.py
       - name: Verify isolated Fcitx and GTK cooperative transactions
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: python tests/linux/fcitx_cooperative/run.py
+        run: python tests/linux/fcitx_cooperative/run.py --core-version 5.1.22
       - name: Verify tray controls without downloading models
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
@@ -164,7 +164,15 @@ jobs:
           export XDG_CONFIG_HOME="$PWD/artifacts/linux/desktop-config"
           export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
-          python tests/linux/native_e2e.py --desktop --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/desktop --editor-bundle artifacts/editor-probe/fixture.js --fcitx-cooperative artifacts/linux/fcitx-cooperative
+          python tests/linux/native_e2e.py --desktop --desktop-scope browser --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/desktop --editor-bundle artifacts/editor-probe/fixture.js
+      - name: Exercise cooperative GTK input with the real local model
+        if: ${{ !cancelled() && steps.models.outcome == 'success' }}
+        run: |
+          export DISPLAY=:99
+          export XDG_CONFIG_HOME="$PWD/artifacts/linux/gtk-desktop-config"
+          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
+          export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
+          python tests/linux/native_e2e.py --desktop --desktop-scope gtk --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk-desktop --fcitx-cooperative artifacts/linux/fcitx-cooperative-5.1.22
       - name: Verify installed VS Code command with the real local model
         if: ${{ !cancelled() && steps.models.outcome == 'success' }}
         run: |
@@ -179,12 +187,14 @@ jobs:
           path: |
             artifacts/linux/nested/
             artifacts/linux/desktop/
+            artifacts/linux/gtk-desktop/
             artifacts/linux/firefox-native/
             artifacts/linux/vscode/
             artifacts/linux/vscode-model/
             artifacts/linux/editor-probe/
             artifacts/linux/fcitx-probe/
-            artifacts/linux/fcitx-cooperative/
+            artifacts/linux/fcitx-cooperative-5.1.22/
+            !artifacts/linux/fcitx-cooperative-5.1.22/core-build/**
             artifacts/linux/desktop-data/typelay/components/*/self-check.json
             artifacts/linux/native/libtypelay-gtk3.so
             artifacts/linux/native/typelay-supervise

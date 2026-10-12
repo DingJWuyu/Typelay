@@ -163,6 +163,12 @@ static gboolean commands(gpointer unused) {
             request = number;
             if (!strcmp(name, "capture")) result = capture();
             else if (!strcmp(name, "accept")) result = accept();
+            else if (!strcmp(name, "deferred-switch")) {
+                GtkIMContext *context = bound_context();
+                Select action = context ? (Select)g_object_get_data(G_OBJECT(context), "typelay.fcitx.deferred-switch-fixture.v1") : NULL;
+                result = action && action(entry) ? "refused-old-pinyin-transaction" : "missing-old-transaction-gate";
+                if (context) g_object_unref(context);
+            }
             else if (!strcmp(name, "candidate")) {
                 if (!select_candidate(entry)) g_error("real candidate context unavailable");
                 /* Same DBus connection: select is enqueued before the synchronous

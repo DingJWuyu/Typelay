@@ -36,13 +36,18 @@ def drive_preview_ui(port, process, output, source):
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(0.1)
+        session = browser.new_browser_cdp_session()
         deadline = time.monotonic() + 45
         while True:
+            # Sync Playwright dispatches page/navigation events during API calls,
+            # not Python sleep or cached browser.contexts/page.url reads.
+            targets = session.send("Target.getTargets")
             pages = [page for context in browser.contexts for page in context.pages]
             page = next((item for item in pages if item.url.startswith("vscode-file:")), None)
             if page is not None:
                 break
             if process.poll() is not None or time.monotonic() >= deadline:
+                (output / "cdp-targets.json").write_text(json.dumps(targets), encoding="utf-8")
                 raise RuntimeError("Code did not expose its workbench page")
             time.sleep(0.1)
 
