@@ -31,6 +31,43 @@ def wait_for(predicate, description, timeout=15):
     raise AssertionError(description)
 
 
+def prepare_tab(stack):
+    """Preconnect to the existing XTest server; deliver one real key pair later."""
+    x11 = ctypes.CDLL("libX11.so.6")
+    xtst = ctypes.CDLL("libXtst.so.6")
+    display_type = ctypes.c_void_p
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = display_type
+    x11.XCloseDisplay.argtypes = [display_type]
+    x11.XCloseDisplay.restype = ctypes.c_int
+    x11.XStringToKeysym.argtypes = [ctypes.c_char_p]
+    x11.XStringToKeysym.restype = ctypes.c_ulong
+    x11.XKeysymToKeycode.argtypes = [display_type, ctypes.c_ulong]
+    x11.XKeysymToKeycode.restype = ctypes.c_ubyte
+    x11.XSync.argtypes = [display_type, ctypes.c_int]
+    x11.XSync.restype = ctypes.c_int
+    xtst.XTestQueryExtension.argtypes = [display_type] + [ctypes.POINTER(ctypes.c_int)] * 4
+    xtst.XTestQueryExtension.restype = ctypes.c_int
+    xtst.XTestFakeKeyEvent.argtypes = [display_type, ctypes.c_uint, ctypes.c_int, ctypes.c_ulong]
+    xtst.XTestFakeKeyEvent.restype = ctypes.c_int
+    display = x11.XOpenDisplay(None)
+    assert display, "Cannot open existing XTest DISPLAY"
+    stack.callback(x11.XCloseDisplay, display)
+    extension = [ctypes.c_int() for _ in range(4)]
+    assert xtst.XTestQueryExtension(display, *(ctypes.byref(value) for value in extension))
+    keycode = x11.XKeysymToKeycode(display, x11.XStringToKeysym(b"Tab"))
+    assert keycode, "XTest DISPLAY has no Tab keycode"
+
+    def send_tab():
+        pressed = xtst.XTestFakeKeyEvent(display, keycode, 1, 0)
+        released = xtst.XTestFakeKeyEvent(display, keycode, 0, 0)
+        # Flush and wait only for X server processing, not Wayland delivery.
+        x11.XSync(display, 0)
+        assert pressed and released, "XTest refused the Tab key pair"
+
+    return send_tab
+
+
 def run(arguments):
     sys.stdout = sys.stderr = (arguments.output / "inside.log").open("w", buffering=1)
     os.environ["DISPLAY"] = os.environ["TYPELAY_TEST_DISPLAY"]
@@ -143,7 +180,9 @@ def run(arguments):
         except Exception:
             pass  # Observability must not replace the original browser failure.
 
+    resources = ExitStack()
     try:
+        send_tab = prepare_tab(resources) if arguments.desktop_scope in ("all", "browser") else None
         start()
         # A duplicate background request must use the existing real session.
         subprocess.run([str(package / "typelay"), "--background"], env=environment, check=True)
@@ -441,9 +480,6 @@ def run(arguments):
                     subprocess.run(
                         ["grim", str(arguments.output / "firefox-rich.png")], check=True, timeout=3
                     )
-                    # Use this run's measured key call, including its settling
-                    # time, as a test precondition, not a hard real-time guarantee.
-                    key_budget_ms = firefox_tab["afterMs"] - firefox_tab["beforeMs"]
 
                     def rich_ready_to_accept():
                         started = now_ms()
@@ -451,7 +487,7 @@ def run(arguments):
                         status_elapsed_ms = now_ms() - started
                         if not candidate:
                             return None
-                        if candidate["acceptanceRemainingMs"] - status_elapsed_ms <= key_budget_ms:
+                        if candidate["acceptanceRemainingMs"] - status_elapsed_ms <= 0:
                             return None
                         return {**candidate, "statusElapsedMs": status_elapsed_ms}
 
@@ -461,10 +497,9 @@ def run(arguments):
                     rich_tab = {
                         "beforeMs": now_ms(),
                         "reportedRemainingMs": ready.get("acceptanceRemainingMs"),
-                        "keyBudgetMs": key_budget_ms,
                         "statusElapsedMs": ready["statusElapsedMs"],
                     }
-                    key("Tab")
+                    send_tab()
                     rich_tab["afterMs"] = now_ms()
                     (arguments.output / "rich-tab.json").write_text(json.dumps(rich_tab))
 
@@ -1326,6 +1361,7 @@ def run(arguments):
             pass  # Diagnostic failures must not replace the original assertion.
         raise
     finally:
+        resources.close()
         for child in (process,):
             if child is not None and child.poll() is None:
                 child.terminate()
