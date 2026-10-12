@@ -13,9 +13,9 @@ jobs:
     steps:
       - name: Collect public desktop build dependencies
         run: |
-          pacman -Syu --noconfirm cmake ninja pkgconf gtk3 json-glib python python-gobject gtk-layer-shell niri mesa grim yad qt6-base qt6-wayland qt6-tools xorg-server-xvfb xdotool dbus
+          pacman -Syu --noconfirm cmake ninja pkgconf gtk3 json-glib python python-gobject gtk-layer-shell niri mesa grim yad qt6-base qt6-wayland qt6-tools xorg-server-xvfb xdotool dbus xdg-desktop-portal-gtk
           mkdir -p output
-          tar -C / -I 'zstd -T0 -6' --exclude=usr/share/doc --exclude=usr/share/man --exclude=usr/share/info --exclude=usr/share/locale -cf output/arch-desktop.tar.zst usr etc/fonts etc/dbus-1
+          tar -C / -I 'zstd -T0 -6' --exclude=usr/share/doc --exclude=usr/share/man --exclude=usr/share/info --exclude=usr/share/locale -cf output/arch-desktop.tar.zst usr etc/fonts
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: typelay-local-arch
