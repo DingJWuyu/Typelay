@@ -1,6 +1,7 @@
 """Disposable real Chromium with Playwright's default focus emulation disabled."""
 
 import os
+import signal
 import subprocess
 import time
 from contextlib import contextmanager
@@ -24,7 +25,9 @@ def chromium_context(playwright, executable, profile, environment, arguments=())
     if os.getuid() == 0:  # Disposable root CI container, never a user profile.
         command.append("--no-sandbox")
     with (profile / "chromium.log").open("w+") as log:
-        process = subprocess.Popen(command, env=environment, stdout=log, stderr=log)
+        process = subprocess.Popen(
+            command, env=environment, stdout=log, stderr=log, start_new_session=True
+        )
         browser = None
         try:
             port_file = profile / "DevToolsActivePort"
@@ -44,11 +47,19 @@ def chromium_context(playwright, executable, profile, environment, arguments=())
         finally:
             try:
                 if browser:
-                    browser.close()
+                    try:
+                        # Closing a CDP attachment only disconnects Playwright.
+                        # Ask Chromium to flush/close its owned profile before removal.
+                        browser.new_browser_cdp_session().send("Browser.close")
+                    finally:
+                        browser.close()
             finally:
-                process.terminate()
                 try:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait()

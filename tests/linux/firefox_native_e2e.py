@@ -275,20 +275,14 @@ class FirefoxNativeContract(unittest.TestCase):
             self.assertEqual(self.source_value(web), "Second document")
 
     def capture(self, native, connection, description, web):
-        before = time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000
-        snapshot = native.request(
-            connection,
-            "capture",
-            {
-                "target": description["target"],
-                "authority": description["authority"],
-            },
-        )
-        after = time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000
-        if snapshot is not None:
-            return snapshot
-        # This is a diagnostic observation after failure, never a capture retry.
-        later = native.request(connection, "describe", {"target": description["target"]})
+        # Match production observation polling: each read gets a NEW metadata
+        # approval for this exact target. Never replay expired authority or a write.
+        target = description["target"]
+        deadline = time.monotonic() + 3
+        previous_timeout = connection.gettimeout()
+        rejected = 0
+        first_failure = None
+        latest = None
 
         def summary(value):
             if value is None:
@@ -303,6 +297,65 @@ class FirefoxNativeContract(unittest.TestCase):
                 },
             }
 
+        try:
+            while time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                connection.settimeout(remaining)
+                started = time.monotonic()
+                latest = native.request(connection, "describe", {"target": target})
+                describe_ms = round((time.monotonic() - started) * 1000, 2)
+                if latest is None or not latest["focused"]:
+                    rejected += 1
+                    print(
+                        f"Firefox observation: describeMs={describe_ms} not-ready rejected={rejected}",
+                        flush=True,
+                    )
+                    continue
+                self.assertEqual(latest["target"], target)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                connection.settimeout(remaining)
+                before = time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000
+                snapshot = native.request(
+                    connection,
+                    "capture",
+                    {
+                        "target": target,
+                        "authority": latest["authority"],
+                    },
+                )
+                after = time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000
+                if snapshot is None:
+                    rejected += 1
+                    if first_failure is None:
+                        first_failure = {
+                            "beforeMs": before,
+                            "afterMs": after,
+                            "description": summary(latest),
+                        }
+                print(
+                    "Firefox observation: "
+                    + json.dumps(
+                        {
+                            "describeMs": describe_ms,
+                            "captureMs": after - before,
+                            "ready": snapshot is not None,
+                            "rejected": rejected,
+                        }
+                    ),
+                    flush=True,
+                )
+                if snapshot is not None:
+                    self.assertEqual(snapshot["target"], target)
+                    return snapshot
+        except TimeoutError:
+            pass  # The bounded observation remains failed below; never turn timeout into success.
+        finally:
+            connection.settimeout(previous_timeout)
+
         page = web(
             "POST",
             "/execute/sync",
@@ -313,18 +366,12 @@ class FirefoxNativeContract(unittest.TestCase):
             },
         )
         self.fail(
-            "Firefox capture declined: "
+            "Firefox capture did not become ready within 3 seconds: "
             + json.dumps(
                 {
-                    "beforeMs": before,
-                    "afterMs": after,
-                    "description": summary(description),
-                    "following": summary(later),
-                    "sameMetadata": bool(
-                        later
-                        and later["authority"]["metadataKey"]
-                        == description["authority"]["metadataKey"]
-                    ),
+                    "rejected": rejected,
+                    "firstFailure": first_failure,
+                    "lastDescription": summary(latest),
                     "page": page,
                 },
                 separators=(",", ":"),
