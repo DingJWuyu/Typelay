@@ -31,6 +31,12 @@ def main():
     output = arguments.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     log = output / "extension-host.log"
+    storage = {
+        str(directory): dict(zip(("total", "used", "free"), shutil.disk_usage(directory)))
+        for directory in (Path("/dev/shm"), Path(tempfile.gettempdir()))
+        if directory.exists()
+    }
+    (output / "storage.json").write_text(json.dumps(storage), encoding="utf-8")
     with tempfile.TemporaryDirectory(prefix="typelay-vscode-") as temporary:
         profile = Path(temporary)
         result_file = profile / "test-result.json"

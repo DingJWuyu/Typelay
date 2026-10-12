@@ -1,0 +1,105 @@
+# Development-only TypeLay transaction probe, changed 2026-10-12.
+# Upstream files retain their SPDX copyright and LGPL-2.1-or-later terms.
+--- a/src/frontend/dbusfrontend/dbusfrontend.cpp
++++ b/src/frontend/dbusfrontend/dbusfrontend.cpp
+@@ -1,3 +1,4 @@
++/* TypeLay development-only transaction cooperation changes, 2026-10-12. */
+ /*
+  * SPDX-FileCopyrightText: 2016-2016 CSSlayer <wengxt@gmail.com>
+  *
+@@ -6,6 +7,8 @@
+  */
+ 
+ #include "dbusfrontend.h"
++#include "typelay-pinyin-public.h"
++#include "fcitx/inputmethodengine.h"
+ #include <cassert>
+ #include <cstdint>
+ #include <memory>
+@@ -173,11 +176,13 @@
+     const dbus::ObjectPath &path() const { return path_; }
+ 
+     void updateIM(const InputMethodEntry *entry) {
++        ++typelayOutputSerial_;
+         currentIMTo(name_, entry->name(), entry->uniqueName(),
+                     entry->languageCode());
+     }
+ 
+     void commitStringImpl(const std::string &text) override {
++        ++typelayOutputSerial_;
+         if (blocked_) {
+             blockedEvents_.emplace_back(BATCHED_COMMIT_STRING, text);
+         } else {
+@@ -186,6 +191,7 @@
+     }
+ 
+     void updatePreeditImpl() override {
++        ++typelayOutputSerial_;
+         auto preedit =
+             im_->instance()->outputFilter(this, inputPanel().clientPreedit());
+         std::vector<dbus::DBusStruct<std::string, int>> strs =
+@@ -202,6 +208,7 @@
+     }
+ 
+     void deleteSurroundingTextImpl(int offset, unsigned int size) override {
++        ++typelayOutputSerial_;
+         if (blocked_) {
+             blockedEvents_.emplace_back(
+                 BATCHED_DELETE_SURROUNDING,
+@@ -275,6 +282,7 @@
+     }
+ 
+     void forwardKeyImpl(const ForwardKeyEvent &key) override {
++        ++typelayOutputSerial_;
+         if (blocked_) {
+             blockedEvents_.emplace_back(
+                 BATCHED_FORWARD_KEY,
+@@ -294,6 +302,23 @@
+     if (currentMessage()->sender() != name_)                                   \
+     return
+ 
++    // Feasibility RPC, not a universal IM-idle contract. Caller must compare
++    // serial against outputs it has actually applied and bind field lifecycle.
++    std::tuple<uint64_t, bool, bool, bool> typelayProbeStateV1() {
++        CHECK_SENDER_OR_RETURN {};
++        auto *engine = im_->instance()->inputMethodEngine(this);
++        if (!engine || !hasFocus()) return {typelayOutputSerial_, false, true, true};
++        try {
++            bool pending = engine->call<IPinyinEngine::typelayHasPendingCommitV1>(this);
++            bool composing = im_->instance()->isComposing(this)
++                || !inputPanel().clientPreedit().empty()
++                || !inputPanel().preedit().empty() || bool(inputPanel().candidateList());
++            return {typelayOutputSerial_, true, pending, composing};
++        } catch (const std::exception &) {
++            return {typelayOutputSerial_, false, true, true};
++        }
++    }
++
+     void focusInDBus() {
+         CHECK_SENDER_OR_RETURN;
+         focusIn();
+@@ -467,9 +492,10 @@
+         blockedEvents_.clear();
+     }
+ 
+-    void sendFocusOut() { notifyFocusOutTo(name_); }
++    void sendFocusOut() { ++typelayOutputSerial_; notifyFocusOutTo(name_); }
+ 
+ private:
++    FCITX_OBJECT_VTABLE_METHOD(typelayProbeStateV1, "TypeLayProbeStateV1", "", "tbbb");
+     FCITX_OBJECT_VTABLE_METHOD(focusInDBus, "FocusIn", "", "");
+     FCITX_OBJECT_VTABLE_METHOD(focusOutDBus, "FocusOut", "", "");
+     FCITX_OBJECT_VTABLE_METHOD(resetDBus, "Reset", "", "");
+@@ -529,6 +555,7 @@
+     std::string name_;
+     CapabilityFlags rawCapabilityFlags_;
+     std::optional<uint64_t> supportedCapability_;
++    uint64_t typelayOutputSerial_ = 0;
+     bool blocked_ = false;
+     std::vector<DBusBlockedEvent> blockedEvents_;
+     std::unique_ptr<HandlerTableEntry<EventHandler>> vkVisibilityChanged_;
+@@ -653,3 +680,4 @@
+ } // namespace fcitx
+ 
+ FCITX_ADDON_FACTORY_V2(dbusfrontend, fcitx::DBusFrontendModuleFactory);
++
