@@ -76,7 +76,7 @@ def paths(first, existing, defaults=()):
     )
 
 
-def environment(*, daemon=False):
+def environment(*, daemon=False, gtk4=False):
     env = os.environ.copy()
     env["LD_LIBRARY_PATH"] = paths(
         [ROOT / "lib", *([ROOT / "core/lib"] if daemon else [])], env.get("LD_LIBRARY_PATH")
@@ -104,11 +104,13 @@ def environment(*, daemon=False):
     else:
         env["GTK_IM_MODULE"] = "fcitx"
         env["TYPELAY_FCITX_COOPERATIVE"] = "1"
+    if gtk4:
+        env["GTK_PATH"] = paths([ROOT / "lib/gtk-4.0"], env.get("GTK_PATH"))
     env.pop("TYPELAY_FCITX_PROBE", None)
     return env
 
 
-def verify():
+def verify(*, gtk4=False):
     manifest = json.loads((ROOT / "manifest.json").read_text())
     if manifest.get("schemaVersion") != 1:
         raise RuntimeError("Unsupported bundle manifest")
@@ -151,7 +153,15 @@ def verify():
         if manifest["versions"].get(key) != "5.1.22":
             raise RuntimeError("This launcher requires the complete Fcitx 5.1.22 bundle")
     env = environment(daemon=True)
-    binaries = [ROOT / "core/bin/fcitx5", *sorted((ROOT / "lib").glob("*.so*"))]
+    binaries = [
+        ROOT / "core/bin/fcitx5",
+        *sorted(p for p in (ROOT / "lib").glob("*.so*") if p.name != "libtypelay-gtk4.so"),
+    ]
+    if gtk4:
+        binaries += [
+            ROOT / "lib/libtypelay-gtk4.so",
+            ROOT / "lib/gtk-4.0/4.0.0/immodules/libim-fcitx5.so",
+        ]
     binaries.extend(sorted((ROOT / "core/lib").glob("libIME*.so.0")))
     binaries.extend(sorted((ROOT / "core/lib/fcitx5").glob("*.so")))
     for binary in binaries:
@@ -173,6 +183,15 @@ def verify():
                         raise RuntimeError(
                             f"System Fcitx/LibIME library mixed into private bundle: {name}"
                         )
+        if gtk4:
+            for name in ("libtypelay-gtk4.so", "libFcitx5GClient.so"):
+                for line in output.splitlines():
+                    if name in line and "=>" in line:
+                        path = Path(line.split("=>", 1)[1].strip().split(" (", 1)[0])
+                        if path.resolve().parent != (ROOT / "lib").resolve():
+                            raise RuntimeError(
+                                f"System client library mixed into GTK4 provider: {name}"
+                            )
     if run([str(ROOT / "core/bin/fcitx5"), "--version"], env=env).strip() != "5.1.22":
         raise RuntimeError("Private daemon version mismatch")
     return manifest
@@ -215,7 +234,10 @@ def main():
     args = parser.parse_args()
     if args.action != "launch" and args.command:
         parser.error("Only launch accepts an application command")
-    manifest = verify()
+    gtk4 = args.action == "launch" and args.command[:1] == ["--gtk4"]
+    if gtk4:
+        args.command.pop(0)
+    manifest = verify(gtk4=gtk4)
     print("Private components:", json.dumps(SOURCE_VERSIONS, sort_keys=True), flush=True)
     print("Private installed libraries:", json.dumps(PRIVATE_VERSIONS, sort_keys=True), flush=True)
     print(
@@ -272,8 +294,9 @@ def main():
         raise RuntimeError(
             "The active Fcitx owner is not this private bundle; start its daemon first"
         )
-    env = environment()
-    env["GTK_IM_MODULE_FILE"] = module_cache(env)
+    env = environment(gtk4=gtk4)
+    if not gtk4:
+        env["GTK_IM_MODULE_FILE"] = module_cache(env)
     os.execvpe(args.command[0], args.command, env)
 
 

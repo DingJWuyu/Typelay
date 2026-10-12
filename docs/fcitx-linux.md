@@ -1,6 +1,6 @@
 # Fcitx 合作组件预览
 
-这套可选组件让 TypeLay 与实际 Fcitx 输入事务协作。当前范围是 GTK3 标准 GtkEntry 和原生 GtkEntryBuffer；GTK4、Qt、GtkTextView、通用 Electron 尚未开放。普通 TypeLay 安装不会安装或启用这些组件。
+这套可选组件让 TypeLay 与实际 Fcitx 输入事务协作。稳定范围是 GTK3 标准 GtkEntry 和原生 GtkEntryBuffer。新增的 GTK4 标准 GtkEntry 实验路径须单独以 --gtk4 启动并通过实际加载/事务验收；Qt、GtkTextView、通用 Electron 尚未开放。普通 TypeLay 安装不会安装或启用这些组件。
 
 当前固定 Core 5.1.22、Chinese Addons 5.1.14、GTK IM 5.1.7、完整私有 LibIME 1.1.16。对应组件已在隔离环境完整构建，实际库、模型路径与同版官方包均有校验。搬迁后的私有包已通过默认组件会话、配置/前台重启、原 session bus，以及嵌套 niri 的实际 CPU 模型、自动预览、一次 Tab 写回、编辑后两阶段 Tab 与拼音组合保护。实际按键由隔离桌面自动化送入，不能代替用户 CachyOS 桌面的物理输入验收。
 
@@ -66,6 +66,8 @@ python /完整路径/TypeLay-Fcitx-cooperative/fcitx-cooperative.py launch ~/.lo
 ```sh
 python /完整路径/TypeLay-Fcitx-cooperative/fcitx-cooperative.py launch ~/.local/bin/typelay launch 应用命令
 ```
+
+GTK4 实验应用使用 `python fcitx-cooperative.py launch --gtk4 应用命令`。只有该入口校验系统 GTK4 动态依赖并设置私有 GTK_PATH；普通 GTK3/daemon 路径不因系统未安装 GTK4 而失败。GTK4 原 Fcitx 模块显式链接包内 libtypelay-gtk4.so，经实际 set_client_widget 绑定后才提供能力；库加载本身没有字段权限。尚未通过本轮真实验收前，不把新增路径列为稳定支持。
 
 启动器只为这些子进程设置私有 GTK IM 模块和合作开关，不替换 session bus。它检查当前服务端确实来自同一私有包。先用非敏感合成文本验证普通输入、拼音候选、取消、Backspace、切换输入法与 TypeLay Tab；未知能力时仍按普通应用行为输入，不应出现读取或写回。
 

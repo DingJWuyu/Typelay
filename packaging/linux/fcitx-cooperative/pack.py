@@ -31,7 +31,7 @@ PRIVATE_VERSIONS = {
     **{f"Fcitx5{name}": CORE_VERSION for name in ("Core", "Config", "Utils")},
     **{f"LibIME{name}": "1.1.16" for name in ("Core", "Pinyin", "Table")},
 }
-LIBRARIES = ("libFcitx5GClient.so", "im-fcitx5.so")
+LIBRARIES = ("libFcitx5GClient.so", "im-fcitx5.so", "libtypelay-gtk4.so")
 CHINESE_ADDONS = (
     "pinyin",
     "table",
@@ -57,6 +57,11 @@ BUILD_INPUTS = (
     "tests/linux/fcitx_cooperative/fixture.c",
     *(f"tests/linux/fcitx_cooperative/{project}.patch" for project in PATCHED_UPSTREAM),
     "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-v1.h",
+    *(
+        str(p.relative_to(ROOT))
+        for p in sorted((ROOT / "src/TypeLay.Linux/native/gtk4").iterdir())
+        if p.suffix in {".c", ".h"} or p.name == "CMakeLists.txt"
+    ),
 )
 SOURCE_CACHE_DIRS = {
     ".git",
@@ -250,7 +255,12 @@ def copy_core(build, bundle):
 def copy_libraries(build, bundle):
     source_root = build / "lib"
     destination_root = bundle / "lib"
-    destination_root.mkdir()
+    gtk4 = Path("gtk-4.0/4.0.0/immodules/libim-fcitx5.so")
+    if not (source_root / gtk4).is_file():
+        raise ValueError("Missing cooperating GTK4 module")
+    (destination_root / gtk4).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source_root / gtk4, destination_root / gtk4)
+    destination_root.mkdir(exist_ok=True)
     for name in LIBRARIES:
         if not (source_root / name).is_file():
             raise ValueError(f"Missing patched runtime library: {name}")
@@ -420,6 +430,7 @@ def manifest(bundle, versions, pins, inputs):
         "systemDependencies": {
             "packages": packages,
             "gtk3": versions.get("gtk3"),
+            "gtk4": versions.get("gtk4"),
             "requiredUserPackageVersions": {"fcitx5-chinese-addons": "5.1.14", "libime": "1.1.16"},
             "chineseMetadataDirectory": "core/share/fcitx5",
             "libimeDataDirectory": "core/share/libime",

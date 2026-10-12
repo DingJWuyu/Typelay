@@ -56,7 +56,7 @@ def build(output, fixture=False):
     )
     run("cmake", "--build", native)
     (output / "native").mkdir()
-    for name in ("libtypelay-gtk3.so", "typelay-supervise"):
+    for name in ("libtypelay-gtk3.so", "libtypelay-gtk4.so", "typelay-supervise"):
         shutil.copy2(native / name, output / "native" / name)
     shutil.copytree(
         ROOT / "src/TypeLay.Linux/desktop",

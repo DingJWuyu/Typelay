@@ -10,7 +10,10 @@ def anchor_geometry(native: dict, space: str = "gtk-toplevel") -> dict | None:
     compositor/output rectangles or used to position a separate desktop window.
     """
     try:
-        if space not in ("gtk-toplevel", "browser-viewport") or native["space"] != space:
+        if (
+            space not in ("gtk-toplevel", "gtk4-toplevel", "browser-viewport")
+            or native["space"] != space
+        ):
             return None
         scale = native["scale"]
         width, height = native["frameWidth"], native["frameHeight"]
@@ -20,7 +23,7 @@ def anchor_geometry(native: dict, space: str = "gtk-toplevel") -> dict | None:
             type(v) in (int, float) and math.isfinite(v) for v in (scale, width, height, x, y, w, h)
         ):
             return None
-        minimum_scale = 1 if space == "gtk-toplevel" else 0.1
+        minimum_scale = 0.1 if space == "browser-viewport" else 1
         if not minimum_scale <= scale <= 8 or width <= 0 or height <= 0:
             return None
         if x < 0 or y < 0 or w <= 0 or h <= 0 or x + w > width or y + h > height:

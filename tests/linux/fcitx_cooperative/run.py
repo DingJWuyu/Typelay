@@ -34,6 +34,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
+GTK4_NATIVE = ROOT / "src/TypeLay.Linux/native/gtk4"
 ABI = ROOT / "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-v1.h"
 PINS = {
     "fcitx5": (
@@ -118,7 +119,15 @@ def build_inputs():
     return {
         "files": {
             str(file.relative_to(ROOT)): hashlib.sha256(file.read_bytes()).hexdigest()
-            for file in [*files, ABI]
+            for file in [
+                *files,
+                ABI,
+                *sorted(
+                    path
+                    for path in GTK4_NATIVE.iterdir()
+                    if path.suffix in {".c", ".h"} or path.name == "CMakeLists.txt"
+                ),
+            ]
         }
     }
 
@@ -358,6 +367,69 @@ def build(out: Path, core_version: str):
             *flags("gtk+-3.0", "gio-unix-2.0", "xkbcommon", "x11"),
         ]
     )
+    # Build the independent GTK4 adapter from this exact checkout. The provider
+    # binds the actual GtkText context; loading the library grants no authority.
+    run(
+        [
+            "cmake",
+            "-S",
+            GTK4_NATIVE,
+            "-B",
+            out / "gtk4-native-build",
+            "-G",
+            "Ninja",
+            "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+            *launchers,
+        ]
+    )
+    subprocess.run(
+        ["cmake", "--build", out / "gtk4-native-build", "--parallel", "2"], check=True, timeout=900
+    )
+    shutil.copyfile(out / "gtk4-native-build/libtypelay-gtk4.so", lib / "libtypelay-gtk4.so")
+    shutil.copyfile(GTK4_NATIVE / "typelay-gtk4.h", gtk / "typelay-gtk4.h")
+    gtk4_modules = lib / "gtk-4.0/4.0.0/immodules"
+    gtk4_modules.mkdir(parents=True, exist_ok=True)
+    run(
+        [
+            "cc",
+            "-O0",
+            "-g",
+            "-fPIC",
+            "-c",
+            *incgtk,
+            gtk / "gtk4/fcitxim.c",
+            "-o",
+            lib / "fcitxim-gtk4.o",
+            *flags("gtk4"),
+        ]
+    )
+    run(
+        [
+            *common,
+            *incgtk,
+            "-include",
+            "cstdlib",
+            lib / "fcitxim-gtk4.o",
+            *[
+                gtk / "gtk4" / name
+                for name in (
+                    "fcitximcontext.cpp",
+                    "fcitximcontext5.cpp",
+                    "fcitxtheme.cpp",
+                    "utils.cpp",
+                    "inputwindow.cpp",
+                    "gtk4inputwindow.cpp",
+                )
+            ],
+            "-L" + str(lib),
+            "-lFcitx5GClient",
+            "-ltypelay-gtk4",
+            "-Wl,-rpath,$ORIGIN/../../..",
+            "-o",
+            gtk4_modules / "libim-fcitx5.so",
+            *flags("gtk4", "gio-unix-2.0", "xkbcommon", "x11"),
+        ]
+    )
     query = shutil.which("gtk-query-immodules-3.0") or "/usr/lib/gtk-3.0/gtk-query-immodules-3.0"
     env = os.environ | {"LD_LIBRARY_PATH": f"{lib}:{prefix / 'lib'}"}
     (out / "immodules.cache").write_text(run([query, lib / "im-fcitx5.so"], env=env) + "\n")
@@ -375,7 +447,7 @@ def build(out: Path, core_version: str):
             *flags("gtk+-3.0", "gmodule-2.0"),
         ]
     )
-    libraries = [out / "fcitx5", *sorted(lib.glob("*.so"))]
+    libraries = [out / "fcitx5", *sorted(lib.glob("*.so")), gtk4_modules / "libim-fcitx5.so"]
     libraries += [
         prefix / "lib/fcitx5" / f"lib{name}.so"
         for name in (
@@ -498,6 +570,7 @@ def session(out: Path, core_version: str):
                     ),
                     "dynamic_libraries": run(["ldd", out / "fcitx5"], env=env),
                     "gtk3": run(["pkg-config", "--modversion", "gtk+-3.0"]),
+                    "gtk4": run(["pkg-config", "--modversion", "gtk4"]),
                     "packages": run(
                         [
                             "pacman",

@@ -362,7 +362,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inside", action="store_true")
     parser.add_argument("--desktop", action="store_true")
-    parser.add_argument("--desktop-scope", choices=("all", "browser", "gtk"), default="all")
+    parser.add_argument("--desktop-scope", choices=("all", "browser", "gtk", "gtk4"), default="all")
     parser.add_argument(
         "--gtk-refusal",
         action="store_true",
@@ -384,8 +384,8 @@ if __name__ == "__main__":
         parser.error("--gtk-refusal and --desktop verify different capability scopes")
     if args.desktop and not args.package:
         parser.error("--desktop requires --package")
-    if args.desktop_scope == "gtk" and not args.fcitx_cooperative:
-        parser.error("--desktop-scope gtk requires --fcitx-cooperative")
+    if args.desktop_scope in ("gtk", "gtk4") and not args.fcitx_cooperative:
+        parser.error("GTK desktop scopes require --fcitx-cooperative")
     if args.package:
         args.package = args.package.resolve()
     if args.fcitx_cooperative:

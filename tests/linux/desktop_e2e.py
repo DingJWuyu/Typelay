@@ -148,7 +148,7 @@ def run(arguments):
         # A duplicate background request must use the existing real session.
         subprocess.run([str(package / "typelay"), "--background"], env=environment, check=True)
         assert process.poll() is None
-        if arguments.desktop_scope != "gtk":
+        if arguments.desktop_scope not in ("gtk", "gtk4"):
             # Exercise the real extension, native host, niri PID authority, shared
             # controller and actual CPU model together, not only a DOM transport seam.
             from browser_process import chromium_context
@@ -472,6 +472,7 @@ def run(arguments):
                         "Wayland Firefox rich editor: selected-range CPU translation, native transaction, preserved surrounding marks and one Tab"
                     )
         if arguments.fcitx_cooperative and arguments.desktop_scope != "browser":
+            gtk4 = arguments.desktop_scope == "gtk4"
             cooperation = arguments.fcitx_cooperative
             bundle_launcher = cooperation / "fcitx-cooperative.py"
             bundled = bundle_launcher.is_file()
@@ -638,8 +639,17 @@ def run(arguments):
                                 "Relocated private Fcitx: existing-owner refusal, real Configure script, foreground Restart and original session bus"
                             )
                         fixture = subprocess.Popen(
-                            ([sys.executable, str(bundle_launcher), "launch"] if bundled else [])
-                            + [str(arguments.native / "gtk-fixture")],
+                            (
+                                [
+                                    sys.executable,
+                                    str(bundle_launcher),
+                                    "launch",
+                                    *(["--gtk4"] if gtk4 else []),
+                                ]
+                                if bundled
+                                else []
+                            )
+                            + [str(arguments.native / ("gtk4-fixture" if gtk4 else "gtk-fixture"))],
                             env=gtk_environment,
                             stdout=sys.stdout,
                             stderr=sys.stderr,
@@ -862,6 +872,59 @@ def run(arguments):
                         evidence.append(
                             "Wayland GTK Entry with opt-in Fcitx cooperation: CPU model, native overlay, one Tab and preserved real pinyin composition"
                         )
+                        if gtk4:
+                            switch_im("keyboard-us")
+                            source_before = gtk_state()["first"]
+                            key("ctrl+shift+u")
+                            wait_for(
+                                lambda: not gtk_state().get("imeClear")
+                                and not status().get("acceptanceReady"),
+                                "GTK4 Unicode composition retained Clear or a write permit",
+                            )
+                            typed("41")
+                            assert gtk_state()["first"] == source_before
+                            key("space")
+                            wait_for(
+                                lambda: gtk_state().get("first") == source_before + "A"
+                                and gtk_state().get("imeClear"),
+                                "GTK4 Unicode composition did not commit normally",
+                            )
+                            evidence.append(
+                                "GTK4 actual Unicode composition blocks TypeLay and commits through the original input method"
+                            )
+                            source_before = gtk_state()["first"]
+                            for field in gtk_state()["protectedFields"]:
+                                before_write = trace_checkpoint()
+                                subprocess.run(
+                                    [
+                                        "xdotool",
+                                        "mousemove",
+                                        "--sync",
+                                        str(round(field["x"] + field["width"] / 2)),
+                                        str(round(field["y"] + field["height"] / 2)),
+                                        "click",
+                                        "1",
+                                    ],
+                                    check=True,
+                                    timeout=3,
+                                )
+                                wait_for(
+                                    lambda: gtk_state().get("focus") == field["name"]
+                                    and status().get("input", {}).get("captureStatus")
+                                    in ("excluded-or-sensitive", "no-native-field")
+                                    and not status().get("acceptanceReady"),
+                                    "GTK4 protected field was not refused before capture",
+                                )
+                                key("Tab")
+                                wait_for(
+                                    lambda: gtk_state().get("focus") != field["name"],
+                                    "protected-field Tab was intercepted",
+                                )
+                                assert gtk_state()["first"] == source_before
+                                assert not new_write_outcomes(before_write)
+                            evidence.append(
+                                "GTK4 hidden Entry and GtkPasswordEntry: refused capture, unchanged source and ordinary Tab navigation"
+                            )
                 finally:
                     for child in (fixture, daemon):
                         if child is not None and child.poll() is None:
@@ -882,7 +945,7 @@ def run(arguments):
                     "scope": arguments.desktop_scope + "-desktop-and-lifecycle",
                     "passed": evidence,
                     "unsupported": [
-                        "uncooperative GTK inputs, GTK TextView, Qt, GTK4 and generic Electron"
+                        "uncooperative GTK inputs, GTK TextView, Qt, nonstandard GTK4 widgets and generic Electron"
                     ],
                 },
                 indent=2,

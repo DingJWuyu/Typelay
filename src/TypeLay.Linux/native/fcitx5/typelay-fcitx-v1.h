@@ -1,10 +1,12 @@
 #pragma once
 #include <gtk/gtk.h>
 
-/* The actual GtkIMContext publishes itself on its owning widget. The widget's
- * qdata owns a reference; the context owns only a static capability table.
- * Consumers must retain the context while calling inspect. Neither a requested
- * im-module name nor loading a library establishes this binding. */
+/* The actual GtkIMContext publishes itself on its owning widget. GTK3 qdata
+ * retains the context. GTK4's context already retains its client widget, so its
+ * qdata binding is borrowed and cleared before unbinding or context teardown.
+ * The capability table is static. Consumers retain the context during each
+ * call, never create a reverse lifetime cycle. Neither a requested im-module
+ * name nor loading a library establishes this binding. */
 #define TL_FCITX_CONTEXT_V1 "typelay.fcitx.context.v1"
 #define TL_FCITX_CAPABILITY_V1 "typelay.fcitx.capability.v1"
 #define TL_FCITX_CHANGED_V1 "typelay-state-changed-v1"

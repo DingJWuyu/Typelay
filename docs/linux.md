@@ -23,7 +23,7 @@ GTK3 更广的输入法事务能力、GTK4、Qt、Electron/VS Code 自动浮层�
 在目标机器安装依赖（fish 可直接运行）：
 
 ```fish
-sudo pacman -Syu --needed git base-devel cmake ninja pkgconf dotnet-sdk gtk3 json-glib python python-gobject libayatana-appindicator niri uv
+sudo pacman -Syu --needed git base-devel cmake ninja pkgconf dotnet-sdk gtk3 gtk4 json-glib python python-gobject libayatana-appindicator niri uv
 ```
 
 .NET SDK 版本须满足仓库 `global.json`。普通用户使用自包含发行包，不需要 .NET SDK。GTK、PyGObject、Ayatana 等桌面库由系统包管理器维护；翻译 worker 使用独立 CPython，不修改系统 Python。
