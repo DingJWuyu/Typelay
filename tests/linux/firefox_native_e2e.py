@@ -35,7 +35,19 @@ ELEMENT = "element-6066-11e4-a52e-4f735466cecf"
 
 class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = b"<!doctype html><meta charset='utf-8'><textarea id='source'></textarea>"
+        body = b"""<!doctype html><meta charset='utf-8'><textarea id='source'></textarea>
+<script>
+window.fixtureEvents = [];
+for (const type of ['focus', 'blur', 'focusin', 'focusout', 'beforeinput', 'input',
+  'compositionstart', 'compositionend', 'pagehide', 'pageshow', 'freeze', 'visibilitychange']) {
+  window.addEventListener(type, event => {
+    fixtureEvents.push({type, trusted: event.isTrusted, composing: event.isComposing === true,
+      source: event.target === document.querySelector('#source'),
+      wall: Date.now(), monotonic: performance.now()});
+    if (fixtureEvents.length > 64) fixtureEvents.shift();
+  }, true);
+}
+</script>"""
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -102,6 +114,17 @@ def firefox(root, environment, binary, driver, log_path):
                 },
             )
             session = result["sessionId"]
+            capabilities = result["capabilities"]
+            print(
+                "Firefox test versions: "
+                + json.dumps(
+                    {
+                        "firefox": capabilities.get("browserVersion"),
+                        "geckodriver": capabilities.get("moz:geckodriverVersion"),
+                    }
+                ),
+                flush=True,
+            )
             prefix = f"/session/{session}"
             yield lambda method, path, data=None: request(method, prefix + path, data)
         finally:
@@ -195,15 +218,7 @@ class FirefoxNativeContract(unittest.TestCase):
             self.assertEqual(hello["data"]["backend"], "browser")
             self.assertEqual(hello["data"]["protocol"], 2)
             original = native.focused_description(connection)
-            snapshot = native.request(
-                connection,
-                "capture",
-                {
-                    "target": original["target"],
-                    "authority": original["authority"],
-                },
-            )
-            self.assertIsNotNone(snapshot)
+            snapshot = self.capture(native, connection, original, web)
             self.assertEqual(snapshot["text"], "First document")
             replacement = "Translated text"
             # The same local CLOCK_BOOTTIME domain as the actual packaged host.
@@ -242,14 +257,7 @@ class FirefoxNativeContract(unittest.TestCase):
             web("POST", "/url", {"url": url + "/second"})
             self.type_source(web, "Second document")
             current = native.focused_description(connection, previous=original["target"])
-            snapshot = native.request(
-                connection,
-                "capture",
-                {
-                    "target": current["target"],
-                    "authority": current["authority"],
-                },
-            )
+            snapshot = self.capture(native, connection, current, web)
             self.assertEqual(snapshot["text"], "Second document")
             web("POST", "/window", {"handle": first})
             web(
@@ -265,6 +273,63 @@ class FirefoxNativeContract(unittest.TestCase):
             )
             web("POST", "/window", {"handle": second})
             self.assertEqual(self.source_value(web), "Second document")
+
+    def capture(self, native, connection, description, web):
+        before = time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000
+        snapshot = native.request(
+            connection,
+            "capture",
+            {
+                "target": description["target"],
+                "authority": description["authority"],
+            },
+        )
+        after = time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000
+        if snapshot is not None:
+            return snapshot
+        # This is a diagnostic observation after failure, never a capture retry.
+        later = native.request(connection, "describe", {"target": description["target"]})
+
+        def summary(value):
+            if value is None:
+                return None
+            authority = value["authority"]
+            return {
+                "focused": value["focused"],
+                "imeKnown": value["metadata"]["hasTextEdit"],
+                **{
+                    key: authority[key]
+                    for key in ("observedAtMs", "contentRevision", "inputRevision", "focusRevision")
+                },
+            }
+
+        page = web(
+            "POST",
+            "/execute/sync",
+            {
+                "script": """return {focused: document.hasFocus(), visible: !document.hidden,
+              wall: Date.now(), monotonic: performance.now(), events: window.fixtureEvents};""",
+                "args": [],
+            },
+        )
+        self.fail(
+            "Firefox capture declined: "
+            + json.dumps(
+                {
+                    "beforeMs": before,
+                    "afterMs": after,
+                    "description": summary(description),
+                    "following": summary(later),
+                    "sameMetadata": bool(
+                        later
+                        and later["authority"]["metadataKey"]
+                        == description["authority"]["metadataKey"]
+                    ),
+                    "page": page,
+                },
+                separators=(",", ":"),
+            )
+        )
 
     @staticmethod
     def type_source(web, text):

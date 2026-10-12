@@ -189,6 +189,9 @@ def run(arguments):
                     subprocess.run(
                         ["grim", str(arguments.output / "browser.png")], check=True, timeout=3
                     )
+                    # Screenshot capture can outlive the 100 ms acceptance permit.
+                    # Observe the current readiness after it, then send one Tab only.
+                    wait_for(ready_to_accept, "browser acceptance expired while taking evidence")
                     key("Tab")
                     wait_for(
                         lambda: translated(page.locator("#source").input_value()),
