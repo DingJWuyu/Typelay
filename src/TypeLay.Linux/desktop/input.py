@@ -5,8 +5,11 @@ validates native anchors, obtains Core approval before reading, and accounts
 for one-shot receipts. A late or missing receipt is never interpreted as success.
 """
 
+import json
 import math
+import os
 import socket
+import sys
 from collections import Counter, OrderedDict
 
 from geometry import anchor_geometry
@@ -122,6 +125,10 @@ class Input:
         self.capture_started_at = 0
         self.capture_failures = []
         self.browser_diagnostics = {}
+        self.browser_publication = None
+        self.publication_generation = 0
+        self.published_plan = None
+        self.publication_epochs = None
         self.shortcut_config = {"enabled": False}
         self.closing = False
         self.niri = Niri(glib, self.changed)
@@ -151,6 +158,8 @@ class Input:
         return True
 
     def lost(self, peer):
+        if self.published_plan and self.published_plan[0] is peer:
+            self.invalidate_publication()
         self.peers.discard(peer)
         for collection in (self.observations, self.frozen, self.issued):
             for key, value in list(collection.items()):
@@ -267,6 +276,7 @@ class Input:
         self.capture_status = reason
         self.capture_counts[reason] = min(self.capture_counts[reason] + 1, 2**31 - 1)
         if result is None:
+            self.invalidate_publication()
             stamp = now_ms()
             self.capture_failures.append(
                 {
@@ -277,6 +287,13 @@ class Input:
                 }
             )
             del self.capture_failures[:-16]
+            if os.environ.get("TYPELAY_TRACE"):
+                print(
+                    "typelay-capture "
+                    + json.dumps(self.capture_failures[-1], separators=(",", ":")),
+                    file=sys.stderr,
+                    flush=True,
+                )
         return result
 
     def remember_browser_diagnostics(self, value):
@@ -327,6 +344,71 @@ class Input:
                 result[key] = number
         self.browser_diagnostics = result
 
+    def invalidate_publication(self):
+        self.publication_generation += 1
+        self.browser_publication = self.published_plan = self.publication_epochs = None
+
+    def remember_browser_publication(self, peer, description, generation):
+        # A rendered candidate is not proof that its one-shot permit arrived.
+        # Only recognize this peer's report of a permit issued by this host.
+        if generation != self.publication_generation or self.publication_epochs != (
+            self.window_epoch,
+            self.user_epoch,
+        ):
+            return
+        value = description.get("publication")
+        if not isinstance(value, dict):
+            return
+        current = self.published_plan
+        if not current or current[0] is not peer:
+            return
+        issued = self.issued.get(current[1])
+        if (
+            not issued
+            or issued["peer"] is not peer
+            or issued["lease"]["source"]["target"] != target_id(peer, description["target"])
+        ):
+            return
+        if value.get("ready") is not True:
+            self.browser_publication = None
+            return
+        plan_id = value.get("planId")
+        if not isinstance(plan_id, str) or current != (peer, plan_id):
+            return
+        self.browser_publication = None
+        until = value.get("readyUntilHostMs")
+        if (
+            type(until) not in (int, float)
+            or not math.isfinite(until)
+            or not now_ms() < until <= issued["permit"]["expiresAtMs"]
+        ):
+            return
+        self.browser_publication = {
+            "peer": peer,
+            "planId": plan_id,
+            "until": until,
+            "windowEpoch": self.window_epoch,
+            "userEpoch": self.user_epoch,
+        }
+
+    def acceptance_remaining_ms(self):
+        peer = self.focused_peer()
+        if not peer:
+            return 0
+        if peer.backend != "browser":
+            return None
+        value = self.browser_publication
+        if (
+            not value
+            or value["peer"] is not peer
+            or self.overlay_focused
+            or value["windowEpoch"] != self.window_epoch
+            or value["userEpoch"] != self.user_epoch
+            or value["planId"] not in self.issued
+        ):
+            return 0
+        return max(0, int(value["until"] - now_ms()))
+
     def diagnostics(self):
         return {
             "captureStatus": self.capture_status,
@@ -360,11 +442,13 @@ class Input:
             return self.captured("no-window")
         if peer not in self.peers:
             return self.captured("unsupported-application")
+        publication_generation = self.publication_generation
         description = await peer.link.ask("describe", {"target": target} if target else {})
         if not description:
             return self.captured("no-native-field")
         if peer.backend == "browser":
             self.remember_browser_diagnostics(description.get("diagnostics"))
+            self.remember_browser_publication(peer, description, publication_generation)
         if not await self.approve(peer, description):
             return self.captured("excluded-or-sensitive")
         native = await peer.link.ask(
@@ -473,6 +557,11 @@ class Input:
             )
         else:
             permit = value.get("permit")
+            if peer.backend == "browser":
+                self.invalidate_publication()
+                if permit:
+                    self.published_plan = (peer, permit["plan"]["id"])
+                    self.publication_epochs = (self.window_epoch, self.user_epoch)
             if permit:
                 self.issued[permit["plan"]["id"]] = {
                     "peer": peer,
@@ -493,6 +582,7 @@ class Input:
             )
 
     def revoke(self, shortcuts=False):
+        self.invalidate_publication()
         for peer in list(self.peers):
             if peer.lifetime and peer.link.channel.alive:
                 peer.link.command("revoke", {"shortcuts": int(shortcuts)})
@@ -505,9 +595,18 @@ class Input:
         # teardown: they belong to already accepted physical input, not the UI.
 
     def event(self, peer, name, value):
-        if name == "ui":
+        if name == "publication" and peer.backend == "browser":
+            if isinstance(value, dict) and isinstance(value.get("target"), str):
+                self.remember_browser_publication(
+                    peer,
+                    {"target": value["target"], "publication": value},
+                    self.publication_generation,
+                )
+        elif name == "ui":
             self.ui_event(peer, value)
         elif name == "input":
+            if self.published_plan and self.published_plan[0] is peer:
+                self.invalidate_publication()
             if peer is self.focused_peer() or (
                 self.bound
                 and peer.lifetime == self.bound["lifetime"]
@@ -530,6 +629,8 @@ class Input:
                 self.revoke()
                 self.state()
         elif name == "accepted":
+            if self.published_plan and self.published_plan[0] is peer:
+                self.invalidate_publication()
             issued = self.issued.pop(value["planId"], None)
             if not issued or issued["peer"] is not peer:
                 peer.link.command(

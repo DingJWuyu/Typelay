@@ -12,7 +12,7 @@
 
 另有可选 [VS Code 手动翻译命令](vscode-linux.md)：选择文字或明确选择整篇文档，经本地模型翻译、原文/译文预览并确认后替换。它不监听通用输入框、不接管 Tab，安装 VSIX 与配置启动器均由用户明确执行。
 
-开发中的 Fcitx 合作路径通过实际 IM context 提供在途提交、组合、输出序号与字段绑定，仅为标准 GTK3 GtkEntry/原生 EntryBuffer 开放能力。它需要版本匹配的合作组件和明确的逐应用启用；普通发行包不替换系统 Fcitx，通用 GTK 禁用状态不因此改变。受控检查已构建并运行完整 Fcitx 5.1.22，实际加载的 Core/Config/Utils 也逐项核为私有 5.1.22；Chinese Addons 5.1.15、GTK IM 5.1.7 与受控 addon 配置仍需分别匹配。框架事务回归通过不代表桌面模型/浮层/Tab 已验收，不应直接安装测试组件到日常系统。
+开发中的 Fcitx 合作路径通过实际 IM context 提供在途提交、组合、输出序号与字段绑定，仅为标准 GTK3 GtkEntry/原生 EntryBuffer 开放能力。它需要版本匹配的合作组件和明确的逐应用启用；普通发行包不替换系统 Fcitx，通用 GTK 禁用状态不因此改变。受控检查已构建并运行完整 Fcitx 5.1.22，实际加载的 Core/Config/Utils 也逐项核为私有 5.1.22；Chinese Addons 5.1.15、GTK IM 5.1.7 与受控 addon 配置仍需分别匹配。隔离 niri 已通过真实键盘输入、本地模型、浮层、一次 Tab 和编辑后两阶段 Tab，框架回归也覆盖拼音组合、空 QuickPhrase 模式及旧提交拒绝。日常配置、第三方 addon 与可回退部署仍需单独验证，不应直接安装测试组件到日常系统。
 
 GTK3 更广的输入法事务能力、GTK4、Qt、Electron/VS Code 自动浮层和更广的富文本结构仍是未完成的开发项；终端/命令区按产品策略默认排除。当前交付未达到通用 Linux 输入框移植目标，不能把这些开发缺口留作“只需真机验证”。GTK 父窗口/浏览器视口定位契约见 `docs/adr/0004-linux-native-anchors.md`。
 

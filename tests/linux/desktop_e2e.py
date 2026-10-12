@@ -16,6 +16,7 @@ from main import control
 from native_e2e import key
 from niri import contents, request
 from paths import Paths
+from wire import now_ms
 
 
 def wait_for(predicate, description, timeout=15):
@@ -388,7 +389,10 @@ def run(arguments):
                     ["grim", str(arguments.output / "firefox-browser.png")], check=True, timeout=3
                 )
                 wait_for(ready_to_accept, "Firefox acceptance expired while taking evidence")
+                firefox_tab = {"beforeMs": now_ms()}
                 key("Tab")
+                firefox_tab["afterMs"] = now_ms()
+                (arguments.output / "firefox-tab.json").write_text(json.dumps(firefox_tab))
                 wait_for(
                     lambda: translated(firefox_value()),
                     "Firefox Tab did not accept the real translation",

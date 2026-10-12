@@ -190,18 +190,27 @@ class BrowserContract(unittest.TestCase):
               const command = {id: 920, op: 'publish', data};
               const result = fixtureCommand(command);
               window.fixtureOriginalDeadline = command.data.permit.expiresAtMs - 1000000;
-              return result;
+              return {...result, publication: fixtureCommand({id: 922, op: 'describe'}).publication,
+                acknowledged: fixtureMessages.findLast(item => item.event === 'publication')?.data,
+                expiresAtMs: command.data.permit.expiresAtMs};
             }""",
             data,
         )
         self.assertTrue(published["published"])
+        self.assertTrue(published["publication"]["ready"])
+        self.assertTrue(published["acknowledged"]["ready"])
+        self.assertEqual(published["acknowledged"]["planId"], "test-plan")
+        self.assertEqual(published["publication"]["planId"], "test-plan")
+        self.assertLessEqual(published["publication"]["readyUntilHostMs"], published["expiresAtMs"])
         # Wait on the actual issued host deadline, never on an arbitrary sleep.
         self.page.wait_for_function("performance.now() > fixtureOriginalDeadline + 2", timeout=1000)
-        self.page.evaluate("""() => {
+        publication = self.page.evaluate("""() => {
           const original = fixtureHostClock;
           fixtureHostClock = () => { const clock = original(); clock.boottimeMs -= 30; return clock; };
-          fixtureCommand({id: 921, op: 'describe'});
+          return fixtureCommand({id: 921, op: 'describe'}).publication;
         }""")
+        self.assertFalse(publication["ready"])
+        self.assertIsNone(publication["readyUntilHostMs"])
         self.page.keyboard.press("Tab")
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
@@ -221,6 +230,11 @@ class BrowserContract(unittest.TestCase):
     def test_coarse_privacy_timer_refuses_capture(self):
         self.page.keyboard.insert_text("Hello")
         self.assertIsNone(self.capture())
+        diagnostics = self.command("describe")["diagnostics"]
+        self.assertEqual(diagnostics["captureCounts"]["timerPrecision"], 1)
+        self.assertEqual(diagnostics["captureCounts"]["supported"], 0)
+        tick = diagnostics["timerTickMs"]
+        self.assertTrue(tick is None or tick >= 100)
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 
@@ -365,6 +379,12 @@ class BrowserContract(unittest.TestCase):
             "theme": "light",
         }
         self.assertTrue(self.command("overlay-render", data)["visible"])
+        # The shared view's suggested accept hint cannot stand in for a native
+        # publication. Read the rendered accessible text, including closed shadow DOM.
+        accessibility = self.context.new_cdp_session(self.page).send("Accessibility.getFullAXTree")
+        names = [node.get("name", {}).get("value") for node in accessibility["nodes"]]
+        self.assertIn("Tab 交还应用", names)
+        self.assertNotIn("Tab 接受译文", names)
         # The real pointer enters the closed-shadow editor; no test-only access
         # to its DOM, value or implementation is exposed by the adapter.
         box = self.page.locator("html > div").bounding_box()

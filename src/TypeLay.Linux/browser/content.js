@@ -15,7 +15,7 @@
   const consumed = new Map();
   const held = new Map();
   const MAX_TEXT = 8192;
-  let counter = 0, publication = null, shortcut = null, configuration = null;
+  let counter = 0, publication = null, shortcut = null, configuration = null, hintTimer = null;
   let clock = null, commandClock = null, lastHostStamp = NaN, alive = true, overlay = null, mutating = false, ownInputEvent = null;
   // Cache native methods in the extension's isolated world, never invoke a
   // page-overridden setter or a page-supplied replacement function.
@@ -59,12 +59,20 @@
   function clockReject(reason) { lastClockReason = reason; return false; }
   function fineClock() {
     const first = monoNow();
+    let previous = first;
     timerTickMs = null;
     for (let index = 0; index < 32768; index++) {
-      const delta = monoNow() - first;
-      if (delta > 0) { timerTickMs = timerProbeMs = delta; return delta <= 1; }
+      const current = monoNow(), delta = current - previous;
+      previous = current;
+      timerProbeMs = current - first;
+      if (delta < 0) return false;
+      if (delta > 0) {
+        timerTickMs = timerTickMs === null ? delta : Math.min(timerTickMs, delta);
+        if (delta <= 1) return true;
+        // A scheduled-out sample measures a gap, not timer resolution. Keep
+        // observing within this same budget; never reuse an earlier proof.
+      }
     }
-    timerProbeMs = monoNow() - first;
     return false;
   }
   function clockValid() {
@@ -185,10 +193,10 @@
     return {space: "browser-viewport", scale: devicePixelRatio, frameWidth: innerWidth,
       frameHeight: innerHeight, bounds: {x, y, width: right - x, height: bottom - y}};
   }
-  function metadata(field) {
+  function metadata(field, domOnly = false) {
     const element = field.element;
     if (field.dead || !(field.richText ? rich?.root(element) === element
-      && (mutating || rich.probe(element)?.supported === true) : allowedElement(element))
+      && (mutating || domOnly || rich.probe(element)?.supported === true) : allowedElement(element))
       || element.getRootNode() !== document || !element.isConnected) return null;
     let ancestors = "";
     let parent = element.parentElement;
@@ -225,13 +233,32 @@
     field.authorities.set(token, {mono, wall: Date.now(), key: JSON.stringify(result)});
     return result;
   }
+  function publicationState(field, meta = null, domOnly = false) {
+    const current = publication, plan = current?.permit?.plan, basis = current?.authority;
+    const unavailable = {planId: null, ready: false, readyUntilHostMs: null};
+    if (!field || !current || typeof plan?.id !== "string" || !plan.id.length || plan.id.length > 256
+      || current.target !== field.id || plan.expected?.target?.value !== field.id
+      || basis?.target !== field.id || consumed.has(plan.id) || consumed.size >= 128 || field.dead || field.quarantined || field.ime !== "Clear"
+      || !focused(field) || field.content !== basis?.contentRevision
+      || field.input !== basis.inputRevision || field.focus !== basis.focusRevision) return unavailable;
+    meta ||= metadata(field, domOnly);
+    if (!meta || meta.password || !meta.enabled || meta.readOnly || meta.offscreen
+      || basis.metadataKey !== JSON.stringify(meta) || !liveDeadline(current)
+      || publication !== current) return unavailable;
+    const mono = monoNow();
+    const remaining = Math.min(current.expiresAtPerformanceMs - mono, current.expiresAtWallMs - Date.now());
+    const readyUntilHostMs = Math.floor(Math.min(current.permit.expiresAtMs, clock.lower + mono + remaining));
+    return remaining > 0 && Number.isSafeInteger(readyUntilHostMs)
+      ? {planId: plan.id, ready: true, readyUntilHostMs} : unavailable;
+  }
   function describe(field) {
     drainMutations();
     if (!field || (!commandClock && !clockValid())) return null;
     const meta = metadata(field);
     if (!meta || meta.password || !meta.enabled || meta.readOnly || meta.offscreen) return null;
     return {target: field.id, metadata: meta, authority: authority(field, meta),
-      geometry: geometry(field), focused: focused(field), diagnostics: diagnostics()};
+      geometry: geometry(field), focused: focused(field), diagnostics: diagnostics(),
+      publication: publicationState(field, meta)};
   }
   function approved(field, basis) {
     const meta = field && metadata(field);
@@ -408,6 +435,7 @@
     if (!focusChanged) field.input++;
     if (textChanged) field.content++;
     if (focusChanged) field.focus++;
+    refreshHint();
     send("input", {target: field.id, textChanged, focusChanged, focused: focused(field)});
   }
   function mutations(records) {
@@ -437,13 +465,31 @@
   observer.observe(document, {subtree: true, childList: true, characterData: true});
   function drainMutations() { mutations(observer.takeRecords()); }
   function hide() {
+    clearTimeout(hintTimer); hintTimer = null;
     if (!overlay) return;
     const previous = overlay;
     ui("visible", false);
     overlay = null;
     previous.host.remove();
   }
+  function refreshHint() {
+    clearTimeout(hintTimer); hintTimer = null;
+    const current = overlay;
+    if (!current) return;
+    // UI refresh must not open a page-owned rich-editor callback after a
+    // capture result has passed its final IME/source guard.
+    const state = publicationState(current.field, null, true);
+    if (overlay !== current) return;
+    const accepts = ["Tab 接受译文", "Tab 交还应用"].includes(current.tabHint);
+    current.hint.textContent = current.editing ? "Tab 返回原输入框"
+      : accepts ? (state.ready ? "Tab 接受译文" : "Tab 交还应用") : current.tabHint || "";
+    if (state.ready && publication) {
+      const remaining = Math.min(publication.expiresAtPerformanceMs - monoNow(), publication.expiresAtWallMs - Date.now());
+      hintTimer = setTimeout(refreshHint, Math.max(1, Math.ceil(remaining)));
+    }
+  }
   function position() {
+    refreshHint();
     if (!overlay) return;
     const geo = geometry(overlay.field);
     if (!geo || !overlay.host.isConnected || !document.hasFocus() || !fresh(overlay.renewed, 800)) { hide(); return; }
@@ -532,7 +578,7 @@
     overlay.host.style.colorScheme = ["light", "dark"].includes(data.theme) ? data.theme : "light dark";
     overlay.language.textContent = `${view.sourceLanguage} → ${view.targetLanguage}`;
     overlay.status.textContent = view.status || "";
-    overlay.hint.textContent = view.presentation.tabHint;
+    overlay.tabHint = view.presentation.tabHint;
     overlay.editor.hidden = !view.text && view.state === "IdleCapsule";
     overlay.footer.hidden = overlay.editor.hidden;
     if (!view.presentation.editorOwnsText) {
@@ -559,7 +605,10 @@
         const expiresAtPerformanceMs = data.permit ? deadline(data.permit.expiresAtMs, 100) : NaN;
         publication = {...data, expiresAtPerformanceMs,
           expiresAtWallMs: data.permit?.expiresAtMs - clock?.upperWall};
-        return {published: !data.permit || liveDeadline(publication)};
+        // Metadata-only acknowledgment of the publication actually received by
+        // this document. It grants no permission beyond the existing permit.
+        if (field) send("publication", {target: field.id, ...publicationState(field)});
+        return {published: !data.permit || !!publication && liveDeadline(publication)};
       }
       case "publish-shortcut": shortcut = calibrate(field, data.authority) ? data : null; return null;
       case "configure-shortcuts": configuration = data; shortcut = null; return null;
@@ -636,6 +685,7 @@
     catch (_) { publication = shortcut = null; hide(); }
     commandClock = null;
     if (message.id) port.postMessage({id: message.id, data: result});
+    refreshHint();
   });
   port.onDisconnect.addListener(() => { alive = false; observationInterrupted(); });
   const reportFocus = () => send("focus", document.visibilityState === "visible" && document.hasFocus());
@@ -696,7 +746,7 @@
     held.set(event.code, false);
     const field = fieldFor(event.target);
     if (!field || !focused(field)) return;
-    if (event.isComposing || event.keyCode === 229) { field.ime = "Composing"; publication = shortcut = null; return; }
+    if (event.isComposing || event.keyCode === 229) { field.ime = "Composing"; publication = shortcut = null; refreshHint(); return; }
     // A trusted non-composing keyboard event provides positive state evidence;
     // it does not retroactively make a previously issued unknown-state plan valid.
     if (field.ime === "Unknown") { field.ime = "Clear"; changed(field, false, false); return; }
@@ -709,26 +759,26 @@
         if (snapshot) {
           consume(event);
           send("shortcut", {kind, generation: configuration.generation, native: snapshot, acceptedAtMs: now()});
-          publication = shortcut = null;
+          publication = shortcut = null; refreshHint();
           return;
         }
       }
     }
     if (!publication || event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) return;
     const basis = publication.authority;
-    if (!approved(field, basis) || field.input !== basis.inputRevision || field.focus !== basis.focusRevision) { publication = null; return; }
+    if (!approved(field, basis) || field.input !== basis.inputRevision || field.focus !== basis.focusRevision) { publication = null; refreshHint(); return; }
     if (event.key === "Escape" && publication.lease?.escapeAllowed && fresh(publication.lease.source.observedAtMs, 150)) {
-      publication = null; consume(event); send("escape", {}); return;
+      publication = null; refreshHint(); consume(event); send("escape", {}); return;
     }
     const permit = publication.permit;
     if (event.key !== "Tab" || !permit?.plan?.id || consumed.has(permit.plan.id)) return;
     for (const [id, expiry] of consumed) if (monoNow() > expiry) consumed.delete(id);
-    if (consumed.size >= 128) { publication = null; return; }
+    if (consumed.size >= 128) { publication = null; refreshHint(); return; }
     consumed.set(permit.plan.id, monoNow() + 100);
     const {expiresAtPerformanceMs, expiresAtWallMs} = publication;
     const acceptedAtMs = now();
     const receipt = write(field, {plan: permit.plan, authority: basis, expiresAtPerformanceMs, expiresAtWallMs}, false);
-    publication = null;
+    publication = null; refreshHint();
     if (receipt.status !== "RejectedBeforeMutation") {
       consume(event);
       send("accepted", {planId: permit.plan.id, receipt, acceptedAtMs});
