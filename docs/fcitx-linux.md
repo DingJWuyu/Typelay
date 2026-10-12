@@ -1,0 +1,96 @@
+# Fcitx 合作组件预览
+
+这套可选组件让 TypeLay 与实际 Fcitx 输入事务协作。当前范围是 GTK3 标准 GtkEntry 和原生 GtkEntryBuffer；GTK4、Qt、GtkTextView、通用 Electron 尚未开放。普通 TypeLay 安装不会安装或启用这些组件。
+
+完整私有 Fcitx 5.1.22 的 Core、Config、Utils、原官方 X11/Wayland 前端，以及 Chinese Addons 5.1.15、GTK IM 5.1.7 已在隔离环境通过真实输入事务检查。嵌套 niri 的生产 GTK 路径通过实际 CPU 模型、自动预览、一次 Tab 写回、编辑后两阶段 Tab 与拼音组合保护。它们不是用户 CachyOS 桌面的物理输入验收。
+
+## 会话与用户数据
+
+合作需要服务端和 GTK 客户端都具备对应能力。仅加载 GTK 模块而连接未修改的系统服务端不能获得安全写入许可。
+
+私有组件使用原 session bus。一个总线上只能有一个 `org.fcitx.Fcitx5` 服务。当前方案要求用户先完成组合输入并明确退出原输入法进程，然后手动运行私有版本。启动器发现已有服务时拒绝，不终止或替换其它进程，不改系统文件、桌面自动启动、shell 配置或全局 GTK 配置。
+
+私有版本沿用原 HOME、XDG 与 FCITX 配置路径，因此保留输入法顺序、快捷键、皮肤和个人词库，并按原 Fcitx 行为保存学习结果。它不复制出另一份日常词库，不同步双 daemon，也不会在恢复时回滚用户的新输入学习。使用前应退出原 daemon 后备份自己的 Fcitx 配置与数据目录。自定义 FCITX_CONFIG_HOME / FCITX_DATA_HOME 优先于默认 `~/.config/fcitx5` / `~/.local/share/fcitx5`。
+
+如果桌面监督程序自动重启原 daemon，先由用户明确暂停该启动方式；启动器不会替用户修改它。两份 daemon 不得并发访问同一 profile。已有应用可能在服务切换时重新连接，应先结束所有组合输入，按需重新启动目标应用。
+
+官方候选窗与 X11/Wayland/原生 Fcitx 前端保留。为避免上游 IBus 兼容前端接管或终止另一套 IBus 服务，私有启动命令明确排除 ibusfrontend；仅使用 IBus 协议的应用不在这个私有会话范围内。该排除只属于私有进程命令行，不改用户配置，恢复原 daemon 后即恢复原行为。其它用户插件不被关闭。TypeLay 仅为已审计的实际加载组件与明确完成的输入事务授予能力；未知插件仍可按原输入法行为运行，但 TypeLay 保持 Unknown。不能用配置中的输入法名称或看起来为空的候选窗代替实际状态。
+
+## 构建与打包
+
+仅在匹配的 Arch/CachyOS x86_64 开发环境构建。官方系统依赖仍由包管理器提供；本包不替换它们。构建命令与测试共用：
+
+```sh
+python tests/linux/fcitx_cooperative/run.py --core-version 5.1.22
+python packaging/linux/fcitx-cooperative/pack.py \
+  --build-output artifacts/linux/fcitx-cooperative-5.1.22 \
+  --output artifacts/TypeLay-Fcitx-cooperative.tar.gz
+```
+
+包内包含私有运行库、原始许可证、修改后的对应源码、补丁、固定来源校验和与重建脚本。保留整个源码与许可证目录后再分发；不要只抽取修改后的二进制。LGPL 组件的原 SPDX 声明及修改说明保留在源码中。系统库版本、构建记录与文件校验和见包内 manifest.json。
+
+解压到独立用户目录即可，不需要安装或 sudo。以下只是用户审阅后明确执行的操作，不会由 TypeLay 自动执行。
+
+```sh
+tar -xzf TypeLay-Fcitx-cooperative.tar.gz
+cd TypeLay-Fcitx-cooperative
+python fcitx-cooperative.py preflight
+```
+
+preflight 校验包文件、实际 ELF 依赖、私有 Core/Config/Utils 解析路径、5.1.22 daemon 版本和系统 Chinese Addons / LibIME 构建版本。当前包的私有 Chinese 源码固定为 5.1.15，因此系统 Chinese Addons 必须同为 5.1.15，不能仅因为构建机器和用户机器恰好都装着另一版本就共用词库。构建、打包和启动三处均检查这个边界；LibIME 须与构建时同上游版本，GTK3/glibc 须满足实际动态依赖。系统 Core 与全部组件版本同时显示供用户核对。缺失或不匹配时拒绝启动，应重新在匹配环境构建，不能忽略错误继续。
+
+GTK IM 缓存包含安装路径，不能直接搬运 CI 缓存。每次逐应用启动都使用官方 gtk-query-immodules-3.0 为当前解压目录生成缓存，写入当前用户 XDG_RUNTIME_DIR；不修改系统 GTK 模块缓存。
+
+## 明确切换与逐应用启用
+
+先在原 Fcitx 托盘中明确选择退出，确认没有正在组合的文字。然后在终端运行：
+
+```sh
+python fcitx-cooperative.py daemon
+```
+
+该命令以前台方式运行私有 daemon，沿用原桌面会话和配置。保留这个终端，以便 Ctrl+C 正常退出。
+
+另一个终端通过同一包启动 TypeLay，确保此前的 TypeLay 已正常退出，避免复用旧环境的后台服务：
+
+```sh
+python /完整路径/TypeLay-Fcitx-cooperative/fcitx-cooperative.py launch ~/.local/bin/typelay
+```
+
+目标 GTK3 应用也需要明确逐应用启动：
+
+```sh
+python /完整路径/TypeLay-Fcitx-cooperative/fcitx-cooperative.py launch ~/.local/bin/typelay launch 应用命令
+```
+
+启动器只为这些子进程设置私有 GTK IM 模块和合作开关，不替换 session bus。它检查当前服务端确实来自同一私有包。先用非敏感合成文本验证普通输入、拼音候选、取消、Backspace、切换输入法与 TypeLay Tab；未知能力时仍按普通应用行为输入，不应出现读取或写回。
+
+## 恢复原输入法
+
+1. 在目标应用完成或取消组合，正常退出 TypeLay 和逐应用启用的测试窗口。
+2. 在私有 daemon 的终端按 Ctrl+C，等待进程退出和总线名称释放。
+3. 通过原桌面启动方式或系统 `/usr/bin/fcitx5` 恢复原服务。若此前明确暂停过自动启动，按原方式恢复。
+4. 正常启动应用，不经过私有包启动器。用户词库与配置仍在原位置。
+
+不需要还原系统库、删除词库或更改全局输入法变量。确认不再使用后可删除私有解压目录；不要删除自己的 Fcitx 数据目录。
+
+## 当前能力边界与维护依据
+
+守卫检查实际 `loadedAddonNames()`，不是配置中列出的可用插件。每个已加载模块必须同时满足已审计的名称、官方 type/library/version，以及 loader 成功加载的真实库路径。私有启动器明确传入私有库目录；缺少来源声明、系统同名回退库或不匹配模块都会使 TypeLay 返回 Unknown。路径查询只读取 loader 已有成功结果，不改变插件加载、回退或普通输入。
+
+当前审计版本固定为 Core 5.1.22、Chinese Addons 5.1.15。已审计组件：dbus、dbusfrontend、keyboard、pinyin、punctuation、pinyinhelper、spell、quickphrase、classicui、wayland、waylandim、xcb、xim、notifications、notificationitem、clipboard、unicode、imselector、chttrans、fullwidth、emoji、fcitx4frontend、kimpanel、virtualkeyboard。其他插件不因“属于官方包”或同名而自动继承结论。
+
+维护时必须核对对应上游实际路径：
+
+- `src/lib/fcitx/tempmodemanager.cpp` 的活动模式分派使用真实 per-context `isActive`。合作只读查询遍历同一状态，覆盖 QuickPhrase、剪贴板、Unicode、输入法选择模式；不能把空候选或空提示当完成。
+- pinyin 的延后标点提交在原输入法切换后仍可能存活，因此同一 IC 查询已加载 pinyin 的真实 pending 状态，同时保留当前 keyboard/pinyin 与 Core compose 检查。
+- `src/ui/classicui/inputwindow.cpp` 点击时重新读取当前 candidateList。classicui/notificationitem 的延迟菜单 action 只按已审计组件的实际动作处理，不缓存旧正文提交，不能仅因有 timer 就拒绝。
+- `src/modules/clipboard/xcbclipboard.cpp` 与 `waylandclipboard.cpp` 的异步接收只更新剪贴板历史；真正提交发生在新按键或当前候选选择中。剪贴板活动模式仍必须拒绝。
+- `src/frontend/waylandim/` 和 `src/frontend/xim/xim.cpp` 向各自 IC 路由输入，不赋予这些前端本身 TypeLay 字段权限。本包仍只开放已绑定的 GTK3 DBus context。
+- Chinese `modules/chttrans` 与 `modules/fullwidth` 为同步输出过滤，保留用户繁简/全角偏好；chttrans 构建保留 OpenCC。
+
+源码更新、模块替换或增加新的输入/输出插件都需要重新核对这些行为。部署测试必须使用搬迁后的实际包和未被清空的正常配置；白名单隔离测试不能代替日常默认组件组合验证。
+
+完整上游 Fcitx 的 IBus 兼容前端会尝试接管 IBus 服务。因此私有进程明确排除该兼容前端，并在启动前检查 session bus 的 IBus owner 和当前用户的 ibus-daemon 进程；检测到活动 IBus 或无法确认时拒绝。原 daemon 的关闭、桌面启动方式与任何冲突输入法的调整仍由用户明确操作。
+
+私有会话的托盘重启沿实际可执行文件 exec，并保留原参数和 IBus 排除项，仍由原前台终端管理。配置菜单运行同目录打包的原 fcitx5-configtool 脚本，由它寻找系统官方配置 GUI；未安装配置 GUI 时按原脚本提示处理，不更改系统安装。

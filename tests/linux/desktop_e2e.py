@@ -1,8 +1,10 @@
 """Real model/browser/cooperative Entry acceptance; generic GTK still refuses."""
 
+import ctypes
 import json
 import os
 import re
+import select
 import subprocess
 import sys
 import tempfile
@@ -466,6 +468,8 @@ def run(arguments):
                     )
         if arguments.fcitx_cooperative and arguments.desktop_scope != "browser":
             cooperation = arguments.fcitx_cooperative
+            bundle_launcher = cooperation / "fcitx-cooperative.py"
+            bundled = bundle_launcher.is_file()
             with tempfile.TemporaryDirectory(prefix="typelay-gtk-cooperative-") as temporary:
                 home = Path(temporary)
                 config = home / "config/fcitx5"
@@ -505,21 +509,132 @@ def run(arguments):
                         FCITX_DATA_DIRS=f"{core / 'share/fcitx5'}:/usr/share/fcitx5",
                     )
                 gtk_environment.pop("TYPELAY_DESKTOP", None)
+                if bundled:
+                    # Exercise the public per-process launcher with the normal
+                    # addon configuration, not the earlier restricted fixture env.
+                    for name in (
+                        "FCITX_DATA_DIRS",
+                        "FCITX_ADDON_DIRS",
+                        "LD_LIBRARY_PATH",
+                        "GTK_IM_MODULE",
+                        "GTK_IM_MODULE_FILE",
+                        "TYPELAY_FCITX_COOPERATIVE",
+                    ):
+                        gtk_environment.pop(name, None)
+                else:
+                    gtk_environment["TYPELAY_FCITX_AUDITED_ADDON_DIRS"] = (
+                        f"{cooperation / 'lib'}:{core / 'lib/fcitx5'}"
+                    )
                 daemon = fixture = None
                 try:
                     with (arguments.output / "gtk-cooperative-framework.log").open("w") as log:
-                        daemon = subprocess.Popen(
-                            [
+                        daemon_command = (
+                            [sys.executable, str(bundle_launcher), "daemon"]
+                            if bundled
+                            else [
                                 str(cooperation / "fcitx5"),
                                 "--disable=all",
                                 "--enable=dbus,dbusfrontend,pinyin,punctuation,pinyinhelper,keyboard,spell,quickphrase",
-                            ],
+                            ]
+                        )
+                        daemon = subprocess.Popen(
+                            daemon_command,
                             env=gtk_environment,
                             stdout=log,
                             stderr=subprocess.STDOUT,
                         )
+                        if bundled:
+
+                            def bus_call(method, *values, controller=False):
+                                return subprocess.check_output(
+                                    [
+                                        "gdbus",
+                                        "call",
+                                        "--session",
+                                        "--dest",
+                                        "org.fcitx.Fcitx5"
+                                        if controller
+                                        else "org.freedesktop.DBus",
+                                        "--object-path",
+                                        "/controller" if controller else "/org/freedesktop/DBus",
+                                        "--method",
+                                        (
+                                            "org.fcitx.Fcitx.Controller1."
+                                            if controller
+                                            else "org.freedesktop.DBus."
+                                        )
+                                        + method,
+                                        *values,
+                                    ],
+                                    env=gtk_environment,
+                                    text=True,
+                                    stderr=subprocess.DEVNULL,
+                                    timeout=3,
+                                ).strip()
+
+                            def private_owner():
+                                assert daemon.poll() is None
+                                try:
+                                    owner = bus_call("GetNameOwner", "org.fcitx.Fcitx5")
+                                    pid_text = bus_call(
+                                        "GetConnectionUnixProcessID", "org.fcitx.Fcitx5"
+                                    )
+                                except subprocess.CalledProcessError:
+                                    return None
+                                pid = int(re.fullmatch(r"\(uint32 (\d+),\)", pid_text)[1])
+                                assert pid == daemon.pid
+                                assert (
+                                    Path(f"/proc/{pid}/exe").resolve()
+                                    == (cooperation / "core/bin/fcitx5").resolve()
+                                )
+                                assert b"--disable=ibusfrontend" in Path(
+                                    f"/proc/{pid}/cmdline"
+                                ).read_bytes().split(b"\0")
+                                return owner
+
+                            old_owner = wait_for(
+                                private_owner,
+                                "relocated private Fcitx did not own its original session bus",
+                            )
+                            duplicate = subprocess.run(
+                                daemon_command,
+                                env=gtk_environment,
+                                stdout=log,
+                                stderr=subprocess.STDOUT,
+                                timeout=30,
+                            )
+                            assert duplicate.returncode != 0 and private_owner() == old_owner
+                            # Observe the actual bundled config script opening, not
+                            # a source-string check or a replacement GUI command.
+                            libc = ctypes.CDLL(None, use_errno=True)
+                            libc.inotify_add_watch.argtypes = [
+                                ctypes.c_int,
+                                ctypes.c_char_p,
+                                ctypes.c_uint32,
+                            ]
+                            watch = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+                            assert watch >= 0
+                            try:
+                                script = cooperation / "core/bin/fcitx5-configtool"
+                                assert libc.inotify_add_watch(watch, os.fsencode(script), 0x20) >= 0
+                                bus_call("Configure", controller=True)
+                                assert select.select([watch], [], [], 5)[0], (
+                                    "private Configure did not open its relocated script"
+                                )
+                                assert os.read(watch, 4096)
+                            finally:
+                                os.close(watch)
+                            bus_call("Restart", controller=True)
+                            wait_for(
+                                lambda: (owner := private_owner()) and owner != old_owner,
+                                "private Restart did not preserve its executable and startup arguments",
+                            )
+                            evidence.append(
+                                "Relocated private Fcitx: existing-owner refusal, real Configure script, foreground Restart and original session bus"
+                            )
                         fixture = subprocess.Popen(
-                            [str(arguments.native / "gtk-fixture")],
+                            ([sys.executable, str(bundle_launcher), "launch"] if bundled else [])
+                            + [str(arguments.native / "gtk-fixture")],
                             env=gtk_environment,
                             stdout=sys.stdout,
                             stderr=sys.stderr,
