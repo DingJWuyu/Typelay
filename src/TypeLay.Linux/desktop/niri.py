@@ -11,25 +11,50 @@ from wire import now_ms
 
 
 def request(command, timeout=0.25):
+    return request_many((command,), timeout)[0]
+
+
+def request_many(commands, timeout=0.25):
+    """Pipeline newline requests on one niri connection, preserving reply order."""
     path = os.environ.get("NIRI_SOCKET", "")
     if not Path(path).is_absolute():
         raise OSError("niri-socket-unavailable")
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        deadline = time.monotonic() + timeout
         connection.settimeout(timeout)
         connection.connect(path)
-        connection.sendall((json.dumps(command, separators=(",", ":")) + "\n").encode())
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("niri-response-timeout")
+        connection.settimeout(remaining)
+        connection.sendall(
+            "".join(
+                json.dumps(command, separators=(",", ":")) + "\n" for command in commands
+            ).encode()
+        )
         data = bytearray()
-        while b"\n" not in data:
+        responses = []
+        while len(responses) < len(commands):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("niri-response-timeout")
+            connection.settimeout(remaining)
             part = connection.recv(16384)
             if not part:
                 raise EOFError("niri-closed")
             data.extend(part)
-            if len(data) > 2 * 1024 * 1024:
+            while b"\n" in data:
+                line, _, rest = data.partition(b"\n")
+                if len(line) > 2 * 1024 * 1024:
+                    raise ValueError("niri-response-size")
+                response = json.loads(line)
+                if not isinstance(response, dict) or "Ok" not in response:
+                    raise OSError("niri-operation-rejected")
+                responses.append(response["Ok"])
+                data = rest
+            if len(data) > 2 * 1024 * 1024 or len(responses) > len(commands):
                 raise ValueError("niri-response-size")
-        response = json.loads(data.split(b"\n", 1)[0])
-        if not isinstance(response, dict) or "Ok" not in response:
-            raise OSError("niri-operation-rejected")
-        return response["Ok"]
+        return responses
 
 
 def contents(response, name):
@@ -84,14 +109,18 @@ class Niri:
         version = ""
         while not self.stopping.is_set():
             start = time.monotonic()
-            observed = now_ms()
             try:
                 if not version:
                     version = contents(request("Version"), "Version")
-                windows = contents(request("Windows"), "Windows")
-                outputs = contents(request("Outputs"), "Outputs")
-                workspaces = contents(request("Workspaces"), "Workspaces")
-                overview = contents(request("OverviewState"), "OverviewState")["is_open"]
+                # niri handles multiple newline requests per connection. Sending the
+                # batch together avoids four connection/scheduling round trips. Keep
+                # the pre-request timestamp: receiving a reply cannot renew its age.
+                observed = now_ms()
+                replies = request_many(("Windows", "Outputs", "Workspaces", "OverviewState"))
+                windows = contents(replies[0], "Windows")
+                outputs = contents(replies[1], "Outputs")
+                workspaces = contents(replies[2], "Workspaces")
+                overview = contents(replies[3], "OverviewState")["is_open"]
                 snapshot = version, windows, outputs, workspaces, overview, observed
             except (OSError, EOFError, ValueError, KeyError, TypeError):
                 snapshot = None

@@ -445,7 +445,7 @@
          } else {
              fcitx_g_client_process_key(
                  fcitxcontext->client, event->keyval, event->hardware_keycode,
-@@ -1772,3 +1881,118 @@
+@@ -1772,3 +1881,127 @@
  }
  
  // kate: indent-mode cstyle; replace-tabs on;
@@ -486,9 +486,18 @@
 +        return refuse(reason);
 +    }
 +    g_clear_error(&error);
-+    if (self->is_inpreedit || (self->preedit_string && *self->preedit_string)
-+        || (self->xkbComposeState && xkb_compose_state_get_status(self->xkbComposeState) != XKB_COMPOSE_NOTHING))
-+        composing = TRUE;
++    const guint localCompositionMask = (self->is_inpreedit ? 1u : 0u)
++        | ((self->preedit_string && *self->preedit_string) ? 2u : 0u)
++        | ((self->xkbComposeState && xkb_compose_state_get_status(self->xkbComposeState) != XKB_COMPOSE_NOTHING) ? 4u : 0u);
++    if (get_boolean_env("TYPELAY_FCITX_PROBE", FALSE)) {
++        static gint previousMask = -1;
++        const gint mask = static_cast<gint>(localCompositionMask | (composing ? 8u : 0u));
++        if (mask != previousMask) {
++            previousMask = mask;
++            g_printerr("typelay-fcitx-composition server=%d local-mask=%u\n", composing, localCompositionMask);
++        }
++    }
++    if (localCompositionMask) composing = TRUE;
 +    *state = {sizeof(*state), TL_FCITX_ABI_V1, self->typelay_generation,
 +        self->typelay_epoch, self->typelay_input_epoch, serial, applied,
 +        static_cast<guint32>((known ? TL_FCITX_KNOWN : 0) | TL_FCITX_FOCUSED

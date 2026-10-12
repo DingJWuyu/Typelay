@@ -199,7 +199,7 @@
          if (blocked_) {
              blockedEvents_.emplace_back(
                  BATCHED_FORWARD_KEY,
-@@ -294,6 +415,81 @@
+@@ -294,6 +415,84 @@
      if (currentMessage()->sender() != name_)                                   \
      return
  
@@ -234,12 +234,15 @@
 +            if (auto *pinyin = im_->instance()->addonManager().lookupAddon("pinyin")) {
 +                pending = pinyin->call<IPinyinEngine::typelayHasPendingCommitV1>(this) || pending;
 +            }
-+            report("known");
-+            bool composing = im_->instance()->isComposing(this)
-+                || !inputPanel().clientPreedit().empty()
-+                || !inputPanel().preedit().empty() || bool(inputPanel().candidateList());
-+            composing = im_->instance()->tempModeManager()
-+                            .typelayHasActiveModeV1(this) || composing;
++            const unsigned compositionMask =
++                (im_->instance()->isComposing(this) ? 1u : 0u)
++                | (!inputPanel().clientPreedit().empty() ? 2u : 0u)
++                | (!inputPanel().preedit().empty() ? 4u : 0u)
++                | (inputPanel().candidateList() ? 8u : 0u)
++                | (im_->instance()->tempModeManager().typelayHasActiveModeV1(this) ? 16u : 0u);
++            const bool composing = compositionMask != 0;
++            const std::string diagnostic = "known-composition-mask=" + std::to_string(compositionMask);
++            report(diagnostic.c_str());
 +            return {typelayOutputSerial_, true, pending, composing, hasFocus()};
 +        } catch (const std::exception &) {
 +            report("missing-transaction-capability");
@@ -281,7 +284,7 @@
      void focusInDBus() {
          CHECK_SENDER_OR_RETURN;
          focusIn();
-@@ -467,9 +663,12 @@
+@@ -467,9 +666,12 @@
          blockedEvents_.clear();
      }
  
@@ -295,7 +298,7 @@
      FCITX_OBJECT_VTABLE_METHOD(focusInDBus, "FocusIn", "", "");
      FCITX_OBJECT_VTABLE_METHOD(focusOutDBus, "FocusOut", "", "");
      FCITX_OBJECT_VTABLE_METHOD(resetDBus, "Reset", "", "");
-@@ -529,6 +728,8 @@
+@@ -529,6 +731,8 @@
      std::string name_;
      CapabilityFlags rawCapabilityFlags_;
      std::optional<uint64_t> supportedCapability_;
@@ -304,7 +307,7 @@
      bool blocked_ = false;
      std::vector<DBusBlockedEvent> blockedEvents_;
      std::unique_ptr<HandlerTableEntry<EventHandler>> vkVisibilityChanged_;
-@@ -653,3 +854,4 @@
+@@ -653,3 +857,4 @@
  } // namespace fcitx
  
  FCITX_ADDON_FACTORY_V2(dbusfrontend, fcitx::DBusFrontendModuleFactory);
@@ -491,18 +494,42 @@
  /*
   * SPDX-FileCopyrightText: 2026-2026 CSSlayer <wengxt@gmail.com>
   *
-@@ -104,6 +105,16 @@
+@@ -7,6 +8,9 @@
+ 
+ #include "tempmodemanager.h"
+ #include <memory>
++#include <string_view>
++#include "fcitx-utils/environ.h"
++#include "fcitx-utils/log.h"
+ #include "fcitx-utils/handlertable.h"
+ #include "fcitx-utils/macros.h"
+ #include "event.h"
+@@ -104,6 +108,30 @@
      }
  }
  
 +bool TempModeManager::typelayHasActiveModeV1(InputContext *inputContext) const {
 +    FCITX_D();
++    std::string_view active = "none";
 +    for (auto *mode : d->modes_.view()) {
 +        if (mode->isActive(inputContext)) {
-+            return true;
++            const auto name = mode->name();
++            active = name == "quickphraseState" ? "quickphrase"
++                : name == "clipboardState" ? "clipboard"
++                : name == "unicodeState" ? "unicode"
++                : name == "imselector" ? "imselector" : "other";
++            break;
 +        }
 +    }
-+    return false;
++    const auto probe = getEnvironment("TYPELAY_FCITX_PROBE");
++    if (probe && *probe == "1") {
++        static thread_local std::string_view previous;
++        if (previous != active) {
++            previous = active;
++            FCITX_INFO() << "TypeLay active-mode=" << active;
++        }
++    }
++    return active != "none";
 +}
 +
  void TempModeManager::registerTempMode(TempMode &tempMode) {
