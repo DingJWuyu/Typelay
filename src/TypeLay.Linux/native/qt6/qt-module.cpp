@@ -84,8 +84,8 @@ protected:
         emit inputRejected();
         return false;
     }
-    void insertFromMimeData(const QMimeData *data) override {
-        if (data && fits(data->text())) QPlainTextEdit::insertFromMimeData(data);
+    void insertFromMimeData(const QMimeData *mime) override {
+        if (mime && fits(mime->text())) QPlainTextEdit::insertFromMimeData(mime);
     }
     void keyPressEvent(QKeyEvent *event) override {
         const auto text = event->text();
