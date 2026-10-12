@@ -12,7 +12,7 @@ static Select select_candidate;
 static GtkWidget *window, *entry, *other;
 static gchar *directory, *captured;
 static GtkEntryBuffer *captured_buffer;
-static guint64 revision, captured_revision, captured_epoch;
+static guint64 revision, captured_revision, captured_epoch, captured_serial;
 static guint request;
 static const char *result = "starting";
 static gboolean writing, nested_refused, nested_done, nested_mutate;
@@ -45,7 +45,7 @@ static const char *capture(void) {
     State s = state();
     if (!s.valid || !s.known || s.pending || s.composing) return "refused-ime";
     if (s.serial != s.delivered) return "refused-undelivered";
-    g_free(captured);
+    g_clear_pointer(&captured, g_free);
     g_clear_object(&captured_buffer);
     GtkEntryBuffer *buffer = gtk_entry_get_buffer(GTK_ENTRY(entry));
     if (G_OBJECT_TYPE(buffer) != GTK_TYPE_ENTRY_BUFFER) return "refused-buffer";
@@ -53,6 +53,7 @@ static const char *capture(void) {
     captured = g_strdup(gtk_entry_buffer_get_text(captured_buffer));
     captured_revision = revision;
     captured_epoch = s.epoch;
+    captured_serial = s.serial;
     return "captured";
 }
 
@@ -61,8 +62,8 @@ static const char *accept(void) {
     if (!captured || !gtk_widget_has_focus(entry)) return "refused-focus";
     State s = state();
     if (!settled(s)) return "refused-ime";
-    if (s.epoch != captured_epoch || gtk_entry_get_buffer(GTK_ENTRY(entry)) != captured_buffer)
-        return "refused-focus";
+    if (gtk_entry_get_buffer(GTK_ENTRY(entry)) != captured_buffer) return "refused-focus";
+    if (s.epoch != captured_epoch || s.serial != captured_serial) return "refused-input";
     if (revision != captured_revision || strcmp(gtk_entry_buffer_get_text(captured_buffer), captured))
         return "refused-stale";
     writing = TRUE;
@@ -70,7 +71,7 @@ static const char *accept(void) {
      * a callback changes the field, focus, context, or intermediate text. */
     gtk_entry_buffer_delete_text(captured_buffer, 0, -1);
     State after_delete = state();
-    if (!settled(after_delete) || after_delete.epoch != captured_epoch ||
+    if (!settled(after_delete) || after_delete.epoch != captured_epoch || after_delete.serial != captured_serial ||
         !gtk_widget_has_focus(entry) || gtk_entry_get_buffer(GTK_ENTRY(entry)) != captured_buffer ||
         revision != captured_revision + (captured[0] ? 1u : 0u) ||
         gtk_entry_buffer_get_length(captured_buffer) != 0) {
@@ -80,6 +81,7 @@ static const char *accept(void) {
     gtk_entry_buffer_insert_text(captured_buffer, 0, replacement, -1);
     State after_insert = state();
     gboolean exact = settled(after_insert) && after_insert.epoch == captured_epoch &&
+        after_insert.serial == captured_serial &&
         gtk_widget_has_focus(entry) && gtk_entry_get_buffer(GTK_ENTRY(entry)) == captured_buffer &&
         revision == captured_revision + (captured[0] ? 2u : 1u) &&
         !strcmp(gtk_entry_buffer_get_text(captured_buffer), replacement);
@@ -111,13 +113,14 @@ static void save_state(void) {
         "{\"request\":%u,\"result\":\"%s\",\"ready\":%s,\"known\":%s,"
         "\"pending\":%s,\"composing\":%s,\"settled\":%s,\"serial\":%" G_GUINT64_FORMAT ","
         "\"delivered\":%" G_GUINT64_FORMAT ",\"length\":%u,\"replacement\":%s,"
-        "\"nested_refused\":%s,\"nested_depth\":%u}\n",
+        "\"nested_refused\":%s,\"nested_depth\":%u,\"epoch\":%" G_GUINT64_FORMAT ",\"unchanged_capture\":%s}\n",
         request, result, gtk_widget_get_mapped(window) ? "true" : "false",
         s.valid && s.known ? "true" : "false", s.pending ? "true" : "false", s.composing ? "true" : "false",
         settled(s) ? "true" : "false", s.serial, s.delivered,
         gtk_entry_buffer_get_length(gtk_entry_get_buffer(GTK_ENTRY(entry))),
         !strcmp(gtk_entry_get_text(GTK_ENTRY(entry)), replacement) ? "true" : "false",
-        nested_refused ? "true" : "false", nested_depth);
+        nested_refused ? "true" : "false", nested_depth, s.epoch,
+        captured && !strcmp(gtk_entry_get_text(GTK_ENTRY(entry)), captured) ? "true" : "false");
     gchar *path = g_build_filename(directory, "state.json", NULL);
     GError *error = NULL;
     if (!g_file_set_contents(path, json, -1, &error)) g_error("state write: %s", error->message);

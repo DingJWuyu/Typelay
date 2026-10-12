@@ -336,6 +336,23 @@ def session(out: Path):
                 assert command("capture")["result"] == "captured"
                 assert command("accept")["result"] == "accepted"
                 assert state()["replacement"] is True
+                before = command("capture")
+                assert before["result"] == "captured"
+                run(["xdotool", "key", "--window", window, "Left"], env=env)
+                wait(
+                    lambda: state().get("epoch", 0) > before["epoch"],
+                    "actual navigation input epoch",
+                )
+                assert state()["unchanged_capture"] is True
+                assert command("accept")["result"] == "refused-input"
+                before = command("capture")
+                assert before["result"] == "captured"
+                run(["xdotool", "key", "--window", window, "dead_acute"], env=env)
+                wait(lambda: state().get("composing"), "core compose before cancellation")
+                run(["xdotool", "key", "--window", window, "Escape"], env=env)
+                wait(lambda: state().get("settled"), "core compose cancellation")
+                assert state()["unchanged_capture"] is True
+                assert command("accept")["result"] == "refused-input"
                 assert command("capture")["result"] == "captured"
                 assert command("mutate")["result"] == "mutated"
                 assert command("accept")["result"] == "refused-stale"
@@ -361,6 +378,8 @@ def session(out: Path):
                             "actual_gtk_compare_write": True,
                             "preedit_refusal": True,
                             "core_compose_refusal": True,
+                            "unchanged_text_input_invalidates_capture": True,
+                            "cancelled_compose_invalidates_capture": True,
                             "undelivered_candidate_refusal": True,
                             "stale_and_focus_refusal": True,
                             "iteration_reentry_refusal": True,

@@ -128,8 +128,26 @@ class EditorProbe(unittest.TestCase):
     def test_production_capture_publish_and_single_tab_acceptance(self):
         self.isolated(browser_e2e.TRANSPORT + "\n" + CONTENT.read_text())
         self.page.evaluate("window.editorProbeSetup('guarded')")
+        # DOM focus alone does not activate a real Chromium window. Establish
+        # the actual keyboard destination before the one trusted IME observation.
+        self.page.bring_to_front()
+        self.page.wait_for_function(
+            """() => {
+          const root = document.querySelector('#editor-source');
+          const selected = document.getSelection();
+          return document.hasFocus() && document.visibilityState === 'visible'
+            && document.activeElement === root && root.contains(selected.anchorNode)
+            && root.contains(selected.focusNode) && !selected.isCollapsed;
+        }""",
+            timeout=5000,
+        )
+        self.isolated("""window.addEventListener('keydown', event => {
+          window.fixtureShift = {trusted: event.isTrusted, key: event.key,
+            targetIsRoot: event.target === document.querySelector('#editor-source'),
+            hasFocus: document.hasFocus(), composing: event.isComposing};
+        }, {capture: true, once: true});""")
         self.page.keyboard.press("Shift")  # Trusted non-composing state evidence.
-        sequence = 0
+        sequence = 2
 
         def command(operation, data=None):
             nonlocal sequence
@@ -137,12 +155,31 @@ class EditorProbe(unittest.TestCase):
             message = {"id": sequence, "op": operation, "data": data or {}}
             return self.isolated("fixtureCommand(" + json.dumps(message) + ")")
 
-        description = command("describe")
-        self.assertIsNotNone(description)
-        snapshot = command(
-            "capture", {"target": description["target"], "authority": description["authority"]}
-        )
-        self.assertIsNotNone(snapshot)
+        # Keep the approved describe/capture pair in one browser turn. Python
+        # transport latency must not consume the production 150 ms authority.
+        captured = self.isolated("""(() => {
+          const describeRequest = {id: 1, op: 'describe', data: {}};
+          const description = fixtureCommand(describeRequest);
+          const captureRequest = {id: 2, op: 'capture', data: {
+            target: description?.target, authority: description?.authority}};
+          const snapshot = description ? fixtureCommand(captureRequest) : null;
+          const root = document.querySelector('#editor-source');
+          const selected = document.getSelection();
+          return {snapshot, diagnostic: {
+            described: !!description, imeKnown: description?.metadata.hasTextEdit,
+            describedFocused: description?.focused, hasFocus: document.hasFocus(),
+            activeIsRoot: document.activeElement === root, visibility: document.visibilityState,
+            shift: window.fixtureShift, authorityObservedAtMs: description?.authority.observedAtMs,
+            describeClock: describeRequest.clock, captureClock: captureRequest.clock,
+            wallTimeMs: Date.now(), performanceMs: performance.now(),
+            selection: {anchorInRoot: root.contains(selected.anchorNode),
+              anchorType: selected.anchorNode?.nodeType, anchorOffset: selected.anchorOffset,
+              focusInRoot: root.contains(selected.focusNode),
+              focusType: selected.focusNode?.nodeType, focusOffset: selected.focusOffset,
+              collapsed: selected.isCollapsed}}};
+        })()""")
+        snapshot = captured["snapshot"]
+        self.assertIsNotNone(snapshot, json.dumps(captured["diagnostic"], sort_keys=True))
         plan = browser_e2e.BrowserContract.plan(snapshot, "bonjour", {"start": 7, "end": 12})
         plan["resultText"] = "Before bonjour world after untouched"
         plan["caret"] = 14

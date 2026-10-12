@@ -193,10 +193,11 @@
      /* firefox needs GtkWidget instead of GtkWindow */
      if (GTK_IS_WIDGET(widget)) {
          fcitxcontext->button_press_signal = g_signal_connect(
-@@ -601,9 +624,11 @@
+@@ -601,9 +624,12 @@
  
          _fcitx_im_context_push_event(fcitxcontext, event);
          if (_use_sync_mode) {
++            ++fcitxcontext->typelay_epoch;
 +            ++fcitxcontext->typelay_depth;
              gboolean ret = fcitx_g_client_process_key_sync(
                  fcitxcontext->client, event->keyval, event->hardware_keycode,
@@ -205,7 +206,7 @@
              if (ret) {
                  event->state |= (guint32)HandledMask;
                  return TRUE;
-@@ -816,6 +841,7 @@
+@@ -816,6 +842,7 @@
  static void _fcitx_im_context_notify_focus_out_cb(FcitxGClient *,
                                                    void *user_data) {
      FcitxIMContext *context = FCITX_IM_CONTEXT(user_data);
@@ -213,7 +214,7 @@
      if (!context->has_focus) {
          return;
      }
-@@ -826,6 +852,7 @@
+@@ -826,6 +853,7 @@
  ///
  static void fcitx_im_context_focus_in(GtkIMContext *context) {
      FcitxIMContext *fcitxcontext = FCITX_IM_CONTEXT(context);
@@ -221,7 +222,7 @@
  
      if (fcitxcontext->has_focus) {
          return;
-@@ -902,6 +929,7 @@
+@@ -902,6 +930,7 @@
  
  static void fcitx_im_context_focus_out(GtkIMContext *context) {
      FcitxIMContext *fcitxcontext = FCITX_IM_CONTEXT(context);
@@ -229,7 +230,7 @@
  
      if (!fcitxcontext->has_focus) {
          return;
-@@ -1186,6 +1214,7 @@
+@@ -1186,6 +1215,7 @@
  ///
  static void fcitx_im_context_reset(GtkIMContext *context) {
      FcitxIMContext *fcitxcontext = FCITX_IM_CONTEXT(context);
@@ -237,7 +238,7 @@
  
      fcitx_im_context_commit_preedit(fcitxcontext);
  
-@@ -1301,6 +1330,7 @@
+@@ -1301,6 +1331,7 @@
      FcitxIMContext *context = FCITX_IM_CONTEXT(user_data);
      GdkEventKey *event = _create_gdk_event(context, keyval, state, isRelease);
      event->state |= (guint32)IgnoredMask;
@@ -245,7 +246,7 @@
      gdk_event_put((GdkEvent *)event);
      gdk_event_free((GdkEvent *)event);
  }
-@@ -1547,6 +1577,7 @@
+@@ -1547,6 +1578,7 @@
  
  void _fcitx_im_context_connect_cb(FcitxGClient *im, void *user_data) {
      FcitxIMContext *context = FCITX_IM_CONTEXT(user_data);
@@ -253,7 +254,7 @@
  #ifdef GDK_WINDOWING_X11
      Display *display = NULL;
      if (context->client_window) {
-@@ -1602,7 +1633,22 @@
+@@ -1602,7 +1634,22 @@
      }
  }
  
@@ -276,10 +277,11 @@
      gboolean retval = FALSE;
  
      FcitxIMContext *fcitxcontext = (FcitxIMContext *)_focus_im_context;
-@@ -1638,9 +1684,11 @@
+@@ -1638,9 +1685,12 @@
  
          _fcitx_im_context_push_event(fcitxcontext, event);
          if (_use_sync_mode) {
++            ++fcitxcontext->typelay_epoch;
 +            ++fcitxcontext->typelay_depth;
              retval = fcitx_g_client_process_key_sync(
                  fcitxcontext->client, event->keyval, event->hardware_keycode,
@@ -288,7 +290,7 @@
          } else {
              fcitx_g_client_process_key(
                  fcitxcontext->client, event->keyval, event->hardware_keycode,
-@@ -1772,3 +1820,40 @@
+@@ -1772,3 +1822,40 @@
  }
  
  // kate: indent-mode cstyle; replace-tabs on;

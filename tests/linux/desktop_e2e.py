@@ -206,8 +206,9 @@ def run(arguments):
                         "Chromium did not acquire actual Wayland keyboard focus",
                     )
                     typed(original)
-                    assert page.locator("#source").input_value() == original, (
-                        "XTest input did not reach Chromium source"
+                    wait_for(
+                        lambda: page.locator("#source").input_value() == original,
+                        "XTest input did not reach Chromium source",
                     )
                     wait_for(
                         ready_to_accept, "browser native route/model did not grant Tab acceptance"
@@ -326,17 +327,18 @@ def run(arguments):
                 "Firefox did not acquire actual Wayland keyboard focus",
             )
             typed(original)
-            assert (
-                web(
+            # XTest completion confirms injection, not that the Wayland/browser
+            # event queue has applied the final character. Observe the exact
+            # source after this one injection, never resend text or relax it.
+            wait_for(
+                lambda: web(
                     "POST",
                     "/execute/sync",
-                    {
-                        "script": "return document.querySelector('#source').value;",
-                        "args": [],
-                    },
+                    {"script": "return document.querySelector('#source').value;", "args": []},
                 )
-                == original
-            ), "XTest input did not reach Firefox source"
+                == original,
+                "XTest input did not reach Firefox source",
+            )
             wait_for(ready_to_accept, "Firefox native route/model did not grant Tab acceptance")
 
             def firefox_value():
