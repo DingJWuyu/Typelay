@@ -546,7 +546,14 @@ private:
         const auto selected = selection(target);
         if (!expected.value("text").isString() || text != expected.value("text").toString())
             return reject("write-source", "SourceChanged");
-        if (selected != expected.value("selection").toObject())
+        const auto expectedSelection = expected.value("selection").toObject();
+        const auto requestedStart = expectedSelection.value("start");
+        const auto requestedEnd = expectedSelection.value("end");
+        // The shared TextRange wire object also contains derived properties.
+        // Only the two exact UTF-16 offsets define selection equality.
+        if (!requestedStart.isDouble() || !requestedEnd.isDouble()
+            || requestedStart.toDouble() != selected.value("start").toInt()
+            || requestedEnd.toDouble() != selected.value("end").toInt())
             return reject("write-selection", "SelectionChanged");
         const auto replacement = plan.value("replacement").toString();
         const auto result = plan.value("resultText").toString();

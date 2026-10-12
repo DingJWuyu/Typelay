@@ -1,5 +1,7 @@
 using TypeLay.Runtime;
 using TypeLay.Windows.Contracts;
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.ExceptionServices;
 using System.Windows;
@@ -17,31 +19,49 @@ using Xunit;
 namespace TypeLay.App.Tests;
 
 [Collection("Desktop")]
-public sealed class SettingsRenderingTests
+public sealed class SettingsRenderingTests(ITestOutputHelper testOutput)
 {
+    private readonly ConcurrentQueue<string> _stages = new();
+    private readonly Stopwatch _elapsed = new();
+
+    private void Stage(string name) => _stages.Enqueue($"{_elapsed.ElapsedMilliseconds} ms: {name}");
+
     [Fact]
     public void SettingsUiSavesModeAndShortcutsAndRendersAtSupportedSizes()
     {
+        _elapsed.Start();
         Exception? failure = null;
         var thread = new Thread(() =>
         {
+            Stage("thread-entered");
             string directory = Path.Combine(Path.GetTempPath(), "typelay-ui-test-" + Guid.NewGuid().ToString("N"));
             Application? application = null;
             try
             {
+                Stage("application-create");
                 application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+                Stage("theme-initialize");
                 UiTheme.Initialize("light");
+                Stage("settings-create");
                 var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
+                Stage("model-create");
                 using var model = WindowsRuntime.CreateModel(); // No model is started or downloaded by this UI test.
+                Stage("window-create");
                 var window = new SettingsWindow(settings, model, () => { });
+                Stage("initial-show");
                 window.ShowPage();
+                Stage("initial-layout");
                 window.UpdateLayout();
+                Stage("mode-save");
                 var modes = Descendants(window).OfType<ComboBox>()
                     .Single(control => AutomationProperties.GetName(control) == "工作模式");
                 modes.SelectedIndex = 1;
                 Assert.Equal(WorkMode.OnDemand, WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json")).Value.Mode);
+                Stage("shortcuts-show");
                 window.ShowPage("shortcuts");
+                Stage("shortcuts-layout");
                 window.UpdateLayout();
+                Stage("shortcuts-save");
                 Descendants(window).OfType<TextBox>().Single(control => AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键").Text = "Ctrl+Shift+K";
                 Descendants(window).OfType<TextBox>().Single(control => AutomationProperties.GetName(control) == "直接翻译并替换快捷键").Text = "Alt+F8";
                 Descendants(window).OfType<Button>().Single(control => Equals(control.Content, "保存按需快捷键"))
@@ -51,17 +71,22 @@ public sealed class SettingsRenderingTests
                 Assert.Equal("Alt+F8", saved.DirectShortcut);
                 foreach (string theme in new[] { "light", "dark" })
                 {
+                    Stage($"theme-apply:{theme}");
                     UiTheme.Apply(theme);
                     foreach (int width in new[] { 944, 790 })
                     {
                         window.Width = width;
                         window.Height = width == 944 ? 674 : 560;
+                        Stage($"shortcuts-show:{theme}:{width}");
                         window.ShowPage("shortcuts");
+                        Stage($"shortcuts-layout:{theme}:{width}");
                         window.UpdateLayout();
                         foreach (var input in Descendants(window).OfType<TextBox>())
                             Assert.InRange(input.ActualWidth, 150, window.ActualWidth);
                         Render(window, $"settings-shortcuts-{theme}-{width}.png");
+                        Stage($"general-show:{theme}:{width}");
                         window.ShowPage();
+                        Stage($"general-layout:{theme}:{width}");
                         window.UpdateLayout();
                         foreach (var selector in Descendants(window).OfType<ComboBox>())
                         {
@@ -72,15 +97,20 @@ public sealed class SettingsRenderingTests
                         scroll.ScrollToTop();
                         window.UpdateLayout();
                         Render(window, $"settings-general-{theme}-{width}.png");
+                        Stage($"general-scroll:{theme}:{width}");
                         scroll.ScrollToBottom();
                         window.UpdateLayout();
                         Assert.Equal(scroll.ScrollableHeight, scroll.VerticalOffset, precision: 1);
                         scroll.ScrollToTop();
+                        Stage($"language-show:{theme}:{width}");
                         window.ShowPage("language");
+                        Stage($"language-layout:{theme}:{width}");
                         window.UpdateLayout();
                         // UpdateLayout does not dispatch Loaded. WPF deliberately
                         // keeps a ComboBox closed until that lifecycle event runs.
+                        Stage($"language-loaded:{theme}:{width}");
                         window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
+                        Stage($"language-dropdowns:{theme}:{width}");
                         foreach (var selector in Descendants(window).OfType<ComboBox>().ToArray())
                         {
                             Assert.True(selector.IsLoaded, "The language selector must be loaded before user interaction.");
@@ -104,32 +134,44 @@ public sealed class SettingsRenderingTests
                 }
                 window.Width = 944;
                 window.Height = 674;
+                Stage("capsule-setup");
                 UiTheme.Apply("light");
                 window.ShowPage();
                 window.UpdateLayout();
+                Stage("capsule-verify");
                 VerifyEmptyFieldCapsule(window, settings.Value);
                 window.Hide();
+                Stage("controller-desktop-scenario");
                 ControllerDesktopScenario.Run();
+                Stage("scenarios-complete");
             }
             catch (Exception error) { failure = error; }
             finally
             {
+                Stage("application-shutdown");
                 application?.Shutdown();
+                Stage("directory-cleanup");
                 if (Directory.Exists(directory))
                     Directory.Delete(directory, true);
+                Stage("thread-complete");
             }
         })
         {
             IsBackground = true
         };
         thread.SetApartmentState(ApartmentState.STA);
+        Stage("thread-start");
         thread.Start();
-        Assert.True(thread.Join(TimeSpan.FromSeconds(40)), "The WPF desktop scenarios exceeded their deadline.");
+        bool completed = thread.Join(TimeSpan.FromSeconds(40));
+        // The STA may still be running on timeout; only the test thread writes to xUnit.
+        string[] stages = _stages.ToArray();
+        testOutput.WriteLine(string.Join(Environment.NewLine, stages));
+        Assert.True(completed, $"The WPF desktop scenarios exceeded their deadline. Last stage: {stages.LastOrDefault()}");
         if (failure is not null)
             ExceptionDispatchInfo.Capture(failure).Throw();
     }
 
-    private static void VerifyEmptyFieldCapsule(Window sourceWindow, UserSettings settings)
+    private void VerifyEmptyFieldCapsule(Window sourceWindow, UserSettings settings)
     {
         var target = new WindowsTarget(Environment.ProcessId, 1, (long)new WindowInteropHelper(sourceWindow).Handle,
             1, "rendering-fixture", "empty-field", Guid.NewGuid());
@@ -198,8 +240,9 @@ public sealed class SettingsRenderingTests
         }
     }
 
-    private static void Render(Window window, string name)
+    private void Render(Window window, string name)
     {
+        Stage($"render:{name}");
         var root = (FrameworkElement)window.Content;
         // The root's visual offset includes its margin. Use the window's entire
         // canvas so rounded borders and shadows are not clipped by the capture.
@@ -213,7 +256,8 @@ public sealed class SettingsRenderingTests
         Assert.NotNull(repository);
         string folder = Path.Combine(repository.FullName, "artifacts", "test-results", "rendering");
         Directory.CreateDirectory(folder);
-        using var output = File.Create(Path.Combine(folder, name));
-        encoder.Save(output);
+        using (var output = File.Create(Path.Combine(folder, name)))
+            encoder.Save(output);
+        Stage($"render-complete:{name}");
     }
 }
