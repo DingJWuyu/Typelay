@@ -55,8 +55,9 @@ typedef struct {
      * delivered output or reentrant local input must invalidate this baseline. */
     gboolean (*validate_local)(GtkIMContext *context, GtkWidget *expected_widget,
         const TlFcitxStateV1 *baseline);
-    /* Prepare only a previously authorized standard Entry caret movement while
-     * its exact baseline is Clear. Run GTK's normal reset-if-needed through a
+    /* Prepare only a previously authorized standard source caret movement
+     * (Entry, or TextView when supported) while its exact baseline is Clear.
+     * Run GTK's normal reset-if-needed through a
      * server-validated, bounded synchronous reset batch and deliver its actual
      * output. Do not alter selection or suppress IM output. The consumer must
      * inspect again and revalidate its original source authorization afterwards;

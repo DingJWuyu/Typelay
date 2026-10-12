@@ -5,7 +5,7 @@
 /* Only the isolated test executable writes this evidence. Production has no
  * command to dump source text, inject input or change a test model. */
 static GtkWidget *report_window, *report_first, *report_second, *other_window, *other_entry;
-static GtkWidget *protected_fields[2];
+static GtkWidget *protected_fields[2], *report_multiline, *excluded_views[3];
 static const char *report_path;
 static char *last_report;
 
@@ -67,6 +67,8 @@ static gboolean report_state(gpointer unused) {
         valid = inspect_ime(focus, &state);
         json_builder_set_member_name(builder, "focusedImeClear");
         json_builder_add_boolean_value(builder, valid && ime_clear(&state));
+        json_builder_set_member_name(builder, "focusedImeComposing");
+        json_builder_add_boolean_value(builder, valid && (state.flags & TL_FCITX_COMPOSING));
         json_builder_set_member_name(builder, "fullscreen");
         json_builder_add_boolean_value(builder,
             gtk_window_is_fullscreen(GTK_WINDOW(report_window)));
@@ -98,6 +100,36 @@ static gboolean report_state(gpointer unused) {
             json_builder_end_object(builder);
         } else json_builder_add_null_value(builder);
     }
+    json_builder_set_member_name(builder, "multiline");
+    json_builder_begin_object(builder);
+    GtkTextBuffer *multiline = gtk_text_view_get_buffer(GTK_TEXT_VIEW(report_multiline));
+    GtkTextIter begin, end, selected_begin, selected_end;
+    gtk_text_buffer_get_bounds(multiline, &begin, &end);
+    char *body = gtk_text_buffer_get_text(multiline, &begin, &end, TRUE);
+    json_builder_set_member_name(builder, "text"); json_builder_add_string_value(builder, body);
+    g_free(body);
+    gtk_text_buffer_get_selection_bounds(multiline, &selected_begin, &selected_end);
+    json_builder_set_member_name(builder, "start"); json_builder_add_int_value(builder, gtk_text_iter_get_offset(&selected_begin));
+    json_builder_set_member_name(builder, "end"); json_builder_add_int_value(builder, gtk_text_iter_get_offset(&selected_end));
+    json_builder_set_member_name(builder, "canUndo"); json_builder_add_boolean_value(builder, gtk_text_buffer_get_can_undo(multiline));
+    graphene_point_t origin = GRAPHENE_POINT_INIT(0, 0), point;
+    if (gtk_widget_compute_point(report_multiline, report_window, &origin, &point)) {
+        json_builder_set_member_name(builder, "x"); json_builder_add_double_value(builder, point.x);
+        json_builder_set_member_name(builder, "y"); json_builder_add_double_value(builder, point.y);
+    }
+    json_builder_end_object(builder);
+    json_builder_set_member_name(builder, "excludedTextViews");
+    json_builder_begin_array(builder);
+    for (guint i = 0; i < G_N_ELEMENTS(excluded_views); i++) {
+        if (gtk_widget_compute_point(excluded_views[i], report_window, &origin, &point)) {
+            json_builder_begin_object(builder);
+            json_builder_set_member_name(builder, "name"); json_builder_add_string_value(builder, gtk_widget_get_name(excluded_views[i]));
+            json_builder_set_member_name(builder, "x"); json_builder_add_double_value(builder, point.x);
+            json_builder_set_member_name(builder, "y"); json_builder_add_double_value(builder, point.y);
+            json_builder_end_object(builder);
+        }
+    }
+    json_builder_end_array(builder);
     json_builder_set_member_name(builder, "protectedFields");
     json_builder_begin_array(builder);
     for (guint i = 0; i < G_N_ELEMENTS(protected_fields); i++) {
@@ -171,8 +203,31 @@ int main(void) {
     protected_fields[1] = password_entry;
     GtkWidget *view = gtk_text_view_new();
     gtk_widget_set_name(view, "fixture-multiline");
-    gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(view)), "first line\nsecond line", -1);
+    GtkTextBuffer *text_buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(view));
+    gtk_text_buffer_set_enable_undo(text_buffer, TRUE);
+    gtk_text_buffer_set_text(text_buffer, "Before 😀\nPlease review this note.\nPlease send me the final version.\nAfter untouched", -1);
+    gtk_widget_set_size_request(view, -1, 100);
+    report_multiline = view;
     gtk_box_append(GTK_BOX(box), view);
+    const char *names[] = {"fixture-tagged", "fixture-object", "fixture-readonly"};
+    for (guint i = 0; i < G_N_ELEMENTS(excluded_views); i++) {
+        GtkWidget *excluded = gtk_text_view_new();
+        excluded_views[i] = excluded;
+        gtk_widget_set_name(excluded, names[i]);
+        GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(excluded));
+        gtk_text_buffer_set_text(buffer, "Excluded fixture content", -1);
+        GtkTextIter first, last;
+        gtk_text_buffer_get_bounds(buffer, &first, &last);
+        if (i == 0) {
+            GtkTextTag *tag = gtk_text_buffer_create_tag(buffer, "fixture-tag", "weight", PANGO_WEIGHT_BOLD, NULL);
+            gtk_text_buffer_apply_tag(buffer, tag, &first, &last);
+        } else if (i == 1) {
+            GtkTextChildAnchor *anchor = gtk_text_buffer_create_child_anchor(buffer, &first);
+            gtk_text_view_add_child_at_anchor(GTK_TEXT_VIEW(excluded), gtk_label_new("Embedded object"), anchor);
+        } else gtk_text_view_set_editable(GTK_TEXT_VIEW(excluded), FALSE);
+        gtk_widget_set_size_request(excluded, -1, 32);
+        gtk_box_append(GTK_BOX(box), excluded);
+    }
     g_signal_connect(window, "close-request", G_CALLBACK(close_fixture), loop);
     gtk_window_present(GTK_WINDOW(window));
     if (g_getenv("TYPELAY_FIXTURE_FULLSCREEN")) gtk_window_fullscreen(GTK_WINDOW(window));

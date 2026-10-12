@@ -8,9 +8,10 @@
 
 typedef struct Target Target;
 struct Target {
-    GtkWidget *widget; /* weak outer exact GtkEntry */
-    GtkWidget *client; /* weak exact GtkText delegate, the actual IM owner */
+    GtkWidget *widget; /* weak exact GtkEntry or GtkTextView */
+    GtkWidget *client; /* weak GtkText delegate or the TextView itself: actual IM owner */
     GObject *buffer;
+    GObject *tag_table;
     GtkIMContext *im_context; /* weak; each provider call temporarily retains it */
     GThread *thread;
     gulong im_handler;

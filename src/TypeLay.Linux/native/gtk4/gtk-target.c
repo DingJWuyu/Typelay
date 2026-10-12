@@ -17,6 +17,25 @@ static gboolean standard_entry(Target *target) {
         && gtk_editable_get_delegate(GTK_EDITABLE(target->widget)) == GTK_EDITABLE(target->client)
         && G_OBJECT_TYPE(target->buffer) == GTK_TYPE_ENTRY_BUFFER;
 }
+static gboolean standard_textview(Target *target) {
+    return target && !target->dead && target->widget && target->buffer
+        && target->client == target->widget && G_OBJECT_TYPE(target->widget) == GTK_TYPE_TEXT_VIEW
+        && G_OBJECT_TYPE(target->buffer) == GTK_TYPE_TEXT_BUFFER
+        && G_OBJECT(gtk_text_view_get_buffer(GTK_TEXT_VIEW(target->widget))) == target->buffer;
+}
+static gboolean plain_text_buffer(GtkTextBuffer *buffer) {
+    if (gtk_text_tag_table_get_size(gtk_text_buffer_get_tag_table(buffer)) != 0
+        || gtk_text_buffer_get_char_count(buffer) > TL_MAX_TEXT) return FALSE;
+    /* Structural inspection only, before obtaining any body text. An untagged
+       standard buffer may still contain images or embedded child widgets. */
+    GtkTextIter position;
+    gtk_text_buffer_get_start_iter(buffer, &position);
+    while (!gtk_text_iter_is_end(&position)) {
+        if (gtk_text_iter_get_child_anchor(&position) || gtk_text_iter_get_paintable(&position)) return FALSE;
+        if (!gtk_text_iter_forward_char(&position)) break;
+    }
+    return TRUE;
+}
 static const TlFcitxCapabilityV1 *im_capability(GtkIMContext *context) {
     if (!context || !GTK_IS_IM_CONTEXT(context)) return NULL;
     const TlFcitxCapabilityV1 *value = g_object_get_data(G_OBJECT(context), TL_FCITX_CAPABILITY_V1);
@@ -24,7 +43,7 @@ static const TlFcitxCapabilityV1 *im_capability(GtkIMContext *context) {
         && value->inspect && value->validate_local && value->prepare_caret ? value : NULL;
 }
 static GtkIMContext *published_context(Target *target) {
-    GtkIMContext *context = standard_entry(target)
+    GtkIMContext *context = (standard_entry(target) || standard_textview(target))
         ? g_object_get_data(G_OBJECT(target->client), TL_FCITX_CONTEXT_V1) : NULL;
     return im_capability(context) ? context : NULL;
 }
@@ -159,6 +178,12 @@ static void changed(Target *target) {
     if (!target->mutating) tl_invalidate(target, TRUE, FALSE);
 }
 static void entry_changed(GtkEditable *editable, gpointer data) { (void)editable; changed(data); }
+static void text_buffer_changed(GtkTextBuffer *buffer, gpointer data) {
+    (void)buffer;
+    Target *target = data;
+    target->storage_revision++;
+    changed(target);
+}
 static void entry_inserted(GtkEntryBuffer *buffer, guint position, const gchar *text, guint count, gpointer data) {
     (void)buffer; (void)position; (void)text; (void)count;
     Target *target = data;
@@ -173,6 +198,19 @@ static void selection_changed(GObject *object, GParamSpec *property, gpointer da
     (void)object; (void)property;
     Target *target = data;
     if (!target->mutating) tl_invalidate(target, FALSE, FALSE);
+}
+static void text_mark_changed(GtkTextBuffer *buffer, GtkTextIter *where, GtkTextMark *mark, gpointer data) {
+    (void)where;
+    if (mark == gtk_text_buffer_get_insert(buffer) || mark == gtk_text_buffer_get_selection_bound(buffer))
+        selection_changed(G_OBJECT(buffer), NULL, data);
+}
+static void tag_added_removed(GtkTextTagTable *table, GtkTextTag *tag, gpointer data) {
+    (void)table; (void)tag;
+    tl_invalidate(data, FALSE, FALSE);
+}
+static void tag_changed(GtkTextTagTable *table, GtkTextTag *tag, gboolean size_changed, gpointer data) {
+    (void)size_changed;
+    tag_added_removed(table, tag, data);
 }
 static void preedit(GtkWidget *widget, const gchar *text, gpointer data) {
     (void)widget;
@@ -193,15 +231,14 @@ static void focused(GObject *object, GParamSpec *property, gpointer data) {
     tl_invalidate(target, FALSE, TRUE);
 }
 static void destroyed(gpointer data, GObject *object) {
-    (void)object;
     Target *target = data;
     target->dead = TRUE;
     target->widget = NULL;
-    if (target->client) {
+    if (target->client && G_OBJECT(target->client) != object) {
         g_signal_handlers_disconnect_by_data(target->client, target);
         g_object_remove_weak_pointer(G_OBJECT(target->client), (gpointer *)&target->client);
-        target->client = NULL;
     }
+    target->client = NULL;
     if (target->im_context) {
         if (target->im_handler) g_signal_handler_disconnect(target->im_context, target->im_handler);
         g_object_remove_weak_pointer(G_OBJECT(target->im_context), (gpointer *)&target->im_context);
@@ -212,21 +249,39 @@ static void destroyed(gpointer data, GObject *object) {
         g_signal_handlers_disconnect_by_data(target->buffer, target);
         g_clear_object(&target->buffer);
     }
+    if (target->tag_table) {
+        g_signal_handlers_disconnect_by_data(target->tag_table, target);
+        g_clear_object(&target->tag_table);
+    }
     tl_forget(target);
     /* Bounded identity tombstones also survive callbacks during a native write. */
 }
 static void attach_buffer(Target *target) {
-    GObject *buffer = G_OBJECT(gtk_entry_get_buffer(GTK_ENTRY(target->widget)));
+    GObject *buffer = GTK_IS_ENTRY(target->widget)
+        ? G_OBJECT(gtk_entry_get_buffer(GTK_ENTRY(target->widget)))
+        : G_OBJECT(gtk_text_view_get_buffer(GTK_TEXT_VIEW(target->widget)));
     if (buffer == target->buffer) return;
     if (target->buffer) {
         g_signal_handlers_disconnect_by_data(target->buffer, target);
         g_object_unref(target->buffer);
+    }
+    if (target->tag_table) {
+        g_signal_handlers_disconnect_by_data(target->tag_table, target);
+        g_clear_object(&target->tag_table);
     }
     target->buffer = g_object_ref(buffer);
     target->storage_revision++;
     if (GTK_IS_ENTRY_BUFFER(buffer)) {
         g_signal_connect(buffer, "inserted-text", G_CALLBACK(entry_inserted), target);
         g_signal_connect_after(buffer, "deleted-text", G_CALLBACK(entry_deleted), target);
+    }
+    if (GTK_IS_TEXT_BUFFER(buffer)) {
+        g_signal_connect(buffer, "changed", G_CALLBACK(text_buffer_changed), target);
+        g_signal_connect(buffer, "mark-set", G_CALLBACK(text_mark_changed), target);
+        target->tag_table = g_object_ref(G_OBJECT(gtk_text_buffer_get_tag_table(GTK_TEXT_BUFFER(buffer))));
+        g_signal_connect(target->tag_table, "tag-added", G_CALLBACK(tag_added_removed), target);
+        g_signal_connect(target->tag_table, "tag-removed", G_CALLBACK(tag_added_removed), target);
+        g_signal_connect(target->tag_table, "tag-changed", G_CALLBACK(tag_changed), target);
     }
     tl_invalidate(target, TRUE, FALSE);
 }
@@ -237,10 +292,13 @@ static void buffer_replaced(GObject *object, GParamSpec *property, gpointer data
 }
 void tl_discover(GtkWidget *client, gboolean before_input) {
     (void)before_input;
-    if (!client || tl_overlay_contains(client) || G_OBJECT_TYPE(client) != GTK_TYPE_TEXT) return;
-    GtkWidget *widget = gtk_widget_get_parent(client);
-    if (!widget || G_OBJECT_TYPE(widget) != GTK_TYPE_ENTRY
-        || gtk_editable_get_delegate(GTK_EDITABLE(widget)) != GTK_EDITABLE(client)) return;
+    if (!client || tl_overlay_contains(client)) return;
+    GtkWidget *widget = client;
+    if (G_OBJECT_TYPE(client) == GTK_TYPE_TEXT) {
+        widget = gtk_widget_get_parent(client);
+        if (!widget || G_OBJECT_TYPE(widget) != GTK_TYPE_ENTRY
+            || gtk_editable_get_delegate(GTK_EDITABLE(widget)) != GTK_EDITABLE(client)) return;
+    } else if (G_OBJECT_TYPE(client) != GTK_TYPE_TEXT_VIEW) return;
     if (!target_quark) target_quark = g_quark_from_static_string("typelay-gtk4-target");
     if (g_object_get_qdata(G_OBJECT(client), target_quark) || target_count >= 2048) return;
     if (!targets) targets = g_hash_table_new(g_str_hash, g_str_equal);
@@ -251,16 +309,18 @@ void tl_discover(GtkWidget *client, gboolean before_input) {
     target->id = g_uuid_string_random();
     target->content_revision = target->input_revision = target->focus_revision = 1;
     g_object_set_qdata(G_OBJECT(client), target_quark, target);
-    g_object_add_weak_pointer(G_OBJECT(client), (gpointer *)&target->client);
+    if (client != widget) g_object_add_weak_pointer(G_OBJECT(client), (gpointer *)&target->client);
     g_object_weak_ref(G_OBJECT(widget), destroyed, target);
     g_hash_table_insert(targets, target->id, target);
     target_count++;
     g_signal_connect(client, "notify::has-focus", G_CALLBACK(focused), target);
     g_signal_connect(client, "preedit-changed", G_CALLBACK(preedit), target);
     g_signal_connect(widget, "notify::buffer", G_CALLBACK(buffer_replaced), target);
-    g_signal_connect(widget, "changed", G_CALLBACK(entry_changed), target);
-    g_signal_connect(client, "notify::cursor-position", G_CALLBACK(selection_changed), target);
-    g_signal_connect(client, "notify::selection-bound", G_CALLBACK(selection_changed), target);
+    if (GTK_IS_ENTRY(widget)) {
+        g_signal_connect(widget, "changed", G_CALLBACK(entry_changed), target);
+        g_signal_connect(client, "notify::cursor-position", G_CALLBACK(selection_changed), target);
+        g_signal_connect(client, "notify::selection-bound", G_CALLBACK(selection_changed), target);
+    }
     attach_buffer(target);
 }
 Target *tl_lookup(const char *id) {
@@ -281,16 +341,22 @@ Target *tl_focused(void) {
     return result && !result->dead ? result : NULL;
 }
 static gboolean supported(Target *target) {
-    return standard_entry(target) && gtk_widget_get_realized(target->widget)
+    return (standard_entry(target) || (standard_textview(target) && plain_text_buffer(GTK_TEXT_BUFFER(target->buffer))))
+        && gtk_widget_get_realized(target->widget)
         && gtk_widget_get_realized(target->client);
 }
 static gboolean sensitive(Target *target) {
+    if (GTK_IS_TEXT_VIEW(target->widget)) {
+        GtkInputPurpose purpose = gtk_text_view_get_input_purpose(GTK_TEXT_VIEW(target->widget));
+        return purpose == GTK_INPUT_PURPOSE_PASSWORD || purpose == GTK_INPUT_PURPOSE_PIN;
+    }
     GtkInputPurpose purpose = gtk_text_get_input_purpose(GTK_TEXT(target->client));
     return !gtk_entry_get_visibility(GTK_ENTRY(target->widget))
         || !gtk_text_get_visibility(GTK_TEXT(target->client))
         || purpose == GTK_INPUT_PURPOSE_PASSWORD || purpose == GTK_INPUT_PURPOSE_PIN;
 }
 static gboolean editable(Target *target) {
+    if (GTK_IS_TEXT_VIEW(target->widget)) return gtk_text_view_get_editable(GTK_TEXT_VIEW(target->widget));
     return gtk_editable_get_editable(GTK_EDITABLE(target->widget))
         && gtk_editable_get_editable(GTK_EDITABLE(target->client));
 }
@@ -355,7 +421,7 @@ static JsonObject *metadata(Target *target) {
     json_object_set_boolean_member(value, "readOnly", !editable(target));
     json_object_set_boolean_member(value, "offscreen", !gtk_widget_get_mapped(widget));
     json_object_set_boolean_member(value, "inDocument", FALSE);
-    json_object_set_boolean_member(value, "multiline", FALSE);
+    json_object_set_boolean_member(value, "multiline", GTK_IS_TEXT_VIEW(widget));
     json_object_set_boolean_member(value, "hasValue", TRUE);
     json_object_set_boolean_member(value, "hasTextEdit", published_context(target) != NULL);
     g_string_free(labels, TRUE);
@@ -440,10 +506,19 @@ static gint utf16_to_char(const char *text, gint offset) {
     return units == offset ? count : -1;
 }
 static char *read_text(Target *target, gint *start, gint *end) {
-    if (!standard_entry(target)) return NULL;
-    char *text = g_strdup(gtk_entry_buffer_get_text(GTK_ENTRY_BUFFER(target->buffer)));
-    if (!gtk_editable_get_selection_bounds(GTK_EDITABLE(target->widget), start, end))
-        *start = *end = gtk_editable_get_position(GTK_EDITABLE(target->widget));
+    char *text;
+    if (standard_entry(target)) {
+        text = g_strdup(gtk_entry_buffer_get_text(GTK_ENTRY_BUFFER(target->buffer)));
+        if (!gtk_editable_get_selection_bounds(GTK_EDITABLE(target->widget), start, end))
+            *start = *end = gtk_editable_get_position(GTK_EDITABLE(target->widget));
+    } else if (standard_textview(target) && plain_text_buffer(GTK_TEXT_BUFFER(target->buffer))) {
+        GtkTextBuffer *buffer = GTK_TEXT_BUFFER(target->buffer);
+        GtkTextIter first, last;
+        gtk_text_buffer_get_bounds(buffer, &first, &last);
+        text = gtk_text_buffer_get_text(buffer, &first, &last, TRUE);
+        gtk_text_buffer_get_selection_bounds(buffer, &first, &last);
+        *start = gtk_text_iter_get_offset(&first); *end = gtk_text_iter_get_offset(&last);
+    } else return NULL;
     if (utf16_length(text) < 0) { g_free(text); return NULL; }
     *start = char_to_utf16(text, *start); *end = char_to_utf16(text, *end);
     if (*start < 0 || *end < 0) { g_free(text); return NULL; }
@@ -504,6 +579,178 @@ static const char *stamp_difference(const TlFcitxStateV1 *before, const TlFcitxS
     if (before->applied_serial != after->applied_serial) return "im-applied";
     return "im-flags";
 }
+typedef struct {
+    Target *target;
+    GtkWidget *widget;
+    GtkTextBuffer *buffer;
+    JsonObject *approved, *basis;
+    guint64 storage, input, focus, content;
+    TlFcitxStateV1 state;
+} TextViewWrite;
+
+static void textview_marks(GtkTextBuffer *buffer, gint *cursor, gint *bound) {
+    GtkTextIter position;
+    gtk_text_buffer_get_iter_at_mark(buffer, &position, gtk_text_buffer_get_insert(buffer));
+    *cursor = gtk_text_iter_get_offset(&position);
+    gtk_text_buffer_get_iter_at_mark(buffer, &position, gtk_text_buffer_get_selection_bound(buffer));
+    *bound = gtk_text_iter_get_offset(&position);
+}
+static gboolean textview_body_matches(GtkTextBuffer *buffer, const char *expected) {
+    GtkTextIter first, last;
+    gtk_text_buffer_get_bounds(buffer, &first, &last);
+    char *text = gtk_text_buffer_get_text(buffer, &first, &last, TRUE);
+    gboolean same = strcmp(text, expected) == 0;
+    g_free(text);
+    return same;
+}
+static gboolean textview_guard(TextViewWrite *write, const char *text, gint cursor, gint bound,
+                               const char **failure) {
+    Target *target = write->target;
+    gboolean valid = write_check(!target->dead && target->widget == write->widget, "destroyed", failure)
+        && write_check(!target->quarantined, "quarantined", failure)
+        && write_check(target->buffer == G_OBJECT(write->buffer) && standard_textview(target), "buffer", failure)
+        && write_check(target->storage_revision == write->storage && target->content_revision == write->content,
+            "storage-revision", failure)
+        && write_check(validate_ime_locally(target, &write->state), "im-local", failure)
+        && write_check(target->ime_known && !target->composing && same_state(&target->im_state, &write->state),
+            "im-state", failure)
+        && write_check(target->input_revision == write->input, "input-revision", failure)
+        && write_check(target->focus_revision == write->focus && tl_focused() == target, "focus", failure)
+        && write_check(tl_metadata_matches(target, write->approved) && tl_metadata_matches(target, write->basis),
+            "metadata", failure);
+    if (!valid) return FALSE;
+    gint actual_cursor, actual_bound;
+    textview_marks(write->buffer, &actual_cursor, &actual_bound);
+    return write_check(actual_cursor == cursor && actual_bound == bound, "selection", failure)
+        && write_check(textview_body_matches(write->buffer, text), "body", failure);
+}
+static JsonObject *write_textview(Target *target, JsonObject *plan, JsonObject *basis, JsonObject *approved,
+                                 const char *text, const char *after_delete, gint from, gint to,
+                                 gint caret, gint64 until) {
+    const char *replacement = tl_string(plan, "replacement"), *result = tl_string(plan, "resultText");
+    TextViewWrite write = {
+        .target = target, .widget = g_object_ref(target->widget), .buffer = g_object_ref(GTK_TEXT_BUFFER(target->buffer)),
+        .approved = approved, .basis = basis, .storage = target->storage_revision,
+        .input = target->input_revision, .focus = target->focus_revision, .content = target->content_revision,
+        .state = target->im_state
+    };
+    gint cursor, bound;
+    textview_marks(write.buffer, &cursor, &bound);
+    const char *failure = NULL, *phase = "prepare";
+    GtkIMContext *context = g_object_ref(target->im_context);
+    const TlFcitxCapabilityV1 *capability = im_capability(context);
+    gboolean ready = textview_guard(&write, text, cursor, bound, &failure)
+        && write_check(tl_now() <= until, "expiry", &failure);
+    if (ready) {
+        /* TextView resets on insertion/selection mark movement. Move that
+           ordinary reset before storage, only from the already proven Clear
+           baseline; then establish a fresh remote barrier and original source. */
+        target->im_probing = TRUE;
+        gboolean prepared = capability && capability->prepare_caret(context, write.widget, &write.state);
+        target->im_probing = FALSE;
+        ready = write_check(prepared, "caret-reset", &failure)
+            && write_check(!target->dead && target->im_context == context, "im-context", &failure)
+            && write_check(inspect_ime(target) && target->ime_known && !target->composing, "im-unclear", &failure)
+            && write_check(target->im_state.context_generation == write.state.context_generation,
+                "im-context", &failure)
+            && write_check(target->im_state.input_epoch == write.state.input_epoch, "im-input", &failure);
+        if (ready) {
+            write.state = target->im_state;
+            ready = textview_guard(&write, text, cursor, bound, &failure)
+                && write_check(tl_now() <= until, "expiry", &failure);
+        }
+    }
+    g_object_unref(context);
+    gboolean grouped = FALSE;
+    if (ready) {
+        phase = "begin-action";
+        gtk_text_buffer_begin_user_action(write.buffer);
+        grouped = TRUE;
+        /* begin-user-action itself can invoke ordinary application callbacks.
+           It establishes no authority and does not freeze the buffer. */
+        ready = textview_guard(&write, text, cursor, bound, &failure)
+            && write_check(tl_now() <= until, "expiry", &failure);
+    }
+    if (!ready) {
+        if (grouped) gtk_text_buffer_end_user_action(write.buffer);
+        if (g_getenv("TYPELAY_TRACE"))
+            g_printerr("TypeLay GTK4 TextView guard phase=%s check=%s atMs=%" G_GINT64_FORMAT "\n",
+                phase, failure ? failure : "unknown", tl_now());
+        g_object_unref(write.buffer); g_object_unref(write.widget);
+        return receipt("RejectedBeforeMutation", tl_now() > until ? "StaleObservation" : "SourceChanged");
+    }
+
+    target->mutating = TRUE;
+    tl_clear_permit();
+    phase = "delete";
+    if (to > from) {
+        GtkTextIter first, last;
+        gtk_text_buffer_get_iter_at_offset(write.buffer, &first, from);
+        gtk_text_buffer_get_iter_at_offset(write.buffer, &last, to);
+        gtk_text_buffer_delete(write.buffer, &first, &last);
+        write.storage++;
+    }
+    gint deleted_cursor = cursor - CLAMP(cursor - from, 0, to - from);
+    gint deleted_bound = bound - CLAMP(bound - from, 0, to - from);
+    gboolean valid = textview_guard(&write, after_delete, deleted_cursor, deleted_bound, &failure);
+    gint count = (gint)g_utf8_strlen(replacement, -1), final_position = from + count;
+    if (valid) {
+        phase = "insert";
+        /* Any buffer mutation invalidates saved GtkTextIters. Rebuild only after
+           the deletion receipt and exact body/local input proof have passed. */
+        GtkTextIter at;
+        gtk_text_buffer_get_iter_at_offset(write.buffer, &at, from);
+        gboolean cursor_right = !gtk_text_mark_get_left_gravity(gtk_text_buffer_get_insert(write.buffer));
+        gboolean bound_right = !gtk_text_mark_get_left_gravity(gtk_text_buffer_get_selection_bound(write.buffer));
+        gint inserted_cursor = deleted_cursor + ((deleted_cursor > from || (deleted_cursor == from && cursor_right)) ? count : 0);
+        gint inserted_bound = deleted_bound + ((deleted_bound > from || (deleted_bound == from && bound_right)) ? count : 0);
+        gtk_text_buffer_insert(write.buffer, &at, replacement, -1);
+        write.storage++;
+        valid = textview_guard(&write, result, inserted_cursor, inserted_bound, &failure);
+        if (valid) {
+            phase = "caret";
+            gtk_text_buffer_get_iter_at_offset(write.buffer, &at, final_position);
+            gtk_text_buffer_place_cursor(write.buffer, &at);
+            valid = textview_guard(&write, result, final_position, final_position, &failure);
+            if (valid) {
+                phase = "scroll";
+                gtk_text_view_scroll_mark_onscreen(GTK_TEXT_VIEW(write.widget), gtk_text_buffer_get_insert(write.buffer));
+                valid = textview_guard(&write, result, final_position, final_position, &failure);
+            }
+        }
+    }
+    /* Always balance the original application undo group. Its end signal can
+       change the field too, so no Verified receipt precedes this callback. */
+    gtk_text_buffer_end_user_action(write.buffer);
+    if (valid) {
+        phase = "end-action";
+        valid = textview_guard(&write, result, final_position, final_position, &failure);
+    }
+    gint first = -1, last = -1;
+    char *after = valid ? read_text(target, &first, &last) : NULL;
+    gboolean verified = valid && write_check(after && strcmp(after, result) == 0, "body", &failure)
+        && write_check(first == caret && last == caret, "selection", &failure);
+    if (!verified && g_getenv("TYPELAY_TRACE"))
+        g_printerr("TypeLay GTK4 TextView guard phase=%s check=%s atMs=%" G_GINT64_FORMAT "\n",
+            phase, failure ? failure : "unknown", tl_now());
+    target->mutating = FALSE;
+    target->content_revision++;
+    JsonObject *reply = receipt(verified ? "Verified" : "OutcomeUnknown", verified ? "None" : "UnknownOutcome");
+    if (verified) {
+        JsonObject *snapshot = tl_copy(tl_object(plan, "expected"));
+        json_object_set_string_member(snapshot, "text", after);
+        JsonObject *selection = json_object_new();
+        json_object_set_int_member(selection, "start", caret); json_object_set_int_member(selection, "end", caret);
+        json_object_set_object_member(snapshot, "selection", selection);
+        json_object_set_int_member(snapshot, "observedAtMs", tl_now());
+        json_object_set_string_member(snapshot, "ime", "Clear");
+        json_object_set_string_member(snapshot, "access", "Supported");
+        json_object_set_object_member(reply, "verifiedSnapshot", snapshot);
+    } else target->quarantined = TRUE;
+    g_free(after); g_object_unref(write.buffer); g_object_unref(write.widget);
+    return reply;
+}
+
 JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     JsonObject *plan = tl_object(request, "plan"), *basis = tl_object(request, "authority");
     JsonObject *approved = direct ? tl_object(request, "approved") : basis;
@@ -557,6 +804,11 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     gboolean matches = strcmp(computed->str, result) == 0 && utf16_length(computed->str) >= 0;
     g_string_free(computed, TRUE);
     if (!matches) { g_free(after_delete); g_free(text); return receipt("RejectedBeforeMutation", "BadPlan"); }
+    if (standard_textview(target)) {
+        JsonObject *reply = write_textview(target, plan, basis, approved, text, after_delete, from, to, caret, until);
+        g_free(after_delete); g_free(text);
+        return reply;
+    }
     gint limit = gtk_entry_buffer_get_max_length(GTK_ENTRY_BUFFER(target->buffer));
     if (limit > 0 && g_utf8_strlen(result, -1) > limit) {
         g_free(after_delete); g_free(text); return receipt("RejectedBeforeMutation", "InvalidText");
@@ -758,6 +1010,7 @@ gboolean tl_return(Target *target, JsonObject *basis) {
     /* Restore only the saved permitted widget. Its IM may be unknown while the
        overlay owns focus; no body is read here. The caller awaits real Clear
        before reporting return completion and allowing the next capture. */
-    gtk_entry_grab_focus_without_selecting(GTK_ENTRY(target->widget));
+    if (GTK_IS_ENTRY(target->widget)) gtk_entry_grab_focus_without_selecting(GTK_ENTRY(target->widget));
+    else gtk_widget_grab_focus(target->widget);
     return return_authorized(target, basis) && tl_focused() == target;
 }

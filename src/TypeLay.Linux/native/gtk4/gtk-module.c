@@ -514,13 +514,17 @@ static gboolean dispatch(GtkEventControllerLegacy *controller, GdkEvent *event, 
 G_MODULE_EXPORT void tl_gtk4_attach(GtkWidget *client_widget) {
     if (!attach_check(g_strcmp0(g_getenv("TYPELAY_FCITX_COOPERATIVE"), "1") == 0, "coop")
         || !attach_check(!g_getenv("TYPELAY_DESKTOP"), "desktop")
-        || !attach_check(client_widget && G_OBJECT_TYPE(client_widget) == GTK_TYPE_TEXT, "type")
+        || !attach_check(client_widget && (G_OBJECT_TYPE(client_widget) == GTK_TYPE_TEXT
+            || G_OBJECT_TYPE(client_widget) == GTK_TYPE_TEXT_VIEW), "type")
         || !attach_check(GDK_IS_WAYLAND_DISPLAY(gtk_widget_get_display(client_widget)), "backend")
         || !attach_check(!tl_overlay_contains(client_widget), "overlay")) return;
-    GtkWidget *entry = gtk_widget_get_parent(client_widget);
-    if (!attach_check(entry && G_OBJECT_TYPE(entry) == GTK_TYPE_ENTRY, "parent")
-        || !attach_check(gtk_editable_get_delegate(GTK_EDITABLE(entry)) == GTK_EDITABLE(client_widget), "delegate")) return;
-    GtkRoot *root = gtk_widget_get_root(entry);
+    GtkWidget *source = client_widget;
+    if (G_OBJECT_TYPE(client_widget) == GTK_TYPE_TEXT) {
+        source = gtk_widget_get_parent(client_widget);
+        if (!attach_check(source && G_OBJECT_TYPE(source) == GTK_TYPE_ENTRY, "parent")
+            || !attach_check(gtk_editable_get_delegate(GTK_EDITABLE(source)) == GTK_EDITABLE(client_widget), "delegate")) return;
+    }
+    GtkRoot *root = gtk_widget_get_root(source);
     if (!attach_check(GTK_IS_WINDOW(root), "root")) return;
     trace_attach("ready");
     if (!initialized) {
