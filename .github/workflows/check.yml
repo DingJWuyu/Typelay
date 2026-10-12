@@ -95,7 +95,7 @@ jobs:
       CCACHE_MAXSIZE: 512MiB
     steps:
       - name: Install target desktop build dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols ccache opencc procps-ng
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols ccache opencc procps-ng zstd
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -177,6 +177,17 @@ jobs:
           python packaging/linux/fcitx-cooperative/pack.py --build-output artifacts/linux/fcitx-cooperative-5.1.22 --output artifacts/TypeLay-Fcitx-cooperative.tar.gz
           mkdir -p "artifacts/linux/relocated 输入法"
           tar -xzf artifacts/TypeLay-Fcitx-cooperative.tar.gz -C "artifacts/linux/relocated 输入法"
+          # Match the user's profile-writing versions in this disposable container.
+          # Keep normal package signatures and dependency validation enabled.
+          mkdir -p artifacts/linux/target-packages
+          cd artifacts/linux/target-packages
+          curl --fail --location --output libime.pkg.tar.zst https://archive.archlinux.org/packages/l/libime/libime-1.1.16-1-x86_64.pkg.tar.zst
+          curl --fail --location --output libime.pkg.tar.zst.sig https://archive.archlinux.org/packages/l/libime/libime-1.1.16-1-x86_64.pkg.tar.zst.sig
+          curl --fail --location --output chinese.pkg.tar.zst https://archive.archlinux.org/packages/f/fcitx5-chinese-addons/fcitx5-chinese-addons-5.1.14-1-x86_64.pkg.tar.zst
+          curl --fail --location --output chinese.pkg.tar.zst.sig https://archive.archlinux.org/packages/f/fcitx5-chinese-addons/fcitx5-chinese-addons-5.1.14-1-x86_64.pkg.tar.zst.sig
+          printf '%s\n' 'adacfc6243df2544665a1d4cc8f2bf2ee6d4966fc2c5f2a37a3ff579134b6c67  libime.pkg.tar.zst' 'cc03b9d1d0bb921d88130e4ef17a4162a1037f6dbb0a165f6a73b83236f06ec4  chinese.pkg.tar.zst' | sha256sum --check
+          pacman -U --noconfirm libime.pkg.tar.zst chinese.pkg.tar.zst
+          cd ../../..
           python "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative/fcitx-cooperative.py" preflight
       - name: Verify tray controls without downloading models
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}

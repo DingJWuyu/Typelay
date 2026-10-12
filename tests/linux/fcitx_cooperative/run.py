@@ -5,8 +5,9 @@ Or: python tests/linux/fcitx_cooperative/run.py --core-version 5.1.22
 Builds all official core frontends and private Core/Config/Utils,
 requires CMake/Ninja/ECM/gettext and official Wayland/Plasma protocols, and writes
 a separate fcitx-cooperative-5.1.22 output directory. It is not an installation.
-Requires the pinned upstream package versions, GTK3 development files, libime,
-boost, GCC, pkgconf, patch, glib-genmarshal, dbus-run-session, Xvfb and xdotool.
+Requires GTK3 development files, boost, zstd, GCC, pkgconf, patch,
+glib-genmarshal, dbus-run-session, Xvfb and xdotool. LibIME and its data
+are built from fixed official sources; system LibIME is not used.
 The separately packaged opt-in components do not change a user installation.
 Downloaded sources, their licenses, modifications and binaries remain together
 under artifacts/linux/fcitx-cooperative-5.1.22. Do not distribute binaries without the
@@ -19,6 +20,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -39,14 +41,58 @@ PINS = {
         "3743c26ee354823c3f808afd6e17af32ed5e6460edc562854e95d5b0f4d8cd4d",
     ),
     "fcitx5-chinese-addons": (
-        "61474bd3aa9fca26d1c31df93343035697e9f265",
-        "485cf09473d4b3615f6ae5bae5e8e2ef019781a9995852da07e5c71a1aef051c",
+        "fa65a9b46f805fc491b88c53f6b0159fd6f756af",
+        "97196e7f922c70cc18eb30e38a146abb34cf70f6ea4b37492b78bcfc2c5598f2",
     ),
     "fcitx5-gtk": (
         "3b18d2ab7401d4233daf38bbc5896f1703685a43",
         "d0afcf4188ce630a5824a10f4d2ba501dcbe3440687cebedba323c95dcc4ba9c",
     ),
+    "libime": (
+        "901a73898df3bf5990d6535bf8e7e02b190aee2e",
+        "d423e691816a3d7229e44bb2e3fa5423513ec64251bc3aafa5389983155378b8",
+    ),
+    "kenlm": (
+        "4cb443e60b7bf2c0ddf3c745378f76cb59e254e5",
+        "11df4f929b175f0b3bd26be7a5a83b3c17cdefa83baecab0b6e69f77430184ea",
+    ),
 }
+PATCH_PROJECTS = ("fcitx5", "fcitx5-chinese-addons", "fcitx5-gtk")
+DATA = (
+    (
+        "libime/data",
+        "lm_sc.arpa-20260629.tar.zst",
+        "06808333b9173e5374cf2cb5afc12d08f5625bf9abb536489cac376fc05f2e7f",
+    ),
+    (
+        "libime/data",
+        "dict-20260703.tar.zst",
+        "c686cab6df8964c48d596f57d205bac31fc72870b06a83017e44503df8c09697",
+    ),
+    (
+        "libime/data",
+        "table-20240108.tar.zst",
+        "3e9d87b04a393f131723472c8eaa860dd23c378a3d4f6a9005513b2a95b3614b",
+    ),
+    (
+        "fcitx5-chinese-addons/modules/pinyinhelper",
+        "py_stroke-20250329.tar.gz",
+        "c1a7ca7225d3614ab83353fc827503006a980447762018f53760425d7b5303a6",
+    ),
+    (
+        "fcitx5-chinese-addons/modules/pinyinhelper",
+        "py_table-20121124.tar.gz",
+        "42146ac97de6c13d55f9e99ed873915f4c66739e9c11532a34556badf9792c04",
+    ),
+)
+
+
+def download(url, destination, digest):
+    if not destination.exists():
+        with urllib.request.urlopen(url, timeout=180) as response:
+            destination.write_bytes(response.read())
+    if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+        raise RuntimeError(f"Official source/data checksum mismatch: {destination.name}")
 
 
 def run(args, **kwargs):
@@ -65,7 +111,10 @@ def flags(*packages):
 
 
 def build_inputs():
-    files = [HERE / name for name in ("run.py", "fixture.c", *(repo + ".patch" for repo in PINS))]
+    files = [
+        HERE / name
+        for name in ("run.py", "fixture.c", *(repo + ".patch" for repo in PATCH_PROJECTS))
+    ]
     return {
         "files": {
             str(file.relative_to(ROOT)): hashlib.sha256(file.read_bytes()).hexdigest()
@@ -76,34 +125,31 @@ def build_inputs():
 
 def build(out: Path, core_version: str):
     inputs = build_inputs()
-    if shutil.which("pacman"):
-        installed = run(["pacman", "-Q", "fcitx5-chinese-addons"]).split()
-        if len(installed) != 2 or installed[1].rsplit("-", 1)[0] != "5.1.15":
-            raise RuntimeError(
-                "Private Chinese source 5.1.15 requires matching system metadata and profile writer 5.1.15"
-            )
     pins = PINS
     sources = out / "sources"
     sources.mkdir(parents=True, exist_ok=True)
     for repo, (commit, digest) in pins.items():
-        archive = out / f"{repo}.tar.gz"
-        if not archive.exists():
-            with urllib.request.urlopen(
-                f"https://codeload.github.com/fcitx/{repo}/tar.gz/{commit}", timeout=90
-            ) as response:
-                archive.write_bytes(response.read())
-        if hashlib.sha256(archive.read_bytes()).hexdigest() != digest:
-            raise AssertionError(f"Upstream archive hash mismatch: {repo}")
+        archive = out / f"{repo}-{commit}.tar.gz"
+        owner = "kpu" if repo == "kenlm" else "fcitx"
+        download(f"https://codeload.github.com/{owner}/{repo}/tar.gz/{commit}", archive, digest)
         target = sources / repo
         if target.exists():
             shutil.rmtree(target)
         with tarfile.open(archive) as bundle:
             bundle.extractall(sources, filter="data")
         (sources / f"{repo}-{commit}").rename(target)
-        run(["patch", "--batch", "--fuzz=0", "-p1", "-i", HERE / f"{repo}.patch"], cwd=target)
-    core, chinese, gtk = (sources / name for name in PINS)
+        if repo in PATCH_PROJECTS:
+            run(["patch", "--batch", "--fuzz=0", "-p1", "-i", HERE / f"{repo}.patch"], cwd=target)
+    core, chinese, gtk = (sources / name for name in PATCH_PROJECTS)
+    kenlm = sources / "libime/src/libime/core/kenlm"
+    kenlm.rmdir()  # Empty gitlink directory from the official source archive.
+    (sources / "kenlm").rename(kenlm)
+    for directory, name, digest in DATA:
+        download(f"https://download.fcitx-im.org/data/{name}", sources / directory / name, digest)
     lib = out / "lib"
-    lib.mkdir(exist_ok=True)
+    if lib.exists():
+        shutil.rmtree(lib)  # Owned outputs: do not retain old manually built Chinese modules.
+    lib.mkdir()
     prefix = out / "core-prefix"
     launchers = (
         [f"-DCMAKE_{language}_COMPILER_LAUNCHER=ccache" for language in ("C", "CXX")]
@@ -150,78 +196,104 @@ def build(out: Path, core_version: str):
     for package in ("Fcitx5Core", "Fcitx5Config", "Fcitx5Utils"):
         assert run(["pkg-config", "--modversion", package]) == core_version
         assert Path(run(["pkg-config", "--variable=prefix", package])).resolve() == prefix
-    shutil.copyfile(ABI, gtk / ABI.name)
-    (chinese / "config.h").write_text(
-        '#pragma once\n#define LIBIME_INSTALL_PKGDATADIR "/usr/share/libime"\n'
+    private_versions = {
+        name: core_version for name in ("Fcitx5Core", "Fcitx5Config", "Fcitx5Utils")
+    }
+    for project, options in (
+        ("libime", ["-DENABLE_DATA=ON", "-DENABLE_TOOLS=ON", "-DENABLE_DOC=OFF"]),
+        (
+            "fcitx5-chinese-addons",
+            [
+                "-DENABLE_DATA=ON",
+                "-DENABLE_TOOLS=ON",
+                "-DENABLE_GUI=OFF",
+                "-DENABLE_OPENCC=ON",
+                "-DENABLE_CLOUDPINYIN=ON",
+            ],
+        ),
+    ):
+        print(f"Configuring private {project} and its fixed upstream data", flush=True)
+        run(
+            [
+                "cmake",
+                "-S",
+                sources / project,
+                "-B",
+                out / (project + "-build"),
+                "-G",
+                "Ninja",
+                "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+                *launchers,
+                f"-DCMAKE_INSTALL_PREFIX={prefix}",
+                "-DCMAKE_INSTALL_LIBDIR=lib",
+                f"-DCMAKE_PREFIX_PATH={prefix}",
+                *[
+                    f"-DFcitx5{name}_DIR={prefix}/lib/cmake/Fcitx5{name}"
+                    for name in (("Utils",) if project == "libime" else ("Utils", "Config", "Core"))
+                ],
+                *(
+                    []
+                    if project == "libime"
+                    else [
+                        f"-DLibIME{name}_DIR={prefix}/lib/cmake/LibIME{name}"
+                        for name in ("Core", "Pinyin", "Table")
+                    ]
+                ),
+                "-DBUILD_SHARED_LIBS=ON",
+                "-DENABLE_TEST=OFF",
+                *options,
+            ]
+        )
+        print(f"Building private {project} (parallel=2)", flush=True)
+        subprocess.run(
+            ["cmake", "--build", out / (project + "-build"), "--parallel", "2"],
+            check=True,
+            timeout=900,
+        )
+        run(["cmake", "--install", out / (project + "-build")])
+        if project == "libime":
+            for name in ("Core", "Pinyin", "Table"):
+                config = prefix / f"lib/cmake/LibIME{name}/LibIME{name}ConfigVersion.cmake"
+                assert re.search(r'set\(PACKAGE_VERSION "1\.1\.16"\)', config.read_text()), config
+                assert (prefix / f"lib/libIME{name}.so.1.1.16").is_file()
+                private_versions["LibIME" + name] = "1.1.16"
+    (out / "installed-private-versions.json").write_text(
+        json.dumps(private_versions, indent=2) + "\n"
     )
+    # Only generated system table entries are made relocatable. User files are untouched.
+    table_data = prefix / "share/fcitx5/table"
+    table_data.mkdir(exist_ok=True)
+    for dictionary in (prefix / "share/libime").glob("*.main.dict"):
+        link = table_data / dictionary.name
+        link.unlink(missing_ok=True)
+        link.symlink_to("../../libime/" + dictionary.name)
+    for config in (prefix / "share/fcitx5/inputmethod").glob("*.conf"):
+        text = config.read_text()
+        config.write_text(text.replace(str(prefix / "share/libime") + "/", "table/"))
+    data_files = [
+        *sorted((prefix / "share/libime").glob("*.dict")),
+        *sorted((prefix / "lib/libime").glob("zh_CN.lm*")),
+        *sorted((prefix / "share/fcitx5/pinyinhelper").glob("*.mb")),
+    ]
+    assert len(data_files) >= 14, "Private dictionaries/model/helper data missing"
+    (out / "installed-private-data.json").write_text(
+        json.dumps(
+            {
+                str(path.relative_to(prefix)): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in data_files
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    shutil.copyfile(ABI, gtk / ABI.name)
     (gtk / "config.h").write_text(
         '#pragma once\n#define LOCALEDIR "/usr/share/locale"\n#define NO_SNOOPER_APPS ".*chrome.*,.*chromium.*,firefox.*,Do.*"\n#define NO_PREEDIT_APPS "gvim.*"\n#define SYNC_MODE_APPS "firefox.*"\n#define _ENABLE_SNOOPER 1\n'
     )
-    includes = [
-        "-I" + str(core / "src/im/keyboard"),
-        "-I" + str(chinese),
-        "-I" + str(chinese / "im/pinyin"),
-        "-I/usr/include/LibIME",
-        "-I" + str(chinese / "modules/punctuation"),
-        "-I" + str(chinese / "modules/pinyinhelper"),
-        "-I" + str(chinese / "modules/cloudpinyin"),
-    ]
-    module_root = (
-        Path(run(["pkg-config", "--variable=includedir", "Fcitx5Core"])).parent
-        / "Module/fcitx-module"
-    )
-    includes += [
-        "-I" + str(module_root / name)
-        for name in (
-            "dbus",
-            "punctuation",
-            "pinyinhelper",
-            "notifications",
-            "spell",
-            "quickphrase",
-            "xcb",
-            "emoji",
-            "clipboard",
-        )
-    ]
     common = ["c++", "-std=c++20", "-O0", "-g", "-fPIC", "-shared"]
-    run(
-        [
-            *common,
-            *includes,
-            '-DFCITX_INSTALL_LOCALEDIR="/usr/share/locale"',
-            '-DFCITX_GETTEXT_DOMAIN="fcitx5-chinese-addons"',
-            *sorted((chinese / "im/pinyin").glob("*.cpp")),
-            "-o",
-            lib / "libpinyin.so",
-            *flags("Fcitx5Core", "Fcitx5Config", "Fcitx5Utils", "fmt"),
-            "-lIMEPinyin",
-            "-lIMECore",
-            "-lboost_iostreams",
-            "-pthread",
-        ]
-    )
     executable = out / "fcitx5"
     executable.unlink(missing_ok=True)
     executable.symlink_to(prefix / "bin/fcitx5")
-    for addon in ("punctuation", "pinyinhelper", "chttrans", "fullwidth", "cloudpinyin"):
-        run(
-            [
-                *common,
-                *includes,
-                *(["-DENABLE_OPENCC", '-DOPENCC_PREFIX="/usr"'] if addon == "chttrans" else []),
-                '-DFCITX_INSTALL_LOCALEDIR="/usr/share/locale"',
-                '-DFCITX_GETTEXT_DOMAIN="fcitx5-chinese-addons"',
-                *sorted((chinese / "modules" / addon).glob("*.cpp")),
-                "-o",
-                lib / f"lib{addon}.so",
-                *flags("Fcitx5Core", "Fcitx5Config", "Fcitx5Utils", "fmt"),
-                "-lIMECore",
-                *(flags("opencc") if addon == "chttrans" else []),
-                *(flags("libcurl") if addon == "cloudpinyin" else []),
-                "-pthread",
-            ]
-        )
     marshall = gtk / "gtk-common/marshall.list"
     for mode, extension in (("header", "h"), ("body", "c")):
         (lib / f"marshall.{extension}").write_text(
@@ -306,7 +378,19 @@ def build(out: Path, core_version: str):
     libraries = [out / "fcitx5", *sorted(lib.glob("*.so"))]
     libraries += [
         prefix / "lib/fcitx5" / f"lib{name}.so"
-        for name in ("dbus", "dbusfrontend", "spell", "quickphrase")
+        for name in (
+            "dbus",
+            "dbusfrontend",
+            "spell",
+            "quickphrase",
+            "pinyin",
+            "pinyinhelper",
+            "punctuation",
+            "cloudpinyin",
+            "chttrans",
+            "fullwidth",
+            "table",
+        )
     ]
     links = {}
     link_env = os.environ | {"LD_LIBRARY_PATH": f"{lib}:{prefix / 'lib'}"}
@@ -317,7 +401,14 @@ def build(out: Path, core_version: str):
             if any(
                 (
                     name in line
-                    for name in ("libFcitx5Core.so", "libFcitx5Config.so", "libFcitx5Utils.so")
+                    for name in (
+                        "libFcitx5Core.so",
+                        "libFcitx5Config.so",
+                        "libFcitx5Utils.so",
+                        "libIMECore.so",
+                        "libIMEPinyin.so",
+                        "libIMETable.so",
+                    )
                 )
             ):
                 resolved = Path(line.split("=>", 1)[1].strip().split()[0]).resolve()
@@ -372,6 +463,8 @@ def session(out: Path, core_version: str):
             FCITX_CONFIG_HOME=str(config),
             FCITX_DATA_HOME=str(Path(env["XDG_DATA_HOME"]) / "fcitx5"),
             FCITX_DATA_DIRS=f"{prefix / 'share/fcitx5'}:/usr/share/fcitx5",
+            XDG_DATA_DIRS=f"{prefix / 'share'}:/usr/local/share:/usr/share",
+            LIBIME_MODEL_DIRS=str(prefix / "lib/libime"),
             GTK_IM_MODULE="fcitx",
             GTK_IM_MODULE_FILE=str(out / "immodules.cache"),
             GDK_BACKEND="x11",
@@ -385,9 +478,16 @@ def session(out: Path, core_version: str):
                 {
                     "component_source_versions": {
                         "fcitx5": "5.1.22",
-                        "fcitx5-chinese-addons": "5.1.15",
+                        "fcitx5-chinese-addons": "5.1.14",
+                        "libime": "1.1.16",
                         "fcitx5-gtk": "5.1.7",
                     },
+                    "installed_private_versions": json.loads(
+                        (out / "installed-private-versions.json").read_text()
+                    ),
+                    "private_data_sources": [
+                        {"file": name, "sha256": digest} for _, name, digest in DATA
+                    ],
                     "server_source_version": core_version,
                     "server_source_commit": PINS["fcitx5"][0],
                     "server_runtime_version": run(
@@ -472,12 +572,22 @@ def session(out: Path, core_version: str):
                 loaded = sorted(
                     {line.split()[-1] for line in mappings.splitlines() if "/" in line.split()[-1]}
                 )
-                for library in ("libFcitx5Core.so", "libFcitx5Config.so", "libFcitx5Utils.so"):
+                for library in (
+                    "libFcitx5Core.so",
+                    "libFcitx5Config.so",
+                    "libFcitx5Utils.so",
+                    "libIMECore.so",
+                    "libIMEPinyin.so",
+                ):
                     matches = [Path(path).resolve() for path in loaded if library in path]
                     assert matches and all((path.is_relative_to(prefix) for path in matches)), (
                         library,
                         matches,
                     )
+                models = [Path(path).resolve() for path in loaded if path.endswith("/zh_CN.lm")]
+                assert models and all(
+                    path.is_relative_to(prefix / "lib/libime") for path in models
+                ), models
                 (out / "server-loaded-libraries.json").write_text(
                     json.dumps(loaded, indent=2) + "\n"
                 )
@@ -621,7 +731,7 @@ def session(out: Path, core_version: str):
                     (
                         "source",
                         "",
-                        env | {"TYPELAY_FCITX_AUDITED_ADDON_DIRS": str(prefix / "lib/fcitx5")},
+                        env | {"TYPELAY_FCITX_AUDITED_ADDON_DIRS": str(out / "lib")},
                     ),
                     ("addon", ",ibusfrontend", env),
                 ):

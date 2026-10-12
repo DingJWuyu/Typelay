@@ -2,7 +2,7 @@
 
 这套可选组件让 TypeLay 与实际 Fcitx 输入事务协作。当前范围是 GTK3 标准 GtkEntry 和原生 GtkEntryBuffer；GTK4、Qt、GtkTextView、通用 Electron 尚未开放。普通 TypeLay 安装不会安装或启用这些组件。
 
-完整私有 Fcitx 5.1.22 的 Core、Config、Utils、原官方 X11/Wayland 前端，以及 Chinese Addons 5.1.15、GTK IM 5.1.7 已在隔离环境通过真实输入事务检查。嵌套 niri 的生产 GTK 路径通过实际 CPU 模型、自动预览、一次 Tab 写回、编辑后两阶段 Tab 与拼音组合保护。它们不是用户 CachyOS 桌面的物理输入验收。
+此前完整私有 Fcitx 5.1.22、Chinese Addons 5.1.15、GTK IM 5.1.7 的开发基线已在隔离环境通过真实输入事务检查。当前按用户确认版本固定为 Core 5.1.22、Chinese Addons 5.1.14、GTK IM 5.1.7、完整私有 LibIME 1.1.16；这次同版构建的真实运行结果需另行验证，不能沿用旧基线结论。嵌套 niri 的生产 GTK 路径通过实际 CPU 模型、自动预览、一次 Tab 写回、编辑后两阶段 Tab 与拼音组合保护。它们不是用户 CachyOS 桌面的物理输入验收。
 
 ## 会话与用户数据
 
@@ -37,7 +37,11 @@ cd TypeLay-Fcitx-cooperative
 python fcitx-cooperative.py preflight
 ```
 
-preflight 校验包文件、实际 ELF 依赖、私有 Core/Config/Utils 解析路径、5.1.22 daemon 版本和系统 Chinese Addons / LibIME 构建版本。当前包的私有 Chinese 源码固定为 5.1.15，因此系统 Chinese Addons 必须同为 5.1.15，不能仅因为构建机器和用户机器恰好都装着另一版本就共用词库。构建、打包和启动三处均检查这个边界；LibIME 须与构建时同上游版本，GTK3/glibc 须满足实际动态依赖。系统 Core 与全部组件版本同时显示供用户核对。缺失或不匹配时拒绝启动，应重新在匹配环境构建，不能忽略错误继续。
+preflight 校验包文件、实际 ELF 依赖、私有 Core/Config/Utils 和三个 LibIME 库的解析路径，以及 5.1.22 daemon 版本。共用原 profile 时，用户系统 Chinese Addons 必须为 5.1.14、LibIME 必须为 1.1.16，不能以构建机器的系统版本代替私有源码版本。构建机器可有较新的系统组件，但本包完整构建并链接固定私有组件，记录源码、安装库、构建机器和用户现装四类版本。GTK3/glibc 仍须满足实际动态依赖。缺失或不匹配时拒绝启动，不得忽略错误继续。
+
+词典与语言模型由 LibIME 1.1.16 源码指定的官方归档与 SHA256 生成，安装到私有目录。私有模型搜索不回退系统模型；XDG 数据路径优先私有词典，个人数据路径仍保留。三个 LibIME 数据归档的 LGPL-2.1-or-later 与权利人依据 [Debian 官方逐文件版权声明](https://metadata.ftp-master.debian.org/changelogs/main/libi/libime/unstable_copyright)，原档、完整许可、固定 KenLM 子模块及对应源码一起保留。生成的官方码表配置改用包内相对路径，用户码表配置不修改。
+
+Chinese 的 py_table.mb / py_stroke.mb 及两份原始归档不随本包分发，因为尚未核实两份数据的单独许可声明。它们来自用户已安装的官方 Chinese 5.1.14：preflight 核验 /usr/share/fcitx5/pinyinhelper 下两文件的固定 SHA256，原模块通过原 StandardPaths::PkgData 读取。私有启动环境保留个人数据优先级，并在末尾确保系统官方数据目录存在。缺失或被改动时拒绝启动，不静默缺少查询功能。包内保留官方下载 recipe/hash 供自行重建。
 
 GTK IM 缓存包含安装路径，不能直接搬运 CI 缓存。每次逐应用启动都使用官方 gtk-query-immodules-3.0 为当前解压目录生成缓存，写入当前用户 XDG_RUNTIME_DIR；不修改系统 GTK 模块缓存。
 
@@ -78,7 +82,7 @@ python /完整路径/TypeLay-Fcitx-cooperative/fcitx-cooperative.py launch ~/.lo
 
 守卫检查实际 `loadedAddonNames()`，不是配置中列出的可用插件。每个已加载模块必须同时满足已审计的名称、官方 type/library/version，以及 loader 成功加载的真实库路径。私有启动器明确传入私有库目录；缺少来源声明、系统同名回退库或不匹配模块都会使 TypeLay 返回 Unknown。路径查询只读取 loader 已有成功结果，不改变插件加载、回退或普通输入。
 
-当前审计版本固定为 Core 5.1.22、Chinese Addons 5.1.15。已审计组件：dbus、dbusfrontend、keyboard、pinyin、punctuation、pinyinhelper、spell、quickphrase、classicui、wayland、waylandim、xcb、xim、notifications、notificationitem、clipboard、unicode、imselector、chttrans、fullwidth、cloudpinyin、emoji、fcitx4frontend、kimpanel、virtualkeyboard。其他插件不因“属于官方包”或同名而自动继承结论。
+当前审计版本固定为 Core 5.1.22、Chinese Addons 5.1.14。已审计组件：dbus、dbusfrontend、keyboard、pinyin、punctuation、pinyinhelper、spell、quickphrase、classicui、wayland、waylandim、xcb、xim、notifications、notificationitem、clipboard、unicode、imselector、chttrans、fullwidth、cloudpinyin、emoji、fcitx4frontend、kimpanel、virtualkeyboard。其他插件不因“属于官方包”或同名而自动继承结论。
 
 维护时必须核对对应上游实际路径：
 

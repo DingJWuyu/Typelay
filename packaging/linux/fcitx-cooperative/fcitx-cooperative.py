@@ -17,6 +17,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 SERVICE = "org.fcitx.Fcitx5"
+SOURCE_VERSIONS = {
+    "fcitx5": "5.1.22",
+    "fcitx5-chinese-addons": "5.1.14",
+    "fcitx5-gtk": "5.1.7",
+    "libime": "1.1.16",
+}
+PRIVATE_VERSIONS = {
+    **{f"Fcitx5{name}": "5.1.22" for name in ("Core", "Config", "Utils")},
+    **{f"LibIME{name}": "1.1.16" for name in ("Core", "Pinyin", "Table")},
+}
+HELPER_FILES = {
+    "py_stroke.mb": "9b526eab3ef2679d63155c8304fc4b11f701c2bf5db7946e7d3e940f54f3aaa9",
+    "py_table.mb": "19b3e593e5a211fe548f39c894d9a2e2e07a08e3edee0083087b1471e5ba026b",
+}
+USER_PACKAGE_VERSIONS = {"fcitx5-chinese-addons": "5.1.14", "libime": "1.1.16"}
 
 
 def run(arguments, *, env=None):
@@ -69,6 +84,12 @@ def environment(*, daemon=False):
     if daemon:
         env["TYPELAY_FCITX_PRIVATE_SESSION"] = "1"
         env["TYPELAY_FCITX_AUDITED_ADDON_DIRS"] = f"{ROOT / 'lib'}:{ROOT / 'core/lib/fcitx5'}"
+        env["LIBIME_MODEL_DIRS"] = str(ROOT / "core/lib/libime")
+        env["XDG_DATA_DIRS"] = paths(
+            [ROOT / "core/share"],
+            env.get("XDG_DATA_DIRS"),
+            ["/usr/local/share", "/usr/share"],
+        )
         env["FCITX_ADDON_DIRS"] = paths(
             [ROOT / "lib", ROOT / "core/lib/fcitx5"],
             env.get("FCITX_ADDON_DIRS"),
@@ -76,7 +97,8 @@ def environment(*, daemon=False):
         )
         env["FCITX_DATA_DIRS"] = paths(
             [ROOT / "core/share/fcitx5"],
-            env.get("FCITX_DATA_DIRS"),
+            paths([], env.get("FCITX_DATA_DIRS"), ["/usr/local/share/fcitx5", "/usr/share/fcitx5"])
+            + ":/usr/share/fcitx5",
             ["/usr/local/share/fcitx5", "/usr/share/fcitx5"],
         )
     else:
@@ -107,39 +129,49 @@ def verify():
             if digest != expected["sha256"]:
                 raise RuntimeError(f"Bundle checksum mismatch: {relative}")
     sources = manifest["versions"].get("component_source_versions")
-    if sources != {"fcitx5": "5.1.22", "fcitx5-chinese-addons": "5.1.15", "fcitx5-gtk": "5.1.7"}:
+    if sources != SOURCE_VERSIONS:
         raise RuntimeError("Explicit private component source versions are missing or unsupported")
-    packages = manifest["systemDependencies"]["packages"]
-    if (
-        packages.get("fcitx5-chinese-addons", "").rsplit("-", 1)[0]
-        != sources["fcitx5-chinese-addons"]
-    ):
+    if manifest["versions"].get("installed_private_versions") != PRIVATE_VERSIONS:
         raise RuntimeError(
-            "Build system Chinese metadata/profile writer differs from private source 5.1.15"
+            "Private installed Fcitx/LibIME library versions are missing or unsupported"
         )
-    for package in ("fcitx5-chinese-addons", "libime"):
-        expected = packages.get(package)
-        if not expected:
-            raise RuntimeError(f"Build dependency version is missing: {package}")
+    for package, expected in USER_PACKAGE_VERSIONS.items():
         actual = run(["pacman", "-Q", package]).strip().split()
-        if len(actual) != 2 or actual[1].rsplit("-", 1)[0] != expected.rsplit("-", 1)[0]:
-            raise RuntimeError(f"Version-matched {package} required: built with {expected}")
-    if manifest["versions"]["server_runtime_version"] != "5.1.22":
-        raise RuntimeError("This launcher requires the complete Fcitx 5.1.22 bundle")
+        if len(actual) != 2 or actual[0] != package or actual[1].rsplit("-", 1)[0] != expected:
+            raise RuntimeError(f"Version-matched user package required: {package} {expected}")
+    for name, digest in HELPER_FILES.items():
+        path = Path("/usr/share/fcitx5/pinyinhelper") / name
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise RuntimeError(f"Matching official Chinese 5.1.14 helper data required: {name}")
+    for key in (
+        "server_source_version",
+        "server_runtime_version",
+        "linked_core_development_version",
+    ):
+        if manifest["versions"].get(key) != "5.1.22":
+            raise RuntimeError("This launcher requires the complete Fcitx 5.1.22 bundle")
     env = environment(daemon=True)
     binaries = [ROOT / "core/bin/fcitx5", *sorted((ROOT / "lib").glob("*.so*"))]
+    binaries.extend(sorted((ROOT / "core/lib").glob("libIME*.so.0")))
     binaries.extend(sorted((ROOT / "core/lib/fcitx5").glob("*.so")))
     for binary in binaries:
         output = run(["ldd", "-r", str(binary)], env=env)
         if "not found" in output or "undefined symbol:" in output:
             raise RuntimeError(f"Unresolved runtime dependencies: {binary.name}\n{output}")
-        for name in ("Core", "Config", "Utils"):
+        for name in (
+            "libFcitx5Core",
+            "libFcitx5Config",
+            "libFcitx5Utils",
+            "libIMECore",
+            "libIMEPinyin",
+            "libIMETable",
+        ):
             for line in output.splitlines():
-                if f"libFcitx5{name}.so" in line and "=>" in line:
+                if f"{name}.so" in line and "=>" in line:
                     path = Path(line.split("=>", 1)[1].strip().split(" (", 1)[0])
                     if not path.resolve().is_relative_to(ROOT / "core/lib"):
                         raise RuntimeError(
-                            f"System Fcitx library mixed into private bundle: {name}"
+                            f"System Fcitx/LibIME library mixed into private bundle: {name}"
                         )
     if run([str(ROOT / "core/bin/fcitx5"), "--version"], env=env).strip() != "5.1.22":
         raise RuntimeError("Private daemon version mismatch")
@@ -184,26 +216,30 @@ def main():
     if args.action != "launch" and args.command:
         parser.error("Only launch accepts an application command")
     manifest = verify()
+    print("Private components:", json.dumps(SOURCE_VERSIONS, sort_keys=True), flush=True)
+    print("Private installed libraries:", json.dumps(PRIVATE_VERSIONS, sort_keys=True), flush=True)
+    print(
+        "Build-machine packages:",
+        json.dumps(manifest["systemDependencies"]["packages"], sort_keys=True),
+        flush=True,
+    )
+    print(
+        "Installed user packages:\n"
+        + run(
+            [
+                "pacman",
+                "-Q",
+                "fcitx5",
+                "fcitx5-chinese-addons",
+                "fcitx5-gtk",
+                "libime",
+                "opencc",
+            ]
+        ).strip(),
+        flush=True,
+    )
     if args.action == "preflight":
         print("Private Fcitx 5.1.22 runtime verified; no session or profile changed")
-        print(
-            "Build packages:",
-            json.dumps(manifest["systemDependencies"]["packages"], sort_keys=True),
-        )
-        print("Installed packages:")
-        print(
-            run(
-                [
-                    "pacman",
-                    "-Q",
-                    "fcitx5",
-                    "fcitx5-chinese-addons",
-                    "fcitx5-gtk",
-                    "libime",
-                    "opencc",
-                ]
-            ).strip()
-        )
         return
     pid = owner_pid()
     if args.action == "daemon":

@@ -19,22 +19,43 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 BUNDLE = "TypeLay-Fcitx-cooperative"
 CORE_VERSION = "5.1.22"
-UPSTREAM = ("fcitx5", "fcitx5-chinese-addons", "fcitx5-gtk")
-LIBRARIES = (
-    "libpinyin.so",
-    "libpunctuation.so",
-    "libpinyinhelper.so",
-    "libchttrans.so",
-    "libfullwidth.so",
-    "libcloudpinyin.so",
-    "libFcitx5GClient.so",
-    "im-fcitx5.so",
+PATCHED_UPSTREAM = ("fcitx5", "fcitx5-chinese-addons", "fcitx5-gtk")
+UPSTREAM = (*PATCHED_UPSTREAM, "libime")
+SOURCE_VERSIONS = {
+    "fcitx5": CORE_VERSION,
+    "fcitx5-chinese-addons": "5.1.14",
+    "fcitx5-gtk": "5.1.7",
+    "libime": "1.1.16",
+}
+PRIVATE_VERSIONS = {
+    **{f"Fcitx5{name}": CORE_VERSION for name in ("Core", "Config", "Utils")},
+    **{f"LibIME{name}": "1.1.16" for name in ("Core", "Pinyin", "Table")},
+}
+LIBRARIES = ("libFcitx5GClient.so", "im-fcitx5.so")
+CHINESE_ADDONS = (
+    "pinyin",
+    "table",
+    "punctuation",
+    "pinyinhelper",
+    "chttrans",
+    "fullwidth",
+    "cloudpinyin",
 )
+TABLE_DATA = ("db", "erbi", "qxm", "wanfeng", "wbpy", "wbx", "zrm", "cj")
+DATA_ARCHIVES = {
+    "lm_sc.arpa-20260629.tar.zst": "06808333b9173e5374cf2cb5afc12d08f5625bf9abb536489cac376fc05f2e7f",
+    "dict-20260703.tar.zst": "c686cab6df8964c48d596f57d205bac31fc72870b06a83017e44503df8c09697",
+    "table-20240108.tar.zst": "3e9d87b04a393f131723472c8eaa860dd23c378a3d4f6a9005513b2a95b3614b",
+}
+CHINESE_DATA_ARCHIVES = {
+    "py_stroke-20250329.tar.gz": "c1a7ca7225d3614ab83353fc827503006a980447762018f53760425d7b5303a6",
+    "py_table-20121124.tar.gz": "42146ac97de6c13d55f9e99ed873915f4c66739e9c11532a34556badf9792c04",
+}
 RUNTIME_DIRS = {"bin", "lib", "libexec", "share", "etc"}
 BUILD_INPUTS = (
     "tests/linux/fcitx_cooperative/run.py",
     "tests/linux/fcitx_cooperative/fixture.c",
-    *(f"tests/linux/fcitx_cooperative/{project}.patch" for project in UPSTREAM),
+    *(f"tests/linux/fcitx_cooperative/{project}.patch" for project in PATCHED_UPSTREAM),
     "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-v1.h",
 )
 SOURCE_CACHE_DIRS = {
@@ -80,23 +101,12 @@ def metadata(build):
     ):
         if versions.get(key) != CORE_VERSION:
             raise ValueError(f"{key} must be {CORE_VERSION}, got {versions.get(key)!r}")
-    expected_sources = {
-        "fcitx5": "5.1.22",
-        "fcitx5-chinese-addons": "5.1.15",
-        "fcitx5-gtk": "5.1.7",
-    }
-    if versions.get("component_source_versions") != expected_sources:
+    if versions.get("component_source_versions") != SOURCE_VERSIONS:
         raise ValueError("Explicit fixed component source versions are missing or mismatched")
-    packages = dict(
-        line.split() for line in versions.get("packages", "").splitlines() if len(line.split()) == 2
-    )
-    if (
-        packages.get("fcitx5-chinese-addons", "").rsplit("-", 1)[0]
-        != expected_sources["fcitx5-chinese-addons"]
-    ):
-        raise ValueError("System Chinese metadata/profile writer must match private source 5.1.15")
+    if versions.get("installed_private_versions") != PRIVATE_VERSIONS:
+        raise ValueError("Installed private Fcitx/LibIME development versions do not match")
     pins = read_object(build / "pins.json")
-    for project in UPSTREAM:
+    for project in (*UPSTREAM, "kenlm"):
         pin = pins.get(project)
         if (
             not isinstance(pin, list)
@@ -149,6 +159,8 @@ def relative_link(source, source_root, destination, destination_root, absolute_r
 
 def omitted(path, source_root, *, runtime):
     relative = path.relative_to(source_root)
+    if path.name in {*CHINESE_DATA_ARCHIVES, "py_table.mb", "py_stroke.mb"}:
+        return True  # User-installed matching helper data is not redistributed.
     if runtime:
         return (
             relative.parts[0] not in RUNTIME_DIRS
@@ -222,6 +234,14 @@ def copy_core(build, bundle):
         "lib/libFcitx5Core.so.7",
         "lib/libFcitx5Config.so.6",
         "lib/libFcitx5Utils.so.2",
+        *(f"lib/libIME{name}.so.0" for name in ("Core", "Pinyin", "Table")),
+        *(f"lib/fcitx5/lib{name}.so" for name in CHINESE_ADDONS),
+        *(f"share/fcitx5/addon/{name}.conf" for name in CHINESE_ADDONS),
+        "share/libime/sc.dict",
+        "share/libime/extb.dict",
+        *(f"share/libime/{name}.main.dict" for name in TABLE_DATA),
+        "lib/libime/zh_CN.lm",
+        "lib/libime/zh_CN.lm.predict",
     ):
         if not (bundle / "core" / required).is_file():
             raise ValueError(f"Private core runtime is incomplete: {required}")
@@ -251,6 +271,25 @@ def copy_libraries(build, bundle):
 
 def copy_sources(build, bundle, pins, inputs):
     source = bundle / "source"
+    libime = build / "sources/libime"
+    for name, digest in DATA_ARCHIVES.items():
+        if sha256(libime / "data" / name) != digest:
+            raise ValueError(f"Missing or mismatched LibIME 1.1.16 data source: {name}")
+    for name, digest in CHINESE_DATA_ARCHIVES.items():
+        if sha256(build / "sources/fcitx5-chinese-addons/modules/pinyinhelper" / name) != digest:
+            raise ValueError(f"Missing or mismatched Chinese Addons 5.1.14 data archive: {name}")
+    kenlm = libime / "src/libime/core/kenlm"
+    for relative in (
+        "LICENSE",
+        "COPYING",
+        "COPYING.3",
+        "COPYING.LESSER.3",
+        "util/double-conversion/LICENSE",
+        "lm/model.cc",
+        "util/file.cc",
+    ):
+        if not (kenlm / relative).is_file():
+            raise ValueError(f"Incomplete corresponding KenLM source or license: {relative}")
     for project in UPSTREAM:
         upstream = build / "sources" / project
         license_file = upstream / "LICENSES/LGPL-2.1-or-later.txt"
@@ -294,8 +333,23 @@ def copy_sources(build, bundle, pins, inputs):
         ]
     notices += [
         "",
-        "Official system GTK, libime, Chinese input data and other dynamic dependencies",
-        "are not redistributed here. Their build-time versions appear in manifest.json.",
+        f"- KenLM: https://github.com/kpu/kenlm/tree/{pins['kenlm'][0]}",
+        f"  Archive SHA-256: {pins['kenlm'][1]}",
+        "  Source and original license notices: source/upstream/libime/src/libime/core/kenlm/",
+        "  Preserve LICENSE, COPYING*, util/double-conversion/LICENSE and source-file notices.",
+        "",
+        "LibIME data archives and their generated data are redistributed under LGPL-2.1-or-later.",
+        "Copyright 2002-2005 Yuking <yuking_net@sohu.com>; 2014-2026 CSSlayer <wengxt@gmail.com>.",
+        "File-specific distribution attribution: https://metadata.ftp-master.debian.org/",
+        "changelogs/main/libi/libime/unstable_copyright (data/dict*, data/lm*, data/table*).",
+        "The full license is in source/upstream/libime/LICENSES/LGPL-2.1-or-later.txt.",
+        "Corresponding raw data archives and their hashes are retained in source/upstream/libime/data/",
+        "and manifest.json. Chinese py_table/py_stroke data and archives are not redistributed;",
+        "the launcher checks the user's matching official Chinese 5.1.14 helper files.",
+        "The original build download recipes and hashes are retained for reproducibility.",
+        "Official system GTK, Boost, OpenCC, zstd and other dynamic dependencies are not",
+        "redistributed here. Build-machine package versions are recorded separately from",
+        "the bundled Fcitx, Chinese Addons and LibIME versions in manifest.json.",
     ]
     (bundle / "THIRD_PARTY_NOTICES.md").write_text("\n".join(notices) + "\n", encoding="utf-8")
 
@@ -309,7 +363,7 @@ def verify_sources(build):
     for relative in BUILD_INPUTS:
         if sha256(ROOT / relative) != inputs[relative]:
             raise ValueError(f"Checkout differs from the recorded build input: {relative}")
-    for project in UPSTREAM:
+    for project in PATCHED_UPSTREAM:
         source = build / "sources" / project
         if source.is_symlink() or not source.is_dir():
             raise ValueError(f"Missing regular patched source directory: {source}")
@@ -361,11 +415,15 @@ def manifest(bundle, versions, pins, inputs):
         "versions": versions,
         "pins": pins,
         "buildInputs": inputs,
+        "libimeDataSources": DATA_ARCHIVES,
+        "chineseDataSources": CHINESE_DATA_ARCHIVES,
         "systemDependencies": {
             "packages": packages,
             "gtk3": versions.get("gtk3"),
-            "chineseMetadataDirectory": "/usr/share/fcitx5",
-            "libimeDataDirectory": "/usr/share/libime",
+            "requiredUserPackageVersions": {"fcitx5-chinese-addons": "5.1.14", "libime": "1.1.16"},
+            "chineseMetadataDirectory": "core/share/fcitx5",
+            "libimeDataDirectory": "core/share/libime",
+            "libimeModelDirectory": "core/lib/libime",
         },
         "files": files,
     }
