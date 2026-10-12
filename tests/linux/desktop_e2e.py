@@ -267,6 +267,7 @@ def run(arguments):
                 )
             addon = package / "browser/typelay-firefox-unsigned.xpi"
             server = stack.enter_context(HTTPServer(("127.0.0.1", 0), Fixture))
+            server.editor_bundle = arguments.editor_bundle
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             stack.callback(thread.join, 3)
@@ -372,6 +373,57 @@ def run(arguments):
             evidence.append(
                 "Wayland Firefox: real extension, native host, compositor process binding, CPU model and Tab"
             )
+            if arguments.editor_bundle:
+                web("POST", "/url", {"url": f"http://127.0.0.1:{server.server_port}/rich"})
+                web(
+                    "POST",
+                    "/execute/sync",
+                    {"script": "return editorProbeSetup('guarded');", "args": []},
+                )
+                wait_for(
+                    lambda: web(
+                        "POST",
+                        "/execute/sync",
+                        {
+                            "script": "return document.hasFocus() && document.activeElement.id === 'editor-source';",
+                            "args": [],
+                        },
+                    ),
+                    "Firefox rich editor did not acquire keyboard focus",
+                )
+                key("Shift_L")
+                wait_for(ready_to_accept, "rich editor did not receive a real model candidate")
+                subprocess.run(
+                    ["grim", str(arguments.output / "firefox-rich.png")], check=True, timeout=3
+                )
+                wait_for(ready_to_accept, "rich editor acceptance expired while taking evidence")
+                key("Tab")
+
+                def rich_value():
+                    return web(
+                        "POST",
+                        "/execute/sync",
+                        {"script": "return editorProbeInspect();", "args": []},
+                    )
+
+                actual = wait_for(
+                    lambda: value if translated((value := rich_value())["domAfter"]) else None,
+                    "rich editor Tab did not accept the actual model result",
+                )
+                assert actual["preserved"] and actual["domAfter"].startswith("Before ")
+                assert actual["domAfter"].endswith(" world after untouched")
+                assert "<strong>" in actual["after"] and "<em>untouched</em>" in actual["after"]
+                assert (
+                    web(
+                        "POST",
+                        "/execute/sync",
+                        {"script": "return document.activeElement.id;", "args": []},
+                    )
+                    == "editor-source"
+                )
+                evidence.append(
+                    "Wayland Firefox rich editor: selected-range CPU translation, native transaction, preserved surrounding marks and one Tab"
+                )
         assert control(paths, "settings") is True
         time.sleep(0.3)
         subprocess.run(["grim", str(arguments.output / "settings.png")], check=True, timeout=3)

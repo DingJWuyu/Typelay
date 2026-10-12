@@ -113,9 +113,12 @@ class EditorProbe(unittest.TestCase):
                 "(() => { const root = document.querySelector('#editor-source');"
                 "const capture = TypeLayEditorBridge.capture(root);"
                 "if (!capture) return {status: 'Unavailable'};"
+                "const deadline = performance.now() + 240; root.dataset.probeDeadline = String(deadline);"
                 "return TypeLayEditorBridge.replace(root, {version: capture.version,"
                 "expectedText: capture.text, selection: capture.selection, start: 7, end: 12,"
-                "replacement: 'bonjour', direct: false}, () => " + guard + "); })()"
+                "replacement: 'bonjour', direct: false, expiresAtPerformanceMs: deadline}, () => "
+                + guard
+                + "); })()"
             )
         result = self.page.evaluate("window.editorProbeInspect()")
         # Capture the DOM before undo/redo can flush a pending page-owned edit.
@@ -156,17 +159,40 @@ class EditorProbe(unittest.TestCase):
         result = self.page.evaluate("window.editorProbeInspect()")
         self.assertEqual(result["after"], TRANSLATED)
         self.assertTrue(result["preserved"])
+        self.assertTrue(result["updateRestored"])
         accepted = self.isolated("fixtureMessages.filter(message => message.event === 'accepted')")
         self.assertEqual(len(accepted), 1)
         self.assertEqual(accepted[0]["data"]["receipt"]["status"], "Verified")
         self.assertEqual(self.page.evaluate("document.activeElement.id"), "editor-source")
         self.assertEqual(self.page.evaluate("window.editorProbeHistory()")["undone"], INITIAL)
 
+        # A page may synchronously revoke IME evidence while a capture reply is
+        # returning across worlds. The production port must not publish its text.
+        self.page.evaluate("""() => {
+          const root = document.querySelector('#editor-source');
+          const revoke = event => {
+            const response = JSON.parse(event.detail);
+            if (typeof response.result?.text !== 'string') return;
+            root.removeEventListener('typelay-editor-response', revoke);
+            root.dispatchEvent(new CompositionEvent('compositionstart', {bubbles: true}));
+            root.dispatchEvent(new CompositionEvent('compositionend', {bubbles: true}));
+          };
+          root.addEventListener('typelay-editor-response', revoke);
+        }""")
+        description = command("describe")
+        self.assertIsNotNone(description)
+        self.assertIsNone(
+            command(
+                "capture", {"target": description["target"], "authority": description["authority"]}
+            )
+        )
+
     def test_transaction_preserves_rich_spans_selection_and_native_undo(self):
         result = self.probe("guarded")
         self.assertEqual(result["status"], "Applied")
         self.assertEqual(result["after"], TRANSLATED)
         self.assertTrue(result["preserved"])
+        self.assertTrue(result["updateRestored"])
         self.assertEqual(result["selection"], {"from": 15, "to": 15})
         self.assertEqual(result["undone"], INITIAL)
         self.assertEqual(result["undoSelection"], {"from": 8, "to": 13})
@@ -183,6 +209,7 @@ class EditorProbe(unittest.TestCase):
         result = self.probe("reentrant-guarded")
         self.assertEqual(result["status"], "OutcomeUnknown")
         self.assertTrue(result["reentered"])
+        self.assertTrue(result["updateRestored"])
         self.assertEqual(result["after"], NEW_SOURCE)
         self.assertEqual(result["undone"], INITIAL)
         self.assertEqual(result["redone"], NEW_SOURCE)
@@ -203,10 +230,51 @@ class EditorProbe(unittest.TestCase):
         self.assertEqual(result["status"], "OutcomeUnknown")
         self.assertEqual(result["after"], INITIAL)
 
+    def test_commit_guard_preserves_change_from_a_later_application_listener(self):
+        result = self.probe("after-guard-change")
+        self.assertEqual(result["status"], "OutcomeUnknown")
+        self.assertTrue(result["reentered"])
+        self.assertTrue(result["updateRestored"])
+        self.assertEqual(result["after"], NEW_SOURCE)
+        self.assertEqual(result["undone"], INITIAL)
+        self.assertEqual(result["redone"], NEW_SOURCE)
+
+    def test_removal_and_reinsertion_cannot_reuse_the_guarded_root(self):
+        result = self.probe("bridge-reinsert")
+        self.assertEqual(result["status"], "OutcomeUnknown")
+        self.assertTrue(result["reentered"])
+        self.assertTrue(result["connected"])
+        self.assertEqual(result["after"], INITIAL)
+
+    def test_unrelated_page_mutation_does_not_block_the_editor(self):
+        result = self.probe("bridge-unrelated")
+        self.assertEqual(result["status"], "Applied")
+        self.assertEqual(result["after"], TRANSLATED)
+
+    def test_ancestor_metadata_cannot_change_after_isolated_approval(self):
+        result = self.probe("bridge-metadata-change")
+        self.assertEqual(result["status"], "OutcomeUnknown")
+        self.assertTrue(result["reentered"])
+        self.assertEqual(result["after"], INITIAL)
+
+    def test_synchronous_page_callback_cannot_outlive_the_real_deadline(self):
+        result = self.probe("bridge-expire")
+        self.assertEqual(result["status"], "OutcomeUnknown")
+        self.assertTrue(result["reentered"])
+        self.assertEqual(result["after"], INITIAL)
+
+    def test_composition_cycle_after_approval_cannot_clear_the_sticky_veto(self):
+        result = self.probe("bridge-composition-cycle")
+        self.assertEqual(result["status"], "OutcomeUnknown")
+        self.assertTrue(result["reentered"])
+        self.assertFalse(result["composing"])
+        self.assertEqual(result["after"], INITIAL)
+
     def test_guard_rechecks_after_page_observes_the_bridge_check(self):
         result = self.probe("bridge-check-change")
         self.assertEqual(result["status"], "OutcomeUnknown")
         self.assertTrue(result["reentered"])
+        self.assertTrue(result["updateRestored"])
         self.assertEqual(result["after"], NEW_SOURCE)
         self.assertEqual(result["undone"], INITIAL)
 

@@ -15,8 +15,10 @@ VS Code 公开扩展 API 未提供 IME composition 生命周期或同步的物�
 先准备官方 VS Code 或发行版 Code OSS 和独立显示环境。以下命令创建临时 HOME、用户数据和扩展目录，不读取现有工作区；退出时删除临时目录并清理自有进程组：
 
 ```sh
-DISPLAY=:99 python tests/linux/vscode_e2e.py --code /usr/bin/code
+DISPLAY=:99 python tests/linux/vscode_e2e.py --code /usr/lib/electron42/electron --app /usr/lib/code
 ```
+
+这里的 `--code` 必须指向真实 ELF 可执行文件，不使用 `/usr/bin/code` CLI 包装器。Arch 的 Electron 版本目录应按实际安装包确认；官方 VS Code 完整包可传包内 `code` 二进制并省略 `--app`。CLI 的 `--wait` 等待文件关闭，不是 Extension Host 生命周期，不能作为测试完成证据。启动日志、临时 profile 的日志以及真实测试入口产生的 `test-result.json` 保存到 `artifacts/linux/vscode/`；仅所有断言完成后的 `passed` 结果被接受。
 
 测试覆盖选区范围外文本、UTF-16 emoji、显式整文、一次 undo/redo、旧版本拒绝、选区变化、编辑器切换、文档关闭、重复接受、并发 renderer 版本拒绝、代码区与超长文档拒绝。未使用编辑器对象替身或翻译模型替身。缺少 Code 可执行文件、显示环境或运行超时是失败，不能跳过为通过。
 

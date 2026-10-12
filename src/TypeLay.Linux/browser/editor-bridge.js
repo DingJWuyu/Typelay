@@ -7,6 +7,7 @@
   const CHECK = "typelay-editor-check", CHECK_RESULT = "typelay-editor-check-result";
   const textValue = Object.getOwnPropertyDescriptor(Node.prototype, "textContent").get;
   const pending = new WeakSet();
+  const monotonic = performance.now.bind(performance);
   function root(element) {
     if (!(element instanceof HTMLElement)) return null;
     const candidate = element.closest(".ProseMirror[contenteditable='true']");
@@ -115,6 +116,12 @@
         || document.activeElement === element && (!selected || selected.start !== result.selection.start || selected.end !== result.selection.end)) return null;
       return result;
     },
-    replace: (element, data, finalGuard) => invoke(element, "replace", data, finalGuard),
+    replace(element, data, finalGuard) {
+      const remaining = data?.expiresAtPerformanceMs - monotonic();
+      if (!Number.isFinite(remaining) || remaining < 0 || remaining > 250) {
+        return {status: "RejectedBeforeMutation", reason: "StaleObservation"};
+      }
+      return invoke(element, "replace", data, finalGuard);
+    },
   });
 })();

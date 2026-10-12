@@ -6,11 +6,11 @@
 
 这是正在完成桌面验证的预览客户端，不是已通过完整产品验收的 Linux 正式版。现有产品规格仍是验收依据；下列缺口不是新的产品规格或永久支持名单。
 
-客户端复用 Core、Runtime 和 Python worker，提供设置、托盘、本地模型安装及浏览器普通输入框的自动/按需翻译、预览编辑、两阶段 Tab 和绑定原框的直接替换。浏览器后端需另行明确安装扩展，范围是顶层 HTTP(S) 网页普通 input/textarea，详见 [浏览器连接与限制](browser-linux.md)。Chromium 回归覆盖真实 DOM 与本地主机；Firefox 回归覆盖实际临时扩展加载、本地主机、普通字段读写和标签页/DOM 身份。两者另有 Wayland+niri+实际模型+Tab 的生产桌面链路检查；结果以对应提交 CI 为准，不能代替物理输入法和目标网页验收。
+客户端复用 Core、Runtime 和 Python worker，提供设置、托盘、本地模型安装及浏览器普通输入框的自动/按需翻译、预览编辑、两阶段 Tab 和绑定原框的直接替换。浏览器后端需另行明确安装扩展，范围是顶层 HTTP(S) 网页普通 input/textarea，以及具备已验证事务接口的 Tiptap 单段文字/marks，详见 [浏览器连接与限制](browser-linux.md)。Chromium 回归覆盖真实 DOM 与本地主机；Firefox 回归覆盖实际临时扩展加载、本地主机、普通字段读写和标签页/DOM 身份。两者另有 Wayland+niri+实际模型+Tab 的生产桌面链路检查；结果以对应提交 CI 为准，不能代替物理输入法和目标网页验收。
 
 通用 GTK3 输入适配器当前处于安全禁用状态：只描述非正文元数据，不捕获正文、不授予写入能力、不拦截 Tab。公开 GTK API 不能确定实际嵌入输入法的异步请求是否结束；空 preedit、提前监听和 im-module 配置值都不能证明 Clear。默认配置与显式 Simple 请求同样不被当作证据。此前 GTK 正向测试不再构成安全可用性证明，当前回归只验证明确拒绝与按键透传。
 
-GTK3 输入法事务能力、GTK4、Qt、Electron/VS Code、富文本仍是未完成的开发项；终端/命令区按产品策略默认排除。当前交付未达到通用 Linux 输入框移植目标，不能把这些开发缺口留作“只需真机验证”。GTK 父窗口/浏览器视口定位契约见 `docs/adr/0004-linux-native-anchors.md`。
+GTK3 输入法事务能力、GTK4、Qt、Electron/VS Code 和更广的富文本结构仍是未完成的开发项；终端/命令区按产品策略默认排除。当前交付未达到通用 Linux 输入框移植目标，不能把这些开发缺口留作“只需真机验证”。GTK 父窗口/浏览器视口定位契约见 `docs/adr/0004-linux-native-anchors.md`。
 
 快捷键默认在已连接的输入适配器中处理；也可将 niri 全局按键绑定到下述 --wake/--direct 命令。默认 Ctrl+Shift+F9 唤醒、Ctrl+Shift+F10 直接替换，仅按需模式生效。全局触发不会为没有输入后端的应用伪造读取/写入能力。所有应用的兼容性、物理快捷键与托盘视觉一致性仍需实际验证。
 
@@ -154,7 +154,8 @@ env GDK_BACKEND=x11 dbus-run-session -- xvfb-run -a python tests/linux/tray_e2e.
 | 托盘 | Waybar 启用 tray，测试暂停/恢复、切换模式、交换语言、中键设置、面板重启、退出 | 真实面板点击、主题与图标清晰度 |
 | 完整生命周期 | 模型安装、断网、退出、重复启动、登录启动、卸载 | 无孤儿模型进程、无遗留键盘占用 |
 | 网页普通字段 | Firefox/Chromium 扩展安装、input/textarea、切标签页、DOM 重建和框架受控值 | native messaging 路由、真实网页状态与撤销栈；详见浏览器说明 |
-| 其他输入框 | GTK3、Electron/VS Code、GTK4、Qt、富文本 | 尚未安全实现，不能标记通过 |
+| 富文本 | Tiptap 单段选区替换，保留范围外 marks 与原生撤销语义 | 其他版本、自定义 dispatcher、多段/列表/mention 尚未覆盖 |
+| 其他输入框 | GTK3、Electron/VS Code、GTK4、Qt | 尚未安全实现，不能标记通过 |
 
 未经实际执行的项目保持未验证。源码中存在实现、单元测试通过和嵌套桌面通过是三个不同层次的证据。
 

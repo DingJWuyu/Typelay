@@ -56,7 +56,12 @@
     let richText = false;
     if (!allowedElement(element)) {
       element = rich?.root(element);
-      if (!element || rich.probe(element)?.supported !== true) return null;
+      if (!element) return null;
+      // Observe lifecycle/input even while the synchronous page bridge is busy.
+      // A nested probe is deliberately unavailable and cannot erase a veto.
+      const existing = fields.get(element);
+      if (existing && !existing.dead) return existing;
+      if (rich.probe(element)?.supported !== true) return null;
       richText = true;
     }
     if (element.getRootNode() !== document) return null;
@@ -179,7 +184,7 @@
       field.richVersion = captured.version;
     }
     const result = describe(field);
-    if (!result || !approved(field, basis)) return null;
+    if (!result || !approved(field, basis) || field.ime !== "Clear") return null;
     return {...result, text, selection: captured?.selection || selection(field),
       ime: field.ime, observedAtMs: now(), writeSupported: !field.quarantined};
   }
@@ -258,7 +263,8 @@
     mutating = true;
     try {
       const receipt = rich.replace(field.element, {version: field.richVersion, expectedText: text,
-        selection: plan.expected.selection, start, end, replacement: plan.replacement, direct}, guard);
+        selection: plan.expected.selection, start, end, replacement: plan.replacement, direct,
+        expiresAtPerformanceMs: clock.mono + request.expiresAtMs - clock.boot}, guard);
       drainMutations();
       if (receipt?.status === "RejectedBeforeMutation") return rejection(receipt.reason || "SourceChanged");
       const current = selection(field);

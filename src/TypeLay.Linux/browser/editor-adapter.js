@@ -10,6 +10,10 @@
   const busy = new WeakSet();
   let serial = 0;
   const MAX = 8192;
+  const monotonic = performance.now.bind(performance);
+  const computedStyle = window.getComputedStyle.bind(window);
+  const clientRects = Element.prototype.getClientRects;
+  const boundingRect = Element.prototype.getBoundingClientRect;
   const rejected = reason => ({status: "RejectedBeforeMutation", reason});
   const unknown = () => ({status: "OutcomeUnknown", reason: "UnknownOutcome"});
   function valid(text) {
@@ -81,6 +85,8 @@
     } finally { window.removeEventListener(CHECK_RESULT, receive, true); }
   }
   function replace(root, current, data, id) {
+    const remaining = data.expiresAtPerformanceMs - monotonic();
+    if (!Number.isFinite(remaining) || remaining < 0 || remaining > 250) return rejected("StaleObservation");
     if (current.view.composing) return rejected("ImeUnclear");
     const captured = capture(root, current);
     if (!captured || data.version !== captured.version || data.expectedText !== captured.text) return rejected("SourceChanged");
@@ -95,40 +101,100 @@
     const selected = document.getSelection(), active = document.activeElement;
     const anchor = selected && [selected.anchorNode, selected.anchorOffset, selected.focusNode, selected.focusOffset];
     const transaction = state.tr.insertText(replacement, start + 1, end + 1);
+    const originalUpdate = view.updateState;
+    const originalDescriptor = Object.getOwnPropertyDescriptor(view, "updateState");
     const mutations = new MutationObserver(() => {});
     mutations.observe(root, {subtree: true, childList: true, characterData: true, attributes: true});
-    let dispatched = false, checked = false;
+    // Also see removal/reinsertion and the ancestors used by metadata approval.
+    // Unrelated page UI changes do not invalidate the source.
+    const ancestors = new Set();
+    for (let parent = root.parentElement; parent; parent = parent.parentElement) ancestors.add(parent);
+    mutations.observe(document, {subtree: true, childList: true, attributes: true, characterData: true});
+    const relevantMutation = record => record.target === root || root.contains(record.target)
+      || record.type === "attributes" && ancestors.has(record.target)
+      || Array.from(record.removedNodes || []).some(node => node === root || node.contains?.(root));
+    let sourceEvent = false;
+    const inputEvents = ["compositionstart", "compositionupdate", "compositionend", "beforeinput", "input", "select"];
+    const interrupted = event => {
+      if (event.target === root || event.target instanceof Node && root.contains(event.target)) sourceEvent = true;
+    };
+    for (const type of inputEvents) window.addEventListener(type, interrupted, true);
+    const visible = () => {
+      if (!clientRects.call(root).length) return false;
+      const rect = boundingRect.call(root);
+      if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= innerWidth || rect.top >= innerHeight) return false;
+      for (const element of [root, ...ancestors]) {
+        const style = computedStyle(element);
+        if (style.display === "none" || style.visibility !== "visible" || Number(style.opacity) === 0) return false;
+      }
+      return true;
+    };
+    let checked = false, wrapperActive = true, nextState = null, completedState = null;
+    let receipt = unknown();
     const abort = new Error("typelay-source-changed");
     const unchanged = () => editor.state === state && editor.view === view && view.dom === root && root.isConnected
-      && editor.isEditable && !view.composing && document.activeElement === active && !mutations.takeRecords().length
+      && editor.isEditable && !view.composing && !sourceEvent && document.activeElement === active
+      && (data.direct || document.hasFocus() && document.visibilityState === "visible")
+      && visible()
+      && !mutations.takeRecords().some(relevantMutation)
       && selected && selected.anchorNode === anchor[0] && selected.anchorOffset === anchor[1]
-      && selected.focusNode === anchor[2] && selected.focusOffset === anchor[3];
-    const guard = ({transaction: incoming}) => {
+      && selected.focusNode === anchor[2] && selected.focusOffset === anchor[3]
+      && monotonic() <= data.expiresAtPerformanceMs;
+    const wrappedUpdate = function (incomingState) {
+      // Preserve nested application transactions. Only the outer transaction's
+      // exact computed nextState gets the final check at its actual commit.
+      if (wrapperActive && incomingState === nextState && (!checked || !unchanged())) throw abort;
+      return originalUpdate.call(this, incomingState);
+    };
+    const guard = ({transaction: incoming, nextState: incomingState}) => {
       if (incoming !== transaction) return;
+      if (!incomingState?.doc?.eq(transaction.doc)) throw abort;
+      nextState = incomingState;
       // CHECK is itself observable by the page. Recheck without another event
       // after it returns, so handlers cannot slip an edit behind the last guard.
       if (checked || !unchanged() || !check(root, id) || !unchanged()) throw abort;
       checked = true;
     };
     try {
+      view.updateState = wrappedUpdate;
       editor.on("beforeTransaction", guard);
-      dispatched = true;
       view.dispatch(transaction);
       const after = target(root);
-      if (!checked || !after || after.editor !== editor || after.view !== view || view.composing
-        || !after.state.doc.eq(transaction.doc) || root.textContent !== result
-        || after.state.selection.from !== start + replacement.length + 1
-        || after.state.selection.to !== start + replacement.length + 1) return unknown();
-      return {status: "Applied", text: result, selection: {start: start + replacement.length, end: start + replacement.length},
-        version: version(root, after)};
+      if (checked && after && after.editor === editor && after.view === view && !view.composing && !sourceEvent
+        && Object.getOwnPropertyDescriptor(view, "updateState")?.value === wrappedUpdate
+        && after.state.doc.eq(transaction.doc) && root.textContent === result
+        && after.state.selection.from === start + replacement.length + 1
+        && after.state.selection.to === start + replacement.length + 1) {
+        completedState = after.state;
+        receipt = {status: "Applied", text: result,
+          selection: {start: start + replacement.length, end: start + replacement.length}, version: version(root, after)};
+      }
     } catch (_) {
-      // A custom dispatcher could commit before invoking a hook or throwing.
-      // Never label any failure after entering it as a zero-mutation rejection.
-      return dispatched ? unknown() : rejected("SourceChanged");
+      // Page callbacks may mutate and then throw. Never report zero mutation
+      // after entering editor code, including listener registration/cleanup.
+      receipt = unknown();
     } finally {
+      wrapperActive = false;
       mutations.disconnect();
-      editor.off("beforeTransaction", guard);
+      try { editor.off("beforeTransaction", guard); }
+      finally {
+        // Do not overwrite a method the application deliberately replaced.
+        // Even if the page freezes the view, any remaining wrapper is inert.
+        try {
+          if (Object.getOwnPropertyDescriptor(view, "updateState")?.value === wrappedUpdate) {
+            if (originalDescriptor) Object.defineProperty(view, "updateState", originalDescriptor);
+            else delete view.updateState;
+          }
+        } finally {
+          for (const type of inputEvents) window.removeEventListener(type, interrupted, true);
+        }
+      }
     }
+    const finalTarget = target(root);
+    if (receipt.status === "Applied" && (!finalTarget || finalTarget.editor !== editor || finalTarget.view !== view
+      || editor.state !== completedState || editor.view !== view || view.updateState !== originalUpdate
+      || view.dom !== root || !root.isConnected || root.textContent !== result || view.composing || sourceEvent)) return unknown();
+    return receipt;
   }
   window.addEventListener(REQUEST, event => {
     const root = event.target;
