@@ -323,10 +323,10 @@ jobs:
         run: |
           set -euo pipefail
           test "$BEFORE" != 0000000000000000000000000000000000000000
-          git merge-base --is-ancestor "$BEFORE" "$AFTER"
+          git -c safe.directory="$PWD" merge-base --is-ancestor "$BEFORE" "$AFTER"
           # Inspect every changed path in the entire push, including changes
           # later reverted by another commit. A forbidden change stays red.
-          git log --format= --name-only "$BEFORE..$AFTER" | sed '/^$/d' > /tmp/qt-research-paths
+          git -c safe.directory="$PWD" log --format= --name-only "$BEFORE..$AFTER" | sed '/^$/d' > /tmp/qt-research-paths
           test -s /tmp/qt-research-paths
           if grep -Ev '^(tests/linux/qt_cooperative/|src/TypeLay\.Linux/native/qt6/|src/TypeLay\.Linux/native/fcitx5/typelay-fcitx-qt-v1\.h$|tests/linux/(qt_desktop\.py|qt_native_fixture\.cpp)$)' /tmp/qt-research-paths; then
             echo 'Qt-only scope rejected; use a normal commit for full product checks.' >&2
@@ -334,7 +334,7 @@ jobs:
           fi
           # The fixed binary package must still match every non-Qt product input.
           # A later shared/desktop change requires a new fully checked baseline.
-          git diff --exit-code db126cec12704ae969bf8520b9298256d5a4c079 HEAD -- \
+          git -c safe.directory="$PWD" diff --exit-code db126cec12704ae969bf8520b9298256d5a4c079 HEAD -- \
             src worker packaging tests/linux/desktop_e2e.py tests/linux/native_e2e.py tests/linux/fcitx_cooperative \
             ':!src/TypeLay.Linux/native/qt6/**' ':!src/TypeLay.Linux/native/fcitx5/typelay-fcitx-qt-v1.h'
       - name: Reuse the exact verified cooperation runtime

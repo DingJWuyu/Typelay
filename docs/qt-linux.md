@@ -4,6 +4,8 @@ Qt 路径目前是 CI 中隔离构建、验证的合作组件，不随普通 Lin
 
 ## 实现范围
 
+目前已验证 Qt 6.12.0 与固定 Fcitx Qt 5.1.15 的隔离 Wayland/niri 链路：实际英文键入、本机模型、浮层、单次 Tab、原生撤销、点击编辑后的两阶段 Tab、实际拼音组合拒写和敏感元数据拒绝。按需快捷键、选区 Unicode 等仍须沿各自真实路径验证。
+
 - 加载器是公开 `QGenericPlugin`，通过 `QT_QPA_GENERIC_PLUGINS` 追加 `typelay`，保留 Qt 原输入法插件。
 - 当前源字段仅为标准、实际类型为 `QLineEdit` 的普通单行输入框。自定义派生类、密码/隐藏/敏感输入提示、只读/禁用字段、validator、input mask 及数字/日期/邮箱/URL等限定输入提示 均不授予正文捕获或写入能力。共享字段策略先检查标签、帮助与标识等元数据，再批准正文读取。
 - 目标身份绑定实际 `QPointer<QLineEdit>`、控件生命周期和合作 provider 的 `fieldGeneration`。同一窗口内第二个输入框不能继承第一个输入框的许可。
