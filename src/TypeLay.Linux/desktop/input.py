@@ -125,6 +125,7 @@ class Input:
         self.capture_counts = Counter()
         self.capture_started_at = 0
         self.capture_failures = []
+        self.timing_metrics = {}
         self.browser_diagnostics = {}
         self.native_publication = None
         self.publication_generation = 0
@@ -271,10 +272,25 @@ class Input:
         metadata = {**description["metadata"], "process": peer.application}
         return await self.host.ask("allowField", metadata) is True
 
+    def timing(self, name, value):
+        # Session-local aggregates only. No target IDs, text or per-frame logs.
+        value = max(-10000, min(10000, int(value)))
+        metric = self.timing_metrics.setdefault(
+            name, {"count": 0, "minMs": value, "maxMs": value, "lastMs": value}
+        )
+        metric["count"] = min(metric["count"] + 1, 2**31 - 1)
+        metric["minMs"] = min(metric["minMs"], value)
+        metric["maxMs"] = max(metric["maxMs"], value)
+        metric["lastMs"] = value
+
     def captured(self, reason, result=None):
         # Fixed reason codes and counts only: no source, title or field metadata.
         self.capture_status = reason
         self.capture_counts[reason] = min(self.capture_counts[reason] + 1, 2**31 - 1)
+        if result is not None:
+            stamp = now_ms()
+            self.timing("captureElapsed", stamp - self.capture_started_at)
+            self.timing("snapshotAge", stamp - result["snapshot"]["observedAtMs"])
         if result is None:
             self.invalidate_publication()
             stamp = now_ms()
@@ -383,6 +399,7 @@ class Input:
             or not now_ms() < until <= issued["permit"]["expiresAtMs"]
         ):
             return
+        self.timing("ackRemaining", until - now_ms())
         self.native_publication = {
             "peer": peer,
             "planId": plan_id,
@@ -412,6 +429,7 @@ class Input:
             "captureStatus": self.capture_status,
             "captureCounts": dict(self.capture_counts),
             "captureFailures": list(self.capture_failures),
+            "timingMs": {key: dict(value) for key, value in self.timing_metrics.items()},
             "browser": self.browser_diagnostics,
             "compositorReady": self.niri.ready,
             "compositorAgeMs": max(0, now_ms() - self.niri.observed_at),
@@ -558,6 +576,7 @@ class Input:
             permit = value.get("permit")
             self.invalidate_publication()
             if permit:
+                self.timing("publishRemaining", permit["expiresAtMs"] - now_ms())
                 self.published_plan = (peer, permit["plan"]["id"])
                 self.publication_epochs = (self.window_epoch, self.user_epoch)
             if permit:

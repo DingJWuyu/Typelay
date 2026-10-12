@@ -15,6 +15,7 @@
 #include <QWindow>
 #include <QDebug>
 #include <cerrno>
+#include <cstdio>
 #include <fcntl.h>
 #include <unistd.h>
 
@@ -92,10 +93,10 @@ public:
 
         if (qEnvironmentVariable("FCITX_QT_USE_SYNC") == "1" && traceLines_++ < 128) {
             const auto *key = keyPress || keyRelease ? static_cast<QKeyEvent *>(event) : nullptr;
-            qInfo() << "tlqt-widget" << "field" << field(object) << "event" << int(type)
-                    << "sync-key-seq" << qApp->property("tlqtSyncKeySeq").toInt()
-                    << "f24" << (key && key->key() == Qt::Key_F24)
-                    << "modifiers" << (key ? int(key->modifiers()) : 0);
+            std::fprintf(stderr,
+                "tlqt-widget field=%d event=%d sync-key-seq=%d f24=%d modifiers=%d\n",
+                field(object), int(type), qApp->property("tlqtSyncKeySeq").toInt(),
+                int(key && key->key() == Qt::Key_F24), key ? int(key->modifiers()) : 0);
         }
         increment("widgetCallbacks");
         increment(field(object) == 1 ? "firstCallbacks" : "secondCallbacks");
@@ -162,6 +163,8 @@ private:
 
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
+    std::fprintf(stderr, "tlqt-fixture-start qt=%s sync=%d\n", qVersion(),
+                 int(qEnvironmentVariable("FCITX_QT_USE_SYNC") == "1"));
     const QString statePath = qEnvironmentVariable("TYPELAY_QT_STATE");
     if (statePath.isEmpty()) {
         qCritical("TYPELAY_QT_STATE is required");
