@@ -37,22 +37,44 @@
   // and toolkit/components/resistfingerprinting/nsRFPService.cpp;
   // https://developer.mozilla.org/en-US/docs/Web/API/Performance/now
   const CLOCK_MARGIN = 4;
+  // Fixed, bounded health counters only. No text, metadata, tokens or paths.
+  const captureCounts = Object.fromEntries(["supported", "metadata", "ime", "clockUnavailable",
+    "clockExpired", "clockDiscontinuity", "authorityMissing", "authorityChanged", "authorityExpired",
+    "authorityClock", "hostAge", "timerPrecision", "intervalConflict", "hostFuture", "invalidClock",
+    "richUnavailable", "invalidText", "postcheck"].map(reason => [reason, 0]));
+  let lastCaptureReason = "none", lastClockReason = "none";
+  let authorityAgeMs = null, hostAgeMs = null, timerTickMs = null, timerProbeMs = null;
+  const boundedMetric = value => Number.isFinite(value)
+    ? Math.round(Math.max(-10000, Math.min(10000, value)) * 10) / 10 : null;
+  const diagnostics = () => ({captureCounts: {...captureCounts}, lastCaptureReason, lastClockReason,
+    authorityAgeMs: boundedMetric(authorityAgeMs), hostAgeMs: boundedMetric(hostAgeMs),
+    timerTickMs: boundedMetric(timerTickMs), timerProbeMs: boundedMetric(timerProbeMs),
+    clockWidthMs: boundedMetric(clock ? clock.upper - clock.lower : NaN),
+    clockAgeMs: boundedMetric(clock ? monoNow() - clock.mono : NaN)});
+  function noteCapture(reason) {
+    lastCaptureReason = Object.hasOwn(captureCounts, reason) ? reason : "postcheck";
+    captureCounts[lastCaptureReason] = Math.min(1000000, captureCounts[lastCaptureReason] + 1);
+    return null;
+  }
+  function clockReject(reason) { lastClockReason = reason; return false; }
   function fineClock() {
     const first = monoNow();
+    timerTickMs = null;
     for (let index = 0; index < 32768; index++) {
       const delta = monoNow() - first;
-      if (delta > 0) return delta <= 1;
+      if (delta > 0) { timerTickMs = timerProbeMs = delta; return delta <= 1; }
     }
+    timerProbeMs = monoNow() - first;
     return false;
   }
   function clockValid() {
-    if (!clock) return false;
+    if (!clock) return clockReject("clockUnavailable");
     const elapsed = monoNow() - clock.mono;
     if (elapsed < 0 || Math.abs(Date.now() - clock.wall - elapsed) > 20) {
       observationInterrupted();
-      return false;
+      return clockReject("clockDiscontinuity");
     }
-    if (elapsed > 1500) { clock = publication = shortcut = null; return false; }
+    if (elapsed > 1500) { clock = publication = shortcut = null; return clockReject("clockExpired"); }
     return true;
   }
   function now(upper = false) {
@@ -60,18 +82,23 @@
   }
   function issued(field, basis) {
     const record = field?.authorities?.get(basis?.token);
-    if (!record || record.key !== JSON.stringify(basis)) return null;
+    if (!record) return clockReject("authorityMissing");
+    if (record.key !== JSON.stringify(basis)) return clockReject("authorityChanged");
     const elapsed = monoNow() - record.mono;
-    if (elapsed < 0 || elapsed + CLOCK_MARGIN > 150
-      || Math.abs(Date.now() - record.wall - elapsed) > 20) return null;
+    if (elapsed < 0 || elapsed + CLOCK_MARGIN > 150) return clockReject("authorityExpired");
+    if (Math.abs(Date.now() - record.wall - elapsed) > 20) return clockReject("authorityClock");
     return record;
   }
   function calibrate(field, basis) {
+    lastClockReason = "none";
     if (clock && !clockValid()) return false;
     const record = issued(field, basis);
-    if (!record || !commandClock || commandClock.boottimeMs < basis.observedAtMs
-      || commandClock.boottimeMs - basis.observedAtMs > 150 || !fineClock()
-      || !issued(field, basis)) return false;
+    if (!record) return false;
+    if (!commandClock) return clockReject("clockUnavailable");
+    if (commandClock.boottimeMs < basis.observedAtMs
+      || commandClock.boottimeMs - basis.observedAtMs > 150) return clockReject("hostAge");
+    if (!fineClock()) return clockReject("timerPrecision");
+    if (!issued(field, basis)) return false;
     const mono = monoNow(), wall = Date.now(), host = commandClock.boottimeMs;
     // The echoed, locally issued token proves the host sampled H after t0 and
     // before this receipt t1. No wall-clock subtraction grants freshness.
@@ -80,7 +107,7 @@
       if (!clockValid()) return false;
       lower = Math.max(lower, clock.lower);
       upper = Math.min(upper, clock.upper);
-      if (lower > upper) { observationInterrupted(); return false; }
+      if (lower > upper) { observationInterrupted(); return clockReject("intervalConflict"); }
     }
     // Keep a separate wall bound solely to veto a deadline after short Linux
     // suspend intervals that performance.now() does not include.
@@ -204,7 +231,7 @@
     const meta = metadata(field);
     if (!meta || meta.password || !meta.enabled || meta.readOnly || meta.offscreen) return null;
     return {target: field.id, metadata: meta, authority: authority(field, meta),
-      geometry: geometry(field), focused: focused(field)};
+      geometry: geometry(field), focused: focused(field), diagnostics: diagnostics()};
   }
   function approved(field, basis) {
     const meta = field && metadata(field);
@@ -232,15 +259,21 @@
   }
   function capture(field, basis) {
     drainMutations();
-    if (!approved(field, basis) || field.ime !== "Clear") return null;
-    if (!(commandClock ? calibrate(field, basis) : issued(field, basis) && clockValid())
-      || field.ime !== "Clear") return null;
+    const record = field?.authorities?.get(basis?.token);
+    authorityAgeMs = record ? monoNow() - record.mono : null;
+    hostAgeMs = commandClock && basis ? commandClock.boottimeMs - basis.observedAtMs : null;
+    if (!approved(field, basis)) return noteCapture("metadata");
+    if (field.ime !== "Clear") return noteCapture("ime");
+    if (!(commandClock ? calibrate(field, basis) : issued(field, basis) && clockValid())) {
+      return noteCapture(lastClockReason);
+    }
+    if (field.ime !== "Clear") return noteCapture("ime");
     // Body access occurs only after the desktop's metadata approval. Unknown or
     // composing input is not shipped even for preview: there is no committed range API.
     const captured = field.richText ? rich.capture(field.element) : null;
-    if (field.richText && !captured) return null;
+    if (field.richText && !captured) return noteCapture("richUnavailable");
     const text = captured ? captured.text : read(field);
-    if (!validText(text)) return null;
+    if (!validText(text)) return noteCapture("invalidText");
     if (captured) {
       // A page model can change without an input event or visible text change.
       // Never silently rebind an already published plan to a new immutable state.
@@ -248,9 +281,11 @@
       field.richVersion = captured.version;
     }
     const result = describe(field);
-    if (!result || !approved(field, basis) || field.ime !== "Clear"
-      || !issued(field, basis) || !clockValid()) return null;
-    return {...result, text, selection: captured?.selection || selection(field),
+    if (!result || !approved(field, basis)) return noteCapture("postcheck");
+    if (field.ime !== "Clear") return noteCapture("ime");
+    if (!issued(field, basis) || !clockValid()) return noteCapture(lastClockReason);
+    noteCapture("supported");
+    return {...result, diagnostics: diagnostics(), text, selection: captured?.selection || selection(field),
       ime: field.ime, observedAtMs: now(), writeSupported: !field.quarantined};
   }
   const rejection = reason => ({status: "RejectedBeforeMutation", reason});
@@ -586,13 +621,17 @@
     // A host send cannot be later than our proved receipt upper bound.
     if (synced && clockValid() && value.boottimeMs > now(true)) {
       observationInterrupted(); synced = false;
-    }
+      lastClockReason = "hostFuture";
+    } else if (!synced) lastClockReason = "invalidClock";
     commandClock = synced ? value : null;
     if (synced) lastHostStamp = Math.max(Number.isFinite(lastHostStamp) ? lastHostStamp : 0, value.boottimeMs);
     let result = null;
     try {
       if (synced || message.op === "configure-shortcuts") result = command(message);
-      else { publication = shortcut = null; hide(); }
+      else {
+        if (message.op === "capture") noteCapture(lastClockReason);
+        publication = shortcut = null; hide();
+      }
     }
     catch (_) { publication = shortcut = null; hide(); }
     commandClock = null;

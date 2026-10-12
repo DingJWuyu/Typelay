@@ -71,7 +71,7 @@
      }
  }
  
-@@ -1205,3 +1214,36 @@
+@@ -1205,3 +1214,58 @@
  }
  
  // kate: indent-mode cstyle; replace-tabs on;
@@ -108,6 +108,28 @@
 +    g_variant_unref(reply);
 +    return result;
 +}
++
++guint64 fcitx_g_client_typelay_delivered_v1(FcitxGClient *self) {
++    return self->priv->typelayDelivered;
++}
++
++gboolean fcitx_g_client_typelay_prepare_caret_v1(FcitxGClient *self, guint64 expected) {
++    if (!fcitx_g_client_is_valid(self)) return FALSE;
++    GError *error = NULL;
++    GVariant *reply = g_dbus_proxy_call_sync(self->priv->icproxy,
++        "TypeLayPrepareCaretV1", g_variant_new("(t)", expected),
++        G_DBUS_CALL_FLAGS_NONE, 25, NULL, &error);
++    if (!reply) {
++        if (g_getenv("TYPELAY_TRACE")) g_printerr("typelay-fcitx-prepare rpc-failed\n");
++        g_clear_error(&error);
++        return FALSE;
++    }
++    gboolean result = FALSE;
++    if (g_variant_is_of_type(reply, G_VARIANT_TYPE("(a(uv)b)")))
++        result = _fcitx_g_client_handle_process_key_reply(self, reply);
++    g_variant_unref(reply);
++    return result;
++}
 --- a/fcitx-gclient/fcitxgclient.h
 +++ b/fcitx-gclient/fcitxgclient.h
 @@ -1,3 +1,4 @@
@@ -115,10 +137,12 @@
  /*
   * SPDX-FileCopyrightText: 2012~2012 CSSlayer <wengxt@gmail.com>
   *
-@@ -70,6 +71,12 @@
+@@ -70,6 +71,14 @@
  
  void fcitx_g_client_reset(FcitxGClient *self);
  
++gboolean fcitx_g_client_typelay_prepare_caret_v1(FcitxGClient *self, guint64 expected);
++guint64 fcitx_g_client_typelay_delivered_v1(FcitxGClient *self);
 +gboolean fcitx_g_client_typelay_deferred_switch_fixture_v1(FcitxGClient *self);
 +gboolean fcitx_g_client_typelay_probe_state_v1(FcitxGClient *self,
 +    guint64 *server_serial, guint64 *delivered, gboolean *known,
@@ -143,17 +167,20 @@
  #include "fcitxtheme.h"
  #include "gtk3inputwindow.h"
  
-@@ -44,6 +46,9 @@
+@@ -44,6 +46,12 @@
      GtkIMContext parent;
  
      GdkWindow *client_window;
 +    guint64 typelay_epoch, typelay_input_epoch, typelay_generation;
++    TlFcitxStateV1 typelay_proof;
++    gboolean typelay_proof_valid, typelay_preparing, typelay_prepare_ok;
++    guint64 typelay_prepare_serial;
 +    gchar *typelay_current_im;
 +    guint typelay_depth;
      gulong button_press_signal;
      bool has_rect;
      GdkRectangle area;
-@@ -178,6 +183,28 @@
+@@ -178,6 +186,31 @@
  static guint _signal_retrieve_surrounding_id = 0;
  static gboolean _use_preedit = TRUE;
  static gboolean _use_sync_mode = 0;
@@ -161,10 +188,12 @@
 +static guint typelay_changed_signal;
 +static guint64 typelay_next_generation;
 +static gboolean typelay_inspect(GtkIMContext *, GtkWidget *, TlFcitxStateV1 *);
++static gboolean typelay_validate_local(GtkIMContext *, GtkWidget *, const TlFcitxStateV1 *);
++static gboolean typelay_prepare_caret(GtkIMContext *, GtkWidget *, const TlFcitxStateV1 *);
 +static gboolean typelay_select_fixture(GtkWidget *);
 +static gboolean typelay_deferred_switch_fixture(GtkWidget *);
 +static const TlFcitxCapabilityV1 typelay_capability = {
-+    sizeof(TlFcitxCapabilityV1), TL_FCITX_ABI_V1, typelay_inspect};
++    sizeof(TlFcitxCapabilityV1), TL_FCITX_ABI_V1, typelay_inspect, typelay_validate_local, typelay_prepare_caret};
 +struct TypeLayCallback {
 +    FcitxIMContext *self;
 +    explicit TypeLayCallback(FcitxIMContext *context) : self(context) { ++self->typelay_depth; }
@@ -172,6 +201,7 @@
 +};
 +static void typelay_changed(FcitxIMContext *context, guint causes) {
 +    if (!get_boolean_env("TYPELAY_FCITX_COOPERATIVE", FALSE)) return;
++    context->typelay_proof_valid = FALSE;
 +    ++context->typelay_epoch;
 +    if (causes & TL_FCITX_CHANGE_INPUT) ++context->typelay_input_epoch;
 +    if (causes & TL_FCITX_CHANGE_BINDING) context->typelay_generation = ++typelay_next_generation;
@@ -182,7 +212,7 @@
  
  static GtkIMContext *_focus_im_context = NULL;
  static const gchar *_no_snooper_apps = NO_SNOOPER_APPS;
-@@ -233,6 +260,8 @@
+@@ -233,6 +266,8 @@
  
  ///
  static void fcitx_im_context_class_init(FcitxIMContextClass *klass, gpointer) {
@@ -191,7 +221,7 @@
      GtkIMContextClass *im_context_class = GTK_IM_CONTEXT_CLASS(klass);
      GObjectClass *gobject_class = G_OBJECT_CLASS(klass);
  
-@@ -324,6 +353,13 @@
+@@ -324,6 +359,13 @@
  }
  
  static void fcitx_im_context_init(FcitxIMContext *context, gpointer) {
@@ -205,7 +235,7 @@
      context->client = NULL;
      context->has_rect = FALSE;
      context->area.x = -1;
-@@ -403,7 +439,8 @@
+@@ -403,7 +445,8 @@
  
      context->client = fcitx_g_client_new_with_watcher(_watcher);
      fcitx_g_client_set_program(context->client, g_get_prgname());
@@ -215,7 +245,7 @@
      if (context->is_wayland) {
          fcitx_g_client_set_display(context->client, "wayland:");
      } else {
-@@ -413,6 +450,15 @@
+@@ -413,6 +456,15 @@
          }
  #endif
      }
@@ -231,7 +261,7 @@
      g_signal_connect(context->client, "connected",
                       G_CALLBACK(_fcitx_im_context_connect_cb), context);
      g_signal_connect(context->client, "forward-key",
-@@ -439,6 +485,7 @@
+@@ -439,6 +491,7 @@
  
  static void fcitx_im_context_finalize(GObject *obj) {
      FcitxIMContext *context = FCITX_IM_CONTEXT(obj);
@@ -239,7 +269,7 @@
      delete context->candidate_window;
      context->candidate_window = nullptr;
  
-@@ -501,6 +548,9 @@
+@@ -501,6 +554,9 @@
                                   (gpointer *)&oldwidget);
      }
  
@@ -249,7 +279,7 @@
      g_clear_signal_handler(&fcitxcontext->button_press_signal, oldwidget);
      g_clear_object(&fcitxcontext->client_window);
      if (!client_window) {
-@@ -511,6 +561,9 @@
+@@ -511,6 +567,9 @@
  
      GtkWidget *widget = nullptr;
      gdk_window_get_user_data(fcitxcontext->client_window, (gpointer *)&widget);
@@ -259,7 +289,7 @@
      /* firefox needs GtkWidget instead of GtkWindow */
      if (GTK_IS_WIDGET(widget)) {
          fcitxcontext->button_press_signal = g_signal_connect(
-@@ -601,9 +654,12 @@
+@@ -601,9 +660,12 @@
  
          _fcitx_im_context_push_event(fcitxcontext, event);
          if (_use_sync_mode) {
@@ -272,7 +302,7 @@
              if (ret) {
                  event->state |= (guint32)HandledMask;
                  return TRUE;
-@@ -770,6 +826,7 @@
+@@ -770,6 +832,7 @@
                                                            int cursor_pos,
                                                            void *user_data) {
      FcitxIMContext *context = FCITX_IM_CONTEXT(user_data);
@@ -280,7 +310,7 @@
  
      gboolean visible = false;
  
-@@ -794,6 +851,7 @@
+@@ -794,6 +857,7 @@
      gboolean new_visible = context->preedit_string != NULL;
  
      gboolean flag = new_visible != visible;
@@ -288,7 +318,7 @@
  
      if (new_visible) {
          if (flag) {
-@@ -816,6 +874,8 @@
+@@ -816,6 +880,8 @@
  static void _fcitx_im_context_notify_focus_out_cb(FcitxGClient *,
                                                    void *user_data) {
      FcitxIMContext *context = FCITX_IM_CONTEXT(user_data);
@@ -297,7 +327,7 @@
      if (!context->has_focus) {
          return;
      }
-@@ -826,6 +886,8 @@
+@@ -826,6 +892,8 @@
  ///
  static void fcitx_im_context_focus_in(GtkIMContext *context) {
      FcitxIMContext *fcitxcontext = FCITX_IM_CONTEXT(context);
@@ -306,7 +336,7 @@
  
      if (fcitxcontext->has_focus) {
          return;
-@@ -879,6 +941,8 @@
+@@ -879,6 +947,8 @@
  
  static void fcitx_im_context_commit_string(FcitxIMContext *context,
                                             const gchar *str) {
@@ -315,7 +345,7 @@
      g_signal_emit(context, _signal_commit_id, 0, str);
  
      // Better request surrounding after commit.
-@@ -902,6 +966,8 @@
+@@ -902,6 +972,8 @@
  
  static void fcitx_im_context_focus_out(GtkIMContext *context) {
      FcitxIMContext *fcitxcontext = FCITX_IM_CONTEXT(context);
@@ -324,7 +354,7 @@
  
      if (!fcitxcontext->has_focus) {
          return;
-@@ -1186,6 +1252,11 @@
+@@ -1186,11 +1258,23 @@
  ///
  static void fcitx_im_context_reset(GtkIMContext *context) {
      FcitxIMContext *fcitxcontext = FCITX_IM_CONTEXT(context);
@@ -336,7 +366,20 @@
  
      fcitx_im_context_commit_preedit(fcitxcontext);
  
-@@ -1299,8 +1370,11 @@
+     if (fcitx_g_client_is_valid(fcitxcontext->client)) {
+-        fcitx_g_client_reset(fcitxcontext->client);
++        if (fcitxcontext->typelay_preparing) {
++            fcitxcontext->typelay_prepare_ok = fcitx_g_client_typelay_prepare_caret_v1(
++                fcitxcontext->client, fcitxcontext->typelay_prepare_serial);
++        } else {
++            fcitx_g_client_reset(fcitxcontext->client);
++        }
++    } else if (fcitxcontext->typelay_preparing) {
++        fcitxcontext->typelay_prepare_ok = FALSE;
+     }
+ 
+     if (fcitxcontext->xkbComposeState) {
+@@ -1299,8 +1383,11 @@
  void _fcitx_im_context_forward_key_cb(FcitxGClient *, guint keyval, guint state,
                                        gboolean isRelease, void *user_data) {
      FcitxIMContext *context = FCITX_IM_CONTEXT(user_data);
@@ -348,7 +391,7 @@
      gdk_event_put((GdkEvent *)event);
      gdk_event_free((GdkEvent *)event);
  }
-@@ -1308,6 +1382,8 @@
+@@ -1308,6 +1395,8 @@
  static void _fcitx_im_context_delete_surrounding_text_cb(
      FcitxGClient *, gint offset_from_cursor, guint nchars, void *user_data) {
      FcitxIMContext *context = FCITX_IM_CONTEXT(user_data);
@@ -357,7 +400,7 @@
      gboolean return_value;
      g_signal_emit(context, _signal_delete_surrounding_id, 0, offset_from_cursor,
                    nchars, &return_value);
-@@ -1547,6 +1623,8 @@
+@@ -1547,6 +1636,8 @@
  
  void _fcitx_im_context_connect_cb(FcitxGClient *im, void *user_data) {
      FcitxIMContext *context = FCITX_IM_CONTEXT(user_data);
@@ -366,7 +409,7 @@
  #ifdef GDK_WINDOWING_X11
      Display *display = NULL;
      if (context->client_window) {
-@@ -1602,7 +1680,22 @@
+@@ -1602,7 +1693,22 @@
      }
  }
  
@@ -389,7 +432,7 @@
      gboolean retval = FALSE;
  
      FcitxIMContext *fcitxcontext = (FcitxIMContext *)_focus_im_context;
-@@ -1638,9 +1731,12 @@
+@@ -1638,9 +1744,12 @@
  
          _fcitx_im_context_push_event(fcitxcontext, event);
          if (_use_sync_mode) {
@@ -402,28 +445,47 @@
          } else {
              fcitx_g_client_process_key(
                  fcitxcontext->client, event->keyval, event->hardware_keycode,
-@@ -1772,3 +1868,44 @@
+@@ -1772,3 +1881,118 @@
  }
  
  // kate: indent-mode cstyle; replace-tabs on;
 +
 +
 +static gboolean typelay_inspect(GtkIMContext *context, GtkWidget *widget, TlFcitxStateV1 *state) {
-+    if (!state || state->size != sizeof(*state) || state->version != TL_FCITX_ABI_V1
-+        || !FCITX_IS_IM_CONTEXT(context) || !get_boolean_env("TYPELAY_FCITX_COOPERATIVE", FALSE)
-+        || g_main_depth() != 1) return FALSE;
++    auto refuse = [](const char *reason) -> gboolean {
++        if (g_getenv("TYPELAY_TRACE")) g_printerr("typelay-fcitx-inspect %s\n", reason);
++        return FALSE;
++    };
++    if (!state || state->size != sizeof(*state) || state->version != TL_FCITX_ABI_V1)
++        return refuse("abi");
++    if (!FCITX_IS_IM_CONTEXT(context)) return refuse("context");
++    if (!get_boolean_env("TYPELAY_FCITX_COOPERATIVE", FALSE)) return refuse("disabled");
++    if (g_main_depth() != 1) return refuse("main-depth");
 +    auto *self = FCITX_IM_CONTEXT(context);
 +    gpointer owner = nullptr;
 +    if (self->client_window) gdk_window_get_user_data(self->client_window, &owner);
-+    if (owner != widget || !self->has_focus || self->typelay_depth || !_use_sync_mode
-+        || typelay_pending_replay || !_key_snooper_id) return FALSE;
++    if (owner != widget) return refuse("owner");
++    if (!self->has_focus) return refuse("focus");
++    if (self->typelay_depth) return refuse("callback-depth");
++    if (!_use_sync_mode) return refuse("async-mode");
++    if (typelay_pending_replay) return refuse("pending-replay");
++    if (!_key_snooper_id) return refuse("snooper");
++    if (!fcitx_g_client_is_valid(self->client)) return refuse("client");
 +    gboolean known = FALSE, pending = TRUE, composing = TRUE;
 +    guint64 serial = 0, applied = 0;
 +    GError *error = nullptr;
++    self->typelay_proof_valid = FALSE;
 +    const gboolean valid = fcitx_g_client_typelay_probe_state_v1(self->client, &serial, &applied,
 +        &known, &pending, &composing, &error);
++    if (!valid) {
++        const bool timeout = g_error_matches(error, G_IO_ERROR, G_IO_ERROR_TIMED_OUT)
++            || g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_TIMEOUT)
++            || g_error_matches(error, G_DBUS_ERROR, G_DBUS_ERROR_NO_REPLY);
++        const char *reason = timeout ? "rpc-timeout" : error ? "rpc-error" : "rpc-state";
++        g_clear_error(&error);
++        return refuse(reason);
++    }
 +    g_clear_error(&error);
-+    if (!valid) return FALSE;
 +    if (self->is_inpreedit || (self->preedit_string && *self->preedit_string)
 +        || (self->xkbComposeState && xkb_compose_state_get_status(self->xkbComposeState) != XKB_COMPOSE_NOTHING))
 +        composing = TRUE;
@@ -431,10 +493,52 @@
 +        self->typelay_epoch, self->typelay_input_epoch, serial, applied,
 +        static_cast<guint32>((known ? TL_FCITX_KNOWN : 0) | TL_FCITX_FOCUSED
 +            | (pending ? TL_FCITX_PENDING : 0) | (composing ? TL_FCITX_COMPOSING : 0))};
++    if (state->flags == (TL_FCITX_KNOWN | TL_FCITX_FOCUSED) && serial == applied) {
++        self->typelay_proof = *state;
++        self->typelay_proof_valid = TRUE;
++    }
 +    return TRUE;
 +}
 +
-+// Only the isolated fixture receives this action; production uses readonly ABI.
++static gboolean typelay_validate_local(GtkIMContext *context, GtkWidget *widget,
++                                       const TlFcitxStateV1 *baseline) {
++    auto refuse = [](const char *reason) -> gboolean {
++        if (g_getenv("TYPELAY_TRACE")) g_printerr("typelay-fcitx-local %s\n", reason);
++        return FALSE;
++    };
++    if (!baseline || baseline->size != sizeof(*baseline) || baseline->version != TL_FCITX_ABI_V1)
++        return refuse("abi");
++    if (!FCITX_IS_IM_CONTEXT(context)) return refuse("context");
++    if (!get_boolean_env("TYPELAY_FCITX_COOPERATIVE", FALSE)) return refuse("disabled");
++    if (g_main_depth() != 1) return refuse("main-depth");
++    auto *self = FCITX_IM_CONTEXT(context);
++    gpointer owner = nullptr;
++    if (self->client_window) gdk_window_get_user_data(self->client_window, &owner);
++    if (owner != widget) return refuse("owner");
++    if (!self->has_focus) return refuse("focus");
++    if (self->typelay_depth) return refuse("callback-depth");
++    if (!_use_sync_mode || !_key_snooper_id) return refuse("dispatch-mode");
++    if (typelay_pending_replay) return refuse("pending-replay");
++    if (!fcitx_g_client_is_valid(self->client)) return refuse("client");
++    if (baseline->context_generation != self->typelay_generation) return refuse("generation");
++    if (baseline->input_epoch != self->typelay_input_epoch) return refuse("input");
++    if (baseline->epoch != self->typelay_epoch) return refuse("epoch");
++    if (baseline->applied_serial != fcitx_g_client_typelay_delivered_v1(self->client)) return refuse("applied");
++    if (self->is_inpreedit || (self->preedit_string && *self->preedit_string)
++        || (self->xkbComposeState && xkb_compose_state_get_status(self->xkbComposeState) != XKB_COMPOSE_NOTHING))
++        return refuse("composition");
++    const auto &proof = self->typelay_proof;
++    if (!self->typelay_proof_valid || baseline->flags != (TL_FCITX_KNOWN | TL_FCITX_FOCUSED)
++        || baseline->server_serial != baseline->applied_serial
++        || proof.size != baseline->size || proof.version != baseline->version
++        || proof.context_generation != baseline->context_generation || proof.epoch != baseline->epoch
++        || proof.input_epoch != baseline->input_epoch || proof.server_serial != baseline->server_serial
++        || proof.applied_serial != baseline->applied_serial || proof.flags != baseline->flags)
++        return refuse("baseline");
++    return TRUE;
++}
++
++// Only the isolated fixture receives this candidate-selection action.
 +static gboolean typelay_select_fixture(GtkWidget *widget) {
 +    auto *self = static_cast<FcitxIMContext *>(g_object_get_data(G_OBJECT(widget), TL_FCITX_CONTEXT_V1));
 +    if (!self || !FCITX_IS_IM_CONTEXT(self) || g_main_depth() != 1) return FALSE;
@@ -446,4 +550,17 @@
 +    auto *self = static_cast<FcitxIMContext *>(g_object_get_data(G_OBJECT(widget), TL_FCITX_CONTEXT_V1));
 +    if (!self || !FCITX_IS_IM_CONTEXT(self) || g_main_depth() != 1) return FALSE;
 +    return fcitx_g_client_typelay_deferred_switch_fixture_v1(self->client);
++}
++
++static gboolean typelay_prepare_caret(GtkIMContext *context, GtkWidget *widget,
++                                      const TlFcitxStateV1 *baseline) {
++    if (!GTK_IS_ENTRY(widget) || !typelay_validate_local(context, widget, baseline)) return FALSE;
++    auto *self = FCITX_IM_CONTEXT(context);
++    if (self->typelay_preparing) return FALSE;
++    self->typelay_preparing = TRUE;
++    self->typelay_prepare_ok = TRUE;
++    self->typelay_prepare_serial = baseline->server_serial;
++    gtk_entry_reset_im_context(GTK_ENTRY(widget));
++    self->typelay_preparing = FALSE;
++    return self->typelay_prepare_ok;
 +}

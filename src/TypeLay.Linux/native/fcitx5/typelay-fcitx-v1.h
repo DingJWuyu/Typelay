@@ -45,4 +45,20 @@ typedef struct {
      * The context emits TL_FCITX_CHANGED_V1(guint causes) before state changes
      * become externally observable, so consumers immediately revoke permits. */
     gboolean (*inspect)(GtkIMContext *context, GtkWidget *expected_widget, TlFcitxStateV1 *state);
+    /* Only validate the exact last successful Clear inspect, in the same UI
+     * dispatch. Check the live binding, local epoch/input/compose/focus, applied
+     * output counter, callback depth and queued replay without IPC or dispatch.
+     * This cannot establish Clear by itself. Once a permitted synchronous write
+     * has begun, new un-dispatched server output is ordered after that write;
+     * delivered output or reentrant local input must invalidate this baseline. */
+    gboolean (*validate_local)(GtkIMContext *context, GtkWidget *expected_widget,
+        const TlFcitxStateV1 *baseline);
+    /* Prepare only a previously authorized standard Entry caret movement while
+     * its exact baseline is Clear. Run GTK's normal reset-if-needed through a
+     * server-validated, bounded synchronous reset batch and deliver its actual
+     * output. Do not alter selection or suppress IM output. The consumer must
+     * inspect again and revalidate its original source authorization afterwards;
+     * this operation cannot turn an unknown/composing context into authority. */
+    gboolean (*prepare_caret)(GtkIMContext *context, GtkWidget *expected_widget,
+        const TlFcitxStateV1 *baseline);
 } TlFcitxCapabilityV1;

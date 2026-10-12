@@ -88,15 +88,30 @@ jobs:
       # Electron's font service exceeds Docker's default 64 MiB /dev/shm.
       options: --shm-size=1g
     timeout-minutes: 30
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/artifacts/ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 512MiB
     steps:
       - name: Install target desktop build dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols ccache
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
           global-json-file: global.json
+      - name: Identify the native build environment
+        id: native-sdk
+        run: echo "digest=$(pacman -Q | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: fcitx-cache
+        with:
+          path: artifacts/ccache
+          key: fcitx-ccache-${{ steps.native-sdk.outputs.digest }}-${{ hashFiles('tests/linux/fcitx_cooperative/*.patch', 'tests/linux/fcitx_cooperative/run.py') }}
+          restore-keys: |
+            fcitx-ccache-${{ steps.native-sdk.outputs.digest }}-
       - name: Build the relocatable Linux client
         id: build
         run: python eng/build-linux.py --with-test-fixture
@@ -144,8 +159,14 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: python tests/linux/fcitx_probe.py
       - name: Verify isolated Fcitx and GTK cooperative transactions
+        id: fcitx
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: python tests/linux/fcitx_cooperative/run.py --core-version 5.1.22
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: ${{ !cancelled() && (steps.fcitx.outcome == 'success' || steps.fcitx.outcome == 'failure') && steps.fcitx-cache.outputs.cache-hit != 'true' }}
+        with:
+          path: artifacts/ccache
+          key: ${{ steps.fcitx-cache.outputs.cache-primary-key }}
       - name: Verify tray controls without downloading models
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |

@@ -21,6 +21,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tarfile
@@ -95,6 +96,12 @@ def build(out: Path, core_version: str):
     full_core = core_version == "5.1.22"
     prefix = out / "core-prefix"
     if full_core:
+        launchers = (
+            [f"-DCMAKE_{language}_COMPILER_LAUNCHER=ccache" for language in ("C", "CXX")]
+            if shutil.which("ccache")
+            else []
+        )
+        print(f"Configuring complete Fcitx {core_version} with official frontends", flush=True)
         run(
             [
                 "cmake",
@@ -105,9 +112,10 @@ def build(out: Path, core_version: str):
                 "-G",
                 "Ninja",
                 "-DCMAKE_BUILD_TYPE=RelWithDebInfo",
+                *launchers,
                 f"-DCMAKE_INSTALL_PREFIX={prefix}",
                 "-DCMAKE_INSTALL_LIBDIR=lib",
-                f"-DCMAKE_CXX_FLAGS=-I{chinese / 'im/pinyin'} -I{core / 'src/im/keyboard'}",
+                f"-DCMAKE_CXX_FLAGS=-I{chinese / 'im/pinyin'} -I{core / 'src/im/keyboard'} -I{core / 'src/modules/quickphrase'}",
                 "-DENABLE_X11=ON",
                 "-DENABLE_WAYLAND=ON",
                 "-DENABLE_KEYBOARD=ON",
@@ -122,7 +130,11 @@ def build(out: Path, core_version: str):
                 "-DEVENT_LOOP_BACKEND=systemd",
             ]
         )
-        run(["cmake", "--build", out / "core-build", "--parallel", "2"], timeout=900)
+        print(f"Building complete Fcitx {core_version} (parallel=2)", flush=True)
+        subprocess.run(
+            ["cmake", "--build", out / "core-build", "--parallel", "2"], check=True, timeout=900
+        )
+        print(f"Installing Fcitx {core_version} into the private build prefix", flush=True)
         run(["cmake", "--install", out / "core-build"])
         os.environ["PKG_CONFIG_PATH"] = f"{prefix}/lib/pkgconfig:{prefix}/share/pkgconfig"
         os.environ["LD_LIBRARY_PATH"] = str(prefix / "lib")
@@ -151,6 +163,7 @@ def build(out: Path, core_version: str):
     )
     includes = [
         "-I" + str(core / "src/im/keyboard"),
+        "-I" + str(core / "src/modules/quickphrase"),
         "-I" + str(chinese),
         "-I" + str(chinese / "im/pinyin"),
         "-I/usr/include/LibIME",
@@ -245,6 +258,19 @@ def build(out: Path, core_version: str):
                 out / "fcitx5",
                 *flags("Fcitx5Core", "Fcitx5Config", "Fcitx5Utils", "fmt", "xkbcommon", "expat"),
                 "-pthread",
+            ]
+        )
+    if not full_core:
+        run(
+            [
+                *common,
+                *includes,
+                "-include",
+                str(core / "config.h"),
+                *sorted((core / "src/modules/quickphrase").glob("*.cpp")),
+                "-o",
+                lib / "libquickphrase.so",
+                *flags("Fcitx5Core", "Fcitx5Config", "Fcitx5Utils", "fmt"),
             ]
         )
     marshall = gtk / "gtk-common/marshall.list"
@@ -446,7 +472,10 @@ def session(out: Path, core_version: str):
                 )
                 children.append(
                     subprocess.Popen(
-                        [str(out / "fixture")], env=env, stdout=client_log, stderr=subprocess.STDOUT
+                        [str(out / "fixture")],
+                        env=env | {"TYPELAY_COOPERATIVE_SERVER_PID": str(children[0].pid)},
+                        stdout=client_log,
+                        stderr=subprocess.STDOUT,
                     )
                 )
 
@@ -598,6 +627,18 @@ def session(out: Path, core_version: str):
                 assert command("capture")["result"] == "refused-ime"
                 run(["xdotool", "key", "--window", window, "e"], env=env)
                 wait(lambda: state().get("settled"), "keyboard compose commit")
+                assert command("capture")["result"] == "captured"
+                assert command("accept-server-paused")["result"] == "accepted"
+                assert state()["replacement"] is True
+                wait(lambda: state().get("settled"), "owned server resumed after local-only write")
+                before_mode = state()
+                run(["xdotool", "key", "--window", window, "super+grave"], env=env)
+                wait(lambda: state().get("composing"), "real empty QuickPhrase mode")
+                assert state()["length"] == before_mode["length"]
+                assert command("capture")["result"] == "refused-ime"
+                run(["xdotool", "key", "--window", window, "Escape"], env=env)
+                wait(lambda: state().get("settled"), "QuickPhrase mode cancelled")
+                assert command("capture")["result"] == "captured"
                 (out / "result.json").write_text(
                     json.dumps(
                         {
@@ -606,8 +647,11 @@ def session(out: Path, core_version: str):
                             "keyboard_us_compare_write": True,
                             "previous_engine_pending_refusal": True,
                             "keyboard_compose_refusal": True,
+                            "empty_quickphrase_mode_refusal": True,
                             "focus_preserves_input_epoch": True,
                             "actual_context_public_abi": True,
+                            "local_only_write_while_server_paused": True,
+                            "clear_caret_reset_batch": True,
                             "preedit_refusal": True,
                             "core_compose_refusal": True,
                             "unchanged_text_input_invalidates_capture": True,
@@ -627,6 +671,8 @@ def session(out: Path, core_version: str):
             finally:
                 for process in reversed(children):
                     if process.poll() is None:
+                        # A failed fixture must never leave its owned daemon stopped.
+                        process.send_signal(signal.SIGCONT)
                         process.terminate()
                     try:
                         process.wait(timeout=5)

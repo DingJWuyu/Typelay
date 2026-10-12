@@ -225,7 +225,9 @@ def run(arguments):
                             "the real Wayland browser window did not map",
                         )
                         request({"Action": {"FocusWindow": {"id": window["id"]}}})
-                        page.locator("#source").focus()
+                        # DOM focus alone does not leave Chromium's initially
+                        # selected address bar. Enter the field as a user does.
+                        page.locator("#source").click()
                         wait_for(
                             lambda: page.evaluate(
                                 "document.hasFocus() && document.activeElement.id === 'source'"

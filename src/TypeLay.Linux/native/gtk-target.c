@@ -17,7 +17,7 @@ static const TlFcitxCapabilityV1 *im_capability(GtkIMContext *context) {
     if (!context || !GTK_IS_IM_CONTEXT(context)) return NULL;
     const TlFcitxCapabilityV1 *value = g_object_get_data(G_OBJECT(context), TL_FCITX_CAPABILITY_V1);
     return value && value->size >= sizeof *value && value->version == TL_FCITX_ABI_V1
-        && value->inspect ? value : NULL;
+        && value->inspect && value->validate_local && value->prepare_caret ? value : NULL;
 }
 static GtkIMContext *published_context(Target *target) {
     GtkIMContext *context = standard_entry(target)
@@ -127,6 +127,21 @@ static gboolean inspect_ime(Target *target) {
 }
 gboolean tl_ime_clear(Target *target) {
     return target && !target->mutating && inspect_ime(target) && target->ime_known && !target->composing;
+}
+static gboolean validate_ime_locally(Target *target, const TlFcitxStateV1 *baseline) {
+    if (!target || target->dead || target->thread != g_thread_self() || target->im_probing
+        || g_main_depth() != 1 || !bind_context(target)) return FALSE;
+    GtkIMContext *context = g_object_ref(target->im_context);
+    GtkWidget *widget = g_object_ref(target->widget);
+    const TlFcitxCapabilityV1 *capability = im_capability(context);
+    target->im_probing = TRUE;
+    gboolean valid = capability && capability->validate_local(context, widget, baseline);
+    target->im_probing = FALSE;
+    valid = valid && !target->dead && target->im_context == context
+        && g_object_get_data(G_OBJECT(widget), TL_FCITX_CONTEXT_V1) == context;
+    g_object_unref(widget); g_object_unref(context);
+    if (!valid) im_invalidated(target, 0);
+    return valid;
 }
 
 static void changed(Target *target) {
@@ -488,6 +503,18 @@ static JsonObject *receipt(const char *status, const char *reason) {
     json_object_set_string_member(value, "reason", reason);
     return value;
 }
+static gboolean write_check(gboolean allowed, const char *reason, const char **failure) {
+    if (!allowed) *failure = reason;
+    return allowed;
+}
+static const char *stamp_difference(const TlFcitxStateV1 *before, const TlFcitxStateV1 *after) {
+    if (before->context_generation != after->context_generation) return "im-context";
+    if (before->epoch != after->epoch) return "im-epoch";
+    if (before->input_epoch != after->input_epoch) return "im-input";
+    if (before->server_serial != after->server_serial) return "im-server";
+    if (before->applied_serial != after->applied_serial) return "im-applied";
+    return "im-flags";
+}
 JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     JsonObject *plan = tl_object(request, "plan"), *basis = tl_object(request, "authority");
     JsonObject *approved = direct ? tl_object(request, "approved") : basis;
@@ -545,20 +572,81 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     if (limit > 0 && g_utf8_strlen(result, -1) > limit) {
         g_free(after_delete); g_free(text); return receipt("RejectedBeforeMutation", "InvalidText");
     }
-    /* Validation and mutation stay in the target's GTK thread. Only the bounded
-       non-dispatching IM query crosses processes; no event-loop iteration,
-       focus change, clipboard paste or retry belongs to this transaction. */
+    /* The actual server inspection above establishes the pre-mutation barrier.
+       From the first storage change onward this is a non-yielding local GTK
+       transaction. Never insert an IPC timeout or renew the consumed permit in
+       the middle of a partially changed field. */
     GtkWidget *widget = g_object_ref(target->widget);
     GObject *buffer = g_object_ref(target->buffer);
     guint64 storage = target->storage_revision, input = target->input_revision, focus = target->focus_revision;
+    guint64 content = target->content_revision;
     gint old_cursor = gtk_editable_get_position(GTK_EDITABLE(widget)), old_bound = 0;
     g_object_get(widget, "selection-bound", &old_bound, NULL);
     gint deleted_cursor = old_cursor - CLAMP(old_cursor - from, 0, to - from);
     gint deleted_bound = old_bound - CLAMP(old_bound - from, 0, to - from);
     TlFcitxStateV1 state = target->im_state;
-    if (tl_now() > until) {
+    gboolean local_valid = validate_ime_locally(target, &state);
+    if (!local_valid || tl_now() > until) {
         g_object_unref(buffer); g_object_unref(widget); g_free(after_delete); g_free(text);
-        return receipt("RejectedBeforeMutation", "StaleObservation");
+        return receipt("RejectedBeforeMutation", local_valid ? "StaleObservation" : "ImeUnclear");
+    }
+    gint replacement_chars = (gint)g_utf8_strlen(replacement, -1);
+    gint expected_cursor = deleted_cursor + (deleted_cursor > from ? replacement_chars : 0);
+    gint expected_bound = deleted_bound + (deleted_bound > from ? replacement_chars : 0);
+    if (expected_cursor != from + replacement_chars || expected_bound != from + replacement_chars) {
+        /* GtkEntry's final caret move normally resets its IM after changing the
+           buffer. Move that same reset before the first storage mutation, when
+           the original snapshot is still intact. The provider batches genuine
+           reset output; an ordinary asynchronous reset would leave server and
+           applied serials unequal until a later UI dispatch. Never reset an IM
+           that was not already proven Clear by the original authorization. */
+        GtkIMContext *context = g_object_ref(target->im_context);
+        const TlFcitxCapabilityV1 *capability = im_capability(context);
+        target->im_probing = TRUE;
+        gboolean prepared = capability && capability->prepare_caret(context, widget, &state);
+        target->im_probing = FALSE;
+        const char *preparation_failure = NULL;
+        gboolean ready = write_check(prepared, "caret-reset", &preparation_failure)
+            && write_check(!target->dead && target->widget == widget, "destroyed", &preparation_failure)
+            && write_check(!target->quarantined, "quarantined", &preparation_failure)
+            && write_check(target->buffer == buffer, "buffer", &preparation_failure)
+            && write_check(target->im_context == context, "im-context", &preparation_failure)
+            && write_check(inspect_ime(target) && target->ime_known && !target->composing,
+                "im-unclear", &preparation_failure)
+            && write_check(target->im_state.context_generation == state.context_generation,
+                "im-context", &preparation_failure)
+            && write_check(target->im_state.input_epoch == state.input_epoch
+                && target->input_revision == input, "input-revision", &preparation_failure)
+            && write_check(target->focus_revision == focus && tl_focused() == target,
+                "focus", &preparation_failure)
+            && write_check(target->storage_revision == storage && target->content_revision == content,
+                "storage-revision", &preparation_failure)
+            && write_check(tl_metadata_matches(target, approved) && tl_metadata_matches(target, basis),
+                "metadata", &preparation_failure);
+        gint prepared_bound = -1;
+        if (ready) g_object_get(widget, "selection-bound", &prepared_bound, NULL);
+        ready = ready && write_check(gtk_editable_get_position(GTK_EDITABLE(widget)) == old_cursor
+                && prepared_bound == old_bound, "selection", &preparation_failure)
+            && write_check(strcmp(gtk_entry_buffer_get_text(GTK_ENTRY_BUFFER(buffer)), text) == 0,
+                "body", &preparation_failure);
+        if (ready) {
+            limit = gtk_entry_buffer_get_max_length(GTK_ENTRY_BUFFER(buffer));
+            ready = write_check(limit <= 0 || g_utf8_strlen(result, -1) <= limit,
+                "max-length", &preparation_failure);
+        }
+        if (ready) {
+            state = target->im_state;
+            ready = write_check(validate_ime_locally(target, &state), "im-local", &preparation_failure)
+                && write_check(tl_now() <= until, "expiry", &preparation_failure);
+        }
+        g_object_unref(context);
+        if (!ready) {
+            if (g_getenv("TYPELAY_TRACE"))
+                g_printerr("TypeLay GTK write guard phase=prepare check=%s remainingMs=%" G_GINT64_FORMAT "\n",
+                    preparation_failure ? preparation_failure : "unknown", until - tl_now());
+            g_object_unref(buffer); g_object_unref(widget); g_free(after_delete); g_free(text);
+            return receipt("RejectedBeforeMutation", tl_now() > until ? "StaleObservation" : "ImeUnclear");
+        }
     }
     target->mutating = TRUE;
     tl_clear_permit();
@@ -570,40 +658,63 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     gint after_bound = -1;
     if (!target->dead) g_object_get(widget, "selection-bound", &after_bound, NULL);
     guint64 expected_storage = storage + (to > from ? 1u : 0u);
-    gboolean intermediate = removed == (guint)(to - from) && !target->dead && target->buffer == buffer
-        && target->storage_revision == expected_storage && inspect_ime(target)
-        && target->ime_known && !target->composing && same_state(&state, &target->im_state)
-        && target->input_revision == input && target->focus_revision == focus && tl_focused() == target
-        && gtk_editable_get_position(GTK_EDITABLE(widget)) == deleted_cursor && after_bound == deleted_bound
-        && tl_now() <= until && tl_metadata_matches(target, approved)
-        && strcmp(gtk_entry_buffer_get_text(GTK_ENTRY_BUFFER(buffer)), after_delete) == 0;
+    const char *failure = NULL, *phase = "delete";
+    gboolean intermediate = write_check(removed == (guint)(to - from), "delete-count", &failure)
+        && write_check(!target->dead, "destroyed", &failure)
+        && write_check(!target->quarantined, "quarantined", &failure)
+        && write_check(target->buffer == buffer, "buffer", &failure)
+        && write_check(target->storage_revision == expected_storage, "storage-revision", &failure)
+        && write_check(validate_ime_locally(target, &state), "im-local", &failure)
+        && write_check(target->ime_known && !target->composing, "im-unclear", &failure)
+        && write_check(same_state(&state, &target->im_state), stamp_difference(&state, &target->im_state), &failure)
+        && write_check(target->input_revision == input, "input-revision", &failure)
+        && write_check(target->focus_revision == focus && tl_focused() == target, "focus", &failure)
+        && write_check(gtk_editable_get_position(GTK_EDITABLE(widget)) == deleted_cursor
+            && after_bound == deleted_bound, "selection", &failure)
+        && write_check(tl_metadata_matches(target, approved), "metadata", &failure)
+        && write_check(strcmp(gtk_entry_buffer_get_text(GTK_ENTRY_BUFFER(buffer)), after_delete) == 0, "body", &failure);
     guint inserted = 0;
     gboolean positioned = FALSE;
-    gint replacement_chars = (gint)g_utf8_strlen(replacement, -1);
     if (intermediate) {
+        phase = "insert";
         inserted = gtk_entry_buffer_insert_text(GTK_ENTRY_BUFFER(buffer), (guint)from, replacement, replacement_chars);
         expected_storage++;
         gint inserted_bound = -1;
         if (!target->dead) g_object_get(widget, "selection-bound", &inserted_bound, NULL);
-        gint expected_cursor = deleted_cursor + (deleted_cursor > from ? replacement_chars : 0);
-        gint expected_bound = deleted_bound + (deleted_bound > from ? replacement_chars : 0);
-        if (!target->dead && target->buffer == buffer && target->storage_revision == expected_storage
-            && inserted == (guint)replacement_chars && inspect_ime(target)
-            && target->ime_known && !target->composing && same_state(&state, &target->im_state)
-            && target->input_revision == input && target->focus_revision == focus && tl_focused() == target
-            && gtk_editable_get_position(GTK_EDITABLE(widget)) == expected_cursor && inserted_bound == expected_bound
-            && tl_now() <= until && tl_metadata_matches(target, approved)) {
+        if (write_check(!target->dead, "destroyed", &failure)
+            && write_check(!target->quarantined, "quarantined", &failure)
+            && write_check(target->buffer == buffer, "buffer", &failure)
+            && write_check(target->storage_revision == expected_storage, "storage-revision", &failure)
+            && write_check(inserted == (guint)replacement_chars, "insert-count", &failure)
+            && write_check(validate_ime_locally(target, &state), "im-local", &failure)
+            && write_check(target->ime_known && !target->composing, "im-unclear", &failure)
+            && write_check(same_state(&state, &target->im_state), stamp_difference(&state, &target->im_state), &failure)
+            && write_check(target->input_revision == input, "input-revision", &failure)
+            && write_check(target->focus_revision == focus && tl_focused() == target, "focus", &failure)
+            && write_check(gtk_editable_get_position(GTK_EDITABLE(widget)) == expected_cursor
+                && inserted_bound == expected_bound, "selection", &failure)
+            && write_check(tl_metadata_matches(target, approved), "metadata", &failure)) {
             positioned = TRUE;
+            phase = "caret";
             gtk_editable_set_position(GTK_EDITABLE(widget), from + replacement_chars);
         }
     }
-    gboolean clear = positioned && inspect_ime(target)
-        && target->ime_known && !target->composing && same_state(&state, &target->im_state)
-        && target->input_revision == input && target->focus_revision == focus && tl_focused() == target
-        && target->buffer == buffer && target->storage_revision == expected_storage
-        && tl_now() <= until && tl_metadata_matches(target, approved);
+    gboolean clear = positioned && write_check(validate_ime_locally(target, &state), "im-local", &failure)
+        && write_check(!target->quarantined, "quarantined", &failure)
+        && write_check(target->ime_known && !target->composing, "im-unclear", &failure)
+        && write_check(same_state(&state, &target->im_state), stamp_difference(&state, &target->im_state), &failure)
+        && write_check(target->input_revision == input, "input-revision", &failure)
+        && write_check(target->focus_revision == focus && tl_focused() == target, "focus", &failure)
+        && write_check(target->buffer == buffer && target->storage_revision == expected_storage, "storage-revision", &failure)
+        && write_check(tl_metadata_matches(target, approved), "metadata", &failure);
     char *after = clear ? read_text(target, &start, &end) : NULL;
-    gboolean verified = after && strcmp(after, result) == 0 && start == caret && end == caret;
+    gboolean verified = clear && write_check(after && strcmp(after, result) == 0, "body", &failure)
+        && write_check(start == caret && end == caret, "selection", &failure);
+    if (!verified && g_getenv("TYPELAY_TRACE"))
+        g_printerr("TypeLay GTK write guard phase=%s check=%s remainingMs=%" G_GINT64_FORMAT
+            " storageDelta=%" G_GUINT64_FORMAT " epochBefore=%" G_GUINT64_FORMAT " cachedEpochAfter=%" G_GUINT64_FORMAT "\n",
+            phase, failure ? failure : "unknown", until - tl_now(), target->storage_revision - storage,
+            state.epoch, target->im_state.epoch);
     target->mutating = FALSE;
     target->content_revision++;
     JsonObject *reply = receipt(verified ? "Verified" : "OutcomeUnknown", verified ? "None" : "UnknownOutcome");

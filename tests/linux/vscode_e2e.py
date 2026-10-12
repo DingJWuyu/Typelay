@@ -101,44 +101,53 @@ def drive_preview_ui(port, process, output, source):
                     raise AssertionError("Saved source did not match the expected editor operation")
                 time.sleep(0.05)
 
-        box = quick_input("Control+p", str(source))
-        box.press("Enter")
-        box.wait_for(state="hidden", timeout=10000)
-        editor = page.locator(".monaco-editor .view-lines").first
-        editor.wait_for(state="visible", timeout=10000)
-        page.keyboard.press("Control+Home")
-        page.keyboard.press("Shift+End")
-        command("TypeLay: 翻译所选文字（先完成输入法候选）")
-        preview = dialog("TypeLay 翻译预览")
-        assert "你好，世界。" in preview.inner_text() and "译文" in preview.inner_text()
-        assert "你好，世界。" in editor.inner_text() and "保留原文" in editor.inner_text()
-        assert source.read_text(encoding="utf-8") == original
-        page.screenshot(path=str(output / "selected-preview.png"))
-        preview.get_by_role("button", name="确认替换", exact=True).click()
-        preview.wait_for(state="hidden", timeout=10000)
-        translated = save_and_expect(
-            lambda text: text.endswith("\n保留原文")
-            and bool(re.search(r"[A-Za-z]", text.split("\n")[0]))
-        )
-        assert translated != original
-        page.screenshot(path=str(output / "selected-replaced.png"))
-        page.keyboard.press("Control+z")
-        save_and_expect(lambda text: text == original)
+        try:
+            # The requested file is already opened by the normal CLI. A page URL
+            # exists before workbench startup and keybindings have completed.
+            editor = (
+                page.locator(".monaco-editor .view-lines").filter(has_text="你好，世界。").first
+            )
+            editor.wait_for(state="visible", timeout=45000)
+            editor.get_by_text("你好，世界。", exact=True).click()
+            page.keyboard.press("Control+Home")
+            page.keyboard.press("Shift+End")
+            command("TypeLay: 翻译所选文字（先完成输入法候选）")
+            preview = dialog("TypeLay 翻译预览")
+            assert "你好，世界。" in preview.inner_text() and "译文" in preview.inner_text()
+            assert "你好，世界。" in editor.inner_text() and "保留原文" in editor.inner_text()
+            assert source.read_text(encoding="utf-8") == original
+            page.screenshot(path=str(output / "selected-preview.png"))
+            preview.get_by_role("button", name="确认替换", exact=True).click()
+            preview.wait_for(state="hidden", timeout=10000)
+            translated = save_and_expect(
+                lambda text: text.endswith("\n保留原文")
+                and bool(re.search(r"[A-Za-z]", text.split("\n")[0]))
+            )
+            assert translated != original
+            page.screenshot(path=str(output / "selected-replaced.png"))
+            page.keyboard.press("Control+z")
+            save_and_expect(lambda text: text == original)
 
-        page.keyboard.press("Control+Home")
-        page.keyboard.press("Shift+ArrowRight")
-        command("TypeLay: 翻译整篇文档")
-        choice = dialog("翻译整篇文档？")
-        page.screenshot(path=str(output / "whole-choice.png"))
-        choice.get_by_role("button", name="翻译整篇文档", exact=True).click()
-        choice.wait_for(state="hidden", timeout=10000)
-        preview = dialog("TypeLay 翻译预览")
-        assert "你好，世界。" in preview.inner_text() and "保留原文" in preview.inner_text()
-        page.screenshot(path=str(output / "whole-preview.png"))
-        preview.get_by_role("button", name=re.compile(r"^(?:Cancel|取消)$")).click()
-        preview.wait_for(state="hidden", timeout=10000)
-        save_and_expect(lambda text: text == original)
-        assert "你好，世界。" in editor.inner_text() and "保留原文" in editor.inner_text()
+            page.keyboard.press("Control+Home")
+            page.keyboard.press("Shift+ArrowRight")
+            command("TypeLay: 翻译整篇文档")
+            choice = dialog("翻译整篇文档？")
+            page.screenshot(path=str(output / "whole-choice.png"))
+            choice.get_by_role("button", name="翻译整篇文档", exact=True).click()
+            choice.wait_for(state="hidden", timeout=10000)
+            preview = dialog("TypeLay 翻译预览")
+            assert "你好，世界。" in preview.inner_text() and "保留原文" in preview.inner_text()
+            page.screenshot(path=str(output / "whole-preview.png"))
+            preview.get_by_role("button", name=re.compile(r"^(?:Cancel|取消)$")).click()
+            preview.wait_for(state="hidden", timeout=10000)
+            save_and_expect(lambda text: text == original)
+            assert "你好，世界。" in editor.inner_text() and "保留原文" in editor.inner_text()
+        except Exception:
+            page.screenshot(path=str(output / "ui-failure.png"))
+            (output / "ui-failure.txt").write_text(
+                page.locator("body").inner_text(), encoding="utf-8"
+            )
+            raise
 
 
 def main():

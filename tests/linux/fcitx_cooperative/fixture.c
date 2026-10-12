@@ -4,6 +4,8 @@
 #include "typelay-fcitx-v1.h"
 #include <stdio.h>
 #include <string.h>
+#include <signal.h>
+#include <unistd.h>
 
 typedef gboolean (*Select)(GtkWidget *);
 static GtkWidget *window, *entry, *other;
@@ -20,7 +22,11 @@ static const char *replacement = "translated fixture";
 typedef struct {
     gboolean valid, known, pending, composing;
     guint64 epoch, input_epoch, generation, serial, delivered;
+    TlFcitxStateV1 raw;
 } State;
+static State writing_baseline;
+static pid_t server_pid;
+static gboolean server_paused, pause_observed;
 
 static GtkIMContext *bound_context(void) {
     gpointer object = g_object_get_data(G_OBJECT(entry), TL_FCITX_CONTEXT_V1);
@@ -36,6 +42,7 @@ static State state(void) {
     if (cap && cap->size == sizeof(*cap) && cap->version == TL_FCITX_ABI_V1 && cap->inspect)
         s.valid = cap->inspect(context, entry, &actual);
     if (s.valid) {
+        s.raw = actual;
         s.epoch = actual.epoch; s.input_epoch = actual.input_epoch; s.generation = actual.context_generation;
         s.serial = actual.server_serial; s.delivered = actual.applied_serial;
         s.known = !!(actual.flags & TL_FCITX_KNOWN);
@@ -45,6 +52,26 @@ static State state(void) {
     }
     g_object_unref(context);
     return s;
+}
+
+static gboolean local_valid(State baseline) {
+    GtkIMContext *context = bound_context();
+    if (!context) return FALSE;
+    const TlFcitxCapabilityV1 *cap = g_object_get_data(G_OBJECT(context), TL_FCITX_CAPABILITY_V1);
+    gboolean valid = cap && cap->size == sizeof(*cap) && cap->version == TL_FCITX_ABI_V1
+        && cap->validate_local && cap->validate_local(context, entry, &baseline.raw);
+    g_object_unref(context);
+    return valid;
+}
+
+static gboolean prepare_caret(State baseline) {
+    GtkIMContext *context = bound_context();
+    if (!context) return FALSE;
+    const TlFcitxCapabilityV1 *cap = g_object_get_data(G_OBJECT(context), TL_FCITX_CAPABILITY_V1);
+    gboolean valid = cap && cap->size == sizeof(*cap) && cap->version == TL_FCITX_ABI_V1
+        && cap->prepare_caret && cap->prepare_caret(context, entry, &baseline.raw);
+    g_object_unref(context);
+    return valid;
 }
 
 static gboolean select_candidate(GtkWidget *widget) {
@@ -92,12 +119,25 @@ static const char *accept(void) {
     if (s.generation != captured_generation || s.epoch != captured_epoch || s.serial != captured_serial) return "refused-input";
     if (revision != captured_revision || strcmp(gtk_entry_buffer_get_text(captured_buffer), captured))
         return "refused-stale";
+    gint cursor = gtk_editable_get_position(GTK_EDITABLE(entry)), bound = 0;
+    g_object_get(entry, "selection-bound", &bound, NULL);
+    if (!prepare_caret(s)) return "refused-prepare";
+    State prepared = state();
+    gint after_bound = 0;
+    g_object_get(entry, "selection-bound", &after_bound, NULL);
+    if (!settled(prepared) || prepared.generation != s.generation || prepared.input_epoch != s.input_epoch
+        || !gtk_widget_has_focus(entry) || gtk_entry_get_buffer(GTK_ENTRY(entry)) != captured_buffer
+        || revision != captured_revision || strcmp(gtk_entry_buffer_get_text(captured_buffer), captured)
+        || gtk_editable_get_position(GTK_EDITABLE(entry)) != cursor || after_bound != bound)
+        return "refused-prepare";
+    s = prepared;
+    if (!local_valid(s)) return "refused-ime";
+    writing_baseline = s;
     writing = TRUE;
     /* Real storage mutation may run application callbacks. Do not insert after
      * a callback changes the field, focus, context, or intermediate text. */
     gtk_entry_buffer_delete_text(captured_buffer, 0, -1);
-    State after_delete = state();
-    if (!settled(after_delete) || after_delete.generation != captured_generation || after_delete.epoch != captured_epoch || after_delete.serial != captured_serial ||
+    if (!local_valid(s) ||
         !gtk_widget_has_focus(entry) || gtk_entry_get_buffer(GTK_ENTRY(entry)) != captured_buffer ||
         revision != captured_revision + (captured[0] ? 1u : 0u) ||
         gtk_entry_buffer_get_length(captured_buffer) != 0) {
@@ -105,9 +145,10 @@ static const char *accept(void) {
         return "outcome-unknown";
     }
     gtk_entry_buffer_insert_text(captured_buffer, 0, replacement, -1);
-    State after_insert = state();
-    gboolean exact = settled(after_insert) && after_insert.generation == captured_generation && after_insert.epoch == captured_epoch &&
-        after_insert.serial == captured_serial &&
+    gboolean inserted = local_valid(s) && revision == captured_revision + (captured[0] ? 2u : 1u)
+        && !strcmp(gtk_entry_buffer_get_text(captured_buffer), replacement);
+    if (inserted) gtk_editable_set_position(GTK_EDITABLE(entry), (gint)g_utf8_strlen(replacement, -1));
+    gboolean exact = inserted && local_valid(s) &&
         gtk_widget_has_focus(entry) && gtk_entry_get_buffer(GTK_ENTRY(entry)) == captured_buffer &&
         revision == captured_revision + (captured[0] ? 2u : 1u) &&
         !strcmp(gtk_entry_buffer_get_text(captured_buffer), replacement);
@@ -119,7 +160,7 @@ static gboolean nested_call(gpointer unused) {
     (void)unused;
     nested_depth = g_main_depth();
     State s = state();
-    nested_refused = !s.valid && !strcmp(accept(), "refused-reentry");
+    nested_refused = !s.valid && !local_valid(writing_baseline) && !strcmp(accept(), "refused-reentry");
     nested_done = TRUE;
     return G_SOURCE_REMOVE;
 }
@@ -131,6 +172,22 @@ static void during_delete(GtkEntryBuffer *buffer, guint position, guint count, g
     /* Deliberately exercise processEvents-style reentry, not gtk_main(). */
     while (!nested_done) g_main_context_iteration(NULL, TRUE);
     if (nested_mutate) gtk_entry_buffer_insert_text(buffer, 0, "application edit", -1);
+}
+
+static void pause_during_delete(GtkEntryBuffer *buffer, guint position, guint count, gpointer unused) {
+    (void)buffer; (void)position; (void)count; (void)unused;
+    server_paused = server_pid > 1 && kill(server_pid, SIGSTOP) == 0;
+    if (!server_paused) return;
+    gchar *path = g_strdup_printf("/proc/%ld/status", (long)server_pid);
+    gint64 deadline = g_get_monotonic_time() + 500000;
+    while (!pause_observed && g_get_monotonic_time() < deadline) {
+        gchar *status = NULL;
+        if (g_file_get_contents(path, &status, NULL, NULL))
+            pause_observed = strstr(status, "State:\tT") != NULL;
+        g_free(status);
+        if (!pause_observed) g_usleep(1000);
+    }
+    g_free(path);
 }
 
 static void save_state(void) {
@@ -192,6 +249,15 @@ static gboolean commands(gpointer unused) {
                 reentry_handler = g_signal_connect(gtk_entry_get_buffer(GTK_ENTRY(entry)), "deleted-text", G_CALLBACK(during_delete), NULL);
                 result = accept();
                 g_signal_handler_disconnect(gtk_entry_get_buffer(GTK_ENTRY(entry)), reentry_handler);
+            } else if (!strcmp(name, "accept-server-paused")) {
+                pause_observed = FALSE;
+                GtkEntryBuffer *buffer = gtk_entry_get_buffer(GTK_ENTRY(entry));
+                gulong handler = g_signal_connect(buffer, "deleted-text", G_CALLBACK(pause_during_delete), NULL);
+                result = accept();
+                g_signal_handler_disconnect(buffer, handler);
+                if (server_paused) kill(server_pid, SIGCONT);
+                server_paused = FALSE;
+                if (!pause_observed) result = "pause-not-observed";
             } else if (!strcmp(name, "quit")) { result = "quit"; gtk_main_quit(); }
             else g_error("unknown fixture command");
             g_print("request=%u result=%s depth=%u nested_depth=%u\n", request, result, g_main_depth(), nested_depth);
@@ -206,7 +272,9 @@ static gboolean commands(gpointer unused) {
 int main(int argc, char **argv) {
     gtk_init(&argc, &argv);
     directory = g_strdup(g_getenv("TYPELAY_COOPERATIVE_DIR"));
-    if (!directory) return 2;
+    const char *pid = g_getenv("TYPELAY_COOPERATIVE_SERVER_PID");
+    server_pid = pid ? (pid_t)g_ascii_strtoll(pid, NULL, 10) : 0;
+    if (!directory || server_pid <= 1) return 2;
     window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(window), "TypeLay Fcitx cooperative fixture");
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);

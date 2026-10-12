@@ -5,6 +5,7 @@ validates native anchors, obtains Core approval before reading, and accounts
 for one-shot receipts. A late or missing receipt is never interpreted as success.
 """
 
+import math
 import socket
 from collections import Counter, OrderedDict
 
@@ -118,6 +119,9 @@ class Input:
         self.last_state = None
         self.capture_status = "not-started"
         self.capture_counts = Counter()
+        self.capture_started_at = 0
+        self.capture_failures = []
+        self.browser_diagnostics = {}
         self.shortcut_config = {"enabled": False}
         self.closing = False
         self.niri = Niri(glib, self.changed)
@@ -262,12 +266,73 @@ class Input:
         # Fixed reason codes and counts only: no source, title or field metadata.
         self.capture_status = reason
         self.capture_counts[reason] = min(self.capture_counts[reason] + 1, 2**31 - 1)
+        if result is None:
+            stamp = now_ms()
+            self.capture_failures.append(
+                {
+                    "reason": reason,
+                    "atMs": stamp,
+                    "elapsedMs": max(0, stamp - self.capture_started_at),
+                    "compositorAgeMs": stamp - self.niri.observed_at,
+                }
+            )
+            del self.capture_failures[:-16]
         return result
+
+    def remember_browser_diagnostics(self, value):
+        # Only bounded numeric telemetry and fixed codes may leave the peer.
+        if not isinstance(value, dict):
+            return
+        reasons = (
+            "supported",
+            "metadata",
+            "ime",
+            "clockUnavailable",
+            "clockExpired",
+            "clockDiscontinuity",
+            "authorityMissing",
+            "authorityChanged",
+            "authorityExpired",
+            "authorityClock",
+            "hostAge",
+            "timerPrecision",
+            "intervalConflict",
+            "hostFuture",
+            "invalidClock",
+            "richUnavailable",
+            "invalidText",
+            "postcheck",
+        )
+        result = {}
+        counts = value.get("captureCounts")
+        if isinstance(counts, dict):
+            result["captureCounts"] = {
+                key: count
+                for key in reasons
+                if type(count := counts.get(key)) is int and 0 <= count <= 1000000
+            }
+        for key in ("lastCaptureReason", "lastClockReason"):
+            if value.get(key) in reasons:
+                result[key] = value[key]
+        for key in (
+            "authorityAgeMs",
+            "hostAgeMs",
+            "timerTickMs",
+            "timerProbeMs",
+            "clockWidthMs",
+            "clockAgeMs",
+        ):
+            number = value.get(key)
+            if type(number) in (int, float) and math.isfinite(number) and -10000 <= number <= 10000:
+                result[key] = number
+        self.browser_diagnostics = result
 
     def diagnostics(self):
         return {
             "captureStatus": self.capture_status,
             "captureCounts": dict(self.capture_counts),
+            "captureFailures": list(self.capture_failures),
+            "browser": self.browser_diagnostics,
             "compositorReady": self.niri.ready,
             "compositorAgeMs": max(0, now_ms() - self.niri.observed_at),
             "focus": self.focus(),
@@ -276,6 +341,7 @@ class Input:
         }
 
     async def capture(self, context):
+        self.capture_started_at = now_ms()
         window_epoch = self.window_epoch
         focus = "Overlay" if self.overlay_focused else "Source"
         if (
@@ -297,6 +363,8 @@ class Input:
         description = await peer.link.ask("describe", {"target": target} if target else {})
         if not description:
             return self.captured("no-native-field")
+        if peer.backend == "browser":
+            self.remember_browser_diagnostics(description.get("diagnostics"))
         if not await self.approve(peer, description):
             return self.captured("excluded-or-sensitive")
         native = await peer.link.ask(
