@@ -26,6 +26,27 @@ static guint64 connection_generation, return_generation;
 static GQueue consumed_ids = G_QUEUE_INIT;
 static gboolean trigger_shortcut(const char *kind, Target *target, JsonObject *approved);
 
+static void trace_connection(const char *check, gint error) {
+    static const char *previous;
+    static gint previous_error;
+    if (!g_getenv("TYPELAY_TRACE")) return;
+    if (g_strcmp0(previous, check) == 0 && previous_error == error) return;
+    previous = check; previous_error = error;
+    g_printerr("TypeLay GTK4 connect check=%s errno=%d\n", check, error);
+}
+static void trace_attach(const char *check) {
+    static const char *previous;
+    if (g_getenv("TYPELAY_TRACE") && g_strcmp0(previous, check) != 0) {
+        previous = check;
+        g_printerr("TypeLay GTK4 attach check=%s\n", check);
+    }
+}
+static gboolean attach_check(gboolean valid, const char *check) {
+    if (valid) return TRUE;
+    trace_attach(check);
+    return FALSE;
+}
+
 const char *tl_string(JsonObject *object, const char *member) {
     if (!object || !json_object_has_member(object, member)) return NULL;
     JsonNode *node = json_object_get_member(object, member);
@@ -62,7 +83,10 @@ static void clear_shortcut(void) {
 }
 static void disconnect_peer(void) {
     connection_generation++;
-    if (connection >= 0) { close(connection); connection = -1; }
+    if (connection >= 0) {
+        trace_connection("disconnected", 0);
+        close(connection); connection = -1;
+    }
     tl_overlay_hide();
     tl_clear_permit();
     clear_shortcut();
@@ -291,7 +315,9 @@ static gboolean connect_peer(gpointer data) {
     (void)data;
     if (connection >= 0) return G_SOURCE_CONTINUE;
     const char *runtime = g_getenv("XDG_RUNTIME_DIR");
-    if (!runtime || !g_path_is_absolute(runtime)) return G_SOURCE_CONTINUE;
+    if (!runtime || !g_path_is_absolute(runtime)) {
+        trace_connection("runtime", 0); return G_SOURCE_CONTINUE;
+    }
     char *identity = g_strconcat(g_getenv("WAYLAND_DISPLAY") ? g_getenv("WAYLAND_DISPLAY") : "", "\n",
         g_getenv("NIRI_SOCKET") ? g_getenv("NIRI_SOCKET") : "", NULL);
     char *hash = g_compute_checksum_for_string(G_CHECKSUM_SHA256, identity, -1);
@@ -300,21 +326,29 @@ static gboolean connect_peer(gpointer data) {
     g_free(hash); g_free(identity);
     struct stat info;
     struct sockaddr_un address = {.sun_family = AF_UNIX};
-    if (strlen(path) >= sizeof address.sun_path || lstat(path, &info) != 0
-        || !S_ISSOCK(info.st_mode) || info.st_uid != getuid() || (info.st_mode & 0077) != 0) {
-        g_free(path); return G_SOURCE_CONTINUE;
-    }
+    const char *failure = NULL;
+    gint error = 0;
+    if (strlen(path) >= sizeof address.sun_path) failure = "path-length";
+    else if (lstat(path, &info) != 0) { failure = "stat"; error = errno; }
+    else if (!S_ISSOCK(info.st_mode)) failure = "socket-type";
+    else if (info.st_uid != getuid()) failure = "socket-owner";
+    else if ((info.st_mode & 0077) != 0) failure = "socket-mode";
+    if (failure) { trace_connection(failure, error); g_free(path); return G_SOURCE_CONTINUE; }
     strcpy(address.sun_path, path); g_free(path);
     gint socket_fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
-    if (socket_fd < 0) return G_SOURCE_CONTINUE;
+    if (socket_fd < 0) { trace_connection("socket", errno); return G_SOURCE_CONTINUE; }
     /* Unix-domain local connect is immediate or fails; never block the application's UI. */
-    if (connect(socket_fd, (struct sockaddr *)&address, sizeof address) != 0) { close(socket_fd); return G_SOURCE_CONTINUE; }
+    if (connect(socket_fd, (struct sockaddr *)&address, sizeof address) != 0) {
+        trace_connection("connect", errno); close(socket_fd); return G_SOURCE_CONTINUE;
+    }
     struct ucred peer;
     socklen_t length = sizeof peer;
-    if (getsockopt(socket_fd, SOL_SOCKET, SO_PEERCRED, &peer, &length) != 0 || peer.uid != getuid()) {
-        close(socket_fd); return G_SOURCE_CONTINUE;
+    if (getsockopt(socket_fd, SOL_SOCKET, SO_PEERCRED, &peer, &length) != 0) {
+        trace_connection("credentials", errno); close(socket_fd); return G_SOURCE_CONTINUE;
     }
+    if (peer.uid != getuid()) { trace_connection("peer-owner", 0); close(socket_fd); return G_SOURCE_CONTINUE; }
     connection = socket_fd;
+    trace_connection("connected", 0);
     if (!incoming) incoming = g_byte_array_new();
     if (!outgoing) outgoing = g_byte_array_new();
     GIOChannel *channel = g_io_channel_unix_new(connection);
@@ -478,14 +512,17 @@ static gboolean dispatch(GtkEventControllerLegacy *controller, GdkEvent *event, 
     return FALSE; /* The original GtkText controller/IM receives the unchanged event. */
 }
 G_MODULE_EXPORT void tl_gtk4_attach(GtkWidget *client_widget) {
-    if (!client_widget || g_strcmp0(g_getenv("TYPELAY_FCITX_COOPERATIVE"), "1") != 0
-        || g_getenv("TYPELAY_DESKTOP") || !GDK_IS_WAYLAND_DISPLAY(gtk_widget_get_display(client_widget))
-        || G_OBJECT_TYPE(client_widget) != GTK_TYPE_TEXT || tl_overlay_contains(client_widget)) return;
+    if (!attach_check(g_strcmp0(g_getenv("TYPELAY_FCITX_COOPERATIVE"), "1") == 0, "coop")
+        || !attach_check(!g_getenv("TYPELAY_DESKTOP"), "desktop")
+        || !attach_check(client_widget && G_OBJECT_TYPE(client_widget) == GTK_TYPE_TEXT, "type")
+        || !attach_check(GDK_IS_WAYLAND_DISPLAY(gtk_widget_get_display(client_widget)), "backend")
+        || !attach_check(!tl_overlay_contains(client_widget), "overlay")) return;
     GtkWidget *entry = gtk_widget_get_parent(client_widget);
-    if (!entry || G_OBJECT_TYPE(entry) != GTK_TYPE_ENTRY
-        || gtk_editable_get_delegate(GTK_EDITABLE(entry)) != GTK_EDITABLE(client_widget)) return;
+    if (!attach_check(entry && G_OBJECT_TYPE(entry) == GTK_TYPE_ENTRY, "parent")
+        || !attach_check(gtk_editable_get_delegate(GTK_EDITABLE(entry)) == GTK_EDITABLE(client_widget), "delegate")) return;
     GtkRoot *root = gtk_widget_get_root(entry);
-    if (!GTK_IS_WINDOW(root)) return;
+    if (!attach_check(GTK_IS_WINDOW(root), "root")) return;
+    trace_attach("ready");
     if (!initialized) {
         initialized = TRUE;
         lifetime = g_uuid_string_random();
