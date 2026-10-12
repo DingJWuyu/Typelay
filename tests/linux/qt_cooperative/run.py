@@ -41,6 +41,12 @@ def wait(test, message):
     raise AssertionError("Timed out: " + message)
 
 
+def counter_exceeds(observation, name, baseline=0):
+    # Null means the provider has not published an observation yet, never zero.
+    value = observation.get(name)
+    return type(value) is int and type(baseline) is int and value > baseline
+
+
 def build(out):
     archive = out / "fcitx5-qt.tar.gz"
     if not archive.exists():
@@ -241,7 +247,7 @@ def session(out, fcitx):
                             ) from error
                         run(["xdotool", "windowfocus", "--sync", window], env=env)
                         wait(
-                            lambda: state().get("tlqtContexts", 0) > 0
+                            lambda: counter_exceeds(state(), "tlqtContexts")
                             and state().get("tlqtFocusObject") == 1,
                             "actual Fcitx IC and first field binding",
                         )
@@ -253,10 +259,12 @@ def session(out, fcitx):
                         )
 
                         def barrier():
-                            before = state().get("widgetF24Releases", 0)
+                            before = state().get("widgetF24Releases")
+                            assert type(before) is int, "Actual fixture F24 counter is unknown"
                             run(["xdotool", "key", "--window", window, "F24"], env=env)
                             wait(
-                                lambda: state().get("widgetF24Releases", 0) > before and settled(),
+                                lambda: counter_exceeds(state(), "widgetF24Releases", before)
+                                and settled(),
                                 "actual F24 release and provider retirement",
                             )
 
@@ -272,7 +280,7 @@ def session(out, fcitx):
                         client.stdin.flush()
                         wait(
                             lambda: state().get("tlqtFocusObject") == 2
-                            and state().get("tlqtBindingEpoch", 0) > generation,
+                            and counter_exceeds(state(), "tlqtBindingEpoch", generation),
                             "same-window actual second QObject binding",
                         )
                         run(
@@ -288,7 +296,7 @@ def session(out, fcitx):
                         )
                         run(["xdotool", "key", "--window", window, "Menu"], env=env)
                         barrier()
-                        assert state().get("widgetMenuCallbacks", 0) > 0
+                        assert counter_exceeds(state(), "widgetMenuCallbacks")
                         run(["fcitx5-remote", "-s", "pinyin"], env=env)
                         wait(lambda: state().get("tlqtEngine") == "pinyin", "actual pinyin engine")
                         run(
@@ -297,20 +305,21 @@ def session(out, fcitx):
                         )
                         barrier()
                         s = state()
-                        assert (
-                            s.get("widgetCommitCallbacks", 0) > 0
-                            and s.get("widgetNonemptyPreeditCallbacks", 0) > 0
+                        assert counter_exceeds(s, "widgetCommitCallbacks") and counter_exceeds(
+                            s, "widgetNonemptyPreeditCallbacks"
                         )
-                        assert s.get("imeDuringOutput", 0) > 0
+                        assert counter_exceeds(s, "imeDuringOutput")
                         for key in (
                             "forwardDroppedDuringNestedPump",
                             "outputDroppedDuringNestedPump",
                         ):
-                            assert s.get(key, 0) == 0, (key, s)
+                            assert s.get(key) == 0, (key, s)
                         if mode == "async":
-                            assert s["tlqtRetired"] > 0 and s.get("nestedForwardChecks", 0) > 0
+                            assert counter_exceeds(s, "tlqtRetired") and counter_exceeds(
+                                s, "nestedForwardChecks"
+                            )
                         else:
-                            assert s["tlqtSyncReplies"] > 0
+                            assert counter_exceeds(s, "tlqtSyncReplies")
                         results[mode] = s
                         client.stdin.write("quit\n")
                         client.stdin.flush()

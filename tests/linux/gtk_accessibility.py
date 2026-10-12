@@ -41,43 +41,30 @@ def focused(node):
     return node.get_state_set().contains(Atspi.StateType.FOCUSED)
 
 
-def bounds(node):
+def bounds(node, pid, expected_size):
+    """Resolve an owned popup's bounds relative to its actual GTK frame.
+
+    WINDOW can be relative to the popover's Gdk toplevel. Subtract the
+    enclosing FRAME in the same reported coordinate space instead; this
+    does not treat Wayland SCREEN coordinates as desktop-global positions.
+    """
     node.clear_cache()
+    assert node.get_process_id() == pid, "candidate belongs to another process"
     assert node.get_state_set().contains(Atspi.StateType.SHOWING)
-    return node.get_component_iface().get_extents(Atspi.CoordType.WINDOW)
-
-
-def geometry_evidence(node, pid):
-    """Record coordinates only within this fixture's accessibility ancestry."""
-    ancestry = []
+    area = Atspi.Component.get_extents(node.get_component_iface(), Atspi.CoordType.SCREEN)
+    frame = node
     for _ in range(16):
-        if node is None:
+        assert frame is not None and frame.get_process_id() == pid, "owned GTK frame unavailable"
+        frame.clear_cache()
+        if frame.get_role() == Atspi.Role.FRAME:
             break
-        try:
-            if node.get_process_id() != pid:
-                break
-            node.clear_cache()
-            states = node.get_state_set()
-            row = {
-                "role": int(node.get_role()),
-                "showing": states.contains(Atspi.StateType.SHOWING),
-                "focused": states.contains(Atspi.StateType.FOCUSED),
-            }
-            component = node.get_component_iface()
-            if component is not None:
-                for name in ("WINDOW", "SCREEN", "PARENT"):
-                    coordinate_type = getattr(Atspi.CoordType, name, None)
-                    if coordinate_type is None:
-                        row[name] = None
-                        continue
-                    try:
-                        area = Atspi.Component.get_extents(component, coordinate_type)
-                        row[name] = [area.x, area.y, area.width, area.height]
-                    except GLib.Error:
-                        row[name] = "unavailable"
-            ancestry.append(row)
-            node = node.get_parent()
-        except GLib.Error:
-            ancestry.append({"error": "owned-accessible-unavailable"})
-            break
-    return ancestry
+        frame = frame.get_parent()
+    else:
+        raise AssertionError("owned GTK frame exceeds the bounded ancestry")
+    assert frame.get_state_set().contains(Atspi.StateType.SHOWING)
+    outer = Atspi.Component.get_extents(frame.get_component_iface(), Atspi.CoordType.SCREEN)
+    assert (outer.width, outer.height) == tuple(expected_size), "GTK frame differs from niri window"
+    x, y = area.x - outer.x, area.y - outer.y
+    assert 0 < area.width <= outer.width and 0 < area.height <= outer.height
+    assert 0 <= x <= outer.width - area.width and 0 <= y <= outer.height - area.height
+    return (x, y, area.width, area.height), (outer.x, outer.y, outer.width, outer.height)

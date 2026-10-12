@@ -1047,13 +1047,7 @@ def run(arguments):
                         if not gtk4 and bundled:
                             # The shipped practice window has no test snapshot or
                             # translator. Observe only its owned accessibility tree.
-                            from gtk_accessibility import (
-                                bounds,
-                                focused,
-                                geometry_evidence,
-                                named,
-                                text,
-                            )
+                            from gtk_accessibility import bounds, focused, named, text
 
                             request({"Action": {"CloseWindow": {"id": window["id"]}}})
                             assert fixture.wait(timeout=5) == 0
@@ -1150,41 +1144,25 @@ def run(arguments):
                                 ),
                                 {},
                             )
-                            current_status = status()
-                            click_evidence = {
-                                "candidate": geometry_evidence(candidate, practice.pid),
-                                "source": geometry_evidence(source, practice.pid),
-                                "window": {
-                                    key: current_window.get(key)
-                                    for key in ("id", "pid", "is_focused", "layout")
-                                },
-                                "status": {
-                                    key: current_status.get(key)
-                                    for key in (
-                                        "viewState",
-                                        "overlayVisible",
-                                        "editing",
-                                        "acceptanceReady",
-                                        "acceptanceRemainingMs",
-                                        "sourceSupported",
-                                    )
-                                },
-                                "inputFocus": current_status.get("input", {}).get("focus"),
-                            }
+                            assert current_window.get("is_focused") is True
                             wait_for(
                                 lambda: focused(source) and ready_to_accept(),
                                 "practice candidate was not ready after collecting evidence",
                             )
-                            area = bounds(candidate)
-                            assert (
-                                area.width > 0 and area.height > 0 and area.x >= 0 and area.y >= 0
+                            area, frame = bounds(
+                                candidate, practice.pid, current_window["layout"]["window_size"]
                             )
-                            click_evidence["clickWindowCoordinates"] = [
-                                area.x + area.width // 2,
-                                area.y + area.height // 2,
-                            ]
+                            x, y, width, height = area
+                            point = [x + width // 2, y + height // 2]
                             (arguments.output / "practice-preclick.json").write_text(
-                                json.dumps(click_evidence, indent=2)
+                                json.dumps(
+                                    {
+                                        "candidateInFrame": area,
+                                        "frameReportedBounds": frame,
+                                        "clickWindowCoordinates": point,
+                                    },
+                                    indent=2,
+                                )
                             )
                             subprocess.run(
                                 [
@@ -1192,8 +1170,8 @@ def run(arguments):
                                     "mousemove",
                                     "--window",
                                     nested[0],
-                                    str(area.x + area.width // 2),
-                                    str(area.y + area.height // 2),
+                                    str(point[0]),
+                                    str(point[1]),
                                     "click",
                                     "1",
                                 ],
