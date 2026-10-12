@@ -32,12 +32,24 @@ def chromium_context(playwright, executable, profile, environment, arguments=())
         try:
             port_file = profile / "DevToolsActivePort"
             deadline = time.monotonic() + 15
-            while not port_file.is_file():
+            port = None
+            while port is None:
+                try:
+                    lines = port_file.read_text().splitlines()
+                    if (
+                        len(lines) >= 2
+                        and lines[0].isdigit()
+                        and 0 < int(lines[0]) < 65536
+                        and lines[1].startswith("/devtools/browser/")
+                    ):
+                        port = int(lines[0])
+                        break
+                except FileNotFoundError:
+                    pass
                 if process.poll() is not None or time.monotonic() >= deadline:
                     log.seek(0)
                     raise RuntimeError("isolated Chromium did not start: " + log.read()[-4000:])
                 time.sleep(0.05)
-            port = int(port_file.read_text().splitlines()[0])
             # A second CDP session cannot undo overrides owned by Playwright's
             # first session. no_defaults prevents their creation altogether.
             browser = playwright.chromium.connect_over_cdp(

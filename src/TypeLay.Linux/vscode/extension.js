@@ -31,6 +31,7 @@ function activate(context) {
         }
         busy = true;
         let transaction;
+        let phase = 'capture';
         activeCancellation = new vscode.CancellationTokenSource();
         try {
             if (wholeDocument) {
@@ -43,6 +44,7 @@ function activate(context) {
             }
             transaction = new EditorTransaction(editor, { wholeDocument });
             const snapshot = transaction.snapshot();
+            phase = 'translate';
             const reply = await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification, title: 'TypeLay 正在本机翻译', cancellable: true,
             }, async (_progress, cancellation) => {
@@ -50,15 +52,18 @@ function activate(context) {
                 try { return await translateSnapshot(hostPath, snapshot, activeCancellation.token); }
                 finally { subscription.dispose(); }
             });
+            phase = 'validate';
             if (!transaction.isCurrent()) {
                 void vscode.window.showInformationMessage('原文、选区或编辑器已变化，译文已作废，请重新翻译。');
                 return { status: 'RejectedBeforeMutation', reason: 'StaleObservation' };
             }
+            phase = 'preview';
             const choice = await vscode.window.showInformationMessage('TypeLay 翻译预览', {
                 modal: true,
                 detail: `原文：\n${snapshot.text}\n\n译文：\n${reply.translation}\n\n请核对原文完整，输入法候选已完成。确认只替换本次范围，不会发送或保存文档。`,
             }, '确认替换');
             if (choice !== '确认替换') return { status: 'Cancelled' };
+            phase = 'apply';
             const status = await transaction.apply(reply);
             if (status === 'RejectedBeforeMutation') {
                 void vscode.window.showInformationMessage('原文、选区或编辑器已变化，未执行替换。');
@@ -81,7 +86,15 @@ function activate(context) {
                 const reasons = ['unsupported-editor', 'invalid-text', 'disabled', 'not-ready', 'no-translation',
                     'host-not-configured', 'invalid-frame', 'host-timeout', 'host-unavailable', 'host-stopped',
                     'translation-unavailable', 'invalid-request', 'translation-failed', 'host-failed'];
-                return { status: 'Failed', reason: reasons.includes(error.message) ? error.message : 'unexpected-error' };
+                if (reasons.includes(error.message)) return { status: 'Failed', reason: error.message };
+                // Bounded non-content diagnostics. Never return an exception's
+                // message or absolute stack path, which may contain user text.
+                const names = ['Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError'];
+                const exception = names.includes(error.name) ? error.name : 'Error';
+                const match = typeof error.stack === 'string'
+                    ? error.stack.match(/[/\\](extension|host-client|transaction)\.js:(\d+):(\d+)/) : null;
+                const location = match ? `${match[1]}.js:${match[2]}:${match[3]}` : 'unknown';
+                return { status: 'Failed', reason: 'unexpected-error', phase, exception, location };
             }
             return { status: 'Cancelled' };
         } finally {
