@@ -311,7 +311,7 @@ def outer(arguments, script=None):
     config.write_text(
         "hotkey-overlay { skip-at-startup; }\n"
         + "spawn-at-startup "
-        + " ".join(json.dumps(item) for item in command)
+        + " ".join(json.dumps(item, ensure_ascii=False) for item in command)
         + "\n"
     )
     environment = {

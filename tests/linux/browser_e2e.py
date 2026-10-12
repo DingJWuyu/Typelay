@@ -78,8 +78,10 @@ class BrowserContract(unittest.TestCase):
             # clock. A 100ms privacy clock cannot grant a 90ms write permit.
             clock_setup = """(() => {
               const nativeNow = performance.now.bind(performance);
+              let origin = 0;
+              window.fixtureBeginClockBucket = () => { origin = nativeNow(); };
               Object.defineProperty(performance, 'now', {
-                value: () => Math.floor(nativeNow() / 100) * 100});
+                value: () => origin + Math.floor((nativeNow() - origin) / 100) * 100});
             })();"""
         self.context.add_init_script(clock_setup + TRANSPORT + "\n" + CONTENT.read_text())
         self.page = self.context.new_page()
@@ -229,8 +231,19 @@ class BrowserContract(unittest.TestCase):
 
     def test_coarse_privacy_timer_refuses_capture(self):
         self.page.keyboard.insert_text("Hello")
-        self.assertIsNone(self.capture())
-        diagnostics = self.command("describe")["diagnostics"]
+        # Start a real 100ms bucket and echo the new authority in the same page
+        # turn. A Python/CDP round trip could instead cross a bucket boundary
+        # and correctly reject wall/monotonic disagreement before the precision
+        # capability check that this case isolates.
+        result = self.page.evaluate("""() => {
+          fixtureBeginClockBucket();
+          const description = fixtureCommand({id: 930, op: 'describe'});
+          const capture = fixtureCommand({id: 931, op: 'capture', data: {
+            target: description.target, authority: description.authority}});
+          return {capture, diagnostics: fixtureCommand({id: 932, op: 'describe'}).diagnostics};
+        }""")
+        self.assertIsNone(result["capture"])
+        diagnostics = result["diagnostics"]
         self.assertEqual(diagnostics["captureCounts"]["timerPrecision"], 1)
         self.assertEqual(diagnostics["captureCounts"]["supported"], 0)
         tick = diagnostics["timerTickMs"]
