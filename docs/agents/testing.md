@@ -58,9 +58,9 @@ TYPELAY_HOME 必须指向包含 worker/ 的完整发行根，不能指向源码�
 
 ## Qt 独立研究入口
 
-正常提交、Pull Request 和手动 workflow 仍运行完整检查。仅 `cachyos-preview` 的显式 `research(qt-only):` 提交运行 `Qt research only (no product acceptance)`；CI 核对整个 push 中每个提交的变更路径，只允许 `tests/linux/qt_cooperative/`，越界即失败，不能用它提交产品修改。
+正常提交、Pull Request 和手动 workflow 仍运行完整检查。仅 `cachyos-preview` 的显式 `research(qt-only):` 提交运行 `Qt isolated input and model (no full product acceptance)`；CI 核对整个 push 中每个提交的变更路径，只允许 Qt 合作研究目录、Qt6 消费者及其专用 IID、fixture 和 desktop helper；越界即失败。共享 Core、Runtime、Protocol、桌面后台与打包代码必须走完整检查。
 
-该入口复用 workflow 中固定 artifact ID、源提交及双层 SHA256 校验的已验证合作运行时，只构建 Qt 原型与真实 fixture。artifact 过期、依赖不兼容或校验失败都直接报错，不自动换包；更新复用基线须走正常完整检查。研究通过不表示 Qt 产品支持或正式产品验收通过。
+该入口复用 workflow 中固定 artifact ID、源提交及双层 SHA256 校验的已验证合作运行时及普通客户端，重建当前 Qt 模块并运行原输入队列和真实 niri/本地模型场景。CI 另核固定包源提交以来的非 Qt 产品输入未变化，不能把旧二进制冒作当前共享实现。artifact 过期、依赖不兼容或校验失败都直接报错，不自动换包；更新复用基线须走正常完整检查。研究通过不表示 Qt 产品支持或正式产品验收通过。
 
 ## 结果表述
 

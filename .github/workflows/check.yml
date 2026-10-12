@@ -296,7 +296,7 @@ jobs:
 # Passing this job does not certify physical Tab, Chinese IME, visual parity or safe universal writeback.
 
   qt-research-only:
-    name: Qt research only (no product acceptance)
+    name: Qt isolated input and model (no full product acceptance)
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/cachyos-preview' && startsWith(github.event.head_commit.message, 'research(qt-only):') }}
     runs-on: ubuntu-latest
     container:
@@ -308,7 +308,7 @@ jobs:
       actions: read
     steps:
       - name: Install isolated Qt research dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf python curl unzip patch qt6-base qt6-wayland extra-cmake-modules libxkbcommon libxcb fcitx5 fcitx5-chinese-addons boost-libs opencc xorg-server-xvfb xdotool dbus
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf python curl unzip patch qt6-base qt6-wayland extra-cmake-modules libxkbcommon libxcb fcitx5 fcitx5-chinese-addons boost-libs opencc xorg-server-xvfb xdotool dbus gtk3 python-gobject libayatana-appindicator niri mesa grim noto-fonts-cjk uv icu openssl zlib
       - name: Initialize the disposable container D-Bus identity
         run: dbus-uuidgen --ensure=/etc/machine-id
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -328,10 +328,15 @@ jobs:
           # later reverted by another commit. A forbidden change stays red.
           git log --format= --name-only "$BEFORE..$AFTER" | sed '/^$/d' > /tmp/qt-research-paths
           test -s /tmp/qt-research-paths
-          if grep -v '^tests/linux/qt_cooperative/' /tmp/qt-research-paths; then
+          if grep -Ev '^(tests/linux/qt_cooperative/|src/TypeLay\.Linux/native/qt6/|src/TypeLay\.Linux/native/fcitx5/typelay-fcitx-qt-v1\.h$|tests/linux/(qt_desktop\.py|qt_native_fixture\.cpp)$)' /tmp/qt-research-paths; then
             echo 'Qt-only scope rejected; use a normal commit for full product checks.' >&2
             exit 1
           fi
+          # The fixed binary package must still match every non-Qt product input.
+          # A later shared/desktop change requires a new fully checked baseline.
+          git diff --exit-code db126cec12704ae969bf8520b9298256d5a4c079 HEAD -- \
+            src worker packaging tests/linux/desktop_e2e.py tests/linux/native_e2e.py tests/linux/fcitx_cooperative \
+            ':!src/TypeLay.Linux/native/qt6/**' ':!src/TypeLay.Linux/native/fcitx5/typelay-fcitx-qt-v1.h'
       - name: Reuse the exact verified cooperation runtime
         shell: bash
         env:
@@ -342,19 +347,44 @@ jobs:
           curl --fail --location --retry 2 \
             -H "Authorization: Bearer $GH_TOKEN" \
             -H 'Accept: application/vnd.github+json' \
-            https://api.github.com/repos/DingJWuyu/Typelay/actions/artifacts/11772722198/zip \
+            https://api.github.com/repos/DingJWuyu/Typelay/actions/artifacts/11776388820/zip \
             -o artifacts/qt-runtime/evidence.zip
-          echo 'd575dd0bd71263bc247274b982d6503e4b6bf63d0088d72b1b745b21c9781099  artifacts/qt-runtime/evidence.zip' | sha256sum -c -
+          echo 'a2573453b425d29342feaa2cadf11b8d42a16b366c0d798009a621733485ffe7  artifacts/qt-runtime/evidence.zip' | sha256sum -c -
           unzip -p artifacts/qt-runtime/evidence.zip TypeLay-Fcitx-cooperative.tar.gz > artifacts/qt-runtime/runtime.tar.gz
-          echo 'af714f91e6c45ea58ee9796af3b4f74a4882d5988b8a6a06151ece617765ae09  artifacts/qt-runtime/runtime.tar.gz' | sha256sum -c -
+          echo 'fc9d589f14da2b107796e3bb87d4322d8d18a4861115e6f375b778e26694f992  artifacts/qt-runtime/runtime.tar.gz' | sha256sum -c -
           tar -xzf artifacts/qt-runtime/runtime.tar.gz -C artifacts/qt-runtime
+          unzip -p artifacts/qt-runtime/evidence.zip TypeLay-Linux-preview-x86_64.tar.gz > artifacts/qt-runtime/client.tar.gz
+          echo '2a9c33f7bdd7df8348e4bde4ba873502c2c172ab6b5f0531b73a37cac1c62642  artifacts/qt-runtime/client.tar.gz' | sha256sum -c -
+          tar -xzf artifacts/qt-runtime/client.tar.gz -C artifacts/qt-runtime
           prefix="$PWD/artifacts/qt-runtime/TypeLay-Fcitx-cooperative/core"
           ln -s "$prefix/bin/fcitx5" artifacts/qt-probe-root/fcitx5
           ln -s "$prefix" artifacts/qt-probe-root/core-prefix
           ln -s "$prefix/lib/fcitx5" artifacts/qt-probe-root/lib
-          printf '%s\n' 'sourceCommit=fcaee7c6fcdc2eb446c62371b466e6f68fc0dbcb' 'artifactId=11772722198' > artifacts/qt-runtime/provenance.txt
+          printf '%s\n' 'sourceCommit=db126cec12704ae969bf8520b9298256d5a4c079' 'artifactId=11776388820' > artifacts/qt-runtime/provenance.txt
       - name: Probe the original Qt input path
         run: python tests/linux/qt_cooperative/run.py --fcitx-root artifacts/qt-probe-root
+      - name: Install the same real local model for the isolated Qt scenario
+        run: |
+          mkdir -p artifacts/linux/desktop-data artifacts/linux/desktop-cache
+          python artifacts/qt-runtime/TypeLay-Linux-preview/desktop/setup.py "$PWD/artifacts/qt-runtime/TypeLay-Linux-preview" "$PWD/artifacts/linux/desktop-data/typelay" "$PWD/artifacts/linux/desktop-cache/typelay"
+      - name: Exercise the current Qt adapter with the fixed production client
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1280x800x24 > artifacts/qt-runtime/xvfb.log 2>&1 &
+          xvfb=$!
+          trap 'kill "$xvfb" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 100); do
+            if xdotool getdisplaygeometry >/dev/null 2>&1; then break; fi
+            kill -0 "$xvfb"
+            sleep 0.05
+          done
+          xdotool getdisplaygeometry
+          export XDG_CONFIG_HOME="$PWD/artifacts/linux/qt-desktop-config"
+          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
+          export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
+          python tests/linux/native_e2e.py --desktop --desktop-scope qt --package artifacts/qt-runtime/TypeLay-Linux-preview --native artifacts/linux/native --output artifacts/linux/qt-desktop --fcitx-cooperative artifacts/qt-probe-root --qt-cooperative artifacts/linux/qt-cooperative
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -363,5 +393,7 @@ jobs:
             artifacts/linux/qt-cooperative/*.json
             artifacts/linux/qt-cooperative/*.log
             artifacts/qt-runtime/provenance.txt
+            artifacts/qt-runtime/xvfb.log
+            artifacts/linux/qt-desktop/
           if-no-files-found: warn
           retention-days: 14

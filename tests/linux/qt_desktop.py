@@ -180,16 +180,34 @@ def run_qt(
                         f"actual Qt {name} input context did not settle",
                     )
 
-                def enter_source(text):
-                    assert state()["first"]["focused"]
-                    key("ctrl+a")
-                    key("BackSpace")
+                def clear_source():
+                    first = state()["first"]
+                    assert first["focused"]
+                    if first["text"]:
+                        length = len(first["text"].encode("utf-16-le")) // 2
+                        if first["selectionStart"] != 0 or first["selectionLength"] != length:
+                            key("ctrl+a")
+                            wait_for(
+                                lambda: (value := state())["first"]["focused"]
+                                and value["first"]["text"] == first["text"]
+                                and value["first"]["selectionStart"] == 0
+                                and value["first"]["selectionLength"] == length
+                                and settled(value),
+                                "Ctrl+A did not select the actual complete Qt source",
+                            )
+                        key("BackSpace")
+                    # An already-empty field needs no clearing keys. Its old
+                    # empty snapshot cannot acknowledge newly queued input.
                     wait_for(
                         lambda: (value := state()).get("first", {}).get("text") == ""
+                        and value["first"]["focused"]
                         and settled(value)
                         and not status().get("acceptanceReady"),
                         "Qt source clearing did not settle and revoke its old candidate",
                     )
+
+                def enter_source(text):
+                    clear_source()
                     typed(text)
                     wait_for(
                         lambda: (value := state()).get("first", {}).get("text") == text
@@ -330,12 +348,7 @@ def run_qt(
                     "without a write, second Tab verifies the exact draft"
                 )
 
-                key("ctrl+a")
-                key("BackSpace")
-                wait_for(
-                    lambda: (value := state())["first"]["text"] == "" and settled(value),
-                    "Qt source did not clear before real pinyin input",
-                )
+                clear_source()
                 switch_im("pinyin")
                 typed("nihao")
                 wait_for(
