@@ -63,7 +63,7 @@ class NativeBrowserContract(unittest.TestCase):
                     context = playwright.chromium.launch_persistent_context(
                         str(root / "config/chromium"),
                         executable_path=self.executable,
-                        headless=True,
+                        headless=False,
                         env=environment,
                         ignore_default_args=["--disable-extensions"],
                         args=[

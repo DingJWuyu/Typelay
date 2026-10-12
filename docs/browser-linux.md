@@ -56,13 +56,13 @@ python install.py browser-uninstall --browser google-chrome
 
 ```sh
 python -m pip install playwright
-python tests/linux/browser_e2e.py --chromium /usr/bin/chromium -v
+xvfb-run -a python tests/linux/browser_e2e.py --chromium /usr/bin/chromium -v
 ```
 
 真实扩展和发行包 host 的最小链路另行运行：
 
 ```sh
-python tests/linux/browser_native_e2e.py --package artifacts/linux/package --chromium /usr/bin/chromium -v
+xvfb-run -a python tests/linux/browser_native_e2e.py --package artifacts/linux/package --chromium /usr/bin/chromium -v
 ```
 
 该检查在临时 HOME 安装发行包并注册唯一测试扩展 ID，使用真实后台脚本、native messaging、host wrapper 与 socket，验证握手、跨标签页路由及控件销毁身份；完成后关闭整个测试浏览器并删除临时目录。socket 对端只提供测试用元数据批准，不是假翻译器，也不代表 niri 前台身份或模型链路验收。

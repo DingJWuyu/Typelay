@@ -10,12 +10,16 @@
 class Controls final : public QObject {
 public:
     using QObject::QObject;
-    bool eventFilter(QObject *watched, QEvent *event) override {
+    bool eventFilter(QObject *, QEvent *event) override {
         if (event->type() != QEvent::KeyPress) return false;
         auto *key = static_cast<QKeyEvent *>(event);
         if (key->key() != Qt::Key_F8 && key->key() != Qt::Key_F9) return false;
         QInputMethodEvent ime(key->key() == Qt::Key_F8 ? QStringLiteral("拼音") : QString(), {});
-        QApplication::sendEvent(watched, &ime);
+        auto *target = QApplication::focusWidget();
+        if (!target) return false;
+        // QPA key delivery first visits QWindow. IME targets the actual focused
+        // editor, not that transport window.
+        QApplication::sendEvent(target, &ime);
         return true;
     }
 };

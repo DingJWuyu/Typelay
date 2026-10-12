@@ -115,6 +115,7 @@ jobs:
       - name: Verify ordinary browser fields through the production DOM adapter
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
+          export DISPLAY=:99
           python tests/linux/browser_e2e.py --chromium /usr/bin/chromium -v
           python tests/linux/browser_native_e2e.py --package artifacts/linux/package --chromium /usr/bin/chromium -v
       - name: Verify tray controls without downloading models

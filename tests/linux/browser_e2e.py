@@ -57,7 +57,7 @@ class BrowserContract(unittest.TestCase):
                 XDG_CACHE_HOME=str(Path(cls.home.name) / "cache"),
             )
             cls.browser = cls.playwright.chromium.launch(
-                executable_path=cls.executable, headless=True, env=environment
+                executable_path=cls.executable, headless=False, env=environment
             )
         except BaseException:
             cls.playwright.stop()
