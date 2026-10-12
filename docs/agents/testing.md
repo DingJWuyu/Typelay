@@ -9,7 +9,7 @@
 `dev.ps1 pack` 生成真实自包含 ZIP，再运行分发与进程 E2E。该流程不装模型、不打开用户文档、不通过假翻译器伪造 ready 状态。
 `dev.ps1 native-e2e` 需要已解锁桌面，验证受控 Win32 适配器的读写、选区、拒绝与零提交契约。它同时约束 Hook 测试依赖的字段后端；前置条件失败是未执行，不是通过。
 
-Linux 发行包回归通过 `tests/linux/distribution_e2e.py` 执行，命令和隔离要求见 `docs/linux.md`。它验证真实安装包、CLI、数据保留与文件锁，不需要桌面或模型。`tests/linux/native_e2e.py --gtk-refusal` 仅验证嵌套 niri 内真实 GTK 控件在未知输入法状态下拒绝正文捕获/写入并透传按键；这不代表 GTK 翻译功能可用。加 `--desktop` 后使用生产客户端、已安装的真实模型及 Chromium 扩展输入链路。测试按键由 XTest 送入独立合成器，不代表物理键盘或中文 IME 通过。控制器状态与原生焦点是异步观察，断言应等待实际用户结果，不以任一状态通知代替另一个进程已经完成操作。
+Linux 发行包回归通过 `tests/linux/distribution_e2e.py` 执行，命令和隔离要求见 `docs/linux.md`。它验证真实安装包、CLI、数据保留与文件锁，不需要桌面或模型。`tests/linux/native_e2e.py --gtk-refusal` 仅验证嵌套 niri 内真实 GTK 控件在未知输入法状态下拒绝正文捕获/写入并透传按键；这不代表 GTK 翻译功能可用。加 `--desktop` 后使用生产客户端、已安装的真实模型及 Chromium 扩展输入链路。`tests/linux/firefox_native_e2e.py` 使用官方 Firefox/geckodriver、临时扩展与发行包本地主机验证普通字段读写和身份，不代替 Firefox+niri+模型完整链路。测试按键由 XTest 送入独立合成器，不代表物理键盘或中文 IME 通过。控制器状态与原生焦点是异步观察，断言应等待实际用户结果，不以任一状态通知代替另一个进程已经完成操作。
 
 测试失败时保留命令、提交 SHA、平台、退出码和最小失败输出。只使用合成测试文本。TRX 和临时包进入 artifacts/ 或 CI artifact，不将执行快照、日志或阶段报告提交到仓库。
 
