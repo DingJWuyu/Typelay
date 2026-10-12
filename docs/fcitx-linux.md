@@ -2,7 +2,7 @@
 
 这套可选组件让 TypeLay 与实际 Fcitx 输入事务协作。当前范围是 GTK3 标准 GtkEntry 和原生 GtkEntryBuffer；GTK4、Qt、GtkTextView、通用 Electron 尚未开放。普通 TypeLay 安装不会安装或启用这些组件。
 
-此前完整私有 Fcitx 5.1.22、Chinese Addons 5.1.15、GTK IM 5.1.7 的开发基线已在隔离环境通过真实输入事务检查。当前按用户确认版本固定为 Core 5.1.22、Chinese Addons 5.1.14、GTK IM 5.1.7、完整私有 LibIME 1.1.16；这次同版构建的真实运行结果需另行验证，不能沿用旧基线结论。嵌套 niri 的生产 GTK 路径通过实际 CPU 模型、自动预览、一次 Tab 写回、编辑后两阶段 Tab 与拼音组合保护。它们不是用户 CachyOS 桌面的物理输入验收。
+当前固定 Core 5.1.22、Chinese Addons 5.1.14、GTK IM 5.1.7、完整私有 LibIME 1.1.16。对应组件已在隔离环境完整构建，实际库、模型路径与同版官方包均有校验。搬迁后的私有包已通过默认组件会话、配置/前台重启、原 session bus，以及嵌套 niri 的实际 CPU 模型、自动预览、一次 Tab 写回、编辑后两阶段 Tab 与拼音组合保护。实际按键由隔离桌面自动化送入，不能代替用户 CachyOS 桌面的物理输入验收。
 
 ## 会话与用户数据
 
