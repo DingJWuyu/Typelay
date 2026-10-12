@@ -114,11 +114,11 @@
 +
 +    std::tuple<std::vector<DBusBlockedEvent>, bool> typelayPrepareCaretV1(uint64_t expected) {
 +        CHECK_SENDER_OR_RETURN {};
-+        if (blocked_) return {{}, false};
++        if (blocked_) return std::make_tuple(std::vector<DBusBlockedEvent>{}, false);
 +        const auto state = typelayProbeStateV1();
 +        if (std::get<0>(state) != expected || !std::get<1>(state)
 +            || std::get<2>(state) || std::get<3>(state) || !std::get<4>(state))
-+            return {{}, false};
++            return std::make_tuple(std::vector<DBusBlockedEvent>{}, false);
 +        setBlocked();
 +        reset();
 +        std::vector<DBusBlockedEvent> output;

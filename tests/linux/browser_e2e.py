@@ -161,15 +161,22 @@ class BrowserContract(unittest.TestCase):
         result = self.page.evaluate("""() => {
           fixtureHostClock = () => ({wallTimeMs: Date.now() - 2, boottimeMs: 1000403});
           const description = fixtureCommand({id: 910, op: 'describe'});
-          fixtureHostClock = () => ({wallTimeMs: Date.now(), boottimeMs: 1000404});
+          let sampledAt;
+          fixtureHostClock = () => {
+            sampledAt = performance.now();
+            return {wallTimeMs: Date.now(), boottimeMs: 1000404};
+          };
           const snapshot = fixtureCommand({id: 911, op: 'capture', data: {
             target: description.target, authority: description.authority}});
-          return {snapshot, descriptionStamp: description.authority.observedAtMs};
+          // The host continues advancing during capture/geometry processing.
+          // Include its <1ms integer sampling error and the measured elapsed time.
+          const hostUpperAtReturn = 1000404 + 1 + Math.ceil(performance.now() - sampledAt);
+          return {snapshot, descriptionStamp: description.authority.observedAtMs, hostUpperAtReturn};
         }""")
         self.assertEqual(result["descriptionStamp"], 1000403)
         self.assertIsNotNone(result["snapshot"])
         self.assertEqual(result["snapshot"]["text"], "Hello")
-        self.assertLessEqual(result["snapshot"]["observedAtMs"], 1000404)
+        self.assertLessEqual(result["snapshot"]["observedAtMs"], result["hostUpperAtReturn"])
 
     def test_unrelated_clock_rebase_cannot_extend_published_deadline(self):
         snapshot = self.type_source()
