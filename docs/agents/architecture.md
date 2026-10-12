@@ -18,7 +18,7 @@
 
 `TypeLay.Launcher` 是 Windows 原生入口。发布时从 C 源码编译，调用发行目录 bootstrap/start.ps1；它不包含 SDK 下载和源码编译功能。
 
-`TypeLay.Linux` 是 Linux 组合根，直接装配共享 Runtime，不复制会话控制器。其 GTK 桌面进程负责 layer-shell、niri IPC、同用户 socket 和界面；原生 GTK3 模块在目标应用事件线程处理输入、IME 与原子替换。Linux 子进程监督和 XDG 安装路径不进入共享层。当前支持范围、拒绝条件和部署流程见 `docs/linux.md`。
+`TypeLay.Linux` 是 Linux 组合根，直接装配共享 Runtime，不复制会话控制器。其 GTK 桌面进程负责 niri IPC、同用户 socket、设置界面和 Ayatana 托盘；原生 GTK3 模块在目标应用事件线程处理控件相对浮层、输入、IME 与原子替换。锚点与坐标契约见 `docs/adr/0004-linux-native-anchors.md`。Linux 子进程监督和 XDG 安装路径不进入共享层。当前支持范围、拒绝条件和部署流程见 `docs/linux.md`。
 
 ## 平台边界不变量
 
@@ -34,7 +34,7 @@ IInputService 的实现负责操作前重新确认目标与权限，不能把 Wr
 
 ## 分发契约
 
-源码目录与部署目录不同。部署根包含 TypeLay.exe、app/、worker/、bootstrap/、assets/tutorial/、README 和第三方声明。AppPaths.Home 由启动脚本指向整个发行根；Broker 与 App 放在同一个 app/。开机启动继续指向发行根 TypeLay.exe。
+源码目录与部署目录不同。Windows 部署根包含 TypeLay.exe、app/、worker/、bootstrap/、assets/tutorial/、README 和第三方声明。AppPaths.Home 由启动脚本指向整个发行根；Broker 与 App 放在同一个 app/。开机启动继续指向发行根 TypeLay.exe。Linux 发行根由 `eng/build-linux.py` 装配，用户本地安装与 XDG 数据布局见 `docs/linux.md`。
 
 打包只能从明确的运行时文件清单复制。不能把 .git、skills、源代码、测试、归档资料、用户设置或模型缓存带入发布包。改变部署路径后必须运行 relocated-distribution E2E，不能只检查编译。
 

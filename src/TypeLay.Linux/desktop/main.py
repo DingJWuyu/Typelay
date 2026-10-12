@@ -51,6 +51,7 @@ async def desktop(paths, background, lock):
     from gi.repository import Gdk, GLib, Gtk
     from input import Input
     from link import Link
+    from tray import Tray
     from ui import Overlay, Settings
 
     initialized, _ = Gtk.init_check([])
@@ -58,7 +59,7 @@ async def desktop(paths, background, lock):
         raise RuntimeError("wayland-gtk-unavailable")
     stopping = asyncio.Event()
     tasks = set()
-    components = {"input": None, "overlay": None, "settings": None}
+    components = {"input": None, "overlay": None, "settings": None, "tray": None}
     status = {"modelReady": False}
     installer = None
     install_task = None
@@ -88,6 +89,7 @@ async def desktop(paths, background, lock):
         if operation == "settings":
             settings.configure(value)
             overlay.configure(value)
+            components["tray"].configure(value)
             if not value["onboardingComplete"]:
                 settings.show()
         elif operation == "render":
@@ -100,6 +102,7 @@ async def desktop(paths, background, lock):
             # Do not expose the process identifier or any input content via CLI.
             status.update({key: item for key, item in value.items() if key != "lastApplication"})
             settings.report(value)
+            components["tray"].report(value)
 
     async def host_request(operation, value):
         return await components["input"].request(operation, value)
@@ -178,6 +181,15 @@ async def desktop(paths, background, lock):
             host, components["input"], task, components["settings"].show
         )
 
+        components["tray"] = Tray(
+            paths,
+            host,
+            task,
+            components["settings"].show,
+            stopping.set,
+            components["settings"].report_tray,
+        )
+
         async def command(operation, _value):
             if operation == "settings":
                 components["settings"].show()
@@ -188,6 +200,8 @@ async def desktop(paths, background, lock):
             if operation == "status":
                 return {
                     **status,
+                    "trayAvailable": components["tray"].indicator is not None,
+                    "trayConnected": components["tray"].connected,
                     "nativePeers": sum(bool(peer.lifetime) for peer in components["input"].peers),
                     "overlayVisible": components["overlay"].visible,
                     "editing": components["overlay"].editing,
@@ -255,6 +269,8 @@ async def desktop(paths, background, lock):
             components["overlay"].hide()
         if components["input"]:
             components["input"].close()
+        if components["tray"]:
+            components["tray"].close()
         if components["settings"]:
             components["settings"].window.destroy()
         if host.channel.alive:

@@ -6,23 +6,23 @@
 
 这是正在完成桌面验证的预览客户端，不是已通过完整产品验收的 Linux 正式版。现有产品规格仍是验收依据；下列缺口不是新的产品规格或永久支持名单。
 
-客户端复用 Core、Runtime 和 Python worker，提供自动/按需模式、翻译预览及编辑、原框返回、Tab 接受、按需快捷键、绑定原框的直接替换、应用排除、设置持久化及本地模型安装。Linux 桌面集成使用 GTK3、layer-shell、niri IPC 和 GTK 原生输入适配器。是否真正可用由每个控件的元数据、输入法状态、窗口身份、几何、版本和时效共同决定，不能仅凭编译成功判断。
+客户端复用 Core、Runtime 和 Python worker，提供自动/按需模式、翻译预览及编辑、原框返回、Tab 接受、按需快捷键、绑定原框的直接替换、应用排除、设置持久化及本地模型安装。Linux 桌面集成使用 GTK3 设置界面、Ayatana 托盘、niri IPC 和绑定源控件的 GTK 原生浮层与输入适配器。是否真正可用由每个控件的元数据、输入法状态、窗口身份、几何、版本和时效共同决定，不能仅凭编译成功判断。
 
 当前输入后端只实现标准 GTK3 GtkEntry / GtkTextView（普通无富文本标记的缓冲区）。应用必须在启动时加载模块，已经运行的实例不能通过再次打开窗口补加载。GTK4、Qt、Firefox/Chromium 网页、Electron/VS Code、终端尚无输入后端。这是尚未完成的功能覆盖，不可描述成通用输入框支持。
 
-同一进程存在多个 niri 顶层窗口时，当前后端拒绝读取和写入，因为尚无足够可靠的跨协议窗口身份映射。隐藏工作区、不能确定窗口坐标、窗口几何与 GTK 不一致、输入法状态未知时，也不尝试猜测。niri IPC 的布局字段必须提供有效位置；缺失位置时不会显示随意摆放的替代 UI。
+同一 GTK3 进程的多个窗口可分别绑定原生控件；预览和编辑要求活动父窗口，直接替换保持绑定触发时的原控件。浮层使用 GTK 父窗口坐标，不依赖 niri 缺失的平铺窗口绝对位置，也不猜测屏幕坐标。控件身份、父窗口状态、输入法状态或锚点不能确认时拒绝操作。定位契约见源码中的 `docs/adr/0004-linux-native-anchors.md`。
 
-快捷键在当前已连接的 GTK 原生输入适配器中处理，而不是桌面范围的通用快捷键服务。默认 Ctrl+Shift+F9 唤醒、Ctrl+Shift+F10 直接替换，仅按需模式生效。未适配应用中的全局唤醒、所有应用的兼容性、系统托盘及物理桌面视觉一致性仍未完成验收。
+快捷键在当前已连接的 GTK 原生输入适配器中处理，而不是桌面范围的通用快捷键服务。默认 Ctrl+Shift+F9 唤醒、Ctrl+Shift+F10 直接替换，仅按需模式生效。未适配应用中的全局唤醒、所有应用的兼容性、托盘物理桌面视觉一致性仍未完成验收。
 
 ## 构建
 
 在目标机器安装依赖（fish 可直接运行）：
 
 ```fish
-sudo pacman -Syu --needed git base-devel cmake ninja pkgconf dotnet-sdk gtk3 json-glib python python-gobject gtk-layer-shell niri uv
+sudo pacman -Syu --needed git base-devel cmake ninja pkgconf dotnet-sdk gtk3 json-glib python python-gobject libayatana-appindicator niri uv
 ```
 
-.NET SDK 版本须满足仓库 `global.json`。普通用户使用自包含发行包，不需要 .NET SDK。GTK、PyGObject、gtk-layer-shell 等桌面库由系统包管理器维护；翻译 worker 使用独立 CPython，不修改系统 Python。
+.NET SDK 版本须满足仓库 `global.json`。普通用户使用自包含发行包，不需要 .NET SDK。GTK、PyGObject、Ayatana 等桌面库由系统包管理器维护；翻译 worker 使用独立 CPython，不修改系统 Python。
 
 ```fish
 git clone --branch cachyos-preview --single-branch git@github.com:DingJWuyu/Typelay.git
@@ -45,7 +45,7 @@ python install.py install
 ~/.local/bin/typelay --settings
 ```
 
-安装是用户级操作，不使用 sudo、不改 fish 配置。启动器位于 `~/.local/bin/typelay`，应用代码位于 `~/.local/lib/typelay/releases/`，`current` 指向当前版本。安装会写入应用菜单入口。未将 `~/.local/bin` 加入 PATH 时，可继续使用以上完整路径。
+安装是用户级操作，不使用 sudo、不改 fish 配置。启动器位于 `~/.local/bin/typelay`，应用代码位于 `~/.local/lib/typelay/releases/`，`current` 指向当前版本。安装会写入应用菜单入口，并在重复安装同一版本时校验已安装文件。若已有版本损坏，安装会拒绝复用，不覆盖可能仍被运行中进程使用的文件；退出所有 TypeLay 会话后，从完整解压包先卸载再安装，默认保留设置和模型。未将 `~/.local/bin` 加入 PATH 时，可继续使用以上完整路径。
 
 在设置窗口点击“安装本地翻译组件…”并确认下载，或显式执行：
 
@@ -77,6 +77,14 @@ Argos 发布源未提供可用的固定发布者摘要时，安装器记录 HTTP
 
 快捷键可在设置中修改。输入法组合中的按键不会被当作 TypeLay 命令。输入法状态不能被确认时，不以“看起来没有候选窗”作为替换许可。
 
+## 托盘与快速操作
+
+客户端通过 `libayatana-appindicator` 向当前 D-Bus 会话的 StatusNotifier 托盘面板注册。使用 Waybar 时，需要在自己的 Waybar 配置中启用 `tray` 模块；TypeLay 不安装面板、不修改 Waybar 或 niri 配置。已有面板配置应保留，只添加缺失的模块。
+
+托盘菜单提供启用/暂停、自动/按需模式、源/目标语言、交换语言、模型就绪状态、设置和退出。暂停时保留灰色图标和恢复入口，不把“暂停”变成“退出”。中键打开设置。自动检测不能作为目标语言，因此源语言为自动识别时，交换入口不可用；选定固定源语言后再交换。上述操作只修改共享运行时的设置，不写入任何输入框，不改变原生写回的安全约束。
+
+没有托盘库或没有运行托盘面板时，设置窗口明确提示原因；应用菜单、`--settings` 和 `--quit` 仍可使用。面板稍后启动或重启时由 Ayatana 重新建立连接，不需要重启翻译服务。托盘图标随包提供，不依赖用户图标主题恰好包含某个图标。
+
 ## 诊断、退出、登录启动
 
 ```fish
@@ -86,7 +94,7 @@ Argos 发布源未提供可用的固定发布者摘要时，安装器记录 HTTP
 ~/.local/bin/typelay --quit
 ```
 
-`--doctor` 输出安装、niri 版本和本会话的服务状态，不包含正文、译文、窗口标题或进程参数。它不是兼容性认证；`nativePeers` 大于零只说明有应用连接，不代表该应用的全部控件可读取或替换。
+`--doctor` 输出安装、niri 版本和本会话的服务状态，不包含正文、译文、窗口标题或进程参数。`trayAvailable` 表示托盘库可用，`trayConnected` 表示与面板完成注册，不代表图标已通过视觉验收。它不是兼容性认证；`nativePeers` 大于零只说明有应用连接，不代表该应用的全部控件可读取或替换。
 
 “登录 niri 时启动”写入 XDG autostart 文件，需要当前 niri 会话启动 XDG 自动启动目标。使用 `niri-session` 的 systemd 集成路径可按 niri 的官方集成文档配置；其他启动方式可在 niri 配置中显式加入：
 
@@ -100,7 +108,7 @@ spawn-at-startup "/home/你的用户名/.local/bin/typelay" "--background"
 
 ## 验证
 
-CI 将共享测试、Windows 原生/打包检查、Arch 容器中的 Linux 构建及嵌套 niri/GTK 测试分开。查看当前提交对应 Actions 的实际结果；失败的任务不算通过，旧提交成功也不能证明新提交通过。
+CI 将共享测试、Windows 原生/打包检查、Arch 容器中的 Linux 构建、发行包生命周期及嵌套 niri/GTK 测试分开执行。查看当前提交对应 Actions 的实际结果；失败的任务不算通过，旧提交成功也不能证明新提交通过。
 
 本地最小静态检查：
 
@@ -109,6 +117,22 @@ python -m pip install -r eng/requirements.txt
 python -m ruff check src/TypeLay.Linux/desktop packaging/linux eng/build-linux.py tests/linux
 dotnet build src/TypeLay.Linux -c Release
 ```
+
+发行包回归使用实际构建产物，从含中文和空格的新目录安装，验证重复安装、完整性校验、卸载保留数据、显式清理及活动会话/组件安装锁。测试使用独立 HOME 和 XDG 目录，不下载模型，也不连接用户桌面：
+
+```fish
+python eng/build-linux.py
+env TYPELAY_LINUX_PACKAGE="$PWD/artifacts/TypeLay-Linux-preview-x86_64.tar.gz" python tests/linux/distribution_e2e.py -v
+```
+
+
+托盘控件回归不安装模型，使用实际 GTK、Ayatana、已构建的共享宿主和隔离的 D-Bus 面板端点：
+
+```fish
+env GDK_BACKEND=x11 dbus-run-session -- xvfb-run -a python tests/linux/tray_e2e.py --package artifacts/linux/package
+```
+
+该回归验证注册、菜单动作、暂停/恢复和持久化，不等同于真实 Waybar、物理鼠标或目标桌面视觉验收。缺少 PyGObject、Ayatana 或显示服务时应报告未执行，不能记为通过。
 
 嵌套测试需要独立 Xvfb、niri、Mesa 软件渲染、D-Bus 和 xdotool。CI 的 XTest 只向独立嵌套合成器注入测试按键，不是生产客户端的输入方案。原生测试验证受控 GTK 控件，不能冒充 Firefox、Qt 或物理键盘实测。
 
@@ -122,6 +146,7 @@ dotnet build src/TypeLay.Linux -c Release
 | 直接替换 | 触发后立即换框、改原文、关原窗口 | 原控件身份、取消及无误写 |
 | 输入法 | Fcitx5/IBus 中文组合、候选选择、取消、切换输入法 | 组合期不拦 Tab、不读半成品、不写回 |
 | 几何/视觉 | 平铺滚动、浮动、窗口动画、不同缩放屏幕、屏幕边缘 | 无遮挡输入框、无抢焦点、主题一致 |
+| 托盘 | Waybar 启用 tray，测试暂停/恢复、切换模式、交换语言、中键设置、面板重启、退出 | 真实面板点击、主题与图标清晰度 |
 | 完整生命周期 | 模型安装、断网、退出、重复启动、登录启动、卸载 | 无孤儿模型进程、无遗留键盘占用 |
 | 非 GTK3 应用 | Firefox/Chromium、Electron/VS Code、GTK4、Qt | 当前没有后端，不能标记通过 |
 
@@ -141,10 +166,10 @@ python install.py uninstall
 python install.py uninstall --purge
 ```
 
-卸载不会删除应用本身或修改用户的 fish/niri 配置。手动加入 niri 的 `spawn-at-startup` 或应用启动命令需要同步移除。程序仍在运行或组件安装占有锁时，卸载拒绝操作，不使用进程名批量杀死其他程序。
+卸载只删除 TypeLay 程序及其菜单/自动启动入口，不删除通过 `launch` 启动的目标应用，也不修改用户的 fish/niri 配置。已安装启动器缺失时仍可从完整解压包卸载，但活动会话的锁检查不会跳过。手动加入 niri 的 `spawn-at-startup` 或应用启动命令需要同步移除。仍有会话占有锁时，卸载拒绝操作；组件安装占有锁时，`--purge` 拒绝删除组件数据，不使用进程名批量杀死其他程序。
 
 ## 设计依据
 
-niri IPC 用于合成器提供的窗口身份、焦点和几何；layer-shell 用于不占布局空间的浮层。观察文本不等于可以安全改写，裸 Tab 的所有权和 IME 状态也不是 GlobalShortcuts portal 提供的文本事务，因此未使用“AT-SPI 能读文本”推导“可以通用模拟粘贴”。当前 GTK3 后端在目标应用事件线程同步校验并写入，返回一次性回执，共享控制器不会重复执行已经完成的写入。
+niri IPC 提供合成器的前台状态；非模态 GTK 原生浮层绑定真实源控件，在父窗口内定位，不占用独立平铺窗口。观察文本不等于可以安全改写，裸 Tab 的所有权和 IME 状态也不是 GlobalShortcuts portal 提供的文本事务，因此未使用“AT-SPI 能读文本”推导“可以通用模拟粘贴”。当前 GTK3 后端在目标应用事件线程同步校验并写入，返回一次性回执，共享控制器不会重复执行已经完成的写入。
 
-参考：[niri IPC](https://niri-wm.github.io/niri/IPC.html)、[niri 集成](https://niri-wm.github.io/niri/Integrating-niri.html)、[gtk-layer-shell](https://wmww.github.io/gtk-layer-shell/)、[GTK3 输入法](https://docs.gtk.org/gtk3/class.IMContext.html)、[uv Python 安装](https://docs.astral.sh/uv/guides/install-python/)。
+参考：[niri IPC](https://niri-wm.github.io/niri/IPC.html)、[niri 集成](https://niri-wm.github.io/niri/Integrating-niri.html)、[Ayatana AppIndicator](https://github.com/AyatanaIndicators/libayatana-appindicator)、[Waybar tray](https://github.com/Alexays/Waybar/wiki/Module:-Tray)、[GTK3 输入法](https://docs.gtk.org/gtk3/class.IMContext.html)、[uv Python 安装](https://docs.astral.sh/uv/guides/install-python/)。

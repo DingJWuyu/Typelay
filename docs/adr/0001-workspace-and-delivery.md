@@ -7,9 +7,9 @@ Scope: workspace boundaries, developer workflow and distribution.
 
 `TypeLay.slnx` 是 .NET 工作区，`src/` 只包含生产组件。Windows App 保留基础设施、Windows 和 UI；跨平台产品编排已由 ADR-0003 明确迁入 TypeLay.Runtime。仅在有实际职责与依赖隔离需要时建立生产项目，不为目录或测试便利拆分。
 
-`tests/` 按可观察边界划分 behavior、contracts、e2e、fixtures 和 support。纯逻辑使用标准 xUnit；发布包和 Broker 协议通过真实子进程验证；受控桌面工具用于定位 Hook、焦点和编辑问题，但不代替生产 UIA 验收。
+`tests/` 按可观察边界划分 behavior、contracts、e2e、linux、fixtures 和 support。纯逻辑使用标准 xUnit；发布包和 Broker 协议通过真实子进程验证；受控桌面工具用于定位 Hook、焦点和编辑问题，但不代替生产 UIA 验收。
 
-`dev.ps1` 是开发任务入口，CI 复用相同命令。工作区约束集中在共享构建配置中，开发工具与模型运行依赖分别管理。
+`dev.ps1` 是 Windows 与共享检查入口，`eng/build-linux.py` 是 Linux 构建入口；CI 复用对应平台的相同命令。工作区约束集中在共享构建配置中，开发工具与模型运行依赖分别管理。
 
 发布包只复制显式运行时清单：启动器、App/Broker、自包含 .NET 运行时、worker、启动脚本、教程与必要声明。普通用户完整解压即可启动，不需要 SDK 或源码。组件和模型安装仍需用户明确同意。
 

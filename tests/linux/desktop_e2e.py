@@ -141,10 +141,12 @@ def run(arguments):
         key("Tab")
         accepted = wait_for(
             changed_fixture,
-            "physical compositor Tab did not accept the real candidate",
+            "compositor-delivered Tab did not accept the real candidate",
         )
         assert accepted["focus"] == "fixture-first", "Tab also navigated to another field"
-        evidence.append("automatic mode: real model preview, physical Wayland Tab and source focus")
+        evidence.append(
+            "automatic mode: real model preview, compositor-delivered Tab and source focus"
+        )
         key("ctrl+a")
         typed(original)
         wait_for(ready_to_accept, "second candidate did not become ready")
@@ -159,12 +161,22 @@ def run(arguments):
         key("ctrl+a")
         typed(manual)
         key("Tab")
-        wait_for(
-            lambda: ready_to_accept("EditedTranslationPending"),
-            "first editor Tab did not return with the edited candidate",
-        )
-        assert fixture_state()["first"] == original, "return from editor also accepted the draft"
-        assert fixture_state()["focus"] == "fixture-first"
+
+        def returned_draft():
+            # The controller renders the pending draft before its asynchronous
+            # native focus request completes. Observe the field itself as well.
+            current = fixture_state()
+            assert current.get("first") == original, "return from editor also accepted the draft"
+            return (
+                current
+                if (
+                    current.get("focus") == "fixture-first"
+                    and ready_to_accept("EditedTranslationPending")
+                )
+                else None
+            )
+
+        wait_for(returned_draft, "first editor Tab did not return with the edited candidate")
         subprocess.run(["grim", str(arguments.output / "edited.png")], check=True, timeout=3)
         key("Tab")
         wait_for(lambda: fixture_state().get("first") == manual, "second Tab lost the edited draft")

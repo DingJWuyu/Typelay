@@ -50,6 +50,12 @@ def install(root, command, desktop):
             shutil.rmtree(stage)
         shutil.copytree(PACKAGE, stage)
         stage.rename(target)
+    else:
+        # Reuse only an intact release. Do not rewrite files that a running
+        # client may still be using, or trust the installed copy's manifest.
+        subprocess.run(
+            ["sha256sum", "--check", "--strict", "--status", str(manifest)], cwd=target, check=True
+        )
     current = root / "current"
     temporary = root / ".current-new"
     temporary.unlink(missing_ok=True)
@@ -70,6 +76,7 @@ def install(root, command, desktop):
         "[Desktop Entry]\nType=Application\nName=TypeLay\n"
         "Comment=Local input field translation\n"
         f'Exec="{executable}" --settings\nTerminal=false\n'
+        f"Icon={root}/current/desktop/icons/typelay-active.svg\n"
         "Categories=Utility;Accessibility;\nStartupNotify=false\n",
         encoding="utf-8",
     )
@@ -79,7 +86,12 @@ def install(root, command, desktop):
 def uninstall(root, command, desktop, config, data, cache, purge):
     # Ask only this program to exit. Do not kill processes by executable name.
     if command.is_symlink() and os.readlink(command) == str(root / "current/typelay"):
-        subprocess.run([str(command), "--quit"], check=False, timeout=5)
+        try:
+            subprocess.run([str(command), "--quit"], check=False, timeout=5)
+        except FileNotFoundError:
+            # A damaged installation still needs to be removable. Session locks
+            # below remain authoritative, even when the launcher has disappeared.
+            pass
     held = []
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     try:

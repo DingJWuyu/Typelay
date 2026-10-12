@@ -182,6 +182,9 @@ class Settings:
         self.status = Gtk.Label(xalign=0)
         self.status.set_line_wrap(True)
         outer.pack_start(self.status, False, False, 0)
+        self.tray_notice = Gtk.Label(xalign=0)
+        self.tray_notice.set_line_wrap(True)
+        outer.pack_start(self.tray_notice, False, False, 0)
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         outer.pack_start(scroll, True, True, 0)
@@ -289,6 +292,15 @@ class Settings:
             for key in ("model", "serviceStatus", "operationStatus", "shortcutStatus")
         ]
         self.status.set_text("\n".join(piece for piece in pieces if piece))
+
+    def report_tray(self, available, connected):
+        if connected:
+            message = ""
+        elif available:
+            message = "未连接托盘面板；可从应用菜单打开设置。Waybar 需启用 tray 模块。"
+        else:
+            message = "托盘组件未安装：请安装 libayatana-appindicator。设置和翻译仍可使用。"
+        self.tray_notice.set_text(message)
 
     def show(self):
         self.window.show_all()

@@ -6,6 +6,10 @@
 
 运行时版本以 `app/TypeLay.App.runtimeconfig.json` 的 `includedFrameworks` 为准。发布过程从该次构建实际解析的 runtime packs 原样复制包内实际提供的许可证与第三方 notices，按包名和版本保存到 `app/licenses/`。不得删改、翻译或用本文件替代上游声明；更新 SDK 或发布方式后重新检查包内文件并运行发行包测试。
 
+## Linux 系统依赖
+
+Linux 发行包复用共享 .NET Runtime 和 Python worker，GTK、PyGObject、Ayatana AppIndicator 及其 D-Bus 菜单依赖由 CachyOS/Arch 的系统包管理器提供，不将系统库复制进发行包。系统依赖的许可证和 notices 随各自软件包维护；Ayatana 的来源为 https://github.com/AyatanaIndicators/libayatana-appindicator 。Linux 桌面的 TypeLay 托盘 SVG 为本项目资源。
+
 ## 首次联网准备
 
 私有 Python、推理依赖及模型由 `src/TypeLay.App/Infrastructure/ModelInstaller.cs` 管理。Python worker 的直接依赖版本见 `src/TypeLay.Worker/requirements.txt`，不得在本文件另建一份易失配的版本清单。
