@@ -501,7 +501,16 @@ def session(out: Path, core_version: str):
                     lambda: state().get("settled") and state().get("length", 0) > 0,
                     "core compose commit",
                 )
+                key_queue_ack = state().get("key_queue_ack", 0)
                 run(["xdotool", "type", "--window", window, "--delay", "15", "nihao"], env=env)
+                # xdotool completion only means the X server received its events.
+                # Wait for a marker from the same actual GTK/Fcitx event queue
+                # before candidate selection, without changing the composition.
+                run(["xdotool", "key", "--window", window, "F24"], env=env)
+                wait(
+                    lambda: state().get("key_queue_ack", 0) > key_queue_ack,
+                    "actual GTK/Fcitx typed-key queue acknowledgement",
+                )
                 wait(lambda: state().get("composing"), "real pinyin preedit")
                 assert command("capture")["result"] == "refused-ime"
                 assert command("candidate")["result"] == "refused-undelivered"

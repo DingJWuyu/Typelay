@@ -169,7 +169,10 @@ jobs:
           key: ${{ steps.fcitx-cache.outputs.cache-primary-key }}
       - name: Package and relocate the optional Fcitx cooperation runtime
         id: fcitx-package
-        if: ${{ !cancelled() && steps.fcitx.outcome == 'success' }}
+        # pack.py requires matching successful-build inputs. A later isolated
+        # fixture failure stays red but must not hide the independent real
+        # default-session deployment result for those same built components.
+        if: ${{ !cancelled() && (steps.fcitx.outcome == 'success' || steps.fcitx.outcome == 'failure') }}
         run: |
           python packaging/linux/fcitx-cooperative/pack.py --build-output artifacts/linux/fcitx-cooperative-5.1.22 --output artifacts/TypeLay-Fcitx-cooperative.tar.gz
           mkdir -p "artifacts/linux/relocated 输入法"

@@ -12,7 +12,7 @@ static GtkWidget *window, *entry, *other;
 static gchar *directory, *captured;
 static GtkEntryBuffer *captured_buffer;
 static guint64 revision, captured_revision, captured_epoch, captured_serial, captured_generation;
-static guint request;
+static guint request, key_queue_ack;
 static const char *result = "starting";
 static gboolean writing, nested_refused, nested_done, nested_mutate;
 static guint nested_depth;
@@ -85,6 +85,16 @@ static gboolean select_candidate(GtkWidget *widget) {
 
 static gboolean settled(State s) {
     return s.valid && s.known && !s.pending && !s.composing && s.serial == s.delivered;
+}
+
+/* The original Fcitx key snooper has completed its synchronous processing
+ * before this actual widget event is delivered. F24 is unused by this fixture
+ * and does not select, cancel, reset, or commit the pinyin composition. */
+static gboolean key_queue_marker(GtkWidget *widget, GdkEventKey *event, gpointer unused) {
+    (void)unused;
+    if (widget != entry || event->keyval != GDK_KEY_F24) return FALSE;
+    if (event->type == GDK_KEY_RELEASE) ++key_queue_ack;
+    return TRUE;
 }
 
 static void changed(GtkEditable *editable, gpointer unused) {
@@ -196,14 +206,14 @@ static void save_state(void) {
         "{\"request\":%u,\"result\":\"%s\",\"ready\":%s,\"known\":%s,"
         "\"probe_valid\":%s,\"pending\":%s,\"composing\":%s,\"settled\":%s,\"serial\":%" G_GUINT64_FORMAT ","
         "\"delivered\":%" G_GUINT64_FORMAT ",\"length\":%u,\"replacement\":%s,"
-        "\"nested_refused\":%s,\"nested_depth\":%u,\"epoch\":%" G_GUINT64_FORMAT ",\"unchanged_capture\":%s,\"input_epoch\":%" G_GUINT64_FORMAT ",\"generation\":%" G_GUINT64_FORMAT "}\n",
+        "\"nested_refused\":%s,\"nested_depth\":%u,\"epoch\":%" G_GUINT64_FORMAT ",\"unchanged_capture\":%s,\"input_epoch\":%" G_GUINT64_FORMAT ",\"generation\":%" G_GUINT64_FORMAT ",\"key_queue_ack\":%u}\n",
         request, result, gtk_widget_get_mapped(window) ? "true" : "false",
         s.valid && s.known ? "true" : "false", s.valid ? "true" : "false", s.pending ? "true" : "false", s.composing ? "true" : "false",
         settled(s) ? "true" : "false", s.serial, s.delivered,
         gtk_entry_buffer_get_length(gtk_entry_get_buffer(GTK_ENTRY(entry))),
         !strcmp(gtk_entry_get_text(GTK_ENTRY(entry)), replacement) ? "true" : "false",
         nested_refused ? "true" : "false", nested_depth, s.epoch,
-        captured && !strcmp(gtk_entry_get_text(GTK_ENTRY(entry)), captured) ? "true" : "false", s.input_epoch, s.generation);
+        captured && !strcmp(gtk_entry_get_text(GTK_ENTRY(entry)), captured) ? "true" : "false", s.input_epoch, s.generation, key_queue_ack);
     gchar *path = g_build_filename(directory, "state.json", NULL);
     GError *error = NULL;
     if (!g_file_set_contents(path, json, -1, &error)) g_error("state write: %s", error->message);
@@ -283,6 +293,8 @@ int main(int argc, char **argv) {
     gtk_box_pack_start(GTK_BOX(box), entry, TRUE, TRUE, 0);
     gtk_box_pack_start(GTK_BOX(box), other, TRUE, TRUE, 0);
     g_signal_connect(entry, "changed", G_CALLBACK(changed), NULL);
+    g_signal_connect(entry, "key-press-event", G_CALLBACK(key_queue_marker), NULL);
+    g_signal_connect(entry, "key-release-event", G_CALLBACK(key_queue_marker), NULL);
     gtk_widget_show_all(window);
     gtk_widget_grab_focus(entry);
     g_timeout_add(20, commands, NULL);
