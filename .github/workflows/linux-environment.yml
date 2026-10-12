@@ -1,0 +1,38 @@
+name: Temporary Linux development dependencies
+on:
+  push:
+    branches: [cachyos-preview]
+    paths: [.github/workflows/linux-environment.yml]
+permissions:
+  contents: read
+jobs:
+  arch:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    timeout-minutes: 15
+    steps:
+      - name: Collect public desktop build dependencies
+        run: |
+          pacman -Syu --noconfirm cmake ninja pkgconf gtk3 json-glib python python-gobject gtk-layer-shell niri mesa grim yad qt6-base qt6-wayland qt6-tools xorg-server-xvfb xdotool dbus
+          mkdir -p output
+          tar -C / -I 'zstd -T0 -6' --exclude=usr/share/doc --exclude=usr/share/man --exclude=usr/share/info --exclude=usr/share/locale -cf output/arch-desktop.tar.zst usr etc/fonts etc/dbus-1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: typelay-local-arch
+          path: output/arch-desktop.tar.zst
+          compression-level: 0
+          retention-days: 1
+  execution:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Collect public userspace execution packages
+        run: |
+          mkdir -p output
+          cd output
+          apt-get download proot libtalloc2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: typelay-local-execution
+          path: output/*.deb
+          retention-days: 1
