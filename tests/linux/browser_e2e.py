@@ -193,6 +193,39 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(result["snapshot"]["text"], "Hello")
         self.assertLessEqual(result["snapshot"]["observedAtMs"], result["hostUpperAtReturn"])
 
+    def test_capture_trace_is_numeric_and_tab_identifies_its_publication_round(self):
+        self.page.keyboard.insert_text("Hello")
+        template = self.plan({"target": "", "text": "", "selection": {}, "observedAtMs": 0})
+        result = self.page.evaluate(
+            """plan => {
+          fixtureCommand({id: 970, op: 'configure-shortcuts', data: {enabled: false, trace: true}});
+          const description = fixtureCommand({id: 971, op: 'describe'});
+          const snapshot = fixtureCommand({id: 972, op: 'capture', data: {
+            target: description.target, authority: description.authority, traceRound: 53}});
+          if (!snapshot) return {captured: false};
+          plan.expected = {...plan.expected, target: {...plan.expected.target, value: snapshot.target},
+            text: snapshot.text, selection: snapshot.selection, observedAtMs: snapshot.observedAtMs};
+          fixtureCommand({id: 973, op: 'publish', data: {target: snapshot.target,
+            authority: snapshot.authority, traceRound: 53, permit: {plan}}});
+          const invalid = fixtureCommand({id: 974, op: 'capture', data: {
+            target: snapshot.target, authority: snapshot.authority, traceRound: true}});
+          return {captured: true, trace: snapshot.captureTrace, invalidTrace: invalid?.captureTrace ?? null};
+        }""",
+            template,
+        )
+        self.assertTrue(result["captured"], result)
+        self.assertEqual(set(result["trace"]), {"round", "pageCaptureMs"})
+        self.assertEqual(result["trace"]["round"], 53)
+        self.assertGreaterEqual(result["trace"]["pageCaptureMs"], 0)
+        self.assertLessEqual(result["trace"]["pageCaptureMs"], 10000)
+        self.assertIsNone(result["invalidTrace"])
+        self.page.keyboard.press("Tab")
+        diagnostic = self.page.evaluate(
+            "fixtureMessages.findLast(item => item.event === 'tab-diagnostic')?.data"
+        )
+        self.assertIsNotNone(diagnostic)
+        self.assertEqual(diagnostic["publicationRound"], 53)
+
     def test_source_capture_reuses_description_with_live_focus_and_metadata_checks(self):
         self.page.keyboard.insert_text("Hello")
         result = self.page.evaluate("""() => {

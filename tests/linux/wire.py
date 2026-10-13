@@ -2,15 +2,20 @@
 
 import fcntl
 import os
+import socket
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from gi.repository import GLib
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
-from wire import MAX_FRAME, Channel, Decoder, encode  # noqa: E402
+from paths import Paths  # noqa: E402
+from wire import MAX_FRAME, Channel, Decoder, encode, now_ms, receive_sync  # noqa: E402
 
 
 class PipeTransportTests(unittest.TestCase):
@@ -40,6 +45,111 @@ class PipeTransportTests(unittest.TestCase):
         message = {"event": "publish", "data": {"generation": 7}}
         self.channel.send(message)
         self.assertEqual(os.read(self.output_read, MAX_FRAME), encode(message))
+        self.assertEqual(self.closed, 0)
+
+    def test_capture_reply_dispatch_stamps_local_time_without_changing_result(self):
+        received = []
+        self.channel.received = received.append
+        frame = {
+            "id": 7,
+            "data": {
+                "text": "synthetic source",
+                "captureTrace": {
+                    "round": 12,
+                    "pageCaptureMs": 2.5,
+                    "nativeReplyReceivedMs": 10,
+                    "desktopReplyDispatchedMs": -1,
+                },
+            },
+        }
+        before = now_ms()
+        os.write(self.input_write, encode(frame))
+        loop = GLib.MainLoop()
+        self.channel.received = lambda value: (received.append(value), loop.quit())
+        timer = GLib.timeout_add(2000, lambda: (loop.quit(), True)[1])
+        try:
+            loop.run()
+        finally:
+            GLib.source_remove(timer)
+        self.assertEqual(len(received), 1)
+        result = received[0]["data"]
+        stamp = result["captureTrace"].pop("desktopReplyDispatchedMs")
+        self.assertLessEqual(before, stamp)
+        self.assertLessEqual(stamp, now_ms())
+        del frame["data"]["captureTrace"]["desktopReplyDispatchedMs"]
+        self.assertEqual(result, frame["data"])
+
+    def test_invalid_capture_trace_cannot_forward_claimed_timestamps(self):
+        received = []
+        traces = [
+            {"round": 12, "pageCaptureMs": -1},
+            {"round": True, "pageCaptureMs": 2},
+            {"round": 12, "pageCaptureMs": "2"},
+        ]
+        for trace in traces:
+            trace.update(nativeReplyReceivedMs=123, desktopReplyDispatchedMs=456)
+            os.write(
+                self.input_write,
+                encode({"id": 7, "data": {"text": "test body", "captureTrace": trace}}),
+            )
+        loop = GLib.MainLoop()
+
+        def receive(value):
+            received.append(value)
+            if len(received) == len(traces):
+                loop.quit()
+
+        self.channel.received = receive
+        timer = GLib.timeout_add(2000, lambda: (loop.quit(), True)[1])
+        try:
+            loop.run()
+        finally:
+            GLib.source_remove(timer)
+        self.assertEqual(received, [{"id": 7, "data": {"text": "test body"}}] * 3)
+
+    def test_diagnostic_clock_failure_keeps_body_without_peer_dispatch_time(self):
+        received = []
+        os.write(
+            self.input_write,
+            encode(
+                {
+                    "id": 7,
+                    "data": {
+                        "text": "test body",
+                        "captureTrace": {
+                            "round": 12,
+                            "pageCaptureMs": 2,
+                            "nativeReplyReceivedMs": 10,
+                            "desktopReplyDispatchedMs": 456,
+                        },
+                    },
+                }
+            ),
+        )
+        loop = GLib.MainLoop()
+        self.channel.received = lambda value: (received.append(value), loop.quit())
+        timer = GLib.timeout_add(2000, lambda: (loop.quit(), True)[1])
+        try:
+            with patch("wire.now_ms", side_effect=OSError("clock unavailable")):
+                loop.run()
+        finally:
+            GLib.source_remove(timer)
+        self.assertEqual(
+            received,
+            [
+                {
+                    "id": 7,
+                    "data": {
+                        "text": "test body",
+                        "captureTrace": {
+                            "round": 12,
+                            "pageCaptureMs": 2,
+                            "nativeReplyReceivedMs": 10,
+                        },
+                    },
+                }
+            ],
+        )
         self.assertEqual(self.closed, 0)
 
     def test_partial_write_and_full_pipe_resume_in_fifo_order(self):
@@ -84,6 +194,106 @@ class PipeTransportTests(unittest.TestCase):
             GLib.source_remove(timer)
         self.assertEqual(messages, [first, second])
         self.assertEqual(self.closed, 0)
+
+    def test_native_host_stamps_reply_and_drops_untrusted_trace_fields(self):
+        with tempfile.TemporaryDirectory(prefix="typelay-wire-") as directory:
+            root = Path(directory)
+            environment = {
+                **os.environ,
+                "HOME": directory,
+                "XDG_RUNTIME_DIR": directory,
+                "XDG_CONFIG_HOME": str(root / "config"),
+                "XDG_DATA_HOME": str(root / "data"),
+                "XDG_CACHE_HOME": str(root / "cache"),
+                "WAYLAND_DISPLAY": "wire-test",
+                "NIRI_SOCKET": str(root / "niri"),
+            }
+            with patch.dict(os.environ, environment):
+                paths = Paths(ROOT / "src/linux")
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+                listener.bind(str(paths.native))
+                paths.native.chmod(0o600)
+                listener.listen(1)
+                listener.settimeout(3)
+                process = subprocess.Popen(
+                    [sys.executable, str(ROOT / "src/linux/desktop/browser_host.py")],
+                    env=environment,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                try:
+                    connection, _ = listener.accept()
+                    with connection:
+                        connection.settimeout(3)
+                        self.assertEqual(receive_sync(connection)["event"], "hello")
+                        before = now_ms()
+                        process.stdin.write(
+                            encode(
+                                {
+                                    "id": 7,
+                                    "data": {
+                                        "text": "test body",
+                                        "captureTrace": {
+                                            "round": 53,
+                                            "pageCaptureMs": 2,
+                                            "nativeReplyReceivedMs": -1,
+                                            "desktopReplyDispatchedMs": -2,
+                                            "untrusted": "not a diagnostic",
+                                        },
+                                    },
+                                }
+                            )
+                        )
+                        process.stdin.flush()
+                        result = receive_sync(connection)["data"]
+                        self.assertEqual(result["text"], "test body")
+                        trace = result["captureTrace"]
+                        self.assertEqual(
+                            set(trace), {"round", "pageCaptureMs", "nativeReplyReceivedMs"}
+                        )
+                        self.assertLessEqual(before, trace["nativeReplyReceivedMs"])
+                        self.assertLessEqual(trace["nativeReplyReceivedMs"], now_ms())
+                        process.stdin.write(encode({"id": 8, "data": None}))
+                        process.stdin.flush()
+                        self.assertEqual(receive_sync(connection), {"id": 8, "data": None})
+                        process.stdin.write(
+                            encode(
+                                {
+                                    "id": 9,
+                                    "data": {
+                                        "text": "test body",
+                                        "captureTrace": {
+                                            "round": 53,
+                                            "pageCaptureMs": -1,
+                                            "nativeReplyReceivedMs": 123,
+                                            "desktopReplyDispatchedMs": 456,
+                                        },
+                                    },
+                                }
+                            )
+                        )
+                        process.stdin.flush()
+                        self.assertEqual(
+                            receive_sync(connection), {"id": 9, "data": {"text": "test body"}}
+                        )
+                finally:
+                    failed = sys.exc_info()[0] is not None
+                    try:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=3)
+                    except (OSError, subprocess.TimeoutExpired):
+                        if not failed:
+                            raise
+                    finally:
+                        try:
+                            process.stdin.close()
+                        except OSError:
+                            pass
 
     def test_backpressure_closes_once_and_rejects_further_sends(self):
         # Fill the actual nonblocking pipe before any channel frame is sent.

@@ -5,6 +5,9 @@ claim native key interception, an IME, or a real desktop interaction.
 """
 
 import asyncio
+import contextlib
+import io
+import json
 import os
 import subprocess
 import sys
@@ -131,14 +134,19 @@ class InputFeedbackTests(unittest.TestCase):
         )
         return peer
 
-    def native_requests(self, peer):
+    def native_frames(self, peer):
         connection = self.connections[peer]
         self.loop.flush(connection.fileno())
         connection.seek(0)
         frames = Decoder().feed(connection.read())
         connection.seek(0)
         connection.truncate()
-        return [frame for frame in frames if frame.get("op") == "trigger-shortcut"]
+        return frames
+
+    def native_requests(self, peer):
+        return [
+            frame for frame in self.native_frames(peer) if frame.get("op") == "trigger-shortcut"
+        ]
 
     def focus(self, peer):
         # Deliver a controlled compositor observation at its normal callback
@@ -174,6 +182,42 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertEqual(notice["commandSequence"], 1)
         self.assertNotIn("source", notice)
 
+    def test_tab_trace_retains_two_inflight_rounds_after_ring_eviction(self):
+        peer = self.connect_peer("browser")
+        rounds = [{"round": index, "startedMs": 900 + index} for index in range(1, 17)]
+        self.input.browser_rounds[:] = rounds
+        self.input.browser_round_owners = {id(item): peer for item in rounds}
+        output = io.StringIO()
+        with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), contextlib.redirect_stderr(output):
+            peer.event(
+                "tab-diagnostic",
+                {
+                    "reason": "StaleObservation",
+                    "remainingMs": -5,
+                    "publicationRound": 14,
+                    "publication": True,
+                    "source": "must not be logged",
+                },
+            )
+        event = json.loads(output.getvalue().removeprefix("typelay-tab "))
+        self.assertEqual(event["publicationRound"], 14)
+        self.assertEqual(event["publicationTiming"], rounds[13])
+        self.assertNotIn("source", event)
+        rounds[-1]["capturedMs"] = 1020
+        self.input.browser_rounds[:] = [{"round": 100}]
+        retained = self.input.diagnostics()["tabCaptureRounds"]
+        self.assertEqual([value["round"] for value in retained], [15, 16])
+        self.assertEqual(retained[-1]["capturedMs"], 1020)
+        with (
+            patch.dict(os.environ, {"TYPELAY_TRACE": "1"}),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.peer.backend = "browser"
+            self.peer.event(
+                "tab-diagnostic", {"reason": "StaleObservation", "publicationRound": 100}
+            )
+        self.assertEqual(self.input.diagnostics()["tabCaptureRounds"], [])
+
     def test_current_cli_without_an_approved_field_reports_a_source_free_refusal(self):
         self.focus(self.peer)
         self.clock.return_value = 1050
@@ -197,6 +241,7 @@ class InputFeedbackTests(unittest.TestCase):
                 peer.event("shortcut-rejected", refusal)
                 peer.event("shortcut-rejected", refusal)
                 self.assertEqual(len(self.host.notices), index)
+
                 notice = self.host.notices[-1]
                 self.assertEqual(notice["commandSequence"], index)
                 self.assertEqual(notice["rejection"], "ImeUnclear")
@@ -212,6 +257,59 @@ class InputFeedbackTests(unittest.TestCase):
                     },
                 )
                 self.assertEqual(len(self.host.notices), index)
+
+    def test_disabled_shortcuts_send_no_publication_and_reenable_requires_current_generation(self):
+        self.focus(self.peer)
+        native = {
+            "target": "field",
+            "text": "ordinary test text",
+            "selection": {"start": 0, "end": 0},
+            "metadata": {"multiline": False},
+            "ime": "Clear",
+            "writeSupported": True,
+            "observedAtMs": 1000,
+            "authority": {"inputRevision": 1, "focusRevision": 1},
+        }
+        source, _ = self.input.remember(
+            self.peer,
+            native,
+            {"id": self.peer.pid},
+            {"bounds": {"x": 0, "y": 0, "width": 20, "height": 10}},
+        )
+        self.native_frames(self.peer)
+        publication = {"lease": {"source": source}, "generation": self.generation}
+        self.input.notification("publishShortcut", publication)
+        frames = self.native_frames(self.peer)
+        self.assertEqual([frame["op"] for frame in frames], ["publish-shortcut"])
+        self.assertEqual(frames[0]["data"]["generation"], self.generation)
+        self.assertIsNotNone(self.peer.shortcut)
+
+        self.generation = str(uuid.uuid4())
+        self.input.notification(
+            "shortcuts",
+            {"enabled": False, "wake": "F9", "direct": "F10", "generation": self.generation},
+        )
+        frames = self.native_frames(self.peer)
+        self.assertEqual([frame["op"] for frame in frames], ["revoke", "configure-shortcuts"])
+        self.assertFalse(frames[-1]["data"]["enabled"])
+        self.assertIsNone(self.peer.shortcut)
+        self.input.notification("publishShortcut", publication)
+        self.input.notification("publishShortcut", {**publication, "generation": self.generation})
+        self.assertEqual(self.native_frames(self.peer), [])
+        self.assertIsNone(self.peer.shortcut)
+
+        disabled_generation = self.generation
+        self.generation = str(uuid.uuid4())
+        self.configure()
+        self.native_frames(self.peer)
+        self.input.notification(
+            "publishShortcut", {**publication, "generation": disabled_generation}
+        )
+        self.assertEqual(self.native_frames(self.peer), [])
+        self.input.notification("publishShortcut", {**publication, "generation": self.generation})
+        frames = self.native_frames(self.peer)
+        self.assertEqual([frame["op"] for frame in frames], ["publish-shortcut"])
+        self.assertEqual(frames[0]["data"]["generation"], self.generation)
 
     def test_current_cli_without_a_connected_peer_reports_one_refusal(self):
         self.focus(self.peer)

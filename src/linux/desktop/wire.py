@@ -1,6 +1,7 @@
 """Bounded length-prefix transport on existing local pipes and sockets."""
 
 import json
+import math
 import os
 import socket
 import struct
@@ -12,6 +13,38 @@ MAX_FRAME = 256 * 1024
 
 def now_ms() -> int:
     return time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000
+
+
+def stamp_capture_reply(frame: dict, stage: str) -> None:
+    """Numeric diagnostics only; never change a reply's success/null meaning."""
+    data = frame.get("data")
+    trace = data.pop("captureTrace", None) if isinstance(data, dict) else None
+    if type(frame.get("id")) is not int or frame["id"] <= 0 or "op" in frame or "event" in frame:
+        return
+    if not isinstance(trace, dict):
+        return
+    round_id, elapsed = trace.get("round"), trace.get("pageCaptureMs")
+    if (
+        type(round_id) is not int
+        or not 0 < round_id < 2**31
+        or type(elapsed) not in (int, float)
+        or not 0 <= elapsed <= 10000
+        or not math.isfinite(elapsed)
+    ):
+        return
+    clean = {"round": round_id, "pageCaptureMs": elapsed}
+    if stage == "desktopReplyDispatchedMs":
+        native = trace.get("nativeReplyReceivedMs")
+        if type(native) is int and 0 <= native < 2**53:
+            clean["nativeReplyReceivedMs"] = native
+    elif stage != "nativeReplyReceivedMs":
+        return
+    # Each receiving process owns its timestamp. Ignore same-name peer claims.
+    try:
+        clean[stage] = now_ms()
+    except OSError:
+        pass
+    data["captureTrace"] = clean
 
 
 def encode(value: dict) -> bytes:
@@ -122,6 +155,7 @@ class Channel:
                     self.close()
                     return False
                 for value in self.decoder.feed(data):
+                    stamp_capture_reply(value, "desktopReplyDispatchedMs")
                     self.received(value)
         except (OSError, ValueError, KeyError, TypeError, UnicodeError):
             self.input_watch = 0

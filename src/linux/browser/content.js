@@ -726,6 +726,9 @@
     } else if (!synced) lastClockReason = "invalidClock";
     commandClock = synced ? value : null;
     if (synced) lastHostStamp = Math.max(Number.isFinite(lastHostStamp) ? lastHostStamp : 0, value.boottimeMs);
+    const traceRound = message.data?.traceRound;
+    const captureStarted = configuration?.trace && message.op === "capture"
+      && Number.isInteger(traceRound) && traceRound > 0 && traceRound < 2147483648 ? monoNow() : null;
     let result = null;
     try {
       if (synced || message.op === "configure-shortcuts") result = command(message);
@@ -736,6 +739,11 @@
     }
     catch (_) { publication = shortcut = null; hide(); }
     commandClock = null;
+    if (captureStarted !== null && result) {
+      const elapsed = monoNow() - captureStarted;
+      if (Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= 10000)
+        result.captureTrace = {round: traceRound, pageCaptureMs: Math.round(elapsed * 10) / 10};
+    }
     if (message.id) port.postMessage({id: message.id, data: result});
     refreshHint();
   });
@@ -796,6 +804,8 @@
       || event.shiftKey || event.metaKey) return () => {};
     const current = publication, basis = current?.authority, mono = monoNow();
     const detail = {publication: !!current, imeClear: field?.ime === "Clear",
+      publicationRound: Number.isInteger(current?.traceRound) && current.traceRound > 0
+        && current.traceRound < 2147483648 ? current.traceRound : null,
       targetMatches: !!field && current?.target === field.id,
       inputMatches: !!field && field.input === basis?.inputRevision,
       focusMatches: !!field && field.focus === basis?.focusRevision,

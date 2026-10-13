@@ -15,7 +15,7 @@ from collections import deque
 from pathlib import Path
 
 from paths import Paths, connect_private
-from wire import MAX_FRAME, Decoder, encode, now_ms
+from wire import MAX_FRAME, Decoder, encode, now_ms, stamp_capture_reply
 
 
 def main():
@@ -73,6 +73,7 @@ def main():
                             # A webpage cannot choose peer identity or reset its lifetime.
                             if message.get("event") == "hello":
                                 raise ValueError("browser-handshake")
+                            stamp_capture_reply(message, "nativeReplyReceivedMs")
                             queue(native_fd, message)
                 if flags & selectors.EVENT_WRITE:
                     queue_items = queues[fd]

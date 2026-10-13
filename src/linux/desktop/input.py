@@ -135,6 +135,8 @@ class Input:
         self.browser_capture_counts = Counter()
         self.browser_capture_round = 0
         self.browser_rounds = []
+        self.browser_round_owners = {}
+        self.tab_capture_rounds = []
         self.native_publication = None
         self.publication_generation = 0
         self.published_plan = None
@@ -493,6 +495,7 @@ class Input:
             "browser": self.browser_diagnostics,
             "browserCaptureCounts": dict(self.browser_capture_counts),
             "browserRounds": [dict(value) for value in self.browser_rounds],
+            "tabCaptureRounds": [dict(value) for value in self.tab_capture_rounds],
             "compositorReady": self.niri.ready,
             "compositorAgeMs": max(0, now_ms() - self.niri.observed_at),
             "focus": self.focus(),
@@ -543,6 +546,11 @@ class Input:
             }
             self.browser_rounds.append(round_timing)
             del self.browser_rounds[:-16]
+            self.browser_round_owners[id(round_timing)] = peer
+            retained = {id(item) for item in self.browser_rounds}
+            self.browser_round_owners = {
+                key: owner for key, owner in self.browser_round_owners.items() if key in retained
+            }
             self.browser_capture_counts[counter] = min(
                 self.browser_capture_counts[counter] + 1, 1000000
             )
@@ -568,16 +576,33 @@ class Input:
             or identity != self.browser_capture_identity(peer)
         ):
             return self.captured("window-changing")
-        native = await peer.link.ask(
-            "capture",
-            {
-                "target": description["target"],
-                "authority": description["authority"],
-                "requireFocused": browser_source,
-            },
-        )
+        capture_data = {
+            "target": description["target"],
+            "authority": description["authority"],
+            "requireFocused": browser_source,
+        }
+        if round_timing is not None and os.environ.get("TYPELAY_TRACE"):
+            capture_data["traceRound"] = round_timing["round"]
+        native = await peer.link.ask("capture", capture_data)
         if round_timing is not None:
             round_timing["capturedMs"] = now_ms()
+            trace = native.get("captureTrace") if isinstance(native, dict) else None
+            if (
+                isinstance(trace, dict)
+                and type(trace.get("round")) is int
+                and trace["round"] == round_timing["round"]
+            ):
+                duration = trace.get("pageCaptureMs")
+                if (
+                    type(duration) in (int, float)
+                    and 0 <= duration <= 10000
+                    and math.isfinite(duration)
+                ):
+                    round_timing["pageCaptureMs"] = duration
+                for key in ("nativeReplyReceivedMs", "desktopReplyDispatchedMs"):
+                    stamp = trace.get(key)
+                    if type(stamp) is int and 0 <= stamp < 2**53:
+                        round_timing[key] = stamp
         if not native:
             return self.captured("native-read-declined")
         if not self.fresh():
@@ -884,7 +909,9 @@ class Input:
         if self.focused_peer() is not peer or self.overlay_focused:
             return
         if shortcut:
-            if value["generation"] != self.shortcut_config.get("generation"):
+            if not self.shortcut_config.get("enabled") or value[
+                "generation"
+            ] != self.shortcut_config.get("generation"):
                 return
             peer.shortcut = record
             peer.link.command(
@@ -941,6 +968,11 @@ class Input:
                     "authority": record["authority"],
                     "lease": lease,
                     "permit": permit,
+                    **(
+                        {"traceRound": round_timing["round"]}
+                        if round_timing is not None and os.environ.get("TYPELAY_TRACE")
+                        else {}
+                    ),
                 },
             )
 
@@ -987,12 +1019,27 @@ class Input:
             }
             remaining = value.get("remainingMs")
             reason = value.get("reason")
+            round_id = value.get("publicationRound")
+            round_id = round_id if type(round_id) is int and 0 < round_id < 2**31 else None
+            # Keep at most two already-started rounds by reference. Their later
+            # capture/publication completion survives eviction from the live ring.
+            peer_rounds = [
+                item
+                for item in self.browser_rounds
+                if self.browser_round_owners.get(id(item)) is peer
+            ]
+            self.tab_capture_rounds = peer_rounds[-2:]
             detail = {
                 "receivedAtMs": now_ms(),
                 "reason": reason if isinstance(reason, str) and reason in reasons else "unknown",
                 "remainingMs": max(-1000, min(1000, remaining))
                 if type(remaining) in (int, float) and math.isfinite(remaining)
                 else None,
+                "publicationRound": round_id,
+                "publicationTiming": next(
+                    (dict(item) for item in peer_rounds if item["round"] == round_id), None
+                ),
+                "browserRounds": [dict(item) for item in self.tab_capture_rounds],
                 **{
                     key: value.get(key) is True
                     for key in (
