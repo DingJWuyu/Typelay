@@ -688,14 +688,20 @@ def run_qt(
                     "Qt6 sensitive metadata, password, validator and input mask: before-body refusal and ordinary Tab navigation"
                 )
 
+                # Removing an existing QLineEdit input mask clears its text.
+                # Restore the synthetic source before testing the buddy policy.
                 command("input-mask", text="")
+                command("set", text="123456")
                 command("metadata", text="")
                 command("buddy-label", text="API key")
                 wait_for(
-                    lambda: state()["first"]["accessibleName"] == ""
-                    and state()["first"]["buddyBound"]
-                    and state()["first"]["buddyLabel"] == "API key",
-                    "real sensitive buddy label did not bind to the Qt source",
+                    lambda: (value := state())["second"]["focused"]
+                    and value["first"]["inputMask"] == ""
+                    and value["first"]["text"] == "123456"
+                    and value["first"]["accessibleName"] == ""
+                    and value["first"]["buddyBound"]
+                    and value["first"]["buddyLabel"] == "API key",
+                    "synthetic Qt source and sensitive buddy label were not ready",
                 )
                 before_refusals = (
                     status()
