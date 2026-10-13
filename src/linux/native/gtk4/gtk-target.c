@@ -48,6 +48,13 @@ static GtkIMContext *published_context(Target *target) {
     return im_capability(context) ? context : NULL;
 }
 static void im_invalidated(Target *target, guint causes) {
+    static guint trace_count;
+    if (g_getenv("TYPELAY_TRACE") && trace_count < 192) {
+        trace_count++;
+        g_printerr("TypeLay GTK4 IM invalidated atMs=%" G_GINT64_FORMAT
+            " causes=%u inputRevision=%" G_GUINT64_FORMAT " focusRevision=%" G_GUINT64_FORMAT
+            "\n", tl_now(), causes, target->input_revision, target->focus_revision);
+    }
     target->ime_known = FALSE;
     tl_clear_permit();
     if (target->dead) return;

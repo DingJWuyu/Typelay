@@ -560,6 +560,110 @@ class BrowserContract(unittest.TestCase):
         names = [node.get("name", {}).get("value") for node in accessible_nodes()]
         self.assertNotIn("更多", names)
 
+    def test_hint_preserves_unchanged_text_and_updates_on_revocation(self):
+        snapshot = self.type_source()
+        self.assertTrue(
+            self.command(
+                "overlay-render",
+                {
+                    "target": snapshot["target"],
+                    "authority": snapshot["authority"],
+                    "view": {
+                        "presentation": {
+                            "visible": True,
+                            "editorOwnsText": False,
+                            "tabHint": "Tab 接受译文",
+                        },
+                        "text": "Candidate",
+                        "state": "ValidTranslation",
+                        "sourceLanguage": "en",
+                        "targetLanguage": "zh",
+                    },
+                    "revision": 1,
+                },
+            )["visible"]
+        )
+        cdp = self.context.new_cdp_session(self.page)
+        self.addCleanup(cdp.detach)
+        hint = next(
+            node
+            for node in cdp.send("Accessibility.getFullAXTree")["nodes"]
+            if not node.get("ignored")
+            and node.get("role", {}).get("value") == "StaticText"
+            and node.get("name", {}).get("value") == "Tab 交还应用"
+        )
+        element = cdp.send("DOM.resolveNode", {"backendNodeId": hint["backendDOMNodeId"]})
+        # Observe the actual closed-shadow DOM through Chromium's public tools,
+        # without exposing any adapter-private object or changing its transport.
+        cdp.send(
+            "Runtime.callFunctionOn",
+            {
+                "objectId": element["object"]["objectId"],
+                "functionDeclaration": """function() {
+                  const element = this.nodeType === Node.TEXT_NODE ? this.parentElement : this;
+                  let changes = 0;
+                  const observer = new MutationObserver(records => { changes += records.length; });
+                  observer.observe(element, {childList: true});
+                  window.fixtureReadHint = () => {
+                    changes += observer.takeRecords().length;
+                    const result = {text: element.textContent, changes};
+                    changes = 0;
+                    return result;
+                  };
+                }""",
+            },
+        )
+        unchanged = self.page.evaluate("""() => {
+          for (let id = 960; id < 963; id++) fixtureCommand({id, op: 'describe'});
+          return fixtureReadHint();
+        }""")
+        self.assertEqual(unchanged, {"text": "Tab 交还应用", "changes": 0})
+        template = self.plan({"target": "", "text": "", "selection": {}, "observedAtMs": 0})
+        initial = self.page.evaluate(
+            """plan => {
+              window.fixturePublishHint = () => {
+                const description = fixtureCommand({id: 963, op: 'describe'});
+                const snapshot = fixtureCommand({id: 964, op: 'capture', data: {
+                  target: description.target, authority: description.authority, requireFocused: true}});
+                if (!snapshot) return false;
+                plan.expected = {...plan.expected, target: {...plan.expected.target, value: snapshot.target},
+                  text: snapshot.text, selection: snapshot.selection, observedAtMs: snapshot.observedAtMs};
+                const command = {id: 965, op: 'publish', data: {
+                  target: snapshot.target, authority: snapshot.authority, permit: {plan}}};
+                const result = fixtureCommand(command);
+                window.fixtureHintDeadline = command.data.permit.expiresAtMs - 1000000;
+                return result.published;
+              };
+              const result = {published: fixturePublishHint(), hint: fixtureReadHint()};
+              for (let id = 967; id < 970; id++) fixtureCommand({id, op: 'describe'});
+              return {...result, unchanged: fixtureReadHint()};
+            }""",
+            template,
+        )
+        self.assertTrue(initial["published"], initial)
+        self.assertEqual(initial["hint"], {"text": "Tab 接受译文", "changes": 1})
+        self.assertEqual(initial["unchanged"], {"text": "Tab 接受译文", "changes": 0})
+        self.page.wait_for_function("performance.now() > fixtureHintDeadline + 2", timeout=1000)
+        self.assertEqual(
+            self.page.evaluate("fixtureReadHint()"), {"text": "Tab 交还应用", "changes": 1}
+        )
+        for action in ("revoke", "focus"):
+            with self.subTest(action=action):
+                result = self.page.evaluate(
+                    """action => {
+                      const published = fixturePublishHint(), before = fixtureReadHint();
+                      if (action === 'revoke') fixtureCommand({id: 966, op: 'revoke'});
+                      else document.querySelector('#other').focus();
+                      return {published, before, after: fixtureReadHint()};
+                    }""",
+                    action,
+                )
+                self.assertTrue(result["published"], result)
+                self.assertEqual(result["before"], {"text": "Tab 接受译文", "changes": 1})
+                self.assertEqual(result["after"], {"text": "Tab 交还应用", "changes": 1})
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
     def test_editor_draft_survives_render_and_two_separate_tabs_return_then_accept(self):
         self.page.locator("#source").evaluate(
             "element => {element.style.marginTop = '220px'; element.style.width = '480px';}"

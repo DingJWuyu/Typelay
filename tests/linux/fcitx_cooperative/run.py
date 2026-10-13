@@ -17,6 +17,7 @@ corresponding modified sources and LGPL notices. User configuration is untouched
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import shlex
@@ -100,6 +101,93 @@ def wait(predicate, label):
     raise AssertionError(f"Timed out: {label}")
 
 
+def fixed_compose_mapping(out: Path):
+    """Keep an owned Xvfb keymap stable until both actual clients have exited."""
+    if os.environ.get("TYPELAY_COOPERATIVE_OWNED_XVFB") != "1":
+        raise RuntimeError("Fixed compose mapping requires this runner's private Xvfb")
+    x11 = ctypes.CDLL("libX11.so.6")
+    display_t = ctypes.c_void_p
+    keysym_t = ctypes.c_ulong
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XOpenDisplay.restype = display_t
+    x11.XCloseDisplay.argtypes = [display_t]
+    x11.XDisplayKeycodes.argtypes = [
+        display_t,
+        ctypes.POINTER(ctypes.c_int),
+        ctypes.POINTER(ctypes.c_int),
+    ]
+    x11.XGetKeyboardMapping.argtypes = [
+        display_t,
+        ctypes.c_ubyte,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_int),
+    ]
+    x11.XGetKeyboardMapping.restype = ctypes.POINTER(keysym_t)
+    x11.XChangeKeyboardMapping.argtypes = [
+        display_t,
+        ctypes.c_int,
+        ctypes.c_int,
+        ctypes.POINTER(keysym_t),
+        ctypes.c_int,
+    ]
+    x11.XKeysymToKeycode.argtypes = [display_t, keysym_t]
+    x11.XKeysymToKeycode.restype = ctypes.c_ubyte
+    x11.XSync.argtypes = [display_t, ctypes.c_int]
+    x11.XFree.argtypes = [ctypes.c_void_p]
+    display = x11.XOpenDisplay(os.environ["DISPLAY"].encode())
+    if not display:
+        raise RuntimeError("Cannot open owned Xvfb for compose mapping")
+    try:
+        dead_acute = 0xFE51
+        keycode = x11.XKeysymToKeycode(display, dead_acute)
+        changed = not keycode
+        if changed:
+            low, high, width = ctypes.c_int(), ctypes.c_int(), ctypes.c_int()
+            x11.XDisplayKeycodes(display, ctypes.byref(low), ctypes.byref(high))
+            count = high.value - low.value + 1
+            mapping = x11.XGetKeyboardMapping(display, low.value, count, ctypes.byref(width))
+            if not mapping or width.value <= 0:
+                raise RuntimeError("Cannot read owned Xvfb keymap")
+            try:
+                keycode = next(
+                    (
+                        low.value + row
+                        for row in range(count)
+                        if all(mapping[row * width.value + col] == 0 for col in range(width.value))
+                    ),
+                    0,
+                )
+            finally:
+                x11.XFree(mapping)
+            if not keycode:
+                raise RuntimeError("No unused keycode for the compose fixture")
+            symbols = (keysym_t * 1)(dead_acute)
+            x11.XChangeKeyboardMapping(display, keycode, 1, symbols, 1)
+            x11.XSync(display, 0)
+        width = ctypes.c_int()
+        mapping = x11.XGetKeyboardMapping(display, keycode, 1, ctypes.byref(width))
+        if not mapping:
+            raise RuntimeError("Cannot read back compose mapping")
+        try:
+            verified = any(mapping[col] == dead_acute for col in range(width.value))
+        finally:
+            x11.XFree(mapping)
+        evidence = {
+            "keycode": keycode,
+            "mapping_created": changed,
+            "dead_acute_readback": verified,
+            "keysym_lookup_matches": x11.XKeysymToKeycode(display, dead_acute) == keycode,
+        }
+        (out / "compose-keymap.json").write_text(json.dumps(evidence, indent=2) + "\n")
+        if not verified or not evidence["keysym_lookup_matches"]:
+            raise RuntimeError("Compose mapping readback mismatch")
+        # Retain the connection: Xvfb may reset its map when the last client closes.
+        return x11, display
+    except BaseException:
+        x11.XCloseDisplay(display)
+        raise
+
+
 def session(out: Path, core_version: str):
     prefix = out / "core-prefix"
     for name in ("command", "command.tmp", "state.json", "result.json"):
@@ -146,11 +234,13 @@ def session(out: Path, core_version: str):
         assert run([out / "fcitx5", "--version"], env=env, stderr=subprocess.STDOUT) == core_version
         assert run(["pkg-config", "--modversion", "Fcitx5Core"], env=env) == core_version
         children = []
+        mapping_connection = None
         with (
             (out / "framework.log").open("w") as framework_log,
             (out / "client.log").open("w") as client_log,
         ):
             try:
+                mapping_connection = fixed_compose_mapping(out)
                 children.append(
                     subprocess.Popen(
                         [
@@ -471,6 +561,10 @@ def session(out: Path, core_version: str):
                         process.kill()
                         process.wait(timeout=5)
 
+                if mapping_connection:
+                    x11, display = mapping_connection
+                    x11.XCloseDisplay(display)
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -503,6 +597,7 @@ def main():
                 ],
                 check=True,
                 timeout=120,
+                env=os.environ | {"TYPELAY_COOPERATIVE_OWNED_XVFB": "1"},
             )
 
 

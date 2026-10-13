@@ -29,6 +29,8 @@ dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release 
 
 `tests/windows/support/TypeLay.Platform.Windows` 提供只访问已登记 fixture 控件的 Win32 适配器，服务适配器契约和键盘 Hook 回归，不在生产依赖链。其受控 IME 状态不等于外部应用的真实输入法状态。
 
+原生辅助调用失败时只报告固定操作名、消息 ID 和 Win32 错误数值，不记录句柄、参数或正文，仍使用原 100ms 上限。`SendMessageTimeoutW` 返回零可能是[失败或超时](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagetimeoutw#return-value)，不能仅凭异常猜超时；当前 .NET 的 [`SetLastError=true`](https://learn.microsoft.com/en-us/dotnet/api/system.runtime.interopservices.dllimportattribute.setlasterror?view=net-10.0#remarks)会在调用前清零并缓存错误，数值零只表示没有更具体的原因。
+
 `tests/windows/fixtures/TypeLay.NativeFixture` 不带 Hook 参数时是供生产 Broker 探测的真实 Win32 测试窗口；Hook 模式使用生产 KeyboardHook/Core 和固定候选隔离按键问题，不调用模型。
 
 `tests/windows/fixtures/TypeLay.DesktopFixture` 使用生产浮层、SessionController、Hook 和真实 ModelClient，WpfFixtureBroker 仅替换源字段访问。它用于定位 WPF 编辑与焦点问题，不证明生产 Broker 的 UIA 或 IPC 行为。运行方法见下方“受控桌面工具”。
@@ -76,6 +78,10 @@ dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows
 ```
 
 验收要求真实译文在独立原生输入仍继续追加时可见，随后继续追加并更新至完整最新源的真实模型结果，原输入保持完整、焦点留在源字段且提交计数为零。输入只含合成已提交中文，无句末标点；不模拟物理按键或真实 IME。最多 300 次、每次约 100ms 的有界追加和桌面阶段 90 秒截止用于识别停止响应，不承诺首译 90 秒符合交互体验；`result.json` 单独记录首译和更新耗时。额外完整源推理只用于核对最终可见结果，首次预览验收在这次核对前完成。
+
+连续预览和直接替换是两个独立场景：复用同一次安装和真实模型，各自启动自有 stock Edit、控制器及浮层，共用 90 秒桌面截止。前场景失败会保留首错，完成清理且模型仍可用时才进入另一场景；清理失败、模型不可用或预算耗尽均明确标记，不能在污染宿主上继续。
+
+按需场景使用固定合成中文，等待生产原生后端实证直接替换能力，在原文/选区/焦点完整时仅注入一次 `Ctrl+Shift+F10`。生产 Hook 和 Broker 仍独立检查 IME、身份、版本与期限；只有真实 Verified 回执对应的成功状态、原字段匹配同一真实模型的独立核对结果、焦点保持、浮层始终隐藏且没有额外提交，场景才通过。每个场景最后点击自己的提交按钮验证计数器确实工作。该阶段只覆盖 x64 stock Edit 与显式自动化按键，不代表物理 IME 或其他应用可写；各场景分别记录结果、首错及清理，任一步或清理失败都会令整个检查返回失败，不重试 F10。
 
 整个模式有 20 分钟取消期限，执行者仍须设置外部进程/步骤上限处理不可取消的系统调用。成功返回 0，前置参数错误返回 2，其余失败返回 1；失败不重试或延长安全观察期限。结果、`trace*.jsonl` 和安装 CPU 自检可进入对应 CI artifact，模型、下载缓存、原始输入及译文不上传。`TYPELAY_TRACE` 开启时，浮层最多记录 32 条耗时至少 50ms 的同步渲染阶段样本到 `.overlay.jsonl`，默认关闭。
 

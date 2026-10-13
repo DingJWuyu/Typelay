@@ -140,6 +140,12 @@ internal static class Program
                         kind,
                         status = "failed",
                         error_type = ex.GetType().Name,
+                        nativeFailure = ex is N.NativeMessageException native ? new
+                        {
+                            native.Operation,
+                            native.MessageId,
+                            native.Win32Error
+                        } : null,
                         phase,
                         receiptStatus = receiptStatus?.ToString(),
                         receiptReason = receiptReason?.ToString(),
@@ -277,6 +283,12 @@ internal static class Program
                 suite = "mvp-native",
                 status = "blocked",
                 error_type = ex.GetType().Name,
+                nativeFailure = ex is N.NativeMessageException native ? new
+                {
+                    native.Operation,
+                    native.MessageId,
+                    native.Win32Error
+                } : null,
                 results
             }));
             return 2;

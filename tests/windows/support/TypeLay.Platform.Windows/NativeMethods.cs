@@ -123,13 +123,13 @@ public static class NativeMethods
     public static nuint Send(nint hwnd, uint message, nuint wParam = 0, nint lParam = 0)
     {
         if (SendRaw(hwnd, message, wParam, lParam, 0x22, 100, out nuint result) == 0)
-            throw new InvalidOperationException("Native message did not complete.");
+            throw new NativeMessageException(nameof(Send), message, Marshal.GetLastPInvokeError());
         return result;
     }
     public static void SendString(nint hwnd, uint message, string text, nuint wParam = 0)
     {
         if (SendText(hwnd, message, wParam, text, 0x22, 100, out _) == 0)
-            throw new InvalidOperationException("Native text message did not complete.");
+            throw new NativeMessageException(nameof(SendString), message, Marshal.GetLastPInvokeError());
     }
     public static string ReadText(nint hwnd, int limit)
     {
@@ -138,7 +138,7 @@ public static class NativeMethods
             throw new InvalidOperationException("Text limit.");
         var buffer = new StringBuilder((int)length + 2);
         if (SendRead(hwnd, WM_GETTEXT, (nuint)buffer.Capacity, buffer, 0x22, 100, out nuint count) == 0)
-            throw new InvalidOperationException("Native read did not complete.");
+            throw new NativeMessageException(nameof(ReadText), WM_GETTEXT, Marshal.GetLastPInvokeError());
         string result = buffer.ToString();
         if ((nuint)result.Length != count || Send(hwnd, WM_GETTEXTLENGTH) != (nuint)result.Length)
             throw new InvalidOperationException("Text changed during read.");
@@ -149,6 +149,16 @@ public static class NativeMethods
         // The adapter is capped at 8192 UTF-16 units. Thus packed 16-bit offsets are sufficient.
         nuint packed = Send(hwnd, EM_GETSEL);
         return new((int)(packed & 0xffff), (int)((packed >> 16) & 0xffff));
+    }
+    // These helpers target .NET, whose SetLastError=true marshaller clears and
+    // caches the native error. Zero means generic failure, not proven timeout.
+    // Never retain handles, message arguments, source text or exception strings.
+    public sealed class NativeMessageException(string operation, uint messageId, int win32Error)
+        : InvalidOperationException("Native message did not complete.")
+    {
+        public string Operation { get; } = operation;
+        public uint MessageId { get; } = messageId;
+        public int Win32Error { get; } = win32Error;
     }
     public static (nint Root, nint Control) Focused()
     {

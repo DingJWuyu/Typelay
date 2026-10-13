@@ -483,8 +483,9 @@
     const state = publicationState(current.field, null, true);
     if (overlay !== current) return;
     const accepts = ["Tab 接受译文", "Tab 交还应用"].includes(current.tabHint);
-    current.hint.textContent = current.editing ? "Tab 返回原输入框"
+    const text = current.editing ? "Tab 返回原输入框"
       : accepts ? (state.ready ? "Tab 接受译文" : "Tab 交还应用") : current.tabHint || "";
+    if (current.hint.textContent !== text) current.hint.textContent = text;
     if (state.ready && publication) {
       const remaining = Math.min(publication.expiresAtPerformanceMs - monoNow(), publication.expiresAtWallMs - Date.now());
       hintTimer = setTimeout(refreshHint, Math.max(1, Math.ceil(remaining)));

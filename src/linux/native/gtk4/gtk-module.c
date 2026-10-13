@@ -78,7 +78,18 @@ gint64 tl_now(void) {
     if (clock_gettime(CLOCK_BOOTTIME, &value) != 0) return G_MAXINT64;
     return (gint64)value.tv_sec * 1000 + value.tv_nsec / 1000000;
 }
+static void trace_publication(const char *stage) {
+    static guint count;
+    if (!g_getenv("TYPELAY_TRACE") || count >= 512) return;
+    count++;
+    JsonObject *permit = tl_object(publication, "permit");
+    gint64 now = tl_now(), until = MAX((gint64)0, tl_integer(permit, "expiresAtMs", 0));
+    g_printerr("TypeLay GTK4 publication stage=%s atMs=%" G_GINT64_FORMAT
+        " present=%d remainingMs=%" G_GINT64_FORMAT "\n", stage, now,
+        publication != NULL, permit ? until - now : -1);
+}
 void tl_clear_permit(void) {
+    if (publication) trace_publication("clear");
     if (publication_timer) { g_source_remove(publication_timer); publication_timer = 0; }
     if (publication) { json_object_unref(publication); publication = NULL; }
     tl_overlay_acceptance();
@@ -280,7 +291,9 @@ static JsonObject *publication_state(Target *target) {
     return state;
 }
 static void trace_tab(const char *reason, Target *target, JsonObject *current, JsonObject *reply) {
-    if (!g_getenv("TYPELAY_TRACE")) return;
+    static guint count;
+    if (!g_getenv("TYPELAY_TRACE") || count >= 96) return;
+    count++;
     JsonObject *permit = tl_object(current, "permit"), *basis = tl_object(current, "authority");
     const char *id = tl_string(tl_object(permit, "plan"), "id");
     const char *receipt_reason = tl_string(reply, "reason"), *safe_receipt = "none";
@@ -292,9 +305,9 @@ static void trace_tab(const char *reason, Target *target, JsonObject *current, J
     gint64 observed = tl_integer(basis, "observedAtMs", -1);
     /* Only opaque UUIDs and fixed reasons are logged, never arbitrary strings
        from the plan, field metadata, or the receipt. */
-    g_printerr("TypeLay GTK4 Tab check=%s planId=%s remainingMs=%" G_GINT64_FORMAT
+    g_printerr("TypeLay GTK4 Tab check=%s atMs=%" G_GINT64_FORMAT " planId=%s remainingMs=%" G_GINT64_FORMAT
         " authorityAgeMs=%" G_GINT64_FORMAT " inputRevision=%" G_GUINT64_FORMAT
-        " expectedInputRevision=%" G_GINT64_FORMAT " receiptReason=%s\n", reason,
+        " expectedInputRevision=%" G_GINT64_FORMAT " receiptReason=%s\n", reason, now,
         id && g_uuid_string_is_valid(id) ? id : id ? "invalid" : "none", permit ? until - now : -1,
         observed >= 0 ? now - observed : -1, target ? target->input_revision : 0,
         tl_integer(basis, "inputRevision", -1), safe_receipt);
@@ -362,6 +375,7 @@ static void command(JsonObject *frame) {
             shortcut_authority = tl_copy(data);
         respond(id, NULL);
     } else if (strcmp(operation, "revoke") == 0) {
+        trace_publication("host-revoke");
         tl_clear_permit();
         if (tl_integer(data, "shortcuts", 0)) clear_shortcut();
         respond(id, NULL);
@@ -373,6 +387,7 @@ static void command(JsonObject *frame) {
         if (publication) (void)tl_ime_clear(target);
         refresh_acceptance();
         JsonObject *state = publication_state(target), *reply = json_object_new();
+        trace_publication("publish-observed");
         json_object_set_boolean_member(reply, "published", publication
             && (!tl_object(data, "permit") || json_object_get_boolean_member(state, "ready")));
         if (target) {
