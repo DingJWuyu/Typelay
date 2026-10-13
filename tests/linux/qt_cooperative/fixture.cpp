@@ -43,6 +43,8 @@ public:
     void publish() {
         QJsonObject state = counts_;
         state.insert("qtVersion", QString::fromLatin1(qVersion()));
+        state.insert("qtBuildVersion", QStringLiteral(QT_VERSION_STR));
+        state.insert("qtPlatform", QGuiApplication::platformName());
         state.insert("firstLength", first_->text().size());
         state.insert("firstIsHello", first_->text() == QStringLiteral("hello"));
         state.insert("secondLength", second_->text().size());

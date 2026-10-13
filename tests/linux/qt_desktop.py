@@ -331,6 +331,51 @@ def run_qt(
                     and status().get("sourceSupported"),
                     "exact Qt window did not focus fullscreen and bind the production host",
                 )
+                build_version = json.loads((qt / "versions.json").read_text())["qt_build_version"]
+                runtime_version = state()["qtVersion"]
+                requested_version = environment.get("TYPELAY_EXPECT_QT_VERSION")
+                mapped_paths = set()
+                for line in Path(f"/proc/{fixture.pid}/maps").read_text().splitlines():
+                    fields = line.split(maxsplit=5)
+                    if len(fields) == 6 and fields[5].startswith("/"):
+                        path = fields[5]
+                        name = Path(path).name
+                        if name.startswith(("libQt6", "libqwayland")) or name == "libqxcb.so":
+                            mapped_paths.add(path)
+                (arguments.output / "qt-desktop-runtime.json").write_text(
+                    json.dumps(
+                        {
+                            "pid": fixture.pid,
+                            "build_version": build_version,
+                            "runtime_version": runtime_version,
+                            "requested_version": requested_version,
+                            "requested_platform": qt_environment["QT_QPA_PLATFORM"],
+                            "mapped_libraries": [
+                                {"path": path, "basename": Path(path).name}
+                                for path in sorted(mapped_paths)
+                            ],
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
+                assert runtime_version == build_version, "Qt fixture SDK/runtime version mismatch"
+                assert not requested_version or runtime_version == requested_version, (
+                    "Unexpected Qt desktop SDK/runtime version"
+                )
+                mapped_names = {Path(path).name for path in mapped_paths}
+                for name in ("Core", "Gui", "Widgets", "DBus", "WaylandClient"):
+                    assert f"libQt6{name}.so.{build_version}" in mapped_names, name
+                for path in mapped_paths:
+                    if Path(path).name.startswith("libQt6"):
+                        assert path.endswith(f".so.{build_version}"), f"Mixed Qt runtime: {path}"
+                assert any(
+                    Path(path).parent.name == "platforms"
+                    and Path(path).name.startswith("libqwayland")
+                    and Path(path).name.endswith(".so")
+                    for path in mapped_paths
+                ), "Qt fixture did not load a real Wayland platform plugin"
+                assert "libqxcb.so" not in mapped_names, "Qt desktop fixture loaded XCB"
                 subprocess.run(["fcitx5-remote", "-o"], env=qt_environment, check=True, timeout=3)
                 switch_im("keyboard-us")
                 other = "Leave this other field unchanged."

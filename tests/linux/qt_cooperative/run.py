@@ -164,13 +164,51 @@ def build(out, forced_sync_diagnostic=False):
                     if path.is_file()
                 },
                 "qt6": qt,
-                "packages": run(["pacman", "-Q", "qt6-base", "qt6-wayland", "fcitx5"]),
+                "packages": run(["pacman", "-Q", "qt6-base", "fcitx5"]),
+                "qt_build_version": qt,
+                "consumer_ldd": run(["ldd", out / "native/qt6/generic/libtypelay-qt6.so"]),
+                "fixture_ldd": run(["ldd", out / "fixture"]),
                 "plugin_ldd": run(["ldd", plugins / "libfcitx5platforminputcontextplugin.so"]),
             },
             indent=2,
         )
         + "\n"
     )
+
+
+def record_runtime(out, mode, pid, observation):
+    expected = json.loads((out / "versions.json").read_text())["qt_build_version"]
+    assert observation["qtBuildVersion"] == observation["qtVersion"] == expected
+    requested = os.environ.get("TYPELAY_EXPECT_QT_VERSION")
+    assert not requested or expected == requested, "Unexpected Qt SDK/runtime version"
+    paths = set()
+    for line in Path(f"/proc/{pid}/maps").read_text().splitlines():
+        fields = line.split(maxsplit=5)
+        if len(fields) == 6 and fields[5].startswith("/"):
+            path = fields[5]
+            if "/libQt6" in path or Path(path).name in ("libqwayland.so", "libqxcb.so"):
+                paths.add(path)
+    libraries = sorted(paths)
+    (out / f"{mode}-runtime.json").write_text(
+        json.dumps(
+            {
+                "pid": pid,
+                "build_version": expected,
+                "runtime_version": observation["qtVersion"],
+                "platform": observation["qtPlatform"],
+                "mapped_libraries": libraries,
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    for name in ("Core", "Gui", "Widgets", "DBus"):
+        assert any(Path(path).name == f"libQt6{name}.so.{expected}" for path in paths), name
+    for path in paths:
+        if Path(path).name.startswith("libQt6"):
+            assert path.endswith(f".so.{expected}"), f"Mixed Qt runtime: {path}"
+    assert observation["qtPlatform"] == "xcb"
+    assert any(Path(path).name == "libqxcb.so" for path in paths)
 
 
 def active_field(state):
@@ -417,6 +455,7 @@ def session(out, fcitx, forced_sync_diagnostic=False):
                             and active_field(state()),
                             "actual Fcitx IC and first field binding",
                         )
+                        record_runtime(out, mode, client.pid, state())
 
                         def sample_modifiers():
                             before = state().get("modifierSamples")
