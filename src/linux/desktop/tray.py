@@ -3,7 +3,7 @@
 import gi
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk  # noqa: E402
+from gi.repository import Gio, GLib, Gtk  # noqa: E402
 
 
 class Tray:
@@ -13,10 +13,15 @@ class Tray:
         self.updating = self.pending = self.closed = False
         self.connected = False
         self.indicator = None
+        self.feedback_revision = 0
+        self.feedback_pending = None
+        self.feedback_sending = False
+        self.feedback_status = {"revision": 0, "code": None, "delivery": "none"}
         self.availability_changed = availability_changed
         self.menu = Gtk.Menu()
         self.status = self.item("TypeLay · 正在启动", sensitive=False)
         self.model = self.item("本地模型尚未就绪", sensitive=False)
+        self.operation = self.item("", sensitive=False)
         self.menu.append(Gtk.SeparatorMenuItem())
         self.enabled = Gtk.CheckMenuItem(label="启用 TypeLay")
         self.enabled.connect("toggled", self.toggle_enabled)
@@ -31,6 +36,7 @@ class Tray:
         settings = self.item("设置…", lambda *_: show_settings())
         self.item("退出 TypeLay", lambda *_: quit_requested())
         self.menu.show_all()
+        self.operation.hide()
         self.refresh()
         try:
             gi.require_version("AyatanaAppIndicator3", "0.1")
@@ -115,6 +121,78 @@ class Tray:
 
     def report(self, value):
         self.model.set_label("本地模型已就绪" if value.get("modelReady") else "本地模型尚未就绪")
+        message = value.get("operationStatus")
+        self.operation.set_label(message or "")
+        self.operation.set_visible(bool(message))
+
+    def feedback(self, value):
+        """Present only explicit command failures from the shared controller."""
+        revision, code, message = (value.get(key) for key in ("revision", "code", "message"))
+        if (
+            self.closed
+            or type(revision) is not int
+            or revision <= self.feedback_revision
+            or not isinstance(code, str)
+            or not 0 < len(code) <= 80
+            or not isinstance(message, str)
+            or not 0 < len(message) <= 1024
+        ):
+            return
+        self.feedback_revision = revision
+        self.feedback_pending = (revision, code, message)
+        self.feedback_status.update(revision=revision, code=code, delivery="pending")
+        self.operation.set_label(message)
+        self.operation.show()
+        if not self.feedback_sending:
+            self.send_feedback()
+
+    def send_feedback(self):
+        if self.closed or self.feedback_pending is None:
+            return
+        self.feedback_sending = True
+        revision, _code, message = self.feedback_pending
+        self.feedback_pending = None
+
+        def finished(delivery):
+            if revision == self.feedback_revision:
+                self.feedback_status["delivery"] = delivery
+            self.feedback_sending = False
+            if not self.closed and self.feedback_pending is not None:
+                self.send_feedback()
+
+        def notified(connection, result):
+            try:
+                connection.call_finish(result)
+                # The service accepted the request; visibility remains its policy.
+                finished("submitted")
+            except GLib.Error:
+                finished("unavailable")
+
+        def connected(_source, result):
+            try:
+                connection = Gio.bus_get_finish(result)
+                if self.closed or revision != self.feedback_revision:
+                    finished("superseded")
+                    return
+                connection.call(
+                    "org.freedesktop.Notifications",
+                    "/org/freedesktop/Notifications",
+                    "org.freedesktop.Notifications",
+                    "Notify",
+                    GLib.Variant(
+                        "(susssasa{sv}i)",
+                        ("TypeLay", 0, "typelay-active", "TypeLay", message, [], {}, 5000),
+                    ),
+                    GLib.VariantType.new("(u)"),
+                    Gio.DBusCallFlags.NO_AUTO_START,
+                    1500,
+                    None,
+                    notified,
+                )
+            except GLib.Error:
+                finished("unavailable")
+
+        Gio.bus_get(Gio.BusType.SESSION, None, connected)
 
     def toggle_enabled(self, item):
         self.change({"enabled": item.get_active()})

@@ -47,7 +47,7 @@ public sealed class SettingsRenderingTests(ITestOutputHelper testOutput)
                 Stage("model-create");
                 using var model = WindowsRuntime.CreateModel(); // No model is started or downloaded by this UI test.
                 Stage("window-create");
-                var window = new SettingsWindow(settings, model, () => { });
+                var window = new SettingsWindow(settings, model, () => { }, new WindowsApplicationSupport());
                 Stage("initial-show");
                 window.ShowPage();
                 Stage("initial-layout");
@@ -69,6 +69,24 @@ public sealed class SettingsRenderingTests(ITestOutputHelper testOutput)
                 var saved = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json")).Value;
                 Assert.Equal("Ctrl+Shift+K", saved.WakeShortcut);
                 Assert.Equal("Alt+F8", saved.DirectShortcut);
+                window.ShowPage("apps");
+                settings.Update(settings.Value with
+                {
+                    Enabled = false
+                });
+                window.UpdateLayout();
+                var checks = Descendants(window).OfType<Button>().Where(button => Equals(button.Content, "检查连接")).ToArray();
+                Assert.NotEmpty(checks);
+                Assert.All(checks, button => Assert.False(button.IsEnabled));
+                var resume = Descendants(window).OfType<Button>().Single(button => Equals(button.Content,
+                    ApplicationSupportPresentation.ReasonText(ApplicationSupportReason.Paused)));
+                Assert.True(resume.IsEnabled);
+                resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.Contains(Descendants(window).OfType<ComboBox>(), control => AutomationProperties.GetName(control) == "工作模式");
+                settings.Update(settings.Value with
+                {
+                    Enabled = true
+                });
                 foreach (string theme in new[] { "light", "dark" })
                 {
                     Stage($"theme-apply:{theme}");
@@ -84,6 +102,18 @@ public sealed class SettingsRenderingTests(ITestOutputHelper testOutput)
                         foreach (var input in Descendants(window).OfType<TextBox>())
                             Assert.InRange(input.ActualWidth, 150, window.ActualWidth);
                         Render(window, $"settings-shortcuts-{theme}-{width}.png");
+                        Stage($"application-support-show:{theme}:{width}");
+                        window.ShowPage("apps");
+                        window.UpdateLayout();
+                        Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "应用支持");
+                        Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "桌面普通输入框");
+                        var supportDetails = Descendants(window).OfType<Expander>()
+                            .Where(expander => Equals(expander.Header, "查看详情")).ToArray();
+                        Assert.NotEmpty(supportDetails);
+                        Assert.All(supportDetails, expander => Assert.False(expander.IsExpanded));
+                        Assert.False(Descendants(window).OfType<Button>().Single(button =>
+                            Equals(button.Content, ApplicationSupportPresentation.Create([]).Labels.TryIt)).IsEnabled);
+                        Render(window, $"settings-applications-{theme}-{width}.png");
                         Stage($"general-show:{theme}:{width}");
                         window.ShowPage();
                         Stage($"general-layout:{theme}:{width}");

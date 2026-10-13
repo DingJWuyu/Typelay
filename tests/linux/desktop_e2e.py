@@ -1528,9 +1528,96 @@ def run(arguments):
                 )
             )
         if arguments.desktop_scope == "setup":
+            assert not status().get("setup", {}).get("tutorialVisible")
+            support = wait_for(
+                lambda: status().get("setup", {}).get("applicationSupport"),
+                "first-run settings did not receive the shared application-support presentation",
+            )
+            assert support["title"] == "应用支持"
+            assert any(row["id"] == "desktop-text" for row in support["rows"])
+            assert not status()["setup"]["onboardingComplete"]
+            from support.gtk_accessibility import Atspi, named, text
+
+            def settings_control(name):
+                return wait_for(
+                    lambda: named(process.pid, name), f"settings control missing: {name}"
+                )
+
+            def activate_setting(name):
+                node = settings_control(name)
+                action = node.get_action_iface()
+                assert action is not None and Atspi.Action.do_action(action, 0), name
+                return node
+
+            # Drive actual GTK actions; the model being ready never completes an
+            # application connection or a canceled component selection.
+            desktop_support = next(row for row in support["rows"] if row["id"] == "desktop-text")
+            activate_setting(desktop_support["primaryAction"]["label"])
+            settings_control(support["labels"]["chooseComponent"])
+            activate_setting(support["labels"]["cancel"])
+            assert not status()["setup"]["onboardingComplete"]
+            trial = settings_control(support["labels"]["tryIt"])
+            assert Atspi.Component.grab_focus(trial.get_component_iface())
+            key("ctrl+Page_Up")
+            enabled = settings_control("设置：启用 TypeLay")
+            wait_for(
+                lambda: enabled.get_state_set().contains(Atspi.StateType.SHOWING),
+                "general settings page did not become visible",
+            )
+            activate_setting("设置：启用 TypeLay")
+            wait_for(
+                lambda: not json.loads(paths.settings.read_text())["Enabled"],
+                "switch did not save immediately",
+            )
+            saved = json.loads(paths.settings.read_text())
+            wake = settings_control("设置：唤醒翻译")
+            direct = settings_control("设置：直接翻译替换")
+            assert Atspi.EditableText.set_text_contents(
+                wake.get_editable_text_iface(), "Ctrl+Shift+F8"
+            )
+            wait_for(
+                lambda: status()["setup"]["settingsDraft"],
+                "shortcut edit was not retained as draft",
+            )
+            activate_setting("设置：启用 TypeLay")
+            wait_for(
+                lambda: json.loads(paths.settings.read_text())["Enabled"],
+                "second switch change was not saved",
+            )
+            assert text(wake) == "Ctrl+Shift+F8", (
+                "settings notification overwrote the pending shortcut"
+            )
+            assert Atspi.EditableText.set_text_contents(
+                direct.get_editable_text_iface(), "Ctrl+Shift+F8"
+            )
+            activate_setting("保存快捷键和排除项")
+            wait_for(
+                lambda: text(settings_control("设置反馈")).startswith("未保存"),
+                "invalid shortcut pair did not report rejection",
+            )
+            assert json.loads(paths.settings.read_text())["WakeShortcut"] == saved["WakeShortcut"]
+            assert status()["setup"]["settingsDraft"], "invalid shortcut pair discarded the draft"
+            assert Atspi.EditableText.set_text_contents(
+                direct.get_editable_text_iface(), saved["DirectShortcut"]
+            )
+            activate_setting("保存快捷键和排除项")
+            wait_for(
+                lambda: json.loads(paths.settings.read_text())["WakeShortcut"] == "Ctrl+Shift+F8",
+                "valid shortcut pair did not persist",
+            )
+            assert Atspi.EditableText.set_text_contents(
+                wake.get_editable_text_iface(), saved["WakeShortcut"]
+            )
+            activate_setting("保存快捷键和排除项")
+            wait_for(
+                lambda: not status()["setup"]["settingsDraft"],
+                "saved shortcuts still appeared dirty",
+            )
+            key("ctrl+Page_Down")
+            activate_setting(support["labels"]["tryIt"])
             wait_for(
                 lambda: status().get("setup", {}).get("tutorialVisible"),
-                "first-run tutorial did not open after the actual model became ready",
+                "explicit local-model trial did not open",
             )
             wait_for(
                 lambda: (contents(request("FocusedWindow"), "FocusedWindow") or {}).get("title")
@@ -1577,7 +1664,7 @@ def run(arguments):
                 "explicit tutorial skip did not close the practice window",
             )
             evidence.append(
-                "First-run tutorial: real local-model preview, explicit completion, persisted restart and optional reopening without intercepting target-app Tab"
+                "First-run application support stays separate from model readiness; explicit local-model trial, completion, persisted restart and optional reopening without intercepting target-app Tab"
             )
         assert control(paths, "settings") is True
         time.sleep(0.3)

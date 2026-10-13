@@ -15,9 +15,14 @@ internal static class WindowsRuntime
         info => new ChildProcess(info));
 
     public static SessionController CreateSession(SettingsStore settings, ModelClient model, OverlayWindow overlay,
-        bool automationTest = false, IInputBroker? broker = null) => new(settings, model, overlay,
-            new KeyboardHook(automationTest, overlay.Handle), new WindowsInputService(broker ?? new BrokerClient(), overlay.Handle),
-            new DispatcherSessionLoop());
+        bool automationTest = false, IInputBroker? broker = null, WindowsApplicationSupport? support = null)
+    {
+        var monitor = new KeyboardHook(automationTest, overlay.Handle);
+        broker ??= new BrokerClient();
+        support?.Bind(broker, monitor);
+        return new(settings, model, overlay, monitor,
+            new WindowsInputService(broker, overlay.Handle, support, monitor), new DispatcherSessionLoop());
+    }
 
     private static void SetStartup(bool enabled)
     {

@@ -110,6 +110,7 @@ async def desktop(paths, background, lock, tutorial=False):
 
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
+    from application_support import ApplicationSupport
     from gi.repository import Gdk, GLib, Gtk
     from input import Input
     from link import Link
@@ -150,10 +151,15 @@ async def desktop(paths, background, lock, tutorial=False):
             input_service.notification(operation, value)
         overlay, settings = components["overlay"], components["settings"]
         if operation == "settings":
+            first_settings = settings.value is None
             settings.configure(value)
             overlay.configure(value)
             components["tray"].configure(value)
-            if not value["onboardingComplete"] and not settings.tutorial.window.get_visible():
+            if (
+                first_settings
+                and not value["onboardingComplete"]
+                and not settings.tutorial.window.get_visible()
+            ):
                 settings.show()
         elif operation == "render":
             overlay.render(value)
@@ -166,6 +172,9 @@ async def desktop(paths, background, lock, tutorial=False):
             status.update({key: item for key, item in value.items() if key != "lastApplication"})
             settings.report(value)
             components["tray"].report(value)
+        elif operation == "operationFeedback":
+            components["tray"].feedback(value)
+            status["operationFeedback"] = components["tray"].feedback_status
 
     async def host_request(operation, value):
         return await components["input"].request(operation, value)
@@ -262,6 +271,26 @@ async def desktop(paths, background, lock, tutorial=False):
     server_watch = 0
     try:
         components["input"] = Input(GLib, Gdk, paths, host, task)
+        support = ApplicationSupport(paths)
+
+        async def support_view():
+            return await host.ask(
+                "applicationSupport",
+                {
+                    "facts": support.facts(
+                        components["input"].peers,
+                        enabled=bool(
+                            components["settings"].value and components["settings"].value["enabled"]
+                        ),
+                    )
+                },
+                timeout=2,
+            )
+
+        async def support_action(identity, action, directory=None):
+            await support.execute(identity, action, directory)
+            return await support_view()
+
         components["settings"] = Settings(
             host,
             task,
@@ -269,6 +298,9 @@ async def desktop(paths, background, lock, tutorial=False):
             install_requested,
             pause_requested,
             lambda text: tutorial_preview(paths, text),
+            support_view,
+            support_action,
+            support.component_folder,
         )
         components["overlay"] = Overlay(
             host, components["input"], task, components["settings"].show
@@ -279,7 +311,7 @@ async def desktop(paths, background, lock, tutorial=False):
             host,
             task,
             components["settings"].show,
-            stopping.set,
+            lambda: components["settings"].dismiss(quit_requested=stopping.set),
             components["settings"].report_tray,
         )
 

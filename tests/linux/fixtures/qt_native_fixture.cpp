@@ -348,6 +348,7 @@ int main(int argc, char **argv) {
             {"overlayVisible", overlay && overlay->isVisible()},
             {"overlayMenuVisible", menu && menu->isVisible()}, {"overlayControls", overlayControls},
             {"clipboardText", clipboard->ownsClipboard() ? clipboard->text() : QString()},
+            {"editorVisible", editor && editor->isVisible()},
             {"editorFocused", editor && editor->hasFocus()},
             {"editorReadOnly", !editor || editor->isReadOnly()},
             {"editorText", editor ? editor->toPlainText() : QString()},

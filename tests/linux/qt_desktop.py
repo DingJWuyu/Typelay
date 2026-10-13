@@ -621,9 +621,13 @@ def run_qt(
                 )
 
                 clear_source()
+                # The host state can advance before Qt applies its render.
+                # Observe the actual capsule (visible overlay, hidden editor)
+                # before using its controls' geometry for the single click.
                 wait_for(
                     lambda: status().get("viewState") == "IdleCapsule"
-                    and state().get("overlayVisible"),
+                    and (value := state()).get("overlayVisible")
+                    and value.get("editorVisible") is False,
                     "empty Qt source did not retain its language capsule",
                 )
                 settings_path = Paths(arguments.package).settings
@@ -790,6 +794,7 @@ def run_qt(
                     command_source = "Please translate this command safely."
                     dormant_source(command_source)
                     before = state()
+                    before_feedback = status().get("operationFeedback", {}).get("revision", 0)
                     before_write = trace_checkpoint()
                     command("on-command-queued", action=action)
                     wait_for(
@@ -818,6 +823,24 @@ def run_qt(
                     assert after["second"]["text"] == other
                     assert after["second"]["changes"] == before["second"]["changes"]
                     assert not new_write_outcomes(before_write)
+                    explanation = (
+                        "输入内容或选区已变化，请重试。"
+                        if action == "rewrite"
+                        else "输入框焦点已变化，请在目标输入框重试。"
+                    )
+                    feedback_code = (
+                        "shortcut-sourcechanged"
+                        if action == "rewrite"
+                        else "shortcut-notsourcefocus"
+                    )
+                    wait_for(
+                        lambda: (report := status()).get("serviceStatus")
+                        == f"未执行本次直接替换：{explanation}"
+                        and (feedback := report.get("operationFeedback", {})).get("code")
+                        == feedback_code
+                        and feedback.get("revision", 0) > before_feedback,
+                        f"cancelled Qt {action} command did not show its shared refusal reason",
+                    )
                     if action == "focus-second":
                         assert after["second"]["focused"] and not after["first"]["focused"]
                         command("focus", field="first")
@@ -855,7 +878,8 @@ def run_qt(
                 assert after["second"]["changes"] == before["second"]["changes"]
                 assert not new_write_outcomes(before_write)
                 evidence.append(
-                    "Qt6 explicit command safety: real queued input/focus changes cancel without writes; "
+                    "Qt6 explicit command safety: real queued input/focus changes cancel without writes "
+                    "and report distinct shared refusal messages; "
                     "a post-snapshot source edit survives the completed CPU direct translation"
                 )
 

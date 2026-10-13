@@ -47,6 +47,9 @@ class Peer:
         self.ancestors = {}
         self.lifetime = None
         self.shortcut = None
+        self.command_id = 0
+        self.command_generation = None
+        self.support_observation = None
         self.link = Link(
             owner.glib,
             connection.fileno(),
@@ -137,6 +140,9 @@ class Input:
         self.published_plan = None
         self.publication_epochs = None
         self.shortcut_config = {"enabled": False}
+        self.shortcut_sequence = 0
+        self.shortcut_ordered = False
+        self.shortcut_command = None
         self.closing = False
         self.niri = Niri(glib, self.changed)
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -180,6 +186,7 @@ class Input:
         )
 
     def lost(self, peer):
+        peer.support_observation = None
         self.clear_browser_capture()
         if self.published_plan and self.published_plan[0] is peer:
             self.invalidate_publication()
@@ -260,6 +267,14 @@ class Input:
         return not self.closing
 
     def remember(self, peer, native, window, geometry, frozen=False):
+        # Diagnostic capability evidence only; never used to authorize capture or writes.
+        if not frozen:
+            peer.support_observation = {
+                "atMs": now_ms(),
+                "preview": True,
+                "tabAccept": native["writeSupported"] is True,
+                "directReplace": native["writeSupported"] is True,
+            }
         snapshot = {
             "target": target_id(peer, native["target"]),
             "text": native["text"],
@@ -326,6 +341,13 @@ class Input:
                     "compositorAgeMs": stamp - self.niri.observed_at,
                 }
             )
+            if (
+                self.browser_rounds
+                and self.browser_rounds[-1]["startedMs"] == self.capture_started_at
+            ):
+                # Preserve this failed round before later captures evict it from the ring.
+                # Round telemetry is bounded numbers/booleans, never source text or IDs.
+                self.capture_failures[-1]["browserRound"] = dict(self.browser_rounds[-1])
             del self.capture_failures[:-16]
             if os.environ.get("TYPELAY_TRACE"):
                 print(
@@ -600,6 +622,151 @@ class Input:
     def configure_peer(self, peer):
         peer.link.command("configure-shortcuts", self.shortcut_config)
         peer.shortcut = None
+        generation = self.shortcut_config.get("generation")
+        if peer.command_generation != generation:
+            peer.command_generation = generation
+            peer.command_id = 0
+
+    def ordered_shortcut_time(self, peer, stamp):
+        if type(stamp) is not int or not 0 <= stamp <= now_ms():
+            return False
+        previous = self.shortcut_command
+        return (
+            not previous
+            or stamp > previous["triggeredAtMs"]
+            or (stamp == previous["triggeredAtMs"] and previous["peer"] is peer)
+        )
+
+    def start_shortcut(self, peer, value):
+        if (
+            not isinstance(value, dict)
+            or value.get("kind") not in ("wake", "direct")
+            or not self.shortcut_config.get("enabled")
+            or value.get("generation") != self.shortcut_config.get("generation")
+        ):
+            return
+        identity = value.get("commandId")
+        if type(identity) is not int or not peer.command_id < identity <= 2**53 - 1:
+            return
+        peer.command_id = identity
+        stamp = value.get("triggeredAtMs")
+        if self.focused_peer() is not peer or not self.ordered_shortcut_time(peer, stamp):
+            return
+        self.shortcut_ordered = True
+        self.shortcut_sequence += 1
+        # Allocate ordering when the actual command begins, not when a delayed
+        # cancellation arrives. One monitor owns ordering across all peers.
+        self.shortcut_command = {
+            "peer": peer,
+            "id": identity,
+            "kind": value["kind"],
+            "generation": value["generation"],
+            "sequence": self.shortcut_sequence,
+            "triggeredAtMs": stamp,
+            "record": peer.shortcut,
+            "completed": False,
+        }
+        peer.shortcut = None
+
+    def finish_shortcut(self, peer, value, rejected=False):
+        if (
+            not isinstance(value, dict)
+            or value.get("kind") not in ("wake", "direct")
+            or not self.shortcut_config.get("enabled")
+            or value.get("generation") != self.shortcut_config.get("generation")
+        ):
+            return
+        command = self.shortcut_command
+        if "commandId" in value:
+            if (
+                not command
+                or command["completed"]
+                or command["peer"] is not peer
+                or type(value["commandId"]) is not int
+                or value["commandId"] != command["id"]
+                or value["kind"] != command["kind"]
+                or value["generation"] != command["generation"]
+            ):
+                return
+        elif rejected or peer.command_id:
+            return  # A rejection can never invent a command or its ordering.
+        else:
+            # Older Qt adapters can queue before reporting their result. Once a
+            # newer ordered command exists, their missing start identity cannot
+            # be reconstructed from the arrival time of a late result.
+            if peer.backend == "qt6" and self.shortcut_ordered:
+                if os.environ.get("TYPELAY_TRACE"):
+                    try:
+                        print("typelay-shortcut legacy-qt-unordered", file=sys.stderr)
+                    except OSError:
+                        pass
+                return
+            stamp = value.get("acceptedAtMs")
+            if not self.ordered_shortcut_time(peer, stamp):
+                return
+            if peer.backend != "qt6":
+                self.shortcut_ordered = True
+            # Existing GTK/browser adapters complete their synchronous command
+            # in one event. They cannot synthesize rejection feedback.
+            self.shortcut_sequence += 1
+            command = {
+                "peer": peer,
+                "id": None,
+                "kind": value["kind"],
+                "generation": value["generation"],
+                "sequence": self.shortcut_sequence,
+                "triggeredAtMs": stamp,
+                "record": peer.shortcut,
+                "completed": False,
+            }
+            self.shortcut_command = command
+            peer.shortcut = None
+        command["completed"] = True
+        notice = {
+            "kind": command["kind"],
+            "commandGeneration": command["generation"],
+            "commandSequence": command["sequence"],
+            "userEpoch": self.user_epoch,
+            "foregroundEpoch": self.foreground_epoch,
+        }
+        if rejected:
+            reason = value.get("reason")
+            reasons = {
+                "Unsupported",
+                "Sensitive",
+                "ReadOnly",
+                "ImeUnclear",
+                "NotSourceFocus",
+                "TargetChanged",
+                "SourceChanged",
+                "SelectionChanged",
+                "EpochChanged",
+                "StaleObservation",
+                "PlatformFailure",
+                "InvalidText",
+                "BadPlan",
+            }
+            # Native errors are fixed codes. Never forward free text, metadata,
+            # or a supplied body with a rejected command.
+            notice["rejection"] = (
+                reason if isinstance(reason, str) and reason in reasons else "Unsupported"
+            )
+        else:
+            record = command["record"]
+            native = value.get("native")
+            if not record or not isinstance(native, dict):
+                notice["rejection"] = "Unsupported"
+            elif native.get("target") != record["target"]["value"]:
+                notice["rejection"] = "TargetChanged"
+            elif (geometry := anchor_geometry(native.get("geometry"), peer.anchor_space)) is None:
+                notice["rejection"] = "Unsupported"
+            else:
+                snapshot, _ = self.remember(
+                    peer, native, record["window"], geometry, frozen=command["kind"] == "direct"
+                )
+                notice["source"] = snapshot
+                notice["acceptedAtMs"] = value["acceptedAtMs"]
+        self.host.send("notice", notice)
 
     async def trigger(self, kind, request):
         """Compositor commands may use only the already-bound native shortcut lease."""
@@ -640,6 +807,10 @@ class Input:
             modifiers = sum({"Ctrl": 4, "Alt": 8, "Shift": 1}.get(part, 0) for part in parts[:-1])
             return {"keyval": self.gdk.keyval_from_name(parts[-1]), "modifiers": modifiers}
 
+        if value.get("generation") != self.shortcut_config.get("generation"):
+            self.shortcut_sequence = 0
+            self.shortcut_ordered = False
+            self.shortcut_command = None
         self.shortcut_config = {
             **value,
             "wake": binding(value["wake"]),
@@ -649,6 +820,7 @@ class Input:
         self.frozen.clear()
         self.revoke()
         for peer in list(self.peers):
+            peer.support_observation = None
             if peer.lifetime:
                 self.configure_peer(peer)
 
@@ -736,6 +908,8 @@ class Input:
         # teardown: they belong to already accepted physical input, not the UI.
 
     def event(self, peer, name, value):
+        if peer not in self.peers:
+            return
         if name == "tab-diagnostic" and peer.backend == "browser":
             if not os.environ.get("TYPELAY_TRACE") or not isinstance(value, dict):
                 return
@@ -849,32 +1023,10 @@ class Input:
                     "foregroundEpoch": self.foreground_epoch,
                 },
             )
-        elif name == "shortcut":
-            record = peer.shortcut
-            peer.shortcut = None
-            if not record or value["generation"] != self.shortcut_config.get("generation"):
-                return
-            native = value["native"]
-            if native["target"] != record["target"]["value"]:
-                return
-            window = record["window"]
-            geometry = anchor_geometry(native["geometry"], peer.anchor_space)
-            if geometry is None:
-                return
-            snapshot, _ = self.remember(
-                peer, native, window, geometry, frozen=value["kind"] == "direct"
-            )
-            self.host.send(
-                "notice",
-                {
-                    "kind": value["kind"],
-                    "source": snapshot,
-                    "commandGeneration": value["generation"],
-                    "acceptedAtMs": value["acceptedAtMs"],
-                    "userEpoch": self.user_epoch,
-                    "foregroundEpoch": self.foreground_epoch,
-                },
-            )
+        elif name == "shortcut-started":
+            self.start_shortcut(peer, value)
+        elif name in ("shortcut", "shortcut-rejected"):
+            self.finish_shortcut(peer, value, rejected=name == "shortcut-rejected")
 
     async def direct(self, plan):
         record = self.frozen.pop(observation_key(plan["expected"]), None)

@@ -75,7 +75,10 @@ internal static class ControllerDesktopScenario
                 Mode = WorkMode.OnDemand
             });
             using var model = WindowsRuntime.CreateModel(); // Empty-field wake needs no model download or fabricated translation.
-            using var controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true);
+            var support = new WindowsApplicationSupport();
+            var broker = new BrokerClient();
+            using var controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true,
+                broker: broker, support: support);
             await controller.StartAsync().WaitAsync(deadline.Token);
             await Until(() => controller.InputAvailable, "The input service must be ready.", deadline.Token);
             async Task Focus(nint field)
@@ -87,6 +90,12 @@ internal static class ControllerDesktopScenario
             N.SendString(b, N.WM_SETTEXT, "B stays unchanged");
             await Focus(a);
             await Until(() => controller.LastApplication is not null, "The source must be observed.", deadline.Token);
+            var supportedField = support.Read(settings.Value).Rows.Single(row => row.Id == "desktop-text");
+            Assert.Equal(ApplicationSupportState.Connected, supportedField.State);
+            Assert.True(supportedField.Capabilities.Preview);
+            Assert.Equal(stockControls, supportedField.Capabilities.DirectReplace);
+            Assert.False(supportedField.Capabilities.TabAccept); // The experimental setting remains off.
+            Assert.NotNull(supportedField.CheckedAt);
             await Task.Delay(200, deadline.Token);
             Assert.False(overlay.IsVisible);
             Keys(0x11, 0x10, 0x78); // Ctrl+Shift+F9, the configured wake shortcut.
@@ -132,6 +141,12 @@ internal static class ControllerDesktopScenario
             Assert.Equal(0, (long)N.Send((nint)host.RootHwnd, N.FixtureSubmitCount));
             Assert.Equal("hello", N.ReadText(a, Limits.MaxTextUnits));
             Assert.Equal("B stays unchanged", N.ReadText(b, Limits.MaxTextUnits));
+            // No capture/tick between broker disposal and this read: loss of the
+            // live service alone must revoke cached connected capabilities.
+            broker.Dispose();
+            var disconnected = support.Read(settings.Value).Rows.Single(row => row.Id == "desktop-text");
+            Assert.Equal(ApplicationSupportState.Error, disconnected.State);
+            Assert.Equal(new ApplicationSupportCapabilities(), disconnected.Capabilities);
         }
         finally
         {

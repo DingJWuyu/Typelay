@@ -211,6 +211,10 @@ internal sealed class SessionScenario : IDisposable
         }
         public List<WritePlan> Writes { get; } = [];
         public List<WritePlan> DirectWrites { get; } = [];
+        public TaskCompletionSource<WriteReceipt>? PendingDirectWrite
+        {
+            get; set;
+        }
         public WriteReceipt DirectReceipt { get; set; } = new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported);
         public TaskCompletionSource<InputCapture>? PendingCapture
         {
@@ -243,7 +247,7 @@ internal sealed class SessionScenario : IDisposable
         public Task<WriteReceipt> WriteDirectAsync(WritePlan plan, string[] excluded)
         {
             DirectWrites.Add(plan);
-            return Task.FromResult(DirectReceipt);
+            return PendingDirectWrite?.Task ?? Task.FromResult(DirectReceipt);
         }
         public Task ClearAsync(InputContext context) => Task.CompletedTask;
         public void Dispose()

@@ -67,12 +67,41 @@ def main():
             lambda *_: owned.set(),
             None,
         )
+        notification_interface = Gio.DBusNodeInfo.new_for_xml(
+            """<node><interface name="org.freedesktop.Notifications">
+            <method name="Notify">
+            <arg type="s" direction="in"/><arg type="u" direction="in"/>
+            <arg type="s" direction="in"/><arg type="s" direction="in"/>
+            <arg type="s" direction="in"/><arg type="as" direction="in"/>
+            <arg type="a{sv}" direction="in"/><arg type="i" direction="in"/>
+            <arg type="u" direction="out"/></method></interface></node>"""
+        ).interfaces[0]
+        notices = []
+        notice_received = asyncio.Event()
+
+        def notify(_connection, _sender, _path, _interface, _method, parameters, invocation):
+            notices.append(parameters.unpack())
+            invocation.return_value(GLib.Variant("(u)", (len(notices),)))
+            notice_received.set()
+
+        notice_registration = connection.register_object(
+            "/org/freedesktop/Notifications", notification_interface, notify, None, None
+        )
+        notice_owned = asyncio.Event()
+        notice_owner = Gio.bus_own_name_on_connection(
+            connection,
+            "org.freedesktop.Notifications",
+            Gio.BusNameOwnerFlags.NONE,
+            lambda *_: notice_owned.set(),
+            None,
+        )
         jobs = set()
         tray = host = process = None
         parent, child = socket.socketpair()
         temporary = tempfile.TemporaryDirectory(prefix="typelay-tray-")
         try:
             await asyncio.wait_for(owned.wait(), 3)
+            await asyncio.wait_for(notice_owned.wait(), 3)
             directory = Path(temporary.name)
             process = subprocess.Popen(
                 [
@@ -221,6 +250,42 @@ def main():
             await settled()
             assert (state["source"], state["target"]) == ("en", "zh")
             assert state["theme"] == "dark"
+            # Exercise the actual session-bus delivery, without claiming panel pixels.
+            feedback = {
+                "revision": 1,
+                "code": "shortcut-ime-unclear",
+                "message": "请先完成输入法组合，再试一次。",
+            }
+            tray.feedback(feedback)
+            await asyncio.wait_for(notice_received.wait(), 3)
+            async with asyncio.timeout(3):
+                while tray.feedback_sending:
+                    await asyncio.sleep(0.01)
+            assert notices[0][4] == feedback["message"]
+            assert notices[0][5] == [] and not actions, "notification activated a window"
+            assert tray.feedback_status["delivery"] == "submitted"
+            tray.feedback(feedback)
+            tray.feedback({**feedback, "revision": 0})
+            assert len(notices) == 1 and not tray.feedback_sending
+            # Remove the service; the same product failure remains visible in the tray.
+            connection.call_sync(
+                "org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+                "ReleaseName",
+                GLib.Variant("(s)", ("org.freedesktop.Notifications",)),
+                GLib.VariantType.new("(u)"),
+                Gio.DBusCallFlags.NONE,
+                1000,
+                None,
+            )
+            tray.feedback({**feedback, "revision": 2})
+            async with asyncio.timeout(3):
+                while tray.feedback_sending:
+                    await asyncio.sleep(0.01)
+            assert tray.feedback_status["delivery"] == "unavailable"
+            assert tray.operation.get_label() == feedback["message"]
+            assert tray.operation.get_visible() and not actions
             tray.indicator.get_secondary_activate_target().activate()
             items["退出 TypeLay"].activate()
             assert actions == ["settings", "quit"]
@@ -250,6 +315,8 @@ def main():
                     process.kill()
                     await asyncio.to_thread(process.wait)
                 process.stderr.close()
+            Gio.bus_unown_name(notice_owner)
+            connection.unregister_object(notice_registration)
             Gio.bus_unown_name(owner)
             connection.unregister_object(registration)
             temporary.cleanup()

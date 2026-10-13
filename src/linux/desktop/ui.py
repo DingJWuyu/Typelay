@@ -8,7 +8,7 @@ import gi
 from wire import now_ms
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk  # noqa: E402
+from gi.repository import Gio, GLib, Gtk  # noqa: E402
 
 
 class Overlay:
@@ -251,11 +251,13 @@ class Tutorial:
         self.message = note("")
         note("2. 在已启用 TypeLay 的真实输入框练习")
         note(
-            "先按发行包说明手动安装浏览器扩展并批准网页权限，或逐应用启用 Fcitx 合作组件。"
-            "普通安装不会自动改变浏览器、输入法或个人配置。"
-            "已启用合作组件时，可通过合作包的 launch 入口运行 typelay --practice，"
-            "打开由正式后台处理的独立实操窗口。"
+            "请先在设置的应用支持中连接目标应用，并按页面指引完成必要授权。"
+            "本窗生成译文只检查本地模型，不代表其他应用已连接。"
+            "回到目标应用的普通文本框，再逐项检查下面的操作。"
         )
+        self.connection_button = Gtk.Button(label="…")
+        self.connection_button.connect("clicked", lambda *_: self.open_connection())
+        box.pack_start(self.connection_button, False, False, 0)
         note(
             "开启设置中的原生输入框替换后，仅用非敏感测试文字：\n"
             "• 正常输入，等待胶囊展开并生成真实译文；在原框按 Tab，只替换、不发送。\n"
@@ -325,7 +327,7 @@ class Tutorial:
                 "settings", {**self.owner.value, "onboardingComplete": True}
             ):
                 self.dismiss()
-                self.owner.message.set_text("首次使用设置已完成；可随时重新打开教程。")
+                self.owner.message.set_text("教程选择已保存；可随时重新打开。")
             else:
                 self.message.set_text("完成状态未保存，请重试。")
         finally:
@@ -338,7 +340,15 @@ class Tutorial:
         self.changed()
         return True
 
+    def open_connection(self):
+        self.dismiss()
+        self.owner.pages.set_current_page(1)
+        self.owner.show()
+
     def show(self):
+        support = self.owner.application_support.value
+        if support:
+            self.connection_button.set_label(support["labels"]["connectApplications"])
         self.window.show_all()
         self.window.present()
         self.source.grab_focus()
@@ -347,25 +357,290 @@ class Tutorial:
             self.message.set_text("请先在设置中明确同意安装本地翻译组件，完成自检后再试译。")
 
 
+class ApplicationSupportPane:
+    """Render the shared presentation; native dialogs only perform platform actions."""
+
+    def __init__(self, owner, refresh, action, folder):
+        self.owner, self.refresh_requested = owner, refresh
+        self.action_requested, self.folder = action, folder
+        self.value = None
+        self.pending = self.busy = False
+        self.rows = {}
+        self.visible_ids = []
+        self.action_signature = None
+        self.widget = Gtk.ScrolledWindow()
+        self.widget.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.box.set_border_width(16)
+        self.widget.add(self.box)
+        self.tab = Gtk.Label(label="…")
+        self.summary = self.note("")
+        self.prepare = self.note("")
+        self.model = self.note("")
+        self.box.pack_start(owner.install_button, False, False, 0)
+        self.connect = self.note("")
+        self.selector = Gtk.ComboBoxText()
+        self.selector.connect("changed", lambda *_: self.render_selected())
+        self.box.pack_start(self.selector, False, False, 0)
+        self.more = Gtk.CheckButton()
+        self.more.connect("toggled", lambda *_: self.render_choices())
+        self.box.pack_start(self.more, False, False, 0)
+        self.state = self.note("")
+        self.reason = self.note("")
+        self.primary = Gtk.Box(spacing=8)
+        self.box.pack_start(self.primary, False, False, 0)
+        self.details = Gtk.Expander()
+        self.box.pack_start(self.details, False, False, 0)
+        detail_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.details.add(detail_box)
+        self.description = self.note("", detail_box)
+        self.capabilities = self.note("", detail_box)
+        self.capability_note = self.note("", detail_box)
+        self.guidance = self.note("", detail_box)
+        self.technical = self.note("", detail_box)
+        self.technical.set_selectable(True)
+        self.secondary = Gtk.Box(spacing=8)
+        detail_box.pack_start(self.secondary, False, False, 0)
+        self.try_button = Gtk.Button()
+        self.try_button.connect("clicked", lambda *_: owner.open_tutorial())
+        self.box.pack_start(self.try_button, False, False, 0)
+        self.recovery = self.note("")
+        self.timer = GLib.timeout_add(2000, self.tick)
+        owner.window.connect("destroy", lambda *_: GLib.source_remove(self.timer))
+
+    def note(self, text, parent=None):
+        label = Gtk.Label(label=text, xalign=0)
+        label.set_line_wrap(True)
+        label.set_max_width_chars(70)
+        (parent or self.box).pack_start(label, False, False, 0)
+        return label
+
+    def tick(self):
+        if self.owner.window.get_visible() and not self.pending and not self.busy:
+            self.owner.tasks(self.refresh())
+        return True
+
+    async def refresh(self):
+        if self.pending or self.busy:
+            return
+        self.pending = True
+        try:
+            value = await self.refresh_requested()
+            if value:
+                self.render(value)
+        except (OSError, ValueError, EOFError, TimeoutError):
+            self.owner.message.set_text("暂时无法读取应用连接状态，请重新打开设置。")
+        finally:
+            self.pending = False
+
+    def render(self, value):
+        self.value = value
+        labels = value["labels"]
+        self.tab.set_text(value["title"])
+        self.summary.set_text(value["summary"])
+        self.prepare.set_text(labels["prepareTranslation"])
+        self.connect.set_text(labels["connectApplications"])
+        self.more.set_label(labels["moreApplications"])
+        self.details.set_label(labels["details"])
+        self.try_button.set_label(labels["tryIt"])
+        self.recovery.set_text(labels["recovery"] + "：" + labels["checkAgain"])
+        self.rows = {row["id"]: row for row in value["rows"]}
+        self.render_choices()
+        self.render_model()
+
+    def render_model(self):
+        self.model.set_text(
+            "本地翻译组件已就绪" if self.owner.model_ready else "本地翻译组件尚未就绪"
+        )
+        self.try_button.set_sensitive(self.owner.model_ready)
+
+    def render_choices(self):
+        if not self.value:
+            return
+        selected = self.selector.get_active_id()
+        rows = [
+            row
+            for row in self.value["rows"]
+            if self.more.get_active() or not row["showInMore"] or row["id"] == selected
+        ]
+        identities = [row["id"] for row in rows]
+        if self.visible_ids != identities:
+            self.visible_ids = identities
+            self.selector.remove_all()
+            for row in rows:
+                self.selector.append(row["id"], row["title"])
+            if identities:
+                self.selector.set_active_id(selected if selected in identities else identities[0])
+        self.render_selected()
+
+    def render_selected(self):
+        row = self.rows.get(self.selector.get_active_id())
+        if not row or not self.value:
+            return
+        self.state.set_text(row["statusText"])
+        self.reason.set_text(row["reasonText"])
+        self.description.set_text(row["description"])
+        self.capabilities.set_text(row["capabilityText"])
+        self.capability_note.set_text(self.value["capabilityNote"])
+        self.guidance.set_text(row["guidance"])
+        self.technical.set_text(row.get("details") or "")
+        signature = (row["id"], row.get("primaryAction"), row["secondaryActions"], self.busy)
+        if signature != self.action_signature:
+            self.action_signature = signature
+            for box in (self.primary, self.secondary):
+                for child in box.get_children():
+                    child.destroy()
+            primary = row.get("primaryAction")
+            if primary:
+                self.add_action(self.primary, row, primary)
+            for action in row["secondaryActions"]:
+                self.add_action(self.secondary, row, action)
+            self.primary.show_all()
+            self.secondary.show_all()
+        self.selector.set_sensitive(not self.busy)
+
+    def add_action(self, box, row, action):
+        button = Gtk.Button(label=action["label"])
+        button.set_sensitive(not self.busy)
+        button.connect("clicked", lambda *_: self.activate(self.rows[row["id"]], action))
+        box.pack_start(button, False, False, 0)
+
+    def activate(self, row, action):
+        if self.busy:
+            return
+        if action["id"] == "OpenInstructions":
+            self.details.set_expanded(True)
+            self.open_instructions(row)
+            return
+        self.busy = True
+        self.render_selected()
+        if action["id"] == "CheckComponent":
+            self.choose_component(row, action)
+        elif action["requiresConfirmation"]:
+            labels = self.value["labels"]
+            dialog = Gtk.MessageDialog(
+                transient_for=self.owner.window,
+                modal=True,
+                message_type=Gtk.MessageType.QUESTION,
+                text=row["title"] + "：" + action["label"],
+            )
+            consequence = action["confirmationText"]
+            if action["id"] == "Install" and row.get("details"):
+                consequence += "\n\n" + row["details"].split("\n\n", 1)[0]
+            dialog.format_secondary_text(consequence)
+            dialog.add_buttons(
+                labels["cancel"], Gtk.ResponseType.CANCEL, labels["confirm"], Gtk.ResponseType.OK
+            )
+
+            def confirmed(widget, response):
+                widget.destroy()
+                if response == Gtk.ResponseType.OK:
+                    self.owner.tasks(self.execute(row, action))
+                else:
+                    self.busy = False
+                    self.render_selected()
+
+            dialog.connect("response", confirmed)
+            dialog.show_all()
+        else:
+            self.owner.tasks(self.execute(row, action))
+
+    def choose_component(self, row, action):
+        labels = self.value["labels"]
+        dialog = Gtk.FileChooserDialog(
+            title=labels["chooseComponent"],
+            transient_for=self.owner.window,
+            action=Gtk.FileChooserAction.SELECT_FOLDER,
+        )
+        dialog.add_buttons(
+            labels["cancel"], Gtk.ResponseType.CANCEL, labels["confirm"], Gtk.ResponseType.OK
+        )
+
+        def selected(widget, response):
+            directory = widget.get_filename() if response == Gtk.ResponseType.OK else None
+            widget.destroy()
+            if directory:
+                self.owner.tasks(self.execute(row, action, directory))
+            else:
+                self.busy = False
+                self.render_selected()
+
+        dialog.connect("response", selected)
+        dialog.show_all()
+
+    def open_instructions(self, row):
+        labels = self.value["labels"]
+        dialog = Gtk.MessageDialog(
+            transient_for=self.owner.window,
+            modal=True,
+            message_type=Gtk.MessageType.INFO,
+            text=row["title"],
+        )
+        folder = self.folder(row["id"])
+        dialog.format_secondary_text(
+            (row.get("details") or row["guidance"]).split("\n\n", 1)[0] + "\n\n" + str(folder)
+        )
+        dialog.add_buttons(
+            labels["cancel"], Gtk.ResponseType.CANCEL, labels["openFolder"], Gtk.ResponseType.OK
+        )
+
+        def opened(widget, response):
+            widget.destroy()
+            if response == Gtk.ResponseType.OK:
+                try:
+                    Gio.AppInfo.launch_default_for_uri(folder.as_uri(), None)
+                except GLib.Error:
+                    self.owner.message.set_text("无法打开文件夹：" + str(folder))
+
+        dialog.connect("response", opened)
+        dialog.show_all()
+
+    async def execute(self, row, action, directory=None):
+        try:
+            value = await self.action_requested(row["id"], action["id"], directory)
+            if value:
+                self.render(value)
+        except (OSError, ValueError, EOFError, TimeoutError):
+            self.owner.message.set_text("应用接入操作未完成，请重新检查连接。")
+        finally:
+            self.busy = False
+            self.render_selected()
+
+
 class Settings:
-    def __init__(self, host, tasks, quit_requested, install_requested, pause_requested, preview):
+    def __init__(
+        self,
+        host,
+        tasks,
+        quit_requested,
+        install_requested,
+        pause_requested,
+        preview,
+        support_refresh,
+        support_action,
+        support_folder,
+    ):
         self.host, self.tasks = host, tasks
         self.value = None
+        self.configuring = False
+        self.dirty_controls = set()
+        self.pending_settings = {}
+        self.settings_lock = asyncio.Lock()
         self.model_ready = False
-        self.tutorial_presented = False
+        self.first_show = True
         self.installation_state = "idle"
         self.install_requested, self.pause_requested = install_requested, pause_requested
         self.window = Gtk.Window(title="TypeLay 设置")
         self.window.set_default_size(660, 640)
         self.window.set_border_width(24)
-        self.window.connect("delete-event", lambda *_: (self.window.hide(), True)[1])
+        self.window.connect("delete-event", self.dismiss)
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         self.window.add(outer)
         heading = Gtk.Label(xalign=0)
         heading.set_markup('<span size="xx-large" weight="bold">TypeLay</span>')
         outer.pack_start(heading, False, False, 0)
         privacy = Gtk.Label(
-            label="翻译全部在本机执行，输入和译文不会上传。首次使用：选择并保存语言 → 安装组件 → 实操教程。",
+            label="翻译全部在本机执行，输入和译文不会上传。",
             xalign=0,
         )
         privacy.set_line_wrap(True)
@@ -378,7 +653,9 @@ class Settings:
         outer.pack_start(self.tray_notice, False, False, 0)
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        outer.pack_start(scroll, True, True, 0)
+        self.pages = Gtk.Notebook()
+        outer.pack_start(self.pages, True, True, 0)
+        self.pages.append_page(scroll, Gtk.Label(label="常规"))
         grid = Gtk.Grid(column_spacing=24, row_spacing=14)
         grid.set_margin_end(12)
         scroll.add(grid)
@@ -412,75 +689,179 @@ class Settings:
                 widget.set_max_length(64)
             widget.set_hexpand(True)
             self.controls[key] = widget
+            widget.get_accessible().set_name("设置：" + label)
+            if isinstance(widget, Gtk.Switch):
+                widget.connect(
+                    "notify::active",
+                    lambda control, _property, name=key: self.change_control(
+                        name, control.get_active()
+                    ),
+                )
+            elif isinstance(widget, Gtk.ComboBoxText):
+                widget.connect(
+                    "changed",
+                    lambda control, name=key: self.change_control(name, control.get_active_id()),
+                )
+            else:
+                widget.connect("changed", lambda _control, name=key: self.draft_changed(name))
             grid.attach(widget, 1, row, 1, 1)
         row = len(rows)
         label = Gtk.Label(label="排除的应用\n每行一个可执行文件名", xalign=0)
         grid.attach(label, 0, row, 1, 1)
         self.excluded = Gtk.TextView()
         self.excluded.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
+        self.excluded.get_buffer().connect(
+            "changed", lambda *_: self.draft_changed("excludedApplications")
+        )
         exclusions = Gtk.ScrolledWindow()
         exclusions.set_size_request(-1, 84)
         exclusions.add(self.excluded)
         grid.attach(exclusions, 1, row, 1, 1)
         note = Gtk.Label(
-            label="快捷键仅在按需模式启用。输入适配器必须随目标应用启动。\n"
-            "网页输入需安装扩展。GTK3/GTK4 标准单行及纯文本多行框需启用 Fcitx 合作组件；Qt6 标准单行/纯文本多行另用 --qt6 启动。\n"
+            label="普通开关与选择即时保存。快捷键仅在按需模式启用，修改后与应用排除项一起保存。\n"
             "密码、敏感字段及无法确认输入法状态的控件不会读取或替换。",
             xalign=0,
         )
         note.set_line_wrap(True)
         grid.attach(note, 0, row + 1, 2, 1)
         self.message = Gtk.Label(xalign=0)
+        self.message.get_accessible().set_name("设置反馈")
         self.message.set_line_wrap(True)
         outer.pack_start(self.message, False, False, 0)
         buttons = Gtk.Box(spacing=8)
         outer.pack_end(buttons, False, False, 0)
         self.install_button = Gtk.Button(label="安装本地翻译组件…")
         self.install_button.connect("clicked", self.install_clicked)
-        buttons.pack_start(self.install_button, False, False, 0)
-        tutorial_button = Gtk.Button(label="实操教程")
-        tutorial_button.connect("clicked", lambda *_: self.open_tutorial())
-        buttons.pack_start(tutorial_button, False, False, 0)
         quit_button = Gtk.Button(label="退出 TypeLay")
-        quit_button.connect("clicked", lambda *_: quit_requested())
+        quit_button.connect("clicked", lambda *_: self.dismiss(quit_requested=quit_requested))
         buttons.pack_start(quit_button, False, False, 0)
-        save = Gtk.Button(label="保存设置")
-        save.get_style_context().add_class("suggested-action")
-        save.connect("clicked", lambda *_: self.tasks(self.save()))
-        buttons.pack_end(save, False, False, 0)
+        self.save_button = Gtk.Button(label="保存快捷键和排除项")
+        self.save_button.get_style_context().add_class("suggested-action")
+        self.save_button.connect("clicked", lambda *_: self.tasks(self.save()))
+        self.save_button.set_sensitive(False)
+        buttons.pack_end(self.save_button, False, False, 0)
         self.tutorial = Tutorial(self, preview)
+        self.application_support = ApplicationSupportPane(
+            self, support_refresh, support_action, support_folder
+        )
+        self.pages.append_page(self.application_support.widget, self.application_support.tab)
 
     def configure(self, value):
+        first = self.value is None
         self.value = value
-        for key, widget in self.controls.items():
-            if isinstance(widget, Gtk.Switch):
-                widget.set_active(value[key])
-            elif isinstance(widget, Gtk.ComboBoxText):
-                widget.set_active_id(value[key])
-            else:
-                widget.set_text(value[key])
-        self.excluded.get_buffer().set_text("\n".join(value.get("excludedApplications") or []))
-        self.offer_tutorial()
+        self.configuring = True
+        try:
+            for key, widget in self.controls.items():
+                if key in self.dirty_controls or key in self.pending_settings:
+                    continue
+                if isinstance(widget, Gtk.Switch):
+                    widget.set_active(value[key])
+                elif isinstance(widget, Gtk.ComboBoxText):
+                    widget.set_active_id(value[key])
+                else:
+                    widget.set_text(value[key])
+            if "excludedApplications" not in self.dirty_controls:
+                self.excluded.get_buffer().set_text(
+                    "\n".join(value.get("excludedApplications") or [])
+                )
+        finally:
+            self.configuring = False
+        if first and not value["onboardingComplete"]:
+            self.pages.set_current_page(1)
 
-    async def save(self):
-        if self.value is None:
-            return
-        value = dict(self.value)
-        for key, widget in self.controls.items():
-            if isinstance(widget, Gtk.Switch):
-                value[key] = widget.get_active()
-            elif isinstance(widget, Gtk.ComboBoxText):
-                value[key] = widget.get_active_id()
-            else:
-                value[key] = widget.get_text()
+    def draft_value(self, key):
+        if key != "excludedApplications":
+            return self.controls[key].get_text()
         buffer = self.excluded.get_buffer()
-        value["excludedApplications"] = [
+        return [
             line.strip()
             for line in buffer.get_text(*buffer.get_bounds(), True).splitlines()
             if line.strip()
         ]
-        ok = await self.host.ask("settings", value)
-        self.message.set_text("设置已保存" if ok else "未保存：请检查语言方向、快捷键及应用列表。")
+
+    def draft_changed(self, key):
+        if self.configuring or self.value is None:
+            return
+        if self.draft_value(key) == (
+            self.value.get(key) or ([] if key == "excludedApplications" else "")
+        ):
+            self.dirty_controls.discard(key)
+        else:
+            self.dirty_controls.add(key)
+        self.save_button.set_sensitive(bool(self.dirty_controls))
+
+    def change_control(self, key, value):
+        if self.configuring or self.value is None or value is None:
+            return
+        self.pending_settings[key] = value
+        self.tasks(self.save_control(key, value))
+
+    async def save_control(self, key, value):
+        async with self.settings_lock:
+            if self.pending_settings.get(key) != value:
+                return
+            try:
+                saved = await self.host.ask("settings", {**self.value, key: value})
+            except (OSError, ValueError, EOFError, TimeoutError):
+                saved = False
+            if self.pending_settings.get(key) == value:
+                self.pending_settings.pop(key, None)
+                self.configure(self.value)
+            self.message.set_text(
+                "设置已保存" if saved else "未保存，已恢复原设置。请检查语言方向或系统权限。"
+            )
+
+    async def save(self):
+        if self.value is None or not self.dirty_controls:
+            return
+        async with self.settings_lock:
+            draft = {key: self.draft_value(key) for key in self.dirty_controls}
+            try:
+                saved = await self.host.ask("settings", {**self.value, **draft})
+            except (OSError, ValueError, EOFError, TimeoutError):
+                saved = False
+            if saved:
+                for key, value in draft.items():
+                    if self.draft_value(key) == value:
+                        self.dirty_controls.discard(key)
+                self.configure(self.value)
+            self.save_button.set_sensitive(bool(self.dirty_controls))
+            self.message.set_text(
+                "设置已保存" if saved else "未保存：请检查快捷键及应用列表。草稿仍保留。"
+            )
+
+    def dismiss(self, *_, quit_requested=None):
+        if not self.dirty_controls:
+            if quit_requested:
+                quit_requested()
+            else:
+                self.window.hide()
+            return True
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.OK_CANCEL,
+            text="放弃未保存的修改？",
+        )
+        dialog.format_secondary_text(
+            "快捷键或应用排除项尚未保存。继续关闭会丢弃这些草稿，已保存的设置不变。"
+        )
+
+        def response(widget, result):
+            widget.destroy()
+            if result == Gtk.ResponseType.OK:
+                self.dirty_controls.clear()
+                self.configure(self.value)
+                self.save_button.set_sensitive(False)
+                if quit_requested:
+                    quit_requested()
+                else:
+                    self.window.hide()
+
+        dialog.connect("response", response)
+        dialog.show_all()
+        return True
 
     def report(self, value):
         self.model_ready = value.get("modelReady", False)
@@ -489,24 +870,18 @@ class Settings:
             and self.tutorial.state != "translating"
             and bool(self.tutorial.source.get_text().strip())
         )
-        self.offer_tutorial()
+        self.application_support.render_model()
+        if self.installation_state in ("idle", "ready"):
+            self.install_button.set_label(
+                "修复本地翻译组件…" if self.model_ready else "安装本地翻译组件…"
+            )
         pieces = [
             value.get(key)
             for key in ("model", "serviceStatus", "operationStatus", "shortcutStatus")
         ]
         self.status.set_text("\n".join(piece for piece in pieces if piece))
 
-    def offer_tutorial(self):
-        if (
-            self.value
-            and not self.value["onboardingComplete"]
-            and self.model_ready
-            and not self.tutorial_presented
-        ):
-            self.open_tutorial()
-
     def open_tutorial(self):
-        self.tutorial_presented = True
         self.tutorial.show()
 
     def install_clicked(self, *_):
@@ -533,6 +908,8 @@ class Settings:
             "onboardingComplete": bool(self.value and self.value["onboardingComplete"]),
             "tutorialVisible": self.tutorial.window.get_visible(),
             "tutorialState": self.tutorial.state,
+            "applicationSupport": self.application_support.value,
+            "settingsDraft": bool(self.dirty_controls),
         }
 
     def report_tray(self, available, connected):
@@ -546,7 +923,11 @@ class Settings:
 
     def show(self):
         self.window.show_all()
+        if self.first_show and self.value and not self.value["onboardingComplete"]:
+            self.pages.set_current_page(1)
+        self.first_show = False
         self.window.present()
+        self.tasks(self.application_support.refresh())
 
     def confirm_install(self, install):
         dialog = Gtk.MessageDialog(

@@ -86,6 +86,8 @@ jobs:
           python -m pip install -r eng/requirements.txt
           python -m ruff check .
           python -m ruff format --check --diff .
+      - name: Verify Linux input feedback contracts
+        run: python tests/linux/input_feedback.py -v
       - name: Verify shared behavior without Windows
         shell: pwsh
         run: ./dev.ps1 shared-check

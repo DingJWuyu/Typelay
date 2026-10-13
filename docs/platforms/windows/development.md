@@ -30,4 +30,4 @@ Windows 代码变更前运行 `./dev.ps1 check` 获取基线；缺陷修复还�
 
 命令实现位于 eng/windows/dev.ps1；原生入口与受限输入 DLL 分别通过 eng/windows/build-launcher.py、eng/windows/build-native-input.py 构建。根 dev.ps1 保持上述用户命令。
 
-受控工具、生产桌面及物理输入法验收见[Windows 测试](testing.md)。当前未结问题与待恢复工作顺序见 [Windows 待办](open-issues.md)；结构整理不启动这些功能修复。
+受控工具、生产桌面及物理输入法验收见[Windows 测试](testing.md)。当前未结问题与修复顺序见 [Windows 待办](open-issues.md)；按共同产品定义并行开发，Windows 桌面与真实输入法证据仍须单独取得。
