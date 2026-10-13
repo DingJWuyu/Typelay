@@ -290,22 +290,68 @@
 +                if (fallback) {
                      return true;
                  }
-@@ -1118,4 +1284,10 @@
+@@ -1118,6 +1284,18 @@
          auto *watcher = new ProcessKeyWatcher(*keyEvent, focusWindowWrapper(),
                                                reply, proxy);
 +        watcher->setProperty("tlOrderId", QVariant::fromValue(submitted.id));
 +        watcher->setProperty("tlOrderTimestamp", QVariant::fromValue(submitted.timestamp));
++        tlKeyQueue_.push_back(watcher);
++        connect(watcher, &QObject::destroyed, this, [this] {
++            if (!destroy_) tlDrainKeys();
++        });
 +        tlCount("tlqtPendingDbus", 1);
 +        connect(watcher, &QObject::destroyed, qApp, [] {
 +            tlCount("tlqtPendingDbus", -1);
 +        });
          connect(watcher, &QDBusPendingCallWatcher::finished, this,
-                 &QFcitxPlatformInputContext::processKeyEventFinished);
-@@ -1128,5 +1300,11 @@
+-                &QFcitxPlatformInputContext::processKeyEventFinished);
++                [this, guard = QPointer<ProcessKeyWatcher>(watcher)] {
++            if (guard) processKeyEventFinished(guard.data());
++        });
+         return true;
+ 
+@@ -1128,5 +1306,48 @@
  void QFcitxPlatformInputContext::processKeyEventFinished(
      QDBusPendingCallWatcher *w) {
 +    tlCount("tlqtKeyReplies", 1);
      auto *watcher = static_cast<ProcessKeyWatcher *>(w);
++    tlOrderTrace("finished", {watcher->property("tlOrderId").toULongLong(),
++                              watcher->property("tlOrderTimestamp").toULongLong(),
++                              watcher->keyEvent().type() == QEvent::KeyRelease});
++    // Readiness comes only from this actual finished signal, never isFinished().
++    // Probe-only: hold one real press completion until a later real press completes.
++    if (qEnvironmentVariableIsSet("TYPELAY_QT_PROBE") &&
++        qEnvironmentVariableIntValue("TYPELAY_QT_DELAY_FIRST_FINISHED") == 1 &&
++        !tlDelayInjected_ && watcher->keyEvent().type() == QEvent::KeyPress) {
++        tlDelayInjected_ = true;
++        tlDelayedFinished_ = watcher;
++        return;
++    }
++    watcher->setProperty("tlFinishedReady", true);
++    if (tlDelayedFinished_ && watcher->keyEvent().type() == QEvent::KeyPress) {
++        tlDelayedFinished_->setProperty("tlFinishedReady", true);
++        tlDelayedFinished_.clear();
++        tlCount("tlqtDelayedCompletion", 1);
++    }
++    tlDrainKeys();
++}
++
++void QFcitxPlatformInputContext::tlDrainKeys() {
++    if (destroy_ || tlDrainingKeys_) return;
++    tlDrainingKeys_ = true;
++    QPointer<QFcitxPlatformInputContext> alive(this);
++    while (!tlKeyQueue_.empty()) {
++        auto watcher = tlKeyQueue_.front();
++        if (!watcher) { tlKeyQueue_.pop_front(); continue; }
++        if (!watcher->property("tlFinishedReady").toBool()) break;
++        tlKeyQueue_.pop_front();
++        tlProcessKeyEventFinished(watcher.data());
++        if (!alive) return;
++    }
++    tlDrainingKeys_ = false;
++}
++
++void QFcitxPlatformInputContext::tlProcessKeyEventFinished(ProcessKeyWatcher *watcher) {
 +    const TlOrder order{watcher->property("tlOrderId").toULongLong(),
 +                        watcher->property("tlOrderTimestamp").toULongLong(),
 +                        watcher->keyEvent().type() == QEvent::KeyRelease};
@@ -313,13 +359,13 @@
 +    tlOrderTrace("reply", order, int(watcher->isError()));
      bool filtered = false;
  
-@@ -1159,4 +1337,5 @@
+@@ -1159,4 +1380,5 @@
      }
  
 +    tlOrderTrace("decision", order, int(filtered));
      if (!filtered) {
          forwardEvent(window, keyEvent);
-@@ -1306,3 +1485,179 @@
+@@ -1306,3 +1528,179 @@
  }
  
 +// TypeLay 2026-10-12: exact-object cooperation for the original async IM path.
@@ -514,7 +560,13 @@
 +#include <QHash>
  #include <QDBusConnection>
  #include <QDBusPendingCallWatcher>
-@@ -104,7 +107,12 @@
+@@ -21,4 +24,5 @@
+ #include <QWindow>
+ #include <memory>
++#include <deque>
+ #include <qpa/qplatforminputcontext.h>
+ #include <unordered_map>
+@@ -104,7 +108,12 @@
  };
  
 -class QFcitxPlatformInputContext : public QPlatformInputContext {
@@ -528,12 +580,18 @@
 +    bool eventFilter(QObject *, QEvent *) override;
      QFcitxPlatformInputContext();
      ~QFcitxPlatformInputContext() override;
-@@ -160,4 +168,26 @@
+@@ -160,4 +169,32 @@
      void processKeyEventFinished(QDBusPendingCallWatcher *);
  
 +Q_SIGNALS:
 +    void typelayStateChangedV1(QObject *actual, uint causes);
 +private:
++    std::deque<QPointer<ProcessKeyWatcher>> tlKeyQueue_;
++    QPointer<ProcessKeyWatcher> tlDelayedFinished_;
++    bool tlDrainingKeys_ = false;
++    bool tlDelayInjected_ = false;
++    void tlDrainKeys();
++    void tlProcessKeyEventFinished(ProcessKeyWatcher *);
 +    struct TlField { quint64 generation = 0; quint64 inputEpoch = 0; };
 +    struct TlContext { QPointer<FcitxQtInputContextProxy> proxy; quint64 remoteGeneration = 0; quint64 generation = 0; };
 +    QHash<QObject *, TlField> tlFields_;

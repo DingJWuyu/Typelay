@@ -44,6 +44,7 @@ public:
         QJsonObject state = counts_;
         state.insert("qtVersion", QString::fromLatin1(qVersion()));
         state.insert("firstLength", first_->text().size());
+        state.insert("firstIsHello", first_->text() == QStringLiteral("hello"));
         state.insert("secondLength", second_->text().size());
         state.insert("focus", field(QApplication::focusWidget()));
         state.insert("actualFocusObject", field(QGuiApplication::focusObject()));
@@ -57,7 +58,7 @@ public:
         static const char *properties[] = {
             "tlqtPendingDbus", "tlqtPendingForward", "tlqtRetired", "tlqtBindingEpoch",
             "tlqtOutputDepth", "tlqtCommits", "tlqtPreedits", "tlqtMenus", "tlqtSyncReplies",
-            "tlqtContexts", "tlqtEngine", "tlqtSyncKeySeq", "tlqtForwardSignals"
+            "tlqtDelayedCompletion", "tlqtContexts", "tlqtEngine", "tlqtSyncKeySeq", "tlqtForwardSignals"
         };
         for (const char *name : properties) {
             const QVariant value = qApp->property(name);

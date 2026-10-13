@@ -378,6 +378,7 @@ def session(out, fcitx, forced_sync_diagnostic=False):
                             env=env
                             | {
                                 "FCITX_QT_USE_SYNC": str(int(mode == "sync")),
+                                "TYPELAY_QT_DELAY_FIRST_FINISHED": str(int(mode == "async")),
                                 "TYPELAY_QT_STATE": str(state_file),
                             },
                             stdout=clientlog,
@@ -466,6 +467,9 @@ def session(out, fcitx, forced_sync_diagnostic=False):
                         )
                         barrier()
                         s = state()
+                        if mode == "async":
+                            assert s["tlqtDelayedCompletion"] == 1
+                            assert s["firstIsHello"], "Delayed completion changed actual text order"
                         if mode == "sync" and not (
                             s["firstLength"] == 5 and s["secondLength"] == 0
                         ):
