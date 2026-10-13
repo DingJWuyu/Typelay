@@ -12,7 +12,7 @@ Linux 发行包复用共享 .NET Runtime 和 Python worker，GTK、PyGObject、A
 
 ## 首次联网准备
 
-私有 Python、推理依赖及模型由 `src/TypeLay.App/Infrastructure/ModelInstaller.cs` 管理。Python worker 的直接依赖版本见 `src/TypeLay.Worker/requirements.txt`，不得在本文件另建一份易失配的版本清单。
+私有 Python、推理依赖及模型分别由 Windows 的 `src/windows/TypeLay.App/Infrastructure/ModelInstaller.cs` 与 Linux 的 `src/linux/desktop/setup.py` 管理。Python worker 的直接依赖版本见 `src/shared/TypeLay.Worker/requirements.txt`，不得在本文件另建一份易失配的版本清单。
 
 下载的 CPython、wheel、模型各自携带的许可证和 notices 必须保留。Argos 软件的许可证不能自动套用于模型权重或训练数据。引入离线模型包或新增二进制再分发前，逐项审查实际下载内容；本文件不是完整许可证审查结论。
 
@@ -22,4 +22,4 @@ Linux 发行包复用共享 .NET Runtime 和 Python worker，GTK、PyGObject、A
 
 `.agents/skills/` 保留 Matt Pocock 上游技能及参考文件，原始许可证位于 `.agents/MATT-LICENSE`；来源 revision 和安装约束见 `docs/agents/skills.md`，安装器记录位于 `skills-lock.json`。这些文件不进入 Windows 运行包。
 
-.NET SDK、xUnit、Ruff、Clang/LLD 用于构建、测试或格式检查，不作为工具链再分发。原生启动器只导入 Windows 系统 API。产品规格和已确认原型位于 `docs/reference/`，不作为发布包的一部分。
+.NET SDK、xUnit、Ruff、Clang/LLD 用于构建、测试或格式检查，不作为工具链再分发。原生启动器只导入 Windows 系统 API。产品规格和已确认原型位于 `docs/product/` 与 `docs/design/`，不作为发布包的一部分。

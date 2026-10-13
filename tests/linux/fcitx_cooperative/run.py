@@ -37,7 +37,7 @@ from eng.linux.cooperative.inputs import (  # noqa: E402
     sha256,
 )
 
-ABI = ROOT / "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-v1.h"
+ABI = ROOT / "src/linux/native/fcitx5/typelay-fcitx-v1.h"
 TEST_INPUTS = ("tests/linux/fcitx_cooperative/run.py", "tests/linux/fcitx_cooperative/fixture.c")
 
 

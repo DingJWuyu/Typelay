@@ -18,8 +18,8 @@ import time
 import unittest
 from pathlib import Path
 
-from browser_process import chromium_context
 from playwright.sync_api import sync_playwright
+from support.browser_process import chromium_context
 
 
 class NativeBrowserContract(unittest.TestCase):

@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsTestProject>true</IsTestProject>
+    <IsPackable>false</IsPackable>
+    <OutputType>Exe</OutputType>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../src/windows/TypeLay.App/TypeLay.App.csproj" />
+    <ProjectReference Include="../../../src/windows/TypeLay.Broker/TypeLay.Broker.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../support/TypeLay.Platform.Windows/TypeLay.Platform.Windows.csproj" />
+    <PackageReference Include="xunit.v3" />
+    <PackageReference Include="xunit.runner.visualstudio" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+  </ItemGroup>
+  <Target Name="CopyProductionBrokerForDesktopTests" AfterTargets="Build">
+    <ItemGroup>
+      <_BrokerTestFiles Include="$(MSBuildThisFileDirectory)../../../src/windows/TypeLay.Broker/bin/$(Configuration)/net10.0-windows/TypeLay.Broker.*" />
+      <_BrokerTestFiles Include="$(MSBuildThisFileDirectory)../../../src/windows/TypeLay.Broker/bin/$(Configuration)/net10.0-windows/TypeLay.NativeInput.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_BrokerTestFiles)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

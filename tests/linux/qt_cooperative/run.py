@@ -28,7 +28,7 @@ TEST_INPUTS = (
     "tests/linux/qt_cooperative/run.py",
     "tests/linux/qt_cooperative/fixture.cpp",
     "tests/linux/qt_cooperative/qpa_ack.cpp",
-    "tests/linux/qt_native_fixture.cpp",
+    "tests/linux/fixtures/qt_native_fixture.cpp",
 )
 
 
@@ -75,7 +75,7 @@ def build(out, forced_sync_diagnostic=False):
         [
             "cmake",
             "-S",
-            ROOT / "src/TypeLay.Linux/native/qt6",
+            ROOT / "src/linux/native/qt6",
             "-B",
             out / "native",
             "-G",

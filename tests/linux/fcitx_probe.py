@@ -205,14 +205,14 @@ def main() -> None:
     commands = [
         (
             "client-trace.so",
-            ROOT / "tests/linux/fcitx_probe.c",
+            ROOT / "tests/linux/fixtures/fcitx_probe.c",
             ["-shared", "-fPIC"],
             ["gio-2.0", "Fcitx5GClient"],
             ["-ldl"],
         ),
         (
             "gtk-fixture",
-            ROOT / "tests/linux/gtk_fixture.c",
+            ROOT / "tests/linux/fixtures/gtk_fixture.c",
             [],
             ["gtk+-3.0", "json-glib-1.0"],
             [],

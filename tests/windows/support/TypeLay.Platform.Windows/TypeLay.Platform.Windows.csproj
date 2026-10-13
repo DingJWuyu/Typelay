@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../../src/windows/TypeLay.Windows.Contracts/TypeLay.Windows.Contracts.csproj" />
+    <ProjectReference Include="../../../../src/shared/TypeLay.Core/TypeLay.Core.csproj" />
+  </ItemGroup>
+</Project>

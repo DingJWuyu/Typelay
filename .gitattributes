@@ -5,7 +5,8 @@
 *.jpg binary
 *.zip binary
 # Product/UI baselines and upstream skills retain their original bytes.
-docs/reference/** -text whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof
+docs/product/TypeLay_产品规格_v1.0.md -text whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof
 .agents/skills/** -text whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof
 # Unified patches require a single context prefix on otherwise empty lines.
-tests/linux/*_cooperative/*.patch whitespace=-blank-at-eol
+eng/linux/cooperative/patches/*.patch whitespace=-blank-at-eol
+docs/design/*.html -text whitespace=cr-at-eol,-blank-at-eol,-blank-at-eof

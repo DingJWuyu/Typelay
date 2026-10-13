@@ -82,11 +82,11 @@ FCITX_BUILD_INPUTS = (
     "eng/linux/cooperative/inputs.py",
     "eng/linux/cooperative/fcitx.py",
     *(f"eng/linux/cooperative/patches/{project}.patch" for project in PATCH_PROJECTS),
-    "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-v1.h",
-    "src/TypeLay.Linux/native/common/gtk-textbuffer-write.inc",
+    "src/linux/native/fcitx5/typelay-fcitx-v1.h",
+    "src/linux/native/common/gtk-textbuffer-write.inc",
     *(
         str(path.relative_to(ROOT))
-        for path in sorted((ROOT / "src/TypeLay.Linux/native/gtk4").glob("*"))
+        for path in sorted((ROOT / "src/linux/native/gtk4").glob("*"))
         if path.suffix in {".c", ".h"} or path.name == "CMakeLists.txt"
     ),
 )
@@ -95,10 +95,10 @@ QT_BUILD_INPUTS = (
     "eng/linux/cooperative/qt.py",
     "eng/linux/cooperative/patches/fcitx5-qt.patch",
     "eng/linux/cooperative/qt-runtime-probe.cpp",
-    "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-qt-v1.h",
+    "src/linux/native/fcitx5/typelay-fcitx-qt-v1.h",
     *(
         str(path.relative_to(ROOT))
-        for path in sorted((ROOT / "src/TypeLay.Linux/native/qt6").glob("*"))
+        for path in sorted((ROOT / "src/linux/native/qt6").glob("*"))
         if path.is_file()
     ),
 )

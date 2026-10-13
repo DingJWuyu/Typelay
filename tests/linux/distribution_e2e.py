@@ -16,7 +16,7 @@ class DistributionTests(unittest.TestCase):
     def setUpClass(cls):
         archive = os.environ.get("TYPELAY_LINUX_PACKAGE")
         if not archive or not Path(archive).is_file():
-            raise RuntimeError("TYPELAY_LINUX_PACKAGE must name an archive from eng/build-linux.py")
+            raise RuntimeError("TYPELAY_LINUX_PACKAGE must name an archive from eng/linux/build.py")
         cls.temporary = tempfile.TemporaryDirectory(prefix="tl-dist-")
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.work = Path(cls.temporary.name)

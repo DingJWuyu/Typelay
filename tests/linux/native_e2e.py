@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "src/TypeLay.Linux/desktop"))
+sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from geometry import anchor_geometry  # noqa: E402
 from niri import contents, request  # noqa: E402
 from paths import Paths, peer_credentials  # noqa: E402

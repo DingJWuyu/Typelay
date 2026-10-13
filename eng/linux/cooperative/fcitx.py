@@ -34,8 +34,8 @@ from eng.linux.cooperative.inputs import (  # noqa: E402
     sha256,
 )
 
-GTK4_NATIVE = ROOT / "src/TypeLay.Linux/native/gtk4"
-ABI = ROOT / "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-v1.h"
+GTK4_NATIVE = ROOT / "src/linux/native/gtk4"
+ABI = ROOT / "src/linux/native/fcitx5/typelay-fcitx-v1.h"
 
 
 def download(url, destination, digest):

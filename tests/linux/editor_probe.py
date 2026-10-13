@@ -1,6 +1,6 @@
 """Real Tiptap transaction/undo/reentrancy experiment for the richtext adapter.
 
-Run npm ci --ignore-scripts in a disposable copy of tests/fixtures/editor,
+Run npm ci --ignore-scripts in a disposable copy of tests/linux/fixtures/editor,
 then pass that directory through --dependencies. No user browser is opened.
 This is not extension bridge, physical IME, or complete desktop acceptance.
 """
@@ -15,14 +15,14 @@ import unittest
 from pathlib import Path
 
 import browser_e2e
-from browser_process import chromium_context
 from playwright.sync_api import sync_playwright
+from support.browser_process import chromium_context
 
 ROOT = Path(__file__).resolve().parents[2]
-FIXTURE = ROOT / "tests/fixtures/editor"
-ADAPTER = ROOT / "src/TypeLay.Linux/browser/editor-adapter.js"
-BRIDGE = ROOT / "src/TypeLay.Linux/browser/editor-bridge.js"
-CONTENT = ROOT / "src/TypeLay.Linux/browser/content.js"
+FIXTURE = ROOT / "tests/linux/fixtures/editor"
+ADAPTER = ROOT / "src/linux/browser/editor-adapter.js"
+BRIDGE = ROOT / "src/linux/browser/editor-bridge.js"
+CONTENT = ROOT / "src/linux/browser/content.js"
 INITIAL = "<p>Before <strong>hello world</strong> after <em>untouched</em></p>"
 TRANSLATED = "<p>Before <strong>bonjour world</strong> after <em>untouched</em></p>"
 NEW_SOURCE = "<p>NEW Before <strong>hello world</strong> after <em>untouched</em></p>"

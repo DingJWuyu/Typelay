@@ -57,7 +57,7 @@ QT_TEST_INPUTS = (
     "tests/linux/qt_cooperative/run.py",
     "tests/linux/qt_cooperative/fixture.cpp",
     "tests/linux/qt_cooperative/qpa_ack.cpp",
-    "tests/linux/qt_native_fixture.cpp",
+    "tests/linux/fixtures/qt_native_fixture.cpp",
 )
 SOURCE_CACHE_DIRS = {
     ".git",
@@ -293,7 +293,8 @@ def copy_sources(build, bundle, pins, inputs, test_inputs):
         *TEST_INPUTS,
         "packaging/linux/fcitx-cooperative/pack.py",
         "packaging/linux/fcitx-cooperative/fcitx-cooperative.py",
-        "docs/fcitx-linux.md",
+        "docs/platforms/linux/fcitx.md",
+        "docs/platforms/linux/qt.md",
         "THIRD_PARTY_NOTICES.md",
     ]
     for relative in files:
@@ -380,7 +381,7 @@ def verify_sources(build):
         )
         if result.returncode:
             raise ValueError(f"Build sources do not match {project}.patch:\n{result.stdout}")
-    abi = Path("src/TypeLay.Linux/native/fcitx5/typelay-fcitx-v1.h")
+    abi = Path("src/linux/native/fcitx5/typelay-fcitx-v1.h")
     if sha256(ROOT / abi) != sha256(build / "sources/fcitx5-gtk" / abi.name):
         raise ValueError("Build GTK sources do not match the cooperation ABI header")
     versions = read_object(build / "versions.json")
@@ -453,7 +454,7 @@ def copy_qt(qt, bundle):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(qt / name, target)
     upstream = qt / f"fcitx5-qt-{pin}"
-    abi = "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-qt-v1.h"
+    abi = "src/linux/native/fcitx5/typelay-fcitx-qt-v1.h"
     if sha256(upstream / "common" / Path(abi).name) != inputs[abi]:
         raise ValueError("Qt source ABI differs from the recorded input")
     subprocess.run(
@@ -597,7 +598,9 @@ def main():
         copy_core(build, bundle)
         copy_libraries(build, bundle)
         copy_sources(build, bundle, pins, inputs, test_inputs)
-        shutil.copyfile(ROOT / "docs/fcitx-linux.md", bundle / "README.md")
+        shutil.copyfile(ROOT / "docs/platforms/linux/fcitx.md", bundle / "README.md")
+        for name in ("fcitx.md", "qt.md"):
+            shutil.copyfile(ROOT / "docs/platforms/linux" / name, bundle / name)
         launcher = bundle / "fcitx-cooperative.py"
         shutil.copyfile(ROOT / "packaging/linux/fcitx-cooperative/fcitx-cooperative.py", launcher)
         launcher.chmod(0o755)

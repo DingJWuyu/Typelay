@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../../../src/shared/TypeLay.Runtime/TypeLay.Runtime.csproj" />
+    <ProjectReference Include="../../support/TypeLay.Platform.Windows/TypeLay.Platform.Windows.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../../../../src/windows/TypeLay.App/Windows/KeyboardHook.cs" Link="Product/KeyboardHook.cs" />
+    <Compile Include="../../../../src/windows/TypeLay.App/Windows/OnDemandHotkeys.cs" Link="Product/OnDemandHotkeys.cs" />
+    <Compile Include="../../../../src/windows/TypeLay.App/Windows/Native.cs" Link="Product/Native.cs" />
+  </ItemGroup>
+</Project>

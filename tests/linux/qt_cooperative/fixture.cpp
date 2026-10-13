@@ -1,6 +1,6 @@
 // Isolated Qt/Fcitx acknowledgement fixture. Never publishes field contents.
 #include <QApplication>
-#include "../../../src/TypeLay.Linux/native/fcitx5/typelay-fcitx-qt-v1.h"
+#include "../../../src/linux/native/fcitx5/typelay-fcitx-qt-v1.h"
 #include <QEvent>
 #include <QEventLoop>
 #include <QInputMethodEvent>

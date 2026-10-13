@@ -240,7 +240,7 @@ def main():
             str(profile / "data"),
             "--extensions-dir",
             str(profile / "extensions"),
-            "--extensionDevelopmentPath=" + str(root / "src/TypeLay.Linux/vscode"),
+            "--extensionDevelopmentPath=" + str(root / "src/linux/vscode"),
             "--extensionTestsPath=" + str(root / "tests/linux/vscode_e2e.js"),
         ]
         if port:

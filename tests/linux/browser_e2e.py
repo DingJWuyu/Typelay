@@ -13,11 +13,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from browser_process import chromium_context
 from playwright.sync_api import sync_playwright
+from support.browser_process import chromium_context
 
 ROOT = Path(__file__).resolve().parents[2]
-CONTENT = ROOT / "src/TypeLay.Linux/browser/content.js"
+CONTENT = ROOT / "src/linux/browser/content.js"
 FIXTURE = """<!doctype html><meta charset='utf-8'>
 <label>Message <textarea id='source'></textarea></label>
 <input id='other'><input id='password' type='password'>

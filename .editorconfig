@@ -24,7 +24,7 @@ end_of_line = crlf
 [packaging/windows/*.ps1]
 charset = utf-8-bom
 
-[docs/reference/**]
+[docs/{product/TypeLay_产品规格_v1.0.md,design/*.html}]
 trim_trailing_whitespace = false
 insert_final_newline = false
 

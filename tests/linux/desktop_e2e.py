@@ -192,8 +192,8 @@ def run(arguments):
         if arguments.desktop_scope in ("all", "browser"):
             # Exercise the real extension, native host, niri PID authority, shared
             # controller and actual CPU model together, not only a DOM transport seam.
-            from browser_process import chromium_context
             from playwright.sync_api import sync_playwright
+            from support.browser_process import chromium_context
 
             with tempfile.TemporaryDirectory(prefix="typelay-browser-desktop-") as temporary:
                 browser_home = Path(temporary)
@@ -1327,7 +1327,7 @@ def run(arguments):
                         if not gtk4 and bundled:
                             # The shipped practice window has no test snapshot or
                             # translator. Observe only its owned accessibility tree.
-                            from gtk_accessibility import bounds, focused, named, text
+                            from support.gtk_accessibility import bounds, focused, named, text
 
                             request({"Action": {"CloseWindow": {"id": window["id"]}}})
                             assert fixture.wait(timeout=5) == 0

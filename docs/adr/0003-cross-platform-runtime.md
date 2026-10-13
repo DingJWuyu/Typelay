@@ -16,7 +16,7 @@ Linux host -----------------> Runtime
 Python worker <-------------> Protocol 的 worker 帧契约
 ```
 
-Protocol 不反向引用 Core。Windows.Contracts 的 PID/HWND/provider 编码只服务 Windows Broker；Linux 使用自己的桌面进程与同用户 socket。当前文件归属以 [架构约束](../agents/architecture.md#生产边界)为准，构建、安装和测试分别归 eng、packaging、tests，生产构建不反向依赖测试 runner。
+Protocol 不反向引用 Core。Windows.Contracts 的 PID/HWND/provider 编码只服务 Windows Broker；Linux 使用自己的桌面进程与同用户 socket。当前文件归属以 [架构约束](../engineering/architecture.md#生产边界)为准，构建、安装和测试分别归 eng、packaging、tests，生产构建不反向依赖测试 runner。
 
 ## 小接口与宿主责任
 
@@ -39,8 +39,8 @@ TargetId 只暴露 backend、opaque value、lifetime 的相等性；平台独立
 
 保留 Windows 的 WPF、UIA Broker、Hook、原生 Edit 事务、安装与分发实现，可以在提取共享规则时避免同时重写已存在的系统边界。Linux 使用 GTK/Qt 合作输入和浏览器事件线程，复用产品规则而不假设它们具有 Windows 的权限或写入语义。ModelInstaller 的平台 wheel、XDG/注册表、托盘、主题/DPI 和启动生命周期分别维护；共享 worker 不等于跨平台原生依赖已经验证。
 
-新平台先证明真实字段、权限、寿命、IME、几何与按键所有权，再实现对应端口。不按发行版名称授予能力，不提前建立没有生产使用者的项目；macOS 当前未交付。当前 Linux 能力与缺口统一见 [Linux 能力表](../linux.md#与-windows-的功能对齐)。
+新平台先证明真实字段、权限、寿命、IME、几何与按键所有权，再实现对应端口。不按发行版名称授予能力，不提前建立没有生产使用者的项目；macOS 当前未交付。当前 Linux 能力与缺口统一见 [Linux 能力表](../platforms/linux/README.md#与-windows-的功能对齐)。
 
 ## 验证要求
 
-共享改动需要跨平台共享回归；宿主或输入改动需要对应平台的真实进程/桌面链路；启动、布局或分发改动需要搬迁后的实际发行包验证。命令与证据分层统一见 [开发流程](../agents/development.md)和 [测试协议](../agents/testing.md)。受控端口、构建与自动化成功不代替真实模型、物理输入、第三方应用、视觉或 B-01 写入竞态验收。
+共享改动需要跨平台共享回归；宿主或输入改动需要对应平台的真实进程/桌面链路；启动、布局或分发改动需要搬迁后的实际发行包验证。命令与证据分层统一见 [开发流程](../engineering/development.md)和 [测试协议](../engineering/testing.md)。受控端口、构建与自动化成功不代替真实模型、物理输入、第三方应用、视觉或 B-01 写入竞态验收。

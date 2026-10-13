@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ApplicationManifest>../TypeLay.App/app.manifest</ApplicationManifest>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../TypeLay.Windows.Contracts/TypeLay.Windows.Contracts.csproj" />
+    <ProjectReference Include="../../shared/TypeLay.Core/TypeLay.Core.csproj" />
+    <ProjectReference Include="../../shared/TypeLay.Protocol/TypeLay.Protocol.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(OS)' == 'Windows_NT'">
+    <None Include="../../../artifacts/native/TypeLay.NativeInput.dll" Link="TypeLay.NativeInput.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="BuildNativeInput" BeforeTargets="PrepareForBuild" Condition="'$(OS)' == 'Windows_NT'"
+          Inputs="../TypeLay.NativeInput/transaction.c;../../../eng/windows/build-native-input.py"
+          Outputs="../../../artifacts/native/TypeLay.NativeInput.dll">
+    <Exec Command="python &quot;$(MSBuildProjectDirectory)/../../../eng/windows/build-native-input.py&quot; --output &quot;$(MSBuildProjectDirectory)/../../../artifacts/native/TypeLay.NativeInput.dll&quot;" />
+  </Target>
+</Project>

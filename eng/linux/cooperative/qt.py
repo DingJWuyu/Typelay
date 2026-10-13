@@ -29,7 +29,7 @@ from eng.linux.cooperative.inputs import (  # noqa: E402
     sha256,
 )
 
-ABI = ROOT / "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-qt-v1.h"
+ABI = ROOT / "src/linux/native/fcitx5/typelay-fcitx-qt-v1.h"
 
 
 def run(args, **kwargs):
@@ -86,7 +86,7 @@ def build(out):
         [
             "cmake",
             "-S",
-            ROOT / "src/TypeLay.Linux/native/qt6",
+            ROOT / "src/linux/native/qt6",
             "-B",
             out / "native",
             "-G",

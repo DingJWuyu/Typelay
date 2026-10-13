@@ -18,7 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "src/TypeLay.Linux/desktop"))
+sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 import setup  # noqa: E402
 
 
@@ -311,7 +311,7 @@ class InstallationProcessTests(unittest.TestCase):
                     sys.executable,
                     "-I",
                     "-B",
-                    str(ROOT / "src/TypeLay.Linux/desktop/setup.py"),
+                    str(ROOT / "src/linux/desktop/setup.py"),
                     str(home),
                     str(base / "data"),
                     str(base / "cache"),

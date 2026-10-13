@@ -351,7 +351,7 @@ def run_qt(
                     )
 
                 def set_mode(mode):
-                    from gtk_accessibility import Atspi, named
+                    from support.gtk_accessibility import Atspi, named
 
                     paths = Paths(arguments.package)
                     with connect_private(paths.control, 1.5) as connection:

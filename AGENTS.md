@@ -27,10 +27,10 @@ TypeLay 是跨平台本地输入框翻译浮层。先保持既有产品行为，
 
 ## 按任务读取
 
-- 改代码前读 `GLOSSARY.md` 与 `docs/agents/architecture.md`；涉及布局、依赖或打包决策时读 `docs/adr/0001-workspace-and-delivery.md`。
-- 执行开发命令、增加依赖或调整 CI 时读 `docs/agents/development.md`，Windows 和共享检查以根目录 `dev.ps1` 为准；Linux 构建和部署以 `docs/linux.md`、`eng/build-linux.py` 与 `eng/linux/cooperative/` 为准。
-- 改测试、修复缺陷或验收时读 `tests/AGENTS.md` 与 `docs/agents/testing.md`。
-- 改产品行为时从 README 的“产品验收入口”读取冻结规格与已接受 ADR-0002；改 UI 时再打开 `docs/reference/` 的两个已确认 HTML 原型。两端实现缺口不降低原要求，不以工程整理为由改规格。
+- 改代码前读 `GLOSSARY.md` 与 `docs/engineering/architecture.md`；涉及布局、依赖或打包决策时读 `docs/adr/0001-workspace-and-delivery.md`。
+- 执行开发命令、增加依赖或调整 CI 时读 `docs/engineering/development.md`，Windows 和共享检查以根目录 `dev.ps1` 为准；Linux 构建和部署以 `docs/platforms/linux/development.md`、`eng/linux/build.py` 与 `eng/linux/cooperative/` 为准。
+- 改测试、修复缺陷或验收时读 `tests/AGENTS.md` 与 `docs/engineering/testing.md`。
+- 改产品行为时从 README 的“产品验收入口”读取冻结规格与已接受 ADR-0002；改 UI 时再打开 `docs/design/` 的两个已确认 HTML 原型。平台使用、架构与验收分别见 `docs/platforms/windows/`、`docs/platforms/linux/`。两端实现缺口不降低原要求，不以工程整理为由改规格。
 
 ## Agent skills
 
@@ -46,4 +46,4 @@ TypeLay 是跨平台本地输入框翻译浮层。先保持既有产品行为，
 
 ### Domain docs
 
-单一领域上下文：根目录 `GLOSSARY.md` 与 `docs/adr/`。进行领域探索或命名决策时读 `docs/agents/domain.md`。
+单一领域上下文：根目录 `GLOSSARY.md` 与 `docs/adr/`；Linux 专属坐标决策在 `docs/platforms/linux/adr/`。进行领域探索或命名决策时读 `docs/agents/domain.md`。
