@@ -1,5 +1,7 @@
 // Real standard widgets with synthetic test content. No production diagnostics.
 #include <QApplication>
+#include <QAbstractButton>
+#include <QClipboard>
 #include <QIntValidator>
 #include <QInputMethodEvent>
 #include <QEventLoop>
@@ -246,6 +248,15 @@ int main(int argc, char **argv) {
             {"selectionAction", plainSelectionAction}, {"textAction", plainTextAction}, {"geometry", rectangle(plain)}};
         auto *overlay = window.findChild<QWidget *>(QStringLiteral("typelay-overlay"));
         auto *editor = window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"));
+        auto *menu = window.findChild<QWidget *>(QStringLiteral("typelay-menu"));
+        QJsonObject overlayControls;
+        for (const auto *name : {"typelay-menu-trigger", "typelay-copy", "typelay-source-auto", "typelay-source-en"}) {
+            auto *button = window.findChild<QAbstractButton *>(QLatin1String(name));
+            if (button) overlayControls.insert(QLatin1String(name), QJsonObject{
+                {"visible", button->isVisible()}, {"enabled", button->isEnabled()},
+                {"checked", button->isChecked()}, {"geometry", rectangle(button)}});
+        }
+        auto *clipboard = QApplication::clipboard();
         QJsonObject state{{"pid", qint64(getpid())}, {"qtVersion", QString::fromLatin1(qVersion())},
             {"fullscreen", window.isFullScreen()}, {"width", window.width()}, {"height", window.height()},
             {"scale", window.devicePixelRatioF()}, {"keys", observer.counts},
@@ -261,6 +272,8 @@ int main(int argc, char **argv) {
             {"first", field(first, firstChanges, firstEdits)},
             {"second", field(second, secondChanges, secondEdits)},
             {"overlayVisible", overlay && overlay->isVisible()},
+            {"overlayMenuVisible", menu && menu->isVisible()}, {"overlayControls", overlayControls},
+            {"clipboardText", clipboard->ownsClipboard() ? clipboard->text() : QString()},
             {"editorFocused", editor && editor->hasFocus()},
             {"editorReadOnly", !editor || editor->isReadOnly()},
             {"editorText", editor ? editor->toPlainText() : QString()},

@@ -12,7 +12,8 @@ static GtkWidget *window, *entry, *other;
 static gchar *directory, *captured;
 static GtkEntryBuffer *captured_buffer;
 static guint64 revision, captured_revision, captured_epoch, captured_serial, captured_generation;
-static guint request, key_queue_ack;
+static guint request, key_queue_ack, other_preedit;
+static gboolean old_delegate_destroyed;
 static const char *result = "starting";
 static gboolean writing, nested_refused, nested_done, nested_mutate;
 static guint nested_depth;
@@ -92,9 +93,18 @@ static gboolean settled(State s) {
  * and does not select, cancel, reset, or commit the pinyin composition. */
 static gboolean key_queue_marker(GtkWidget *widget, GdkEventKey *event, gpointer unused) {
     (void)unused;
-    if (widget != entry || event->keyval != GDK_KEY_F24) return FALSE;
+    if ((widget != entry && widget != other) || event->keyval != GDK_KEY_F24) return FALSE;
     if (event->type == GDK_KEY_RELEASE) ++key_queue_ack;
     return TRUE;
+}
+
+static void other_preedit_changed(GtkEntry *widget, const gchar *text, gpointer data) {
+    (void)widget; (void)data;
+    other_preedit = (guint)g_utf8_strlen(text, -1);
+}
+static void delegate_destroyed(gpointer data, GObject *object) {
+    (void)data; (void)object;
+    old_delegate_destroyed = TRUE;
 }
 
 static void changed(GtkEditable *editable, gpointer unused) {
@@ -206,14 +216,16 @@ static void save_state(void) {
         "{\"request\":%u,\"result\":\"%s\",\"ready\":%s,\"known\":%s,"
         "\"probe_valid\":%s,\"pending\":%s,\"composing\":%s,\"settled\":%s,\"serial\":%" G_GUINT64_FORMAT ","
         "\"delivered\":%" G_GUINT64_FORMAT ",\"length\":%u,\"replacement\":%s,"
-        "\"nested_refused\":%s,\"nested_depth\":%u,\"epoch\":%" G_GUINT64_FORMAT ",\"unchanged_capture\":%s,\"input_epoch\":%" G_GUINT64_FORMAT ",\"generation\":%" G_GUINT64_FORMAT ",\"key_queue_ack\":%u}\n",
+        "\"nested_refused\":%s,\"nested_depth\":%u,\"epoch\":%" G_GUINT64_FORMAT ",\"unchanged_capture\":%s,\"input_epoch\":%" G_GUINT64_FORMAT ",\"generation\":%" G_GUINT64_FORMAT ",\"key_queue_ack\":%u,\"other_preedit\":%u,\"other_length\":%u,\"other_focused\":%s}\n",
         request, result, gtk_widget_get_mapped(window) ? "true" : "false",
         s.valid && s.known ? "true" : "false", s.valid ? "true" : "false", s.pending ? "true" : "false", s.composing ? "true" : "false",
         settled(s) ? "true" : "false", s.serial, s.delivered,
         gtk_entry_buffer_get_length(gtk_entry_get_buffer(GTK_ENTRY(entry))),
         !strcmp(gtk_entry_get_text(GTK_ENTRY(entry)), replacement) ? "true" : "false",
         nested_refused ? "true" : "false", nested_depth, s.epoch,
-        captured && !strcmp(gtk_entry_get_text(GTK_ENTRY(entry)), captured) ? "true" : "false", s.input_epoch, s.generation, key_queue_ack);
+        captured && !strcmp(gtk_entry_get_text(GTK_ENTRY(entry)), captured) ? "true" : "false", s.input_epoch, s.generation, key_queue_ack, other_preedit,
+        gtk_entry_buffer_get_length(gtk_entry_get_buffer(GTK_ENTRY(other))),
+        gtk_widget_has_focus(other) ? "true" : "false");
     gchar *path = g_build_filename(directory, "state.json", NULL);
     GError *error = NULL;
     if (!g_file_set_contents(path, json, -1, &error)) g_error("state write: %s", error->message);
@@ -230,6 +242,27 @@ static gboolean commands(gpointer unused) {
             request = number;
             if (!strcmp(name, "capture")) result = capture();
             else if (!strcmp(name, "accept")) result = accept();
+            else if (!strcmp(name, "detached-proof")) {
+                State before = state();
+                const guint preedit = other_preedit;
+                gboolean clear = before.raw.flags == (TL_FCITX_KNOWN | TL_FCITX_DETACHED)
+                    && local_valid(before) && prepare_caret(before);
+                State after = state();
+                result = clear && after.raw.flags == (TL_FCITX_KNOWN | TL_FCITX_DETACHED)
+                    && local_valid(after) && other_preedit == preedit && gtk_widget_has_focus(other)
+                    ? "detached-clear" : "detached-refused";
+            } else if (!strcmp(name, "replace-delegate")) {
+                GtkIMContext *old = bound_context();
+                if (!old) g_error("missing original delegate");
+                old_delegate_destroyed = FALSE;
+                g_object_weak_ref(G_OBJECT(old), delegate_destroyed, NULL);
+                g_object_unref(old);
+                g_object_set(entry, "im-module", "gtk-im-context-simple", NULL);
+                gtk_entry_reset_im_context(GTK_ENTRY(entry));
+                result = old_delegate_destroyed &&
+                    !g_object_get_data(G_OBJECT(entry), TL_FCITX_CONTEXT_V1)
+                    ? "old-delegate-released" : "old-delegate-retained";
+            }
             else if (!strcmp(name, "deferred-switch")) {
                 GtkIMContext *context = bound_context();
                 Select action = context ? (Select)g_object_get_data(G_OBJECT(context), "typelay.fcitx.deferred-switch-fixture.v1") : NULL;
@@ -295,6 +328,9 @@ int main(int argc, char **argv) {
     g_signal_connect(entry, "changed", G_CALLBACK(changed), NULL);
     g_signal_connect(entry, "key-press-event", G_CALLBACK(key_queue_marker), NULL);
     g_signal_connect(entry, "key-release-event", G_CALLBACK(key_queue_marker), NULL);
+    g_signal_connect(other, "key-press-event", G_CALLBACK(key_queue_marker), NULL);
+    g_signal_connect(other, "key-release-event", G_CALLBACK(key_queue_marker), NULL);
+    g_signal_connect(other, "preedit-changed", G_CALLBACK(other_preedit_changed), NULL);
     gtk_widget_show_all(window);
     gtk_widget_grab_focus(entry);
     g_timeout_add(20, commands, NULL);

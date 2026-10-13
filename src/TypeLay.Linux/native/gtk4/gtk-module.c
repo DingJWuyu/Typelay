@@ -629,7 +629,17 @@ static gboolean dispatch(GtkEventControllerLegacy *controller, GdkEvent *event, 
         if (shortcut_event(&key) || key_event(&key)) return TRUE;
         if (key.down && target) tl_invalidate(target, FALSE, FALSE);
     } else if (type == GDK_BUTTON_PRESS || type == GDK_SCROLL || type == GDK_TOUCH_BEGIN) {
-        if (target) tl_invalidate(target, FALSE, FALSE);
+        GtkWidget *receiver = NULL;
+        double x, y, offset_x, offset_y;
+        if (native && gdk_event_get_position(event, &x, &y)) {
+            gtk_native_get_surface_transform(native, &offset_x, &offset_y);
+            receiver = gtk_widget_pick(GTK_WIDGET(native), x + offset_x, y + offset_y, GTK_PICK_DEFAULT);
+        }
+        /* Root capture runs before GTK focuses a clicked sibling. Pick the
+           actual recipient; an event on B does not edit the frozen source A. */
+        if (target && (!receiver || (!tl_overlay_contains(receiver)
+            && (receiver == target->widget || gtk_widget_is_ancestor(receiver, target->widget)))))
+            tl_invalidate(target, FALSE, FALSE);
     }
     return FALSE; /* The original GtkText controller/IM receives the unchanged event. */
 }

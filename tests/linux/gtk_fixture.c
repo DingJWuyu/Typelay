@@ -8,6 +8,53 @@ static GtkWidget *report_window, *report_first, *report_second, *other_window, *
 static GtkWidget *report_multiline, *excluded_views[3];
 static const char *report_path;
 static char *last_report;
+typedef struct {
+    guint insertions, deletions, focus_in, focus_out;
+} EntryEvidence;
+static EntryEvidence first_evidence, second_evidence;
+static JsonObject *first_insert_context, *first_delete_context;
+
+static GtkWidget *entry_client(GtkWidget *widget) {
+    return widget;
+}
+static void focus_changed(GObject *object, GParamSpec *spec, gpointer data) {
+    (void)spec;
+    EntryEvidence *evidence = data;
+    if (gtk_widget_has_focus(GTK_WIDGET(object))) evidence->focus_in++;
+    else evidence->focus_out++;
+}
+static void remember_entry_change(EntryEvidence *evidence, JsonObject **observation) {
+    if (evidence != &first_evidence) return;
+    if (*observation) json_object_unref(*observation);
+    JsonObject *context = *observation = json_object_new();
+    gint start, end;
+    gtk_editable_get_selection_bounds(GTK_EDITABLE(report_second), &start, &end);
+    json_object_set_boolean_member(context, "secondFocused",
+        gtk_widget_has_focus(entry_client(report_second)));
+    json_object_set_string_member(context, "secondText", gtk_entry_get_text(GTK_ENTRY(report_second)));
+    json_object_set_int_member(context, "secondStart", start);
+    json_object_set_int_member(context, "secondEnd", end);
+    json_object_set_int_member(context, "firstFocusIn", first_evidence.focus_in);
+    json_object_set_int_member(context, "firstFocusOut", first_evidence.focus_out);
+}
+static void entry_inserted(GtkEntryBuffer *buffer, guint position, const char *text, guint count, gpointer data) {
+    (void)buffer; (void)position; (void)text; (void)count;
+    EntryEvidence *evidence = data;
+    evidence->insertions++;
+    remember_entry_change(evidence, &first_insert_context);
+}
+static void entry_deleted(GtkEntryBuffer *buffer, guint position, guint count, gpointer data) {
+    (void)buffer; (void)position; (void)count;
+    EntryEvidence *evidence = data;
+    evidence->deletions++;
+    remember_entry_change(evidence, &first_delete_context);
+}
+static void watch_entry(GtkWidget *widget, EntryEvidence *evidence) {
+    GtkEntryBuffer *buffer = gtk_entry_get_buffer(GTK_ENTRY(widget));
+    g_signal_connect_after(buffer, "inserted-text", G_CALLBACK(entry_inserted), evidence);
+    g_signal_connect_after(buffer, "deleted-text", G_CALLBACK(entry_deleted), evidence);
+    g_signal_connect(entry_client(widget), "notify::has-focus", G_CALLBACK(focus_changed), evidence);
+}
 static guint user_actions_started, user_actions_finished;
 static void action_started(GtkTextBuffer *buffer, gpointer data) {
     (void)buffer; (void)data; user_actions_started++;
@@ -30,6 +77,41 @@ static gboolean ime_clear(const TlFcitxStateV1 *state) {
     return state->flags == (TL_FCITX_KNOWN | TL_FCITX_FOCUSED)
         && state->server_serial == state->applied_serial;
 }
+/* These are observations of the real widgets, never inputs to the provider. */
+static void report_entry(JsonBuilder *builder, const char *name, GtkWidget *widget, const EntryEvidence *evidence) {
+    gint start, end;
+    gtk_editable_get_selection_bounds(GTK_EDITABLE(widget), &start, &end);
+    json_builder_set_member_name(builder, name);
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "focused");
+    json_builder_add_boolean_value(builder, gtk_widget_has_focus(entry_client(widget)));
+    json_builder_set_member_name(builder, "start"); json_builder_add_int_value(builder, start);
+    json_builder_set_member_name(builder, "end"); json_builder_add_int_value(builder, end);
+    json_builder_set_member_name(builder, "insertions"); json_builder_add_int_value(builder, evidence->insertions);
+    json_builder_set_member_name(builder, "deletions"); json_builder_add_int_value(builder, evidence->deletions);
+    json_builder_set_member_name(builder, "focusIn"); json_builder_add_int_value(builder, evidence->focus_in);
+    json_builder_set_member_name(builder, "focusOut"); json_builder_add_int_value(builder, evidence->focus_out);
+    gint x, y;
+    if (gtk_widget_translate_coordinates(widget, report_window, 0, 0, &x, &y)) {
+        json_builder_set_member_name(builder, "x"); json_builder_add_int_value(builder, x);
+        json_builder_set_member_name(builder, "y"); json_builder_add_int_value(builder, y);
+        json_builder_set_member_name(builder, "height");
+        json_builder_add_int_value(builder, gtk_widget_get_allocated_height(widget));
+    }
+    TlFcitxStateV1 state = { .size = sizeof(state), .version = TL_FCITX_ABI_V1 };
+    gboolean valid = inspect_ime(widget, &state);
+    json_builder_set_member_name(builder, "ime");
+    if (valid) {
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "flags"); json_builder_add_int_value(builder, state.flags);
+        json_builder_set_member_name(builder, "context"); json_builder_add_int_value(builder, state.context_generation);
+        json_builder_set_member_name(builder, "input"); json_builder_add_int_value(builder, state.input_epoch);
+        json_builder_set_member_name(builder, "server"); json_builder_add_int_value(builder, state.server_serial);
+        json_builder_set_member_name(builder, "applied"); json_builder_add_int_value(builder, state.applied_serial);
+        json_builder_end_object(builder);
+    } else json_builder_add_null_value(builder);
+    json_builder_end_object(builder);
+}
 static void find_candidate(GtkWidget *widget, gpointer data) {
     GtkWidget **candidate = data;
     if (GTK_IS_TEXT_VIEW(widget)
@@ -44,6 +126,8 @@ static gboolean report_state(gpointer unused) {
     GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(active));
     JsonBuilder *builder = json_builder_new();
     json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "observedAtMs");
+    json_builder_add_int_value(builder, g_get_monotonic_time() / 1000);
     json_builder_set_member_name(builder, "first");
     json_builder_add_string_value(builder, gtk_entry_get_text(GTK_ENTRY(report_first)));
     json_builder_set_member_name(builder, "second");
@@ -55,6 +139,18 @@ static gboolean report_state(gpointer unused) {
     json_builder_set_member_name(builder, "focus");
     json_builder_add_string_value(builder, focus ? gtk_buildable_get_name(GTK_BUILDABLE(focus)) : "");
     if (g_getenv("TYPELAY_FIXTURE_COOPERATIVE")) {
+        report_entry(builder, "firstEntry", report_first, &first_evidence);
+        report_entry(builder, "secondEntry", report_second, &second_evidence);
+        const char *names[] = {"firstInsertContext", "firstDeleteContext"};
+        JsonObject *contexts[] = {first_insert_context, first_delete_context};
+        for (guint i = 0; i < G_N_ELEMENTS(contexts); i++) {
+            json_builder_set_member_name(builder, names[i]);
+            if (contexts[i]) {
+                JsonNode *change = json_node_new(JSON_NODE_OBJECT);
+                json_node_set_object(change, contexts[i]);
+                json_builder_add_value(builder, change);
+            } else json_builder_add_null_value(builder);
+        }
         TlFcitxStateV1 state = { .size = sizeof(state), .version = TL_FCITX_ABI_V1 };
         gboolean valid = inspect_ime(report_first, &state);
         json_builder_set_member_name(builder, "cooperative");
@@ -228,9 +324,13 @@ int main(int argc, char **argv) {
         report_window = window;
         report_first = first;
         report_second = second;
+        watch_entry(first, &first_evidence);
+        watch_entry(second, &second_evidence);
         g_timeout_add(25, report_state, NULL);
     }
     gtk_main();
     g_free(last_report);
+    if (first_insert_context) json_object_unref(first_insert_context);
+    if (first_delete_context) json_object_unref(first_delete_context);
     return 0;
 }

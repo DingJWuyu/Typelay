@@ -457,6 +457,96 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(second.locator("#source").input_value(), "Second tab")
 
+    def test_more_actions_are_disclosed_without_moving_source_focus(self):
+        self.page.locator("#source").evaluate(
+            "element => {element.style.marginTop = '220px'; element.style.width = '480px';}"
+        )
+        snapshot = self.type_source()
+        self.assertTrue(
+            self.command(
+                "overlay-render",
+                {
+                    "target": snapshot["target"],
+                    "authority": snapshot["authority"],
+                    "view": {
+                        "presentation": {
+                            "visible": True,
+                            "editorOwnsText": False,
+                            "tabHint": "Tab 接受译文",
+                        },
+                        "text": "Initial candidate",
+                        "editable": True,
+                        "state": "ValidTranslation",
+                        "sourceLanguage": "en",
+                        "targetLanguage": "zh",
+                        "status": "译文就绪",
+                    },
+                    "revision": 1,
+                    "theme": "light",
+                },
+            )["visible"]
+        )
+        cdp = self.context.new_cdp_session(self.page)
+        self.addCleanup(cdp.detach)
+
+        def accessible_nodes():
+            return [
+                node
+                for node in cdp.send("Accessibility.getFullAXTree")["nodes"]
+                if not node.get("ignored")
+            ]
+
+        def menu_names(expanded):
+            nodes = accessible_nodes()
+            more = next(
+                node
+                for node in nodes
+                if node.get("role", {}).get("value") == "button"
+                and node.get("name", {}).get("value") == "更多"
+            )
+            properties = {item["name"]: item["value"].get("value") for item in more["properties"]}
+            self.assertEqual(properties["expanded"], expanded)
+            return [node.get("name", {}).get("value") for node in nodes]
+
+        def click_button(name):
+            # Chromium exposes the real closed-shadow control through its AX
+            # tree and DOM geometry. Dispatch a real pointer, not a DOM click.
+            buttons = [
+                node
+                for node in accessible_nodes()
+                if node.get("role", {}).get("value") == "button"
+                and node.get("name", {}).get("value") == name
+            ]
+            self.assertEqual(len(buttons), 1)
+            border = cdp.send("DOM.getBoxModel", {"backendNodeId": buttons[0]["backendDOMNodeId"]})[
+                "model"
+            ]["border"]
+            self.page.mouse.click((border[0] + border[4]) / 2, (border[1] + border[5]) / 2)
+
+        names = menu_names(False)
+        self.assertNotIn("复制", names)
+        self.assertNotIn("复制译文", names)
+        click_button("更多")
+        names = menu_names(True)
+        for name in ["复制译文", "重新翻译", "不要在这个应用中显示", "设置"]:
+            self.assertIn(name, names)
+        self.assertIn("Tab 交还应用", names)
+        self.assertNotIn("Tab 接受译文", names)
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+        click_button("更多")
+        names = menu_names(False)
+        self.assertNotIn("复制译文", names)
+        self.assertNotIn("重新翻译", names)
+        description = self.command("describe", {"target": snapshot["target"]})
+        self.assertTrue(description["focused"])
+        for revision in ["inputRevision", "focusRevision", "contentRevision"]:
+            self.assertEqual(description["authority"][revision], snapshot["authority"][revision])
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+        self.command("overlay-hide")
+        names = [node.get("name", {}).get("value") for node in accessible_nodes()]
+        self.assertNotIn("更多", names)
+
     def test_editor_draft_survives_render_and_two_separate_tabs_return_then_accept(self):
         self.page.locator("#source").evaluate(
             "element => {element.style.marginTop = '220px'; element.style.width = '480px';}"

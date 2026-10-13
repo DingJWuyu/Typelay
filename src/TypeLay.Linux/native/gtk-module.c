@@ -579,7 +579,12 @@ static void dispatch(GdkEvent *event, gpointer data) {
     } else if ((event->type == GDK_BUTTON_PRESS || event->type == GDK_SCROLL)
         && !tl_overlay_contains(gtk_get_event_widget(event))) {
         Target *target = tl_focused();
-        if (target) tl_invalidate(target, FALSE, FALSE);
+        GtkWidget *receiver = gtk_get_event_widget(event);
+        /* A click on B arrives before GTK moves focus from A. Attribute pointer
+           input to its real widget, not to the field that is about to lose focus. */
+        if (target && (!receiver || receiver == target->widget
+            || gtk_widget_is_ancestor(receiver, target->widget)))
+            tl_invalidate(target, FALSE, FALSE);
     }
     gtk_main_do_event(event);
 }

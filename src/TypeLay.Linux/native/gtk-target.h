@@ -11,7 +11,7 @@ struct Target {
     GtkWidget *widget; /* weak; removed in the widget's destroy handler */
     GObject *buffer;
     GObject *tag_table;
-    GtkIMContext *im_context;
+    GtkIMContext *im_context; /* weak; each provider call temporarily retains it */
     GThread *thread;
     gulong im_handler;
     TlFcitxStateV1 im_state;

@@ -231,6 +231,51 @@ def run_qt(
                     fixture.stdin.write(json.dumps({"op": operation, **values}) + "\n")
                     fixture.stdin.flush()
 
+                def click_rectangle(actual, rectangle):
+                    geometry = dict(
+                        line.split("=", 1)
+                        for line in subprocess.check_output(
+                            ["xdotool", "getwindowgeometry", "--shell", nested_window],
+                            text=True,
+                            timeout=3,
+                        ).splitlines()
+                    )
+                    scale = actual["scale"]
+                    assert actual["fullscreen"]
+                    assert actual["width"] * scale == int(geometry["WIDTH"])
+                    assert actual["height"] * scale == int(geometry["HEIGHT"])
+                    x = rectangle["x"] + rectangle["width"] // 2
+                    y = rectangle["y"] + rectangle["height"] // 2
+                    assert rectangle["width"] > 0 and rectangle["height"] > 0
+                    assert 0 <= x < actual["width"] and 0 <= y < actual["height"]
+                    subprocess.run(
+                        [
+                            "xdotool",
+                            "mousemove",
+                            "--window",
+                            nested_window,
+                            str(round(x * scale)),
+                            str(round(y * scale)),
+                            "click",
+                            "1",
+                        ],
+                        check=True,
+                        timeout=3,
+                    )
+
+                def click_overlay(name):
+                    actual = wait_for(
+                        lambda: value
+                        if (value := state())
+                        .get("overlayControls", {})
+                        .get(name, {})
+                        .get("visible")
+                        and value["overlayControls"][name]["enabled"]
+                        else None,
+                        f"actual Qt overlay control was unavailable: {name}",
+                    )
+                    click_rectangle(actual, actual["overlayControls"][name]["geometry"])
+
                 def settled(value):
                     # Missing diagnostics remain unknown, never an invented zero.
                     return all(
@@ -496,6 +541,35 @@ def run_qt(
                 )
                 original = "Please send me the latest report."
                 candidate = enter_source(original)
+                before_menu = state()
+                assert not before_menu["overlayMenuVisible"]
+                assert not before_menu["overlayControls"]["typelay-copy"]["visible"]
+                assert before_menu["clipboardText"] != candidate
+                before_menu_write = trace_checkpoint()
+                click_overlay("typelay-menu-trigger")
+                opened = wait_for(
+                    lambda: value if (value := state()).get("overlayMenuVisible") else None,
+                    "actual Qt language/more button did not open its menu",
+                )
+                assert opened["first"] == before_menu["first"]
+                assert opened["focusTransitions"] == before_menu["focusTransitions"]
+                click_overlay("typelay-copy")
+                copied = wait_for(
+                    lambda: value
+                    if (value := state()).get("clipboardText") == candidate
+                    and value["overlayVisible"]
+                    and not value["overlayMenuVisible"]
+                    else None,
+                    "actual Qt Copy did not copy the candidate and close its menu",
+                )
+                assert copied["first"] == before_menu["first"]
+                assert copied["second"] == before_menu["second"]
+                assert copied["focusTransitions"] == before_menu["focusTransitions"]
+                assert not new_write_outcomes(before_menu_write)
+                evidence.append(
+                    "Qt6 actual more-menu clicks copy the CPU candidate to the clipboard; "
+                    "copy is hidden outside the menu, with no source mutation or focus transition"
+                )
                 subprocess.run(
                     ["grim", str(arguments.output / "qt-desktop-candidate.png")],
                     check=True,
@@ -520,39 +594,43 @@ def run_qt(
                     "verifies the translation, preserves the other field, and native undo restores the source"
                 )
 
+                clear_source()
+                wait_for(
+                    lambda: status().get("viewState") == "IdleCapsule"
+                    and state().get("overlayVisible"),
+                    "empty Qt source did not retain its language capsule",
+                )
+                settings_path = Paths(arguments.package).settings
+                original_settings = json.loads(settings_path.read_text())
+                assert original_settings["Source"] == "en" and original_settings["Target"] == "zh"
+                before_direction = state()
+                before_direction_write = trace_checkpoint()
+                for language in ("auto", "en"):
+                    click_overlay("typelay-menu-trigger")
+                    click_overlay(f"typelay-source-{language}")
+                    wait_for(
+                        lambda: json.loads(settings_path.read_text())["Source"] == language
+                        and (value := state()).get("overlayVisible")
+                        and not value["overlayMenuVisible"]
+                        and value["overlayControls"][f"typelay-source-{language}"]["checked"],
+                        f"Qt language selection did not reach the real host settings: {language}",
+                    )
+                    assert state()["first"] == before_direction["first"]
+                    assert state()["focusTransitions"] == before_direction["focusTransitions"]
+                    assert not new_write_outcomes(before_direction_write)
+                restored_settings = json.loads(settings_path.read_text())
+                assert all(
+                    restored_settings[name] == value for name, value in original_settings.items()
+                )
+                evidence.append(
+                    "Qt6 native language choices persist Auto and restore English through the real "
+                    "host settings while the source is empty, without writing or moving its focus"
+                )
+
                 editing_source = "Please review this note."
                 enter_source(editing_source)
                 actual = state()
-                geometry = dict(
-                    line.split("=", 1)
-                    for line in subprocess.check_output(
-                        ["xdotool", "getwindowgeometry", "--shell", nested_window],
-                        text=True,
-                        timeout=3,
-                    ).splitlines()
-                )
-                scale = actual["scale"]
-                assert actual["fullscreen"]
-                assert actual["width"] * scale == int(geometry["WIDTH"])
-                assert actual["height"] * scale == int(geometry["HEIGHT"])
-                editor = actual["editorGeometry"]
-                x, y = editor["x"] + editor["width"] // 2, editor["y"] + editor["height"] // 2
-                assert editor["width"] > 0 and editor["height"] > 0
-                assert 0 <= x < actual["width"] and 0 <= y < actual["height"]
-                subprocess.run(
-                    [
-                        "xdotool",
-                        "mousemove",
-                        "--window",
-                        nested_window,
-                        str(round(x * scale)),
-                        str(round(y * scale)),
-                        "click",
-                        "1",
-                    ],
-                    check=True,
-                    timeout=3,
-                )
+                click_rectangle(actual, actual["editorGeometry"])
                 wait_for(
                     lambda: state().get("editorFocused")
                     and not state().get("editorReadOnly")

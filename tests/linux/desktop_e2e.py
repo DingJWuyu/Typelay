@@ -1117,6 +1117,212 @@ def run(arguments):
                             evidence.append(
                                 "GTK4 hidden Entry and GtkPasswordEntry: refused capture, unchanged source and ordinary Tab navigation"
                             )
+                        # Restart the same production client with persisted OnDemand
+                        # settings. No fake translator or test-only command dispatch.
+                        stop()
+                        settings["Mode"] = 1
+                        start()
+                        request({"Action": {"FocusWindow": {"id": window["id"]}}})
+
+                        def click_entry(name):
+                            value = gtk_state()
+                            entry = value[name + "Entry"]
+                            subprocess.run(
+                                [
+                                    "xdotool",
+                                    "mousemove",
+                                    "--window",
+                                    nested[0],
+                                    str(int((entry["x"] + 20) * value["scale"])),
+                                    str(int((entry["y"] + entry["height"] / 2) * value["scale"])),
+                                    "click",
+                                    "1",
+                                ],
+                                check=True,
+                                timeout=3,
+                            )
+                            wait_for(
+                                lambda: gtk_state().get("focus") == "fixture-" + name,
+                                "actual mouse click did not focus the GTK " + name + " entry",
+                            )
+
+                        pending_direct = "正在直接翻译；可以切换输入框，当前操作仍绑定原输入框。"
+                        for changes_source in (False, True):
+                            click_entry("first")
+                            switch_im("keyboard-us")
+                            source = (
+                                "Please send me the updated schedule. We need to review the final "
+                                "version before the meeting and share the changes with the team."
+                                if not changes_source
+                                else "Please keep the revised message safe. The application may update "
+                                "this field while the original translation is still being prepared."
+                            )
+                            key("ctrl+a")
+                            key("BackSpace")
+                            wait_for(
+                                lambda: gtk_state().get("first") == ""
+                                and gtk_state().get("imeClear"),
+                                "OnDemand GTK source did not clear through real input",
+                            )
+                            typed(source)
+                            wait_for(
+                                lambda: gtk_state().get("first") == source
+                                and gtk_state().get("imeClear"),
+                                "OnDemand GTK source did not receive the actual keyboard text",
+                            )
+                            captures = (
+                                status()
+                                .get("input", {})
+                                .get("captureCounts", {})
+                                .get("supported", 0)
+                            )
+                            wait_for(
+                                lambda: not status().get("overlayVisible")
+                                and status().get("input", {}).get("captureStatus") == "supported"
+                                and status()
+                                .get("input", {})
+                                .get("captureCounts", {})
+                                .get("supported", 0)
+                                > captures,
+                                "OnDemand GTK source did not remain dormant with a fresh capture",
+                            )
+                            before = gtk_state()
+                            first_before, second_before = (
+                                before["firstEntry"],
+                                before["secondEntry"],
+                            )
+                            assert first_before["start"] == len(source)
+                            assert first_before["end"] == len(source)
+                            assert status().get("serviceStatus") != pending_direct
+                            before_write = trace_checkpoint()
+                            key("ctrl+shift+F10")
+                            dispatched_at = now_ms()
+                            wait_for(
+                                lambda: status().get("serviceStatus") == pending_direct,
+                                "single GTK F10 did not dispatch before the background transition; "
+                                "a model result that already completed cannot prove this case",
+                            )
+                            dispatched = wait_for(
+                                lambda: value
+                                if (value := gtk_state()).get("observedAtMs", 0) >= dispatched_at
+                                and value.get("imeClear")
+                                and (value["firstEntry"]["ime"] or {}).get("flags") == 3
+                                else None,
+                                "GTK F10 modifier releases did not retire in the actual source context",
+                            )
+                            assert (
+                                dispatched["first"] == source
+                                and dispatched["firstEntry"]["focused"]
+                            )
+                            if changes_source:
+                                # A real post-snapshot edit must survive the eventual
+                                # model result. There is no retry or model delay.
+                                key("exclam")
+                                wait_for(
+                                    lambda: gtk_state().get("first") == source + "!",
+                                    "actual post-snapshot GTK source edit did not arrive",
+                                )
+                            click_entry("second")
+                            key("ctrl+a")
+                            detached = wait_for(
+                                lambda: value
+                                if (value := gtk_state()).get("focus") == "fixture-second"
+                                and value["secondEntry"]["start"] == 0
+                                and value["secondEntry"]["end"] == len(value["second"])
+                                and value.get("focusedImeClear")
+                                else None,
+                                "background GTK destination did not retain real focus and selection",
+                            )
+                            case = "changed-source" if changes_source else "retained-source"
+                            record = {
+                                "before": before,
+                                "dispatched": dispatched,
+                                "detached": detached,
+                            }
+                            record_path = arguments.output / (
+                                "gtk-background-direct-" + case + ".json"
+                            )
+                            record_path.write_text(json.dumps(record, indent=2))
+                            assert detached["first"] == source + ("!" if changes_source else ""), (
+                                "the real model completed before A detached; background write was not exercised"
+                            )
+                            first_ime = detached["firstEntry"]["ime"]
+                            assert first_ime and first_ime["flags"] == 17
+                            assert first_ime["server"] == first_ime["applied"]
+                            assert (
+                                first_ime["context"] == dispatched["firstEntry"]["ime"]["context"]
+                            )
+                            if not changes_source:
+                                assert (
+                                    first_ime["input"] == dispatched["firstEntry"]["ime"]["input"]
+                                )
+                            terminal = (
+                                "直接写回未获确认，请检查原输入框；不会自动重试。"
+                                if changes_source
+                                else "已直接替换原输入框文字。"
+                            )
+                            wait_for(
+                                lambda: status().get("serviceStatus") == terminal,
+                                "background GTK direct translation did not reach its real terminal outcome",
+                            )
+                            terminal_at = now_ms()
+                            after = wait_for(
+                                lambda: value
+                                if (value := gtk_state()).get("observedAtMs", 0) >= terminal_at
+                                else None,
+                                "GTK fixture did not observe the completed direct operation",
+                            )
+                            first_after, second_after = after["firstEntry"], after["secondEntry"]
+                            record["after"] = after
+                            record["terminal"] = status().get("serviceStatus")
+                            record_path.write_text(json.dumps(record, indent=2))
+                            assert after["focus"] == "fixture-second"
+                            assert after["second"] == before["second"]
+                            for member in (
+                                "focused",
+                                "start",
+                                "end",
+                                "insertions",
+                                "deletions",
+                                "focusIn",
+                                "focusOut",
+                            ):
+                                assert second_after[member] == detached["secondEntry"][member]
+                            assert second_after["insertions"] == second_before["insertions"]
+                            assert second_after["deletions"] == second_before["deletions"]
+                            assert not first_after["focused"]
+                            assert first_after["focusIn"] == first_before["focusIn"]
+                            assert first_after["focusOut"] == first_before["focusOut"] + 1
+                            assert not new_write_outcomes(before_write), (
+                                "direct work used the Tab write path"
+                            )
+                            if changes_source:
+                                assert after["first"] == source + "!"
+                                assert first_after["insertions"] == first_before["insertions"] + 1
+                                assert first_after["deletions"] == first_before["deletions"]
+                            else:
+                                assert translated(after["first"])
+                                # Standard GtkEntryBuffer exposes one delete and
+                                # one insert for this one real direct replacement.
+                                assert first_after["insertions"] == first_before["insertions"] + 1
+                                assert first_after["deletions"] == first_before["deletions"] + 1
+                                for member in ("firstInsertContext", "firstDeleteContext"):
+                                    changed = after[member]
+                                    assert (
+                                        changed["secondFocused"]
+                                        and changed["secondText"] == before["second"]
+                                    )
+                                    assert (
+                                        changed["secondStart"] == detached["secondEntry"]["start"]
+                                    )
+                                    assert changed["secondEnd"] == detached["secondEntry"]["end"]
+                                    assert changed["firstFocusIn"] == first_before["focusIn"]
+                                    assert changed["firstFocusOut"] == first_after["focusOut"]
+                        evidence.append(
+                            "GTK Entry background direct: one real F10/CPU-model write to A while B "
+                            "keeps focus, text and selection; a post-snapshot source edit is retained "
+                            "and the model write is rejected"
+                        )
                         if not gtk4 and bundled:
                             # The shipped practice window has no test snapshot or
                             # translator. Observe only its owned accessibility tree.
@@ -1126,6 +1332,7 @@ def run(arguments):
                             assert fixture.wait(timeout=5) == 0
                             stop()
                             settings["OnboardingComplete"] = False
+                            settings["Mode"] = 0
                             start()
                             assert not status()["setup"]["onboardingComplete"]
                             practice_environment = dict(gtk_environment)

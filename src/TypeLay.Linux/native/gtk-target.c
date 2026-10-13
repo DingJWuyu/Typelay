@@ -70,16 +70,23 @@ static gboolean bind_context(Target *target) {
         if (target->im_context && target->im_handler)
             g_signal_handler_disconnect(target->im_context, target->im_handler);
         target->im_handler = 0;
-        g_clear_object(&target->im_context);
+        if (target->im_context) {
+            g_object_remove_weak_pointer(G_OBJECT(target->im_context), (gpointer *)&target->im_context);
+            target->im_context = NULL;
+        }
         if (context) {
-            target->im_context = g_object_ref(context);
+            target->im_context = context;
+            g_object_add_weak_pointer(G_OBJECT(context), (gpointer *)&target->im_context);
             guint signal = g_signal_lookup(TL_FCITX_CHANGED_V1, G_OBJECT_TYPE(context));
             GSignalQuery query = {0};
             if (signal) g_signal_query(signal, &query);
             if (query.return_type == G_TYPE_NONE && query.n_params == 1
                 && query.param_types[0] == G_TYPE_UINT)
                 target->im_handler = g_signal_connect(context, TL_FCITX_CHANGED_V1, G_CALLBACK(im_changed), target);
-            else g_clear_object(&target->im_context);
+            else {
+                g_object_remove_weak_pointer(G_OBJECT(context), (gpointer *)&target->im_context);
+                target->im_context = NULL;
+            }
         }
         target->im_observed = FALSE;
         im_invalidated(target, TL_FCITX_CHANGE_BINDING);
@@ -98,11 +105,18 @@ static gboolean read_ime(GtkWidget *widget, GtkIMContext *context, TlFcitxStateV
         && g_object_get_data(G_OBJECT(widget), TL_FCITX_CONTEXT_V1) == context
         && state->size == sizeof *state && state->version == TL_FCITX_ABI_V1
         && state->context_generation != 0
-        && !(state->flags & (guint32)~(TL_FCITX_KNOWN | TL_FCITX_FOCUSED | TL_FCITX_PENDING | TL_FCITX_COMPOSING));
+        && !(state->flags & (guint32)~(TL_FCITX_KNOWN | TL_FCITX_FOCUSED | TL_FCITX_PENDING
+            | TL_FCITX_COMPOSING | TL_FCITX_DETACHED));
 }
 static gboolean state_clear(const TlFcitxStateV1 *state) {
     return state->flags == (TL_FCITX_KNOWN | TL_FCITX_FOCUSED)
         && state->server_serial == state->applied_serial;
+}
+static gboolean write_ime_clear(Target *target, gboolean direct_entry) {
+    return target->im_observed && !target->composing
+        && (state_clear(&target->im_state) || (direct_entry && standard_entry(target)
+            && target->im_state.flags == (TL_FCITX_KNOWN | TL_FCITX_DETACHED)
+            && target->im_state.server_serial == target->im_state.applied_serial));
 }
 gboolean tl_widget_ime_clear(GtkWidget *widget) {
     if (!widget || !gtk_widget_has_focus(widget)) return FALSE;
@@ -111,7 +125,10 @@ gboolean tl_widget_ime_clear(GtkWidget *widget) {
     g_object_ref(widget); g_object_ref(context);
     TlFcitxStateV1 state = {.size = sizeof state, .version = TL_FCITX_ABI_V1};
     gboolean clear = read_ime(widget, context, &state) && state_clear(&state);
-    g_object_unref(context); g_object_unref(widget);
+    g_object_unref(context);
+    clear = clear && gtk_widget_has_focus(widget)
+        && g_object_get_data(G_OBJECT(widget), TL_FCITX_CONTEXT_V1) == context;
+    g_object_unref(widget);
     return clear;
 }
 static gboolean inspect_ime(Target *target) {
@@ -124,7 +141,9 @@ static gboolean inspect_ime(Target *target) {
     gboolean valid = read_ime(widget, context, &state);
     target->im_probing = FALSE;
     valid = valid && !target->dead && target->im_context == context;
-    g_object_unref(context); g_object_unref(widget);
+    g_object_unref(context);
+    valid = valid && !target->dead && target->im_context == context;
+    g_object_unref(widget);
     if (!valid) {
         im_invalidated(target, 0);
         return FALSE;
@@ -159,6 +178,7 @@ static gboolean validate_ime_locally(Target *target, const TlFcitxStateV1 *basel
     valid = valid && !target->dead && target->im_context == context
         && g_object_get_data(G_OBJECT(widget), TL_FCITX_CONTEXT_V1) == context;
     g_object_unref(widget); g_object_unref(context);
+    valid = valid && !target->dead && target->im_context == context;
     if (!valid) im_invalidated(target, 0);
     return valid;
 }
@@ -228,7 +248,10 @@ static void destroyed(GtkWidget *widget, gpointer data) {
     if (target->im_context && target->im_handler)
         g_signal_handler_disconnect(target->im_context, target->im_handler);
     target->im_handler = 0;
-    g_clear_object(&target->im_context);
+    if (target->im_context) {
+        g_object_remove_weak_pointer(G_OBJECT(target->im_context), (gpointer *)&target->im_context);
+        target->im_context = NULL;
+    }
     if (target->buffer) {
         g_signal_handlers_disconnect_by_data(target->buffer, target);
         g_clear_object(&target->buffer);
@@ -567,6 +590,64 @@ static const char *stamp_difference(const TlFcitxStateV1 *before, const TlFcitxS
     if (before->applied_serial != after->applied_serial) return "im-applied";
     return "im-flags";
 }
+static gboolean direct_authority_matches(Target *target, JsonObject *basis, JsonObject *approved) {
+    JsonObject *original = tl_object(basis, "contextStamp");
+    gint64 age = tl_now() - tl_integer(approved, "observedAtMs", 0);
+    /* Focus/reset may advance the transport proof, never the frozen source.
+       The current metadata approval authorizes a fresh proof for this same IC. */
+    return original && target->im_observed
+        && (gint64)target->im_state.context_generation == tl_integer(original, "context", -1)
+        && (gint64)target->im_state.input_epoch == tl_integer(original, "input", -1)
+        && (gint64)target->input_revision == tl_integer(basis, "inputRevision", -1)
+        && (gint64)target->content_revision == tl_integer(basis, "contentRevision", -1)
+        && stamp_matches(target, approved)
+        && (gint64)target->input_revision == tl_integer(approved, "inputRevision", -1)
+        && (gint64)target->content_revision == tl_integer(approved, "contentRevision", -1)
+        && (gint64)target->focus_revision == tl_integer(approved, "focusRevision", -1)
+        && age >= 0 && age <= 150;
+}
+typedef struct {
+    GtkWidget *top, *focused;
+    gboolean background, changed;
+} EntryFocusGuard;
+static void entry_focus_changed(GObject *object, gpointer detail, gpointer data) {
+    (void)object; (void)detail;
+    ((EntryFocusGuard *)data)->changed = TRUE;
+}
+static void entry_focus_clear(EntryFocusGuard *guard) {
+    if (guard->top) g_signal_handlers_disconnect_by_data(guard->top, guard);
+    g_clear_object(&guard->focused);
+    g_clear_object(&guard->top);
+}
+G_DEFINE_AUTO_CLEANUP_CLEAR_FUNC(EntryFocusGuard, entry_focus_clear)
+
+static gboolean entry_focus_matches(Target *target, const EntryFocusGuard *guard) {
+    if (!standard_entry(target) || guard->changed || !guard->top || !guard->focused
+        || gtk_widget_in_destruction(guard->top) || gtk_widget_in_destruction(guard->focused)
+        || !gtk_widget_get_mapped(target->widget) || !gtk_widget_get_mapped(guard->focused)
+        || gtk_widget_get_toplevel(target->widget) != guard->top
+        || gtk_widget_get_toplevel(guard->focused) != guard->top
+        || !gtk_window_is_active(GTK_WINDOW(guard->top))
+        || gtk_window_get_focus(GTK_WINDOW(guard->top)) != guard->focused)
+        return FALSE;
+    if (!guard->background) return tl_focused() == target && gtk_widget_has_focus(target->widget);
+    Target *other = tl_focused();
+    return !gtk_widget_has_focus(target->widget) && !(guard->focused == target->widget)
+        && !tl_overlay_contains(guard->focused)
+        && (!other || (other != target && other->buffer != target->buffer));
+}
+static gboolean entry_focus_init(Target *target, gboolean background, EntryFocusGuard *guard) {
+    GtkWidget *top = gtk_widget_get_toplevel(target->widget);
+    if (!GTK_IS_WINDOW(top)) return FALSE;
+    GtkWidget *focused_widget = gtk_window_get_focus(GTK_WINDOW(top));
+    if (!focused_widget) return FALSE;
+    guard->top = g_object_ref(top);
+    guard->focused = g_object_ref(focused_widget);
+    guard->background = background;
+    g_signal_connect(top, "set-focus", G_CALLBACK(entry_focus_changed), guard);
+    g_signal_connect(top, "notify::is-active", G_CALLBACK(entry_focus_changed), guard);
+    return entry_focus_matches(target, guard);
+}
 #include "common/gtk-textbuffer-write.inc"
 
 JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
@@ -575,18 +656,26 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     JsonObject *expected = tl_object(plan, "expected");
     if (!target || !plan || !expected || !basis || !approved)
         return receipt("RejectedBeforeMutation", "BadPlan");
-    if (target->mutating || !tl_ime_clear(target) || target->quarantined)
+    gboolean direct_entry = direct && standard_entry(target);
+    if (target->mutating || target->quarantined || !inspect_ime(target)
+        || !write_ime_clear(target, direct_entry))
         return receipt("RejectedBeforeMutation", "ImeUnclear");
     gint64 now = tl_now(), until = tl_integer(request, "expiresAtMs", 0);
     if (until < now || until - now > (direct ? 250 : 100))
         return receipt("RejectedBeforeMutation", "StaleObservation");
     if (!tl_metadata_matches(target, approved) || !tl_metadata_matches(target, basis))
         return receipt("RejectedBeforeMutation", "Sensitive");
-    if (!stamp_matches(target, basis)) return receipt("RejectedBeforeMutation", "EpochChanged");
+    if (direct_entry ? !direct_authority_matches(target, basis, approved) : !stamp_matches(target, basis))
+        return receipt("RejectedBeforeMutation", "EpochChanged");
     if ((gint64)target->content_revision != tl_integer(basis, "contentRevision", -1))
         return receipt("RejectedBeforeMutation", "SourceChanged");
-    if (tl_focused() != target || (gint64)target->input_revision != tl_integer(basis, "inputRevision", -1)
-        || (gint64)target->focus_revision != tl_integer(basis, "focusRevision", -1))
+    if ((gint64)target->input_revision != tl_integer(basis, "inputRevision", -1)
+        || (!direct_entry && (tl_focused() != target
+            || (gint64)target->focus_revision != tl_integer(basis, "focusRevision", -1))))
+        return receipt("RejectedBeforeMutation", "EpochChanged");
+    g_auto(EntryFocusGuard) focus_guard = {0};
+    if (standard_entry(target) && !entry_focus_init(target,
+        target->im_state.flags == (TL_FCITX_KNOWN | TL_FCITX_DETACHED), &focus_guard))
         return receipt("RejectedBeforeMutation", "EpochChanged");
     gint start, end;
     char *text = read_text(target, &start, &end);
@@ -644,7 +733,7 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     gint deleted_cursor = old_cursor - CLAMP(old_cursor - from, 0, to - from);
     gint deleted_bound = old_bound - CLAMP(old_bound - from, 0, to - from);
     TlFcitxStateV1 state = target->im_state;
-    gboolean local_valid = validate_ime_locally(target, &state);
+    gboolean local_valid = validate_ime_locally(target, &state) && entry_focus_matches(target, &focus_guard);
     if (!local_valid || tl_now() > until) {
         g_object_unref(buffer); g_object_unref(widget); g_free(after_delete); g_free(text);
         return receipt("RejectedBeforeMutation", local_valid ? "StaleObservation" : "ImeUnclear");
@@ -670,13 +759,13 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
             && write_check(!target->quarantined, "quarantined", &preparation_failure)
             && write_check(target->buffer == buffer, "buffer", &preparation_failure)
             && write_check(target->im_context == context, "im-context", &preparation_failure)
-            && write_check(inspect_ime(target) && target->ime_known && !target->composing,
+            && write_check(inspect_ime(target) && write_ime_clear(target, direct_entry),
                 "im-unclear", &preparation_failure)
             && write_check(target->im_state.context_generation == state.context_generation,
                 "im-context", &preparation_failure)
             && write_check(target->im_state.input_epoch == state.input_epoch
                 && target->input_revision == input, "input-revision", &preparation_failure)
-            && write_check(target->focus_revision == focus && tl_focused() == target,
+            && write_check(target->focus_revision == focus && entry_focus_matches(target, &focus_guard),
                 "focus", &preparation_failure)
             && write_check(target->storage_revision == storage && target->content_revision == content,
                 "storage-revision", &preparation_failure)
@@ -699,6 +788,10 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
                 && write_check(tl_now() <= until, "expiry", &preparation_failure);
         }
         g_object_unref(context);
+        /* GTK3 may replace its IM delegate during reset. Releasing our last
+           temporary reference must expose that unbinding before storage changes. */
+        ready = ready && target->im_context == context
+            && validate_ime_locally(target, &state) && entry_focus_matches(target, &focus_guard);
         if (!ready) {
             if (g_getenv("TYPELAY_TRACE"))
                 g_printerr("TypeLay GTK write guard phase=prepare check=%s remainingMs=%" G_GINT64_FORMAT "\n",
@@ -724,10 +817,10 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
         && write_check(target->buffer == buffer, "buffer", &failure)
         && write_check(target->storage_revision == expected_storage, "storage-revision", &failure)
         && write_check(validate_ime_locally(target, &state), "im-local", &failure)
-        && write_check(target->ime_known && !target->composing, "im-unclear", &failure)
+        && write_check(write_ime_clear(target, direct_entry), "im-unclear", &failure)
         && write_check(same_state(&state, &target->im_state), stamp_difference(&state, &target->im_state), &failure)
         && write_check(target->input_revision == input, "input-revision", &failure)
-        && write_check(target->focus_revision == focus && tl_focused() == target, "focus", &failure)
+        && write_check(target->focus_revision == focus && entry_focus_matches(target, &focus_guard), "focus", &failure)
         && write_check(gtk_editable_get_position(GTK_EDITABLE(widget)) == deleted_cursor
             && after_bound == deleted_bound, "selection", &failure)
         && write_check(tl_metadata_matches(target, approved), "metadata", &failure)
@@ -746,10 +839,10 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
             && write_check(target->storage_revision == expected_storage, "storage-revision", &failure)
             && write_check(inserted == (guint)replacement_chars, "insert-count", &failure)
             && write_check(validate_ime_locally(target, &state), "im-local", &failure)
-            && write_check(target->ime_known && !target->composing, "im-unclear", &failure)
+            && write_check(write_ime_clear(target, direct_entry), "im-unclear", &failure)
             && write_check(same_state(&state, &target->im_state), stamp_difference(&state, &target->im_state), &failure)
             && write_check(target->input_revision == input, "input-revision", &failure)
-            && write_check(target->focus_revision == focus && tl_focused() == target, "focus", &failure)
+            && write_check(target->focus_revision == focus && entry_focus_matches(target, &focus_guard), "focus", &failure)
             && write_check(gtk_editable_get_position(GTK_EDITABLE(widget)) == expected_cursor
                 && inserted_bound == expected_bound, "selection", &failure)
             && write_check(tl_metadata_matches(target, approved), "metadata", &failure)) {
@@ -760,10 +853,10 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     }
     gboolean clear = positioned && write_check(validate_ime_locally(target, &state), "im-local", &failure)
         && write_check(!target->quarantined, "quarantined", &failure)
-        && write_check(target->ime_known && !target->composing, "im-unclear", &failure)
+        && write_check(write_ime_clear(target, direct_entry), "im-unclear", &failure)
         && write_check(same_state(&state, &target->im_state), stamp_difference(&state, &target->im_state), &failure)
         && write_check(target->input_revision == input, "input-revision", &failure)
-        && write_check(target->focus_revision == focus && tl_focused() == target, "focus", &failure)
+        && write_check(target->focus_revision == focus && entry_focus_matches(target, &focus_guard), "focus", &failure)
         && write_check(target->buffer == buffer && target->storage_revision == expected_storage, "storage-revision", &failure)
         && write_check(tl_metadata_matches(target, approved), "metadata", &failure);
     char *after = clear ? read_text(target, &start, &end) : NULL;

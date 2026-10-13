@@ -215,8 +215,8 @@
 +                FCITX_INFO() << "TypeLay probe " << reason;
 +            }
 +        };
-+        if (!engine || !hasFocus()) {
-+            report(!engine ? "no-engine" : "no-focus");
++        if (!engine) {
++            report("no-engine");
 +            return {typelayOutputSerial_, false, true, true, hasFocus()};
 +        }
 +        if (const char *reason = typelayAddonGuard(im_->instance())) {
@@ -256,7 +256,7 @@
 +        if (blocked_) return std::make_tuple(std::vector<DBusBlockedEvent>{}, false);
 +        const auto state = typelayProbeStateV1();
 +        if (std::get<0>(state) != expected || !std::get<1>(state)
-+            || std::get<2>(state) || std::get<3>(state) || !std::get<4>(state))
++            || std::get<2>(state) || std::get<3>(state))
 +            return std::make_tuple(std::vector<DBusBlockedEvent>{}, false);
 +        setBlocked();
 +        reset();

@@ -2,8 +2,8 @@
 // field access and presentation. Session/model/acceptance policy stays in Runtime.
 #include "../fcitx5/typelay-fcitx-qt-v1.h"
 #include <QApplication>
+#include <QButtonGroup>
 #include <QClipboard>
-#include <QComboBox>
 #include <QCryptographicHash>
 #include <QFrame>
 #include <QGenericPlugin>
@@ -18,6 +18,7 @@
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QScopedValueRollback>
 #include <QSocketNotifier>
 #include <QTextBlock>
@@ -948,7 +949,8 @@ private:
         ui("visible", false);
         auto *card = card_.data();
         card_ = nullptr; editor_ = nullptr; hint_ = nullptr; status_ = nullptr;
-        language_ = nullptr; footer_ = nullptr; overlayTarget_ = nullptr;
+        language_ = nullptr; footer_ = nullptr; menu_ = nullptr; swap_ = nullptr;
+        sourceLanguages_ = nullptr; targetLanguages_ = nullptr; overlayTarget_ = nullptr;
         overlayView_ = {}; overlayFocused_ = false; composing_ = false; pendingEdit_ = false;
         card->hide();
         card->deleteLater();
@@ -962,6 +964,26 @@ private:
             hint = ready(overlayTarget_, publication_) ? QStringLiteral("Tab 接受译文") : QStringLiteral("Tab 交还应用");
         hint_->setText(hint);
     }
+    void arrangeOverlay() {
+        if (!card_ || !overlayTarget_ || !overlayTarget_->field) return;
+        auto *field = overlayTarget_->field.data();
+        auto *top = field->window();
+        const bool capsule = overlayView_.value("state").toString() == "IdleCapsule";
+        const int width = qMin(capsule && !menu_->isVisible() ? 160 : qBound(390, field->width(), 520),
+            qMax(1, top->width() - 16));
+        editor_->setFixedHeight(expanded_ ? 280 : 100);
+        card_->setFixedWidth(width); card_->adjustSize();
+        const auto bounds = geometry(overlayTarget_).value("bounds").toObject();
+        const int x = qBound(0, int(integer(bounds, "x") + integer(bounds, "width")) - width, qMax(0, top->width() - width));
+        const int above = int(integer(bounds, "y")) - card_->height() - 6;
+        const int y = above >= 0 ? above : int(integer(bounds, "y") + integer(bounds, "height")) + 6;
+        card_->move(x, qBound(0, y, qMax(0, top->height() - card_->height())));
+    }
+    void chooseLanguages(const QString &source, const QString &target) {
+        ui("languages", QJsonObject{{"source", source}, {"target", target}});
+        menu_->hide();
+        arrangeOverlay();
+    }
     void createOverlay(Target *target) {
         auto *top = target->field->window();
         auto *frame = new QFrame(top); // Child surface, never a new toplevel/input grab.
@@ -973,10 +995,31 @@ private:
         overlayTarget_ = target;
         auto *layout = new QVBoxLayout(frame);
         layout->setContentsMargins(12, 8, 12, 8);
+        auto button = [&](QWidget *parent, QBoxLayout *box, const QString &label, const char *operation) {
+            auto *value = new QPushButton(label, parent);
+            value->setFocusPolicy(Qt::NoFocus);
+            connect(value, &QPushButton::clicked, this, [this, operation] {
+                if (qstrcmp(operation, "menu") == 0) {
+                    menu_->setVisible(!menu_->isVisible());
+                } else if (qstrcmp(operation, "expand") == 0) {
+                    expanded_ = !expanded_; ui("expand", expanded_);
+                } else {
+                    menu_->hide();
+                    if (qstrcmp(operation, "copy") == 0) {
+                        if (editor_) QApplication::clipboard()->setText(editor_->toPlainText());
+                    } else ui(operation);
+                }
+                arrangeOverlay();
+            });
+            box->addWidget(value);
+            return value;
+        };
         auto *header = new QHBoxLayout;
-        language_ = new QLabel(frame);
+        language_ = button(frame, header, QString(), "menu");
+        language_->setObjectName(QStringLiteral("typelay-menu-trigger"));
+        language_->setAccessibleName(QStringLiteral("语言与更多操作"));
         status_ = new QLabel(frame);
-        header->addWidget(language_); header->addStretch(); header->addWidget(status_);
+        header->addStretch(); header->addWidget(status_);
         layout->addLayout(header);
         auto *translationEditor = new TranslationEditor(frame);
         editor_ = translationEditor;
@@ -1000,23 +1043,49 @@ private:
         footerLayout->setContentsMargins(0, 0, 0, 0);
         hint_ = new QLabel(footer_);
         footerLayout->addWidget(hint_); footerLayout->addStretch();
-        auto button = [&](const QString &label, const char *operation) {
-            auto *value = new QPushButton(label, footer_);
-            value->setFocusPolicy(Qt::NoFocus);
-            connect(value, &QPushButton::clicked, this, [this, operation] {
-                if (qstrcmp(operation, "copy") == 0) {
-                    if (editor_) QApplication::clipboard()->setText(editor_->toPlainText());
-                } else if (qstrcmp(operation, "expand") == 0) {
-                    expanded_ = !expanded_; ui("expand", expanded_);
-                } else ui(operation);
-            });
-            footerLayout->addWidget(value);
-        };
-        button(QStringLiteral("复制"), "copy");
-        button(QStringLiteral("重译"), "regenerate");
-        button(QStringLiteral("展开"), "expand");
-        button(QStringLiteral("Esc 隐藏"), "escape");
+        button(footer_, footerLayout, QStringLiteral("重译"), "regenerate");
+        button(footer_, footerLayout, QStringLiteral("展开"), "expand");
+        button(footer_, footerLayout, QStringLiteral("Esc 隐藏"), "escape");
         layout->addWidget(footer_);
+        menu_ = new QWidget(frame);
+        menu_->setObjectName(QStringLiteral("typelay-menu"));
+        auto *menuLayout = new QVBoxLayout(menu_);
+        menuLayout->setContentsMargins(0, 4, 0, 0);
+        // Keep choices inside the source window without a popup/focus grab.
+        // Direction changes still belong to the host's existing settings path.
+        const QStringList codes{QStringLiteral("auto"), QStringLiteral("zh"), QStringLiteral("en")};
+        const QStringList names{QStringLiteral("Auto"), QStringLiteral("中文"), QStringLiteral("英语")};
+        for (const bool source : {true, false}) {
+            auto *row = new QHBoxLayout;
+            row->addWidget(new QLabel(source ? QStringLiteral("源语言") : QStringLiteral("目标语言"), menu_));
+            auto *group = new QButtonGroup(menu_);
+            if (source) sourceLanguages_ = group; else targetLanguages_ = group;
+            for (int index = source ? 0 : 1; index < codes.size(); ++index) {
+                auto *choice = new QRadioButton(names[index], menu_);
+                choice->setFocusPolicy(Qt::NoFocus);
+                choice->setObjectName((source ? QStringLiteral("typelay-source-") : QStringLiteral("typelay-target-")) + codes[index]);
+                group->addButton(choice, index);
+                row->addWidget(choice);
+            }
+            row->addStretch();
+            connect(group, &QButtonGroup::idClicked, this, [this, source, codes](int index) {
+                chooseLanguages(source ? codes[index] : overlayView_.value("sourceLanguage").toString(),
+                    source ? overlayView_.value("targetLanguage").toString() : codes[index]);
+            });
+            menuLayout->addLayout(row);
+        }
+        swap_ = new QPushButton(QStringLiteral("交换语言"), menu_);
+        swap_->setFocusPolicy(Qt::NoFocus);
+        connect(swap_, &QPushButton::clicked, this, [this] {
+            const auto source = overlayView_.value("sourceLanguage").toString();
+            if (source != QStringLiteral("auto")) chooseLanguages(overlayView_.value("targetLanguage").toString(), source);
+        });
+        menuLayout->addWidget(swap_);
+        button(menu_, menuLayout, QStringLiteral("复制译文"), "copy")->setObjectName(QStringLiteral("typelay-copy"));
+        button(menu_, menuLayout, QStringLiteral("不要在这个应用中显示"), "exclude");
+        button(menu_, menuLayout, QStringLiteral("设置…"), "settings");
+        layout->addWidget(menu_);
+        menu_->hide();
     }
     QJsonObject overlayCommand(const QString &op, Target *target, const QJsonObject &data) {
         if (op == "overlay-hide") hideOverlay();
@@ -1054,20 +1123,21 @@ private:
                 }
                 editor_->setReadOnly(!editing);
                 editor_->setFocusPolicy(editing ? Qt::StrongFocus : Qt::NoFocus);
-                language_->setText(view.value("sourceLanguage").toString() + QStringLiteral(" → ") + view.value("targetLanguage").toString());
+                const auto source = view.value("sourceLanguage").toString();
+                const auto destination = view.value("targetLanguage").toString();
+                const auto languageName = [](const QString &code) {
+                    return code == QStringLiteral("auto") ? QStringLiteral("Auto")
+                        : code == QStringLiteral("zh") ? QStringLiteral("中文") : QStringLiteral("EN");
+                };
+                language_->setText(languageName(source) + QStringLiteral(" → ") + languageName(destination) + QStringLiteral(" ▾"));
+                sourceLanguages_->button(source == QStringLiteral("auto") ? 0 : source == QStringLiteral("zh") ? 1 : 2)->setChecked(true);
+                targetLanguages_->button(destination == QStringLiteral("zh") ? 1 : 2)->setChecked(true);
+                swap_->setEnabled(source != QStringLiteral("auto"));
                 status_->setText(view.value("status").toString());
                 refreshHint();
                 const bool capsule = view.value("state").toString() == "IdleCapsule";
                 editor_->setVisible(!capsule); footer_->setVisible(!capsule); status_->setVisible(!capsule);
-                auto *top = target->field->window();
-                const int width = qMin(capsule ? 160 : qBound(390, target->field->width(), 520), qMax(1, top->width() - 16));
-                editor_->setFixedHeight(expanded_ ? 280 : 100);
-                card_->setFixedWidth(width); card_->adjustSize();
-                const auto bounds = geometry(target).value("bounds").toObject();
-                const int x = qBound(0, int(integer(bounds, "x") + integer(bounds, "width")) - width, qMax(0, top->width() - width));
-                const int above = int(integer(bounds, "y")) - card_->height() - 6;
-                const int y = above >= 0 ? above : int(integer(bounds, "y") + integer(bounds, "height")) + 6;
-                card_->move(x, qBound(0, y, qMax(0, top->height() - card_->height())));
+                arrangeOverlay();
                 const bool dark = data.value("theme").toString() == "Dark";
                 card_->setStyleSheet(dark
                     ? QStringLiteral("QFrame#typelay-overlay { background:#20242c; color:#e8ebf2; border:1px solid #596170; border-radius:12px; }")
@@ -1339,8 +1409,10 @@ private:
     bool dispatching_ = false, handlingKey_ = false, advancingShortcut_ = false;
     QPointer<QFrame> card_;
     QPointer<QPlainTextEdit> editor_;
-    QPointer<QLabel> hint_, status_, language_;
-    QPointer<QWidget> footer_;
+    QPointer<QLabel> hint_, status_;
+    QPointer<QPushButton> language_, swap_;
+    QPointer<QButtonGroup> sourceLanguages_, targetLanguages_;
+    QPointer<QWidget> footer_, menu_;
     Target *overlayTarget_ = nullptr;
     qint64 overlayUntil_ = 0, overlayRevision_ = 0;
     bool overlayFocused_ = false, composing_ = false, settingText_ = false, pendingEdit_ = false, expanded_ = false;

@@ -424,7 +424,7 @@ class Settings:
         grid.attach(exclusions, 1, row, 1, 1)
         note = Gtk.Label(
             label="快捷键仅在按需模式启用。输入适配器必须随目标应用启动。\n"
-            "网页输入需安装扩展。GTK3/GTK4 标准单行输入框需另行启用 Fcitx 合作组件；Qt 尚未实现。\n"
+            "网页输入需安装扩展。GTK3/GTK4 标准单行及纯文本多行框需启用 Fcitx 合作组件；Qt6 标准单行/纯文本多行另用 --qt6 启动。\n"
             "密码、敏感字段及无法确认输入法状态的控件不会读取或替换。",
             xalign=0,
         )

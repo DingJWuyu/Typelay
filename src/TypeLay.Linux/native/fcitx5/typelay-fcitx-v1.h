@@ -1,9 +1,9 @@
 #pragma once
 #include <gtk/gtk.h>
 
-/* The actual GtkIMContext publishes itself on its owning widget. GTK3 qdata
- * retains the context. GTK4's context already retains its client widget, so its
- * qdata binding is borrowed and cleared before unbinding or context teardown.
+/* The actual GtkIMContext publishes a borrowed binding on its owning widget.
+ * Both versions clear it on unbinding/teardown only while it still names them.
+ * Consumers keep a weak context between calls and a strong reference per call.
  * The capability table is static. Consumers retain the context during each
  * call, never create a reverse lifetime cycle. Neither a requested im-module
  * name nor loading a library establishes this binding. */
@@ -16,7 +16,10 @@ enum {
     TL_FCITX_KNOWN = 1u << 0,
     TL_FCITX_FOCUSED = 1u << 1,
     TL_FCITX_PENDING = 1u << 2,
-    TL_FCITX_COMPOSING = 1u << 3
+    TL_FCITX_COMPOSING = 1u << 3,
+    /* Exact Entry, same window: widget and its independent IC are unfocused.
+     * Only Known|Detached with equal serials is a background direct proof. */
+    TL_FCITX_DETACHED = 1u << 4
 };
 enum {
     TL_FCITX_CHANGE_INPUT = 1u << 0,
@@ -61,7 +64,9 @@ typedef struct {
      * server-validated, bounded synchronous reset batch and deliver its actual
      * output. Do not alter selection or suppress IM output. The consumer must
      * inspect again and revalidate its original source authorization afterwards;
-     * this operation cannot turn an unknown/composing context into authority. */
+     * this operation cannot turn an unknown/composing context into authority.
+     * Detached preparation addresses only this original field/context. It never
+     * focuses it or resets the currently focused field's independent context. */
     gboolean (*prepare_caret)(GtkIMContext *context, GtkWidget *expected_widget,
         const TlFcitxStateV1 *baseline);
 } TlFcitxCapabilityV1;

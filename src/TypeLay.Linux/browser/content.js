@@ -515,7 +515,7 @@
       host.style.cssText = "all:initial;position:fixed;z-index:2147483647;display:block;max-width:calc(100vw - 16px)";
       const shadow = host.attachShadow({mode: "closed"});
       const style = document.createElement("style");
-      style.textContent = ":host{color-scheme:light dark}section{font:13px system-ui;color:light-dark(#252a31,#eef1f6);background:light-dark(#fff,#252830);border:1px solid #9299a477;border-radius:14px;box-shadow:0 8px 28px #0003;overflow:hidden}header,footer{padding:8px 12px;font-size:11px;display:flex;align-items:center;gap:8px}header{border-bottom:1px solid #9299a433}footer{border-top:1px solid #9299a433;flex-wrap:wrap}textarea{box-sizing:border-box;display:block;resize:none;width:100%;min-height:64px;max-height:160px;border:0;padding:12px 14px;outline:none;font:14px/1.55 system-ui;background:transparent;color:inherit}textarea:focus{box-shadow:inset 0 0 0 2px #3267e355}button{font:inherit;color:inherit;border:0;border-radius:5px;padding:3px 5px;background:transparent;cursor:pointer}button:hover{background:#9299a422}[hidden]{display:none!important}";
+      style.textContent = ":host{color-scheme:light dark}section{font:13px system-ui;color:light-dark(#252a31,#eef1f6);background:light-dark(#fff,#252830);border:1px solid #9299a477;border-radius:14px;box-shadow:0 8px 28px #0003;overflow:hidden}header,footer{padding:8px 12px;font-size:11px;display:flex;align-items:center;gap:8px}header{border-bottom:1px solid #9299a433}footer{border-top:1px solid #9299a433;flex-wrap:wrap}.more-actions{display:flex;flex-direction:column;gap:4px;padding:8px 12px;border-top:1px solid #9299a433}.more-actions button{text-align:left}textarea{box-sizing:border-box;display:block;resize:none;width:100%;min-height:64px;max-height:160px;border:0;padding:12px 14px;outline:none;font:14px/1.55 system-ui;background:transparent;color:inherit}textarea:focus{box-shadow:inset 0 0 0 2px #3267e355}button{font:inherit;color:inherit;border:0;border-radius:5px;padding:3px 5px;background:transparent;cursor:pointer}button:hover{background:#9299a422}[hidden]{display:none!important}";
       const panel = document.createElement("section"), header = document.createElement("header");
       const language = document.createElement("button"), status = document.createElement("span");
       language.title = "语言和设置";
@@ -549,12 +549,36 @@
         expand.textContent = overlay.expanded ? "缩小" : "展开";
         sizeEditor(); position();
       });
+      const collapse = document.createElement("button");
+      collapse.textContent = "收起";
+      collapse.addEventListener("pointerdown", event => event.preventDefault());
+      collapse.addEventListener("click", () => ui("escape"));
+      const more = document.createElement("button"), menu = document.createElement("div");
+      more.textContent = "更多";
+      more.setAttribute("aria-expanded", "false");
+      more.setAttribute("aria-controls", "more-actions");
+      menu.id = menu.className = "more-actions";
+      menu.setAttribute("role", "group");
+      menu.setAttribute("aria-label", "更多操作");
+      menu.hidden = true;
+      const setMoreOpen = open => {
+        menu.hidden = !open;
+        more.setAttribute("aria-expanded", String(open));
+        position();
+      };
+      // Disclosure controls retain source/editor focus just like the existing
+      // actions. Opening this UI never renews its host lease or a write permit.
+      more.addEventListener("pointerdown", event => event.preventDefault());
+      more.addEventListener("click", event => {
+        if (event.isTrusted && overlay) setMoreOpen(menu.hidden);
+      });
       const copy = document.createElement("button");
-      copy.textContent = "复制";
+      copy.textContent = "复制译文";
       copy.addEventListener("pointerdown", event => event.preventDefault());
       copy.addEventListener("click", async event => {
         if (!event.isTrusted || !overlay) return;
         const current = overlay;
+        setMoreOpen(false);
         try {
           if (!navigator.clipboard?.writeText) throw new Error("clipboard-unavailable");
           await navigator.clipboard.writeText(current.editor.value);
@@ -563,15 +587,16 @@
           if (overlay === current) current.status.textContent = "复制失败，请选中译文手动复制";
         }
       });
-      footer.append(expand, copy);
-      for (const [text, operation] of [["重译", "regenerate"], ["收起", "escape"], ["排除应用", "exclude"]]) {
+      footer.append(expand, collapse, more);
+      menu.append(copy);
+      for (const [text, operation] of [["重新翻译", "regenerate"], ["不要在这个应用中显示", "exclude"], ["设置", "settings"]]) {
         const button = document.createElement("button"); button.textContent = text;
         button.addEventListener("pointerdown", event => event.preventDefault());
-        button.addEventListener("click", () => ui(operation)); footer.append(button);
+        button.addEventListener("click", () => { setMoreOpen(false); ui(operation); }); menu.append(button);
       }
-      panel.append(header, editor, footer); shadow.append(style, panel);
+      panel.append(header, editor, footer, menu); shadow.append(style, panel);
       document.documentElement.append(host);
-      overlay = {field, host, editor, language, status, hint, footer, editing: false, composing: false, expanded: false};
+      overlay = {field, host, editor, language, status, hint, footer, more, menu, editing: false, composing: false, expanded: false};
     }
     if (data.revision < (overlay.revision || 0)) return {visible: true, editing: overlay.editing};
     overlay.revision = data.revision;
@@ -583,6 +608,10 @@
     overlay.tabHint = view.presentation.tabHint;
     overlay.editor.hidden = !view.text && view.state === "IdleCapsule";
     overlay.footer.hidden = overlay.editor.hidden;
+    if (overlay.footer.hidden) {
+      overlay.menu.hidden = true;
+      overlay.more.setAttribute("aria-expanded", "false");
+    }
     if (!view.presentation.editorOwnsText) {
       overlay.editor.value = view.text || "";
       overlay.editing = false; overlay.editor.readOnly = true;

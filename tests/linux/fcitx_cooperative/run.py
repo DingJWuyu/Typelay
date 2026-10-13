@@ -771,6 +771,32 @@ def session(out: Path, core_version: str):
                 assert command("accept")["result"] == "refused-input"
                 assert command("capture")["result"] == "captured"
                 assert command("accept")["result"] == "accepted"
+                # The independent inactive A context is queried while real B input
+                # and then B pinyin composition are active. Preparation must not reset B.
+                assert command("focus")["result"] == "focused-other"
+                wait(lambda: state().get("other_focused"), "actual second field focus")
+                run(["xdotool", "type", "--window", window, "--delay", "15", "world"], env=env)
+                wait(lambda: state().get("other_length") == 5, "second field ordinary input")
+                assert command("detached-proof")["result"] == "detached-clear"
+                run(["fcitx5-remote", "-s", "pinyin"], env=env)
+                assert run(["fcitx5-remote", "-n"], env=env) == "pinyin"
+                run(["xdotool", "type", "--window", window, "--delay", "15", "nihao"], env=env)
+                ack = state().get("key_queue_ack", 0)
+                run(["xdotool", "key", "--window", window, "F24"], env=env)
+                wait(
+                    lambda: state().get("key_queue_ack", 0) > ack
+                    and state().get("other_preedit", 0) > 0,
+                    "second field real preedit delivered",
+                )
+                assert command("detached-proof")["result"] == "detached-clear"
+                assert state()["other_preedit"] > 0
+                run(["xdotool", "key", "--window", window, "Escape"], env=env)
+                wait(
+                    lambda: state().get("other_preedit") == 0, "second field composition cancelled"
+                )
+                run(["fcitx5-remote", "-s", "keyboard-us"], env=env)
+                assert command("refocus")["result"] == "focused-original"
+                wait(lambda: state().get("settled"), "original keyboard field returned")
                 run(["xdotool", "key", "--window", window, "dead_acute"], env=env)
                 wait(
                     lambda: state().get("composing") or state().get("pending"),
@@ -844,11 +870,14 @@ def session(out: Path, core_version: str):
                         lambda: state().get("length") == 8,
                         f"ordinary input preserved with unknown {label}",
                     )
+                assert command("replace-delegate")["result"] == "old-delegate-released"
                 (out / "result.json").write_text(
                     json.dumps(
                         {
                             "passed": True,
                             "actual_gtk_compare_write": True,
+                            "detached_independent_ic_typing_and_preedit": True,
+                            "replaced_delegate_released": True,
                             "keyboard_us_compare_write": True,
                             "previous_engine_pending_refusal": True,
                             "keyboard_compose_refusal": True,

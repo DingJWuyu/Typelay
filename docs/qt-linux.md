@@ -1,6 +1,6 @@
 # Qt6 原生输入路径
 
-Qt 路径已在隔离 CI 中构建、验证，普通 Linux 安装不会自动启用；可选合作包仍待实际构建与搬迁验证，尚未完成用户交付。用户已确认 Qt 6.11.2-3.1、Fcitx Qt 5.1.15、GTK4 4.22.5-1.1；Arch 隔离环境已验证同上游版本的 Qt 6.11.2 与 GTK4 4.22.5。CI 的 Arch 构建与用户的 CachyOS 发行修订仍须区分，不能把 CI 插件直接当作用户可安装组件，或据此声明用户机器通过。该路径复用同一个 Linux 宿主、Core/Runtime 会话与本地模型，不另建翻译或接受控制器。
+Qt 路径已在隔离 CI 中构建、验证，普通 Linux 安装不会自动启用；可选合作包已通过实际构建、中文空格目录搬迁与 `launch --qt6` 验证，启用和回退步骤见 [Fcitx 合作组件](fcitx-linux.md)。用户已确认 Qt 6.11.2-3.1、Fcitx Qt 5.1.15、GTK4 4.22.5-1.1；Arch 隔离环境已验证同上游版本的 Qt 6.11.2 与 GTK4 4.22.5。CI 的 Arch 构建与用户的 CachyOS 发行修订仍须区分，须通过合作包的运行时版本与依赖检查，不能据此声明用户机器通过。该路径复用同一个 Linux 宿主、Core/Runtime 会话与本地模型，不另建翻译或接受控制器。
 
 ## 实现范围
 
@@ -30,7 +30,7 @@ F9/F10 是显式命令：有效的当前目标/元数据授权可登记最多一
 
 写入在源 GUI 线程执行：验证原文与 UTF-16 选区，准备并重验 provider，设置原生选区，在所有同步选区回调后再次检查身份、字段元数据、输入/焦点/正文版本、期限与本地 IME 证明。单行沿用 `setSelection`/`insert`；多行用 `QTextCursor` 的 `beginEditBlock`/`insertText`/`endEditBlock`，核对完整正文与当前光标后再设置 cursor，最终核对文档变更范围。禁止通过 `setText`/`setPlainText` 清空撤销记录，也不强制开启应用关闭的 undo。写后核对完整结果、光标、字段、文档身份与 IME；不匹配返回 `OutcomeUnknown` 并隔离该字段，不盲目重试或回滚覆盖应用的新内容。该范围包含普通应用事件过滤器与重入回调；不宣称对恶意应用提供原子事务保证。
 
-直接替换分别核验冻结的原源版本和写前新批准的完整 Clear 证明，不能把纯 modifier 之后的旧证明继续当作可写许可。目前 provider 只为实际焦点对象提供能力，F10 写回仍要求原字段聚焦；任务期间切换到其他字段后的后台写回未完成，结果也不会转写新焦点。QTextEdit、其他富文本结构和自绘源字段仍未完成。
+直接替换分别核验冻结的原源版本和写前新批准的完整 Clear 证明，不能把纯 modifier 之后的旧证明继续当作可写许可。标准 QLineEdit 另有同窗口后台直接替换路径：离开原字段时，只有原输入与输出全部退休、真实输入法 Clear、原上下文及字段版本仍一致，provider 才建立独立的 detached 证明。写入原字段时不聚焦它，也不 reset 当前字段的输入法；原正文、选区、元数据或绑定变化仍拒绝。真实模型回归已验证 A→B 后写 A、保持 B 焦点/正文和 A 原生撤销；独立输入法回归验证 B 处于真实拼音组合时证明不清理 B，以及未退休输入时拒绝。此增量尚待纳入下一发行包。QPlainTextEdit 后台、跨窗口/应用后台仍未完成；结果不会转写新焦点。QTextEdit、其他富文本结构和自绘源字段仍未完成。
 
 ## 构建与验证
 
@@ -43,6 +43,6 @@ cmake --build artifacts/linux/qt-native
 
 输出 `qt6/generic/libtypelay-qt6.so` 与 `qt-native-fixture`。仅在已验证的隔离合作环境中，为该测试进程追加插件目录和 `typelay` generic plugin，并设置 `TYPELAY_FCITX_COOPERATIVE=1`。普通安装器不会修改系统 Qt 插件目录、系统输入法或用户会话。
 
-`tests/linux/qt_native_fixture.cpp` 提供两个真实 QLineEdit 和按场景启用的标准 QPlainTextEdit、原生 undo/redo 与文档变更状态、输入事件计数、字段保护配置及一次性应用回调干扰。它只使用合成正文。生产模块不输出字段正文或任意元数据日志。`tests/linux/qt_desktop.py` 使用正式宿主、真实本地模型与嵌套 niri 路径进行集成验收，当前上述范围由 [6d9a761 的 13 项 Qt 隔离验收](https://github.com/DingJWuyu/Typelay/actions/runs/38343429488) 覆盖。测试记录实际 fixture PID 的库和 Wayland 插件映射，并核对构建、请求与运行版本均为 6.11.2，拒绝混版或 XCB 替代；`qt_cooperative` 另用真实完成顺序扰动检查异步 FIFO 和实际字段内容，不能用正文长度代替内容完整性。
+`tests/linux/qt_native_fixture.cpp` 提供两个真实 QLineEdit 和按场景启用的标准 QPlainTextEdit、原生 undo/redo 与文档变更状态、输入事件计数、字段保护配置及一次性应用回调干扰。它只使用合成正文。生产模块不输出字段正文或任意元数据日志。`tests/linux/qt_desktop.py` 使用正式宿主、真实本地模型与嵌套 niri 路径进行集成验收，上述范围及同窗口 QLineEdit 后台直接替换由 [238f15a 的 14 项 Qt 隔离验收](https://github.com/DingJWuyu/Typelay/actions/runs/38347539688) 覆盖；该单项验收不代表完整发行回归。测试记录实际 fixture PID 的库和 Wayland 插件映射，并核对构建、请求与运行版本均为 6.11.2，拒绝混版或 XCB 替代；`qt_cooperative` 另用真实完成顺序扰动检查异步 FIFO 和实际字段内容，不能用正文长度代替内容完整性。
 
 编译与 offscreen 加载只证明构建/加载，不证明 socket、Fcitx 输入、物理 Tab、真实中文 IME、多屏缩放或完整产品 UI 通过。QTextEdit、其他 Qt 富文本结构和应用自绘编辑器仍未实现；本路径不能代表通用 Qt 输入框全部完成。

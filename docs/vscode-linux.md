@@ -27,6 +27,17 @@
 
 VS Code 的公开扩展 API 不提供 IME composition 生命周期。文档版本不是输入法空闲证明；Command Palette 也不是可靠提交屏障，上游在缺失原生 compositionend 的 blur 路径会人工结束内部状态。请先提交输入法候选并核对预览原文，再确认替换。这条手动命令不能证明 Fcitx5 组合输入、自动胶囊或物理 Tab 已安全支持。
 
+## 自动路径尚缺的宿主能力
+
+这里的限制来自编辑器扩展接口，不是 Wayland 的窗口访问限制：
+
+- 文档、选区、身份及版本观察已经可用，`TextEditor.edit` 也会在 renderer 应用编辑前核验文档版本。缺口不是普通并发改文没有版本事务，而是同一次操作没有包含当前选区、焦点及 IME 证明。
+- renderer 在 `compositionupdate` 期间就会向模型发送 `type`/`compositionType`，所以文档变化加 debounce 不能证明观察到的是已提交正文。内部确有 [`isComposing` 上下文键](https://github.com/microsoft/vscode/blob/main/src/vs/editor/common/editorContextKeys.ts)，可限制快捷键的 `when`，但公开扩展 API 没有与文档版本绑定的组合事件或已提交范围查询。
+- 自定义 Tab 命令经过 Extension Host 异步状态。按键匹配后，[其余绑定不再处理](https://code.visualstudio.com/docs/configure/keybindings#_keyboard-rules)；之后编辑被拒绝不能把原键完整交还原补全、缩进或焦点行为。不能通过补发另一个 `tab` 命令冒充原按键。
+- [InlineCompletionItem](https://code.visualstudio.com/api/references/vscode-api#InlineCompletionItem) 可以使用宿主的展示和接受机制，但稳定接口的替换范围限于单行；宿主 Tab 接受还要求无选区，不能覆盖现规格的跨行选区或整段替换。Decoration 不是可编辑胶囊，Webview 在独立视图中；公开 TextEditor 没有光标屏幕矩形，扩展也[不能访问 VS Code DOM](https://code.visualstudio.com/api/extension-capabilities/overview#restrictions)。
+
+因此，自动预览或 inline completion 是可能的另一种交互，但不能直接记为当前自动胶囊/Tab 规格完成。闭合当前路径需要 renderer 侧提供组合状态、布局锚点和按键时同步核验/执行的合作入口，再接现有共享会话。当前普通 VSIX 没有这项集成；也不能将此结论外推成所有 Electron 应用都不可能支持。
+
 ## 开发回归
 
 使用官方 VS Code 原生二进制，或发行版拆分的 Electron + Code 应用目录。`--code` 必须是真实 ELF，而非 `/usr/bin/code` CLI 包装器；Arch 的 Electron 版本目录按实际安装确认。容器应给字体共享内存足够容量，例如 1 GiB `/dev/shm`。
