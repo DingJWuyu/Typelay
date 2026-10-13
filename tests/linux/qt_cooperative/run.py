@@ -396,6 +396,7 @@ def session(out, fcitx, forced_sync_diagnostic=False):
             QT_QPA_PLATFORM="xcb",
             QT_IM_MODULE="fcitx5",
             TYPELAY_QT_PROBE="1",
+            TYPELAY_QT_COOPERATIVE="1",
         )
         results = {}
         with (out / "framework.log").open("w") as log:
@@ -558,6 +559,19 @@ def session(out, fcitx, forced_sync_diagnostic=False):
                             assert client.wait(timeout=10) == 0
                             continue
                         assert s["firstLength"] == 5 and s["secondLength"] == 0
+
+                        def probe_first():
+                            before = state().get("firstProbeCount", 0)
+                            client.stdin.write("probe1\n")
+                            client.stdin.flush()
+                            wait(
+                                lambda: counter_exceeds(state(), "firstProbeCount", before),
+                                "actual first field cooperation query",
+                            )
+                            return state()
+
+                        if mode == "async":
+                            assert probe_first()["firstProbeFlags"] == 3
                         generation, contexts = s["tlqtBindingEpoch"], s["tlqtContexts"]
                         client.stdin.write("focus2\n")
                         client.stdin.flush()
@@ -577,15 +591,31 @@ def session(out, fcitx, forced_sync_diagnostic=False):
                             and s["secondLength"] == 5
                             and s["tlqtContexts"] == contexts
                         )
+                        if mode == "async":
+                            detached = probe_first()
+                            assert detached["firstProbeFlags"] == 17 and detached["firstProbeLocal"]
+                            assert detached["firstProbePrepare"] and detached["firstLength"] == 5
                         run(["xdotool", "key", "--window", window, "Menu"], env=env)
                         barrier()
                         assert counter_exceeds(state(), "widgetMenuCallbacks")
                         run(["fcitx5-remote", "-s", "pinyin"], env=env)
                         wait(lambda: state().get("tlqtEngine") == "pinyin", "actual pinyin engine")
                         run(
-                            ["xdotool", "type", "--window", window, "--delay", "10", "nihao "],
+                            ["xdotool", "type", "--window", window, "--delay", "10", "nihao"],
                             env=env,
                         )
+                        wait(
+                            lambda: (state().get("secondPreeditLength") or 0) > 0 and settled(),
+                            "actual second-field pinyin composition",
+                        )
+                        if mode == "async":
+                            detached = probe_first()
+                            assert detached["firstProbeFlags"] == 17 and detached["firstProbeLocal"]
+                            assert (
+                                detached["firstProbePrepare"]
+                                and detached["secondPreeditLength"] > 0
+                            )
+                        run(["xdotool", "key", "--window", window, "space"], env=env)
                         barrier()
                         s = state()
                         assert counter_exceeds(s, "widgetCommitCallbacks") and counter_exceeds(
@@ -603,6 +633,30 @@ def session(out, fcitx, forced_sync_diagnostic=False):
                             )
                         else:
                             assert counter_exceeds(s, "tlqtSyncReplies")
+                        if mode == "async":
+                            run(["fcitx5-remote", "-s", "keyboard-us"], env=env)
+                            wait(
+                                lambda: state().get("tlqtEngine") == "keyboard-us",
+                                "keyboard engine restored",
+                            )
+                            client.stdin.write("focus1\n")
+                            client.stdin.flush()
+                            wait(
+                                lambda: state().get("tlqtFocusObject") == 1 and settled(),
+                                "first field restored",
+                            )
+                            assert probe_first()["firstProbeFlags"] == 3
+                            client.stdin.write("arm-pending-switch\n")
+                            client.stdin.flush()
+                            run(["xdotool", "key", "--window", window, "a"], env=env)
+                            wait(
+                                lambda: counter_exceeds(state(), "pendingSwitches") and settled(),
+                                "focus switched during actual pending QPA delivery",
+                            )
+                            assert probe_first()["firstProbeFlags"] == 0
+                            s = state()
+                            s["detached_typing_and_preedit"] = True
+                            s["pending_switch_refused_detached"] = True
                         results[mode] = s
                         transition.update(
                             engine_after=run(["fcitx5-remote", "-n"], env=env),

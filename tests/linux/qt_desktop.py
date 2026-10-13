@@ -754,6 +754,105 @@ def run_qt(
                     "Qt6 explicit command safety: real queued input/focus changes cancel without writes; "
                     "a post-snapshot source edit survives the completed CPU direct translation"
                 )
+
+                def native_verified_count():
+                    return sum(
+                        line.startswith("TypeLay Qt6 phase=write-verified reason=None ")
+                        for line in (arguments.output / "qt-desktop-fixture.log")
+                        .read_text(errors="replace")
+                        .splitlines()
+                    )
+
+                for action, background_source, succeeds in (
+                    ("focus-second", "Please send me the updated schedule.", True),
+                    ("focus-second-rewrite", "Please keep the revised message safe.", False),
+                ):
+                    command("focus", field="first")
+                    wait_for(
+                        lambda: state()["first"]["focused"],
+                        "background direct source did not regain focus",
+                    )
+                    dormant_source(background_source)
+                    before = state()
+                    assert before["first"]["selectionLength"] == 0
+                    assert (
+                        before["first"]["cursor"] == len(background_source.encode("utf-16-le")) // 2
+                    )
+                    before_verified = native_verified_count()
+                    before_write = trace_checkpoint()
+                    command("on-command-dispatched", action=action)
+                    wait_for(
+                        lambda: state().get("commandDispatchedAction") == action,
+                        "fixture did not arm the real post-snapshot background transition",
+                    )
+                    key("ctrl+shift+F10")
+                    wait_for(
+                        lambda: (value := state()).get("shortcutState") == "dispatched"
+                        and value.get("shortcutId") == before["shortcutId"] + 1
+                        and value.get("shortcutActionId") == value["shortcutId"]
+                        and value.get("shortcutActionCount") == before["shortcutActionCount"] + 1
+                        and value["second"]["focused"],
+                        "real direct snapshot was not followed by the application's focus change",
+                    )
+                    # Success then failure gives distinct public terminal states;
+                    # no old failure string can acknowledge the next operation.
+                    terminal = (
+                        "已直接替换原输入框文字。"
+                        if succeeds
+                        else "直接写回未获确认，请检查原输入框；不会自动重试。"
+                    )
+                    after = wait_for(
+                        lambda: value
+                        if (value := state())["first"]["changes"] > before["first"]["changes"]
+                        and status().get("serviceStatus") == terminal
+                        else None,
+                        "background direct translation did not reach its expected real outcome",
+                    )
+                    assert after["first"]["changes"] == before["first"]["changes"] + 1
+                    assert after["second"]["focused"] and not after["first"]["focused"]
+                    assert after["second"]["text"] == other
+                    assert after["second"]["changes"] == before["second"]["changes"]
+                    assert after["focusTransitions"] == before["focusTransitions"] + 1
+                    assert after["keys"].get("firstFocusIn", 0) == before["keys"].get(
+                        "firstFocusIn", 0
+                    )
+                    assert (
+                        after["keys"].get("firstFocusOut", 0)
+                        == before["keys"].get("firstFocusOut", 0) + 1
+                    )
+                    changed = after["firstChangeContext"]
+                    assert changed["firstChanges"] == before["first"]["changes"] + 1
+                    assert changed["secondFocused"] and changed["secondText"] == other
+                    assert changed["focusTransitions"] == after["focusTransitions"]
+                    assert native_verified_count() == before_verified + succeeds
+                    assert not new_write_outcomes(before_write)
+                    if succeeds:
+                        assert after["first"]["text"] != background_source
+                        assert re.search(r"[\u3400-\u9fff]", after["first"]["text"])
+                        assert after["first"]["undoAvailable"]
+                        command("undo", field="first")
+                        wait_for(
+                            lambda: state()["first"]["text"] == background_source,
+                            "background native undo did not restore the exact original source",
+                        )
+                        restored = state()
+                        assert restored["first"]["changes"] == after["first"]["changes"] + 1
+                        assert restored["second"]["focused"] and restored["second"]["text"] == other
+                        assert restored["second"]["changes"] == before["second"]["changes"]
+                        assert restored["focusTransitions"] == after["focusTransitions"]
+                        assert native_verified_count() == before_verified + 1
+                    else:
+                        assert after["first"]["text"] == changed_source
+                command("focus", field="first")
+                wait_for(
+                    lambda: state()["first"]["focused"],
+                    "source did not regain focus after background direct cases",
+                )
+                evidence.append(
+                    "Qt6 QLineEdit background direct: one native Verified write to the captured A "
+                    "while B keeps focus and text, native undo restores A without stealing focus; "
+                    "a post-snapshot application edit to A rejects the next direct write"
+                )
                 set_mode(0)
 
                 clear_source()

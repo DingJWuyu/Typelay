@@ -147,6 +147,7 @@ public:
     explicit Native(QObject *parent) : QObject(parent) {
         qApp->installEventFilter(this);
         connect(qApp, &QApplication::focusChanged, this, [this](QWidget *old, QWidget *current) {
+            ++focusGeneration_;
             for (auto *widget : {old, current}) if (auto *target = discover(widget)) invalidate(target, false, true);
             syncOverlay();
         });
@@ -481,9 +482,9 @@ private:
         auto *owner = target->field->property(ProviderProperty).value<QObject *>();
         auto *capability = owner ? qobject_cast<TypeLayFcitxQtV1 *>(owner) : nullptr;
         if (!capability || owner->thread() != thread()) owner = nullptr;
-        // The provider publishes only on its current focus object. Keep its
-        // weak identity while the source lends focus to our editor; absence is
-        // never Clear, but is not itself a source-text edit.
+        // The provider may retain this property for a proven Detached field.
+        // Absence still grants no capability and is not itself a text edit;
+        // only inspect can distinguish focused and sealed background proof.
         if (!owner) { clearPermit(); return nullptr; }
         if (target->provider != owner) {
             shortcutAuthority_ = {};
@@ -503,6 +504,13 @@ private:
         return state.flags == 3u && state.serverSerial == state.appliedSerial
             && state.contextGeneration != 0 && state.fieldGeneration != 0;
     }
+    bool clearForWrite(Target *target, bool direct) const {
+        if (clear(target->state)) return true;
+        const auto &state = target->state;
+        return direct && target->line() && state.flags == (TlQtKnown | TlQtDetached)
+            && state.serverSerial == state.appliedSerial
+            && state.contextGeneration != 0 && state.fieldGeneration != 0;
+    }
     QJsonObject stamp(const TypeLayFcitxQtStateV1 &state) const {
         return {{"context", qint64(state.contextGeneration)}, {"field", qint64(state.fieldGeneration)},
             {"epoch", qint64(state.epoch)}, {"input", qint64(state.inputEpoch)},
@@ -520,7 +528,7 @@ private:
         QScopedValueRollback<bool> probing(target->probing, true);
         const bool valid = capability->inspect(field, &state) && field && owner && target->provider == owner
             && field->property(ProviderProperty).value<QObject *>() == owner
-            && state.size == sizeof state && state.version == 1u && (state.flags & ~15u) == 0;
+            && state.size == sizeof state && state.version == 1u && (state.flags & ~(TlQtKnown | TlQtFocused | TlQtPending | TlQtComposing | TlQtDetached)) == 0;
         if (!valid) { clearPermit(); return false; }
         if (target->observed && stamp(target->state) != stamp(state)) {
             clearPermit();
@@ -769,20 +777,36 @@ private:
             || identity.value("backend").toString() != "linux-qt6" || identity.value("value").toString() != target->id
             || identity.value("lifetime").toString() != lifetime_)
             return reject("write-header", "BadPlan");
-        if (target->mutating || target->quarantined || !inspect(target) || !clear(target->state))
+        if (target->mutating || target->quarantined || !inspect(target) || !clearForWrite(target, direct))
             return reject("write-inspect", "ImeUnclear");
         const qint64 until = integer(request, "expiresAtMs", 0), current = now();
         if (until <= current || until - current > (direct ? 250 : 100))
             return reject("write-deadline", "StaleObservation");
+        const bool background = target->state.flags == (TlQtKnown | TlQtDetached);
+        const bool directLine = direct && target->line();
         const qint64 approvedAge = now() - integer(approved, "observedAtMs");
         const bool authorized = direct
-            ? sourceAuthorityMatches(target, basis, true) && authorityMatches(target, approved, true)
+            ? sourceAuthorityMatches(target, basis, !directLine) && authorityMatches(target, approved, !background)
+                && integer(approved, "focusRevision") == qint64(target->focus)
                 && approvedAge >= 0 && approvedAge <= 150
             : authorityMatches(target, basis, true);
         if (!metadataMatches(target, approved) || !authorized)
             return reject("write-authority", "EpochChanged");
         QPointer<QWidget> field = target->field;
         QPointer<QObject> provider = target->provider;
+        const QPointer<QWidget> active = QApplication::activeWindow();
+        const QPointer<QWidget> focusedWidget = QApplication::focusWidget();
+        const QPointer<QObject> focusedObject = QGuiApplication::focusObject();
+        const auto focusGeneration = focusGeneration_;
+        auto focusUnchanged = [&] {
+            return field && active && focusedWidget && focusedObject && focusGeneration_ == focusGeneration
+                && QApplication::activeWindow() == active && QApplication::focusWidget() == focusedWidget
+                && QGuiApplication::focusObject() == focusedObject
+                && (background ? focusedWidget != field && focusedObject != field
+                    && active == field->window() && focusedWidget->window() == field->window()
+                    : focused() == target);
+        };
+        if (!focusUnchanged()) return reject("write-current-focus", "EpochChanged");
         const QPointer<QTextDocument> document = target->document;
         const auto documentGeneration = target->documentGeneration;
         const auto captured = body(target);
@@ -824,7 +848,7 @@ private:
         auto unchanged = [&] {
             return field && provider && fd_ >= 0 && connectionGeneration_ == connection
                 && authorizationGeneration_ == authorization && target->field == field && target->provider == provider
-                && focused() == target && target->input == input && target->focus == focus
+                && focusUnchanged() && target->input == input && target->focus == focus
                 && target->storage == storage && target->content == content
                 && metadataMatches(target, basis) && metadataMatches(target, approved)
                 && target->document == document && target->documentGeneration == documentGeneration
@@ -834,14 +858,15 @@ private:
         if (!capability || !local(target, initialState))
             return reject("write-local-before-prepare", "ImeUnclear");
         // Prepare against the real provider while the original body is intact,
-        // then inspect again. Standard Clear selection has no pending preedit
-        // to commit; any unexpected reset/output still invalidates proof.
+        // then inspect again. Detached prepare is a provider-local validation,
+        // never a reset of the currently focused field. Standard Clear selection
+        // has no preedit to commit; unexpected output still invalidates proof.
         {
             QScopedValueRollback<bool> probing(target->probing, true);
             if (!capability->prepareCaret(field, &initialState))
                 return reject("write-prepare", "ImeUnclear");
         }
-        if (!unchanged() || !inspect(target) || !clear(target->state)
+        if (!unchanged() || !inspect(target) || !clearForWrite(target, direct)
             || target->state.contextGeneration != initialState.contextGeneration
             || target->state.fieldGeneration != initialState.fieldGeneration
             || target->state.inputEpoch != initialState.inputEpoch || !unchanged())
@@ -865,7 +890,7 @@ private:
         auto written = [&] {
             return field && provider && target->field == field && target->provider == provider
                 && target->document == document && target->documentGeneration == documentGeneration
-                && focused() == target && target->input == input && target->focus == focus
+                && focusUnchanged() && target->input == input && target->focus == focus
                 && metadataMatches(target, basis) && metadataMatches(target, approved)
                 && target->storage == storage + 1 && target->content == content + 1
                 && body(target) == std::optional<QString>(result) && local(target, baseline);
@@ -1310,7 +1335,7 @@ private:
     QJsonObject publication_, overlayView_, shortcutConfiguration_, shortcutAuthority_;
     std::optional<ShortcutRequest> pendingShortcut_;
     quint64 shortcutSequence_ = 0;
-    quint64 connectionGeneration_ = 0, returnGeneration_ = 0, authorizationGeneration_ = 0;
+    quint64 connectionGeneration_ = 0, returnGeneration_ = 0, authorizationGeneration_ = 0, focusGeneration_ = 0;
     bool dispatching_ = false, handlingKey_ = false, advancingShortcut_ = false;
     QPointer<QFrame> card_;
     QPointer<QPlainTextEdit> editor_;

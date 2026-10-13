@@ -13,7 +13,8 @@ inline constexpr char TypeLayFcitxQtConsumerPropertyV1[] = "typelay.fcitx.qt.con
 inline constexpr char TypeLayFcitxQtControlKeysPropertyV1[] = "typelay.fcitx.qt.control-keys.v1";
 
 enum TypeLayFcitxQtFlagV1 : quint32 {
-    TlQtKnown = 1u, TlQtFocused = 2u, TlQtPending = 4u, TlQtComposing = 8u
+    TlQtKnown = 1u, TlQtFocused = 2u, TlQtPending = 4u, TlQtComposing = 8u,
+    TlQtDetached = 16u
 };
 enum TypeLayFcitxQtCauseV1 : quint32 {
     TlQtInput = 1u, TlQtFocus = 2u, TlQtBinding = 4u, TlQtModifier = 8u
@@ -29,7 +30,10 @@ struct TypeLayFcitxQtStateV1 {
     quint64 appliedSerial = 0;
     quint32 flags = 0;
 };
-// The actual focused object holds a non-owning QObject* provider property.
+// The focused object, or a proven same-window detached QLineEdit, holds a
+// non-owning QObject* provider property. Known|Detached is direct-write-only;
+// its epoch and sealed serial belong to the old field, not the current IM.
+// prepareCaret on Detached is local validation only and never resets another field.
 // Consumers must hold QPointer, qobject_cast the IID, and reacquire before calls.
 // A successful inspect establishes a short-lived proof for this exact object.
 // validateLocal does no IPC/event iteration and cannot independently establish Clear.

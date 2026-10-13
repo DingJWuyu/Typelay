@@ -1,5 +1,6 @@
 // Isolated Qt/Fcitx acknowledgement fixture. Never publishes field contents.
 #include <QApplication>
+#include "../../../src/TypeLay.Linux/native/fcitx5/typelay-fcitx-qt-v1.h"
 #include <QEvent>
 #include <QEventLoop>
 #include <QInputMethodEvent>
@@ -82,6 +83,20 @@ public:
         }
     }
 
+    void probeFirst() {
+        auto *owner = first_->property(TypeLayFcitxQtProviderPropertyV1).value<QObject *>();
+        auto *capability = owner ? qobject_cast<TypeLayFcitxQtV1 *>(owner) : nullptr;
+        TypeLayFcitxQtStateV1 state;
+        const bool valid = capability && capability->inspect(first_, &state);
+        counts_.insert("firstProbeFlags", valid ? int(state.flags) : 0);
+        const bool local = valid && capability->validateLocal(first_, &state);
+        counts_.insert("firstProbeLocal", local);
+        counts_.insert("firstProbePrepare", local && state.flags == 17u
+                       && capability->prepareCaret(first_, &state));
+        increment("firstProbeCount");
+    }
+    void armPendingSwitch() { switchPending_ = true; }
+
     void sampleModifiers() {
         counts_.insert("queriedKeyboardModifiers", int(QGuiApplication::queryKeyboardModifiers()));
         increment("modifierSamples");
@@ -126,6 +141,8 @@ public:
             const auto *input = static_cast<QInputMethodEvent *>(event);
             if (!input->commitString().isEmpty()) increment("widgetCommitCallbacks");
             if (!input->preeditString().isEmpty()) increment("widgetNonemptyPreeditCallbacks");
+            counts_.insert(field(object) == 1 ? "firstPreeditLength" : "secondPreeditLength",
+                           input->preeditString().size());
         }
 
         const int dbusBefore = qApp->property("tlqtPendingDbus").toInt();
@@ -135,6 +152,12 @@ public:
         if (forwardBefore > 0) increment("callbacksDuringForward");
         if (outputBefore > 0) increment("callbacksDuringOutput");
         if (ime && outputBefore > 0) increment("imeDuringOutput");
+
+        if (switchPending_ && object == first_ && keyPress && forwardBefore > 0) {
+            switchPending_ = false;
+            second_->setFocus(Qt::OtherFocusReason);
+            increment("pendingSwitches");
+        }
 
         // This is application code on the actual target's event-delivery stack.
         // Nested event processing must not retire that still-running delivery.
@@ -168,6 +191,7 @@ public:
     bool quitting = false;
 
 private:
+    bool switchPending_ = false;
     QLineEdit *first_;
     QLineEdit *second_;
     QWidget *root_;
@@ -223,6 +247,8 @@ int main(int argc, char **argv) {
             commands.remove(0, newline + 1);
             if (command == "focus1") first.setFocus(Qt::OtherFocusReason);
             else if (command == "focus2") second.setFocus(Qt::OtherFocusReason);
+            else if (command == "probe1") observer.probeFirst();
+            else if (command == "arm-pending-switch") observer.armPendingSwitch();
             else if (command == "sample-modifiers") observer.sampleModifiers();
             else if (command == "quit") { observer.quitting = true; app.quit(); }
             else if (!command.isEmpty()) observer.increment("unknownCommands");

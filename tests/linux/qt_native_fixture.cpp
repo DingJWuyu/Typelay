@@ -33,7 +33,7 @@ public:
     QJsonObject counts;
     bool firstPreedit = false, secondPreedit = false, plainPreedit = false, editorPreedit = false;
     QString shortcutState, commandQueuedAction, commandDispatchedAction;
-    quint64 shortcutId = 0, shortcutActionCount = 0, shortcutActionId = 0;
+    quint64 shortcutId = 0, shortcutActionCount = 0, shortcutActionId = 0, focusTransitions = 0;
     void applyCommandAction(QString &action) {
         const auto operation = action;
         action.clear();
@@ -41,7 +41,11 @@ public:
         ++shortcutActionCount;
         shortcutActionId = shortcutId;
         if (operation == "rewrite") first->setText(QStringLiteral("Application changed this field"));
-        else if (operation == "focus-second") second->setFocus();
+        else if (operation.startsWith("focus-second")) {
+            second->setFocus();
+            if (operation == "focus-second-rewrite") first->setText(QStringLiteral("Application changed this field"));
+            else if (operation == "focus-second-sensitive") first->setAccessibleName(QStringLiteral("Password"));
+        }
     }
 public slots:
     void shortcutChanged(const QString &state, quint64 id) {
@@ -66,6 +70,12 @@ public:
             else if (object->objectName() == QStringLiteral("typelay-editor")) editorPreedit = composing;
         }
         if (object != first && object != second && object != plain) return false;
+        if (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut) {
+            const QString focusName = (object == first ? QStringLiteral("first")
+                : object == second ? QStringLiteral("second") : QStringLiteral("plain"))
+                + (event->type() == QEvent::FocusIn ? QStringLiteral("FocusIn") : QStringLiteral("FocusOut"));
+            counts.insert(focusName, counts.value(focusName).toInt() + 1);
+        }
         if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease) return false;
         const auto *key = static_cast<QKeyEvent *>(event);
         const QString name = (object == first ? QStringLiteral("first")
@@ -91,6 +101,7 @@ int main(int argc, char **argv) {
     KeyObserver observer;
     observer.first = first; observer.second = second; observer.plain = plain;
     app.installEventFilter(&observer);
+    QObject::connect(&app, &QApplication::focusChanged, &observer, [&observer] { ++observer.focusTransitions; });
     first->setObjectName(QStringLiteral("first"));
     second->setObjectName(QStringLiteral("second"));
     first->setAccessibleName(QStringLiteral("Message one"));
@@ -113,7 +124,17 @@ int main(int argc, char **argv) {
     window.show();
     first->setFocus();
     int firstChanges = 0, secondChanges = 0, firstEdits = 0, secondEdits = 0;
-    QObject::connect(first, &QLineEdit::textChanged, [&] { ++firstChanges; });
+    QJsonObject firstChangeContext;
+    QObject::connect(first, &QLineEdit::textChanged, [&] {
+        ++firstChanges;
+        // Synthetic fixture observation only: record what really owned focus
+        // and whether B was composing at the instant A's body changed.
+        firstChangeContext = {{"firstChanges", firstChanges}, {"secondFocused", second->hasFocus()},
+            {"secondText", second->text()}, {"secondPreedit", observer.secondPreedit},
+            {"focusTransitions", qint64(observer.focusTransitions)},
+            {"firstFocusIn", observer.counts.value("firstFocusIn")},
+            {"firstFocusOut", observer.counts.value("firstFocusOut")}};
+    });
     QObject::connect(second, &QLineEdit::textChanged, [&] { ++secondChanges; });
     QObject::connect(first, &QLineEdit::textEdited, [&] { ++firstEdits; });
     QObject::connect(second, &QLineEdit::textEdited, [&] { ++secondEdits; });
@@ -228,6 +249,7 @@ int main(int argc, char **argv) {
         QJsonObject state{{"pid", qint64(getpid())}, {"qtVersion", QString::fromLatin1(qVersion())},
             {"fullscreen", window.isFullScreen()}, {"width", window.width()}, {"height", window.height()},
             {"scale", window.devicePixelRatioF()}, {"keys", observer.counts},
+            {"focusTransitions", qint64(observer.focusTransitions)}, {"firstChangeContext", firstChangeContext},
             {"shortcutState", observer.shortcutState}, {"shortcutId", qint64(observer.shortcutId)},
             {"shortcutActionCount", qint64(observer.shortcutActionCount)},
             {"shortcutActionId", qint64(observer.shortcutActionId)}, {"shortcutHint", QToolTip::text()},

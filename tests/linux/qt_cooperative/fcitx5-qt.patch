@@ -8,13 +8,20 @@
 +#include <qpa/qwindowsysteminterface_p.h>
  #include <QDBusConnection>
  #include <QDebug>
-@@ -22,4 +25,5 @@
+@@ -14,4 +17,6 @@
+ #include <QTextCharFormat>
+ #include <QWidget>
++#include <QLineEdit>
++#include <typeinfo>
+ #include <QWindow>
+ #include <qnamespace.h>
+@@ -22,4 +27,5 @@
  
  #include <cerrno>
 +#include <cstdio>
  #include <csignal>
  #include <unistd.h>
-@@ -42,4 +46,76 @@
+@@ -42,4 +48,76 @@
  
  namespace {
 +
@@ -91,7 +98,7 @@
 +}
  
  template <typename T>
-@@ -266,4 +342,11 @@
+@@ -266,4 +344,11 @@
                             : nullptr) {
      registerFcitxQtDBusTypes();
 +    if (tlCooperate()) {
@@ -103,7 +110,7 @@
 +    }
      watcher_->setWatchPortal(true);
  
-@@ -271,4 +354,8 @@
+@@ -271,4 +356,8 @@
      // to event loop to ensure event dispatcher is avaiable.
      QTimer::singleShot(0, this, [this]() {
 +        for (const char *name : {"tlqtPendingDbus", "tlqtPendingForward", "tlqtRetired",
@@ -112,13 +119,13 @@
 +            tlCount(name, 0);
          watcher_->watch();
          fcitx4Watcher_->watch();
-@@ -277,4 +364,5 @@
+@@ -277,4 +366,5 @@
  
  QFcitxPlatformInputContext::~QFcitxPlatformInputContext() {
 +    tlBind(nullptr);
      destroy_ = true;
      watcher_->unwatch();
-@@ -349,4 +437,13 @@
+@@ -349,4 +439,13 @@
          return false;
      }
 +    TlScope output("tlqtOutputDepth");
@@ -132,16 +139,29 @@
 +    }
      QInputMethodEvent e;
      if (!commitPreedit_.isEmpty()) {
-@@ -365,4 +462,5 @@
+@@ -365,4 +464,5 @@
  
  void QFcitxPlatformInputContext::reset() {
 +    if (tlCooperate()) tlChanged(0);
      commitPreedit();
      if (auto *proxy = validIC()) {
-@@ -534,4 +632,10 @@
+@@ -522,4 +622,12 @@
+     }
+ 
++    QPointer<QFcitxPlatformInputContext> focusSelf(this);
++    QPointer<QObject> requestedFocus(realFocusObject), previousFocus(lastObject_);
++    tlRevokeDetached();
++    if (!focusSelf || requestedFocus.data() != realFocusObject ||
++        focusObjectWrapper() != realFocusObject || previousFocus != lastObject_) return;
++    auto detached = tlBeginDetach(realFocusObject);
++    if (!focusSelf || requestedFocus.data() != realFocusObject ||
++        focusObjectWrapper() != realFocusObject || previousFocus != lastObject_) return;
+     auto *proxy = validICByWindow(lastWindow_);
+     commitPreedit(lastObject_);
+@@ -534,4 +642,10 @@
      lastWindow_ = window;
      lastObject_ = realFocusObject;
-+    tlBind(realFocusObject);
++    tlBind(realFocusObject, detached.source.data());
 +    if (tlProbe()) {
 +        tlCount("tlqtBindingEpoch", 1);
 +        qApp->setProperty("tlqtFocusObject", QVariant::fromValue(realFocusObject));
@@ -149,13 +169,25 @@
 +    }
      // Always create IC Data for window.
      if (window) {
-@@ -640,4 +744,5 @@
+@@ -544,4 +658,5 @@
+         lastWindow_ = nullptr;
+         lastObject_ = nullptr;
++        tlFinishDetach(std::move(detached));
+         return;
+     }
+@@ -562,4 +677,5 @@
+ 
+     updateInputPanelVisible();
++    tlFinishDetach(std::move(detached));
+ }
+ 
+@@ -640,4 +756,5 @@
  
      if (proxy->isValid() && !uuid.isEmpty()) {
 +        tlCount("tlqtContexts", 1);
          QWindow *window = focusWindowWrapper();
  #ifdef ENABLE_X11
-@@ -690,4 +795,8 @@
+@@ -690,4 +807,8 @@
  
  void QFcitxPlatformInputContext::commitString(const QString &str) {
 +    TlScope output("tlqtOutputDepth");
@@ -164,7 +196,7 @@
 +    if (tlTraceLine()) std::fprintf(stderr, "tlqt-output-commit\n");
      cursorPos_ = 0;
      preeditList_.clear();
-@@ -705,4 +814,12 @@
+@@ -705,4 +826,12 @@
  void QFcitxPlatformInputContext::updateFormattedPreedit(
      const FcitxQtFormattedPreeditList &preeditList, int cursorPos) {
 +    TlScope output("tlqtOutputDepth");
@@ -177,14 +209,14 @@
 +    if (tlTraceLine()) std::fprintf(stderr, "tlqt-output-preedit\n");
      QObject *input = qGuiApp->focusObject();
      if (!input) {
-@@ -792,4 +909,6 @@
+@@ -792,4 +921,6 @@
  void QFcitxPlatformInputContext::deleteSurroundingText(int offset,
                                                         unsigned int _nchar) {
 +    TlScope output("tlqtOutputDepth");
 +    if (tlCooperate()) tlChanged(TlQtInput);
      QObject *input = qGuiApp->focusObject();
      if (!input) {
-@@ -852,4 +971,9 @@
+@@ -852,4 +983,9 @@
  void QFcitxPlatformInputContext::forwardKey(unsigned int keyval,
                                              unsigned int state, bool type) {
 +    TlScope output("tlqtOutputDepth");
@@ -194,7 +226,7 @@
 +
      auto *proxy = qobject_cast<HybridInputContext *>(sender());
      if (!proxy) {
-@@ -873,5 +997,10 @@
+@@ -873,5 +1009,10 @@
                                                   const QString &langCode) {
      Q_UNUSED(name);
 -    Q_UNUSED(uniqueName);
@@ -206,13 +238,13 @@
 +    if (tlProbe()) qApp->setProperty("tlqtEngine", uniqueName);
      QLocale newLocale(langCode);
      if (locale_ != newLocale) {
-@@ -882,4 +1011,5 @@
+@@ -882,4 +1023,5 @@
  
  void QFcitxPlatformInputContext::serverSideFocusOut() {
 +    if (tlCooperate()) tlChanged(TlQtFocus);
      if (lastObject_ == focusObjectWrapper()) {
          commitPreedit();
-@@ -1044,4 +1174,7 @@
+@@ -1044,4 +1186,7 @@
      ulong time = keyEvent.timestamp();
      // copied from QXcbKeyboard::handleKeyEvent()
 +    const bool trackedAsync = tlProbe() &&
@@ -220,7 +252,7 @@
 +    TlScope forwarding("tlqtPendingForward");
      if (type == QEvent::KeyPress && qtcode == Qt::Key_Menu) {
          QPoint globalPos;
-@@ -1051,10 +1184,22 @@
+@@ -1051,10 +1196,22 @@
              pos = window->mapFromGlobal(globalPos);
          }
 -        QWindowSystemInterface::handleContextMenuEvent(window, false, pos,
@@ -249,14 +281,14 @@
 +    }
  }
  
-@@ -1067,4 +1212,6 @@
+@@ -1067,4 +1224,6 @@
  
          const auto *keyEvent = static_cast<const QKeyEvent *>(event);
 +        if (tlCooperate() && tlControlKey(keyEvent)) return true;
 +        if (tlCooperate()) tlChanged(tlKeyCause(keyEvent->key()));
          quint32 keyval = keyEvent->nativeVirtualKey();
          quint32 keycode = keyEvent->nativeScanCode();
-@@ -1100,4 +1247,14 @@
+@@ -1100,4 +1259,14 @@
              stateToFcitx |= (1U << 31);
          }
 +        if (tlProbe() && syncMode_) {
@@ -271,7 +303,7 @@
 +        TlScope submitting("tlqtPendingDbus");
          auto reply = proxy->processKeyEvent(keyval, keycode, stateToFcitx,
                                              isRelease, keyEvent->timestamp());
-@@ -1105,8 +1262,17 @@
+@@ -1105,8 +1274,17 @@
          if (Q_UNLIKELY(syncMode_)) {
              reply.waitForFinished();
 +            tlCount("tlqtSyncReplies", 1);
@@ -290,7 +322,7 @@
 +                if (fallback) {
                      return true;
                  }
-@@ -1118,6 +1284,18 @@
+@@ -1118,6 +1296,18 @@
          auto *watcher = new ProcessKeyWatcher(*keyEvent, focusWindowWrapper(),
                                                reply, proxy);
 +        watcher->setProperty("tlOrderId", QVariant::fromValue(submitted.id));
@@ -310,7 +342,7 @@
 +        });
          return true;
  
-@@ -1128,5 +1306,48 @@
+@@ -1128,5 +1318,48 @@
  void QFcitxPlatformInputContext::processKeyEventFinished(
      QDBusPendingCallWatcher *w) {
 +    tlCount("tlqtKeyReplies", 1);
@@ -359,26 +391,27 @@
 +    tlOrderTrace("reply", order, int(watcher->isError()));
      bool filtered = false;
  
-@@ -1159,4 +1380,5 @@
+@@ -1159,4 +1392,5 @@
      }
  
 +    tlOrderTrace("decision", order, int(filtered));
      if (!filtered) {
          forwardEvent(window, keyEvent);
-@@ -1306,3 +1528,179 @@
+@@ -1306,3 +1540,317 @@
  }
  
 +// TypeLay 2026-10-12: exact-object cooperation for the original async IM path.
 +void QFcitxPlatformInputContext::tlChanged(quint32 causes) {
++    if (causes & TlQtBinding) tlRevokeDetached(TlQtBinding);
 +    ++tlEpoch_;
 +    tlProofObject_.clear();
 +    if (tlBound_ && (causes & TlQtInput)) ++tlFields_[tlBound_].inputEpoch;
 +    Q_EMIT typelayStateChangedV1(tlBound_, causes);
 +}
 +
-+void QFcitxPlatformInputContext::tlBind(QObject *actual) {
++void QFcitxPlatformInputContext::tlBind(QObject *actual, QObject *retained) {
 +    if (!tlCooperate() || tlBound_ == actual) return;
-+    if (tlBound_ && tlBound_->property(TypeLayFcitxQtProviderPropertyV1).value<QObject *>() == this)
++    if (tlBound_ && tlBound_ != retained && tlBound_->property(TypeLayFcitxQtProviderPropertyV1).value<QObject *>() == this)
 +        tlBound_->setProperty(TypeLayFcitxQtProviderPropertyV1, QVariant());
 +    tlBound_ = actual;
 +    if (actual) {
@@ -386,6 +419,8 @@
 +            tlFields_.insert(actual, {++tlNextGeneration_, 0});
 +            connect(actual, &QObject::destroyed, this, [this, actual]() {
 +                tlFields_.remove(actual);
++                if (!tlDetached_.source || !tlDetached_.destination)
++                    tlRevokeDetached(TlQtBinding);
 +                ++tlEpoch_;
 +                tlProofObject_.clear();
 +            });
@@ -394,6 +429,117 @@
 +                            QVariant::fromValue(static_cast<QObject *>(this)));
 +    }
 +    tlChanged(TlQtFocus);
++}
++
++void QFcitxPlatformInputContext::tlRevokeDetached(quint32 causes) {
++    QPointer<QObject> source = tlDetached_.source;
++    tlDetached_ = {};
++    if (!source) return;
++    if (source != tlBound_ &&
++        source->property(TypeLayFcitxQtProviderPropertyV1).value<QObject *>() == this)
++        source->setProperty(TypeLayFcitxQtProviderPropertyV1, QVariant());
++    if ((causes & TlQtInput) && tlFields_.contains(source)) ++tlFields_[source].inputEpoch;
++    Q_EMIT typelayStateChangedV1(source, causes);
++}
++
++QFcitxPlatformInputContext::TlDetached
++QFcitxPlatformInputContext::tlBeginDetach(QObject *destination) {
++    TlDetached candidate;
++    auto *source = qobject_cast<QLineEdit *>(lastObject_.data());
++    auto *next = qobject_cast<QLineEdit *>(destination);
++    if (!tlCooperate() || syncMode_ || destroy_ || tlInspecting_ ||
++        !source || !next || source == next || source != tlBound_ ||
++        source->metaObject() != &QLineEdit::staticMetaObject ||
++        next->metaObject() != &QLineEdit::staticMetaObject ||
++        typeid(*source) != typeid(QLineEdit) || typeid(*next) != typeid(QLineEdit) ||
++        !lastWindow_ || source->window()->windowHandle() != lastWindow_ ||
++        next->window()->windowHandle() != lastWindow_ || focusWindowWrapper() != lastWindow_ ||
++        !tlFields_.contains(source) || tlPendingDbus || tlPendingForward || tlOutputDepth ||
++        tlDrainingKeys_ || !tlKeyQueue_.empty() || !preedit_.isEmpty() || !commitPreedit_.isEmpty() ||
++        (xkbComposeState_ && xkb_compose_state_get_status(xkbComposeState_.data()) ==
++         XKB_COMPOSE_COMPOSING)) return candidate;
++    auto *hybrid = validICByWindow(lastWindow_);
++    auto *proxy = hybrid ? hybrid->typelayProxy() : nullptr;
++    const auto context = tlContexts_.value(hybrid);
++    if (!proxy || !proxy->isValid() || proxy->typelayOutputDepth() ||
++        context.proxy != proxy || !context.generation ||
++        context.remoteGeneration != proxy->typelayGeneration()) return candidate;
++    const auto field = tlFields_.value(source);
++    const auto epoch = tlEpoch_;
++    const auto queueEpoch = tlQueueEpoch;
++    QPointer<QObject> old(source), nextObject(destination);
++    QPointer<FcitxQtInputContextProxy> remote(proxy);
++    QPointer<QFcitxPlatformInputContext> self(this);
++    quint64 serial = 0;
++    bool known = false, pending = false, composing = false, focused = false;
++    tlInspecting_ = true;
++    const bool ok = proxy->typelayProbe(serial, known, pending, composing, focused);
++    if (!self) return {};
++    tlInspecting_ = false;
++    if (!ok || !known || pending || composing || !focused || !old || !nextObject || !remote ||
++        epoch != tlEpoch_ || queueEpoch != tlQueueEpoch || old != lastObject_ || old != tlBound_ ||
++        nextObject != focusObjectWrapper() || proxy->typelayGeneration() != context.remoteGeneration ||
++        serial != proxy->typelayAppliedSerial()) return {};
++    candidate.source = old;
++    candidate.destination = nextObject;
++    candidate.window = lastWindow_;
++    candidate.proxy = remote;
++    candidate.remoteGeneration = context.remoteGeneration;
++    candidate.state.contextGeneration = context.generation;
++    candidate.state.fieldGeneration = field.generation;
++    candidate.state.inputEpoch = field.inputEpoch;
++    candidate.state.serverSerial = serial;
++    candidate.state.appliedSerial = serial;
++    return candidate;
++}
++
++void QFcitxPlatformInputContext::tlFinishDetach(TlDetached candidate) {
++    if (!candidate.source) return;
++    const auto field = tlFields_.value(candidate.source);
++    const bool valid = candidate.destination && candidate.proxy && candidate.window &&
++        candidate.destination == tlBound_ && candidate.destination == focusObjectWrapper() &&
++        candidate.window == lastWindow_ && candidate.window == focusWindowWrapper() &&
++        candidate.proxy->isValid() && !candidate.proxy->typelayOutputDepth() &&
++        candidate.proxy->typelayGeneration() == candidate.remoteGeneration &&
++        candidate.proxy->typelayAppliedSerial() == candidate.state.appliedSerial &&
++        field.generation == candidate.state.fieldGeneration && field.inputEpoch == candidate.state.inputEpoch &&
++        !tlPendingDbus && !tlPendingForward && !tlOutputDepth && !tlDrainingKeys_ && tlKeyQueue_.empty() &&
++        preedit_.isEmpty() && commitPreedit_.isEmpty() &&
++        (!xkbComposeState_ || xkb_compose_state_get_status(xkbComposeState_.data()) != XKB_COMPOSE_COMPOSING);
++    if (!valid) {
++        if (candidate.source != tlBound_ &&
++            candidate.source->property(TypeLayFcitxQtProviderPropertyV1).value<QObject *>() == this)
++            candidate.source->setProperty(TypeLayFcitxQtProviderPropertyV1, QVariant());
++        return;
++    }
++    candidate.state.flags = TlQtKnown | TlQtDetached;
++    candidate.state.epoch = ++tlDetachedEpoch_;
++    tlDetached_ = candidate;
++    candidate.source->setProperty(TypeLayFcitxQtProviderPropertyV1,
++                                  QVariant::fromValue(static_cast<QObject *>(this)));
++    Q_EMIT typelayStateChangedV1(candidate.source, TlQtFocus);
++}
++
++bool QFcitxPlatformInputContext::tlDetachedValid(QObject *actual) const {
++    const auto &record = tlDetached_;
++    auto *source = qobject_cast<QLineEdit *>(actual);
++    auto *destination = qobject_cast<QLineEdit *>(record.destination.data());
++    auto *hybrid = record.window ? validICByWindow(record.window) : nullptr;
++    const auto context = tlContexts_.value(hybrid);
++    return tlCooperate() && !syncMode_ && !destroy_ && !tlInspecting_ &&
++        QThread::currentThread() == thread() && source && destination &&
++        record.source == actual && record.state.flags == (TlQtKnown | TlQtDetached) &&
++        source->metaObject() == &QLineEdit::staticMetaObject && typeid(*source) == typeid(QLineEdit) &&
++        destination == tlBound_ && destination == focusObjectWrapper() &&
++        record.window && record.window == lastWindow_ && record.window == focusWindowWrapper() &&
++        source->window()->windowHandle() == record.window &&
++        destination->window()->windowHandle() == record.window &&
++        source->property(TypeLayFcitxQtProviderPropertyV1).value<QObject *>() == this &&
++        record.proxy && record.proxy->isValid() && context.proxy == record.proxy &&
++        record.proxy->typelayGeneration() == record.remoteGeneration &&
++        context.generation == record.state.contextGeneration &&
++        tlFields_.value(actual).generation == record.state.fieldGeneration &&
++        tlFields_.value(actual).inputEpoch == record.state.inputEpoch;
 +}
 +
 +bool QFcitxPlatformInputContext::tlLocalClear(QObject *actual) const {
@@ -407,6 +553,13 @@
 +}
 +
 +bool QFcitxPlatformInputContext::inspect(QObject *actual, TypeLayFcitxQtStateV1 *state) {
++    if (state && state->size == sizeof(*state) && state->version == 1 &&
++        actual && actual == tlDetached_.source) {
++        if (!tlDetachedValid(actual)) { tlRevokeDetached(); return false; }
++        *state = tlDetached_.state;
++        tlDetached_.inspected = true;
++        return true;
++    }
 +    if (!state || state->size != sizeof(*state) || state->version != 1 ||
 +        tlInspecting_ || !tlCooperate() || syncMode_ || destroy_ ||
 +        tlPendingDbus || tlPendingForward || tlOutputDepth ||
@@ -461,6 +614,15 @@
 +}
 +
 +bool QFcitxPlatformInputContext::validateLocal(QObject *actual, const TypeLayFcitxQtStateV1 *state) {
++    if (state && state->size == sizeof(*state) && state->version == 1 &&
++        state->flags == (TlQtKnown | TlQtDetached)) {
++        const auto &proof = tlDetached_.state;
++        return tlDetached_.inspected && tlDetachedValid(actual) &&
++            state->contextGeneration == proof.contextGeneration &&
++            state->fieldGeneration == proof.fieldGeneration &&
++            state->epoch == proof.epoch && state->inputEpoch == proof.inputEpoch &&
++            state->serverSerial == proof.serverSerial && state->appliedSerial == proof.appliedSerial;
++    }
 +    if (!state || state->size != sizeof(*state) || state->version != 1 ||
 +        state->flags != (TlQtKnown | TlQtFocused) || actual != tlProofObject_ ||
 +        tlInspecting_ || !tlLocalClear(actual) || tlProofQueueEpoch_ != tlQueueEpoch ||
@@ -480,6 +642,8 @@
 +
 +bool QFcitxPlatformInputContext::prepareCaret(QObject *actual, const TypeLayFcitxQtStateV1 *state) {
 +    if (!validateLocal(actual, state)) return false;
++    // An already detached field has no active IM to prepare. Never reset B's IC.
++    if (state->flags == (TlQtKnown | TlQtDetached)) return true;
 +    auto *hybrid = validICByWindow(lastWindow_);
 +    auto *proxy = hybrid ? hybrid->typelayProxy() : nullptr;
 +    if (!proxy) return false;
@@ -538,6 +702,12 @@
 +// Observe actual replay delivery, which bypasses the original IM filter. A key
 +// requested by field A may be delivered to field B after a same-window switch.
 +bool QFcitxPlatformInputContext::eventFilter(QObject *object, QEvent *event) {
++    if (object && object == tlDetached_.source) {
++        if (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease ||
++            event->type() == QEvent::InputMethod) tlRevokeDetached(TlQtInput);
++        else if (event->type() == QEvent::FocusIn || event->type() == QEvent::ParentChange)
++            tlRevokeDetached(TlQtFocus);
++    }
 +    if (tlCooperate() && tlPendingForward && object == tlBound_ &&
 +        (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease))
 +        tlChanged(tlKeyCause(static_cast<QKeyEvent *>(event)->key()));
@@ -580,7 +750,7 @@
 +    bool eventFilter(QObject *, QEvent *) override;
      QFcitxPlatformInputContext();
      ~QFcitxPlatformInputContext() override;
-@@ -160,4 +169,32 @@
+@@ -160,4 +169,46 @@
      void processKeyEventFinished(QDBusPendingCallWatcher *);
  
 +Q_SIGNALS:
@@ -592,6 +762,20 @@
 +    bool tlDelayInjected_ = false;
 +    void tlDrainKeys();
 +    void tlProcessKeyEventFinished(ProcessKeyWatcher *);
++    struct TlDetached {
++        QPointer<QObject> source, destination;
++        QPointer<QWindow> window;
++        QPointer<FcitxQtInputContextProxy> proxy;
++        quint64 remoteGeneration = 0;
++        TypeLayFcitxQtStateV1 state;
++        bool inspected = false;
++    };
++    TlDetached tlDetached_;
++    quint64 tlDetachedEpoch_ = 0;
++    TlDetached tlBeginDetach(QObject *destination);
++    void tlFinishDetach(TlDetached candidate);
++    void tlRevokeDetached(quint32 causes = 0);
++    bool tlDetachedValid(QObject *actual) const;
 +    struct TlField { quint64 generation = 0; quint64 inputEpoch = 0; };
 +    struct TlContext { QPointer<FcitxQtInputContextProxy> proxy; quint64 remoteGeneration = 0; quint64 generation = 0; };
 +    QHash<QObject *, TlField> tlFields_;
@@ -607,7 +791,7 @@
 +    quint32 tlConsumedScan_ = 0;
 +    int tlConsumedKey_ = 0;
 +    QString tlEngine_;
-+    void tlBind(QObject *);
++    void tlBind(QObject *, QObject *retained = nullptr);
 +    void tlChanged(quint32);
 +    bool tlLocalClear(QObject *) const;
 +    bool tlControlKey(const QKeyEvent *);
