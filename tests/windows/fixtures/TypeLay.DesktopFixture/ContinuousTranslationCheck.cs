@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -11,7 +12,8 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 
 // Explicit, network-using verification mode. Ordinary desktop tests never install models.
 // Uses the real installer/model, production Broker and overlay, with committed text
-// replay into a separate owned stock Edit. This does not simulate physical IME input.
+// replay into a separate owned stock Edit, followed by one automation-mode direct
+// shortcut. This does not simulate physical IME input or qualify other controls.
 internal static class ContinuousTranslationCheck
 {
     public static int Run(string directory, string worker, string nativeFixture)
@@ -40,6 +42,17 @@ internal static class ContinuousTranslationCheck
         long? firstPreviewMs = null, refreshedPreviewMs = null;
         int firstPreviewSourceUnits = 0, finalSourceUnits = 0;
         bool ready = false, sourceUnchanged = false, zeroSubmits = false, passed = false;
+        string continuousOutcome = "not-run", continuousFailure = "none";
+        string directOutcome = "not-run", directFailure = "none";
+        string? directFeedbackCode = null;
+        bool directCapabilityObserved = false, directSourceUnchangedBefore = false, directFocusBefore = false;
+        bool directSelectionUnchangedBefore = false, directOverlayShown = false, directVerified = false;
+        bool directSourceMatched = false, directFocusRetained = false, directZeroSubmits = false;
+        bool submitCounterVerified = false;
+        TextRange? directSelectionBefore = null;
+        int directShortcutAttempts = 0;
+        uint directInputsInserted = 0;
+        long? directVerifiedMs = null;
         var cleanupErrors = new List<object>();
         using var all = new CancellationTokenSource(TimeSpan.FromMinutes(20));
         ChildProcess? native = null;
@@ -93,13 +106,15 @@ internal static class ContinuousTranslationCheck
                 ExperimentalWriteback = false,
                 OnboardingComplete = true
             });
-            controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true);
+            var support = new WindowsApplicationSupport();
+            controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true, support: support);
             await controller.StartAsync().WaitAsync(setupDeadline.Token);
             await UntilAsync(() => controller.InputAvailable && controller.LastApplication is not null, setupDeadline.Token);
             var editor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
             var firstPreview = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             int sourceUnits = 0;
             stage = "continuous-input";
+            continuousOutcome = "running";
             long began = elapsed.ElapsedMilliseconds;
             // A separate task drives the separate native process. A blocked WPF
             // dispatcher must not pause replay and turn a stall into a false pass.
@@ -147,6 +162,7 @@ internal static class ContinuousTranslationCheck
             await UntilAsync(() => !model.Busy, checkDeadline.Token);
             var expected = await model.TranslateTextAsync(finalSource, new("zh", "en")).WaitAsync(checkDeadline.Token);
             Require(expected.Status == "translated" && expected.Text.Length > 0, "reference-translation-failed");
+            Require(expected.Text != finalSource, "reference-translation-unchanged");
             await UntilAsync(() => VisibleTranslation(overlay, editor) && editor.Text != initialTranslation
                 && editor.Text == expected.Text,
                 checkDeadline.Token);
@@ -154,8 +170,75 @@ internal static class ContinuousTranslationCheck
             sourceUnchanged = N.ReadText(field, Limits.MaxTextUnits) == finalSource;
             zeroSubmits = N.Send(root, N.FixtureSubmitCount) == 0;
             Require(sourceUnchanged && zeroSubmits && N.Focused() == (root, field), "source-mutated-or-focus-lost");
+            continuousOutcome = "passed";
+            Console.WriteLine("Continuous preview: passed.");
+
+            stage = "direct-native-capture";
+            directOutcome = "running";
+            var selection = N.ReadSelection(field);
+            Require(selection == new TextRange(finalSource.Length, finalSource.Length), "direct-source-selection");
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.OnDemand
+            });
+            await UntilAsync(() => !overlay.IsVisible, checkDeadline.Token);
+            overlay.IsVisibleChanged += (_, _) => directOverlayShown |= overlay.IsVisible;
+            controller.OperationFeedback += feedback => directFeedbackCode ??= feedback.Code;
+            // Automatic-mode UIA preview may legitimately report Unknown IME.
+            // OnDemand requests production native capture. This consumer reports
+            // Clear + DirectWriteSupported; it never supplies write permission.
+            // The production hook and broker must independently recheck safety.
+            await UntilAsync(() =>
+            {
+                Require(directFeedbackCode is null, "direct-production-feedback");
+                Require(!directOverlayShown, "direct-overlay-shown");
+                var row = support.Read(settings.Value).Rows.Single(item => item.Id == "desktop-text");
+                return row.State == ApplicationSupportState.Connected && row.Capabilities.DirectReplace;
+            }, checkDeadline.Token);
+            directCapabilityObserved = true;
+            stage = "direct-before-shortcut";
+            directSourceUnchangedBefore = N.ReadText(field, Limits.MaxTextUnits) == finalSource;
+            directSelectionBefore = N.ReadSelection(field);
+            directSelectionUnchangedBefore = directSelectionBefore == selection;
+            directFocusBefore = N.Focused() == (root, field);
+            Require(directSourceUnchangedBefore, "direct-source-changed-before");
+            Require(directSelectionUnchangedBefore, "direct-selection-changed-before");
+            Require(directFocusBefore, "direct-focus-changed-before");
+            Require(N.Send(root, N.FixtureSubmitCount) == 0, "direct-submitted-before");
+            Require(controller.OperationStatus is null, "direct-status-before-shortcut");
+            Require(new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x79 }.All(key => GetAsyncKeyState(key) >= 0),
+                "direct-key-already-down");
+            stage = "direct-shortcut";
+            long directBegan = elapsed.ElapsedMilliseconds;
+            directShortcutAttempts++;
+            SendDirectShortcut(out directInputsInserted, cleanupErrors);
+            stage = "direct-verify";
+            // This user-visible success status is emitted only for a real
+            // WriteStatus.Verified receipt. Text equality alone cannot pass.
+            await UntilAsync(() =>
+            {
+                Require(directFeedbackCode is null, "direct-production-feedback");
+                Require(!directOverlayShown && !overlay.IsVisible, "direct-overlay-shown");
+                Require(N.Focused() == (root, field), "direct-focus-changed");
+                Require(N.Send(root, N.FixtureSubmitCount) == 0, "direct-submitted");
+                return controller.OperationStatus == "已直接替换原输入框文字。";
+            }, checkDeadline.Token);
+            directVerified = true;
+            directVerifiedMs = elapsed.ElapsedMilliseconds - directBegan;
+            directSourceMatched = N.ReadText(field, Limits.MaxTextUnits) == expected.Text;
+            directFocusRetained = N.Focused() == (root, field);
+            directZeroSubmits = N.Send(root, N.FixtureSubmitCount) == 0;
+            Require(directSourceMatched, "direct-result-mismatch");
+            Require(directFocusRetained, "direct-focus-changed");
+            Require(directZeroSubmits, "direct-submitted");
+            Require(!directOverlayShown && !overlay.IsVisible, "direct-overlay-shown");
+            directOutcome = "verified";
+            Console.WriteLine("Direct translation: verified.");
+
+            stage = "submit-positive-control";
             N.Send((nint)host.SubmitButtonHwnd, 0x00F5); // BM_CLICK: prove the fixture's submit counter is live.
-            Require(N.Send(root, N.FixtureSubmitCount) == 1, "submit-positive-control-failed");
+            submitCounterVerified = N.Send(root, N.FixtureSubmitCount) == 1;
+            Require(submitCounterVerified, "submit-positive-control-failed");
             passed = true;
             stage = "complete";
         }
@@ -164,6 +247,16 @@ internal static class ContinuousTranslationCheck
             failure = error is CheckFailure check ? check.Code : error is OperationCanceledException ? "deadline" : "operation-failed";
             errorType = error.GetType().Name;
             errorCode = error.HResult;
+            if (continuousOutcome == "running")
+            {
+                continuousOutcome = "failed";
+                continuousFailure = failure;
+            }
+            if (directOutcome == "running")
+            {
+                directOutcome = "failed";
+                directFailure = failure;
+            }
         }
         finally
         {
@@ -187,6 +280,7 @@ internal static class ContinuousTranslationCheck
                     cleanupErrors.Add(new
                     {
                         area,
+                        code = "cleanup-failed",
                         errorType = error.GetType().Name,
                         errorCode = error.HResult
                     });
@@ -217,13 +311,101 @@ internal static class ContinuousTranslationCheck
                 finalSourceUnits,
                 sourceUnchanged,
                 zeroSubmits,
+                continuousPreview = new
+                {
+                    outcome = continuousOutcome,
+                    failure = continuousFailure
+                },
+                directTranslation = new
+                {
+                    outcome = directOutcome,
+                    failure = directFailure,
+                    feedbackCode = directFeedbackCode,
+                    directCapabilityObserved,
+                    directSourceUnchangedBefore,
+                    directSelectionUnchangedBefore,
+                    selectionStart = directSelectionBefore?.Start,
+                    selectionEnd = directSelectionBefore?.End,
+                    directFocusBefore,
+                    directShortcutAttempts,
+                    directInputsInserted,
+                    directVerified,
+                    directVerifiedMs,
+                    directSourceMatched,
+                    directFocusRetained,
+                    directZeroSubmits,
+                    directOverlayShown
+                },
+                submitCounterVerified,
                 sourceBackend = "production-broker-stock-edit",
                 physicalIme = false
             }, new JsonSerializerOptions { WriteIndented = true }));
         }
-        Console.WriteLine($"Continuous translation: {(passed ? "passed" : "failed")}; stage={stage}; code={failure}.");
+        Console.WriteLine($"Continuous translation check: {(passed ? "passed" : "failed")}; continuous={continuousOutcome}; direct={directOutcome}; stage={stage}; code={failure}.");
         return passed ? 0 : 1;
     }
+
+    private static void SendDirectShortcut(out uint inserted, List<object> cleanupErrors)
+    {
+        // One Ctrl+Shift+F10 chord, never retried. INPUT is 40 bytes on Windows x64.
+        ushort[] keys = [0x11, 0x10, 0x79];
+        var input = keys.Select(key => new KeyboardInput { Type = 1, Key = key })
+            .Concat(keys.Reverse().Select(key => new KeyboardInput { Type = 1, Key = key, Flags = 2 })).ToArray();
+        inserted = SendInput((uint)input.Length, input, Marshal.SizeOf<KeyboardInput>());
+        if (inserted == input.Length)
+            return;
+        // Release only keys pressed by the inserted prefix and not yet released.
+        // Cleanup cannot turn a partial injection into a successful shortcut.
+        var held = new List<ushort>();
+        foreach (var item in input.Take((int)Math.Min(inserted, (uint)input.Length)))
+            if (item.Flags == 0)
+                held.Add(item.Key);
+            else
+                held.Remove(item.Key);
+        if (held.Count != 0)
+        {
+            var release = held.AsEnumerable().Reverse().Select(key => new KeyboardInput
+            {
+                Type = 1,
+                Key = key,
+                Flags = 2
+            }).ToArray();
+            try
+            {
+                if (SendInput((uint)release.Length, release, Marshal.SizeOf<KeyboardInput>()) != release.Length)
+                    cleanupErrors.Add(new
+                    {
+                        area = "direct-keys",
+                        code = "key-release-incomplete",
+                        errorType = "Win32",
+                        errorCode = Marshal.GetLastWin32Error()
+                    });
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                cleanupErrors.Add(new
+                {
+                    area = "direct-keys",
+                    code = "key-release-failed",
+                    errorType = error.GetType().Name,
+                    errorCode = error.HResult
+                });
+            }
+        }
+        throw new CheckFailure("direct-key-injection-incomplete");
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 40)]
+    private struct KeyboardInput
+    {
+        [FieldOffset(0)] public uint Type;
+        [FieldOffset(8)] public ushort Key;
+        [FieldOffset(12)] public uint Flags;
+    }
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint count, KeyboardInput[] input, int size);
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int key);
 
     private static bool VisibleTranslation(OverlayWindow overlay, TextBox editor) => overlay.IsVisible && editor.IsVisible
         && editor.Text.Any(character => character is >= 'A' and <= 'Z' or >= 'a' and <= 'z');
