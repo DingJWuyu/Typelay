@@ -208,6 +208,7 @@ def inside(arguments):
             current = client.describe(target)
             lease = {"target": target, "authority": current["authority"], "generation": generation}
             client.call("publish-shortcut", lease)
+            before_events = len(client.events)
             assert client.call(
                 "trigger-shortcut",
                 {
@@ -216,7 +217,25 @@ def inside(arguments):
                     "triggeredAtMs": now_ms(),
                 },
             ) == {"triggered": False}, "Unknown IME allowed a shortcut read"
+            if kind == "wake":
+                feedback = [
+                    event
+                    for event in client.events[before_events:]
+                    if event.get("event") in ("shortcut-started", "shortcut-rejected")
+                ]
+                assert [event["event"] for event in feedback] == [
+                    "shortcut-started",
+                    "shortcut-rejected",
+                ], "native CLI refusal did not use the ordered feedback protocol"
+                started, refused = (event["data"] for event in feedback)
+                assert started["commandId"] > 0
+                assert refused["commandId"] == started["commandId"]
+                assert refused["kind"] == kind and refused["generation"] == generation
+                assert refused["reason"] == "ImeUnclear"
+                assert "native" not in refused and "source" not in refused
+                assert original not in json.dumps(feedback, ensure_ascii=False)
         checks.append("caller-supplied Clear cannot authorize direct write or wake/direct reads")
+        checks.append("native CLI Unknown-IME refusal reports one ordered source-free result")
 
         current = client.describe(target)
         write = plan(snapshot({**forged, **current}, client.hello, geometry), "must not replace")

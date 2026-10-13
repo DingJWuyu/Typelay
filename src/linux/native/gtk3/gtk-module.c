@@ -21,9 +21,10 @@ static guint shortcut_key;
 static gboolean shortcut_consumed;
 static gboolean tab_down, tab_consumed, escape_down, escape_consumed;
 static gboolean initialized;
-static guint64 connection_generation, return_generation;
+static guint64 connection_generation, return_generation, shortcut_sequence;
+static gint64 shortcut_started_at = -1;
 static GQueue consumed_ids = G_QUEUE_INIT;
-static gboolean trigger_shortcut(const char *kind, Target *target, JsonObject *approved);
+static gboolean trigger_shortcut(const char *kind, Target *target, JsonObject *approved, gint64 triggered_at, gboolean require_revisions);
 static gboolean already_consumed(const char *id);
 
 const char *tl_string(JsonObject *object, const char *member) {
@@ -71,7 +72,6 @@ static void disconnect_peer(void) {
     tl_clear_permit();
     clear_shortcut();
     if (shortcut_configuration) { json_object_unref(shortcut_configuration); shortcut_configuration = NULL; }
-    shortcut_key = 0; shortcut_consumed = FALSE;
     if (input_watch) { g_source_remove(input_watch); input_watch = 0; }
     if (output_watch) { g_source_remove(output_watch); output_watch = 0; }
     if (incoming) g_byte_array_set_size(incoming, 0);
@@ -126,7 +126,6 @@ void tl_invalidate(Target *target, gboolean text_changed, gboolean focus_changed
     if (focus_changed) {
         target->focus_revision++;
         clear_shortcut();
-        shortcut_key = 0; shortcut_consumed = FALSE;
         tab_down = escape_down = tab_consumed = escape_consumed = FALSE;
     }
     tl_clear_permit();
@@ -313,21 +312,15 @@ static void command(JsonObject *frame) {
         clear_shortcut();
         if (shortcut_configuration) json_object_unref(shortcut_configuration);
         shortcut_configuration = data ? tl_copy(data) : NULL;
-        shortcut_key = 0; shortcut_consumed = FALSE;
         respond(id, NULL);
     } else if (strcmp(operation, "trigger-shortcut") == 0) {
         JsonObject *basis = tl_object(data, "authority");
         gint64 stamp = tl_integer(data, "triggeredAtMs", 0), age = tl_now() - stamp;
-        gboolean allowed = target && target == tl_focused() && age >= 0 && age <= 150
-            && shortcut_authority
-            && g_strcmp0(tl_string(data, "generation"), tl_string(shortcut_configuration, "generation")) == 0
-            && g_strcmp0(target->id, tl_string(shortcut_authority, "target")) == 0
-            && (gint64)target->content_revision == tl_integer(basis, "contentRevision", -1)
-            && (gint64)target->input_revision == tl_integer(basis, "inputRevision", -1)
-            && (gint64)target->focus_revision == tl_integer(basis, "focusRevision", -1);
+        gboolean allowed = age >= 0 && age <= 150 && stamp > shortcut_started_at
+            && g_strcmp0(tl_string(data, "generation"), tl_string(shortcut_configuration, "generation")) == 0;
         JsonObject *reply = json_object_new();
         json_object_set_boolean_member(reply, "triggered", allowed
-            && trigger_shortcut(tl_string(data, "kind"), target, basis));
+            && trigger_shortcut(tl_string(data, "kind"), target, basis, stamp, TRUE));
         respond(id, reply);
     } else if (strcmp(operation, "publish-shortcut") == 0) {
         clear_shortcut();
@@ -442,34 +435,161 @@ static void remember(const char *id) {
     g_queue_push_tail(&consumed_ids, g_strdup(id));
     while (g_queue_get_length(&consumed_ids) > 128) g_free(g_queue_pop_head(&consumed_ids));
 }
-static gboolean trigger_shortcut(const char *kind, Target *target, JsonObject *approved) {
-    if (!kind || (strcmp(kind, "wake") != 0 && strcmp(kind, "direct") != 0)
-        || !shortcut_configuration || !json_object_has_member(shortcut_configuration, "enabled")
-        || !json_object_get_boolean_member(shortcut_configuration, "enabled")) return FALSE;
-    gint64 age = tl_now() - tl_integer(approved, "observedAtMs", 0);
-    if (!target || target != tl_focused() || !target->ime_known || target->composing
-        || age < 0 || age > 150 || !tl_metadata_matches(target, approved)) return FALSE;
-    JsonObject *description = tl_describe(target);
-    JsonObject *read = description ? tl_capture(target, tl_object(description, "authority")) : NULL;
-    if (description) json_object_unref(description);
-    if (!read) return FALSE;
+typedef struct {
+    JsonObject *configuration, *authority, *approved;
+    Target *target;
+    GtkWidget *widget; /* identity only; provider calls retain the actual widget */
+    const char *kind;
+    guint64 id, connection, content, input, focus;
+    gint64 triggered_at;
+    gboolean require_revisions;
+} ShortcutCommand;
+static gboolean shortcut_current(const ShortcutCommand *attempt) {
+    return connection >= 0 && connection_generation == attempt->connection
+        && shortcut_configuration == attempt->configuration && shortcut_sequence == attempt->id;
+}
+/* Only cached state and metadata are inspected here. Refusal classification
+   must never probe the provider again or read a source body. */
+static const char *shortcut_failure(const ShortcutCommand *attempt, gboolean inspected, const char **reason) {
+    Target *target = attempt->target;
+    *reason = "PlatformFailure";
+    if (connection < 0 || connection_generation != attempt->connection) return "connection";
+    *reason = "EpochChanged";
+    if (shortcut_configuration != attempt->configuration) return "configuration";
+    if (shortcut_sequence != attempt->id) return "superseded";
+    *reason = "Unsupported";
+    if (!target) return "target-missing";
+    *reason = "TargetChanged";
+    if (target->dead || target->widget != attempt->widget) return "target-destroyed";
+    *reason = "NotSourceFocus";
+    if (target != tl_focused() || target->focus_revision != attempt->focus
+        || (attempt->require_revisions
+            && (gint64)target->focus_revision != tl_integer(attempt->approved, "focusRevision", -1))) return "focus";
+    *reason = "Unsupported";
+    if (target->quarantined || target->mutating || target->im_probing) return "unavailable";
+    *reason = "ImeUnclear";
+    if (inspected && (!target->ime_known || target->composing)) return "ime";
+    if (!attempt->authority) {
+        *reason = target->ime_known && !target->composing ? "StaleObservation" : "ImeUnclear";
+        return "authority-missing";
+    }
+    *reason = "EpochChanged";
+    if (shortcut_authority != attempt->authority) return "authority-revoked";
+    if (g_strcmp0(tl_string(attempt->authority, "generation"),
+            tl_string(attempt->configuration, "generation")) != 0) return "authority-generation";
+    *reason = "TargetChanged";
+    if (g_strcmp0(target->id, tl_string(attempt->authority, "target")) != 0) return "authority-target";
+    *reason = "SourceChanged";
+    if (target->content_revision != attempt->content || (attempt->require_revisions
+        && (gint64)target->content_revision != tl_integer(attempt->approved, "contentRevision", -1))) return "source-revision";
+    *reason = "EpochChanged";
+    if (target->input_revision != attempt->input || (attempt->require_revisions
+        && (gint64)target->input_revision != tl_integer(attempt->approved, "inputRevision", -1))) return "input-revision";
+    if (inspected) {
+        *reason = "StaleObservation";
+        gint64 observed = tl_integer(attempt->approved, "observedAtMs", -1), now = tl_now();
+        if (observed < 0 || now < observed || now - observed > 150) return "authority-age";
+        *reason = "Unsupported";
+        if (!tl_metadata_matches(target, attempt->approved)) return "metadata";
+    }
+    return NULL;
+}
+static void trace_shortcut(const ShortcutCommand *attempt, const char *phase, const char *gate, const char *reason) {
+    static guint emitted;
+    if (!g_getenv("TYPELAY_TRACE") || emitted >= 192) return;
+    emitted++;
+    gint64 now = tl_now(), observed = tl_integer(attempt->approved, "observedAtMs", -1);
+    /* Phases, gates and reasons are fixed literals; no body, metadata, target
+       identity or caller-supplied generation enters this bounded diagnostic. */
+    g_printerr("TypeLay GTK3 shortcut phase=%s gate=%s reason=%s commandId=%" G_GUINT64_FORMAT
+        " atMs=%" G_GINT64_FORMAT " authorityAgeMs=%" G_GINT64_FORMAT " elapsedMs=%" G_GINT64_FORMAT "\n",
+        phase, gate, reason, attempt->id, now, observed >= 0 ? now - observed : -1, now - attempt->triggered_at);
+}
+static JsonObject *shortcut_message(const ShortcutCommand *attempt) {
     JsonObject *message = json_object_new();
-    json_object_set_string_member(message, "kind", kind);
-    json_object_set_string_member(message, "generation", tl_string(shortcut_configuration, "generation"));
+    json_object_set_string_member(message, "kind", attempt->kind);
+    json_object_set_string_member(message, "generation", tl_string(attempt->configuration, "generation"));
+    json_object_set_int_member(message, "commandId", (gint64)attempt->id);
+    return message;
+}
+static gboolean trigger_shortcut(const char *kind, Target *target, JsonObject *approved, gint64 triggered_at, gboolean require_revisions) {
+    if (!kind || (strcmp(kind, "wake") != 0 && strcmp(kind, "direct") != 0)
+        || connection < 0 || !shortcut_configuration || !tl_string(shortcut_configuration, "generation")
+        || !json_object_has_member(shortcut_configuration, "enabled")
+        || !json_object_get_boolean_member(shortcut_configuration, "enabled")
+        || triggered_at < shortcut_started_at || shortcut_sequence >= G_GUINT64_CONSTANT(9007199254740991)) return FALSE;
+    ShortcutCommand attempt = {.configuration = json_object_ref(shortcut_configuration),
+        .authority = shortcut_authority ? json_object_ref(shortcut_authority) : NULL,
+        .target = target, .widget = target ? target->widget : NULL, .kind = kind,
+        .id = ++shortcut_sequence, .connection = connection_generation, .triggered_at = triggered_at,
+        .content = target ? target->content_revision : 0, .input = target ? target->input_revision : 0,
+        .focus = target ? target->focus_revision : 0, .require_revisions = require_revisions};
+    if (!approved && !require_revisions) approved = tl_object(attempt.authority, "authority");
+    attempt.approved = approved ? json_object_ref(approved) : NULL;
+    shortcut_started_at = triggered_at;
+    JsonObject *message = shortcut_message(&attempt);
+    json_object_set_int_member(message, "triggeredAtMs", triggered_at);
+    tl_send_event("shortcut-started", message);
+    trace_shortcut(&attempt, "started", "none", "none");
+    JsonObject *description = NULL, *read = NULL;
+    const char *phase = "authority", *reason = NULL;
+    const char *failure = shortcut_failure(&attempt, FALSE, &reason);
+    gboolean dispatched = FALSE;
+    if (failure) goto rejected;
+    phase = "ime";
+    gboolean clear = tl_ime_clear(target);
+    /* Input revision also includes selection callbacks. A provider epoch
+       reconciliation cannot be assumed to be the only change during a probe. */
+    failure = shortcut_failure(&attempt, TRUE, &reason);
+    if (failure) goto rejected;
+    if (!clear) { failure = "ime"; reason = "ImeUnclear"; goto rejected; }
+    phase = "describe";
+    description = tl_describe(target);
+    failure = shortcut_failure(&attempt, TRUE, &reason);
+    if (failure) goto rejected;
+    if (!description) { failure = "description"; reason = "Unsupported"; goto rejected; }
+    phase = "capture";
+    read = tl_capture(target, tl_object(description, "authority"));
+    failure = shortcut_failure(&attempt, TRUE, &reason);
+    if (failure) goto rejected;
+    if (!read) { failure = "capture"; reason = "Unsupported"; goto rejected; }
+    tl_clear_permit();
+    failure = shortcut_failure(&attempt, TRUE, &reason);
+    if (failure) goto rejected;
+    clear_shortcut();
+    message = shortcut_message(&attempt);
     json_object_set_object_member(message, "native", read);
+    read = NULL;
     json_object_set_int_member(message, "acceptedAtMs", tl_now());
-    tl_clear_permit(); clear_shortcut();
     tl_send_event("shortcut", message);
-    return connection >= 0;
+    dispatched = shortcut_current(&attempt);
+    trace_shortcut(&attempt, dispatched ? "dispatched" : "send", dispatched ? "none" : "connection",
+        dispatched ? "none" : "PlatformFailure");
+    goto finished;
+rejected:
+    trace_shortcut(&attempt, phase, failure, reason);
+    if (shortcut_current(&attempt)) {
+        message = shortcut_message(&attempt);
+        json_object_set_string_member(message, "reason", reason);
+        tl_send_event("shortcut-rejected", message);
+    }
+finished:
+    if (read) json_object_unref(read);
+    if (description) json_object_unref(description);
+    if (attempt.approved) json_object_unref(attempt.approved);
+    if (attempt.authority) json_object_unref(attempt.authority);
+    json_object_unref(attempt.configuration);
+    return dispatched;
 }
 static gboolean shortcut_event(GdkEventKey *event) {
+    if (event->send_event || !event->hardware_keycode) return FALSE;
     gboolean down = event->type == GDK_KEY_PRESS;
     if (shortcut_key && event->hardware_keycode == shortcut_key) {
         gboolean consumed = shortcut_consumed;
         if (!down) { shortcut_key = 0; shortcut_consumed = FALSE; }
         return consumed;
     }
-    if (!down || shortcut_key || event->send_event || !shortcut_configuration || !shortcut_authority
+    if (!down || shortcut_key || !shortcut_configuration
         || !json_object_has_member(shortcut_configuration, "enabled")
         || !json_object_get_boolean_member(shortcut_configuration, "enabled")) return FALSE;
     guint modifiers = event->state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_MOD1_MASK | GDK_MOD3_MASK
@@ -483,15 +603,14 @@ static gboolean shortcut_event(GdkEventKey *event) {
             && (gint64)modifiers == tl_integer(binding, "modifiers", -1)) kind = names[index];
     }
     if (!kind) return FALSE;
-    Target *target = tl_focused();
-    if (!tl_ime_clear(target) || !shortcut_authority) return FALSE;
-    JsonObject *approved = tl_object(shortcut_authority, "authority");
-    /* Freeze the actual trigger's text and selection, not a later IPC poll. The
-       metadata-only read approval is revalidated before any text is obtained. */
-    if (!trigger_shortcut(kind, target, approved)) return FALSE;
+    /* A refused shortcut still has one physical press/release pair. Remember
+       it before provider callbacks so focus/config changes cannot turn a held
+       key into repeated commands. Refusal never acquires the application's key. */
     shortcut_key = event->hardware_keycode;
-    shortcut_consumed = TRUE;
-    return shortcut_consumed;
+    shortcut_consumed = FALSE;
+    gboolean consumed = trigger_shortcut(kind, tl_focused(), NULL, tl_now(), FALSE);
+    if (shortcut_key == event->hardware_keycode) shortcut_consumed = consumed;
+    return consumed;
 }
 static gboolean key_event(GdkEventKey *event) {
     gboolean down = event->type == GDK_KEY_PRESS;
@@ -569,6 +688,11 @@ static gboolean key_event(GdkEventKey *event) {
 }
 static void dispatch(GdkEvent *event, gpointer data) {
     (void)data;
+    /* Keyboard focus leaving a surface can deliver its release to another
+       process. Field/config changes keep the pair; surface loss retires it. */
+    if (event->type == GDK_FOCUS_CHANGE && !event->focus_change.in && !event->focus_change.send_event) {
+        shortcut_key = 0; shortcut_consumed = FALSE;
+    }
     if (tl_overlay_event(event)) return;
     if (event->type == GDK_KEY_PRESS || event->type == GDK_KEY_RELEASE) {
         if (shortcut_event(&event->key) || key_event(&event->key)) return;

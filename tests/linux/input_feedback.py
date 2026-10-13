@@ -188,6 +188,31 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertEqual(self.host.notices[0]["commandSequence"], 1)
         self.assertNotIn("source", self.host.notices[0])
 
+    def test_gtk_refusals_share_ordering_and_discard_duplicate_results(self):
+        for index, backend in enumerate(("gtk3", "gtk4"), start=1):
+            with self.subTest(backend=backend):
+                peer = self.connect_peer(backend)
+                command = self.command(peer=peer, kind="direct")
+                refusal = {**command, "reason": "ImeUnclear"}
+                peer.event("shortcut-rejected", refusal)
+                peer.event("shortcut-rejected", refusal)
+                self.assertEqual(len(self.host.notices), index)
+                notice = self.host.notices[-1]
+                self.assertEqual(notice["commandSequence"], index)
+                self.assertEqual(notice["rejection"], "ImeUnclear")
+                self.assertNotIn("source", notice)
+                # Once this peer speaks the ordered protocol, a result without
+                # the start identity cannot resurrect an older command.
+                peer.event(
+                    "shortcut",
+                    {
+                        "kind": "direct",
+                        "generation": self.generation,
+                        "acceptedAtMs": self.stamp + 1,
+                    },
+                )
+                self.assertEqual(len(self.host.notices), index)
+
     def test_current_cli_without_a_connected_peer_reports_one_refusal(self):
         self.focus(self.peer)
         self.peer.link.close()

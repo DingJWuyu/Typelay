@@ -1147,6 +1147,72 @@ def run(arguments):
                                 "actual mouse click did not focus the GTK " + name + " entry",
                             )
 
+                        click_entry("first")
+                        switch_im("pinyin")
+                        key("ctrl+a")
+                        key("BackSpace")
+                        wait_for(
+                            lambda: gtk_state().get("first") == "" and gtk_state().get("imeClear"),
+                            "OnDemand refusal source did not clear through real input",
+                        )
+                        typed("nihao")
+                        wait_for(
+                            lambda: gtk_state().get("imeComposing")
+                            and not status().get("acceptanceReady"),
+                            "OnDemand refusal did not observe real pinyin composition",
+                        )
+                        before_refusal = status().get("commandFeedbackRevision", 0)
+                        refusal_source = gtk_state()
+                        before_write = trace_checkpoint()
+                        key("ctrl+shift+F10")
+                        refusal = wait_for(
+                            lambda: value
+                            if (value := status()).get("commandFeedbackRevision", 0)
+                            > before_refusal
+                            and (value.get("operationFeedback") or {}).get("code")
+                            == "shortcut-imeunclear"
+                            else None,
+                            "one GTK F10 during composition did not report its safe refusal",
+                        )
+                        assert refusal.get("operationStatus")
+                        feedback_observed_at = now_ms()
+                        refused_source = wait_for(
+                            lambda: value
+                            if (value := gtk_state()).get("observedAtMs", 0) >= feedback_observed_at
+                            else None,
+                            "GTK source state did not advance beyond the refusal feedback",
+                        )
+                        assert refused_source["first"] == "" and refused_source.get("imeComposing")
+                        for counter in ("insertions", "deletions"):
+                            assert (
+                                refused_source["firstEntry"][counter]
+                                == refusal_source["firstEntry"][counter]
+                            )
+                        assert not new_write_outcomes(before_write)
+                        key("space")
+                        committed_source = wait_for(
+                            lambda: value
+                            if bool(
+                                re.search(
+                                    r"[\u3400-\u9fff]", (value := gtk_state()).get("first", "")
+                                )
+                            )
+                            and value.get("imeClear")
+                            else None,
+                            "refused F10 disturbed the original pinyin candidate commit",
+                        )
+                        assert (
+                            committed_source["firstEntry"]["insertions"]
+                            == refused_source["firstEntry"]["insertions"] + 1
+                        )
+                        assert (
+                            committed_source["firstEntry"]["deletions"]
+                            == refused_source["firstEntry"]["deletions"]
+                        )
+                        evidence.append(
+                            "GTK explicit F10 during real pinyin composition: shared refusal feedback, no write, original candidate still commits"
+                        )
+
                         pending_direct = "正在直接翻译；可以切换输入框，当前操作仍绑定原输入框。"
                         for changes_source in (False, True):
                             click_entry("first")

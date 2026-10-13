@@ -6,13 +6,32 @@
 
 ## 安装与启动
 
-在本仓库 Actions 中打开 `TypeLay checks` 的成功运行，下载对应提交的 artifact，取出其中的 `TypeLay-Windows-preview.zip`，完整解压后双击 `TypeLay.exe`。不要单独移动可执行文件。`Start-TypeLay.cmd` 是备用入口。
+在本仓库 Actions 中打开 `TypeLay checks` 已核对的运行，下载对应提交的 artifact，取出其中的 `TypeLay-Windows-preview.zip`，完整解压后双击 `TypeLay.exe`。当前候选及仍未通过的项目见下方；不要单独移动可执行文件。`Start-TypeLay.cmd` 是备用入口。
 
 升级前先从托盘退出旧 TypeLay，再把完整 ZIP 解压到新目录启动。App 与 Broker 必须来自同一个包；旧版本的输入组件会被连接校验拒绝，不会降级读取或写回。若“应用支持”提示连接检查失败，先退出并从完整安装目录重开；仍失败时重新解压完整包，不要只替换其中一个程序。
 
 预览包自带 .NET 运行时，不需要 SDK、Python 开发环境或源码。第一次使用时，在设置中明确同意安装本地翻译组件与模型。模型安装后，推理在本机 CPU 上运行。组件和设置存放在 `%LOCALAPPDATA%\TypeLay`，不会作为源码或发布包提交。托盘菜单提供设置、实操教程与退出入口。
 
 普通输入框是产品目标，不是按应用维护的支持名单。未知输入法状态只允许只读预览；密码、敏感字段、终端和代码编辑器不能通过弱化安全限制来“扩大支持”。
+
+### 当前可验证候选
+
+这是开发候选，不是已完成通用输入验收的正式发布。[Actions 下载入口](https://github.com/DingJWuyu/Typelay/actions/runs/38441769291)中的 artifact 为 `typelay-windows-056b317b16886c184a9f01533c47b573bab258b5`（ID `11837010204`）；下载后取出内层 `TypeLay-Windows-preview.zip`，再完整解压启动。该运行仍因 Chrome 页面前置失败而为红色，不能把它标为全套通过。artifact 预计于 2026-10-27 UTC 到期，届时需核对新的候选，不能将其他包当作同一版本。
+
+<details>
+<summary>包校验与版本配对</summary>
+
+- 源码提交：`056b317b16886c184a9f01533c47b573bab258b5`
+- 内层安装 ZIP：76,445,672 字节；SHA-256：`0cb84372b1d13dcc09a58032ab1f1d1033c077f2ed1bc5c234e66291f43f068f`。已与包旁的 `.sha256` 文件核对。
+- 外层 Actions artifact：77,248,498 字节；SHA-256：`4839fe9ffc87f0b8e370c8255c015590cd02510c5b634b2626f15e7289dde392`。不要混用内外层校验值。
+- 已直接读取包内 App、Broker、Windows.Contracts 的程序集元数据，三者均为 `0.2.0-dev+056b317b16886c184a9f01533c47b573bab258b5`；程序集/文件版本均为 `0.2.0.0`。仅看 `0.2.0.0` 不能区分开发包。
+- App/Broker 均为 win-x64 自包含发行，使用 .NET 与 WindowsDesktop `10.0.12`；包内 `BrokerProtocol.Version=3`。不要混放旧包文件。
+
+在 ZIP 所在文件夹可用 `Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256` 核对内层安装包。
+
+</details>
+
+该提交已通过共享行为、Windows 原生适配器 16 项、完整 ZIP 搬迁后发行包 13 项及 13 项 App 桌面回归。同提交生产构建的真实本地模型检查分别通过无标点持续预览和一次原生 Edit F10 替换，源焦点/提交计数/结果/清理均验证；浮窗定位、长词换行、主题与草稿回归通过。剩余 1 项 App 失败为 Chrome 测试页面未完成启动/聚焦前置，尚未尝试采集。Chrome 新标签页和用户报告的其他应用仍须按[最小实机步骤](open-issues.md#新标签页实机复现)验证；原生 Edit F10 通过不代表这些应用可写。
 
 ## 工作模式与按需操作
 
