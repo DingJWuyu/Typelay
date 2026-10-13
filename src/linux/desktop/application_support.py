@@ -276,6 +276,23 @@ class ApplicationSupport:
                     "chromium-extension-id-required": "InvalidExtensionId",
                 }.get(result["reason"], "RegistrationFailed")
                 state = "AwaitingApproval" if reason == "AwaitingApproval" else "Error"
+            details = self.instructions(browser)
+            if status["reason"] == "browser-host-missing":
+                details = (
+                    "本地通信主机尚未安装。安装操作会把当前 TypeLay 包部署到用户目录，创建用户级启动入口；"
+                    "不使用 sudo，不下载模型，不修改输入法或浏览器权限。完成后还需连接所选浏览器。\n\n"
+                    + details
+                )
+            if status["state"] == "not-registered" and browser in connected:
+                state, reason = "RestartRequired", "RestartRequired"
+                actions = ["Refresh", "OpenInstructions"]
+                details = (
+                    "本地通信注册已移除，但浏览器现有会话仍与 TypeLay 连接。"
+                    "请先保存网页中的工作，再完整退出该浏览器；关闭一个标签页不代表连接已经结束。"
+                    "重新打开后回到这里检查连接。\n\n"
+                    "如不再使用 TypeLay，可在浏览器扩展页移除扩展。"
+                    "TypeLay 不会结束浏览器进程或更改其扩展权限。"
+                )
             facts.append(
                 {
                     "id": browser,
@@ -283,13 +300,7 @@ class ApplicationSupport:
                     "reason": reason,
                     "capabilities": {},
                     "supportedActions": actions,
-                    "details": (
-                        "本地通信主机尚未安装。安装操作会把当前 TypeLay 包部署到用户目录，创建用户级启动入口；"
-                        "不使用 sudo，不下载模型，不修改输入法或浏览器权限。完成后还需连接所选浏览器。\n\n"
-                        if status["reason"] == "browser-host-missing"
-                        else ""
-                    )
-                    + self.instructions(browser),
+                    "details": details,
                     "applicationDetected": bool(
                         shutil.which(browser)
                         or browser in connected

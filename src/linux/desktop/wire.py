@@ -96,6 +96,10 @@ class Channel:
         self.queue.append(memoryview(data))
         self.queued += len(data)
         if not self.output_watch:
+            # A writable nonblocking pipe needs no extra GLib dispatch. Keep the
+            # existing close notification on failure; send is not a delivery ACK.
+            if not self._write(self.write_fd, 0):
+                return
             self.output_watch = self.glib.io_add_watch(
                 self.write_fd,
                 self.glib.IO_OUT | self.glib.IO_HUP | self.glib.IO_ERR | self.glib.IO_NVAL,

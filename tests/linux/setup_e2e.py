@@ -363,6 +363,40 @@ class ApplicationSupportTests(unittest.TestCase):
             (self.home / ".mozilla/native-messaging-hosts/org.typelay.browser.json").exists()
         )
 
+    def test_removed_registration_waits_for_the_existing_browser_connection_to_close(self):
+        self.assertTrue(asyncio.run(self.support.execute("firefox", "Connect"))["ok"])
+        peer = SimpleNamespace(
+            lifetime="existing-browser-session",
+            backend="browser",
+            application="firefox",
+            link=SimpleNamespace(channel=SimpleNamespace(alive=True)),
+            support_observation={
+                "atMs": now_ms(),
+                "preview": True,
+                "tabAccept": True,
+                "directReplace": True,
+            },
+        )
+
+        def row():
+            return next(fact for fact in self.support.facts([peer]) if fact["id"] == "firefox")
+
+        self.assertEqual(row()["state"], "Connected")
+        result = asyncio.run(self.support.execute("firefox", "Remove"))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(self.support.browser_status("firefox")["state"], "not-registered")
+        self.assertEqual(row()["state"], "RestartRequired")
+        self.assertEqual(row()["reason"], "RestartRequired")
+        self.assertEqual(row()["supportedActions"], ["Refresh", "OpenInstructions"])
+        self.assertFalse(any(row()["capabilities"].values()))
+        self.assertIsNone(row()["checkedAt"])
+        asyncio.run(self.support.execute("firefox", "Refresh"))
+        self.assertEqual(row()["state"], "RestartRequired")
+        peer.link.channel.alive = False
+        self.assertEqual(row()["state"], "NeedsInstall")
+        self.assertEqual(row()["reason"], "RegistrationMissing")
+        self.assertIn("Connect", row()["supportedActions"])
+
     def test_connect_uses_only_the_profile_extension_for_this_exact_package(self):
         folder = self.package / "browser/chromium"
         folder.mkdir(parents=True)

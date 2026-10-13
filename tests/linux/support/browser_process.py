@@ -12,6 +12,11 @@ from pathlib import Path
 def chromium_context(playwright, executable, profile, environment, arguments=()):
     profile = Path(profile)
     profile.mkdir(parents=True, exist_ok=True)
+    # Chromium leaves this discovery file behind after a normal shutdown.
+    # This helper owns the disposable profile; only the new child may publish
+    # the endpoint used by this launch, even when reusing its saved extensions.
+    port_file = profile / "DevToolsActivePort"
+    port_file.unlink(missing_ok=True)
     command = [
         executable,
         f"--user-data-dir={profile}",
@@ -30,7 +35,6 @@ def chromium_context(playwright, executable, profile, environment, arguments=())
         )
         browser = None
         try:
-            port_file = profile / "DevToolsActivePort"
             deadline = time.monotonic() + 15
             port = None
             while port is None:
