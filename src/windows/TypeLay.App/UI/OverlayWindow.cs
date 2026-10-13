@@ -21,10 +21,13 @@ internal sealed class OverlayWindow : Window, ISessionView
     private readonly Border _escapeKeycap;
     private readonly TextBlock _escapeLabel;
     private readonly Grid _surface;
-    private bool _rendering, _editing, _composing, _expanded, _hasCandidate, _hasPreview;
+    private bool _rendering, _editing, _composing, _expanded, _hasCandidate, _hasPreview, _editorAccent;
     private readonly bool _automationTest;
     private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
     private int _renderTraceSamples;
+    private string? _dotBrushKey, _editorForegroundKey;
+    private (string Text, double Width, double Scale, FontFamily Font, CultureInfo Culture)? _measurementKey;
+    private double _measuredTextHeight;
     private double _panelWidth = 390;
     private nint _hwnd;
     private (int X, int Y, int Width, int Height)? _placement;
@@ -58,7 +61,11 @@ internal sealed class OverlayWindow : Window, ISessionView
         get; set;
     }
     public bool EditingComposition => _composing;
-    public void Configure(UserSettings settings) => UiTheme.Apply(settings.Theme);
+    public void Configure(UserSettings settings)
+    {
+        _measurementKey = null;
+        UiTheme.Apply(settings.Theme);
+    }
     public OverlayWindow(bool automationTest = false)
     {
         _automationTest = automationTest;
@@ -123,6 +130,7 @@ internal sealed class OverlayWindow : Window, ISessionView
             SpellCheck = { IsEnabled = false }
         };
         _editor.SetValue(TextBlock.LineHeightProperty, 21.7);
+        _editor.SetResourceReference(Control.BackgroundProperty, "Panel");
         _editor.PreviewMouseDown += (_, e) =>
         {
             if (!StartEdit())
@@ -230,6 +238,7 @@ internal sealed class OverlayWindow : Window, ISessionView
         _editor.IsUndoEnabled = true;
         _editor.Focusable = true;
         _editor.SetResourceReference(Control.BackgroundProperty, "AccentSoft");
+        _editorAccent = true;
         SetNoActivate(false);
         return true;
     }
@@ -293,7 +302,12 @@ internal sealed class OverlayWindow : Window, ISessionView
                 _ => "Auto"
             }) + " → " + (settings.Target == "zh" ? "中" : "EN") + "  ⌄";
             _status.Text = (statusOverride ?? display.Status) + (_automationTest ? " · 自动化测试" : "");
-            _dot.SetResourceReference(Border.BackgroundProperty, display.Dot == StatusDot.Green ? "Good" : display.Dot == StatusDot.Yellow ? "Warn" : "Muted");
+            string dotBrushKey = display.Dot == StatusDot.Green ? "Good" : display.Dot == StatusDot.Yellow ? "Warn" : "Muted";
+            if (_dotBrushKey != dotBrushKey)
+            {
+                _dot.SetResourceReference(Border.BackgroundProperty, dotBrushKey);
+                _dotBrushKey = dotBrushKey;
+            }
             _tabHint.Text = display.TabHint.Replace("Tab ", "", StringComparison.Ordinal);
             _escapeKeycap.Visibility = source.Ime == ImeState.Clear ? Visibility.Visible : Visibility.Collapsed;
             _escapeLabel.Text = source.Ime == ImeState.Clear ? "退出翻译" : "隐藏当前翻译";
@@ -305,7 +319,11 @@ internal sealed class OverlayWindow : Window, ISessionView
                 _editor.IsUndoEnabled = false;
                 _editor.Focusable = false;
                 SetNoActivate(true);
-                _editor.SetResourceReference(Control.BackgroundProperty, "Panel");
+                if (_editorAccent)
+                {
+                    _editor.SetResourceReference(Control.BackgroundProperty, "Panel");
+                    _editorAccent = false;
+                }
                 long textStarted = trace ? Stopwatch.GetTimestamp() : 0;
                 string value = idle ? "" : session.Preview.Length > 0 ? session.Preview : statusOverride is not null ? statusOverride + "…" : "正在翻译…";
                 if (_editor.Text != value)
@@ -313,8 +331,12 @@ internal sealed class OverlayWindow : Window, ISessionView
                 if (trace)
                     textMs = Stopwatch.GetElapsedTime(textStarted).TotalMilliseconds;
             }
-            _editor.SetResourceReference(Control.ForegroundProperty,
-                session.State is SessionState.Translating or SessionState.TranslationFailed ? "Muted" : "Text");
+            string foregroundKey = session.State is SessionState.Translating or SessionState.TranslationFailed ? "Muted" : "Text";
+            if (_editorForegroundKey != foregroundKey)
+            {
+                _editor.SetResourceReference(Control.ForegroundProperty, foregroundKey);
+                _editorForegroundKey = foregroundKey;
+            }
             if (trace)
                 uiMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds - textMs;
             positionTiming = Position(source, idle, trace);
@@ -329,16 +351,24 @@ internal sealed class OverlayWindow : Window, ISessionView
         double scale = Math.Max(1, Native.GetDpiForWindow((nint)source.Target.AsWindows().RootHwnd) / 96.0);
         _panelWidth = idle ? 140 : Math.Clamp(source.Bounds.Width / scale, 320, 520);
         _editor.MaxHeight = _expanded ? 360 : 160;
-        long measureStarted = trace ? Stopwatch.GetTimestamp() : 0;
-        var measure = new FormattedText(_editor.Text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
-            new Typeface(FontFamily, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal), 14, Brushes.Black, scale)
+        var measurementKey = (_editor.Text, _panelWidth, scale, FontFamily, CultureInfo.CurrentUICulture);
+        if (!idle && _measurementKey != measurementKey)
         {
-            MaxTextWidth = _panelWidth - 30,
-            LineHeight = 21.7
-        };
-        double bodyHeight = Math.Clamp(measure.Height + 24, 54, _editor.MaxHeight);
-        if (trace)
-            timing.MeasureMs = Stopwatch.GetElapsedTime(measureStarted).TotalMilliseconds;
+            long measureStarted = trace ? Stopwatch.GetTimestamp() : 0;
+            var measure = new FormattedText(_editor.Text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
+                new Typeface(FontFamily, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal), 14, Brushes.Black, scale)
+            {
+                MaxTextWidth = _panelWidth - 30,
+                LineHeight = 21.7
+            };
+            _measuredTextHeight = measure.Height;
+            _measurementKey = measurementKey;
+            if (trace)
+                timing.MeasureMs = Stopwatch.GetElapsedTime(measureStarted).TotalMilliseconds;
+        }
+        // Cache natural text height, not the clipped height: expansion and edits
+        // must still resize the persistent editor on the next render.
+        double bodyHeight = idle ? 54 : Math.Clamp(_measuredTextHeight + 24, 54, _editor.MaxHeight);
         _editor.Height = bodyHeight;
         double height = idle ? 60 : 34 + bodyHeight + 34 + 26, width = _panelWidth + 26;
         var rect = new Native.Rect
@@ -357,26 +387,33 @@ internal sealed class OverlayWindow : Window, ISessionView
             Hide();
             return timing;
         }
-        Width = width;
-        Height = height;
         bool showing = !IsVisible;
         if (showing)
-        {
             Opacity = 0;
+        var pixels = (X: (int)position.X, Y: (int)position.Y, Width: (int)position.Width, Height: (int)position.Height);
+        if (showing || _placement != pixels)
+        {
+            // WPF's Width/Height setters each resize the HWND synchronously.
+            // Move and resize once; WM_SIZE updates both WPF dimensions. Do not
+            // reveal a hidden HWND here: the normal Show below owns visibility.
+            long positionStarted = trace ? Stopwatch.GetTimestamp() : 0;
+            bool positioned = Native.SetWindowPos(_hwnd, (nint)(-1), pixels.X, pixels.Y, pixels.Width, pixels.Height, 0x0010);
+            if (trace)
+                timing.SetWindowPosMs = Stopwatch.GetElapsedTime(positionStarted).TotalMilliseconds;
+            _placement = positioned ? pixels : null;
+            if (!positioned)
+            {
+                Hide();
+                return timing;
+            }
+        }
+        if (showing)
+        {
             long showStarted = trace ? Stopwatch.GetTimestamp() : 0;
             Show();
             if (trace)
                 timing.ShowMs = Stopwatch.GetElapsedTime(showStarted).TotalMilliseconds;
             BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(140)));
-        }
-        var pixels = (X: (int)position.X, Y: (int)position.Y, Width: (int)position.Width, Height: (int)position.Height);
-        if (showing || _placement != pixels)
-        {
-            long positionStarted = trace ? Stopwatch.GetTimestamp() : 0;
-            Native.SetWindowPos(_hwnd, (nint)(-1), pixels.X, pixels.Y, pixels.Width, pixels.Height, 0x0010 | 0x0040);
-            if (trace)
-                timing.SetWindowPosMs = Stopwatch.GetElapsedTime(positionStarted).TotalMilliseconds;
-            _placement = pixels;
         }
         return timing;
     }
@@ -409,6 +446,7 @@ internal sealed class OverlayWindow : Window, ISessionView
     }
     public void HideQuietly()
     {
+        _measurementKey = null;
         _editing = false;
         _composing = false;
         _expanded = false;

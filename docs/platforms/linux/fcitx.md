@@ -1,5 +1,7 @@
 # Fcitx 合作组件预览
 
+本页命令描述高级手动会话，会沿用原输入法配置。主包设置里的受管“连接应用…”当前只用于自有练习，采用独立配置、监督进程和安全移除；操作及原输入法恢复顺序见 [Linux 客户端](README.md#连接目标应用)。两种方式不要混用，均不自动切换或恢复用户原输入法。
+
 这套可选组件让 TypeLay 与实际 Fcitx 输入事务协作。已验证范围包括 GTK3、GTK4 的标准 GtkEntry 和原生 GtkEntryBuffer；标准纯文本 TextView 使用原生 TextBuffer，两代已有多行选区、真实模型、Tab 和 IME 实证；GTK3 验证宿主 user-action 分组，GTK4 另验原生 undo/redo。GTK4 须单独以 --gtk4 启动。Qt 的可选同版构建与启动入口见末节；非纯文本/自定义控件、通用 Electron 尚未开放。普通 TypeLay 安装不会安装或启用这些组件。
 
 固定生产输入以 `eng/linux/cooperative/inputs.py` 为准，当前为 Core 5.1.22、Chinese Addons 5.1.14、GTK IM 5.1.7、完整私有 LibIME 1.1.16。对应组件已在隔离环境完整构建，实际库、模型路径与同版官方包均有校验。搬迁后的私有包已通过默认组件会话、配置/前台重启、原 session bus，以及嵌套 niri 的实际 CPU 模型、自动预览、一次 Tab 写回、编辑后两阶段 Tab 与拼音组合保护。同窗后台直接替换也已验证实际类型恰为标准 GTK3/GTK4 Entry 的原字段：一次真实 F10/模型任务写 A 时保持 B 的焦点、正文与选择，原文变化时拒绝；不外推到 TextView 或跨窗口/应用后台。实际按键由隔离桌面自动化送入，不能代替用户 CachyOS 桌面的物理输入验收。

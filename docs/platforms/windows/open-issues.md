@@ -53,6 +53,8 @@ Windows 与 Linux 并行开发，遵循[共同应用支持与完整体验](../..
 - 当前模型使用完整 `translate_batch` 返回完整结果，不是 token 流式显示。“实时跟随输入”的产品要求不等于必须采用 token 流，但不能用批量推理为仅到标点才更新的体验免责。
 - 组合输入期间走已提交前缀读取，无法获得可靠前缀时可能没有新可译源。标点伴随提交或停顿，可能让该路径恢复，但没有现场证据证明用户的问题由 IME 前缀失败造成。
 
+[真实 Windows 模型回归](https://github.com/DingJWuyu/Typelay/actions/runs/38431686175)已在独立 stock Edit、生产 Broker/控制器/浮层和实际安装的本地模型之间跑通持续无标点输入：模型就绪后开始追加，903ms 时显示首译且输入仍继续，源从 27 字继续至 45 字，最终译文与完整源的真实推理结果相符，原文完整、零提交。本轮 UIA 的 IME 为 Unknown，始终只有只读 Preview、没有写候选；这证明该预览链不依赖句末标点，不证明物理拼音已提交前缀、新标签页或用户原场景通过。耗时是该次运行的观测值，不是延迟保证；使用方法见[真实模型持续输入检查](testing.md#无标点持续翻译的真实模型检查)。
+
 源码入口：`src/shared/TypeLay.Core/Domain.cs` 的 `Limits`、`src/shared/TypeLay.Core/Session.cs` 的 `TakeTranslationJob`、`src/windows/TypeLay.Broker/Interop/NativeUia.cs` 的 `ReadCommittedPrefix`、`src/shared/TypeLay.Worker/typelay_worker/engine.py` 的 `translate_batch`。
 
 ## 最小取证和验收
