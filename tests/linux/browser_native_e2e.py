@@ -21,6 +21,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 from support.browser_process import chromium_context
 
@@ -114,9 +115,18 @@ class NativeBrowserContract(unittest.TestCase):
                     )
                     context = scope.__enter__()
                     try:
-                        with context.expect_page(timeout=10_000) as opened:
-                            self.support_action(installed, environment, "OpenInstructions")
-                        opened.value.wait_for_url("chrome://extensions/", timeout=10_000)
+                        opened_page = None
+                        try:
+                            with context.expect_page(timeout=10_000) as opened:
+                                self.support_action(installed, environment, "OpenInstructions")
+                            opened_page = opened.value
+                            opened_page.wait_for_url("chrome://extensions/", timeout=10_000)
+                        except (PlaywrightError, AssertionError, subprocess.TimeoutExpired):
+                            try:
+                                self.save_open_failure(context, opened_page, root)
+                            except (OSError, PlaywrightError) as error:
+                                print("Browser evidence could not be saved:", error, flush=True)
+                            raise
                         with patch.dict(os.environ, environment):
                             self.assertEqual(
                                 support.browser_status("chromium")["state"], "not-registered"
@@ -219,6 +229,55 @@ class NativeBrowserContract(unittest.TestCase):
                             )
                     finally:
                         scope.__exit__(None, None, None)
+
+    @staticmethod
+    def save_open_failure(context, opened, root):
+        """One bounded snapshot of this disposable browser; never retry the failed action."""
+        output = Path(__file__).resolve().parents[2] / "artifacts/linux/browser-native"
+        output.mkdir(parents=True, exist_ok=True)
+        pages = context.pages[:4]
+        report = {
+            "expectedUrl": "chrome://extensions/",
+            "openedPage": {"url": opened.url, "closed": opened.is_closed()} if opened else None,
+            "pages": [
+                {"url": page.url, "closed": page.is_closed(), "selected": page is opened}
+                for page in pages
+            ],
+        }
+        print("Browser pages at failure:", json.dumps(report, ensure_ascii=False), flush=True)
+        for index, page in enumerate(pages):
+            value = report["pages"][index]
+            if page.is_closed():
+                continue
+            for state in ("domcontentloaded", "load"):
+                try:
+                    page.wait_for_load_state(state, timeout=100)
+                    value[state] = True
+                except PlaywrightError as error:
+                    value[state] = str(error)[:300]
+            for name, selector in (
+                ("extensionManager", "extensions-manager"),
+                ("browserErrorPage", "#main-frame-error"),
+            ):
+                try:
+                    page.locator(selector).wait_for(state="attached", timeout=250)
+                    value[name] = True
+                except PlaywrightError as error:
+                    value[name] = str(error)[:300]
+            try:
+                page.screenshot(path=str(output / f"open-page-{index}.png"), timeout=2000)
+            except (OSError, PlaywrightError) as error:
+                value["screenshotError"] = str(error)[:300]
+        try:
+            with (root / "config/chromium/chromium.log").open("rb") as log:
+                log.seek(0, os.SEEK_END)
+                log.seek(max(0, log.tell() - 65536))
+                (output / "chromium.log").write_bytes(log.read())
+        except OSError as error:
+            report["chromiumLogError"] = str(error)[:300]
+        evidence = json.dumps(report, ensure_ascii=False, indent=2)
+        print("Browser open failure evidence:\n" + evidence, flush=True)
+        (output / "open-failure.json").write_text(evidence, encoding="utf-8")
 
     def support_action(self, installed, environment, action):
         # Isolate the product's asyncio loop from Playwright's synchronous loop.

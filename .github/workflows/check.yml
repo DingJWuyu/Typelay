@@ -439,6 +439,7 @@ jobs:
             artifacts/linux/gtk4-desktop/
             artifacts/linux/setup-desktop/
             artifacts/linux/firefox-native/
+            artifacts/linux/browser-native/
             artifacts/linux/vscode/
             artifacts/linux/vscode-model/
             artifacts/linux/editor-probe/
