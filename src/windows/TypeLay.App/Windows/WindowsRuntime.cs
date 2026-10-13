@@ -20,8 +20,11 @@ internal static class WindowsRuntime
         var monitor = new KeyboardHook(automationTest, overlay.Handle);
         broker ??= new BrokerClient();
         support?.Bind(broker, monitor);
+        var loop = new DispatcherSessionLoop();
+        if (support is not null)
+            loop.Tick += support.Poll;
         return new(settings, model, overlay, monitor,
-            new WindowsInputService(broker, overlay.Handle, support, monitor), new DispatcherSessionLoop());
+            new WindowsInputService(broker, overlay.Handle, support, monitor), loop);
     }
 
     private static void SetStartup(bool enabled)

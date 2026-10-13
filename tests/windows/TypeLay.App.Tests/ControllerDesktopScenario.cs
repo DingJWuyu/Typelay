@@ -143,7 +143,16 @@ internal static class ControllerDesktopScenario
             Assert.Equal("B stays unchanged", N.ReadText(b, Limits.MaxTextUnits));
             // No capture/tick between broker disposal and this read: loss of the
             // live service alone must revoke cached connected capabilities.
+            int completedChecks = 0;
+            support.CheckCompleted += _ => completedChecks++;
+            support.BeginCheck("desktop-text");
             broker.Dispose();
+            support.Poll();
+            Assert.Equal(1, completedChecks);
+            support.BeginCheck("desktop-text");
+            support.CancelCheck();
+            support.Poll();
+            Assert.Equal(1, completedChecks);
             var disconnected = support.Read(settings.Value).Rows.Single(row => row.Id == "desktop-text");
             Assert.Equal(ApplicationSupportState.Error, disconnected.State);
             Assert.Equal(new ApplicationSupportCapabilities(), disconnected.Capabilities);

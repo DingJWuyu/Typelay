@@ -40,6 +40,7 @@ internal static class Program
             controller.ServiceStatus,
             controller.ShortcutStatus,
             controller.OperationStatus,
+            controller.CommandFeedbackRevision,
             controller.LastApplication
         });
         controller.Changed += Status;
@@ -91,6 +92,8 @@ internal static class Program
                     return settings.Value.Enabled && FieldPolicy.Allows(DesktopLink.Decode<FieldMetadata>(value), settings.Value.Excluded);
                 case "beginEdit":
                     return view.BeginEditing?.Invoke() ?? false;
+                case "settingsDraft":
+                    return SettingsDraftPresentation.Create();
                 case "applicationSupport":
                     // The desktop owns detection and explicit installation actions.
                     // Reading this view never starts either of them.

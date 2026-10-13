@@ -32,6 +32,9 @@ public sealed class SessionController : IDisposable
     {
         get; private set;
     }
+    // Hosts discard queued feedback older than this revision, including when a
+    // newer command succeeds and deliberately emits no failure notification.
+    public long CommandFeedbackRevision => _commandFeedbackRevision;
     public string ServiceStatus { get; private set; } = "正在连接输入服务";
     public event Action? Changed;
     public event Action<CommandFeedback>? OperationFeedback;

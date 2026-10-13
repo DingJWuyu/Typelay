@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Windows.Automation;
 using TypeLay.App;
 using TypeLay.Core;
 using TypeLay.Runtime;
@@ -21,6 +22,7 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             .Select(folder => Path.Combine(Environment.GetFolderPath(folder), "Google", "Chrome", "Application", "chrome.exe"))
             .FirstOrDefault(File.Exists);
         Assert.True(chrome is not null, "This desktop regression requires the runner's installed Google Chrome.");
+        output.WriteLine("Installed Chrome version: " + FileVersionInfo.GetVersionInfo(chrome!).ProductVersion);
         string directory = Path.Combine(Path.GetTempPath(), "typelay-browser-" + Guid.NewGuid().ToString("N"));
         bool failed = false;
         try
@@ -33,6 +35,17 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             <style>body{padding:20vh 15vw;font:20px sans-serif}input{width:65vw;padding:14px}</style>
             <label for="query">Search</label>
             <input id="query" type="search" value="ordinary search without punctuation" autofocus>
+            <script>
+            function reportFocus() {
+              document.title = "TypeLay browser input regression " +
+                (document.hasFocus() && document.activeElement === document.getElementById("query") ? "focused" : "unfocused");
+            }
+            window.addEventListener("focus", reportFocus);
+            window.addEventListener("blur", reportFocus);
+            document.addEventListener("focusin", reportFocus);
+            document.addEventListener("focusout", reportFocus);
+            reportFocus();
+            </script>
             """, TestContext.Current.CancellationToken);
             var start = new ProcessStartInfo(chrome!) { UseShellExecute = false, RedirectStandardError = true };
             start.ArgumentList.Add("--user-data-dir=" + Path.Combine(directory, "profile"));
@@ -64,6 +77,7 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
                         return source;
                     await Task.Delay(40, deadline.Token);
                 } while (elapsed.Elapsed < TimeSpan.FromSeconds(6));
+                ReportFocus(browser);
                 throw new Xunit.Sdk.XunitException("The ordinary page search field was not captured; inspect the broker's fixed stage/rejection trace.");
             }
             var first = await Observe(initial);
@@ -100,6 +114,29 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             {
                 output.WriteLine("Isolated browser profile cleanup failed: " + error.GetType().Name);
             }
+        }
+    }
+
+    private void ReportFocus(Process browser)
+    {
+        // Test-owned browser only. Log fixed booleans/control type, not window
+        // titles, field text, paths, runtime IDs or user metadata. This separates
+        // browser/page readiness from the production broker's rejection reason.
+        try
+        {
+            browser.Refresh();
+            nint window = browser.MainWindowHandle;
+            var focus = AutomationElement.FocusedElement?.Current;
+            output.WriteLine($"Browser focus atMs={Environment.TickCount64}: windowReady={window != 0}; "
+                + $"foregroundOwned={window != 0 && Native.GetForegroundWindow() == window}; "
+                + $"expectedPageTitle={browser.MainWindowTitle.Contains("TypeLay browser input regression", StringComparison.Ordinal)}; "
+                + $"domFocusConfirmed={browser.MainWindowTitle.Contains("TypeLay browser input regression focused", StringComparison.Ordinal)}; "
+                + $"controlType={focus?.ControlType.Id}; keyboardFocus={focus?.HasKeyboardFocus}; "
+                + $"enabled={focus?.IsEnabled}; offscreen={focus?.IsOffscreen}; password={focus?.IsPassword}");
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            output.WriteLine("Browser focus diagnostic unavailable: " + error.GetType().Name);
         }
     }
 

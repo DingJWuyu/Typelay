@@ -1556,6 +1556,9 @@ def run(arguments):
             settings_control(support["labels"]["chooseComponent"])
             activate_setting(support["labels"]["cancel"])
             assert not status()["setup"]["onboardingComplete"]
+            subprocess.run(
+                ["grim", str(arguments.output / "application-support.png")], check=True, timeout=3
+            )
             trial = settings_control(support["labels"]["tryIt"])
             assert Atspi.Component.grab_focus(trial.get_component_iface())
             key("ctrl+Page_Up")
@@ -1570,6 +1573,7 @@ def run(arguments):
                 "switch did not save immediately",
             )
             saved = json.loads(paths.settings.read_text())
+            settings_control("保存修改")
             wake = settings_control("设置：唤醒翻译")
             direct = settings_control("设置：直接翻译替换")
             assert Atspi.EditableText.set_text_contents(
@@ -1579,6 +1583,7 @@ def run(arguments):
                 lambda: status()["setup"]["settingsDraft"],
                 "shortcut edit was not retained as draft",
             )
+            assert "离开此页后仍会保留" in text(settings_control("设置草稿"))
             activate_setting("设置：启用 TypeLay")
             wait_for(
                 lambda: json.loads(paths.settings.read_text())["Enabled"],
@@ -1590,9 +1595,9 @@ def run(arguments):
             assert Atspi.EditableText.set_text_contents(
                 direct.get_editable_text_iface(), "Ctrl+Shift+F8"
             )
-            activate_setting("保存快捷键和排除项")
+            activate_setting("保存修改")
             wait_for(
-                lambda: text(settings_control("设置反馈")).startswith("未保存"),
+                lambda: text(settings_control("设置反馈")) == "未保存：请检查输入。草稿仍保留。",
                 "invalid shortcut pair did not report rejection",
             )
             assert json.loads(paths.settings.read_text())["WakeShortcut"] == saved["WakeShortcut"]
@@ -1600,7 +1605,7 @@ def run(arguments):
             assert Atspi.EditableText.set_text_contents(
                 direct.get_editable_text_iface(), saved["DirectShortcut"]
             )
-            activate_setting("保存快捷键和排除项")
+            activate_setting("保存修改")
             wait_for(
                 lambda: json.loads(paths.settings.read_text())["WakeShortcut"] == "Ctrl+Shift+F8",
                 "valid shortcut pair did not persist",
@@ -1608,11 +1613,59 @@ def run(arguments):
             assert Atspi.EditableText.set_text_contents(
                 wake.get_editable_text_iface(), saved["WakeShortcut"]
             )
-            activate_setting("保存快捷键和排除项")
+            activate_setting("保存修改")
             wait_for(
                 lambda: not status()["setup"]["settingsDraft"],
                 "saved shortcuts still appeared dirty",
             )
+            assert text(settings_control("设置反馈")) == "设置已保存"
+            assert Atspi.EditableText.set_text_contents(
+                wake.get_editable_text_iface(), "Ctrl+Shift+F8"
+            )
+            assert Atspi.Component.grab_focus(wake.get_component_iface())
+            key("ctrl+Page_Down")
+            wait_for(
+                lambda: trial.get_state_set().contains(Atspi.StateType.SHOWING),
+                "application-support page did not become visible with a pending draft",
+            )
+            assert status()["setup"]["settingsDraft"]
+            key("ctrl+Page_Up")
+            assert text(wake) == "Ctrl+Shift+F8", "page navigation discarded the shortcut draft"
+            window = wait_for(
+                lambda: next(
+                    (
+                        window
+                        for window in (contents(request("Windows"), "Windows") or [])
+                        if window.get("title") == "TypeLay 设置"
+                    ),
+                    None,
+                ),
+                "settings window missing before close",
+            )
+            request({"Action": {"CloseWindow": {"id": window["id"]}}})
+            keep_editing = settings_control("继续编辑")
+            wait_for(
+                lambda: keep_editing.get_state_set().contains(Atspi.StateType.FOCUSED),
+                "closing a draft did not default to keeping the user's work",
+            )
+            key("Return")
+            wait_for(
+                lambda: named(process.pid, "放弃修改") is None,
+                "default keep-editing action did not dismiss the close prompt",
+            )
+            assert status()["setup"]["settingsDraft"]
+            assert text(wake) == "Ctrl+Shift+F8"
+            request({"Action": {"CloseWindow": {"id": window["id"]}}})
+            activate_setting("放弃修改")
+            wait_for(
+                lambda: not status()["setup"]["settingsDraft"],
+                "explicit discard retained the unsaved draft",
+            )
+            assert json.loads(paths.settings.read_text())["WakeShortcut"] == saved["WakeShortcut"]
+            assert control(paths, "settings") is True
+            wake = settings_control("设置：唤醒翻译")
+            assert text(wake) == saved["WakeShortcut"]
+            assert Atspi.Component.grab_focus(wake.get_component_iface())
             key("ctrl+Page_Down")
             activate_setting(support["labels"]["tryIt"])
             wait_for(

@@ -377,6 +377,7 @@ def run_qt(
                 def set_mode(mode):
                     from support.gtk_accessibility import Atspi, named
 
+                    before_settings = state()
                     paths = Paths(arguments.package)
                     with connect_private(paths.control, 1.5) as connection:
                         host_pid = peer_credentials(connection)[0]
@@ -426,14 +427,16 @@ def run_qt(
                         == names[mode],
                         "real settings combo did not change work mode",
                     )
-                    save = wait_for(
-                        lambda: named(host_pid, "保存设置"), "real settings Save was unavailable"
-                    )
-                    assert Atspi.Action.do_action(save.get_action_iface(), 0)
+                    # Ordinary choices save immediately through SettingsStore;
+                    # the separate draft-save action owns only text settings.
                     wait_for(
                         lambda: json.loads(paths.settings.read_text()).get("Mode") == mode,
                         "production settings did not persist the selected work mode",
                     )
+                    after_settings = state()
+                    for field in ("first", "second"):
+                        assert after_settings[field]["text"] == before_settings[field]["text"]
+                        assert after_settings[field]["changes"] == before_settings[field]["changes"]
                     request({"Action": {"CloseWindow": {"id": settings_window["id"]}}})
                     request({"Action": {"FocusWindow": {"id": window["id"]}}})
                     wait_for(

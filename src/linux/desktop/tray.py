@@ -14,6 +14,7 @@ class Tray:
         self.connected = False
         self.indicator = None
         self.feedback_revision = 0
+        self.command_revision = 0
         self.feedback_pending = None
         self.feedback_sending = False
         self.feedback_status = {"revision": 0, "code": None, "delivery": "none"}
@@ -121,6 +122,15 @@ class Tray:
 
     def report(self, value):
         self.model.set_label("本地模型已就绪" if value.get("modelReady") else "本地模型尚未就绪")
+        revision = value.get("commandFeedbackRevision")
+        if type(revision) is int:
+            if revision < self.command_revision:
+                return
+            self.command_revision = revision
+            if revision > self.feedback_revision:
+                self.feedback_pending = None
+                if self.feedback_status["code"] is not None:
+                    self.feedback_status["delivery"] = "superseded"
         message = value.get("operationStatus")
         self.operation.set_label(message or "")
         self.operation.set_visible(bool(message))
@@ -132,6 +142,7 @@ class Tray:
             self.closed
             or type(revision) is not int
             or revision <= self.feedback_revision
+            or revision < self.command_revision
             or not isinstance(code, str)
             or not 0 < len(code) <= 80
             or not isinstance(message, str)
@@ -139,6 +150,7 @@ class Tray:
         ):
             return
         self.feedback_revision = revision
+        self.command_revision = max(self.command_revision, revision)
         self.feedback_pending = (revision, code, message)
         self.feedback_status.update(revision=revision, code=code, delivery="pending")
         self.operation.set_label(message)
@@ -154,7 +166,7 @@ class Tray:
         self.feedback_pending = None
 
         def finished(delivery):
-            if revision == self.feedback_revision:
+            if revision == self.feedback_revision and revision >= self.command_revision:
                 self.feedback_status["delivery"] = delivery
             self.feedback_sending = False
             if not self.closed and self.feedback_pending is not None:
@@ -171,7 +183,11 @@ class Tray:
         def connected(_source, result):
             try:
                 connection = Gio.bus_get_finish(result)
-                if self.closed or revision != self.feedback_revision:
+                if (
+                    self.closed
+                    or revision != self.feedback_revision
+                    or revision < self.command_revision
+                ):
                     finished("superseded")
                     return
                 connection.call(

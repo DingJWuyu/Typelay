@@ -111,6 +111,9 @@ public sealed class SettingsRenderingTests(ITestOutputHelper testOutput)
                             .Where(expander => Equals(expander.Header, "查看详情")).ToArray();
                         Assert.NotEmpty(supportDetails);
                         Assert.All(supportDetails, expander => Assert.False(expander.IsExpanded));
+                        Assert.All(Descendants(window).OfType<Expander>(), expander => Assert.Equal(
+                            Assert.IsType<SolidColorBrush>(window.FindResource("Text")).Color,
+                            Assert.IsType<SolidColorBrush>(expander.Foreground).Color));
                         Assert.False(Descendants(window).OfType<Button>().Single(button =>
                             Equals(button.Content, ApplicationSupportPresentation.Create([]).Labels.TryIt)).IsEnabled);
                         Render(window, $"settings-applications-{theme}-{width}.png");
@@ -173,6 +176,27 @@ public sealed class SettingsRenderingTests(ITestOutputHelper testOutput)
                 window.Hide();
                 Stage("controller-desktop-scenario");
                 ControllerDesktopScenario.Run();
+                Stage("shortcut-draft-preservation");
+                window.ShowPage("shortcuts");
+                window.UpdateLayout();
+                const string draft = "Ctrl+Shift+U";
+                Descendants(window).OfType<TextBox>().Single(control =>
+                    AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键").Text = draft;
+                // A real status/settings refresh must not replace an unsubmitted
+                // edit with the value currently stored on disk.
+                settings.Update(settings.Value with
+                {
+                    Theme = "dark"
+                });
+                window.UpdateLayout();
+                Assert.Equal(draft, Descendants(window).OfType<TextBox>().Single(control =>
+                    AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键").Text);
+                window.ShowPage("apps");
+                window.ShowPage("shortcuts");
+                window.UpdateLayout();
+                Assert.Equal(draft, Descendants(window).OfType<TextBox>().Single(control =>
+                    AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键").Text);
+                Assert.Equal(saved.WakeShortcut, WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json")).Value.WakeShortcut);
                 Stage("scenarios-complete");
             }
             catch (Exception error) { failure = error; }

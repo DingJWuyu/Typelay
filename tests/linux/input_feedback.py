@@ -4,6 +4,7 @@ The compositor/listening socket are controlled system ports. These tests do not
 claim native key interception, an IME, or a real desktop interaction.
 """
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -17,6 +18,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from input import Input, Peer  # noqa: E402
+from wire import Decoder  # noqa: E402
 
 
 class EventLoop:
@@ -24,15 +26,26 @@ class EventLoop:
 
     def __init__(self):
         self.next_id = 0
+        self.watches = {}
 
     def register(self, *_):
         self.next_id += 1
         return self.next_id
 
-    io_add_watch = timeout_add = idle_add = register
+    timeout_add = idle_add = register
 
-    def source_remove(self, _):
-        pass
+    def io_add_watch(self, descriptor, condition, callback):
+        identity = self.register()
+        self.watches[identity] = (descriptor, condition, callback)
+        return identity
+
+    def flush(self, descriptor):
+        for identity, (fd, condition, callback) in list(self.watches.items()):
+            if fd == descriptor and condition & self.IO_OUT and not callback(fd, self.IO_OUT):
+                self.source_remove(identity)
+
+    def source_remove(self, identity):
+        self.watches.pop(identity, None)
 
 
 class Listener:
@@ -69,9 +82,11 @@ class InputFeedbackTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory(prefix="typelay-input-feedback-")
         self.addCleanup(directory.cleanup)
         self.host = Host()
+        self.loop = EventLoop()
+        self.connections = {}
         self.stamp = 100
         clock = patch("input.now_ms", return_value=1000)
-        clock.start()
+        self.clock = clock.start()
         self.addCleanup(clock.stop)
         # Niri still owns its real lifecycle, but an absent socket cannot inspect
         # a user's compositor. No source text, model, or desktop is involved.
@@ -80,7 +95,7 @@ class InputFeedbackTests(unittest.TestCase):
         self.addCleanup(environment.stop)
         with patch("socket.socket", return_value=Listener()):
             self.input = Input(
-                EventLoop(),
+                self.loop,
                 SimpleNamespace(keyval_from_name=lambda name: {"F9": 0xFFC6, "F10": 0xFFC7}[name]),
                 SimpleNamespace(native=Path(directory.name) / "native.sock"),
                 self.host,
@@ -108,12 +123,22 @@ class InputFeedbackTests(unittest.TestCase):
         connection = tempfile.TemporaryFile()
         self.addCleanup(connection.close)
         peer = Peer(self.input, connection, process.pid)
+        self.connections[peer] = connection
         self.input.peers.add(peer)
         peer.event(
             "hello",
             {"protocol": 2, "pid": process.pid, "backend": backend, "lifetime": str(uuid.uuid4())},
         )
         return peer
+
+    def native_requests(self, peer):
+        connection = self.connections[peer]
+        self.loop.flush(connection.fileno())
+        connection.seek(0)
+        frames = Decoder().feed(connection.read())
+        connection.seek(0)
+        connection.truncate()
+        return [frame for frame in frames if frame.get("op") == "trigger-shortcut"]
 
     def focus(self, peer):
         # Deliver a controlled compositor observation at its normal callback
@@ -148,6 +173,177 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertEqual(notice["commandGeneration"], self.generation)
         self.assertEqual(notice["commandSequence"], 1)
         self.assertNotIn("source", notice)
+
+    def test_current_cli_without_an_approved_field_reports_a_source_free_refusal(self):
+        self.focus(self.peer)
+        self.clock.return_value = 1050
+        accepted = asyncio.run(
+            self.input.trigger("wake", {"windowId": self.peer.pid, "triggeredAtMs": 1040})
+        )
+        self.assertFalse(accepted)
+        self.assertEqual(len(self.host.notices), 1)
+        self.assertEqual(self.host.notices[0]["rejection"], "Unsupported")
+        self.assertEqual(self.host.notices[0]["kind"], "wake")
+        self.assertEqual(self.host.notices[0]["commandGeneration"], self.generation)
+        self.assertEqual(self.host.notices[0]["commandSequence"], 1)
+        self.assertNotIn("source", self.host.notices[0])
+
+    def test_current_cli_without_a_connected_peer_reports_one_refusal(self):
+        self.focus(self.peer)
+        self.peer.link.close()
+        self.clock.return_value = 1050
+        request = {"windowId": self.peer.pid, "triggeredAtMs": 1040}
+        self.assertFalse(asyncio.run(self.input.trigger("direct", request)))
+        self.assertFalse(asyncio.run(self.input.trigger("direct", request)))
+        self.assertEqual(len(self.host.notices), 1)
+        self.assertEqual(self.host.notices[0]["kind"], "direct")
+        self.assertEqual(self.host.notices[0]["rejection"], "Unsupported")
+        self.assertNotIn("source", self.host.notices[0])
+
+    def test_invalid_disabled_or_unproven_cli_does_not_invent_a_command(self):
+        self.focus(self.peer)
+        self.clock.return_value = 1050
+        valid = {"windowId": self.peer.pid, "triggeredAtMs": 1040}
+        requests = [
+            ("wake", None),
+            ("other", valid),
+            ("wake", {**valid, "source": "untrusted"}),
+            ("wake", {**valid, "windowId": True}),
+            ("wake", {**valid, "windowId": self.peer.pid + 1}),
+            ("wake", {**valid, "triggeredAtMs": True}),
+            ("wake", {**valid, "triggeredAtMs": 1051}),
+            ("wake", {**valid, "triggeredAtMs": 899}),
+            # Without a generation or sub-millisecond time, ordering at the
+            # configuration boundary is ambiguous and must remain a refusal.
+            ("wake", {**valid, "triggeredAtMs": 1000}),
+        ]
+        for kind, request in requests:
+            with self.subTest(kind=kind, request=request):
+                self.assertFalse(asyncio.run(self.input.trigger(kind, request)))
+        self.clock.return_value = 1200  # The compositor observation is now stale.
+        self.assertFalse(asyncio.run(self.input.trigger("wake", {**valid, "triggeredAtMs": 1190})))
+        self.clock.return_value = 1050
+        self.input.notification(
+            "shortcuts",
+            {"enabled": False, "wake": "F9", "direct": "F10", "generation": self.generation},
+        )
+        self.assertFalse(asyncio.run(self.input.trigger("wake", valid)))
+        self.assertEqual(self.host.notices, [])
+        self.assertEqual(self.native_requests(self.peer), [])
+
+    def test_old_cli_cannot_retire_a_newer_native_command(self):
+        self.clock.return_value = 1050
+        current = self.command(stamp=1045)
+        for stamp in (1040, 1045):
+            self.assertFalse(
+                asyncio.run(
+                    self.input.trigger(
+                        "direct", {"windowId": self.peer.pid, "triggeredAtMs": stamp}
+                    )
+                )
+            )
+        self.peer.event("shortcut-rejected", {**current, "reason": "ImeUnclear"})
+        self.assertEqual(len(self.host.notices), 1)
+        self.assertEqual(self.host.notices[0]["rejection"], "ImeUnclear")
+        self.assertEqual(self.host.notices[0]["commandSequence"], 1)
+        self.assertEqual(self.native_requests(self.peer), [])
+
+    def test_cli_from_before_reconfiguration_cannot_become_a_current_command(self):
+        self.focus(self.peer)
+        self.clock.return_value = 1045
+        self.generation = str(uuid.uuid4())
+        self.configure()
+        self.clock.return_value = 1050
+        for stamp in (1040, 1045):
+            self.assertFalse(
+                asyncio.run(
+                    self.input.trigger("wake", {"windowId": self.peer.pid, "triggeredAtMs": stamp})
+                )
+            )
+        self.assertEqual(self.host.notices, [])
+
+    def test_forwarded_qt_cli_keeps_its_original_time_and_emits_only_its_native_result(self):
+        self.clock.return_value = 1050
+        old = self.command(stamp=1020)
+        self.peer.shortcut = {
+            "target": {"value": "field"},
+            "window": {"id": self.peer.pid},
+            "authority": {"inputRevision": 1, "focusRevision": 1},
+        }
+        request = {"windowId": self.peer.pid, "triggeredAtMs": 1040}
+
+        async def trigger():
+            task = asyncio.create_task(self.input.trigger("direct", request))
+            await asyncio.sleep(0)  # Let the real Link enqueue its native request.
+            frames = self.native_requests(self.peer)
+            self.assertEqual(len(frames), 1)
+            self.assertEqual(frames[0]["data"]["triggeredAtMs"], 1040)
+            self.assertEqual(frames[0]["data"]["generation"], self.generation)
+            self.assertEqual(self.host.notices, [])
+            self.assertFalse(await self.input.trigger("direct", request))
+            self.assertEqual(self.native_requests(self.peer), [])
+            self.peer.event("shortcut-rejected", {**old, "reason": "SourceChanged"})
+            self.assertEqual(self.host.notices, [])
+            command = self.command(command_id=2, kind="direct", stamp=1040)
+            self.peer.link.receive(
+                {
+                    "event": "shortcut",
+                    "data": {
+                        **command,
+                        "acceptedAtMs": 1050,
+                        "native": {
+                            "target": "field",
+                            "text": "ordinary test text",
+                            "selection": {"start": 0, "end": 0},
+                            "metadata": {"multiline": False},
+                            "ime": "Clear",
+                            "writeSupported": True,
+                            "observedAtMs": 1050,
+                            "authority": {"inputRevision": 1, "focusRevision": 1},
+                            "geometry": {
+                                "space": "qt-toplevel",
+                                "bounds": {"x": 0, "y": 0, "width": 20, "height": 10},
+                                "frameWidth": 100,
+                                "frameHeight": 100,
+                                "scale": 1,
+                            },
+                        },
+                    },
+                }
+            )
+            self.peer.link.receive({"id": frames[0]["id"], "data": {"triggered": True}})
+            self.assertTrue(await asyncio.wait_for(task, timeout=1))
+
+        asyncio.run(trigger())
+        self.assertEqual(len(self.host.notices), 1)
+        self.assertEqual(self.host.notices[0]["commandSequence"], 2)
+        self.assertEqual(self.host.notices[0]["source"]["text"], "ordinary test text")
+        self.assertNotIn("rejection", self.host.notices[0])
+
+    def test_another_peer_cannot_claim_the_reserved_cli_millisecond(self):
+        other = self.connect_peer()
+        self.focus(self.peer)
+        self.clock.return_value = 1050
+        self.peer.shortcut = {
+            "target": {"value": "field"},
+            "window": {"id": self.peer.pid},
+            "authority": {"inputRevision": 1, "focusRevision": 1},
+        }
+
+        async def trigger():
+            task = asyncio.create_task(
+                self.input.trigger("wake", {"windowId": self.peer.pid, "triggeredAtMs": 1040})
+            )
+            await asyncio.sleep(0)
+            frames = self.native_requests(self.peer)
+            self.assertEqual(len(frames), 1)
+            command = self.command(peer=other, stamp=1040)
+            other.event("shortcut-rejected", {**command, "reason": "SourceChanged"})
+            self.peer.link.receive({"id": frames[0]["id"], "data": {"triggered": False}})
+            self.assertFalse(await asyncio.wait_for(task, timeout=1))
+
+        asyncio.run(trigger())
+        self.assertEqual(self.host.notices, [])
 
     def test_late_cancel_cannot_replace_a_command_that_has_already_started(self):
         old = self.command(command_id=1)

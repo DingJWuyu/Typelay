@@ -5,6 +5,39 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class SessionControllerTests
 {
+    [Fact]
+    public void NewLegacyWakePublishesARevisionThatRetiresOlderFailure()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Command("wake");
+        s.Tick();
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Input.Notices.Enqueue(new("direct", AcceptedAtMs: s.Loop.NowMs,
+            CommandGeneration: s.Input.CommandGeneration, Rejection: Denial.ImeUnclear, CommandSequence: 1));
+        s.Tick();
+        Assert.Contains("输入法", s.Controller.OperationStatus);
+        long rejectedRevision = Assert.Single(feedback).Revision;
+        Assert.Equal(rejectedRevision, s.Controller.CommandFeedbackRevision);
+        var changed = new List<(string? Status, long Revision)>();
+        s.Controller.Changed += () => changed.Add((s.Controller.OperationStatus, s.Controller.CommandFeedbackRevision));
+        s.Command("wake"); // Legacy sequence zero remains a distinct user command.
+        s.Tick();
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.True(s.Controller.CommandFeedbackRevision > rejectedRevision);
+        Assert.Contains(changed, status => status.Status is null && status.Revision > rejectedRevision);
+        Assert.Single(feedback);
+        s.Tick(Limits.DebounceMs);
+        s.CompleteTranslation("translated");
+        Assert.True(s.View.Visible);
+        long acceptedRevision = s.Controller.CommandFeedbackRevision;
+        s.Settings.Update(s.Settings.Value with
+        {
+            DirectShortcut = "Ctrl+F8"
+        });
+        Assert.True(s.Controller.CommandFeedbackRevision > acceptedRevision);
+    }
+
     [Theory]
     [InlineData("wake")]
     [InlineData("direct")]
@@ -91,6 +124,7 @@ public sealed class SessionControllerTests
         s.Input.Notices.Enqueue(rejected);
         s.Tick();
         string? latest = s.Controller.OperationStatus;
+        long revision = s.Controller.CommandFeedbackRevision;
         Assert.NotNull(latest);
         s.Input.Notices.Enqueue(rejected with
         {
@@ -103,6 +137,7 @@ public sealed class SessionControllerTests
         });
         s.Tick();
         Assert.Equal(latest, s.Controller.OperationStatus);
+        Assert.Equal(revision, s.Controller.CommandFeedbackRevision);
         var only = Assert.Single(feedback);
         Assert.Equal(s.Input.CommandGeneration, only.CommandGeneration);
         Assert.Equal(2, only.CommandSequence);

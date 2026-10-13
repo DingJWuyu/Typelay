@@ -42,6 +42,7 @@ jobs:
               paths = set(git('log', '-m', '--format=', '--name-only', f'{base}..HEAD').splitlines()) - {''}
               before = os.environ.get('BEFORE', '')
               valid_before = bool(re.fullmatch(r'[0-9a-f]{40}', before)) and before != '0' * 40
+              valid_before = valid_before and subprocess.run(['git', 'merge-base', '--is-ancestor', before, 'HEAD'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
               pushed = set(git('log', '-m', '--format=', '--name-only', f'{before}..HEAD').splitlines()) if valid_before else {'.github/'}
               workflow_changed = any(x.startswith('.github/') for x in pushed)
               neutral = lambda x: x.startswith(('docs/', '.github/')) or x in ('README.md', 'AGENTS.md', 'GLOSSARY.md')
@@ -49,6 +50,14 @@ jobs:
               linux_only = bool(platform_paths) and all(x.startswith(('src/linux/', 'tests/linux/', 'eng/linux/', 'packaging/linux/')) for x in platform_paths)
               windows_only = bool(platform_paths) and all(x.startswith(('src/windows/', 'tests/windows/', 'eng/windows/', 'packaging/windows/')) for x in platform_paths)
               if not workflow_changed:
+                  windows_push = all(neutral(x) or x.startswith(('src/windows/', 'tests/windows/', 'eng/windows/', 'packaging/windows/')) for x in pushed if x)
+                  if branch == 'work/windows-experience' and not windows_only and windows_push:
+                      # This exact combined candidate was exercised on both platforms.
+                      # Reusing its unchanged Linux/shared bytes is not a claim that
+                      # every GUI scenario passed. Any shared/unknown change runs both.
+                      baseline = '432d5ae26d4fee2697d591933dc56879d67fccf0'
+                      if subprocess.run(['git', 'cat-file', '-e', baseline + '^{commit}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                          windows_only = subprocess.run(['git', 'diff', '--quiet', baseline, 'HEAD', '--', '.', ':!src/windows/**', ':!tests/windows/**', ':!eng/windows/**', ':!packaging/windows/**', ':!docs/**', ':!.github/**', ':!README.md', ':!AGENTS.md', ':!GLOSSARY.md']).returncode == 0
                   if branch == 'work/linux-usability' and linux_only:
                       windows = False
                       allowed = re.compile(r'^(src/linux/native/qt6/|src/linux/native/fcitx5/typelay-fcitx-qt-v1\.h$|eng/linux/cooperative/(qt\.py|qt-runtime-probe\.cpp|patches/fcitx5-qt\.patch)$|tests/linux/qt_cooperative/|tests/linux/qt_desktop\.py$|tests/linux/fixtures/qt_native_fixture\.cpp$)')
@@ -244,6 +253,11 @@ jobs:
           Xvfb :99 -screen 0 1280x960x24 -nolisten tcp &
           export DISPLAY=:99
           python tests/linux/native_e2e.py --gtk-refusal --native artifacts/linux/native --output artifacts/linux/nested
+      - name: Verify tray controls without downloading models
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          export DISPLAY=:99
+          GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package
       - name: Verify ordinary browser fields through the production DOM adapter
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
@@ -320,11 +334,6 @@ jobs:
           pacman -U --noconfirm libime.pkg.tar.zst chinese.pkg.tar.zst
           cd ../../..
           python "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative/fcitx-cooperative.py" preflight
-      - name: Verify tray controls without downloading models
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: |
-          export DISPLAY=:99
-          GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package
       - name: Install and verify actual local translation components
         id: models
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}

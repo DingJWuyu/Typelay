@@ -77,11 +77,16 @@ def main():
             <arg type="u" direction="out"/></method></interface></node>"""
         ).interfaces[0]
         notices = []
+        held_replies = []
+        hold_reply = False
         notice_received = asyncio.Event()
 
         def notify(_connection, _sender, _path, _interface, _method, parameters, invocation):
             notices.append(parameters.unpack())
-            invocation.return_value(GLib.Variant("(u)", (len(notices),)))
+            if hold_reply:
+                held_replies.append(invocation)
+            else:
+                invocation.return_value(GLib.Variant("(u)", (len(notices),)))
             notice_received.set()
 
         notice_registration = connection.register_object(
@@ -178,8 +183,15 @@ def main():
                 availability,
             )
             assert tray.indicator is not None, "AyatanaAppIndicator3 unavailable"
-            await asyncio.wait_for(connected.wait(), 3)
-            assert tray.connected and registered, "real indicator did not register with the panel"
+            panel_failure = None
+            try:
+                await asyncio.wait_for(connected.wait(), 3)
+                if not tray.connected or not registered:
+                    panel_failure = "real indicator did not register with the panel"
+            except TimeoutError:
+                # Keep the panel failure, but still exercise independent shared
+                # feedback delivery through the actual notification service.
+                panel_failure = "real indicator did not register with the panel within 3 seconds"
             initial = {
                 "schema": 1,
                 "enabled": True,
@@ -252,7 +264,7 @@ def main():
             assert state["theme"] == "dark"
             # Exercise the actual session-bus delivery, without claiming panel pixels.
             feedback = {
-                "revision": 1,
+                "revision": tray.command_revision + 1,
                 "code": "shortcut-ime-unclear",
                 "message": "请先完成输入法组合，再试一次。",
             }
@@ -267,6 +279,24 @@ def main():
             tray.feedback(feedback)
             tray.feedback({**feedback, "revision": 0})
             assert len(notices) == 1 and not tray.feedback_sending
+            # A newer successful command retires queued older failures, even while
+            # the notification service is still acknowledging the preceding request.
+            hold_reply = True
+            notice_received.clear()
+            tray.feedback({**feedback, "revision": feedback["revision"] + 1})
+            await asyncio.wait_for(notice_received.wait(), 3)
+            tray.feedback({**feedback, "revision": feedback["revision"] + 2})
+            tray.report(
+                {"commandFeedbackRevision": feedback["revision"] + 3, "operationStatus": None}
+            )
+            assert tray.feedback_pending is None
+            held_replies.pop().return_value(GLib.Variant("(u)", (len(notices),)))
+            async with asyncio.timeout(3):
+                while tray.feedback_sending:
+                    await asyncio.sleep(0.01)
+            assert len(notices) == 2 and tray.feedback_status["delivery"] == "superseded"
+            assert not tray.operation.get_visible() and not actions
+            hold_reply = False
             # Remove the service; the same product failure remains visible in the tray.
             connection.call_sync(
                 "org.freedesktop.DBus",
@@ -279,7 +309,7 @@ def main():
                 1000,
                 None,
             )
-            tray.feedback({**feedback, "revision": 2})
+            tray.feedback({**feedback, "revision": feedback["revision"] + 4})
             async with asyncio.timeout(3):
                 while tray.feedback_sending:
                     await asyncio.sleep(0.01)
@@ -293,6 +323,12 @@ def main():
             assert saved["Mode"] == 1 and saved["Source"] == "en" and saved["Target"] == "zh"
             tray.close()
             assert tray.indicator.get_status() == tray.backend.IndicatorStatus.PASSIVE
+            print(
+                "PASS: actual notification delivery, stale queue retirement and unavailable-service fallback",
+                flush=True,
+            )
+            if panel_failure is not None:
+                raise AssertionError(panel_failure)
             print(
                 "PASS: native tray registration, pause/resume, settings persistence, modes, "
                 "language swap, secondary settings action and exit action"

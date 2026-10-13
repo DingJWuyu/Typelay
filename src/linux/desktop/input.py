@@ -140,6 +140,9 @@ class Input:
         self.published_plan = None
         self.publication_epochs = None
         self.shortcut_config = {"enabled": False}
+        self.shortcut_configured_at = now_ms()
+        self.shortcut_cli_at = -1
+        self.shortcut_cli_peer = None
         self.shortcut_sequence = 0
         self.shortcut_ordered = False
         self.shortcut_command = None
@@ -628,7 +631,12 @@ class Input:
             peer.command_id = 0
 
     def ordered_shortcut_time(self, peer, stamp):
-        if type(stamp) is not int or not 0 <= stamp <= now_ms():
+        if (
+            type(stamp) is not int
+            or not 0 <= stamp <= now_ms()
+            or stamp < self.shortcut_cli_at
+            or (stamp == self.shortcut_cli_at and peer is not self.shortcut_cli_peer)
+        ):
             return False
         previous = self.shortcut_command
         return (
@@ -686,6 +694,7 @@ class Input:
                 or value["commandId"] != command["id"]
                 or value["kind"] != command["kind"]
                 or value["generation"] != command["generation"]
+                or command["triggeredAtMs"] < self.shortcut_cli_at
             ):
                 return
         elif rejected or peer.command_id:
@@ -770,24 +779,63 @@ class Input:
 
     async def trigger(self, kind, request):
         """Compositor commands may use only the already-bound native shortcut lease."""
-        if not isinstance(request, dict) or kind not in ("wake", "direct"):
+        if (
+            not isinstance(request, dict)
+            or set(request) != {"windowId", "triggeredAtMs"}
+            or kind not in ("wake", "direct")
+        ):
             return False
         stamp = request.get("triggeredAtMs")
         window = self.niri.focused
-        peer = self.focused_peer()
         if (
             type(stamp) is not int
             or not 0 <= now_ms() - stamp <= 150
             or not self.shortcut_config.get("enabled")
+            or not self.fresh()
             or not window
+            or type(request.get("windowId")) is not int
             or request.get("windowId") != window["id"]
-            or not peer
-            or not peer.shortcut
-            or self.overlay_focused
+            or stamp <= max(self.shortcut_configured_at, self.shortcut_cli_at)
+            or (self.shortcut_command and stamp <= self.shortcut_command["triggeredAtMs"])
         ):
             return False
-        record = peer.shortcut
-        if record["window"]["id"] != window["id"]:
+        # The authenticated CLI has no generation or command ID. Its original
+        # time must be strictly newer, including within the same millisecond.
+        # Reserve that time before awaiting native input, but let the native
+        # started event allocate its one monitor sequence.
+        peer = self.focused_peer()
+        self.shortcut_cli_at = stamp
+        self.shortcut_cli_peer = peer
+        record = peer.shortcut if peer else None
+        reason = None
+        if self.overlay_focused or (record and record["window"]["id"] != window["id"]):
+            reason = "NotSourceFocus"
+        elif not record:
+            reason = "Unsupported"
+        if reason:
+            self.shortcut_ordered = True
+            self.shortcut_sequence += 1
+            self.shortcut_command = {
+                "peer": peer,
+                "id": None,
+                "kind": kind,
+                "generation": self.shortcut_config["generation"],
+                "sequence": self.shortcut_sequence,
+                "triggeredAtMs": stamp,
+                "record": None,
+                "completed": True,
+            }
+            self.host.send(
+                "notice",
+                {
+                    "kind": kind,
+                    "commandGeneration": self.shortcut_config["generation"],
+                    "commandSequence": self.shortcut_sequence,
+                    "userEpoch": self.user_epoch,
+                    "foregroundEpoch": self.foreground_epoch,
+                    "rejection": reason,
+                },
+            )
             return False
         response = await peer.link.ask(
             "trigger-shortcut",
@@ -808,6 +856,9 @@ class Input:
             return {"keyval": self.gdk.keyval_from_name(parts[-1]), "modifiers": modifiers}
 
         if value.get("generation") != self.shortcut_config.get("generation"):
+            self.shortcut_configured_at = now_ms()
+            self.shortcut_cli_at = -1
+            self.shortcut_cli_peer = None
             self.shortcut_sequence = 0
             self.shortcut_ordered = False
             self.shortcut_command = None

@@ -44,16 +44,29 @@ internal sealed class WindowsApplicationSupport
         _requested = null;
     }
 
-    public void Observe(InputCapture capture, bool available, bool canIntercept, long startedAt, long checkGeneration)
+    // Runs on the existing host loop, even when capture is paused by a failed
+    // service. A user-initiated check must always get a bounded terminal result.
+    public void Poll()
     {
-        _available = available;
-        _canIntercept = canIntercept;
+        if (_requested is null)
+            return;
+        if (_broker?.Available != true || _monitor?.Ready != true)
+        {
+            Disconnected();
+            return;
+        }
         if (_requested is { } waiting && Environment.TickCount64 - _requestedAt > 10_000)
         {
             _requested = null;
             _observations.Remove(waiting);
             CheckCompleted?.Invoke(waiting);
         }
+    }
+
+    public void Observe(InputCapture capture, bool available, bool canIntercept, long startedAt, long checkGeneration)
+    {
+        _available = available;
+        _canIntercept = canIntercept;
         if (!available)
         {
             Disconnected();

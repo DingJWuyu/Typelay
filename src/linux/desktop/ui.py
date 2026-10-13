@@ -624,6 +624,8 @@ class Settings:
         self.value = None
         self.configuring = False
         self.dirty_controls = set()
+        self.draft_messages = None
+        self.loading_draft_messages = False
         self.pending_settings = {}
         self.settings_lock = asyncio.Lock()
         self.model_ready = False
@@ -687,6 +689,7 @@ class Settings:
             else:
                 widget = Gtk.Entry()
                 widget.set_max_length(64)
+                widget.set_sensitive(False)
             widget.set_hexpand(True)
             self.controls[key] = widget
             widget.get_accessible().set_name("设置：" + label)
@@ -709,6 +712,7 @@ class Settings:
         label = Gtk.Label(label="排除的应用\n每行一个可执行文件名", xalign=0)
         grid.attach(label, 0, row, 1, 1)
         self.excluded = Gtk.TextView()
+        self.excluded.set_sensitive(False)
         self.excluded.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.excluded.get_buffer().connect(
             "changed", lambda *_: self.draft_changed("excludedApplications")
@@ -724,6 +728,11 @@ class Settings:
         )
         note.set_line_wrap(True)
         grid.attach(note, 0, row + 1, 2, 1)
+        self.draft_notice = Gtk.Label(xalign=0)
+        self.draft_notice.get_accessible().set_name("设置草稿")
+        self.draft_notice.set_line_wrap(True)
+        self.draft_notice.set_no_show_all(True)
+        outer.pack_start(self.draft_notice, False, False, 0)
         self.message = Gtk.Label(xalign=0)
         self.message.get_accessible().set_name("设置反馈")
         self.message.set_line_wrap(True)
@@ -735,7 +744,8 @@ class Settings:
         quit_button = Gtk.Button(label="退出 TypeLay")
         quit_button.connect("clicked", lambda *_: self.dismiss(quit_requested=quit_requested))
         buttons.pack_start(quit_button, False, False, 0)
-        self.save_button = Gtk.Button(label="保存快捷键和排除项")
+        self.save_button = Gtk.Button()
+        self.save_button.set_no_show_all(True)
         self.save_button.get_style_context().add_class("suggested-action")
         self.save_button.connect("clicked", lambda *_: self.tasks(self.save()))
         self.save_button.set_sensitive(False)
@@ -745,6 +755,37 @@ class Settings:
             self, support_refresh, support_action, support_folder
         )
         self.pages.append_page(self.application_support.widget, self.application_support.tab)
+        self.tasks(self.load_draft_messages())
+
+    async def load_draft_messages(self):
+        if self.draft_messages is not None or self.loading_draft_messages:
+            return
+        self.loading_draft_messages = True
+        try:
+            messages = await self.host.ask("settingsDraft", timeout=2)
+            if not isinstance(messages, dict):
+                raise ValueError("settings-draft-unavailable")
+            self.draft_messages = messages
+            self.save_button.set_label(messages["saveLabel"])
+            self.save_button.show()
+            for widget in self.controls.values():
+                if isinstance(widget, Gtk.Entry):
+                    widget.set_sensitive(True)
+            self.excluded.set_sensitive(True)
+            self.render_draft()
+        except (OSError, ValueError, EOFError, TimeoutError):
+            self.draft_notice.set_text("无法加载设置操作，请重新打开设置后重试。")
+            self.draft_notice.show()
+        finally:
+            self.loading_draft_messages = False
+
+    def render_draft(self):
+        dirty = bool(self.dirty_controls)
+        self.save_button.set_sensitive(dirty and self.draft_messages is not None)
+        self.draft_notice.set_text(
+            self.draft_messages["unsavedNotice"] if dirty and self.draft_messages else ""
+        )
+        self.draft_notice.set_visible(dirty and self.draft_messages is not None)
 
     def configure(self, value):
         first = self.value is None
@@ -788,7 +829,7 @@ class Settings:
             self.dirty_controls.discard(key)
         else:
             self.dirty_controls.add(key)
-        self.save_button.set_sensitive(bool(self.dirty_controls))
+        self.render_draft()
 
     def change_control(self, key, value):
         if self.configuring or self.value is None or value is None:
@@ -808,11 +849,13 @@ class Settings:
                 self.pending_settings.pop(key, None)
                 self.configure(self.value)
             self.message.set_text(
-                "设置已保存" if saved else "未保存，已恢复原设置。请检查语言方向或系统权限。"
+                (self.draft_messages or {}).get("savedMessage", "")
+                if saved
+                else "未保存，已恢复原设置。请检查语言方向或系统权限。"
             )
 
     async def save(self):
-        if self.value is None or not self.dirty_controls:
+        if self.value is None or not self.dirty_controls or self.draft_messages is None:
             return
         async with self.settings_lock:
             draft = {key: self.draft_value(key) for key in self.dirty_controls}
@@ -825,9 +868,9 @@ class Settings:
                     if self.draft_value(key) == value:
                         self.dirty_controls.discard(key)
                 self.configure(self.value)
-            self.save_button.set_sensitive(bool(self.dirty_controls))
+            self.render_draft()
             self.message.set_text(
-                "设置已保存" if saved else "未保存：请检查快捷键及应用列表。草稿仍保留。"
+                self.draft_messages["savedMessage" if saved else "invalidMessage"]
             )
 
     def dismiss(self, *_, quit_requested=None):
@@ -837,23 +880,31 @@ class Settings:
             else:
                 self.window.hide()
             return True
+        if self.draft_messages is None:
+            return True
         dialog = Gtk.MessageDialog(
             transient_for=self.window,
             modal=True,
             message_type=Gtk.MessageType.QUESTION,
-            buttons=Gtk.ButtonsType.OK_CANCEL,
-            text="放弃未保存的修改？",
+            buttons=Gtk.ButtonsType.NONE,
+            text=self.draft_messages["closeTitle"],
         )
-        dialog.format_secondary_text(
-            "快捷键或应用排除项尚未保存。继续关闭会丢弃这些草稿，已保存的设置不变。"
+        dialog.format_secondary_text(self.draft_messages["closeMessage"])
+        dialog.add_button(self.draft_messages["discardLabel"], Gtk.ResponseType.OK)
+        dialog.add_button(self.draft_messages["keepEditingLabel"], Gtk.ResponseType.CANCEL)
+        default_response = (
+            Gtk.ResponseType.OK
+            if self.draft_messages["defaultCloseChoice"] == "Discard"
+            else Gtk.ResponseType.CANCEL
         )
+        dialog.set_default_response(default_response)
 
         def response(widget, result):
             widget.destroy()
             if result == Gtk.ResponseType.OK:
                 self.dirty_controls.clear()
                 self.configure(self.value)
-                self.save_button.set_sensitive(False)
+                self.render_draft()
                 if quit_requested:
                     quit_requested()
                 else:
@@ -861,6 +912,7 @@ class Settings:
 
         dialog.connect("response", response)
         dialog.show_all()
+        dialog.get_widget_for_response(default_response).grab_focus()
         return True
 
     def report(self, value):
@@ -927,6 +979,7 @@ class Settings:
             self.pages.set_current_page(1)
         self.first_show = False
         self.window.present()
+        self.tasks(self.load_draft_messages())
         self.tasks(self.application_support.refresh())
 
     def confirm_install(self, install):

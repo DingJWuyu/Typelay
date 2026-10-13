@@ -91,7 +91,7 @@ internal static class Program
             };
             support.CheckStarted += id =>
             {
-                var target = support.Read(settings.Value).Rows.Single(row => row.Id == id);
+                var target = ApplicationSupportPresentation.Create([]).Rows.Single(row => row.Id == id);
                 tray.ShowBalloonTip(5000, target.Title,
                     ApplicationSupportPresentation.ReasonText(ApplicationSupportReason.NoFocusedField), Forms.ToolTipIcon.Info);
             };
