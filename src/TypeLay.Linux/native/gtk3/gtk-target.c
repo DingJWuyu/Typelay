@@ -648,7 +648,7 @@ static gboolean entry_focus_init(Target *target, gboolean background, EntryFocus
     g_signal_connect(top, "notify::is-active", G_CALLBACK(entry_focus_changed), guard);
     return entry_focus_matches(target, guard);
 }
-#include "common/gtk-textbuffer-write.inc"
+#include "../common/gtk-textbuffer-write.inc"
 
 JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     JsonObject *plan = tl_object(request, "plan"), *basis = tl_object(request, "authority");

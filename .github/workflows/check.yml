@@ -1,9 +1,9 @@
 name: TypeLay checks
 on:
   push:
-    branches: [windows-preview, cachyos-preview]
+    branches: [trunk, windows-preview, cachyos-preview]
   pull_request:
-    branches: [windows-preview, cachyos-preview]
+    branches: [trunk, windows-preview, cachyos-preview]
   workflow_dispatch:
 permissions:
   contents: read
@@ -138,7 +138,7 @@ jobs:
         id: fcitx-cache
         with:
           path: artifacts/ccache
-          key: fcitx-ccache-${{ steps.native-sdk.outputs.digest }}-${{ hashFiles('tests/linux/fcitx_cooperative/*.patch', 'tests/linux/fcitx_cooperative/run.py') }}
+          key: fcitx-ccache-${{ steps.native-sdk.outputs.digest }}-${{ hashFiles('eng/linux/cooperative/inputs.py', 'eng/linux/cooperative/fcitx.py', 'eng/linux/cooperative/patches/fcitx5.patch', 'eng/linux/cooperative/patches/fcitx5-chinese-addons.patch', 'eng/linux/cooperative/patches/fcitx5-gtk.patch') }}
           # ccache validates compiler content, flags and source/header hashes;
           # added unrelated SDK packages must not discard usable compile entries.
           restore-keys: |
@@ -380,8 +380,8 @@ jobs:
           git -c safe.directory="$PWD" log --format= --name-only "$BEFORE..$AFTER" | sed '/^$/d' > /tmp/qt-research-paths
           test -s /tmp/qt-research-paths
           if [ "$ADAPTER_SCOPE" = qt ]; then
-            allowed='^(tests/linux/qt_cooperative/|src/TypeLay\.Linux/native/qt6/|src/TypeLay\.Linux/native/fcitx5/typelay-fcitx-qt-v1\.h$|tests/linux/(qt_desktop\.py|qt_native_fixture\.cpp)$)'
-            set -- ':!src/TypeLay.Linux/native/qt6/**' ':!src/TypeLay.Linux/native/fcitx5/typelay-fcitx-qt-v1.h' ':!src/TypeLay.Linux/browser/**'
+            allowed='^(eng/linux/cooperative/(qt\.py|qt-runtime-probe\.cpp|patches/fcitx5-qt\.patch)$|tests/linux/qt_cooperative/|src/TypeLay\.Linux/native/qt6/|src/TypeLay\.Linux/native/fcitx5/typelay-fcitx-qt-v1\.h$|tests/linux/(qt_desktop\.py|qt_native_fixture\.cpp)$)'
+            set -- ':!eng/linux/cooperative/qt.py' ':!eng/linux/cooperative/qt-runtime-probe.cpp' ':!eng/linux/cooperative/patches/fcitx5-qt.patch' ':!src/TypeLay.Linux/native/qt6/**' ':!src/TypeLay.Linux/native/fcitx5/typelay-fcitx-qt-v1.h' ':!src/TypeLay.Linux/browser/**'
           else
             allowed='^(src/TypeLay\.Linux/browser/content\.js|tests/linux/(browser_e2e|desktop_e2e)\.py)$'
             set -- ':!src/TypeLay.Linux/browser/content.js' ':!src/TypeLay.Linux/native/qt6/**' ':!src/TypeLay.Linux/native/fcitx5/typelay-fcitx-qt-v1.h'
@@ -396,7 +396,7 @@ jobs:
           # explicit independent GTK/Qt/VSIX passes and a known browser failure;
           # browser iterations reproduce that failure, not claim a green baseline.
           git -c safe.directory="$PWD" diff --exit-code 6689c810c50ebdcc14493918cb13e3c4f75be5e1 HEAD -- \
-            src worker packaging tests/linux/fcitx_cooperative "$@"
+            src worker packaging eng/linux/cooperative tests/linux/fcitx_cooperative "$@"
       - name: Reuse the exact verified cooperation runtime
         shell: bash
         env:

@@ -70,3 +70,7 @@
 本轮控制器 trace 显示第一次 F9 的快照年龄为 140ms，已 `notice-enqueued`；第二次 F9 在 `atMs=313046` 被以 `future-or-stale` 拒绝，年龄为 156ms。当时 IME 为 Clear，内容版本 1==1、前台版本 2==2；现有观察期限是 150ms，因此**该次 CI 快捷键入口因快照超过期限 6ms 而拒绝**。这只定位该次 CI 的入口分支，尚未解释快照为什么超时，也不等同于用户 F10 故障根因；不得通过延长期限或重试掩盖失败。
 
 证据包：artifact `11788680275`，SHA-256 `9eed74f6c66aaa5f56552cb1a3d58dce02d9ea54ba75adba420fffe0f940e3c4`。此项保留待后续复现与定位，不改变等待用户检查 trunk 后回复再修 Windows 的安排。
+
+[CI run 38351805969](https://github.com/DingJWuyu/Typelay/actions/runs/38351805969) 又在同一设置回归的 `ControllerDesktopScenario:89` 超时，断言为 `The source must be observed`。该轮已通过输入服务就绪与 fixture 实际焦点前置，但在首次观察到源应用之前失败，尚未发送 F9。桌面 trace 只留下两条 `shortcut-configure`（最后两快捷键注册均为 true），没有对应的首次 `capture`；不能从这份诊断断言是 IME、许可期限或注册失败，也不能与前述第二次 F9 过期视为同一根因。
+
+此轮只提交 Linux 测试前置修正，Windows 桌面失败仍保留，未通过重跑消除记录；先前相同 Windows 路径曾通过也不能替代这次失败的定位。证据包：artifact `11791695218`，SHA-256 `4b4715d3fe79effe607101ab62ec21433d092a7e26d47de65a20f432ff128754`。后续仍须遵守用户检查 trunk 后回复才开始 Windows 修复的顺序。

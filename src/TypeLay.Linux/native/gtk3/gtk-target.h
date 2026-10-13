@@ -1,7 +1,7 @@
 #pragma once
 #include <gtk/gtk.h>
 #include <json-glib/json-glib.h>
-#include "fcitx5/typelay-fcitx-v1.h"
+#include "../fcitx5/typelay-fcitx-v1.h"
 
 #define TL_MAX_FRAME (256 * 1024)
 #define TL_MAX_TEXT 8192

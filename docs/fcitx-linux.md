@@ -2,7 +2,7 @@
 
 这套可选组件让 TypeLay 与实际 Fcitx 输入事务协作。已验证范围包括 GTK3、GTK4 的标准 GtkEntry 和原生 GtkEntryBuffer；标准纯文本 TextView 使用原生 TextBuffer，两代已有多行选区、真实模型、Tab 和 IME 实证；GTK3 验证宿主 user-action 分组，GTK4 另验原生 undo/redo。GTK4 须单独以 --gtk4 启动。Qt 的可选同版构建与启动入口见末节；非纯文本/自定义控件、通用 Electron 尚未开放。普通 TypeLay 安装不会安装或启用这些组件。
 
-当前固定 Core 5.1.22、Chinese Addons 5.1.14、GTK IM 5.1.7、完整私有 LibIME 1.1.16。对应组件已在隔离环境完整构建，实际库、模型路径与同版官方包均有校验。搬迁后的私有包已通过默认组件会话、配置/前台重启、原 session bus，以及嵌套 niri 的实际 CPU 模型、自动预览、一次 Tab 写回、编辑后两阶段 Tab 与拼音组合保护。实际按键由隔离桌面自动化送入，不能代替用户 CachyOS 桌面的物理输入验收。
+固定生产输入以 `eng/linux/cooperative/inputs.py` 为准，当前为 Core 5.1.22、Chinese Addons 5.1.14、GTK IM 5.1.7、完整私有 LibIME 1.1.16。对应组件已在隔离环境完整构建，实际库、模型路径与同版官方包均有校验。搬迁后的私有包已通过默认组件会话、配置/前台重启、原 session bus，以及嵌套 niri 的实际 CPU 模型、自动预览、一次 Tab 写回、编辑后两阶段 Tab 与拼音组合保护。同窗后台直接替换也已验证实际类型恰为标准 GTK3/GTK4 Entry 的原字段：一次真实 F10/模型任务写 A 时保持 B 的焦点、正文与选择，原文变化时拒绝；不外推到 TextView 或跨窗口/应用后台。实际按键由隔离桌面自动化送入，不能代替用户 CachyOS 桌面的物理输入验收。
 
 ## 会话与用户数据
 
@@ -18,7 +18,13 @@
 
 ## 构建与打包
 
-仅在匹配的 Arch/CachyOS x86_64 开发环境构建。官方系统依赖仍由包管理器提供；本包不替换它们。构建命令与测试共用：
+仅在匹配的 Arch/CachyOS x86_64 开发环境构建。官方系统依赖仍由包管理器提供；本包不替换它们。生产配方与补丁在 `eng/linux/cooperative/`，单独构建不编译 fixture、不运行桌面测试：
+
+```sh
+python eng/linux/cooperative/fcitx.py --output artifacts/linux/fcitx-build
+```
+
+发布验收使用原测试入口调用同一生产构建，然后执行真实输入事务断言，再打包对应产物：
 
 ```sh
 python tests/linux/fcitx_cooperative/run.py --core-version 5.1.22
@@ -26,6 +32,8 @@ python packaging/linux/fcitx-cooperative/pack.py \
   --build-output artifacts/linux/fcitx-cooperative-5.1.22 \
   --output artifacts/TypeLay-Fcitx-cooperative.tar.gz
 ```
+
+生产构建与测试分别记录输入/产物哈希，测试记录不冒充生产构建来源。各构建应使用新的输出目录，不能把已修改或旧构建的源码静默复用；默认测试产物目录保持不变。固定来源只在 `inputs.py` 维护，不另复制一套版本或补丁清单。
 
 包内包含私有运行库、原始许可证、修改后的对应源码、补丁、固定来源校验和与重建脚本。保留整个源码与许可证目录后再分发；不要只抽取修改后的二进制。LGPL 组件的原 SPDX 声明及修改说明保留在源码中。系统库版本、构建记录与文件校验和见包内 manifest.json。
 
@@ -106,8 +114,19 @@ GTK4 应用使用 `python fcitx-cooperative.py launch --gtk4 应用命令`。只
 
 Qt 组件是显式可选内容，只有使用 `pack.py --qt-output <本轮Qt构建目录>` 才进入包。固定 Fcitx5-Qt 5.1.15 和 Qt 6.11.2；包内不带 Qt 系统库，也不安装、升级或替换系统输入法插件。构建记录、每个输入文件与 ELF 的 SHA256、完整修改后的上游源码、BSD/LGPL 许可和重建脚本随包提供。原 GTK3/GTK4 入口不要求系统安装 Qt。
 
+Qt 的生产构建和原生实现见 [Qt 路径](qt-linux.md#构建与验证)。可选发行包还要求同一构建的真实异步输入回归记录，使用新输出目录执行：
+
+```sh
+python tests/linux/qt_cooperative/run.py \
+  --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22
+python packaging/linux/fcitx-cooperative/pack.py \
+  --build-output artifacts/linux/fcitx-cooperative-5.1.22 \
+  --qt-output artifacts/linux/qt-cooperative \
+  --output artifacts/TypeLay-Fcitx-cooperative-qt6.tar.gz
+```
+
 有 Qt 组件的包可执行 `python fcitx-cooperative.py preflight --qt6`，再以 `python fcitx-cooperative.py launch --qt6 应用命令` 逐应用启动。仍须先按前述步骤手动启动同包私有 Fcitx daemon。启动器仅在这个子进程设置 Qt 插件路径、TypeLay generic 插件、原 Fcitx 输入模块与合作开关。无 GUI 的版本探针核实实际 `qVersion()`、编译版本和两个插件的元数据；另独立检查 ELF 动态依赖，未知或混合 Qt ABI 时拒绝。强制同步 Fcitx Qt 模式不支持，不能靠它绕过原异步输入事务。
 
-Qt 系统包的发行修订可与 CI 的 Arch 构建不同；校验明确针对 Qt 6.11.2 上游 ABI，不声称与 CachyOS 包逐字节相同。Qt 6.10 起客户端 Wayland 库及平台插件已在 qt6-base 内，无需安装仅提供 compositor 的 qt6-wayland。应用自带另一套 Qt、Qt5、QtQuick、自绘或富文本不属于本入口的支持范围。已用真实搬迁包的 launcher 在 Qt 6.11.2/Wayland 验证标准 QLineEdit 与纯文本 QPlainTextEdit：本地模型、选区/Unicode、Tab、人工编辑回源、原生撤销、按需快捷键和组合拒写。后台直接替换原字段仍是未完成项；物理输入与实际应用需用户机器验证。
+Qt 系统包的发行修订可与 CI 的 Arch 构建不同；校验明确针对 Qt 6.11.2 上游 ABI，不声称与 CachyOS 包逐字节相同。Qt 6.10 起客户端 Wayland 库及平台插件已在 qt6-base 内，无需安装仅提供 compositor 的 qt6-wayland。应用自带另一套 Qt、Qt5、QtQuick、自绘或富文本不属于本入口的支持范围。已用真实搬迁包的 launcher 在 Qt 6.11.2/Wayland 验证标准 QLineEdit 与纯文本 QPlainTextEdit：本地模型、选区/Unicode、Tab、人工编辑回源、原生撤销、按需快捷键和组合拒写。同窗标准 QLineEdit 后台直接替换和原文冲突拒绝也已通过该搬迁包入口，QPlainTextEdit 后台及跨窗口/应用后台未覆盖。物理输入与实际应用需用户机器验证。
 
 撤回此逐应用选项只需退出该应用，随后正常启动原应用；不修改 shell 或全局配置。私有 daemon 的整体退出和原输入法恢复沿用前述流程。

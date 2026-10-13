@@ -1,10 +1,10 @@
 # TypeLay
 
-Linux 开发分支 `cachyos-preview` 的构建、安装、功能缺口与验收步骤见 [Linux 客户端说明](docs/linux.md)。下面保留 Windows 客户端的使用和维护入口。 用户报告的待处理 Windows 问题见[临时待办](docs/windows-open-issues.md)，按约定在 Linux 与 trunk 整理后再开始修复。
+TypeLay 是 Windows/Linux 的本地输入翻译工具。自动模式跟随当前文本输入框显示译文，支持修改候选，并在满足安全条件时用 Tab 接受；按需模式由快捷键唤醒翻译 UI，或执行一次性直接翻译并替换。两端均处于开发预览，尚未完成通用输入支持与完整产品验收。
 
-TypeLay 是 Windows 上的本地输入翻译工具。自动模式跟随当前文本输入框显示译文，支持修改候选，并在满足安全条件时用 Tab 接受；按需模式由快捷键唤醒翻译 UI，或执行一次性直接翻译并替换。当前是 Windows 开发预览，不是已完成通用输入支持的稳定版本。
+Windows 的使用入口见下文；CachyOS + niri/Wayland 的构建、安装、能力缺口与验收步骤见 [Linux 客户端说明](docs/linux.md)。[Windows 待办](docs/windows-open-issues.md)保留当前问题和复现边界；按约定先完成 Linux 主线与 trunk 整理，通知用户检查，收到回复后再开始 Windows 修复。
 
-**重要限制：原有实验性 Tab 写回默认关闭。** 当前通用 UI Automation 的读取、校验和写入不能组成原子操作，仍有覆盖并发输入的风险。测试实验写回时，只使用已备份的非敏感文本。新增直接替换使用独立的、范围受限的原生控件事务，不通过开启该实验开关来扩大兼容性。编译和自动化测试通过不等于真实中文输入法、物理 Tab 或所有应用都已验收。
+**重要限制：Windows 原有实验性 Tab 写回默认关闭。** Windows 通用 UI Automation 的读取、校验和写入不能组成原子操作，仍有覆盖并发输入的风险。测试实验写回时，只使用已备份的非敏感文本。直接替换与 Linux 合作输入路径各自依赖经过校验的目标能力，不通过开启开关扩大兼容性。编译和自动化测试通过不等于真实中文输入法、物理 Tab 或所有应用都已验收。
 
 ## 产品验收入口
 
@@ -39,51 +39,45 @@ TypeLay 是 Windows 上的本地输入翻译工具。自动模式跟随当前文
 
 ## 从源码开发
 
-长期开发分支是 `windows-preview`；`main` 不参与本阶段开发。
+长期集成入口是 `trunk`，稳定发布保留在 `main`。临时分支与现有 preview 的规则见根 [AGENTS.md](AGENTS.md)。开发依赖、命令、变更检查与 CI 流程统一见 [开发流程](docs/agents/development.md)；Linux 平台的构建和部署见 [Linux 说明](docs/linux.md#构建)。
 
-Windows x64 开发环境需要 Git、PowerShell 7.2 或更高版本、`global.json` 指定的 .NET SDK、Python 3.13，以及 LLVM 的 `clang` / `lld-link`。把这些工具加入 PATH。只跑 Python 行为测试不需要安装模型；Core、Runtime 和协议测试也不依赖真实桌面。
+Windows 快速启动（先满足开发流程中的工具要求）：
 
 ```powershell
-git clone --branch windows-preview https://github.com/DingJWuyu/Typelay.git
+git clone --branch trunk https://github.com/DingJWuyu/Typelay.git
 cd Typelay
 python -m pip install -r eng/requirements.txt
 ./dev.ps1 check
 ./dev.ps1 run
 ```
 
-`run` 会从源码构建可启动的开发目录，启动真实客户端，而不是演示替身。安装好组件和模型后即可使用该目录继续调试。
-
-| 命令 | 用途 |
-| --- | --- |
-| `./dev.ps1 check` | 编译、行为与协议回归、Windows 桌面契约、Python 测试、lint 和格式检查 |
-| `./dev.ps1 shared-check` | 在非 Windows 环境运行共享核心、会话编排、协议和 worker 回归，不构建桌面客户端 |
-| `./dev.ps1 format` | 使用统一工具修正格式及可自动修复的 lint |
-| `./dev.ps1 pack` | 生成自包含 Windows 包、校验和，并验证迁移目录后的发布包及进程协议 |
-| `./dev.ps1 e2e` | 对已生成的发布包重跑进程与分发回归 |
-| `./dev.ps1 native-e2e` | 在已解锁桌面验证受控 Win32 fixture 的适配器契约，不代表生产 UIA 验收 |
-
-发布包与测试报告进入 `artifacts/`；.NET 编译中间结果留在各项目的 `bin/`、`obj/`，这些生成物均不提交到 Git。NuGet 包版本集中在 `Directory.Packages.props`。测试使用标准 `dotnet test` 和 Python `unittest`；受控桌面工具的用途与运行方法见 [测试流程](docs/agents/testing.md)。`check` 中的 App 桌面测试需要可交互的 Windows 桌面，会启动并清理独立的测试控件进程；不会下载模型，也不应用于用户正在编辑的窗口。
+`run` 构建并启动真实客户端。受控测试、真实桌面验收与证据边界见 [测试协议](docs/agents/testing.md)。
 
 ## 跨平台架构
 
-Windows 客户端继续保留；`cachyos-preview` 正在开发 CachyOS + niri/Wayland Linux 预览客户端，安装、支持缺口和真实验证要求见 [Linux 客户端说明](docs/linux.md)。尚未交付 macOS 客户端。共享产品逻辑已从 Windows 宿主独立出来：Core 管理会话与安全规则，Runtime 管理激活、翻译/编辑/接受时序、设置持久化和本地 worker 客户端，Protocol 管理通用帧与 worker 消息，Python worker 保留模型校验、结构保护与推理实现。
+Windows 与 Linux 保留独立宿主，共用一份 Core、Runtime、Protocol 和 Python worker。Windows 负责 WPF/UIA/Hook/原生 Edit；Linux 负责 GTK/Qt 合作输入、浏览器适配、niri 集成与 XDG 安装。VS Code 仅有独立手动命令，尚未交付 macOS。
 
-App 负责 Windows 组装和 WPF 界面；UIA Broker、输入 Hook、快捷键注册、原生 Edit 写入、焦点、Job Object、启动项和发行安装仍由 Windows 实现。Windows.Contracts 的 DTO/句柄编码只属于 Windows App 与 Broker，不要求其它平台采用它。
-
-增加平台时实现实际可提供的输入/视图/生命周期适配器并复用 Runtime。无法确认 IME、写权限或按键所有权时仍拒绝相应行为，不能把“可观察”当作“可替换”。CachyOS + niri/Wayland、其它 Linux 桌面和 macOS 的权限、可访问性、几何、快捷键、输入法和可靠写入需要后续分别验证。设计与具体接入契约见 [ADR-0003](docs/adr/0003-cross-platform-runtime.md)。
+平台后端拥有本机控件、IME、焦点、按键及写入证据，共享层拥有产品规则和会话编排。具体模块归属与安全不变量见 [架构约束](docs/agents/architecture.md)，小接口和依赖方向的决定见 [ADR-0003](docs/adr/0003-cross-platform-runtime.md)。
 
 ## 源码导航
 
 ```text
-src/                  客户端、UIA Broker、核心、协议、worker、原生启动器与输入事务
-assets/tutorial/      随产品分发的本地实操教程
-tests/                行为、协议、发布包 E2E，以及明确隔离的 fixtures/support
-eng/                  开发工具依赖和原生组件编译工具
-packaging/windows/    发布包入口，不包含源码构建器
-docs/agents/          Agent 按任务读取的工程约束与验证流程
-docs/adr/             当前架构决策及其取舍
-docs/reference/       当前产品规格与已确认 UI 原型
-.agents/skills/       固定版本的 Matt Pocock skills
+src/TypeLay.{Core,Runtime,Protocol,Worker}/  单份共享规则、编排、协议与模型进程
+src/TypeLay.{App,Broker,Windows.Contracts}/ Windows 宿主、UIA 与私有协议
+src/TypeLay.{Launcher,NativeInput}/        Windows 原生入口与受限输入事务
+src/TypeLay.Linux/                        Linux 宿主及 desktop/browser/vscode
+src/TypeLay.Linux/native/                 gtk3/gtk4/qt6、common 与 fcitx5 合作接口
+eng/                                     共享开发依赖、Windows/Linux 构建入口
+eng/linux/cooperative/                   Linux 合作组件构建、固定输入与补丁
+packaging/{windows,linux}/               运行时启动、安装与发行包装配
+tests/{behavior,contracts,worker}/       共享逻辑/worker 与明确标识的 Windows 契约
+tests/{e2e,fixtures,support,linux}/        分发/平台回归及受控测试工具
+assets/tutorial/                        随产品分发的本地实操教程
+docs/agents/                            工程约束与验证流程
+docs/adr/                               仍有效的架构决策
+docs/reference/                         冻结规格与已确认 UI 原型
+docs/{linux,qt-linux,fcitx-linux,...}.md   各现役平台路径的部署、能力与限制
+.agents/skills/                         固定版本的 Matt Pocock skills
 ```
 
 不创建空的 benchmarks 或 examples：当前没有通过验收的性能基准；真实推理和 UI 延迟需要在明确的设备、模型与操作序列下测量，不能用假模型报告性能。复杂用例目前由产品教程承担。

@@ -4,7 +4,7 @@ Qt 路径已在隔离 CI 中构建、验证，普通 Linux 安装不会自动启
 
 ## 实现范围
 
-Qt 6.11.2 与固定 Fcitx Qt 5.1.15 的隔离 Wayland/niri 链路已通过 13 项场景。标准 QLineEdit 已验证：实际英文键入、真实本地模型、浮层、单次 Tab、原生撤销、点击编辑后的两阶段 Tab、UTF-16 选区替换与中文/emoji 周边保留；真实设置切换按需模式后，默认 Ctrl+Shift+F9 唤醒及 Ctrl+Shift+F10 一次直接替换通过。显式命令待捕获时的正文/焦点变化会取消，捕获后的原文变化也会阻止直接写回。实际拼音组合、敏感标签、密码、validator、input mask、仅 buddy 标签敏感及聚焦但被裁剪的字段均有拒绝证据。
+Qt 6.11.2 与固定 Fcitx Qt 5.1.15 的隔离 Wayland/niri 链路已有实际模型与控件行为证据。标准 QLineEdit 已验证：实际英文键入、真实本地模型、浮层、单次 Tab、原生撤销、点击编辑后的两阶段 Tab、UTF-16 选区替换与中文/emoji 周边保留；真实设置切换按需模式后，默认 Ctrl+Shift+F9 唤醒及 Ctrl+Shift+F10 一次直接替换通过。显式命令待捕获时的正文/焦点变化会取消，捕获后的原文变化也会阻止直接写回。实际拼音组合、敏感标签、密码、validator、input mask、仅 buddy 标签敏感及聚焦但被裁剪的字段均有拒绝证据。
 
 标准 QPlainTextEdit 已验证真实模型的跨行 UTF-16 选区替换，保留 emoji/NBSP 周边及其他字段，一次 Tab 产生一个文档编辑，原生 undo/redo 精确恢复。实际拼音组合不触发 TypeLay 写回；只读、有限 block 数及自定义对象格式在正文读取前拒绝。应用在写入通知中移动光标时保留应用位置，返回一次 `OutcomeUnknown`、隔离该目标且不重试。
 
@@ -30,11 +30,17 @@ F9/F10 是显式命令：有效的当前目标/元数据授权可登记最多一
 
 写入在源 GUI 线程执行：验证原文与 UTF-16 选区，准备并重验 provider，设置原生选区，在所有同步选区回调后再次检查身份、字段元数据、输入/焦点/正文版本、期限与本地 IME 证明。单行沿用 `setSelection`/`insert`；多行用 `QTextCursor` 的 `beginEditBlock`/`insertText`/`endEditBlock`，核对完整正文与当前光标后再设置 cursor，最终核对文档变更范围。禁止通过 `setText`/`setPlainText` 清空撤销记录，也不强制开启应用关闭的 undo。写后核对完整结果、光标、字段、文档身份与 IME；不匹配返回 `OutcomeUnknown` 并隔离该字段，不盲目重试或回滚覆盖应用的新内容。该范围包含普通应用事件过滤器与重入回调；不宣称对恶意应用提供原子事务保证。
 
-直接替换分别核验冻结的原源版本和写前新批准的完整 Clear 证明，不能把纯 modifier 之后的旧证明继续当作可写许可。标准 QLineEdit 另有同窗口后台直接替换路径：离开原字段时，只有原输入与输出全部退休、真实输入法 Clear、原上下文及字段版本仍一致，provider 才建立独立的 detached 证明。写入原字段时不聚焦它，也不 reset 当前字段的输入法；原正文、选区、元数据或绑定变化仍拒绝。真实模型回归已验证 A→B 后写 A、保持 B 焦点/正文和 A 原生撤销；独立输入法回归验证 B 处于真实拼音组合时证明不清理 B，以及未退休输入时拒绝。此增量尚待纳入下一发行包。QPlainTextEdit 后台、跨窗口/应用后台仍未完成；结果不会转写新焦点。QTextEdit、其他富文本结构和自绘源字段仍未完成。
+直接替换分别核验冻结的原源版本和写前新批准的完整 Clear 证明，不能把纯 modifier 之后的旧证明继续当作可写许可。标准 QLineEdit 另有同窗口后台直接替换路径：离开原字段时，只有原输入与输出全部退休、真实输入法 Clear、原上下文及字段版本仍一致，provider 才建立独立的 detached 证明。写入原字段时不聚焦它，也不 reset 当前字段的输入法；原正文、选区、元数据或绑定变化仍拒绝。真实模型回归已验证 A→B 后写 A、保持 B 焦点/正文和 A 原生撤销；独立输入法回归验证 B 处于真实拼音组合时证明不清理 B，以及未退休输入时拒绝。同一路径已纳入可选包，并通过搬迁目录的实际 `launch --qt6` 与真实模型回归。QPlainTextEdit 后台、跨窗口/应用后台仍未覆盖；结果不会转写新焦点。QTextEdit、其他富文本结构和自绘源字段仍未完成。
 
 ## 构建与验证
 
-合作 provider 的构建与隔离运行由 `tests/linux/qt_cooperative/run.py` 管理。它依赖与实际 Qt 版本匹配的 Qt private headers；通用 consumer 自身只使用公开 Qt Core/Gui/Widgets API。consumer 可以单独编译：
+合作 provider 的生产构建由 `eng/linux/cooperative/qt.py` 管理，固定来源和构建输入在同目录 `inputs.py`，补丁在 `patches/`，运行时探针是同目录 `qt-runtime-probe.cpp`。它依赖与实际 Qt 版本匹配的 Qt private headers；通用 consumer 自身只使用公开 Qt Core/Gui/Widgets API。单独生产构建使用新输出目录：
+
+```sh
+python eng/linux/cooperative/qt.py --out artifacts/linux/qt-build
+```
+
+`tests/linux/qt_cooperative/run.py` 调用同一生产构建，再编译 fixture 并执行隔离回归，命令和可选包打包流程见 [Fcitx 合作组件](fcitx-linux.md#可选-qt-6112-构建与启动)。生产构建元数据与测试输入/结果分别记录；单独构建不是发布验收。consumer 与受控控件也可单独编译：
 
 ```sh
 cmake -S src/TypeLay.Linux/native/qt6 -B artifacts/linux/qt-native -G Ninja -DTYPELAY_QT_NATIVE_TESTS=ON
@@ -43,6 +49,6 @@ cmake --build artifacts/linux/qt-native
 
 输出 `qt6/generic/libtypelay-qt6.so` 与 `qt-native-fixture`。仅在已验证的隔离合作环境中，为该测试进程追加插件目录和 `typelay` generic plugin，并设置 `TYPELAY_FCITX_COOPERATIVE=1`。普通安装器不会修改系统 Qt 插件目录、系统输入法或用户会话。
 
-`tests/linux/qt_native_fixture.cpp` 提供两个真实 QLineEdit 和按场景启用的标准 QPlainTextEdit、原生 undo/redo 与文档变更状态、输入事件计数、字段保护配置及一次性应用回调干扰。它只使用合成正文。生产模块不输出字段正文或任意元数据日志。`tests/linux/qt_desktop.py` 使用正式宿主、真实本地模型与嵌套 niri 路径进行集成验收，上述范围及同窗口 QLineEdit 后台直接替换由 [238f15a 的 14 项 Qt 隔离验收](https://github.com/DingJWuyu/Typelay/actions/runs/38347539688) 覆盖；该单项验收不代表完整发行回归。测试记录实际 fixture PID 的库和 Wayland 插件映射，并核对构建、请求与运行版本均为 6.11.2，拒绝混版或 XCB 替代；`qt_cooperative` 另用真实完成顺序扰动检查异步 FIFO 和实际字段内容，不能用正文长度代替内容完整性。
+`tests/linux/qt_native_fixture.cpp` 提供两个真实 QLineEdit 和按场景启用的标准 QPlainTextEdit、原生 undo/redo 与文档变更状态、输入事件计数、字段保护配置及一次性应用回调干扰。它只使用合成正文。生产模块不输出字段正文或任意元数据日志。`tests/linux/qt_desktop.py` 使用正式宿主、真实本地模型与嵌套 niri 路径进行集成验收，覆盖上述前台单行/多行、同窗 QLineEdit 后台写回和原文冲突拒绝；发行回归另外从搬迁后的可选包执行启动器，不用源码构建目录代替。执行结果以当前提交 CI 为准。测试记录实际 fixture PID 的库和 Wayland 插件映射，并核对构建、请求与运行版本均为 6.11.2，拒绝混版或 XCB 替代；`qt_cooperative` 另用真实完成顺序扰动检查异步 FIFO 和实际字段内容，不能用正文长度代替内容完整性。
 
 编译与 offscreen 加载只证明构建/加载，不证明 socket、Fcitx 输入、物理 Tab、真实中文 IME、多屏缩放或完整产品 UI 通过。QTextEdit、其他 Qt 富文本结构和应用自绘编辑器仍未实现；本路径不能代表通用 Qt 输入框全部完成。

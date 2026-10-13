@@ -11,6 +11,10 @@
 
 Linux 发行包回归通过 `tests/linux/distribution_e2e.py` 执行，命令和隔离要求见 `docs/linux.md`。它验证真实安装包、CLI、数据保留与文件锁，不需要桌面或模型。`tests/linux/native_e2e.py --gtk-refusal` 仅验证嵌套 niri 内真实 GTK 控件在未知输入法状态下拒绝正文捕获/写入并透传按键；这不代表 GTK 翻译功能可用。加 `--desktop` 后使用生产客户端、已安装的真实模型及 Chromium/Firefox 的真实 Wayland 扩展输入链路。`tests/linux/firefox_native_e2e.py` 使用官方 Firefox/geckodriver、临时扩展与发行包本地主机验证普通字段读写和身份，不代替 `--desktop` 的 niri+模型完整链路。测试按键由 XTest 送入独立合成器，不代表物理键盘或中文 IME 通过。控制器状态与原生焦点是异步观察，断言应等待实际用户结果，不以任一状态通知代替另一个进程已经完成操作。
 
+合作 Fcitx/Qt 的生产构建入口在 `eng/linux/cooperative/`；`tests/linux/fcitx_cooperative/run.py` 与 `tests/linux/qt_cooperative/run.py` 保留 fixture 编译和真实输入事务断言，复用生产构建产物。GTK3/GTK4 及 Qt 桌面回归另外使用正式宿主和真实 CPU 模型；可选包必须在搬迁目录通过实际启动器运行，不能用源构建目录的成功代替。具体命令见 [合作组件](../fcitx-linux.md)和 [Qt 路径](../qt-linux.md)。
+
+当前同窗后台直接替换证据限于实际类型恰为标准 GTK3/GTK4 Entry 与 Qt QLineEdit 的原字段，包含保持另一字段焦点/正文的正向及原文冲突拒绝。TextView/QPlainTextEdit 的前台多行验证不覆盖后台，跨窗口/应用后台也未覆盖；更多能力与共同规格缺口以 [Linux 能力表](../linux.md#与-windows-的功能对齐)为准。浏览器短租约空窗仍是风险，单次链路通过不等于长期调度稳定。
+
 测试失败时保留命令、提交 SHA、平台、退出码和最小失败输出。只使用合成测试文本。TRX 和临时包进入 artifacts/ 或 CI artifact，不将执行快照、日志或阶段报告提交到仓库。
 
 ## 受控桌面工具
@@ -47,7 +51,7 @@ TYPELAY_HOME 必须指向包含 worker/ 的完整发行根，不能指向源码�
 
 ## 真实产品验收
 
-以下项目需在实际 Windows 桌面单独执行。默认只读优先，实验写回仅用备份的非敏感内容。开放风险及关闭条件以 `docs/agents/architecture.md` 为准。
+产品要求统一从 [README 产品验收入口](../../README.md#产品验收入口)读取冻结规格及已接受 ADR-0002。以下项目需在实际 Windows 桌面单独执行，Linux 的对应入口见 [Linux 验证](../linux.md#验证)。默认只读优先，实验写回仅用备份的非敏感内容。开放风险及关闭条件以 `docs/agents/architecture.md` 为准。
 
 1. 完整解压，双击 TypeLay.exe，首次安装需明确同意；重复启动只留一个托盘；退出后 App、Broker、worker 和 hook 全部退出。断网后已装模型仍能推理。
 2. 在教程之外的浏览器普通输入框与桌面应用中输入合成文本，验证真实模型候选、无抢焦点/页面挤压。无标签输入不能预先排除；失败控件如实记录。
@@ -58,11 +62,11 @@ TYPELAY_HOME 必须指向包含 worker/ 的完整发行根，不能指向源码�
 
 ## Linux 适配器独立验证入口
 
-正常提交、Pull Request 和手动 workflow 仍运行完整检查。仅 `cachyos-preview` 的显式 `research(qt-only):` 或 `research(browser-only):` 提交运行 `Isolated Linux adapter (no full product acceptance)`。CI 检查整个 push 中每个提交的变更路径，越界即失败；Qt 入口仅接受 Qt 模块/IID/专用 fixture 与 helper，浏览器入口仅接受 `content.js` 与现有 DOM/desktop 测试。共享 Core、Runtime、Protocol、桌面后台与打包代码必须走完整检查。
+`trunk` 提交、Pull Request 和手动 workflow 运行完整检查。工作流仍保留仅限 `cachyos-preview` 显式 `research(qt-only):` 或 `research(browser-only):` 提交的 `Isolated Linux adapter (no full product acceptance)` 入口，但当前分支约定不授权继续修改该 preview。CI 检查整个 push 中每个提交的变更路径，越界即失败；Qt 入口仅接受 Qt 模块/IID/专用 fixture 与 helper，浏览器入口仅接受 `content.js` 与现有 DOM/desktop 测试。共享 Core、Runtime、Protocol、桌面后台、生产构建与打包代码必须走完整检查。
 
 两个入口复用固定 artifact ID、源提交与双层 SHA256 校验的精确客户端和合作运行时。Qt 重建当前插件并验证实际输入队列与 niri/本地模型；浏览器只在临时客户端中替换当前 content.js、重建临时 Firefox 扩展，运行原 DOM 契约及同一 Chromium/Firefox 模型场景。没有另一套控制器或替代模型。对应场景未执行的另一适配器不参与该场景的二进制一致性检查；实际执行的共享/宿主输入仍须与固定包源提交相同。测试代码从本次 checkout 运行，不能把旧共享实现冒作新实现。
 
-基线的各场景结果须独立说明：当前固定包已有实际 GTK/Qt/VSIX 验证，但有尚待修复的 Firefox 许可时效失败，浏览器入口用于重复验证这个已知失败，不宣称基线整体通过。artifact 过期、依赖不兼容或校验失败直接报错，不自动换包。更新复用基线或入口工作流走正常检查；独立场景通过不等于整个平台或真实用户桌面验收通过。
+复用基线和当前提交的结果须分别读取实际 CI，逐场景说明，不能以旧包某项通过或失败推导当前版本。artifact 过期、依赖不兼容或校验失败直接报错，不自动换包。更新复用基线或入口工作流走正常检查；独立场景通过不等于整个平台或真实用户桌面验收通过。Windows 未结失败以 [Windows 待办](../windows-open-issues.md)为入口，不由 Linux/shared 绿色结果关闭。
 
 ## 结果表述
 

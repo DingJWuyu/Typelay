@@ -44,9 +44,7 @@ internal static class EditorHost
                 await Error("disabled");
                 return 0;
             }
-            using var model = new ModelClient(new(Path.Combine(data, "components", "current", "runtime", "venv", "bin", "python"),
-                Path.Combine(home, "worker", "run_worker.py"), Path.Combine(data, "components", "current", "models")),
-                start => new LinuxChildProcess(start, Path.Combine(home, "native", "typelay-supervise")));
+            using var model = LinuxModelFactory.Create(home, data);
             await model.StartAsync();
             if (!model.Ready)
             {

@@ -30,9 +30,7 @@ internal static class Program
         var view = new DesktopView(link);
         var settings = new SettingsStore(Path.Combine(config, "settings.json"),
             enabled => SetStartup(enabled, home, config), app => Path.GetFileName(app.Trim()).ToLowerInvariant());
-        using var model = new ModelClient(new(Path.Combine(data, "components", "current", "runtime", "venv", "bin", "python"),
-            Path.Combine(home, "worker", "run_worker.py"), Path.Combine(data, "components", "current", "models")),
-            start => new LinuxChildProcess(start, Path.Combine(home, "native", "typelay-supervise")));
+        using var model = LinuxModelFactory.Create(home, data);
         using var controller = new SessionController(settings, model, view, input, input, loop);
         void Status() => link.Send("status", new
         {

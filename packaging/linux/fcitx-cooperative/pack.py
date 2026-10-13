@@ -5,32 +5,41 @@ from __future__ import annotations
 
 import argparse
 import gzip
-import hashlib
 import json
 import os
 import re
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
+from eng.linux.cooperative.inputs import (  # noqa: E402
+    CHINESE_DATA_ARCHIVES,
+    CORE_VERSION,
+    DATA_ARCHIVES,
+    FCITX_BUILD_INPUTS,
+    FCITX_PINS,
+    PATCH_PROJECTS,
+    PATCHES,
+    PRIVATE_VERSIONS,
+    QT_BUILD_INPUTS,
+    QT_PIN,
+    QT_SHA256,
+    QT_SOURCE_VERSION,
+    QT_VERSION,
+    SOURCE_VERSIONS,
+    hashes,
+    sha256,
+)
+
 BUNDLE = "TypeLay-Fcitx-cooperative"
-CORE_VERSION = "5.1.22"
-PATCHED_UPSTREAM = ("fcitx5", "fcitx5-chinese-addons", "fcitx5-gtk")
+PATCHED_UPSTREAM = PATCH_PROJECTS
 UPSTREAM = (*PATCHED_UPSTREAM, "libime")
-SOURCE_VERSIONS = {
-    "fcitx5": CORE_VERSION,
-    "fcitx5-chinese-addons": "5.1.14",
-    "fcitx5-gtk": "5.1.7",
-    "libime": "1.1.16",
-}
-PRIVATE_VERSIONS = {
-    **{f"Fcitx5{name}": CORE_VERSION for name in ("Core", "Config", "Utils")},
-    **{f"LibIME{name}": "1.1.16" for name in ("Core", "Pinyin", "Table")},
-}
 LIBRARIES = ("libFcitx5GClient.so", "im-fcitx5.so", "libtypelay-gtk4.so")
 CHINESE_ADDONS = (
     "pinyin",
@@ -42,27 +51,13 @@ CHINESE_ADDONS = (
     "cloudpinyin",
 )
 TABLE_DATA = ("db", "erbi", "qxm", "wanfeng", "wbpy", "wbx", "zrm", "cj")
-DATA_ARCHIVES = {
-    "lm_sc.arpa-20260629.tar.zst": "06808333b9173e5374cf2cb5afc12d08f5625bf9abb536489cac376fc05f2e7f",
-    "dict-20260703.tar.zst": "c686cab6df8964c48d596f57d205bac31fc72870b06a83017e44503df8c09697",
-    "table-20240108.tar.zst": "3e9d87b04a393f131723472c8eaa860dd23c378a3d4f6a9005513b2a95b3614b",
-}
-CHINESE_DATA_ARCHIVES = {
-    "py_stroke-20250329.tar.gz": "c1a7ca7225d3614ab83353fc827503006a980447762018f53760425d7b5303a6",
-    "py_table-20121124.tar.gz": "42146ac97de6c13d55f9e99ed873915f4c66739e9c11532a34556badf9792c04",
-}
 RUNTIME_DIRS = {"bin", "lib", "libexec", "share", "etc"}
-BUILD_INPUTS = (
-    "tests/linux/fcitx_cooperative/run.py",
-    "tests/linux/fcitx_cooperative/fixture.c",
-    *(f"tests/linux/fcitx_cooperative/{project}.patch" for project in PATCHED_UPSTREAM),
-    "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-v1.h",
-    "src/TypeLay.Linux/native/common/gtk-textbuffer-write.inc",
-    *(
-        str(p.relative_to(ROOT))
-        for p in sorted((ROOT / "src/TypeLay.Linux/native/gtk4").iterdir())
-        if p.suffix in {".c", ".h"} or p.name == "CMakeLists.txt"
-    ),
+TEST_INPUTS = ("tests/linux/fcitx_cooperative/run.py", "tests/linux/fcitx_cooperative/fixture.c")
+QT_TEST_INPUTS = (
+    "tests/linux/qt_cooperative/run.py",
+    "tests/linux/qt_cooperative/fixture.cpp",
+    "tests/linux/qt_cooperative/qpa_ack.cpp",
+    "tests/linux/qt_native_fixture.cpp",
 )
 SOURCE_CACHE_DIRS = {
     ".git",
@@ -93,11 +88,6 @@ def read_object(path):
     return value
 
 
-def sha256(path):
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
 def metadata(build):
     versions = read_object(build / "versions.json")
     for key in (
@@ -112,17 +102,8 @@ def metadata(build):
     if versions.get("installed_private_versions") != PRIVATE_VERSIONS:
         raise ValueError("Installed private Fcitx/LibIME development versions do not match")
     pins = read_object(build / "pins.json")
-    for project in (*UPSTREAM, "kenlm"):
-        pin = pins.get(project)
-        if (
-            not isinstance(pin, list)
-            or len(pin) != 2
-            or not isinstance(pin[0], str)
-            or not re.fullmatch(r"[0-9a-f]{40}", pin[0])
-            or not isinstance(pin[1], str)
-            or not re.fullmatch(r"[0-9a-f]{64}", pin[1])
-        ):
-            raise ValueError(f"Missing or invalid upstream source pin: {project}")
+    if pins != {name: list(pin) for name, pin in FCITX_PINS.items()}:
+        raise ValueError("Upstream source pins differ from the production build recipe")
     if versions.get("server_source_commit") != pins["fcitx5"][0]:
         raise ValueError("Server source commit differs from the recorded upstream pin")
     return versions, pins
@@ -280,7 +261,7 @@ def copy_libraries(build, bundle):
             raise ValueError(f"Expected a patched shared library file: {source}")
 
 
-def copy_sources(build, bundle, pins, inputs):
+def copy_sources(build, bundle, pins, inputs, test_inputs):
     source = bundle / "source"
     libime = build / "sources/libime"
     for name, digest in DATA_ARCHIVES.items():
@@ -308,7 +289,8 @@ def copy_sources(build, bundle, pins, inputs):
             raise ValueError(f"Missing original upstream LGPL text: {license_file}")
         copy_tree(upstream, source / "upstream" / project)
     files = [
-        *BUILD_INPUTS,
+        *FCITX_BUILD_INPUTS,
+        *TEST_INPUTS,
         "packaging/linux/fcitx-cooperative/pack.py",
         "packaging/linux/fcitx-cooperative/fcitx-cooperative.py",
         "docs/fcitx-linux.md",
@@ -318,7 +300,7 @@ def copy_sources(build, bundle, pins, inputs):
         destination = source / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(ROOT / relative, destination)
-        expected = inputs["files"].get(relative)
+        expected = inputs["files"].get(relative, (test_inputs or {}).get("files", {}).get(relative))
         if expected is not None and sha256(destination) != expected:
             raise ValueError(f"Build input changed while packaging: {relative}")
     notices = [
@@ -328,9 +310,10 @@ def copy_sources(build, bundle, pins, inputs):
         "The original LGPL-2.1-or-later terms apply to the modified libraries; consult",
         "the source-file notices for individual components and bundled data.\n",
         "Corresponding modified sources are included in source/upstream. TypeLay's",
-        "modifications are also provided as patches in source/tests/linux/fcitx_cooperative.",
-        "Build commands, configurations and test fixtures are in that directory's run.py.",
-        "From source/, run: python3 tests/linux/fcitx_cooperative/run.py --core-version 5.1.22",
+        "modifications and build recipes are in source/eng/linux/cooperative/.",
+        "Test fixtures and regression scenarios remain in source/tests/linux/fcitx_cooperative/.",
+        "From source/, build: python3 eng/linux/cooperative/fcitx.py --core-version 5.1.22",
+        "Build and test: python3 tests/linux/fcitx_cooperative/run.py --core-version 5.1.22",
         "This requires the documented build dependencies and pinned upstream downloads.",
         "You may modify and rebuild these components under their applicable licenses.\n",
         "Pinned upstream revisions and source archive SHA-256 values:",
@@ -369,9 +352,9 @@ def verify_sources(build):
     """Do not silently ship newer checkout patches with an older build's sources."""
     record = read_object(build / "build-inputs.json")
     inputs = record.get("files")
-    if not isinstance(inputs, dict) or set(inputs) != set(BUILD_INPUTS):
+    if not isinstance(inputs, dict) or set(inputs) != set(FCITX_BUILD_INPUTS):
         raise ValueError("Build input record must identify every cooperation build input")
-    for relative in BUILD_INPUTS:
+    for relative in FCITX_BUILD_INPUTS:
         if sha256(ROOT / relative) != inputs[relative]:
             raise ValueError(f"Checkout differs from the recorded build input: {relative}")
     for project in PATCHED_UPSTREAM:
@@ -387,7 +370,7 @@ def verify_sources(build):
                 "--fuzz=0",
                 "-p1",
                 "-i",
-                str(ROOT / "tests/linux/fcitx_cooperative" / f"{project}.patch"),
+                str(PATCHES / f"{project}.patch"),
             ],
             cwd=source,
             text=True,
@@ -400,49 +383,65 @@ def verify_sources(build):
     abi = Path("src/TypeLay.Linux/native/fcitx5/typelay-fcitx-v1.h")
     if sha256(ROOT / abi) != sha256(build / "sources/fcitx5-gtk" / abi.name):
         raise ValueError("Build GTK sources do not match the cooperation ABI header")
+    versions = read_object(build / "versions.json")
+    binaries = versions.get("binary_sha256")
+    if not isinstance(binaries, dict) or not binaries:
+        raise ValueError("Missing production Fcitx binary hashes")
+    for relative, digest in binaries.items():
+        if sha256(build / relative) != digest:
+            raise ValueError(f"Fcitx binary changed after its build: {relative}")
+    return record
+
+
+def verify_tests(build):
+    if not (build / "test-inputs.json").exists():
+        return None
+    record = read_object(build / "test-inputs.json")
+    if record.get("files") != hashes(TEST_INPUTS):
+        raise ValueError("Fcitx regression fixture inputs differ from this checkout")
+    for key, relative in (
+        ("fixture_sha256", "fixture"),
+        ("build_inputs_sha256", "build-inputs.json"),
+        ("build_metadata_sha256", "versions.json"),
+    ):
+        if record.get(key) != sha256(build / relative):
+            raise ValueError(
+                f"Fcitx regression inputs changed after fixture compilation: {relative}"
+            )
     return record
 
 
 def copy_qt(qt, bundle):
     versions = read_object(qt / "versions.json")
     if (
-        versions.get("qt_build_version") != "6.11.2"
-        or versions.get("fcitx5_qt_source_version") != "5.1.15"
+        versions.get("qt_build_version") != QT_VERSION
+        or versions.get("fcitx5_qt_source_version") != QT_SOURCE_VERSION
     ):
         raise ValueError("Optional Qt bundle requires Qt 6.11.2 and Fcitx Qt 5.1.15")
-    pin = "272b6b9eba97f0ed97e8a5caaf0bb22c6123f462"
-    archive_hash = "b2c5f7c47009656ce79eac0c8f047a73b224210d0bc232150349577525fbd0d3"
+    pin, archive_hash = QT_PIN, QT_SHA256
     if versions.get("source_commit") != pin or versions.get("source_sha256") != archive_hash:
         raise ValueError("Unexpected Fcitx Qt source pin")
     if sha256(qt / "fcitx5-qt.tar.gz") != archive_hash:
         raise ValueError("Missing matching original Fcitx Qt archive")
-    files = {
-        "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-qt-v1.h",
-        "packaging/linux/fcitx-cooperative/qt-runtime-probe.cpp",
-        "tests/linux/qt_native_fixture.cpp",
-        *(
-            f"tests/linux/qt_cooperative/{name}"
-            for name in ("run.py", "fixture.cpp", "qpa_ack.cpp", "fcitx5-qt.patch")
-        ),
-        *(
-            str(p.relative_to(ROOT))
-            for p in (ROOT / "src/TypeLay.Linux/native/qt6").iterdir()
-            if p.is_file()
-        ),
-    }
     inputs = versions.get("build_inputs", {})
-    if set(inputs) != files or any(sha256(ROOT / name) != inputs[name] for name in files):
+    if inputs != hashes(QT_BUILD_INPUTS):
         raise ValueError("Qt binaries were built from different checkout inputs")
+    test_inputs = versions.get("test_inputs", {})
+    if test_inputs != hashes(QT_TEST_INPUTS):
+        raise ValueError("Qt regression fixture inputs differ from this checkout")
+    test_binaries = versions.get("test_binary_sha256", {})
+    for name in ("fixture", "qpa_ack", "native/qt-native-fixture"):
+        if test_binaries.get(name) != sha256(qt / name):
+            raise ValueError(f"Qt regression binary changed after its build: {name}")
     probe = read_object(qt / "result.json")
     if probe.get("passed") is not True or not probe.get("default_async_required"):
         raise ValueError("Successful original async Qt regression evidence required")
     runtime = read_object(qt / "async-runtime.json")
-    if runtime.get("build_version") != "6.11.2" or runtime.get("runtime_version") != "6.11.2":
+    if runtime.get("build_version") != QT_VERSION or runtime.get("runtime_version") != QT_VERSION:
         raise ValueError("Qt probe runtime is not version matched")
     binaries = {
         "plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so": "qt6/plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so",
         "native/qt6/generic/libtypelay-qt6.so": "qt6/plugins/generic/libtypelay-qt6.so",
-        "native/qt-native-fixture": None,
         "qt-runtime-probe": "qt6/bin/qt-runtime-probe",
     }
     for name, destination in binaries.items():
@@ -466,7 +465,7 @@ def copy_qt(qt, bundle):
             "--fuzz=0",
             "-p1",
             "-i",
-            str(ROOT / "tests/linux/qt_cooperative/fcitx5-qt.patch"),
+            str(PATCHES / "fcitx5-qt.patch"),
         ],
         cwd=upstream,
         check=True,
@@ -477,32 +476,37 @@ def copy_qt(qt, bundle):
         if not (upstream / "LICENSES" / license_name).is_file():
             raise ValueError("Missing original Fcitx Qt license")
     copy_tree(upstream, bundle / "source/upstream/fcitx5-qt")
-    for name in files:
+    for name in (*QT_BUILD_INPUTS, *QT_TEST_INPUTS):
         target = bundle / "source" / name
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / name, target)
+        if sha256(target) != inputs.get(name, test_inputs.get(name)):
+            raise ValueError(f"Qt build/test input changed while packaging: {name}")
     with (bundle / "THIRD_PARTY_NOTICES.md").open("a") as notices:
         notices.write(
             "\n## Optional Qt cooperation\nFcitx5-Qt 5.1.15 is modified by TypeLay. "
             "Original BSD-3-Clause/LGPL-2.1-or-later notices and complete modified "
             "sources are in source/upstream/fcitx5-qt; the dated patch and build "
-            "recipe are in source/tests/linux/qt_cooperative. Build with the "
-            "Qt 6.11.2 SDK using that run.py and the private Fcitx build. "
+            "recipe are in source/eng/linux/cooperative. Build with the "
+            "Qt 6.11.2 SDK using qt.py; tests/linux/qt_cooperative/run.py "
+            "also builds the fixtures and tests against the private Fcitx build. "
             "The Qt libraries themselves are supplied by the user system.\n"
         )
     return {
-        "qtVersion": "6.11.2",
-        "fcitxQtVersion": "5.1.15",
+        "qtVersion": QT_VERSION,
+        "fcitxQtVersion": QT_SOURCE_VERSION,
         "sourceCommit": pin,
         "sourceSha256": archive_hash,
         "buildInputs": inputs,
+        "testInputs": test_inputs,
+        "testBinarySha256": test_binaries,
         "binarySha256": versions["binary_sha256"],
         "probeEvidenceSha256": sha256(qt / "result.json"),
         "modelValidation": "required after relocation",
     }
 
 
-def manifest(bundle, versions, pins, inputs, qt=None):
+def manifest(bundle, versions, pins, inputs, test_inputs, qt=None):
     files = {}
     for path in sorted(bundle.rglob("*")):
         relative = path.relative_to(bundle).as_posix()
@@ -525,13 +529,16 @@ def manifest(bundle, versions, pins, inputs, qt=None):
         "versions": versions,
         "pins": pins,
         "buildInputs": inputs,
+        "testInputs": test_inputs,
         "libimeDataSources": DATA_ARCHIVES,
         "chineseDataSources": CHINESE_DATA_ARCHIVES,
         "systemDependencies": {
             "packages": packages,
             "gtk3": versions.get("gtk3"),
             "gtk4": versions.get("gtk4"),
-            "requiredUserPackageVersions": {"fcitx5-chinese-addons": "5.1.14", "libime": "1.1.16"},
+            "requiredUserPackageVersions": {
+                name: SOURCE_VERSIONS[name] for name in ("fcitx5-chinese-addons", "libime")
+            },
             "chineseMetadataDirectory": "core/share/fcitx5",
             "libimeDataDirectory": "core/share/libime",
             "libimeModelDirectory": "core/lib/libime",
@@ -583,19 +590,24 @@ def main():
         parser.error("--output must end in .tar.gz")
     versions, pins = metadata(build)
     inputs = verify_sources(build)
+    test_inputs = verify_tests(build)
     with tempfile.TemporaryDirectory(prefix="typelay-fcitx-pack-") as temporary:
         bundle = Path(temporary) / BUNDLE
         bundle.mkdir()
         copy_core(build, bundle)
         copy_libraries(build, bundle)
-        copy_sources(build, bundle, pins, inputs)
+        copy_sources(build, bundle, pins, inputs, test_inputs)
         shutil.copyfile(ROOT / "docs/fcitx-linux.md", bundle / "README.md")
         launcher = bundle / "fcitx-cooperative.py"
         shutil.copyfile(ROOT / "packaging/linux/fcitx-cooperative/fcitx-cooperative.py", launcher)
         launcher.chmod(0o755)
         qt = copy_qt(args.qt_output.resolve(strict=True), bundle) if args.qt_output else None
         (bundle / "manifest.json").write_text(
-            json.dumps(manifest(bundle, versions, pins, inputs, qt), indent=2, ensure_ascii=False)
+            json.dumps(
+                manifest(bundle, versions, pins, inputs, test_inputs, qt),
+                indent=2,
+                ensure_ascii=False,
+            )
             + "\n",
             encoding="utf-8",
         )

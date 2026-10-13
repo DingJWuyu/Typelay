@@ -518,7 +518,9 @@ def run_qt(
                         ] == [str(path.resolve())], f"Qt plugin loaded outside its bundle: {path}"
                     assert (
                         binary_hashes["fixture_sha256"]
-                        == manifest["qt6"]["binarySha256"]["native/qt-native-fixture"]
+                        == manifest["qt6"].get("testBinarySha256", manifest["qt6"]["binarySha256"])[
+                            "native/qt-native-fixture"
+                        ]
                     ), "Owned Qt fixture differs from the packaged build provenance"
                 for name in ("Core", "Gui", "Widgets", "DBus", "WaylandClient"):
                     assert f"libQt6{name}.so.{build_version}" in mapped_names, name

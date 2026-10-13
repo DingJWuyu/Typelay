@@ -1,8 +1,10 @@
 # Architecture constraints
 
-在改模块边界、进程启动、会话或目录时读取本文件。工作区入口是 TypeLay.slnx；跨平台依赖、宿主契约与扩展取舍见 `docs/adr/0003-cross-platform-runtime.md`；工作区与交付约定见 ADR-0001，按需/直接替换语义见 ADR-0002。
+在改模块边界、进程启动、会话或目录时读取本文件。工作区入口是 TypeLay.slnx；跨平台依赖、宿主契约与扩展取舍见 `docs/adr/0003-cross-platform-runtime.md`；工作区与交付约定见 ADR-0001。产品要求统一从 [README 产品验收入口](../../README.md#产品验收入口)读取冻结规格与已接受 ADR-0002，平台现状不降低要求。
 
 ## 生产边界
+
+Windows/Linux 在 `trunk` 共用一份 Core、Runtime、Protocol 与 Python worker。平台源码按宿主职责隔离，不按分支复制共享实现；生产构建在 `eng/`，运行时包装与安装在 `packaging/`，受控工具和断言在 `tests/`。
 
 `TypeLay.Core` 拥有 Session、AcceptanceGate、WriteSafety、字段安全策略、UTF-16 选区映射和展示状态的纯逻辑。只接收显式快照、时间与结果；不读取操作系统、环境变量、网络或磁盘。回归通过这些公开边界观察，不断言私有字段。
 
@@ -18,7 +20,13 @@
 
 `TypeLay.Launcher` 是 Windows 原生入口。发布时从 C 源码编译，调用发行目录 bootstrap/start.ps1；它不包含 SDK 下载和源码编译功能。
 
-`TypeLay.Linux` 是 Linux 组合根，直接装配共享 Runtime，不复制会话控制器。其 GTK 桌面进程负责 niri IPC、同用户 socket、设置界面和 Ayatana 托盘；原生 GTK3/GTK4 模块保留控件身份与父窗口定位机制；普通公开 GTK API 无法证明异步 IME 空闲，通用路径保持 Unknown。可选 Fcitx 合作组件提供实际 context、在途状态和输出序号，仅为已校验的标准 Entry/纯文本 TextView 提供能力。两代共用私有 TextBuffer 写入实现，平台对象/元数据检查仍归各自模块。浏览器扩展在真实文档事件线程处理标准 DOM 输入；单段 Tiptap 富文本通过有界 MAIN-world 桥调用源编辑器事务，隔离脚本持有 IME 与最终写入许可，经浏览器拥有的 native-messaging 子进程进入相同宿主端口；宿主独立验证同用户进程祖先与启动寿命，不接受页面声明的 PID。GTK 父窗口和浏览器视口坐标明确分开，只有对应的原生 renderer 使用，不能混为屏幕全局坐标。GTK 锚点契约见 `docs/adr/0004-linux-native-anchors.md`，浏览器部署/限制见 `docs/browser-linux.md`。Linux 子进程监督和 XDG 安装路径不进入共享层。当前支持范围、拒绝条件和部署流程见 `docs/linux.md`。
+`TypeLay.Linux` 是 Linux 组合根，直接装配共享 Runtime，不复制会话控制器。其 .NET 宿主拥有串行事件循环、类型化输入/视图端口及 worker 生命周期；`desktop/` 的 GTK 进程负责 niri IPC、同用户 socket、设置界面和 Ayatana 托盘。Linux 子进程监督和 XDG 安装路径不进入共享层。
+
+`TypeLay.Linux/native/` 的 `gtk3/`、`gtk4/`、`qt6/` 分别拥有各 toolkit 的源控件与父窗口内浮层，`common/` 保留实际共用的原生实现，`fcitx5/` 保留输入法合作接口；根目录只负责总构建和子进程监督。普通 GTK API 无法证明异步 IME 空闲，通用路径保持 Unknown。可选 Fcitx 合作组件提供真实 context、在途状态、输出序号与字段绑定，只向经过验证的标准控件授予能力。GTK 两代共用私有 TextBuffer 写入实现，平台对象/元数据检查仍归各自模块；Qt 使用实际 QObject/provider 与源 GUI 线程，不复用 GTK 控件身份。标准控件、前台与后台写回的不同范围见 [Linux 能力表](../linux.md#与-windows-的功能对齐)及 [Qt 路径](../qt-linux.md)。
+
+`TypeLay.Linux/browser/` 的扩展在真实文档事件线程处理标准 DOM 输入；单段 Tiptap 富文本通过有界 MAIN-world 桥调用源编辑器事务，隔离脚本持有 IME 与最终写入许可，经浏览器拥有的 native-messaging 子进程进入相同宿主端口。宿主独立验证同用户进程祖先与启动寿命，不接受页面声明的 PID。GTK/Qt 父窗口和浏览器视口坐标明确分开，只有对应的 renderer 使用，不能混为屏幕全局坐标。GTK 锚点契约见 `docs/adr/0004-linux-native-anchors.md`，浏览器部署/限制见 `docs/browser-linux.md`。`vscode/` 仅提供手动预览确认替换，不代表自动浮层后端。
+
+`eng/linux/cooperative/` 拥有合作组件的固定输入、补丁、生产构建和 Qt 运行时探针；`packaging/linux/fcitx-cooperative/` 负责产物、对应源码/许可及逐应用启动器。测试 runner 调用这些构建入口，不再拥有生产 recipe。当前部署与验收边界见 `docs/linux.md`、`docs/fcitx-linux.md`。
 
 ## 平台边界不变量
 
@@ -36,7 +44,7 @@ IInputService 的实现负责操作前重新确认目标与权限，不能把 Wr
 
 源码目录与部署目录不同。Windows 部署根包含 TypeLay.exe、app/、worker/、bootstrap/、assets/tutorial/、README 和第三方声明。AppPaths.Home 由启动脚本指向整个发行根；Broker 与 App 放在同一个 app/。开机启动继续指向发行根 TypeLay.exe。Linux 发行根由 `eng/build-linux.py` 装配，用户本地安装与 XDG 数据布局见 `docs/linux.md`。
 
-打包只能从明确的运行时文件清单复制。不能把 .git、skills、源代码、测试、归档资料、用户设置或模型缓存带入发布包。改变部署路径后必须运行 relocated-distribution E2E，不能只检查编译。
+客户端打包只能从明确的运行时文件清单复制，不带 .git、skills、源代码、测试、归档资料、用户设置或模型缓存。可选 Fcitx 合作包另外保留其许可证要求的对应源码、修改和生产重建输入，不把测试 fixture 当运行时依赖。改变部署路径后必须运行 relocated-distribution E2E，不能只检查编译。
 
 ## 受控测试边界
 
@@ -48,7 +56,9 @@ IInputService 的实现负责操作前重新确认目标与权限，不能把 Wr
 
 `tests/behavior/TypeLay.Runtime.Tests` 用确定性串行宿主和受控输入/模型端口执行生产控制器，覆盖激活、异步结果隔离、草稿、直接替换和能力拒绝；设置测试使用真实临时文件。它们不证明桌面、真实模型或原子写入。`shared-check` 在非 Windows 环境构建并运行共享层，完整 Windows check/pack 保留。
 
-共享测试准备仅留在 tests 内，不向生产代码导出额外的“方便测试”接口。平台端口有 Windows 生产使用者；不为未开发平台保留空项目或假实现。
+`tests/linux/` 拥有 GTK/Qt 原生 fixture、合作输入回归、浏览器/VS Code 场景和发行包验证。`fcitx_cooperative/run.py`、`qt_cooperative/run.py` 调用 `eng/linux/cooperative/` 构建，再执行隔离输入事务断言；生产构建不导入或调用测试 runner；打包独立核验构建来源，Qt 可选发行仍要求同一构建的真实异步输入回归记录。
+
+共享测试准备仅留在 tests 内，不向生产代码导出额外的“方便测试”接口。平台端口有 Windows/Linux 生产使用者；不为未开发平台保留空项目或假实现。
 
 ## 开放风险与安全边界
 
@@ -57,6 +67,8 @@ IInputService 的实现负责操作前重新确认目标与权限，不能把 Wr
 按下时的短效接受许可与已消费按键的远程执行期限是两个边界，具体值以 Core 的 Limits 为准。派发前核验 Hook 输入/焦点版本，Broker 写前重读、期限检查与写后核验不能省略。浮层编辑按键与源字段输入版本必须区分，避免把译文编辑误判成原文变化。
 
 **B-02：真实桌面验收不完整。** 独立网站、物理 Tab、完整中文 IME、多显示器/DPI 与视觉一致性需要对应用户路径的证据。构建、fixture、软件注入和模型自检结果均不能替代这些验收；具体操作见 `docs/agents/testing.md`。
+
+Linux 浏览器链路仍有短租约到期与续期之间的可用性空窗风险；某次模型/Tab 回归通过不能证明所有调度条件稳定。保持到期拒绝，不延长授权或放宽断言掩盖。平台实现缺口集中在 [Linux 能力表](../linux.md#与-windows-的功能对齐)，Windows 未结问题见 [Windows 待办](../windows-open-issues.md)。
 
 **B-03：通用输入后端不完整。** 缺少可靠 IME 状态的普通字段只能提供只读预览，不能进入人工编辑或接受；值可能含未提交字符，不能当成已提交原文。已知组合态只提供已提交前缀，Unknown 不伪装成 Clear，预览不因状态恢复自动成为接受候选。缺少 ValuePattern 的富文本不能降级为整框 SetValue；未暴露可编辑文本接口的自绘控件仍缺少后端。补齐的是控件能力，不是应用名单或自然语言标签。
 

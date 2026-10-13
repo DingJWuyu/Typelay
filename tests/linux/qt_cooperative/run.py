@@ -1,4 +1,4 @@
-"""Research-only Fcitx Qt queue ACK probe; does not install an input module.
+"""Build through the production recipe, then probe the real Fcitx Qt queue ACK.
 Run with the existing isolated Fcitx output: --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22.
 Requires official Qt6 base/private headers, Qt6 Wayland development files, ECM,
 xkbcommon/XCB, cmake, ninja, dbus-run-session, xvfb-run and xdotool.
@@ -7,7 +7,6 @@ xkbcommon/XCB, cmake, ninja, dbus-run-session, xvfb-run and xdotool.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shlex
@@ -17,14 +16,20 @@ import sys
 import tarfile
 import tempfile
 import time
-import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
-ABI = ROOT / "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-qt-v1.h"
-PIN = "272b6b9eba97f0ed97e8a5caaf0bb22c6123f462"
-SHA = "b2c5f7c47009656ce79eac0c8f047a73b224210d0bc232150349577525fbd0d3"
+sys.path.insert(0, str(ROOT))
+from eng.linux.cooperative import qt as qt_build  # noqa: E402
+from eng.linux.cooperative.inputs import QT_PIN, hashes, sha256  # noqa: E402
+
+TEST_INPUTS = (
+    "tests/linux/qt_cooperative/run.py",
+    "tests/linux/qt_cooperative/fixture.cpp",
+    "tests/linux/qt_cooperative/qpa_ack.cpp",
+    "tests/linux/qt_native_fixture.cpp",
+)
 
 
 def run(args, **kwargs):
@@ -50,52 +55,22 @@ def counter_exceeds(observation, name, baseline=0):
 
 
 def build(out, forced_sync_diagnostic=False):
-    archive = out / "fcitx5-qt.tar.gz"
-    if not archive.exists():
-        with urllib.request.urlopen(
-            f"https://codeload.github.com/fcitx/fcitx5-qt/tar.gz/{PIN}", timeout=180
-        ) as response:
-            archive.write_bytes(response.read())
-    assert hashlib.sha256(archive.read_bytes()).hexdigest() == SHA
-    source = out / f"fcitx5-qt-{PIN}"
-    if source.exists():
-        raise RuntimeError("Use a fresh output directory; never silently reuse modified source")
-    with tarfile.open(archive) as tar:
-        tar.extractall(out, filter="data")
-    subprocess.run(
-        [
-            "cmake",
-            "-S",
-            source,
-            "-B",
-            out / "build",
-            "-G",
-            "Ninja",
-            "-DBUILD_ONLY_PLUGIN=ON",
-            "-DENABLE_QT4=OFF",
-            "-DENABLE_QT5=OFF",
-            "-DENABLE_QT6=ON",
-            "-DENABLE_QT6_WAYLAND_WORKAROUND=ON",
-        ],
-        check=True,
-    )
+    inputs = hashes(TEST_INPUTS)
+    qt_build.build(out)
     if forced_sync_diagnostic:
-        subprocess.run(
-            ["cmake", "--build", out / "build", "--parallel", "2"], check=True, timeout=600
-        )
-        stock = out / "stock-plugins/platforminputcontexts"
-        stock.mkdir(parents=True)
-        shutil.copy2(
-            out / "build/qt6/platforminputcontext/libfcitx5platforminputcontextplugin.so", stock
-        )
-    run(["patch", "-p1", "-i", HERE / "fcitx5-qt.patch"], cwd=source)
-    shutil.copy2(ABI, source / "common" / ABI.name)
-    subprocess.run(["cmake", "--build", out / "build", "--parallel", "2"], check=True, timeout=600)
-    plugins = out / "plugins/platforminputcontexts"
-    plugins.mkdir(parents=True)
-    shutil.copy2(
-        out / "build/qt6/platforminputcontext/libfcitx5platforminputcontextplugin.so", plugins
-    )
+        # Compile the unmodified control only for this optional comparison.
+        with tempfile.TemporaryDirectory(prefix="typelay-qt-stock-", dir=out) as temporary:
+            stock_root = Path(temporary)
+            with tarfile.open(out / "fcitx5-qt.tar.gz") as bundle:
+                bundle.extractall(stock_root, filter="data")
+            qt_build.build_plugin(stock_root / f"fcitx5-qt-{QT_PIN}", stock_root / "build")
+            stock = out / "stock-plugins/platforminputcontexts"
+            stock.mkdir(parents=True)
+            shutil.copy2(
+                stock_root
+                / "build/qt6/platforminputcontext/libfcitx5platforminputcontextplugin.so",
+                stock,
+            )
     subprocess.run(
         [
             "cmake",
@@ -109,7 +84,11 @@ def build(out, forced_sync_diagnostic=False):
         ],
         check=True,
     )
-    subprocess.run(["cmake", "--build", out / "native", "--parallel", "2"], check=True, timeout=180)
+    subprocess.run(
+        ["cmake", "--build", out / "native", "--target", "qt-native-fixture", "--parallel", "2"],
+        check=True,
+        timeout=180,
+    )
     flags = shlex.split(run(["pkg-config", "--cflags", "--libs", "Qt6Widgets"]))
     run(
         [
@@ -146,62 +125,18 @@ def build(out, forced_sync_diagnostic=False):
             f"-I{headers}/QtCore/{qt}/QtCore",
         ]
     )
-    runtime_probe = ROOT / "packaging/linux/fcitx-cooperative/qt-runtime-probe.cpp"
-    run(
-        [
-            "c++",
-            "-std=c++17",
-            "-Wall",
-            "-Wextra",
-            "-Werror",
-            "-fPIC",
-            runtime_probe,
-            "-o",
-            out / "qt-runtime-probe",
-            *shlex.split(run(["pkg-config", "--cflags", "--libs", "Qt6Core"])),
-        ]
-    )
-    (out / "versions.json").write_text(
-        json.dumps(
-            {
-                "scope": "research only, not user-version compatibility",
-                "fcitx5_qt_source_version": "5.1.15",
-                "source_commit": PIN,
-                "source_sha256": SHA,
-                "build_inputs": {
-                    str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
-                    for path in [
-                        ABI,
-                        runtime_probe,
-                        HERE / "run.py",
-                        HERE / "fixture.cpp",
-                        HERE / "qpa_ack.cpp",
-                        HERE / "fcitx5-qt.patch",
-                        ROOT / "tests/linux/qt_native_fixture.cpp",
-                        *sorted((ROOT / "src/TypeLay.Linux/native/qt6").glob("*")),
-                    ]
-                    if path.is_file()
-                },
-                "binary_sha256": {
-                    name: hashlib.sha256((out / name).read_bytes()).hexdigest()
-                    for name in (
-                        "plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so",
-                        "native/qt6/generic/libtypelay-qt6.so",
-                        "native/qt-native-fixture",
-                        "qt-runtime-probe",
-                    )
-                },
-                "qt6": qt,
-                "packages": run(["pacman", "-Q", "qt6-base", "fcitx5"]),
-                "qt_build_version": qt,
-                "consumer_ldd": run(["ldd", out / "native/qt6/generic/libtypelay-qt6.so"]),
-                "fixture_ldd": run(["ldd", out / "fixture"]),
-                "plugin_ldd": run(["ldd", plugins / "libfcitx5platforminputcontextplugin.so"]),
-            },
-            indent=2,
-        )
-        + "\n"
-    )
+    if hashes(TEST_INPUTS) != inputs:
+        raise RuntimeError("Test inputs changed during fixture compilation")
+    versions = json.loads((out / "versions.json").read_text())
+    for name, digest in versions["binary_sha256"].items():
+        if sha256(out / name) != digest:
+            raise RuntimeError(f"Production Qt binary changed while building fixtures: {name}")
+    versions["test_inputs"] = inputs
+    versions["test_binary_sha256"] = {
+        name: sha256(out / name) for name in ("fixture", "qpa_ack", "native/qt-native-fixture")
+    }
+    versions["fixture_ldd"] = run(["ldd", out / "fixture"])
+    (out / "versions.json").write_text(json.dumps(versions, indent=2) + "\n")
 
 
 def record_runtime(out, mode, pid, observation):
