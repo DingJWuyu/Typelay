@@ -1,6 +1,7 @@
 """GTK settings and a source-bound native view for the shared session controller."""
 
 import asyncio
+import json
 import os
 import sys
 
@@ -21,6 +22,7 @@ class Overlay:
         self.value = self.settings = self.peer = None
         self.visible = self.editing = self.acceptance_ready = False
         self.revision = 0
+        self.edit_trace_count = 0
         self.pending = False
         self.lock = asyncio.Lock()
         self.input.ui_event = self.event
@@ -113,7 +115,32 @@ class Overlay:
             self.conceal("observation-unavailable")
         return not self.input.closing
 
+    def trace_edit(self, stage, **fields):
+        if os.environ.get("TYPELAY_TRACE") and self.edit_trace_count < 96:
+            self.edit_trace_count += 1
+            try:
+                print(
+                    "typelay-edit "
+                    + json.dumps(
+                        {"stage": stage, "atMs": now_ms(), "revision": self.revision, **fields}
+                    ),
+                    file=sys.stderr,
+                    flush=True,
+                )
+            except OSError:
+                pass
+
     def event(self, peer, event):
+        if isinstance(event, dict) and event.get("operation") == "beginEdit":
+            self.trace_edit(
+                "event",
+                eventRevision=(event["revision"] if type(event.get("revision")) is int else None),
+                hasView=self.value is not None,
+                peerMatches=peer is self.peer,
+                targetMatches=bool(
+                    self.value and event.get("target") == self.value["source"]["target"]["value"]
+                ),
+            )
         if (
             not self.value
             or peer is not self.peer
@@ -143,7 +170,18 @@ class Overlay:
 
     async def begin_edit(self, peer, target):
         try:
+            requested_revision = self.revision
             allowed = await self.host.ask("beginEdit")
+            self.trace_edit(
+                "host-reply",
+                requestedRevision=requested_revision,
+                allowed=allowed is True,
+                peerMatches=self.peer is peer,
+                targetMatches=bool(
+                    self.value and self.value["source"]["target"]["value"] == target
+                ),
+                editing=bool(self.value and self.value.get("state") == "EditingTranslation"),
+            )
             if (
                 allowed is not True
                 or not self.value
@@ -155,8 +193,17 @@ class Overlay:
             # The state transition's render precedes the reply on the host channel;
             # flush it before asking GTK to focus its editor. No source text is changed.
             value, revision = self.value, self.revision
+            sent = await self.send_view()
+            self.trace_edit(
+                "render-reply",
+                requestedRevision=revision,
+                sent=sent,
+                sameView=self.value is value,
+                peerMatches=self.peer is peer,
+                visible=self.visible,
+            )
             if (
-                await self.send_view()
+                sent
                 and self.value is value
                 and self.revision == revision
                 and self.peer is peer

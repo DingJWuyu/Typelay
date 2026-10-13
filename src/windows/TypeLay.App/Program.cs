@@ -135,12 +135,12 @@ internal static class Program
             SystemEvents.UserPreferenceChanged += themeChanged;
             app.Exit += (_, _) => SystemEvents.UserPreferenceChanged -= themeChanged;
             if (!model.Installed)
-                window.ShowPage();
+                window.ShowStartupPage();
             await session.StartAsync();
             await model.StartAsync();
             TrayStatus();
             if (!model.Ready || !settings.Value.OnboardingComplete)
-                window.ShowPage();
+                window.ShowStartupPage();
         };
         try
         {

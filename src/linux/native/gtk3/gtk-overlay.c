@@ -148,6 +148,15 @@ static void preedit(GtkWidget *widget, const gchar *text, gpointer data) {
 }
 static gboolean begin_edit(GtkWidget *widget, GdkEventButton *event, gpointer data) {
     (void)data;
+    static guint trace_count;
+    if (g_getenv("TYPELAY_TRACE") && trace_count < 96) {
+        trace_count++;
+        g_printerr("TypeLay GTK beginEdit revision=%" G_GINT64_FORMAT
+            " left=%d editor=%d editable=%d pending=%d remainingMs=%" G_GINT64_FORMAT "\n",
+            overlay.revision, event->button == 1,
+            gtk_text_view_get_editable(GTK_TEXT_VIEW(widget)),
+            boolean(overlay.view, "editable"), overlay.pending_edit, overlay.expires - tl_now());
+    }
     if (event->button != 1 || gtk_text_view_get_editable(GTK_TEXT_VIEW(widget))) return FALSE;
     if (!boolean(overlay.view, "editable") || overlay.pending_edit) return TRUE;
     gint x, y;

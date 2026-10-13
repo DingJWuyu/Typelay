@@ -17,6 +17,8 @@ internal static class WindowsInterruptClock
         }
     }
 
-    [DllImport("kernel32.dll")]
+    // Windows SDK import contract (Windows 10 / Server 2016 and later).
+    // Kernel32 does not expose this entry point on every supported build.
+    [DllImport("api-ms-win-core-realtime-l1-1-1.dll", ExactSpelling = true)]
     private static extern void QueryInterruptTimePrecise(out ulong interruptTime);
 }

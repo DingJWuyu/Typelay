@@ -26,6 +26,7 @@ internal sealed class SettingsWindow : Window
     private TextBlock? _shortcutNotice, _shortcutStatus;
     private Window? _closeDialog;
     private bool _updatingShortcuts, _emergencyShutdown;
+    private bool _startupPresentationAllowed = true;
     public Func<string>? ShortcutStatus
     {
         get; set;
@@ -112,6 +113,7 @@ internal sealed class SettingsWindow : Window
         }
         if (_shortcutDraft is not null && !ConfirmDiscard())
             return false;
+        _startupPresentationAllowed = false;
         _shortcutDraft = null;
         _shortcutFeedback = null;
         _settingsError = null;
@@ -156,8 +158,16 @@ internal sealed class SettingsWindow : Window
         }
         finally { _closeDialog = null; }
     }
+    // Startup may finish after the user has closed settings or chosen another page.
+    // Only the first presentation may be automatic; normal user navigation still works.
+    public void ShowStartupPage()
+    {
+        if (_startupPresentationAllowed)
+            ShowPage("apps");
+    }
     public void ShowPage(string page = "general")
     {
+        _startupPresentationAllowed = false;
         _support?.CancelCheck();
         SessionMustEnd?.Invoke();
         _page = page;
@@ -542,7 +552,7 @@ internal sealed class SettingsWindow : Window
         if (row.PrimaryAction is { } primary)
         {
             var next = UiTheme.Button(primary.Label, () => Run(primary));
-            next.IsEnabled = primary.Id != ApplicationSupportAction.Refresh || _settings.Value.Enabled;
+            next.IsEnabled = primary.Id != ApplicationSupportAction.Refresh || _settings.Value.Enabled && _model.Ready;
             next.Margin = new(12, 0, 0, 0);
             DockPanel.SetDock(next, Dock.Right);
             header.Children.Add(next);
@@ -567,7 +577,7 @@ internal sealed class SettingsWindow : Window
         foreach (var action in row.SecondaryActions)
         {
             var button = UiTheme.Button(action.Label, () => Run(action));
-            button.IsEnabled = action.Id != ApplicationSupportAction.Refresh || _settings.Value.Enabled;
+            button.IsEnabled = action.Id != ApplicationSupportAction.Refresh || _settings.Value.Enabled && _model.Ready;
             button.HorizontalAlignment = HorizontalAlignment.Left;
             button.Margin = new(0, 8, 0, 0);
             detailsBody.Children.Add(button);
@@ -607,6 +617,7 @@ internal sealed class SettingsWindow : Window
             else
                 _ = Install();
         }, _install is null);
+        System.Windows.Automation.AutomationProperties.SetName(button, ApplicationSupportPresentation.Create([]).Labels.PrepareTranslation);
         button.Margin = new(0, 0, 8, 0);
         actions.Children.Add(button);
         var runtime = UiTheme.Button("微软运行库说明", () => OpenUri("https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist"));

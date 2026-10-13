@@ -193,6 +193,17 @@ jobs:
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
         run: ./dev.ps1 native-e2e
+      - name: Probe browser window identity (metadata only)
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pin = Get-Content tests/windows/fixtures/TypeLay.BrowserIdentityFixture/chrome-for-testing.json -Raw | ConvertFrom-Json
+          $archive = Join-Path $env:RUNNER_TEMP 'typelay-chrome-for-testing.zip'
+          Invoke-WebRequest -Uri $pin.archiveUrl -OutFile $archive -TimeoutSec 90
+          ./eng/windows/probe-browser-identity.ps1 -ChromeArchive $archive -ExpectedSha256 $pin.archiveSha256 -OutputPath artifacts/browser-identity/result.json
+          exit $LASTEXITCODE
       - name: Package and test the relocated distribution
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
@@ -204,6 +215,7 @@ jobs:
           path: |
             artifacts/test-results/
             artifacts/controller-trace.jsonl*
+            artifacts/browser-identity/result*.json
             artifacts/TypeLay-Windows-preview.zip
             artifacts/TypeLay-Windows-preview.zip.sha256
           if-no-files-found: warn

@@ -181,6 +181,56 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
     }
 
     [Fact]
+    public async Task StartupOpensApplicationSetupOnceAndPreservesDismissalAndNavigation()
+    {
+        await desktop.RunAsync(async () =>
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "typelay-startup-ui-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
+                // The real client has no installed files in this fresh private directory.
+                // This tests setup presentation, not a synthetic model or inference success.
+                using var model = new ModelClient(new(Path.Combine(directory, "python.exe"),
+                    Path.Combine(directory, "worker.py"), Path.Combine(directory, "models")), info => new ChildProcess(info));
+                Assert.False(model.Installed);
+                var window = new SettingsWindow(settings, model, () => Assert.Fail("Startup must not open a tutorial."), new WindowsApplicationSupport());
+                var view = ApplicationSupportPresentation.Create([]);
+                window.ShowStartupPage();
+                window.UpdateLayout();
+                Assert.True(window.IsVisible);
+                Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == view.Title);
+                var prepare = Descendants(window).OfType<Button>().Single(button =>
+                    AutomationProperties.GetName(button) == view.Labels.PrepareTranslation);
+                Assert.True(prepare.IsEnabled);
+                Assert.True(prepare.IsVisible);
+                var checks = Descendants(window).OfType<Button>().Where(button => Equals(button.Content, "检查连接")).ToArray();
+                Assert.NotEmpty(checks);
+                Assert.All(checks, button => Assert.False(button.IsEnabled));
+                Assert.False(Descendants(window).OfType<Button>().Single(button => Equals(button.Content, view.Labels.TryIt)).IsEnabled);
+                Assert.False(settings.Value.OnboardingComplete);
+                Assert.True(window.RequestClose());
+                await window.Dispatcher.InvokeAsync(window.ShowStartupPage, DispatcherPriority.Background);
+                Assert.False(window.IsVisible);
+                window.ShowPage("shortcuts");
+                window.UpdateLayout();
+                var editor = ShortcutEditor(window);
+                editor.Text = "Ctrl+Shift+U";
+                await window.Dispatcher.InvokeAsync(window.ShowStartupPage, DispatcherPriority.Background);
+                Assert.True(window.IsVisible);
+                Assert.Same(editor, ShortcutEditor(window));
+                Assert.Equal("Ctrl+Shift+U", editor.Text);
+                Assert.False(settings.Value.OnboardingComplete);
+            }
+            finally
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, true);
+            }
+        });
+    }
+
+    [Fact]
     public async Task UnsavedShortcutDraftSurvivesSettingsRefreshAndPageNavigation()
     {
         _elapsed.Start();
