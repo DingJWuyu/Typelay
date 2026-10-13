@@ -15,6 +15,8 @@
 
 GTK 非纯文本/非标准控件、Qt QTextEdit/富文本/自绘控件、Electron/VS Code 自动浮层、更广富文本和输入法事务能力仍是开发缺口，不能标成“只需真机验证”。终端/命令区按产品策略默认排除。GTK 父窗口定位契约见 [ADR-0004](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/linux/adr/0004-native-anchors.md)。
 
+当前候选 [61f51ca 的隔离验证](https://github.com/DingJWuyu/Typelay/actions/runs/38450976266)已通过构建、实际发行包与安装、首次引导、浏览器协议/DOM、合作输入事务、Firefox 真实模型桌面及 GTK3 桌面流程；GTK3/GTK4 显式快捷键在组合态拒绝且不改源文的反馈已有真实回归证据。该候选 Linux job 仍失败：GTK4 单次 Tab 在许可过期 9ms 时拒绝，Qt 单次 F10 的待捕获请求超期取消。Qt 后续场景未因此获得本轮通过证据。浏览器本轮接受成功，但同一稳定候选仍观测到续期空窗；不能把一次成功当作稳定性已解决。三条路径都保留原期限和实际输入法检查，不重发按键。
+
 快捷键默认在已连接的输入适配器中处理，也可将 niri 全局按键绑定到下述 --wake/--direct 命令。全局触发不会为没有输入后端的应用伪造读取或写入能力。
 
 ## 与 Windows 的功能对齐

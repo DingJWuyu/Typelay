@@ -1073,11 +1073,12 @@ class Settings:
         elif self.installation_state != "pausing":
             self.confirm_install(self.install_requested)
 
-    def installation(self, state, message):
+    def installation(self, state, message, button_label=None):
         self.installation_state = state
         self.message.set_text(message)
         self.install_button.set_label(
-            {"running": "暂停下载", "pausing": "正在暂停…", "paused": "继续下载"}.get(
+            button_label
+            or {"running": "暂停下载", "pausing": "正在暂停…", "paused": "继续下载"}.get(
                 state, "安装 / 修复组件…"
             )
         )

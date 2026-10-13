@@ -1091,7 +1091,7 @@ class InstallationFailureTests(unittest.TestCase):
             self.assertNotIn("Traceback", output.getvalue())
             return output.getvalue()
 
-    def test_network_failure_has_safe_diagnostics_and_an_actionable_next_step(self):
+    def test_network_failure_keeps_safe_diagnostics_when_presentation_is_unavailable(self):
         output = self.run_setup(
             urllib.error.URLError(
                 ConnectionResetError(errno.ECONNRESET, "https://private-token.example/private-path")
@@ -1100,17 +1100,15 @@ class InstallationFailureTests(unittest.TestCase):
         self.assertIn('"category":"network"', output)
         self.assertIn('"stage":"model-download"', output)
         self.assertIn(f'"errno":{errno.ECONNRESET}', output)
-        self.assertIn("检查网络", output)
-        self.assertIn("再次安装", output)
+        self.assertIn("无法读取安装结果说明", output)
 
-    def test_disk_space_failure_names_the_remedy_without_exposing_the_path(self):
+    def test_disk_space_failure_does_not_expose_the_path(self):
         output = self.run_setup(
             response=Response(b"model", headers={"Content-Length": 5}),
             write_error=OSError(errno.ENOSPC, "private-token", "/private-token/cache"),
         )
         self.assertIn('"category":"disk-space"', output)
         self.assertIn(f'"errno":{errno.ENOSPC}', output)
-        self.assertIn("释放", output)
         diagnostic = json.loads(
             next(line for line in output.splitlines() if line.startswith(setup.FAILURE_PREFIX))[
                 len(setup.FAILURE_PREFIX) :
@@ -1125,20 +1123,28 @@ class InstallationFailureTests(unittest.TestCase):
         )
         self.assertIn('"category":"integrity"', output)
         self.assertIn('"stage":"model-extract"', output)
-        self.assertIn("重新获取", output)
 
-    def test_permission_failure_has_a_separate_remedy(self):
+    def test_permission_failure_has_a_separate_diagnostic(self):
         output = self.run_setup(
             response=Response(b"model"), write_error=PermissionError(errno.EACCES, "private-token")
         )
         self.assertIn('"category":"permission"', output)
-        self.assertIn("写入权限", output)
 
     def test_failed_runtime_keeps_only_the_exit_code(self):
         output = self.run_setup(returncode=7)
         self.assertIn('"category":"runtime"', output)
         self.assertIn('"stage":"runtime"', output)
         self.assertIn('"exitCode":7', output)
+
+    def test_timeouts_remain_failures_rather_than_user_pauses(self):
+        for failure, category in (
+            (TimeoutError("private-token"), "network"),
+            (subprocess.TimeoutExpired("private-token", 1200), "runtime"),
+        ):
+            with self.subTest(category=category):
+                output = self.run_setup(failure)
+                self.assertIn(f'"category":"{category}"', output)
+                self.assertNotIn("已暂停", output)
 
     def test_unknown_exception_cannot_leak_its_type_or_message(self):
         class PrivateTokenException(Exception):
@@ -1147,7 +1153,7 @@ class InstallationFailureTests(unittest.TestCase):
         output = self.run_setup(PrivateTokenException("private-token source text"))
         self.assertIn('"category":"unknown"', output)
         self.assertNotIn("PrivateTokenException", output)
-        self.assertIn("原因尚未确定", output)
+        self.assertIn("无法读取安装结果说明", output)
 
     def test_failed_self_check_reports_runtime_without_claiming_model_corruption(self):
         for result in (
@@ -1198,7 +1204,7 @@ class InstallationFailureTests(unittest.TestCase):
                 self.assertIsNone(setup.failure_code(setup.FAILURE_PREFIX + json.dumps(payload)))
         self.assertIsNone(setup.failure_code("plain progress"))
         self.assertIsNone(setup.failure_code(setup.FAILURE_PREFIX + "private-token"))
-        self.assertNotIn("private-token", setup.failure_message("private-token"))
+        self.assertNotIn("private-token", setup.failure_message(None, "private-token"))
 
 
 class InstallationProcessTests(unittest.TestCase):
@@ -1278,13 +1284,101 @@ class InstallationProcessTests(unittest.TestCase):
                         process.wait(timeout=5)
 
 
+class PresentationProcessTests(unittest.TestCase):
+    def test_pause_during_failure_guidance_keeps_the_first_failure_and_previous_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "app").mkdir()
+            pid = home / "formatter-pid"
+            executable = home / "app/TypeLay.Linux"
+            executable.write_text(
+                f"#!{sys.executable}\n"
+                "import os, time\n"
+                "from pathlib import Path\n"
+                f"Path({str(pid)!r}).write_text(str(os.getpid()))\n"
+                "time.sleep(30)\n"
+            )
+            executable.chmod(0o700)
+            current = home / "data/components/previous"
+            current.mkdir(parents=True)
+            (current.parent / "current").symlink_to("previous")
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    str(ROOT / "src/linux/desktop/setup.py"),
+                    "--supervised",
+                    str(home),
+                    str(home / "data"),
+                    str(home / "cache"),
+                ],
+                env={**os.environ, "PATH": str(home / "no-uv")},
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                deadline = time.monotonic() + 3
+                while not pid.exists():
+                    self.assertLess(time.monotonic(), deadline, "failure formatter did not start")
+                    time.sleep(0.02)
+                process.terminate()
+                output, error = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 1, (output, error))
+                diagnostic = None
+                for line in output.decode().splitlines():
+                    diagnostic = setup.failure_code(line, diagnostic)
+                self.assertEqual(diagnostic, "runtime")
+                self.assertNotIn("已暂停", output.decode())
+                self.assertFalse(Path(f"/proc/{int(pid.read_text())}").exists())
+                self.assertEqual(os.readlink(current.parent / "current"), "previous")
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                process.stdout.close()
+                process.stderr.close()
+
+    def test_bounded_presentation_failures_reap_the_formatter_without_leaking_output(self):
+        for oversized in (False, True):
+            with self.subTest(oversized=oversized), tempfile.TemporaryDirectory() as directory:
+                home = Path(directory)
+                (home / "app").mkdir()
+                pid = home / "pid"
+                executable = home / "app/TypeLay.Linux"
+                executable.write_text(
+                    f"#!{sys.executable}\n"
+                    "import os, sys, time\n"
+                    "from pathlib import Path\n"
+                    f"Path({str(pid)!r}).write_text(str(os.getpid()))\n"
+                    + (
+                        "sys.stdout.write('private-token' * 2000); sys.stdout.flush()\n"
+                        if oversized
+                        else ""
+                    )
+                    + "time.sleep(30)\n"
+                )
+                executable.chmod(0o700)
+                started = time.monotonic()
+                message = setup.failure_message(home, "network")
+                self.assertLess(time.monotonic() - started, 10, "formatter exceeded its deadline")
+                self.assertIn("无法读取安装结果说明", message)
+                self.assertNotIn("private-token", message)
+                self.assertFalse(Path(f"/proc/{int(pid.read_text())}").exists())
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(add_help=False)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--http", action="store_true")
     mode.add_argument("--supervisor", type=Path)
     options, remaining = parser.parse_known_args()
-    suite = ["DownloadTests", "InstallationFailureTests", "ApplicationSupportTests"]
+    suite = [
+        "DownloadTests",
+        "InstallationFailureTests",
+        "ApplicationSupportTests",
+        "PresentationProcessTests",
+    ]
     if options.http:
         suite = "HTTPDownloadTests"
     elif options.supervisor:

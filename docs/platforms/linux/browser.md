@@ -18,6 +18,14 @@ Chrome 新标签页中央的 Google / Ask Google 搜索框与 google.com 普通�
 
 浮层使用文档视口坐标，在当前页面的封闭 Shadow Root 中呈现，不推算 Wayland 全局坐标、不推动页面布局。浏览器窗口/标签页失焦、字段隐藏、租约到期或 host 断开时撤下。根元素经过变换而无法可靠映射固定定位时拒绝使用。
 
+## 接受时效与诊断
+
+可见译文不保证当前 Tab 仍有有效许可。真实 Firefox 链路仍出现稳定候选续期空窗；许可过期时保留原文并透传 Tab，不自动重放。61f51ca 的普通与单段富文本接受通过，同轮较早稳定候选仍有 54ms 空窗，故当前不能承诺连续可接受。页面主线程停顿也可能让提示的实际绘制晚于逻辑失效。
+
+现有 trace 在同一 capture 回复附带页面执行耗时、native host 收件和 desktop 分派时间，不增加 RPC。页面值是局部 duration；后两项是同机 BOOTTIME。Tab 诊断关联实际 publication round，并保留同 peer 最近两个在途 round 的后续结果；这些数字不授予权限，也不含正文或目标身份。所分析的 Firefox 捕获样本中，页面执行为 1–5ms，host 收件到 desktop 分派为 0–2ms；仍有 capture 请求等待 213ms 的长尾。长尾在 host 收到 capture 回复之前，尚不能细分发送、浏览器路由与调度，不能归因于正文扫描或 desktop 收件后的队列。`snapshotAtMs` 是校准下界，不能与 host 时间相减后冒称精确回程延迟。
+
+自动模式不再发布禁用的 F9/F10 观察；模式变更仍立即撤销旧观察并发送新配置，按需模式继续使用新 generation。这只减少无效消息，不保证消除浏览器调度长尾。不能让页面自行延长旧许可来代替宿主的新鲜观察与策略批准。
+
 ## 显式安装
 
 先安装 Linux 发行包并启动 TypeLay。扩展源码随包放在 `browser/firefox` 与 `browser/chromium`，两者均包含对应 `manifest.json`。保持这个发行目录可用；浏览器加载解压扩展后会引用其文件。

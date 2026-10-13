@@ -17,8 +17,12 @@ internal sealed class SettingsWindow : Window
     private readonly StackPanel _nav;
     private readonly Action _openTutorial;
     private readonly WindowsApplicationSupport? _support;
+    private readonly Func<ModelInstaller> _createInstaller;
     private readonly SettingsDraftMessages _draftMessages = SettingsDraftPresentation.Create();
     private string _page = "general", _setupStatus = "";
+    private SetupFailureView? _setupFailure, _setupRecoveryFailure;
+    private string? _setupFailureStage;
+    private bool _setupPaused, _startingModel;
     private string? _renderedPage, _shortcutFeedback;
     private string? _settingsError;
     private (string Wake, string Direct)? _shortcutDraft;
@@ -35,12 +39,14 @@ internal sealed class SettingsWindow : Window
     private ProgressBar? _progress;
     private TextBlock? _progressLabel;
     public Action? SessionMustEnd;
-    public SettingsWindow(SettingsStore settings, ModelClient model, Action openTutorial, WindowsApplicationSupport? support = null)
+    public SettingsWindow(SettingsStore settings, ModelClient model, Action openTutorial, WindowsApplicationSupport? support = null,
+        Func<ModelInstaller>? createInstaller = null)
     {
         _settings = settings;
         _model = model;
         _openTutorial = openTutorial;
         _support = support;
+        _createInstaller = createInstaller ?? (() => new ModelInstaller());
         Title = "TypeLay 设置";
         Width = 944;
         Height = 674;
@@ -610,32 +616,57 @@ internal sealed class SettingsWindow : Window
         _progress = new ProgressBar { Minimum = 0, Maximum = 100, Height = 5, Margin = new(0, 9, 0, 12), IsIndeterminate = _install is not null };
         panel.Children.Add(_progress);
         var actions = new StackPanel { Orientation = Orientation.Horizontal };
-        var button = UiTheme.Button(_install is not null ? "暂停下载" : _model.Installed ? "重新安装 / 修复" : "检查并准备", () =>
+        string prepareLabel = _startingModel ? "正在启动翻译…" : _install is not null ? "暂停下载" : _setupPaused ? SetupFailurePresentation.ResumeLabel
+            : _setupFailure?.RetryLabel ?? (_model.Installed ? "重新安装 / 修复" : "检查并准备");
+        var button = UiTheme.Button(prepareLabel, () =>
         {
             if (_install is not null)
                 _install.Cancel();
             else
                 _ = Install();
         }, _install is null);
+        button.IsEnabled = !_startingModel;
         button.Margin = new(0, 0, 8, 0);
         actions.Children.Add(button);
         var runtime = UiTheme.Button("微软运行库说明", () => OpenUri("https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist"));
         actions.Children.Add(runtime);
         panel.Children.Add(actions);
+        if (_setupFailure is { } failure)
+        {
+            var details = new Expander
+            {
+                Header = "安装诊断",
+                Margin = new(0, 10, 0, 0),
+                Content = UiTheme.Text($"错误类别：{failure.Code}\n安装阶段：{_setupFailureStage}"
+                    + (_setupRecoveryFailure is { } recovery ? $"\n恢复阻塞：{recovery.Code}" : ""), 11, true)
+            };
+            panel.Children.Add(details);
+        }
         var border = UiTheme.Border(panel, 13, "Panel2", 14);
         border.Margin = new(0, 0, 0, 16);
         _content.Children.Add(border);
     }
     private async Task Install()
     {
+        if (_install is not null)
+            return;
         SessionMustEnd?.Invoke();
         _model.Dispose();
-        _install = new CancellationTokenSource();
+        using var operation = new CancellationTokenSource();
+        _install = operation;
+        _setupFailure = null;
+        _setupRecoveryFailure = null;
+        _setupFailureStage = null;
+        _setupPaused = false;
+        _setupStatus = "正在准备本地翻译组件…";
+        bool acceptingProgress = true;
         Refresh();
         try
         {
             var progress = new Progress<SetupProgress>(update =>
             {
+                if (!acceptingProgress || !ReferenceEquals(_install, operation) || operation.IsCancellationRequested)
+                    return;
                 _setupStatus = update.Label + (update.Downloaded > 0 ? $" · {update.Downloaded / 1048576.0:F1} MB" : "");
                 if (_progressLabel is not null)
                     _progressLabel.Text = _setupStatus;
@@ -646,7 +677,12 @@ internal sealed class SettingsWindow : Window
                         _progress.Value = 100.0 * update.Downloaded / update.Total.Value;
                 }
             });
-            await new ModelInstaller().InstallAsync(progress, _install.Token);
+            await _createInstaller().InstallAsync(progress, operation.Token);
+            acceptingProgress = false;
+            operation.Token.ThrowIfCancellationRequested();
+            _startingModel = true;
+            _setupStatus = "正在启动本地翻译…";
+            Refresh();
             await _model.StartAsync();
             if (_model.Ready)
             {
@@ -656,13 +692,29 @@ internal sealed class SettingsWindow : Window
                 });
                 _setupStatus = "本地翻译已就绪。可打开实操教程。";
             }
+            else
+                SetupFailed(SetupFailureCategory.Runtime, "ModelStart");
         }
-        catch (OperationCanceledException) { _setupStatus = "下载已暂停，已下载的部分会保留。再次点击继续。"; }
+        catch (OperationCanceledException) when (operation.IsCancellationRequested)
+        {
+            _setupPaused = true;
+            _setupStatus = SetupFailurePresentation.PausedMessage;
+        }
+        catch (ModelSetupException failure) { SetupFailed(failure.Category, failure.Stage.ToString(), failure.RecoveryFailureCategory); }
+        catch (OperationCanceledException) { SetupFailed(SetupFailureCategory.Runtime, "Preparation"); }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
-            _setupStatus = "准备未完成。网络、下载完整性或本地 CPU 自检失败；缺少 VC++ x64 运行库时请先安装微软官方组件，再重试。";
+            SetupFailed(SetupFailureCategory.Unknown, "Preparation");
         }
-        finally { _install?.Dispose(); _install = null; Refresh(); }
+        finally { acceptingProgress = false; _startingModel = false; _install = null; Refresh(); }
+    }
+    private void SetupFailed(SetupFailureCategory category, string stage, SetupFailureCategory? recovery = null)
+    {
+        _setupFailure = SetupFailurePresentation.Create(category);
+        _setupRecoveryFailure = recovery is { } blocked ? SetupFailurePresentation.Create(blocked) : null;
+        _setupFailureStage = stage;
+        _setupStatus = _setupFailure.Message + "\n" + (_setupRecoveryFailure is { } obstruction
+            ? obstruction.Message + "\n" + obstruction.NextStep : _setupFailure.NextStep);
     }
     private void Glossary()
     {

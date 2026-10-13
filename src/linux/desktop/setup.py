@@ -12,6 +12,7 @@ import http.client
 import json
 import os
 import re
+import select
 import shutil
 import signal
 import stat
@@ -34,14 +35,8 @@ MAX_ARCHIVE = 1024 * 1024 * 1024
 
 
 FAILURE_PREFIX = "TYPELAY_SETUP_FAILURE="
-FAILURE_MESSAGES = {
-    "network": "模型下载连接失败。请检查网络或代理后再次安装；已验证的下载进度可继续使用。",
-    "disk-space": "组件安装空间不足。请释放安装位置和下载缓存所在磁盘的空间后再次安装。",
-    "integrity": "组件校验失败。请再次安装以重新获取损坏的模型；若仍失败，请检查安装包来源。",
-    "permission": "组件文件无法写入。请检查安装位置和下载缓存的写入权限后再次安装。",
-    "runtime": "翻译运行环境安装或自检失败。请确认 uv 可用后再次安装；若仍失败，请提供安装诊断信息。",
-    "unknown": "组件安装失败，原因尚未确定。请再次安装；若仍失败，请提供安装诊断信息。",
-}
+FAILURE_CODES = {"network", "disk-space", "integrity", "permission", "runtime", "unknown"}
+PRESENTATION_UNAVAILABLE = "无法读取安装结果说明，请重新启动 TypeLay 后重试。"
 FAILURE_STAGES = {
     "prepare",
     "runtime",
@@ -54,8 +49,65 @@ FAILURE_STAGES = {
 }
 
 
-def failure_message(code):
-    return FAILURE_MESSAGES.get(code, FAILURE_MESSAGES["unknown"]) + "原可用版本保持不变。"
+def setup_presentation(home, code=None):
+    """Read shared copy from this package's host without starting a desktop or model."""
+    executable = home / "app/TypeLay.Linux" if home is not None else None
+    if executable is None or not executable.is_file():
+        return None
+    try:
+        # Reading failure guidance must still work when the disk is full.
+        process = subprocess.Popen(
+            [str(executable), "--setup-presentation", code if code in FAILURE_CODES else "unknown"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            encoded = bytearray()
+            deadline = time.monotonic() + 3
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not select.select([process.stdout], [], [], remaining)[0]:
+                    return None
+                part = os.read(process.stdout.fileno(), min(4096, 16385 - len(encoded)))
+                if not part:
+                    break
+                encoded.extend(part)
+                if len(encoded) > 16384:
+                    return None
+            if process.wait(timeout=max(0, deadline - time.monotonic())) != 0:
+                return None
+        finally:
+            try:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=1)
+            finally:
+                process.stdout.close()
+        value = json.loads(encoded)
+        failure = value["failure"]
+        if (
+            failure["code"] not in FAILURE_CODES
+            or any(
+                not isinstance(failure[key], str) or not failure[key]
+                for key in ("message", "nextStep", "retryLabel")
+            )
+            or any(
+                not isinstance(value[key], str) or not value[key]
+                for key in ("pausedMessage", "resumeLabel")
+            )
+        ):
+            return None
+        return value
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        return None
+
+
+def failure_message(home, code):
+    value = setup_presentation(home, code)
+    if value is None:
+        return PRESENTATION_UNAVAILABLE
+    failure = value["failure"]
+    return failure["message"] + "\n" + failure["nextStep"]
 
 
 def failure_code(line, previous=None):
@@ -68,7 +120,7 @@ def failure_code(line, previous=None):
         value = json.loads(line[len(FAILURE_PREFIX) :])
         if (
             not isinstance(value, dict)
-            or value.get("category") not in FAILURE_MESSAGES
+            or value.get("category") not in FAILURE_CODES
             or value.get("stage") not in FAILURE_STAGES
             or set(value)
             - {"category", "stage", "errno", "exitCode", "dataFreeBytes", "cacheFreeBytes"}
@@ -84,7 +136,7 @@ def failure_code(line, previous=None):
         return None
 
 
-def report_failure(error, stage="prepare", data=None, cache=None):
+def report_failure(error, stage="prepare", data=None, cache=None, home=None):
     cause = error.reason if isinstance(error, urllib.error.URLError) else error
     number = cause.errno if isinstance(cause, OSError) else None
     category = "unknown"
@@ -120,8 +172,9 @@ def report_failure(error, stage="prepare", data=None, cache=None):
                 pass
     try:
         print(FAILURE_PREFIX + json.dumps(diagnostic, separators=(",", ":")), flush=True)
-        print(failure_message(category), flush=True)
-    except OSError:
+        print(failure_message(home, category), flush=True)
+    except (OSError, Paused):
+        # Once the failure is reported, a late pause cannot replace its outcome.
         pass
 
 
@@ -541,7 +594,7 @@ def install(home, data, cache):
     except Paused:
         raise
     except Exception as error:
-        report_failure(error, stage, data, cache)
+        report_failure(error, stage, data, cache, home)
         return 1
     finally:
         # A stop between the atomic rename and the next Python instruction must
@@ -554,11 +607,13 @@ def install(home, data, cache):
 
 if __name__ == "__main__":
     os.umask(0o077)
+    home = None
     try:
         supervised = len(sys.argv) == 5 and sys.argv[1] == "--supervised"
         arguments = sys.argv[2:] if supervised else sys.argv[1:]
         if len(arguments) != 3 or any(not Path(value).is_absolute() for value in arguments):
             raise ValueError("setup-arguments")
+        home = Path(arguments[0])
         if not supervised:
             # Exactly one process-family owner for GUI, CLI and explicit setup
             # invocations. Nested supervisors have independent sessions and
@@ -581,8 +636,11 @@ if __name__ == "__main__":
         signal.signal(signal.SIGINT, pause)
         raise SystemExit(install(*(Path(value) for value in arguments)))
     except Paused:
-        print("安装已暂停，已验证的下载进度会保留。再次安装可继续，原版本保持不变。", flush=True)
+        presentation = setup_presentation(home)
+        print(
+            presentation["pausedMessage"] if presentation else PRESENTATION_UNAVAILABLE, flush=True
+        )
         raise SystemExit(75) from None
     except Exception as error:
-        report_failure(error)
+        report_failure(error, home=home)
         raise SystemExit(1) from None

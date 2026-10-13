@@ -3,6 +3,8 @@
 import fcntl
 import json
 import os
+import socket
+import struct
 import subprocess
 import sys
 import tarfile
@@ -61,6 +63,126 @@ class DistributionTests(unittest.TestCase):
 
     def assert_success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_setup_failures_explain_next_steps_without_starting_the_desktop(self):
+        for category, remedy in (
+            ("network", "网络"),
+            ("disk-space", "空间"),
+            ("integrity", "重新"),
+            ("permission", "权限"),
+            ("runtime", "重新"),
+            ("private-token", "诊断"),
+        ):
+            with self.subTest(category=category):
+                result = subprocess.run(
+                    [str(self.package / "app/TypeLay.Linux"), "--setup-presentation", category],
+                    cwd=self.home,
+                    env=self.env,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                self.assert_success(result)
+                self.assertNotIn("private-token", result.stdout + result.stderr)
+                presentation = json.loads(result.stdout)
+                failure = presentation["failure"]
+                self.assertEqual(
+                    failure["code"], "unknown" if category == "private-token" else category
+                )
+                self.assertTrue(failure["message"])
+                self.assertIn(remedy, failure["nextStep"])
+                self.assertTrue(failure["retryLabel"])
+                self.assertTrue(presentation["pausedMessage"])
+                self.assertTrue(presentation["resumeLabel"])
+        self.assertFalse(any(self.home.iterdir()), "reading setup feedback created user state")
+
+    def test_failed_setup_uses_shared_guidance_and_keeps_the_previous_version(self):
+        current = self.home / "data/typelay/components/previous"
+        current.mkdir(parents=True)
+        (current / "retained").write_text("previous usable version")
+        (current.parent / "current").symlink_to("previous")
+        for _ in range(2):
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    str(self.package / "desktop/setup.py"),
+                    str(self.package),
+                    str(self.home / "data/typelay"),
+                    str(self.home / "cache/typelay"),
+                ],
+                # No uv on this isolated path: fail at the real runtime boundary
+                # before any download, then exercise the packaged presentation host.
+                env={**self.env, "PATH": str(self.home / "empty-bin")},
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('"category":"runtime"', result.stdout)
+            self.assertIn("重新准备本地翻译组件", result.stdout)
+            self.assertIn("安装诊断", result.stdout)
+            self.assertNotIn(str(self.home), result.stdout + result.stderr)
+            self.assertNotIn("Traceback", result.stdout + result.stderr)
+            self.assertEqual(os.readlink(current.parent / "current"), "previous")
+            self.assertEqual((current / "retained").read_text(), "previous usable version")
+
+    def test_desktop_setup_feedback_uses_the_same_shared_presentation(self):
+        parent, child = socket.socketpair()
+        parent.settimeout(5)
+        process = None
+
+        def receive(length):
+            result = bytearray()
+            while len(result) < length:
+                part = parent.recv(length - len(result))
+                self.assertTrue(part, "desktop host closed before setup feedback")
+                result.extend(part)
+            return result
+
+        try:
+            process = subprocess.Popen(
+                [
+                    str(self.package / "app/TypeLay.Linux"),
+                    str(self.package),
+                    str(self.home / "config"),
+                    str(self.home / "data"),
+                ],
+                stdin=child,
+                stdout=child,
+                stderr=subprocess.DEVNULL,
+                env=self.env,
+            )
+            child.close()
+            for identity, category in enumerate(("network", "unknown", "private-token"), 1):
+                request = json.dumps(
+                    {"id": identity, "op": "setupFailure", "data": category}
+                ).encode()
+                parent.sendall(struct.pack("<I", len(request)) + request)
+                length = struct.unpack("<I", receive(4))[0]
+                self.assertLessEqual(length, 16384)
+                response = json.loads(receive(length))
+                self.assertEqual(response["reply"], identity)
+                cli = subprocess.run(
+                    [str(self.package / "app/TypeLay.Linux"), "--setup-presentation", category],
+                    env=self.env,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                self.assert_success(cli)
+                self.assertEqual(response["data"], json.loads(cli.stdout))
+                self.assertNotIn("private-token", json.dumps(response))
+        finally:
+            parent.close()
+            child.close()
+            if process is not None:
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
 
     def test_shipped_runtime_includes_its_upstream_license_and_notices(self):
         dependencies = json.loads((self.package / "app/TypeLay.Linux.deps.json").read_text())

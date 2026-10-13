@@ -15,6 +15,11 @@ internal static class Program
             Console.WriteLine("TypeLay Linux preview 0.2.0");
             return 0;
         }
+        if (args is ["--setup-presentation", var failureCode])
+        {
+            Console.WriteLine(JsonSerializer.Serialize(SetupPresentation(failureCode), DesktopLink.Json));
+            return 0;
+        }
         if (OperatingSystem.IsLinux() && args is ["--editor-host", var editorHome, var editorConfig, var editorData]
             && args.Skip(1).All(Path.IsPathFullyQualified))
             return EditorHost.Run(editorHome, editorConfig, editorData).GetAwaiter().GetResult();
@@ -94,6 +99,8 @@ internal static class Program
                     return view.BeginEditing?.Invoke() ?? false;
                 case "settingsDraft":
                     return SettingsDraftPresentation.Create();
+                case "setupFailure":
+                    return SetupPresentation(value.ValueKind == JsonValueKind.String ? value.GetString() : null);
                 case "applicationSupport":
                     // The desktop owns detection and explicit installation actions.
                     // Reading this view never starts either of them.
@@ -131,6 +138,13 @@ internal static class Program
             return 1;
         }
     }
+    private static object SetupPresentation(string? code) => new
+    {
+        Failure = SetupFailurePresentation.FromCode(code),
+        SetupFailurePresentation.PausedMessage,
+        SetupFailurePresentation.ResumeLabel
+    };
+
     private static void SetStartup(bool enabled, string home, string config)
     {
         string directory = Path.Combine(Path.GetDirectoryName(config)!, "autostart");

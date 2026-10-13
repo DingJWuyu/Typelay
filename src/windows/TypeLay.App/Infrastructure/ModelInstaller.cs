@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text.Json;
+using TypeLay.Runtime;
 namespace TypeLay.App;
 
 internal sealed record SetupProgress(string Label, long Downloaded = 0, long? Total = null);
@@ -13,25 +14,37 @@ internal sealed record DownloadLock(string Name, string Version, string Url, str
 /// <summary>Only this explicit setup path has network access. It never receives source or candidate text.</summary>
 internal sealed class ModelInstaller
 {
-    private readonly string _data, _worker, _cache;
+    private readonly string _data, _worker, _cache, _localPackages;
     private string Runtime => Path.Combine(_data, "runtime");
     private string Models => Path.Combine(_data, "models");
     private string Python => Path.Combine(Runtime, "python", "tools", "python.exe");
 
     public ModelInstaller() : this(AppPaths.Data, AppPaths.Worker) { }
-    internal ModelInstaller(string data, string worker)
+    internal ModelInstaller(string data, string worker, HttpMessageHandler? handler = null,
+        TimeSpan? downloadTimeout = null, Func<ProcessStartInfo, IChildProcess>? startProcess = null,
+        TimeSpan? selfCheckTimeout = null, string? localPackages = null)
     {
         _data = Path.GetFullPath(data);
         _worker = Path.GetFullPath(worker);
         _cache = Path.Combine(_data, "downloads");
+        _localPackages = localPackages ?? DefaultLocalPackages;
+        _http = new HttpClient(handler ?? new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression = DecompressionMethods.All
+        })
+        {
+            Timeout = downloadTimeout ?? TimeSpan.FromMinutes(15)
+        };
+        _startProcess = startProcess ?? (start => new ChildProcess(start));
+        _selfCheckTimeout = selfCheckTimeout ?? TimeSpan.FromMinutes(3);
     }
 
     private static readonly HashSet<string> AllowedHosts = new(StringComparer.OrdinalIgnoreCase)
     { "api.nuget.org", "globalcdn.nuget.org", "pypi.org", "files.pythonhosted.org", "argos-net.com" };
-    private readonly HttpClient _http = new(new HttpClientHandler { AllowAutoRedirect = false, AutomaticDecompression = DecompressionMethods.All })
-    {
-        Timeout = TimeSpan.FromMinutes(15)
-    };
+    private readonly HttpClient _http;
+    private readonly Func<ProcessStartInfo, IChildProcess> _startProcess;
+    private readonly TimeSpan _selfCheckTimeout;
     private readonly List<DownloadLock> _locks = [];
     private static readonly (string Name, string Version)[] Wheels =
     [("numpy", "2.3.5"), ("PyYAML", "6.0.3"), ("setuptools", "80.9.0"),
@@ -39,17 +52,22 @@ internal sealed class ModelInstaller
     private static readonly string[] ModelFiles =
     ["metadata.json", "sentencepiece.model", "model/config.json", "model/model.bin", "model/shared_vocabulary.json"];
 
-    public static bool HasReusableLocalModels => FindLocalPackage("zh_en", AppPaths.Models) is not null
-        && FindLocalPackage("en_zh", AppPaths.Models) is not null;
+    private static string DefaultLocalPackages => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share", "argos-translate", "packages");
+    public static bool HasReusableLocalModels => FindLocalPackage("zh_en", AppPaths.Models, DefaultLocalPackages) is not null
+        && FindLocalPackage("en_zh", AppPaths.Models, DefaultLocalPackages) is not null;
 
     public async Task InstallAsync(IProgress<SetupProgress> progress, CancellationToken ct)
     {
-        Directory.CreateDirectory(_cache);
-        Directory.CreateDirectory(Runtime);
         string staging = Path.Combine(_data, "staging", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(staging);
+        var stage = ModelSetupStage.Prepare;
         try
         {
+            ct.ThrowIfCancellationRequested();
+            Directory.CreateDirectory(_cache);
+            Directory.CreateDirectory(Runtime);
+            Directory.CreateDirectory(staging);
+            stage = ModelSetupStage.Runtime;
             const string pythonVersion = "3.13.16";
             progress.Report(new("读取 CPython 官方包元数据"));
             using var index = await Json(new Uri("https://api.nuget.org/v3/index.json"), ct);
@@ -77,7 +95,7 @@ internal sealed class ModelInstaller
             }
             string pythonStage = Path.Combine(staging, "python");
             progress.Report(new("准备私有运行组件"));
-            await Task.Run(() => Extract(pythonZip, pythonStage, ct), ct);
+            await Task.Run(() => Extract(pythonZip, pythonStage, stage, ct), ct);
             if (!File.Exists(Path.Combine(pythonStage, "tools", "python.exe")))
                 throw new InvalidDataException("python-layout");
             string pythonTarget = Path.Combine(Runtime, "python");
@@ -85,6 +103,7 @@ internal sealed class ModelInstaller
             _locks.Add(new("python", pythonVersion, pythonUrl, await Hash(pythonZip, ct)));
             string site = Path.Combine(pythonTarget, "tools", "Lib", "site-packages");
             Directory.CreateDirectory(site);
+            stage = ModelSetupStage.Dependencies;
             foreach (var (name, version) in Wheels)
             {
                 ct.ThrowIfCancellationRequested();
@@ -98,7 +117,7 @@ internal sealed class ModelInstaller
                 string filename = wheel.GetProperty("filename").GetString()!, url = wheel.GetProperty("url").GetString()!;
                 string checksum = wheel.GetProperty("digests").GetProperty("sha256").GetString()!;
                 string archive = await Download(url, filename, checksum, "下载本地组件 · " + name, progress, ct);
-                await Task.Run(() => Extract(archive, site, ct), ct);
+                await Task.Run(() => Extract(archive, site, stage, ct), ct);
                 _locks.Add(new(name, version, url, checksum));
             }
             string modelStage = Path.Combine(staging, "models");
@@ -106,33 +125,50 @@ internal sealed class ModelInstaller
             foreach (string pair in new[] { "zh_en", "en_zh" })
             {
                 string dest = Path.Combine(modelStage, pair);
+                stage = ModelSetupStage.ModelVerify;
                 if (await TryStageLocalModel(pair, dest, progress, ct))
                     continue;
+                stage = ModelSetupStage.ModelDownload;
                 string modelUrl = $"https://argos-net.com/v1/translate-{pair}-1_9.argosmodel";
                 string archive = await Download(modelUrl, pair + "-1.9.argosmodel", null,
                     pair == "zh_en" ? "下载中文 → English 模型" : "下载 English → 中文模型", progress, ct);
                 // Argos publishes no archive checksum for these entries. HTTPS is the first-install
                 // authenticity boundary; the observed SHA is recorded, not misrepresented as upstream-pinned.
                 string extraction = Path.Combine(staging, pair);
-                await Task.Run(() => Extract(archive, extraction, ct), ct);
-                var metadataPaths = Directory.GetFiles(extraction, "metadata.json", SearchOption.AllDirectories);
-                if (metadataPaths.Length != 1)
-                    throw new InvalidDataException("model-layout");
-                using var metadata = JsonDocument.Parse(await File.ReadAllTextAsync(metadataPaths[0], ct));
-                var parts = pair.Split('_');
-                if (metadata.RootElement.GetProperty("from_code").GetString() != parts[0]
-                    || metadata.RootElement.GetProperty("to_code").GetString() != parts[1])
-                    throw new InvalidDataException("model-direction");
-                string package = Path.GetDirectoryName(metadataPaths[0])!;
-                if (!File.Exists(Path.Combine(package, "model", "model.bin"))
-                    || !File.Exists(Path.Combine(package, "sentencepiece.model")))
-                    throw new InvalidDataException("model-layout");
+                stage = ModelSetupStage.ModelExtract;
+                await Task.Run(() => Extract(archive, extraction, stage, ct), ct);
+                stage = ModelSetupStage.ModelVerify;
+                string package;
+                try
+                {
+                    var metadataPaths = Directory.GetFiles(extraction, "metadata.json", SearchOption.AllDirectories);
+                    if (metadataPaths.Length != 1)
+                        throw new InvalidDataException("model-layout");
+                    using var metadata = JsonDocument.Parse(await File.ReadAllTextAsync(metadataPaths[0], ct));
+                    var parts = pair.Split('_');
+                    if (metadata.RootElement.GetProperty("from_code").GetString() != parts[0]
+                        || metadata.RootElement.GetProperty("to_code").GetString() != parts[1]
+                        || metadata.RootElement.GetProperty("package_version").GetString() != "1.9")
+                        throw new InvalidDataException("model-direction");
+                    package = Path.GetDirectoryName(metadataPaths[0])!;
+                    foreach (string relative in ModelFiles)
+                        RequireModelFile(Path.Combine(package, relative));
+                }
+                catch (Exception error) when (error is InvalidDataException or JsonException
+                    or KeyNotFoundException or InvalidOperationException)
+                {
+                    // A complete but unusable Argos archive must not poison every explicit retry.
+                    // Storage failures and cancellation do not establish that its bytes are bad.
+                    throw new ModelSetupException(SetupFailureCategory.Integrity, stage,
+                        DeleteDamagedArchive(archive));
+                }
                 Directory.CreateDirectory(dest);
                 Directory.Move(Path.Combine(package, "model"), Path.Combine(dest, "model"));
                 foreach (string file in Directory.GetFiles(package))
                     File.Copy(file, Path.Combine(dest, Path.GetFileName(file)), true);
                 _locks.Add(new("argos-" + pair, "1.9", modelUrl, await Hash(archive, ct)));
             }
+            stage = ModelSetupStage.ModelVerify;
             progress.Report(new("校验模型并执行真实 CPU 翻译自检"));
             var files = new List<object>();
             foreach (string file in Directory.GetFiles(modelStage, "*", SearchOption.AllDirectories))
@@ -148,6 +184,7 @@ internal sealed class ModelInstaller
                 files,
                 dependencies = _locks
             }, new JsonSerializerOptions { WriteIndented = true }), ct);
+            stage = ModelSetupStage.SelfCheck;
             var start = new ProcessStartInfo(Python)
             {
                 UseShellExecute = false,
@@ -162,10 +199,10 @@ internal sealed class ModelInstaller
             start.ArgumentList.Add("--models");
             start.ArgumentList.Add(modelStage);
             start.ArgumentList.Add("--self-check");
-            using (var child = new ChildProcess(start))
+            using (var child = _startProcess(start))
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                timeout.CancelAfter(TimeSpan.FromMinutes(3));
+                timeout.CancelAfter(_selfCheckTimeout);
                 string result = await child.Process.StandardOutput.ReadToEndAsync(timeout.Token);
                 await child.Process.WaitForExitAsync(timeout.Token);
                 if (child.Process.ExitCode != 0 || result.Length > 16384)
@@ -175,10 +212,16 @@ internal sealed class ModelInstaller
                     throw new InvalidDataException("cpu-self-check-failed");
                 await File.WriteAllTextAsync(Path.Combine(_data, "setup-self-check.json"), result, ct);
             }
+            stage = ModelSetupStage.Activate;
             Promote(modelStage, Models);
             await File.WriteAllTextAsync(Path.Combine(_data, "dependency-lock.json"),
                 JsonSerializer.Serialize(_locks, new JsonSerializerOptions { WriteIndented = true }), ct);
             progress.Report(new("模型已安装并通过本机 CPU 自检"));
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            throw ModelSetupException.From(error, stage);
         }
         finally
         {
@@ -192,12 +235,11 @@ internal sealed class ModelInstaller
             catch (UnauthorizedAccessException) { }
         }
     }
-    private static string? FindLocalPackage(string pair, string models)
+    private static string? FindLocalPackage(string pair, string models, string localPackages)
     {
-        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         string[] candidates =
         [Path.Combine(models, pair),
-         Path.Combine(home, ".local", "share", "argos-translate", "packages", $"translate-{pair}-1_9")];
+         Path.Combine(localPackages, $"translate-{pair}-1_9")];
         foreach (string source in candidates)
         {
             try
@@ -233,7 +275,7 @@ internal sealed class ModelInstaller
     }
     private async Task<bool> TryStageLocalModel(string pair, string destination, IProgress<SetupProgress> progress, CancellationToken ct)
     {
-        string? source = FindLocalPackage(pair, Models);
+        string? source = FindLocalPackage(pair, Models, _localPackages);
         if (source is null)
             return false;
         progress.Report(new(pair == "zh_en" ? "复用本机中文 → English 模型" : "复用本机 English → 中文模型"));
@@ -314,7 +356,7 @@ internal sealed class ModelInstaller
             }
             return response;
         }
-        throw new IOException("redirect-limit");
+        throw new HttpRequestException("redirect-limit");
     }
     private async Task<string> Download(string url, string name, string? expectedHash, string label,
         IProgress<SetupProgress> progress, CancellationToken ct)
@@ -367,7 +409,7 @@ internal sealed class ModelInstaller
             progress.Report(new(label, offset, total));
         }
         if (total is { } expectedLength && offset != expectedLength)
-            throw new IOException("download-incomplete");
+            throw new HttpRequestException("download-incomplete");
         if (expectedHash is not null && !(await Hash(partial, ct)).Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
         {
             File.Delete(partial);
@@ -376,18 +418,45 @@ internal sealed class ModelInstaller
         File.Move(partial, destination, true);
         return destination;
     }
+    private static void RequireModelFile(string path)
+    {
+        try
+        {
+            if ((File.GetAttributes(path) & FileAttributes.Directory) != 0 || new FileInfo(path).Length == 0)
+                throw new InvalidDataException("model-layout");
+        }
+        catch (Exception error) when (error is FileNotFoundException or DirectoryNotFoundException)
+        {
+            throw new InvalidDataException("model-layout");
+        }
+    }
+    private static SetupFailureCategory? DeleteDamagedArchive(string archive)
+    {
+        try
+        {
+            File.Delete(archive);
+            return null;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            return ModelSetupException.From(error, ModelSetupStage.Prepare).Category;
+        }
+    }
     private static async Task<string> Hash(string path, CancellationToken ct)
     {
         await using var file = File.OpenRead(path);
         return Convert.ToHexString(await SHA256.HashDataAsync(file, ct)).ToLowerInvariant();
     }
-    private static void Extract(string archive, string destination, CancellationToken ct)
+    private static void Extract(string archive, string destination, ModelSetupStage stage, CancellationToken ct)
     {
         try
         {
             ExtractChecked(archive, destination, ct);
         }
-        catch (InvalidDataException) { try { File.Delete(archive); } catch (IOException) { } throw; }
+        catch (InvalidDataException)
+        {
+            throw new ModelSetupException(SetupFailureCategory.Integrity, stage, DeleteDamagedArchive(archive));
+        }
     }
     private static void ExtractChecked(string archive, string destination, CancellationToken ct)
     {

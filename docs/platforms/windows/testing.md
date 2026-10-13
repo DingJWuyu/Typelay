@@ -27,6 +27,14 @@ dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release 
 
 ## 受控工具的边界
 
+`ModelInstallerTests` 通过生产 `InstallAsync` 验证安装失败与显式重试：HTTP 超时和用户暂停分别处理，CPU 自检失败不标为暂停，损坏模型元数据或布局的对应缓存会被清除；清除受阻时保留完整性首因并说明恢复阻塞。权限/空间/取消/CPU 失败不误删完好的下载。测试只替换 HTTP 与子进程系统边界，使用隔离目录、真实 ZIP/哈希/文件锁及自有受控子进程，不连接公网、不读写用户模型。受控小包只验证恢复，不能证明真实模型可用；实际安装/推理仍由下方独立模式验证。
+
+`SetupRenderingTests` 从实际 WPF 准备按钮进入生产安装器，验证网络超时后的共同原因、下一步、折叠诊断、关窗返回重试，以及用户主动暂停后的继续入口。这两个场景不覆盖实际模型成功启动或迟到进度的 UI 验收。
+
+```powershell
+dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release --no-build --filter 'FullyQualifiedName~ModelInstallerTests|FullyQualifiedName~SetupRenderingTests'
+```
+
 `tests/windows/support/TypeLay.Platform.Windows` 提供只访问已登记 fixture 控件的 Win32 适配器，服务适配器契约和键盘 Hook 回归，不在生产依赖链。其受控 IME 状态不等于外部应用的真实输入法状态。
 
 原生辅助调用失败时只报告固定操作名、消息 ID 和 Win32 错误数值，不记录句柄、参数或正文，仍使用原 100ms 上限。`SendMessageTimeoutW` 返回零可能是[失败或超时](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagetimeoutw#return-value)，不能仅凭异常猜超时；当前 .NET 的 [`SetLastError=true`](https://learn.microsoft.com/en-us/dotnet/api/system.runtime.interopservices.dllimportattribute.setlasterror?view=net-10.0#remarks)会在调用前清零并缓存错误，数值零只表示没有更具体的原因。
