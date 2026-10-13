@@ -11,7 +11,7 @@ Windows 与 Linux 并行开发，遵循[共同应用支持与完整体验](../..
 用户表示使用远端最新 Windows 版本，F9 可以翻译，报告三类现象：
 
 1. 按需模式 Ctrl+Shift+F10 无翻译、无替换、无报错。测试位置为 Windows 搜索框、Chrome 顶部地址/搜索栏、Codex desktop 输入框、打开的 .txt 文档。
-2. Chrome 顶部地址/搜索栏可翻译，但页面中心搜索框在自动和按需模式都不工作。
+2. Chrome 顶部地址/搜索栏可翻译，但新建标签页的 Google 中央搜索框（提示文字为 `Ask Google`）在自动和按需模式都不工作。用户已明确这是点 `+` 后出现的新标签页，不是输入 `google.com` 打开的普通网页。
 3. 翻译似乎必须输入标点才出现，只等最后一句标点，没有实时跟随输入的体验。
 
 2026-10-13 只读核对的远端 `windows-preview` 为 `47d456f8ae4892a2564be0dfd15323cfb7fa3808`。这是源码版本确认，不是用户安装包哈希确认；尚未在用户 Windows 环境复现上述故障。以下实现事实不等于用户根因。
@@ -28,15 +28,21 @@ Windows 与 Linux 并行开发，遵循[共同应用支持与完整体验](../..
 
 源码入口：`KeyboardHook.TryInvokeShortcut`、共享 `SessionController.Shortcut` / `QueueDirect`、`NativeEditTransactions` 与 `UiaInputProvider`。
 
-## Chrome 页面搜索框未工作
+## Chrome 新标签页中央搜索框未工作
 
-不能仅凭现象判断是“没有聚焦”或“Chrome 不支持”。浏览器自身顶栏与网页输入区域的 UIA 类型、值/文本能力、只读属性、输入法状态和焦点身份可能不同，需查实际采集拒绝点。
+不能仅凭现象判断是“没有聚焦”或“Chrome 不支持”。浏览器自身顶栏、内置新标签页与普通网页输入区域的 UIA 类型、值/文本能力、只读属性、输入法状态和焦点身份可能不同，需查实际采集拒绝点。原问题应在新标签页中复现，先确认点击中央框和开始输入后，真实焦点仍在中央框还是移到了顶栏。
 
-`UiaInputProvider.Capture` 要求原始/托管 UIA runtime ID 一致，只接受 Edit/Document 类型，要求 ValuePattern 或明确可编辑的 TextPattern，并检查字段元数据、边界和焦点。代码没有针对普通网页搜索框的禁令。
+`UiaInputProvider.Capture` 要求原始/托管 UIA runtime ID 一致，并检查字段元数据、边界和焦点。原入口只接受 Edit/Document；Chromium 155 新标签页真实输入框的 `role=combobox` 会映射为 Windows UIA ComboBox。这是与用户现象吻合的源码候选，不是用户机器的采集结论。
+
+当前实现增加 ComboBox 的只读预览路径，但必须同时具有可编辑 ValuePattern 和明确可编辑的 TextPattern；普通选择器、密码、只读或未聚焦字段仍被拒绝。此路径不授予 Tab 或 F10 写回能力。受控真实 UIA/Broker 回归和 Chrome 新标签页验收分别记录，不能互相替代。
+
+固定版本来源：[新标签页输入模板](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/ui/webui/resources/cr_components/searchbox/searchbox_input.html.ts#L24-L54)、[Blink 的可编辑组合框角色](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/third_party/blink/renderer/modules/accessibility/ax_object.cc#L6252-L6275)、[Windows UIA 类型映射](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/ui/accessibility/platform/ax_platform_node_win.cc#L1502-L1512)。检查到的中央框焦点/输入事件更新本地搜索框并请求补全，未要求迁到顶栏；真实页面仍需观察，不能只从源码保证所有版本/配置相同。
 
 需同时核对一个反差：`FieldPolicy` 的机器区域正则实际排除 `address.?bar`、`omnibox`、`地址栏`，但并不匹配所有本地化标签，例如“地址和搜索栏”。顶栏能翻译不代表中心搜索框应被排除，也不能在未读现场属性时认定是哪条正则命中。
 
-普通网页输入框和自然语言搜索框属于产品目标，应建立此路径的复现和验收；按控件技术能力划分适配边界，不能以每个应用都要适配为由跳过问题。
+新标签页、顶栏和普通网页中的自然语言输入都应提供一致的用户体验，但必须分别建立真实复现和验收。普通网页 DOM 身份/事务接入是另一条覆盖路径，即使通过也不能关闭本项。Chrome 内置页面受扩展注入保护，不能靠增加扩展权限或关闭浏览器安全限制绕过；本项需验证 Windows UIA/浏览器原生可提供的能力。
+
+该限制可核对 [Chromium 155 的 `PermissionsData::IsRestrictedUrl`](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/extensions/common/permissions/permissions_data.cc)：普通扩展不能向受保护的 `chrome://` 页面注入脚本。此来源说明接入边界，不证明当前 UIA 捕获失败的原因。
 
 源码定位：`src/windows/TypeLay.Broker/Input/UiaInputProvider.cs:29-107,204-205`、`src/shared/TypeLay.Core/FieldPolicy.cs:14-26`。
 
@@ -52,7 +58,7 @@ Windows 与 Linux 并行开发，遵循[共同应用支持与完整体验](../..
 ## 最小取证和验收
 
 1. 在原输入框按一次 F10，记录托盘提示；系统通知不可见时查看托盘快速面板中的同一操作状态。不要重复要求已提供的 F9/应用信息，也不先要求重装模型。
-2. 对 Chrome 顶栏和中心框使用相同已提交的普通测试文字作对照，记录实际焦点元素、ControlType、HWND 类名、Value/TextPattern 能力、IME 状态和具体采集拒绝位置。避免收集用户真实正文。
+2. 对 Chrome 顶栏、新标签页 `Ask Google` 中央框和普通网页输入分别使用相同已提交的普通测试文字作对照。新标签页先记录点击、开始输入前后的焦点是否转移，再记录实际焦点元素、ControlType、HWND 类名、Value/TextPattern 能力、IME 状态和具体采集拒绝位置。避免收集用户真实正文。
 3. 对实时问题分别测试无标点输入后停顿、持续输入、中文组合及提交、加标点；记录源快照更新时间、已提交前缀是否可得、任务派发/推理结束/浮层更新时间，分清输入读取和推理显示延迟。
 4. 先确认安装包对应版本，再用真实 Windows 输入链路重现；当前版本已有状态、IME 和前缀诊断，但没有后来 Linux 分支增加的 `shortcut-*` 入口 trace，不要要求旧包查不存在的日志字段。
 5. 依据 Frozen 产品规格第4节、第9.2节和 Accepted `ADR-0002` 验收：普通网页/桌面自然语言输入可捕获和持续预览；无标点也可更新；F9 唤醒复用正常会话；F10 对具备能力的原控件完成一次替换、不抢焦点、不发送；拒写不绕过安全检查，并检验显式命令的失败反馈。测试应覆盖真实输入法、选区、焦点切换、冲突和撤销，不用源码检查或假模型证明产品可用。

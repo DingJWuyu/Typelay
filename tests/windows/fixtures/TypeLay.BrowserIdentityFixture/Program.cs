@@ -123,6 +123,11 @@ internal static class Program
                 var item = await server.Events.Reader.ReadAsync(deadline.Token);
                 events.Add(item);
                 string kind = item.GetProperty("kind").GetString()!;
+                if (kind == "navigation")
+                {
+                    stage = "navigation-" + item.GetProperty("source").GetString();
+                    continue; // Tab metadata observes startup; it cannot start navigation or grant a binding.
+                }
                 if (kind == "diagnostic")
                 {
                     stage = item.GetProperty("stage").GetString()!;
@@ -261,6 +266,8 @@ internal static class Program
         string[] common = ["kind", "tabId", "windowId", "documentId"];
         string[] fields = kind.GetString() switch
         {
+            "navigation" => ["kind", "source", "sequence", "querySucceeded", "tabCount", "targetPresent", "pendingTargetPresent",
+                "hasLoadingTab", "categories", "attemptedTarget", "errorClass"],
             "diagnostic" => ["kind", "stage", "sequence"],
             "baseline" => ["kind", "result"],
             "top-ready" => [.. common, "fieldKind"],
@@ -272,6 +279,23 @@ internal static class Program
         };
         if (fields.Length == 0 || !item.EnumerateObject().Select(property => property.Name).Order().SequenceEqual(fields.Order()))
             return false;
+        if (kind.GetString() == "navigation")
+        {
+            string[] sources = ["startup", "tab-created", "tab-updated", "before-navigate", "target-error"];
+            string[] errors = ["none", "aborted", "blocked", "connection", "other"];
+            string[] categories = ["target", "new-tab", "blank", "browser-internal", "other", "unknown"];
+            string[] flags = ["querySucceeded", "targetPresent", "pendingTargetPresent", "hasLoadingTab", "attemptedTarget"];
+            if (item.GetProperty("source").ValueKind != JsonValueKind.String || !sources.Contains(item.GetProperty("source").GetString()) ||
+                item.GetProperty("errorClass").ValueKind != JsonValueKind.String || !errors.Contains(item.GetProperty("errorClass").GetString()) ||
+                item.GetProperty("sequence").ValueKind != JsonValueKind.Number || !item.GetProperty("sequence").TryGetInt32(out int sequence) ||
+                sequence is < 1 or > 12 || item.GetProperty("tabCount").ValueKind != JsonValueKind.Number ||
+                !item.GetProperty("tabCount").TryGetInt32(out int tabCount) || tabCount is < 0 or > 100 ||
+                flags.Any(flag => item.GetProperty(flag).ValueKind is not (JsonValueKind.True or JsonValueKind.False)))
+                return false;
+            var observedCategories = item.GetProperty("categories");
+            return observedCategories.ValueKind == JsonValueKind.Array && observedCategories.GetArrayLength() <= categories.Length &&
+                observedCategories.EnumerateArray().All(value => value.ValueKind == JsonValueKind.String && categories.Contains(value.GetString()));
+        }
         if (kind.GetString() == "diagnostic")
         {
             string[] stages = ["worker-started", "internal-port-received", "sender-extension-id-rejected", "sender-tab-missing",

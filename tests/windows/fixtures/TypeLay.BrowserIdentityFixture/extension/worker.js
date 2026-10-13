@@ -22,6 +22,32 @@ function rejectPort(port, reason) {
     diagnostic(reason);
     port.disconnect();
 }
+let navigationSequence = 0;
+function pageCategory(url) {
+    if (url === pageUrl) return "target";
+    if (url === "about:blank") return "blank";
+    if (["chrome://newtab/", "chrome://new-tab-page/", "chrome-search://local-ntp/local-ntp.html"].includes(url)) return "new-tab";
+    if (typeof url !== "string" || url.length === 0) return "unknown";
+    if (url.startsWith("chrome:") || url.startsWith("chrome-search:") || url.startsWith("chrome-extension:")) return "browser-internal";
+    return "other";
+}
+function navigationEvidence(source, attemptedTarget = false, errorClass = "none") {
+    if (navigationSequence >= 12) return;
+    const sequence = ++navigationSequence;
+    // Read only this isolated profile's tabs. Neither URLs nor titles leave this worker.
+    void chrome.tabs.query({}).then(tabs => report({
+        kind: "navigation", source, sequence, querySucceeded: true, tabCount: tabs.length,
+        targetPresent: tabs.some(tab => tab.url === pageUrl),
+        pendingTargetPresent: tabs.some(tab => tab.pendingUrl === pageUrl),
+        hasLoadingTab: tabs.some(tab => tab.status === "loading"),
+        categories: [...new Set(tabs.map(tab => pageCategory(tab.url)))].sort(),
+        attemptedTarget, errorClass
+    }), () => report({
+        kind: "navigation", source, sequence, querySucceeded: false, tabCount: 0,
+        targetPresent: false, pendingTargetPresent: false, hasLoadingTab: false,
+        categories: [], attemptedTarget, errorClass
+    })).catch(() => {});
+}
 function identity(record) {
     return { tabId: record.tabId, windowId: record.windowId, documentId: record.documentId };
 }
@@ -162,6 +188,7 @@ chrome.runtime.onConnect.addListener(port => {
     })().catch(() => revoke(record, "bridge-check-failed"));
 });
 chrome.webNavigation.onBeforeNavigate.addListener(details => {
+    if (details.frameId === 0) navigationEvidence("before-navigate", details.url === pageUrl);
     if (details.frameId === 0 && records.has(details.tabId)) revoke(records.get(details.tabId), "navigation");
 });
 chrome.tabs.onDetached.addListener(tabId => { if (records.has(tabId)) revoke(records.get(tabId), "tab-detached"); });
@@ -170,4 +197,16 @@ chrome.tabs.onAttached.addListener(tabId => {
     void chrome.tabs.sendMessage(tabId, { kind: "restart" }, { frameId: 0 }).catch(() => {});
 });
 
+chrome.tabs.onCreated.addListener(() => navigationEvidence("tab-created"));
+chrome.tabs.onUpdated.addListener((_tabId, change) => {
+    if (change.url !== undefined || change.status !== undefined) navigationEvidence("tab-updated");
+});
+chrome.webNavigation.onErrorOccurred.addListener(details => {
+    if (details.frameId !== 0 || details.url !== pageUrl) return;
+    const errorClass = details.error === "net::ERR_ABORTED" ? "aborted" :
+        details.error.startsWith("net::ERR_BLOCKED_") ? "blocked" :
+        details.error.startsWith("net::ERR_CONNECTION_") ? "connection" : "other";
+    navigationEvidence("target-error", true, errorClass);
+});
 diagnostic("worker-started");
+navigationEvidence("startup");

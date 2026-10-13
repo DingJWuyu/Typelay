@@ -237,7 +237,16 @@ public sealed class OwnedProcess : IDisposable
                         throw new Win32Exception();
                     if (accounting.ActiveProcesses == 0)
                     {
+                        // Job accounting can reach zero before this exact process is signaled.
+                        // Spend only the remainder of the existing cleanup deadline.
+                        uint remaining = (uint)Math.Max(0, 5000 - wait.ElapsedMilliseconds);
+                        uint processWait = WaitForSingleObject(_process, remaining);
+                        int processError = processWait == uint.MaxValue ? Marshal.GetLastWin32Error() : 0;
                         AfterCleanup = Observe();
+                        if (processWait == uint.MaxValue)
+                            throw new Win32Exception(processError);
+                        if (processWait != 0)
+                            throw new TimeoutException("Owned launcher did not signal within the cleanup deadline.");
                         break;
                     }
                     if (wait.ElapsedMilliseconds >= 5000)

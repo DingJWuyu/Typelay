@@ -1,6 +1,6 @@
 # 浏览器窗口身份探针
 
-本页约束 `tests/windows/fixtures/TypeLay.BrowserIdentityFixture`。它是独立、metadata-only 的 Windows 实验，不接入 App、Broker、worker、产品支持标记或发行包。它不读取输入正文、不翻译、不写回、不获取 Tab 接受资格。生产浏览器故障和 B-01/B-02/B-03 的结论不随此探针改变。
+本页约束 `tests/windows/fixtures/TypeLay.BrowserIdentityFixture`。它是独立、metadata-only 的 Windows 实验，不接入 App、Broker、worker、产品支持标记或发行包。它不读取输入正文、不翻译、不写回、不获取 Tab 接受资格。它覆盖普通合成网页，不能代表 Chrome NTP（新标签页）中央搜索框的支持或修复。生产浏览器故障和 B-01/B-02/B-03 的结论不随此探针改变。
 
 ## 要回答的问题
 
@@ -14,7 +14,7 @@ MV3 service worker 没有页面原生视图；仅有浏览器 PID 无法区分�
 - worker 允许同一 tab 唯一 pending bridge。扩展 origin 的 `bridge.html` 建立第二条内部 port；其 `parentFrameId` 必须是 0，`parentDocumentId` 必须等于仍存活的顶层 document。异步核验前先保留唯一位置；重复桥撤销整条绑定。
 - bridge 不接收 `postMessage`、URL 参数或网页命令。只有私有 worker port 发出的单次随机 challenge 能启动固定的本次 host。host 仅接收该 challenge，回传启动参数、`IsWindow`、根 HWND、owner PID、自身 PID、随机连接 ID 及握手时的连接存活毫秒数。第二条 native 请求直接拒绝。
 - 导航开始、tab detach/remove、任一内部或 native port 断连撤销旧绑定。attach 后只要求当前顶层重新报到，不沿用旧 challenge/document。生命周期监听已写入实验代码，重建行为仍必须在真实 Chrome 中单独验证。
-- coordinator 独立确认 HWND 当前存在、根窗口及 owner PID 一致、owner 进程仍在本次专属 Job 中，且映像路径等于本次 CfT。Chrome 以 suspended 方式创建，先加入 Job 再恢复执行；清理终止本次 Job，在 5 秒内查询其 active process 数归零后才释放句柄，不按进程名或 PID 搜索后杀进程。
+- coordinator 独立确认 HWND 当前存在、根窗口及 owner PID 一致、owner 进程仍在本次专属 Job 中，且映像路径等于本次 CfT。Chrome 以 suspended 方式创建，先加入 Job 再恢复执行；清理终止本次 Job，在同一 5 秒预算内查询其 active process 数归零并等待原持有的 launcher 句柄 signaled 后才释放句柄，不按进程名或 PID 搜索后杀进程。
 - 使用独立临时 profile、每次随机扩展 ID 和独有 host 名。只创建本次 HKCU `Software\Google\Chrome\NativeMessagingHosts` 子键，已存在则拒绝。清理只删除仍只有本次精确 manifest 值的键；检测到外来变更时保留并报 cleanup 失败。
 - 本地 loopback 服务只提供合成 HTML 和有随机能力令牌的 metadata 回报入口。回报必须来自本次扩展 origin，字段有白名单及长度限制。结果保存到 `artifacts/`，不保留正文、网页日志、profile 或任意页面错误字符串。
 
@@ -53,11 +53,14 @@ MV3 service worker 没有页面原生视图；仅有浏览器 PID 无法区分�
 诊断信号只缩小失败位置，不满足任何 HWND、baseline 或字段焦点门。先读 `result.json` 的首个 `failure`，再分别看：
 
 - `loopback` 的固定计数区分 fixture GET 是否到达/响应、报告端点是否收到 OPTIONS/POST、Origin 缺失/不符、格式/schema 拒绝或已接受。只记录类别和数量，不保存 URL、原始 headers、被拒正文或页面错误文本。没有事件不能单独说明失焦。
+- `events` 中 `kind=navigation` 只读临时 profile 的 tabs，最多 12 次：记录目标/待导航目标匹配布尔、标签页数量、加载状态、固定页面类别与固定导航错误类别，不保存 URL/title。只在启动或实际 tab/navigation 事件时采样，不轮询或发导航命令。目标 GET 为 0 时先区分没有目标 tab、pending 导航、浏览器内部页面和导航失败，不能用已加载的 worker 代替网页已打开。
 - `events` 中 `kind=diagnostic` 的固定阶段区分 worker 启动、内部 port 到达、sender 哪一项被拒、顶层 port 接受、焦点 ready、native 请求和回包。它们不会建立绑定，不改变原生验证门，也不引入浏览器控制通道。
 - `coordinatorElevationType` 与 `browserBeforeResume`、`browserBeforeCleanup`、`browserAfterCleanup` 只保存自有句柄的 PID、退出状态/退出码、Job total/active、固定 token elevation 枚举及 Win32 查询错误码。清理前后必须分开；`TerminateJobObject(..., 2)` 产生的 2 不是启动失败证据。Job limit terminations 只计限制违规终止，不能当全部退出数。
-- `cleanupErrors` 保留异常类型及 HRESULT，区分共享占用和其它失败；不覆盖首错。旁边 `.runner.json` 给出 build/browser 清理区域及 fixture 退出码，`.entry.json` 给出外层自有进程/Job 状态。目录删除失败或 Job 计数本身都不足以证明有 Job 外接力进程。
+- `cleanupErrors` 保留异常类型及 HRESULT，区分共享占用和其它失败；不覆盖首错。旁边 `.runner.json` 给出 build/browser 清理区域及 fixture 退出码，`.entry.json` 给出外层自有进程/Job 状态。目录删除失败或 Job 计数本身都不足以证明有 Job 外接力进程；Job 归零也不等于持有的进程句柄已 signaled。即使根句柄结束，仍不能据此宣称所有 DLL 锁已释放，删除失败继续如实报告。
 
 固定 Chromium 155 的[自动降权条件](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/chrome/browser/chrome_browser_main_win.cc#L1023-L1074)包括 elevated token、feature 与启动环境；[实际实现](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/base/win/elevation_util.cc#L69-L140)可能启动另一进程，原 launcher 最终[返回正常退出码](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/chrome/app/chrome_main.cc#L224-L229)。这些是待观测分支，不是“退出 0 等于降权”或“必然逃 Job”的依据。独立 `user-data-dir` 已[排除另一个 COM isolated-browser 分支](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/chrome/browser/win/isolated_browser/isolated_browser_support.cc#L298-L344)。诊断不改变 Chrome flags/启动权限，不扫描或终止 Job 外进程，不延长 35/180 秒上限。
+
+命令行核验依据是固定 155 的 [Windows CommandLineToArgvW 解析](https://github.com/chromium/chromium/blob/155.0.8059.39/base/command_line.cc#L609-L634)、[GetArgs 到启动标签页](https://github.com/chromium/chromium/blob/155.0.8059.39/chrome/browser/ui/startup/startup_tab_provider.cc#L149-L165)和[URL 转换](https://github.com/chromium/chromium/blob/155.0.8059.39/chrome/browser/ui/startup/startup_tab_provider.cc#L297-L350)。当前受限参数引用规则不包含内嵌引号或尾反斜杠，不能在没有 argv 反证时把 GET 缺失归咎于引号。现有 `--no-first-run` 也会[使 FirstRunService 不 eligible](https://github.com/chromium/chromium/blob/155.0.8059.39/chrome/browser/ui/startup/first_run_service.cc#L49-L59)；其它启动阻塞仍须实际元数据证明，不自动接受对话或增添绕过 flag。
 
 ## 扩展前的门槛
 

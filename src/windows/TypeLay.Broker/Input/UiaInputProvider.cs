@@ -55,7 +55,8 @@ internal sealed class UiaInputProvider : IDisposable
         if (_native.BindFocused() != token)
             return Reject("focused-identity-changed");
         var info = element.Cached;
-        if (info.ControlType != ControlType.Edit && info.ControlType != ControlType.Document)
+        bool comboBox = info.ControlType == ControlType.ComboBox;
+        if (info.ControlType != ControlType.Edit && info.ControlType != ControlType.Document && !comboBox)
             return Reject("not-edit-control");
         if (info.IsPassword)
             return Reject("password-field");
@@ -97,7 +98,12 @@ internal sealed class UiaInputProvider : IDisposable
             return Reject("foreground-owner");
         trace?.Stage("editable-pattern");
         ValuePattern? value = element.TryGetCurrentPattern(ValuePattern.Pattern, out object vp) ? (ValuePattern)vp : null;
-        bool? textReadOnly = value is null ? _native.ReadOnly() : null;
+        bool? textReadOnly = value is null || comboBox ? _native.ReadOnly() : null;
+        // Editable web search boxes may expose ComboBox rather than Edit. The
+        // role alone also describes selectors: require both an editable value
+        // and an editable text range before reading any content, and preview only.
+        if (comboBox && (value?.Current.IsReadOnly != false || textReadOnly != false))
+            return Reject("combobox-not-editable-text");
         // Document is also used by rich editors. Require an explicit editable text
         // attribute, never read an ordinary browser page as an input field.
         if (value is null && textReadOnly != false)
@@ -125,7 +131,7 @@ internal sealed class UiaInputProvider : IDisposable
         var id = new WindowsTarget(info.ProcessId, start, (long)root, info.NativeWindowHandle,
             value is null ? "uia-text-preview-v2" : "uia-value-text-v2", token, new Guid(idBytes.AsSpan(0, 16)));
         trace?.Stage("native-capture");
-        if (request.CaptureDirect && _edits.Capture(id, bounds, _inputEpoch, _focusEpoch) is { } direct)
+        if (!comboBox && request.CaptureDirect && _edits.Capture(id, bounds, _inputEpoch, _focusEpoch) is { } direct)
         {
             trace?.Stage("focus-recheck");
             if (!StillFocused(root, token))
@@ -213,7 +219,7 @@ internal sealed class UiaInputProvider : IDisposable
         // The provider's value and ranges are separate remote reads. During typing
         // they can describe different revisions; preserve whole-field preview while
         // refusing selection edits and acceptance until a consistent capture arrives.
-        bool writeSupported = value is not null && selection is not null;
+        bool writeSupported = !comboBox && value is not null && selection is not null;
         selection ??= new TextRange(content.Length, content.Length);
         trace?.Stage("focus-recheck");
         if (!StillFocused(root, token))
