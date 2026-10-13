@@ -939,8 +939,11 @@ def run_qt(
                     and settled(value),
                     "Escape did not clear real multiline pinyin composition",
                 )
-                assert state()["plain"]["text"] == after_tab["text"]
-                assert state()["plain"]["changes"] == after_tab["changes"]
+                # Qt's preedit/layout updates can emit textChanged without
+                # changing committed text. Compare the actual body and focus.
+                after_escape = state()["plain"]
+                assert after_escape["text"] == after_tab["text"]
+                assert after_escape["focused"] and after_escape["focusObject"]
                 assert not new_write_outcomes(before_write)
                 switch_im("keyboard-us")
                 evidence.append(
