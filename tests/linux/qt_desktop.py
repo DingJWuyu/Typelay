@@ -4,6 +4,7 @@ This uses the CI-built private Fcitx/Qt provider, not a user-ABI support claim.
 XTest supplies input to niri; it does not provide physical-keyboard evidence.
 """
 
+import hashlib
 import json
 import re
 import subprocess
@@ -334,13 +335,24 @@ def run_qt(
                 build_version = json.loads((qt / "versions.json").read_text())["qt_build_version"]
                 runtime_version = state()["qtVersion"]
                 requested_version = environment.get("TYPELAY_EXPECT_QT_VERSION")
+                binaries = {
+                    "provider_sha256": qt
+                    / "plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so",
+                    "consumer_sha256": qt / "native/qt6/generic/libtypelay-qt6.so",
+                    "fixture_sha256": executable,
+                }
+                binary_names = {path.name for path in binaries.values()}
                 mapped_paths = set()
                 for line in Path(f"/proc/{fixture.pid}/maps").read_text().splitlines():
                     fields = line.split(maxsplit=5)
                     if len(fields) == 6 and fields[5].startswith("/"):
                         path = fields[5]
                         name = Path(path).name
-                        if name.startswith(("libQt6", "libqwayland")) or name == "libqxcb.so":
+                        if (
+                            name.startswith(("libQt6", "libqwayland"))
+                            or name == "libqxcb.so"
+                            or name in binary_names
+                        ):
                             mapped_paths.add(path)
                 (arguments.output / "qt-desktop-runtime.json").write_text(
                     json.dumps(
@@ -350,6 +362,10 @@ def run_qt(
                             "runtime_version": runtime_version,
                             "requested_version": requested_version,
                             "requested_platform": qt_environment["QT_QPA_PLATFORM"],
+                            **{
+                                name: hashlib.sha256(path.read_bytes()).hexdigest()
+                                for name, path in binaries.items()
+                            },
                             "mapped_libraries": [
                                 {"path": path, "basename": Path(path).name}
                                 for path in sorted(mapped_paths)
@@ -364,6 +380,8 @@ def run_qt(
                     "Unexpected Qt desktop SDK/runtime version"
                 )
                 mapped_names = {Path(path).name for path in mapped_paths}
+                for path in binaries.values():
+                    assert str(path.resolve()) in mapped_paths, f"Qt binary was not loaded: {path}"
                 for name in ("Core", "Gui", "Widgets", "DBus", "WaylandClient"):
                     assert f"libQt6{name}.so.{build_version}" in mapped_names, name
                 for path in mapped_paths:
@@ -805,6 +823,248 @@ def run_qt(
                 )
                 evidence.append(
                     "Qt6 buddy-only sensitive label and focused offscreen source: before-body refusal without mutation"
+                )
+
+                untouched = {name: state()[name] for name in ("first", "second")}
+                command("plain-visible", enabled=True)
+                command("focus", field="plain")
+                wait_for(
+                    lambda: (value := state())["plain"]["visible"]
+                    and value["plain"]["focused"]
+                    and value["plain"]["focusObject"]
+                    and value["plain"]["text"] == ""
+                    and settled(value)
+                    and status().get("sourceSupported")
+                    and not status().get("acceptanceReady"),
+                    "standard empty QPlainTextEdit did not acquire the real source context",
+                )
+                prefix = "前🙂\u00a0[\n"
+                selected = "Please review this note.\nSend the report tomorrow."
+                suffix = "\n]\u00a0后🚀"
+                plain_source = prefix + selected + suffix
+                start = len(prefix.encode("utf-16-le")) // 2
+                length = len(selected.encode("utf-16-le")) // 2
+                command("set", field="plain", text=plain_source)
+                command("select", field="plain", start=start, length=length)
+                wait_for(
+                    lambda: (value := state())["plain"]["text"] == plain_source
+                    and value["plain"]["selectionStart"] == start
+                    and value["plain"]["selectionLength"] == length
+                    and value["plain"]["focused"]
+                    and settled(value),
+                    "actual multiline UTF-16 selection did not settle",
+                )
+                wait_for(
+                    ready_to_accept, "multiline selection did not receive a CPU model candidate"
+                )
+                value = state()
+                plain_candidate = value["editorText"]
+                assert value["overlayVisible"] and value["editorReadOnly"]
+                assert re.search(r"[\u3400-\u9fff]", plain_candidate)
+                before = value["plain"]
+                assert before["undoRedoEnabled"]
+                before_write = trace_checkpoint()
+                wait_for(ready_to_accept, "multiline candidate lost its fresh acceptance permit")
+                send_tab()
+                translated_plain = prefix + plain_candidate + suffix
+                after = wait_for(
+                    lambda: value["plain"]
+                    if (value := state())["plain"]["text"] == translated_plain
+                    and verified_write(before_write)
+                    else None,
+                    "multiline Tab did not verify the exact replacement with Unicode surroundings",
+                )
+                assert after["focused"] and after["focusObject"] and after["undoAvailable"]
+                assert after["documentGeneration"] == before["documentGeneration"]
+                assert after["changes"] == before["changes"] + 1
+                assert after["contentsChanges"] == before["contentsChanges"] + 1
+                assert after["lastChange"] == {
+                    "position": start,
+                    "removed": length,
+                    "added": len(plain_candidate.encode("utf-16-le")) // 2,
+                }
+                command("undo", field="plain")
+                wait_for(
+                    lambda: (value := state())["plain"]["text"] == plain_source
+                    and value["plain"]["redoAvailable"],
+                    "native multiline undo did not restore the exact original document",
+                )
+                command("redo", field="plain")
+                wait_for(
+                    lambda: state()["plain"]["text"] == translated_plain,
+                    "native multiline redo did not restore the verified replacement",
+                )
+                assert state()["plain"]["documentGeneration"] == before["documentGeneration"]
+                evidence.append(
+                    "Wayland Qt6 QPlainTextEdit: CPU translation and one verified Tab replace a "
+                    "multiline UTF-16 selection in one document edit, preserve emoji/NBSP surroundings, "
+                    "and native undo/redo restore both exact documents"
+                )
+
+                command("set", field="plain", text="")
+                wait_for(
+                    lambda: (value := state())["plain"]["text"] == ""
+                    and value["plain"]["focused"]
+                    and settled(value)
+                    and not status().get("acceptanceReady"),
+                    "multiline source clearing did not revoke its old candidate",
+                )
+                switch_im("pinyin")
+                typed("nihao")
+                wait_for(
+                    lambda: (value := state()).get("plainPreedit")
+                    and settled(value)
+                    and not status().get("acceptanceReady"),
+                    "real multiline pinyin preedit was not observed or retained a write permit",
+                )
+                before_write = trace_checkpoint()
+                before_replies = state()["tlqtKeyReplies"]
+                assert isinstance(before_replies, int)
+                send_tab()
+                wait_for(
+                    lambda: (value := state()).get("tlqtKeyReplies", -1) >= before_replies + 2
+                    and settled(value),
+                    "real multiline pinyin did not finish the Tab key pair",
+                )
+                # The original IM may consume Tab or let the standard editor
+                # insert it. Only TypeLay's write outcome is forbidden here.
+                after_tab = state()["plain"]
+                assert after_tab["focused"]
+                assert not new_write_outcomes(before_write)
+                before_replies = state()["tlqtKeyReplies"]
+                key("Escape")
+                wait_for(
+                    lambda: (value := state()).get("plainPreedit") is False
+                    and value.get("tlqtKeyReplies", -1) >= before_replies + 2
+                    and settled(value),
+                    "Escape did not clear real multiline pinyin composition",
+                )
+                assert state()["plain"]["text"] == after_tab["text"]
+                assert state()["plain"]["changes"] == after_tab["changes"]
+                assert not new_write_outcomes(before_write)
+                switch_im("keyboard-us")
+                evidence.append(
+                    "Wayland Qt6 QPlainTextEdit real pinyin: nihao composition keeps Tab with the "
+                    "original input path; Escape clears composition without a TypeLay write"
+                )
+
+                protected_source = "Synthetic plain line.\nSecond plain line."
+                for operation, values, field_key, expected in (
+                    ("read-only", {"enabled": True}, "readOnly", True),
+                    ("maximum-block-count", {"value": 2}, "maximumBlockCount", 2),
+                    ("structure", {"kind": "object"}, "object", True),
+                ):
+                    command("focus", field="second")
+                    wait_for(
+                        lambda: state()["second"]["focused"],
+                        "fixture did not leave the multiline target",
+                    )
+                    command("read-only", field="plain", enabled=False)
+                    command("maximum-block-count", field="plain", value=0)
+                    generation = state()["plain"]["documentGeneration"]
+                    command("replace-document", field="plain", text=protected_source)
+                    wait_for(
+                        lambda: (value := state())["plain"]["documentGeneration"] == generation + 1
+                        and value["plain"]["text"] == protected_source
+                        and not value["plain"]["readOnly"]
+                        and value["plain"]["maximumBlockCount"] == 0
+                        and not value["plain"]["object"],
+                        "fresh standard multiline document did not initialize",
+                    )
+                    command(operation, field="plain", **values)
+                    wait_for(
+                        lambda: state()["plain"][field_key] == expected,
+                        f"multiline {operation} protection did not apply",
+                    )
+                    before = state()["plain"]
+                    before_refusals = (
+                        status()
+                        .get("input", {})
+                        .get("captureCounts", {})
+                        .get("excluded-or-sensitive", 0)
+                    )
+                    before_write = trace_checkpoint()
+                    command("focus", field="plain")
+                    wait_for(
+                        lambda: state()["plain"]["focused"]
+                        and status().get("input", {}).get("captureStatus")
+                        == "excluded-or-sensitive"
+                        and status()
+                        .get("input", {})
+                        .get("captureCounts", {})
+                        .get("excluded-or-sensitive", 0)
+                        > before_refusals
+                        and not status().get("acceptanceReady"),
+                        f"multiline {operation} was not refused before body capture",
+                    )
+                    # Default QPlainTextEdit Tab inserts a tab. Metadata refusal
+                    # is observed directly without manufacturing a navigation key.
+                    after = state()["plain"]
+                    assert after["text"] == protected_source
+                    assert after["changes"] == before["changes"]
+                    assert after["contentsChanges"] == before["contentsChanges"]
+                    assert not new_write_outcomes(before_write)
+                for name, before in untouched.items():
+                    assert state()[name]["text"] == before["text"]
+                    assert state()[name]["changes"] == before["changes"]
+                evidence.append(
+                    "Qt6 QPlainTextEdit read-only, bounded-block and custom-object-format documents: "
+                    "before-body refusal without mutation; both QLineEdit fields remain unchanged"
+                )
+
+                # Run last: an application callback after mutation must leave
+                # the outcome unknown and this target unavailable for more writes.
+                callback_source = "Please preserve the application cursor.\nThis is a second line."
+                generation = state()["plain"]["documentGeneration"]
+                command("replace-document", field="plain", text=callback_source)
+                wait_for(
+                    lambda: (value := state())["plain"]["documentGeneration"] == generation + 1
+                    and value["plain"]["text"] == callback_source
+                    and not value["plain"]["object"]
+                    and value["plain"]["focused"]
+                    and settled(value),
+                    "ordinary multiline source did not recover for the application callback",
+                )
+                wait_for(
+                    ready_to_accept, "multiline callback source did not receive a CPU candidate"
+                )
+                callback_candidate = state()["editorText"]
+                assert re.search(r"[\u3400-\u9fff]", callback_candidate)
+                command("on-text", field="plain", action="move-caret")
+                wait_for(
+                    lambda: state()["plain"]["textAction"] == "move-caret",
+                    "real multiline application cursor callback was not armed",
+                )
+                before = state()["plain"]
+                before_write = trace_checkpoint()
+                wait_for(ready_to_accept, "multiline callback candidate lost its fresh permit")
+                send_tab()
+                outcomes = wait_for(
+                    lambda: new_write_outcomes(before_write),
+                    "multiline application callback did not produce a terminal write outcome",
+                )
+                assert outcomes == ["write-OutcomeUnknown-UnknownOutcome"]
+                captures = status().get("input", {}).get("captureCounts", {}).get("supported", 0)
+                wait_for(
+                    lambda: status().get("input", {}).get("captureCounts", {}).get("supported", 0)
+                    > captures
+                    and not status().get("acceptanceReady"),
+                    "multiline target retained acceptance after an unknown write outcome",
+                )
+                after = state()["plain"]
+                assert after["text"] == callback_candidate
+                assert after["cursor"] == 0 and after["selectionLength"] == 0
+                assert after["textAction"] == ""
+                assert after["documentGeneration"] == before["documentGeneration"]
+                assert after["changes"] == before["changes"] + 1
+                assert after["contentsChanges"] == before["contentsChanges"] + 1
+                assert new_write_outcomes(before_write) == outcomes
+                for name, before in untouched.items():
+                    assert state()[name]["text"] == before["text"]
+                    assert state()[name]["changes"] == before["changes"]
+                evidence.append(
+                    "Qt6 QPlainTextEdit application cursor callback survives the write notification; "
+                    "one unknown outcome, no Verified receipt or retry, and no fresh acceptance"
                 )
                 return evidence
             finally:

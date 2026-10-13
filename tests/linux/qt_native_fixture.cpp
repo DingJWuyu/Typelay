@@ -10,7 +10,13 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPlainTextDocumentLayout>
 #include <QPlainTextEdit>
+#include <QPointer>
+#include <QTextBlock>
+#include <QTextDocument>
+#include <QTextFrame>
+#include <QTextList>
 #include <QSaveFile>
 #include <QSocketNotifier>
 #include <QTimer>
@@ -23,8 +29,9 @@ class KeyObserver final : public QObject {
     Q_OBJECT
 public:
     QLineEdit *first = nullptr, *second = nullptr;
+    QPlainTextEdit *plain = nullptr;
     QJsonObject counts;
-    bool firstPreedit = false, secondPreedit = false, editorPreedit = false;
+    bool firstPreedit = false, secondPreedit = false, plainPreedit = false, editorPreedit = false;
     QString shortcutState, commandQueuedAction, commandDispatchedAction;
     quint64 shortcutId = 0, shortcutActionCount = 0, shortcutActionId = 0;
     void applyCommandAction(QString &action) {
@@ -55,12 +62,14 @@ public:
             const bool composing = !static_cast<QInputMethodEvent *>(event)->preeditString().isEmpty();
             if (object == first) firstPreedit = composing;
             else if (object == second) secondPreedit = composing;
+            else if (object == plain) plainPreedit = composing;
             else if (object->objectName() == QStringLiteral("typelay-editor")) editorPreedit = composing;
         }
-        if (object != first && object != second) return false;
+        if (object != first && object != second && object != plain) return false;
         if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease) return false;
         const auto *key = static_cast<QKeyEvent *>(event);
-        const QString name = (object == first ? QStringLiteral("first") : QStringLiteral("second"))
+        const QString name = (object == first ? QStringLiteral("first")
+            : object == second ? QStringLiteral("second") : QStringLiteral("plain"))
             + (key->key() == Qt::Key_Tab ? QStringLiteral("Tab") : QStringLiteral("Key"))
             + (event->type() == QEvent::KeyPress ? QStringLiteral("Press") : QStringLiteral("Release"));
         counts.insert(name, counts.value(name).toInt() + 1);
@@ -75,8 +84,12 @@ int main(int argc, char **argv) {
     auto *layout = new QVBoxLayout(&window);
     auto *first = new QLineEdit(&window);
     auto *second = new QLineEdit(&window);
+    auto *plain = new QPlainTextEdit(&window);
+    plain->setObjectName(QStringLiteral("plain"));
+    plain->setAccessibleName(QStringLiteral("Multiline message"));
+    plain->setMaximumHeight(140);
     KeyObserver observer;
-    observer.first = first; observer.second = second;
+    observer.first = first; observer.second = second; observer.plain = plain;
     app.installEventFilter(&observer);
     first->setObjectName(QStringLiteral("first"));
     second->setObjectName(QStringLiteral("second"));
@@ -86,10 +99,15 @@ int main(int argc, char **argv) {
     auto *secondLabel = new QLabel(QStringLiteral("Message two"), &window);
     firstLabel->setBuddy(first);
     secondLabel->setBuddy(second);
+    auto *plainLabel = new QLabel(QStringLiteral("Multiline message"), &window);
+    plainLabel->setBuddy(plain);
     layout->addWidget(firstLabel);
     layout->addWidget(first);
     layout->addWidget(secondLabel);
     layout->addWidget(second);
+    layout->addWidget(plainLabel);
+    layout->addWidget(plain);
+    plainLabel->hide(); plain->hide();
     layout->addStretch();
     window.resize(700, 500);
     window.show();
@@ -99,7 +117,38 @@ int main(int argc, char **argv) {
     QObject::connect(second, &QLineEdit::textChanged, [&] { ++secondChanges; });
     QObject::connect(first, &QLineEdit::textEdited, [&] { ++firstEdits; });
     QObject::connect(second, &QLineEdit::textEdited, [&] { ++secondEdits; });
-    QString selectionAction, textAction;
+    int plainChanges = 0, plainContentsChanges = 0, plainDocumentGeneration = 0;
+    QJsonObject plainLastChange;
+    QPointer<QTextDocument> observedDocument;
+    QList<QMetaObject::Connection> plainConnections;
+    auto observeDocument = [&] {
+        if (observedDocument == plain->document()) return;
+        for (const auto &connection : plainConnections) QObject::disconnect(connection);
+        plainConnections.clear();
+        observedDocument = plain->document();
+        ++plainDocumentGeneration;
+        plainConnections.append(QObject::connect(observedDocument, &QTextDocument::contentsChange,
+            [&](int position, int removed, int added) {
+                ++plainContentsChanges;
+                plainLastChange = {{"position", position}, {"removed", removed}, {"added", added}};
+            }));
+    };
+    observeDocument();
+    QObject::connect(plain, &QPlainTextEdit::textChanged, [&] { ++plainChanges; observeDocument(); });
+    QString selectionAction, textAction, plainSelectionAction, plainTextAction;
+    auto replaceDocument = [&](const QString &text) {
+        QPointer<QTextDocument> previous = plain->document();
+        auto *document = new QTextDocument(plain);
+        document->setDocumentLayout(new QPlainTextDocumentLayout(document));
+        document->setPlainText(text);
+        // setDocument synchronously deletes control-owned documents. A normal
+        // application callback can replace the document while its signal is
+        // on the stack, so keep that old QObject alive until the callback ends.
+        if (previous) previous->setParent(plain);
+        plain->setDocument(document);
+        observeDocument();
+        if (previous) previous->deleteLater();
+    };
     auto applicationChange = [&](QString &action) {
         const auto pending = action;
         action.clear();
@@ -110,6 +159,18 @@ int main(int argc, char **argv) {
     };
     QObject::connect(first, &QLineEdit::selectionChanged, [&] { applicationChange(selectionAction); });
     QObject::connect(first, &QLineEdit::textChanged, [&] { applicationChange(textAction); });
+    auto plainApplicationChange = [&](QString &action) {
+        const auto pending = action;
+        action.clear();
+        if (pending == "rewrite") plain->setPlainText(QStringLiteral("Application changed this document"));
+        else if (pending == "replace-document") replaceDocument(QStringLiteral("Replacement document must survive"));
+        else if (pending == "focus-second") second->setFocus();
+        else if (pending == "read-only") plain->setReadOnly(true);
+        else if (pending == "move-caret") { auto cursor = plain->textCursor(); cursor.setPosition(0); plain->setTextCursor(cursor); }
+        else if (pending == "nested") QCoreApplication::processEvents(QEventLoop::AllEvents);
+    };
+    QObject::connect(plain, &QPlainTextEdit::selectionChanged, [&] { plainApplicationChange(plainSelectionAction); });
+    QObject::connect(plain, &QPlainTextEdit::textChanged, [&] { plainApplicationChange(plainTextAction); });
     QIntValidator validator(0, 999999, &window);
     const QString path = qEnvironmentVariable("TYPELAY_QT_NATIVE_STATE");
     auto rectangle = [&](QWidget *widget) {
@@ -130,6 +191,38 @@ int main(int argc, char **argv) {
                 {"buddyLabel", label->text()}, {"buddyBound", label->buddy() == edit}, {"visible", edit->isVisible()},
                 {"changes", changes}, {"edits", edits}, {"geometry", rectangle(edit)}};
         };
+        observeDocument();
+        const auto cursor = plain->textCursor();
+        auto raw = plain->document()->toRawText();
+        raw.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
+        bool list = false, object = false, anchor = false, tag = false;
+        for (auto block = plain->document()->begin(); block.isValid(); block = block.next()) {
+            list = list || block.textList();
+            for (auto it = block.begin(); !it.atEnd(); ++it) {
+                const auto format = it.fragment().charFormat();
+                object = object || format.objectType() != QTextFormat::NoObject;
+                anchor = anchor || format.isAnchor();
+                tag = tag || format.hasProperty(QTextFormat::UserProperty);
+            }
+        }
+        const QJsonObject plainState{{"text", raw}, {"cursor", cursor.position()},
+            {"selectionStart", cursor.hasSelection() ? cursor.selectionStart() : -1},
+            {"selectionLength", cursor.selectionEnd() - cursor.selectionStart()},
+            {"undoAvailable", plain->document()->isUndoAvailable()},
+            {"redoAvailable", plain->document()->isRedoAvailable()}, {"undoRedoEnabled", plain->isUndoRedoEnabled()},
+            {"focused", plain->hasFocus()},
+            {"focusObject", QGuiApplication::focusObject() == plain},
+            {"readOnly", plain->isReadOnly()}, {"maximumBlockCount", plain->maximumBlockCount()},
+            {"accessibleName", plain->accessibleName()}, {"inputMethodHints", int(plain->inputMethodHints())},
+            {"buddyLabel", plainLabel->text()}, {"buddyBound", plainLabel->buddy() == plain},
+            {"visible", plain->isVisible()}, {"changes", plainChanges}, {"contentsChanges", plainContentsChanges},
+            {"lastChange", plainLastChange}, {"documentGeneration", plainDocumentGeneration},
+            {"documentClass", plain->document()->metaObject()->className()},
+            {"layoutClass", plain->document()->documentLayout()->metaObject()->className()},
+            {"blocks", plain->document()->blockCount()}, {"characters", plain->document()->characterCount()},
+            {"list", list}, {"object", object}, {"anchor", anchor}, {"tag", tag},
+            {"childFrames", plain->document()->rootFrame()->childFrames().size()},
+            {"selectionAction", plainSelectionAction}, {"textAction", plainTextAction}, {"geometry", rectangle(plain)}};
         auto *overlay = window.findChild<QWidget *>(QStringLiteral("typelay-overlay"));
         auto *editor = window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"));
         QJsonObject state{{"pid", qint64(getpid())}, {"qtVersion", QString::fromLatin1(qVersion())},
@@ -141,7 +234,8 @@ int main(int argc, char **argv) {
             {"commandQueuedAction", observer.commandQueuedAction},
             {"commandDispatchedAction", observer.commandDispatchedAction},
             {"firstPreedit", observer.firstPreedit}, {"secondPreedit", observer.secondPreedit},
-            {"editorPreedit", observer.editorPreedit},
+            {"editorPreedit", observer.editorPreedit}, {"plainPreedit", observer.plainPreedit},
+            {"plain", plainState},
             {"first", field(first, firstChanges, firstEdits)},
             {"second", field(second, secondChanges, secondEdits)},
             {"overlayVisible", overlay && overlay->isVisible()},
@@ -162,7 +256,7 @@ int main(int argc, char **argv) {
             app.exit(3);
     };
     QByteArray input;
-    QHash<QLineEdit *, QPoint> clippedPositions;
+    QHash<QWidget *, QPoint> clippedPositions;
     fcntl(STDIN_FILENO, F_SETFL, fcntl(STDIN_FILENO, F_GETFL) | O_NONBLOCK);
     QSocketNotifier stdinNotifier(STDIN_FILENO, QSocketNotifier::Read);
     QObject::connect(&stdinNotifier, &QSocketNotifier::activated, [&] {
@@ -177,25 +271,58 @@ int main(int argc, char **argv) {
             const auto command = QJsonDocument::fromJson(input.left(newline)).object();
             input.remove(0, newline + 1);
             const auto op = command.value("op").toString();
+            const bool multiline = command.value("field").toString() == "plain";
             auto *field = command.value("field").toString() == "second" ? second : first;
-            if (op == "set") field->setText(command.value("text").toString());
-            else if (op == "focus") field->setFocus();
+            QWidget *widget = multiline ? static_cast<QWidget *>(plain) : field;
+            if (op == "plain-visible") { plainLabel->setVisible(command.value("enabled").toBool()); plain->setVisible(command.value("enabled").toBool()); }
+            else if (multiline && op == "set") plain->setPlainText(command.value("text").toString());
+            else if (multiline && op == "select") {
+                auto selected = plain->textCursor();
+                selected.setPosition(command.value("start").toInt());
+                selected.setPosition(command.value("start").toInt() + command.value("length").toInt(), QTextCursor::KeepAnchor);
+                plain->setTextCursor(selected);
+            }
+            else if (multiline && op == "undo") plain->undo();
+            else if (multiline && op == "redo") plain->redo();
+            else if (multiline && op == "read-only") plain->setReadOnly(command.value("enabled").toBool());
+            else if (multiline && op == "replace-document") replaceDocument(command.value("text").toString());
+            else if (multiline && op == "maximum-block-count") plain->setMaximumBlockCount(command.value("value").toInt());
+            else if (multiline && op == "on-selection") plainSelectionAction = command.value("action").toString();
+            else if (multiline && op == "on-text") plainTextAction = command.value("action").toString();
+            else if (multiline && op == "structure") {
+                const auto kind = command.value("kind").toString();
+                auto selected = plain->textCursor();
+                selected.select(QTextCursor::Document);
+                if (kind == "list") selected.createList(QTextListFormat::ListDisc);
+                else if (kind == "frame") selected.insertFrame(QTextFrameFormat());
+                else if (kind == "table") selected.insertTable(1, 1);
+                else {
+                    QTextCharFormat format;
+                    if (kind == "object") format.setObjectType(QTextFormat::UserObject);
+                    else if (kind == "anchor") { format.setAnchor(true); format.setAnchorHref(QStringLiteral("https://example.invalid")); }
+                    else if (kind == "tag") format.setProperty(QTextFormat::UserProperty, QStringLiteral("fixture-tag"));
+                    else if (kind == "style") { format.setFontWeight(QFont::Bold); format.setForeground(Qt::blue); }
+                    selected.mergeCharFormat(format);
+                }
+            }
+            else if (op == "set") field->setText(command.value("text").toString());
+            else if (op == "focus") widget->setFocus();
             else if (op == "select") field->setSelection(command.value("start").toInt(), command.value("length").toInt());
             else if (op == "undo") field->undo();
             else if (op == "read-only") field->setReadOnly(command.value("enabled").toBool());
-            else if (op == "password") field->setEchoMode(command.value("enabled").toBool() ? QLineEdit::Password : QLineEdit::Normal);
-            else if (op == "input-mask") field->setInputMask(command.value("text").toString());
-            else if (op == "validator") field->setValidator(command.value("enabled").toBool() ? &validator : nullptr);
-            else if (op == "input-hints") field->setInputMethodHints(Qt::InputMethodHints(command.value("value").toInt()));
-            else if (op == "metadata") field->setAccessibleName(command.value("text").toString());
-            else if (op == "buddy-label") (field == first ? firstLabel : secondLabel)->setText(command.value("text").toString());
+            else if (!multiline && op == "password") field->setEchoMode(command.value("enabled").toBool() ? QLineEdit::Password : QLineEdit::Normal);
+            else if (!multiline && op == "input-mask") field->setInputMask(command.value("text").toString());
+            else if (!multiline && op == "validator") field->setValidator(command.value("enabled").toBool() ? &validator : nullptr);
+            else if (op == "input-hints") widget->setInputMethodHints(Qt::InputMethodHints(command.value("value").toInt()));
+            else if (op == "metadata") widget->setAccessibleName(command.value("text").toString());
+            else if (op == "buddy-label") (multiline ? plainLabel : field == first ? firstLabel : secondLabel)->setText(command.value("text").toString());
             else if (op == "offscreen") {
                 if (command.value("enabled").toBool()) {
-                    if (!clippedPositions.contains(field)) clippedPositions.insert(field, field->pos());
+                    if (!clippedPositions.contains(widget)) clippedPositions.insert(widget, widget->pos());
                     layout->setEnabled(false);
-                    field->move(window.width() + 16, field->y());
-                } else if (clippedPositions.contains(field)) {
-                    field->move(clippedPositions.take(field));
+                    widget->move(window.width() + 16, widget->y());
+                } else if (clippedPositions.contains(widget)) {
+                    widget->move(clippedPositions.take(widget));
                     if (clippedPositions.isEmpty()) { layout->setEnabled(true); layout->invalidate(); layout->activate(); }
                 }
             }

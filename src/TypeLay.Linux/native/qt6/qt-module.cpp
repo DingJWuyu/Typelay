@@ -14,11 +14,15 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMimeData>
+#include <QPlainTextDocumentLayout>
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QPushButton>
 #include <QScopedValueRollback>
 #include <QSocketNotifier>
+#include <QTextBlock>
+#include <QTextDocument>
+#include <QTextFrame>
 #include <QThread>
 #include <QTimer>
 #include <QToolTip>
@@ -111,8 +115,14 @@ protected:
 };
 
 struct Target {
-    QPointer<QLineEdit> field;
+    QPointer<QWidget> field;
     QPointer<QObject> provider;
+    QPointer<QTextDocument> document;
+    QList<QMetaObject::Connection> documentConnections;
+    quint64 documentGeneration = 0;
+    int changePosition = -1, changeRemoved = -1, changeAdded = -1;
+    QLineEdit *line() const { return qobject_cast<QLineEdit *>(field.data()); }
+    QPlainTextEdit *plain() const { return qobject_cast<QPlainTextEdit *>(field.data()); }
     QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     quint64 content = 1, input = 1, focus = 1, storage = 0, selection = 1;
     TypeLayFcitxQtStateV1 state{};
@@ -121,7 +131,7 @@ struct Target {
 
 struct ShortcutRequest {
     Target *target = nullptr;
-    QPointer<QLineEdit> field;
+    QPointer<QWidget> field;
     QPointer<QObject> provider;
     QString kind;
     QJsonObject basis;
@@ -282,26 +292,78 @@ private:
         for (auto *parent = object; parent; parent = parent->parent()) if (parent == card_) return true;
         return false;
     }
+    static bool standardField(QWidget *widget) {
+        return widget && ((widget->metaObject() == &QLineEdit::staticMetaObject && typeid(*widget) == typeid(QLineEdit))
+            || (widget->metaObject() == &QPlainTextEdit::staticMetaObject && typeid(*widget) == typeid(QPlainTextEdit)));
+    }
+    void syncDocument(Target *target) {
+        auto *plain = target->plain();
+        if (!plain || target->document == plain->document()) return;
+        for (const auto &connection : target->documentConnections) disconnect(connection);
+        target->documentConnections.clear();
+        target->document = plain->document();
+        ++target->documentGeneration;
+        ++target->content;
+        invalidate(target, true, false);
+        if (target == overlayTarget_) hideOverlay();
+        if (!target->document) return;
+        const auto generation = target->documentGeneration;
+        auto *document = target->document.data();
+        target->documentConnections.append(connect(document, &QTextDocument::contentsChange, this,
+            [this, target, generation](int position, int removed, int added) {
+                if (target->documentGeneration != generation) return;
+                target->changePosition = position;
+                target->changeRemoved = removed;
+                target->changeAdded = added;
+                if (!target->mutating) invalidate(target, false, false);
+            }));
+        target->documentConnections.append(connect(document, &QTextDocument::contentsChanged, this,
+            [this, target, generation] {
+                if (target->documentGeneration != generation) return;
+                ++target->storage;
+                ++target->content;
+                if (!target->mutating) invalidate(target, true, false);
+            }));
+        target->documentConnections.append(connect(document, &QTextDocument::documentLayoutChanged, this,
+            [this, target, generation] {
+                if (target->documentGeneration == generation) invalidate(target, false, false);
+            }));
+        target->documentConnections.append(connect(document, &QObject::destroyed, this,
+            [this, target, generation] {
+                if (target->documentGeneration != generation) return;
+                target->document = nullptr;
+                ++target->documentGeneration;
+                ++target->content;
+                invalidate(target, true, false);
+                if (target == overlayTarget_) hideOverlay();
+            }));
+    }
     Target *discover(QWidget *widget) {
-        if (!widget || widget->metaObject() != &QLineEdit::staticMetaObject
-            || typeid(*widget) != typeid(QLineEdit) || insideOverlay(widget)) return nullptr;
-        if (auto *existing = targets_.value(widget, nullptr)) return existing;
+        if (!standardField(widget) || insideOverlay(widget)) return nullptr;
+        if (auto *existing = targets_.value(widget, nullptr)) { syncDocument(existing); return existing; }
         auto *target = new Target;
-        target->field = static_cast<QLineEdit *>(widget);
+        target->field = widget;
         targets_.insert(widget, target);
-        connect(target->field, &QLineEdit::textChanged, this, [this, target] {
-            ++target->storage;
-            ++target->content;
-            if (!target->mutating) invalidate(target, true, false);
-        });
-        connect(target->field, &QLineEdit::selectionChanged, this, [this, target] {
+        const auto selectionChanged = [this, target] {
             ++target->selection;
             if (!target->mutating) invalidate(target, false, false);
-        });
-        connect(target->field, &QLineEdit::cursorPositionChanged, this, [this, target] {
-            ++target->selection;
-            if (!target->mutating) invalidate(target, false, false);
-        });
+        };
+        if (auto *line = target->line()) {
+            connect(line, &QLineEdit::textChanged, this, [this, target] {
+                ++target->storage;
+                ++target->content;
+                if (!target->mutating) invalidate(target, true, false);
+            });
+            connect(line, &QLineEdit::selectionChanged, this, selectionChanged);
+            connect(line, &QLineEdit::cursorPositionChanged, this, selectionChanged);
+        } else if (auto *plain = target->plain()) {
+            syncDocument(target);
+            connect(plain, &QPlainTextEdit::selectionChanged, this, selectionChanged);
+            connect(plain, &QPlainTextEdit::cursorPositionChanged, this, selectionChanged);
+            // setDocument has no documentChanged signal. Widget textChanged,
+            // discovery and every provider inspection recheck the real identity.
+            connect(plain, &QPlainTextEdit::textChanged, this, [this, target] { syncDocument(target); });
+        }
         connect(widget, &QObject::destroyed, this, [this, target, widget] {
             cancelShortcut(target);
             shortcutAuthority_ = {};
@@ -324,28 +386,70 @@ private:
             ? discover(widget) : nullptr;
     }
     bool supported(Target *target) const {
-        return target && target->field && target->field->metaObject() == &QLineEdit::staticMetaObject && typeid(*target->field) == typeid(QLineEdit)
-            && target->field->isVisible() && target->field->window()->windowHandle();
+        return target && standardField(target->field) && target->field->isVisible()
+            && target->field->window()->windowHandle()
+            && (!target->plain() || (target->document && target->document == target->plain()->document()));
+    }
+    static bool textFormat(const QTextFormat &format) {
+        if (format.objectType() != QTextFormat::NoObject || format.objectIndex() != -1) return false;
+        const auto properties = format.properties();
+        for (auto it = properties.cbegin(); it != properties.cend(); ++it) {
+            if (it.key() >= QTextFormat::UserProperty) return false;
+        }
+        if (!format.isCharFormat()) return true;
+        const auto character = format.toCharFormat();
+        return !character.isAnchor() && character.anchorHref().isEmpty() && character.anchorNames().isEmpty();
+    }
+    bool plainStructure(Target *target) const {
+        auto *plain = target->plain();
+        auto *document = target->document.data();
+        if (!plain || !document || plain->document() != document || document->maximumBlockCount() != 0
+            || document->characterCount() < 1 || document->characterCount() - 1 > MaxText
+            || document->metaObject() != &QTextDocument::staticMetaObject || typeid(*document) != typeid(QTextDocument)) return false;
+        auto *layout = document->documentLayout();
+        if (!layout || layout->metaObject() != &QPlainTextDocumentLayout::staticMetaObject
+            || typeid(*layout) != typeid(QPlainTextDocumentLayout)
+            || !document->rootFrame() || !document->rootFrame()->childFrames().isEmpty()) return false;
+        // Inspect structure and format metadata, never fragment text. Ordinary
+        // font/color/alignment styling retains Qt's normal cursor semantics.
+        for (auto block = document->begin(); block.isValid(); block = block.next()) {
+            const auto format = block.blockFormat();
+            if (block.textList() || !block.isVisible() || !textFormat(format) || !textFormat(block.charFormat())
+                || format.headingLevel() != 0 || format.hasProperty(QTextFormat::BlockCodeLanguage)
+                || format.hasProperty(QTextFormat::BlockCodeFence)
+                || format.marker() != QTextBlockFormat::MarkerType::NoMarker) return false;
+            for (auto it = block.begin(); !it.atEnd(); ++it) {
+                const auto fragment = it.fragment();
+                if (fragment.isValid() && !textFormat(fragment.charFormat())) return false;
+            }
+        }
+        return true;
     }
     QJsonObject metadata(Target *target) const {
         if (!supported(target)) return {};
         auto *field = target->field.data();
+        auto *line = target->line();
+        auto *plain = target->plain();
         const auto hints = field->inputMethodHints();
-        const bool password = field->echoMode() != QLineEdit::Normal
+        const bool password = (line && line->echoMode() != QLineEdit::Normal)
             || (hints & (Qt::ImhHiddenText | Qt::ImhSensitiveData)) != 0;
         const bool constrained = (hints & (Qt::ImhExclusiveInputMask | Qt::ImhDate | Qt::ImhTime)) != 0;
+        const bool readOnly = line ? line->isReadOnly() || line->validator() || !line->inputMask().isEmpty()
+            : !plain || plain->isReadOnly() || !plainStructure(target);
         QString labels = field->accessibleName();
         for (const auto *label : field->window()->findChildren<QLabel *>()) {
             if (label->buddy() == field) labels += ' ' + label->text();
         }
         return {{"process", ""}, {"label", labels},
             {"automationId", field->objectName()},
-            {"help", (field->accessibleDescription() + ' ' + field->toolTip() + ' ' + field->placeholderText())},
-            {"aria", "QLineEdit"}, {"password", password}, {"enabled", field->isEnabled()},
-            {"readOnly", field->isReadOnly() || field->validator() || !field->inputMask().isEmpty() || constrained},
-            {"offscreen", geometry(target).isEmpty()}, {"inDocument", false}, {"multiline", false},
+            {"help", (field->accessibleDescription() + ' ' + field->toolTip() + ' '
+                + (line ? line->placeholderText() : plain->placeholderText()))},
+            {"aria", line ? "QLineEdit" : "QPlainTextEdit"}, {"password", password}, {"enabled", field->isEnabled()},
+            {"readOnly", readOnly || constrained},
+            {"offscreen", geometry(target).isEmpty()}, {"inDocument", false}, {"multiline", bool(plain)},
             {"hasValue", true}, {"hasTextEdit", bool(target->provider)},
-            {"maximumLength", field->maxLength()}, {"inputMethodHints", qint64(hints)}};
+            {"maximumLength", line ? line->maxLength() : int(MaxText)}, {"inputMethodHints", qint64(hints)},
+            {"documentGeneration", qint64(target->documentGeneration)}};
     }
     QString metadataKey(Target *target) const {
         return QString::fromLatin1(QCryptographicHash::hash(QJsonDocument(metadata(target)).toJson(QJsonDocument::Compact),
@@ -407,10 +511,11 @@ private:
     }
     bool inspect(Target *target) {
         if (!onThread() || !target || !target->field || target->probing || target->mutating) return false;
+        syncDocument(target);
         auto *capability = bind(target);
         if (!capability) return false;
         QPointer<QObject> owner = target->provider;
-        QPointer<QLineEdit> field = target->field;
+        QPointer<QWidget> field = target->field;
         TypeLayFcitxQtStateV1 state{};
         QScopedValueRollback<bool> probing(target->probing, true);
         const bool valid = capability->inspect(field, &state) && field && owner && target->provider == owner
@@ -430,7 +535,7 @@ private:
         return true;
     }
     bool local(Target *target, const TypeLayFcitxQtStateV1 &state) const {
-        if (!target || !target->field || !target->provider || target->probing || !onThread()
+        if (!supported(target) || !target->provider || target->probing || !onThread()
             || target->field->property(ProviderProperty).value<QObject *>() != target->provider) return false;
         auto *capability = qobject_cast<TypeLayFcitxQtV1 *>(target->provider);
         return capability && capability->validateLocal(target->field, &state);
@@ -472,17 +577,35 @@ private:
             {"geometry", geometry(target)}, {"focused", target == focused()}, {"publication", publicationState(target)}};
     }
     QJsonObject selection(Target *target) const {
-        auto *field = target->field.data();
-        const int start = field->selectionStart() < 0 ? field->cursorPosition() : field->selectionStart();
-        return {{"start", start}, {"end", start + field->selectionLength()}};
+        if (const auto *line = target->line()) {
+            const int start = line->selectionStart() < 0 ? line->cursorPosition() : line->selectionStart();
+            return {{"start", start}, {"end", start + line->selectionLength()}};
+        }
+        const auto cursor = target->plain()->textCursor();
+        return {{"start", cursor.selectionStart()}, {"end", cursor.selectionEnd()}};
+    }
+    std::optional<QString> body(Target *target) const {
+        if (const auto *line = target->line()) return line->text();
+        if (!target->document || target->document != target->plain()->document()) return std::nullopt;
+        auto text = target->document->toRawText();
+        // A block separator occupies one UTF-16 unit. Map only paragraphs to
+        // LF; toPlainText would also lose NBSP and genuine U+2028 line breaks.
+        if (text.size() != target->document->characterCount() - 1
+            || text.contains(QChar::ObjectReplacementCharacter) || text.contains(QChar(0xfdd0))
+            || text.contains(QChar(0xfdd1)) || text.contains('\r')) return std::nullopt;
+        text.replace(QChar::ParagraphSeparator, QLatin1Char('\n'));
+        return text;
     }
     QJsonObject capture(Target *target, const QJsonObject &basis,
                         qint64 until = std::numeric_limits<qint64>::max()) {
         const qint64 age = now() - integer(basis, "observedAtMs");
         if (age < 0 || age > 150 || !inspect(target) || !clear(target->state)
             || !authorityMatches(target, basis, true) || !local(target, target->state) || now() >= until) return {};
-        const auto text = target->field->text();
-        if (!validText(text)) return {};
+        const auto captured = body(target);
+        if (!captured || !validText(*captured)) return {};
+        const auto text = *captured;
+        const auto selected = selection(target);
+        if (!boundary(text, integer(selected, "start")) || !boundary(text, integer(selected, "end"))) return {};
         auto result = describe(target);
         if (result.isEmpty() || !authorityMatches(target, basis, true) || !local(target, target->state)
             || now() - integer(basis, "observedAtMs") > 150 || now() >= until) return {};
@@ -658,9 +781,14 @@ private:
             : authorityMatches(target, basis, true);
         if (!metadataMatches(target, approved) || !authorized)
             return reject("write-authority", "EpochChanged");
-        QPointer<QLineEdit> field = target->field;
+        QPointer<QWidget> field = target->field;
         QPointer<QObject> provider = target->provider;
-        const auto text = field->text();
+        const QPointer<QTextDocument> document = target->document;
+        const auto documentGeneration = target->documentGeneration;
+        const auto captured = body(target);
+        if (!captured) return reject("write-mapping", "InvalidText");
+        const auto text = *captured;
+        const bool multiline = target->plain() != nullptr;
         const auto selected = selection(target);
         if (!expected.value("text").isString() || text != expected.value("text").toString())
             return reject("write-source", "SourceChanged");
@@ -679,9 +807,13 @@ private:
         const qint64 from = scope.isEmpty() ? 0 : integer(scope, "start");
         const qint64 to = scope.isEmpty() ? text.size() : integer(scope, "end");
         if (!validText(text) || !validText(replacement) || !validText(result) || replacement.isEmpty()
-            || replacement.contains('\n') || replacement.contains('\r')
+            || (!multiline && replacement.contains('\n')) || replacement.contains('\r')
+            || (multiline && (replacement.contains(QChar::ParagraphSeparator)
+                || replacement.contains(QChar::ObjectReplacementCharacter) || replacement.contains(QChar(0xfdd0))
+                || replacement.contains(QChar(0xfdd1))))
             || !boundary(text, from) || !boundary(text, to) || to < from || (!scope.isEmpty() && to == from)
-            || integer(plan, "caret") != from + replacement.size() || result.size() > field->maxLength()
+            || integer(plan, "caret") != from + replacement.size()
+            || (!multiline && result.size() > target->line()->maxLength())
             || result != text.left(qsizetype(from)) + replacement + text.mid(qsizetype(to)))
             return reject("write-text", "InvalidText");
         const auto initialState = target->state;
@@ -695,14 +827,15 @@ private:
                 && focused() == target && target->input == input && target->focus == focus
                 && target->storage == storage && target->content == content
                 && metadataMatches(target, basis) && metadataMatches(target, approved)
-                && field->text() == text;
+                && target->document == document && target->documentGeneration == documentGeneration
+                && body(target) == captured;
         };
         auto *capability = qobject_cast<TypeLayFcitxQtV1 *>(provider);
         if (!capability || !local(target, initialState))
             return reject("write-local-before-prepare", "ImeUnclear");
         // Prepare against the real provider while the original body is intact,
-        // then inspect again. Standard Clear QLineEdit selection has no pending
-        // preedit to commit; any unexpected reset/output still invalidates proof.
+        // then inspect again. Standard Clear selection has no pending preedit
+        // to commit; any unexpected reset/output still invalidates proof.
         {
             QScopedValueRollback<bool> probing(target->probing, true);
             if (!capability->prepareCaret(field, &initialState))
@@ -715,19 +848,41 @@ private:
             return reject("write-after-prepare", "EpochChanged");
         const auto baseline = target->state;
         QScopedValueRollback<bool> mutation(target->mutating, true);
-        field->setSelection(int(from), int(to - from));
+        if (auto *line = target->line()) line->setSelection(int(from), int(to - from));
+        else {
+            QTextCursor cursor(document);
+            cursor.setPosition(int(from));
+            cursor.setPosition(int(to), QTextCursor::KeepAnchor);
+            target->plain()->setTextCursor(cursor);
+        }
         // Selection signals are application code. Recheck every source/input/IM
         // condition after them and immediately before the first body mutation.
         const auto preparedSelection = QJsonObject{{"start", from}, {"end", to}};
         if (!unchanged() || selection(target) != preparedSelection || !local(target, baseline) || now() >= until)
             return reject("write-after-selection", "EpochChanged");
-        field->insert(replacement); // Native one-edit replacement and native undo.
-        const bool verified = field && provider && target->field == field && target->provider == provider
-            && focused() == target && target->input == input && target->focus == focus
-            && metadataMatches(target, basis) && metadataMatches(target, approved)
-            && target->storage == storage + 1 && target->content == content + 1
-            && field->text() == result && field->cursorPosition() == integer(plan, "caret")
-            && field->selectionLength() == 0 && local(target, baseline);
+        const auto caret = integer(plan, "caret");
+        const QJsonObject writtenSelection{{"start", caret}, {"end", caret}};
+        auto written = [&] {
+            return field && provider && target->field == field && target->provider == provider
+                && target->document == document && target->documentGeneration == documentGeneration
+                && focused() == target && target->input == input && target->focus == focus
+                && metadataMatches(target, basis) && metadataMatches(target, approved)
+                && target->storage == storage + 1 && target->content == content + 1
+                && body(target) == std::optional<QString>(result) && local(target, baseline);
+        };
+        if (auto *line = target->line()) line->insert(replacement);
+        else {
+            auto cursor = target->plain()->textCursor();
+            cursor.beginEditBlock();
+            cursor.insertText(replacement);
+            cursor.endEditBlock(); // Native single undo item, never setPlainText.
+            // Application callbacks can change/destroy the document during the
+            // edit notification. Do not then reset their new cursor/document.
+            if (written() && selection(target) == writtenSelection) target->plain()->setTextCursor(cursor);
+        }
+        const bool verified = written() && selection(target) == writtenSelection
+            && (!multiline || (target->changePosition == from && target->changeRemoved == to - from
+                && target->changeAdded == replacement.size()));
         ++target->input;
         clearPermit();
         if (!verified) {
@@ -924,7 +1079,12 @@ private:
             }
         }
         if (insideOverlay(object)) return false;
-        auto *target = discover(qobject_cast<QWidget *>(object));
+        auto *widget = qobject_cast<QWidget *>(object);
+        auto *target = discover(widget);
+        if (!target && widget) {
+            auto *plain = qobject_cast<QPlainTextEdit *>(widget->parentWidget());
+            if (plain && plain->viewport() == widget) target = discover(plain);
+        }
         if (!target) return false;
         const auto type = event->type();
         if (type == QEvent::InputMethod) {
@@ -956,7 +1116,7 @@ private:
             && target->content == quint64(integer(basis, "contentRevision", 0))
             && overlayView_.value("presentation").toObject().value("editorOwnsText").toBool();
         if (!allowed) { respond(id, QJsonObject{{"returned", false}}); return; }
-        const QPointer<QLineEdit> source = target->field;
+        const QPointer<QWidget> source = target->field;
         const QPointer<QPlainTextEdit> editor = editor_;
         const QPointer<QFrame> card = card_;
         TypeLayFcitxQtStateV1 editorState{};
