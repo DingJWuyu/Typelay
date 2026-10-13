@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -34,13 +35,35 @@ def run_qt(
     """Use the caller's running production desktop/model and input callbacks."""
     qt = arguments.qt_cooperative
     fcitx = arguments.fcitx_cooperative
-    core = fcitx / "core-prefix"
+    manifest_path = fcitx / "manifest.json"
+    bundled = manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text()) if bundled else None
+    if bundled:
+        assert (
+            isinstance(manifest, dict)
+            and manifest.get("schemaVersion") == 1
+            and isinstance(manifest.get("qt6"), dict)
+        ), "explicit cooperation bundle has no supported optional Qt manifest"
+    core = fcitx / ("core" if bundled else "core-prefix")
+    launcher = fcitx / "fcitx-cooperative.py"
+    daemon_executable = core / "bin/fcitx5" if bundled else fcitx / "fcitx5"
     executable = qt / "native/qt-native-fixture"
+    provider = (
+        fcitx / "qt6/plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so"
+        if bundled
+        else qt / "plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so"
+    )
+    consumer = (
+        fcitx / "qt6/plugins/generic/libtypelay-qt6.so"
+        if bundled
+        else qt / "native/qt6/generic/libtypelay-qt6.so"
+    )
     for path in (
         executable,
-        qt / "native/qt6/generic/libtypelay-qt6.so",
-        qt / "plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so",
-        fcitx / "fcitx5",
+        consumer,
+        provider,
+        daemon_executable,
+        *([launcher] if bundled else []),
     ):
         assert path.is_file(), f"required real Qt/Fcitx artifact missing: {path}"
     assert send_tab is not None
@@ -81,6 +104,25 @@ def run_qt(
             "TYPELAY_QT_NATIVE_STATE": str(state_path),
         }
         qt_environment.pop("TYPELAY_DESKTOP", None)
+        qt_environment.pop("TYPELAY_QT_DELAY_FIRST_FINISHED", None)
+        if bundled:
+            # Let the public launcher establish its own package environment.
+            # In particular, never fall back to plugins from the research build.
+            for name in (
+                "XDG_DATA_DIRS",
+                "FCITX_DATA_DIRS",
+                "FCITX_ADDON_DIRS",
+                "TYPELAY_FCITX_AUDITED_ADDON_DIRS",
+                "LIBIME_MODEL_DIRS",
+                "LD_LIBRARY_PATH",
+                "QT_PLUGIN_PATH",
+                "QT_IM_MODULE",
+                "QT_QPA_GENERIC_PLUGINS",
+                "TYPELAY_FCITX_COOPERATIVE",
+                "TYPELAY_QT_COOPERATIVE",
+                "TYPELAY_QT_PROBE",
+            ):
+                qt_environment.pop(name, None)
         # Keep the existing Wayland runtime and session bus: the running host's
         # socket and niri's focus authority belong to this exact session.
         for name in (
@@ -120,12 +162,17 @@ def run_qt(
             (arguments.output / "qt-desktop-fixture.log").open("w") as fixture_log,
         ):
             try:
-                daemon = subprocess.Popen(
-                    [
-                        str(fcitx / "fcitx5"),
+                daemon_command = (
+                    [sys.executable, str(launcher), "daemon"]
+                    if bundled
+                    else [
+                        str(daemon_executable),
                         "--disable=all",
                         "--enable=dbus,dbusfrontend,pinyin,punctuation,pinyinhelper,keyboard,spell,quickphrase",
-                    ],
+                    ]
+                )
+                daemon = subprocess.Popen(
+                    daemon_command,
                     env=qt_environment,
                     stdout=framework_log,
                     stderr=subprocess.STDOUT,
@@ -139,12 +186,29 @@ def run_qt(
                         return False
                     match = re.fullmatch(r"\(uint32 (\d+),\)", owner)
                     assert match and int(match[1]) == daemon.pid, "unexpected Fcitx bus owner"
-                    assert Path(f"/proc/{daemon.pid}/exe").resolve() == (fcitx / "fcitx5").resolve()
+                    assert Path(f"/proc/{daemon.pid}/exe").resolve() == daemon_executable.resolve()
+                    if bundled:
+                        assert b"--disable=ibusfrontend" in Path(
+                            f"/proc/{daemon.pid}/cmdline"
+                        ).read_bytes().split(b"\0")
                     return True
 
                 wait_for(private_owner, "private Core22 Fcitx did not own the existing session bus")
+                fixture_command = (
+                    [
+                        sys.executable,
+                        str(launcher),
+                        "launch",
+                        "--qt6",
+                        "/usr/bin/env",
+                        "TYPELAY_QT_PROBE=1",
+                        str(executable),
+                    ]
+                    if bundled
+                    else [str(executable)]
+                )
                 fixture = subprocess.Popen(
-                    [str(executable)],
+                    fixture_command,
                     env=qt_environment,
                     stdin=subprocess.PIPE,
                     text=True,
@@ -336,10 +400,13 @@ def run_qt(
                 runtime_version = state()["qtVersion"]
                 requested_version = environment.get("TYPELAY_EXPECT_QT_VERSION")
                 binaries = {
-                    "provider_sha256": qt
-                    / "plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so",
-                    "consumer_sha256": qt / "native/qt6/generic/libtypelay-qt6.so",
+                    "provider_sha256": provider,
+                    "consumer_sha256": consumer,
                     "fixture_sha256": executable,
+                }
+                binary_hashes = {
+                    name: hashlib.sha256(path.read_bytes()).hexdigest()
+                    for name, path in binaries.items()
                 }
                 binary_names = {path.name for path in binaries.values()}
                 mapped_paths = set()
@@ -358,14 +425,21 @@ def run_qt(
                     json.dumps(
                         {
                             "pid": fixture.pid,
+                            "launch_mode": "relocated-bundle" if bundled else "research-build",
+                            "daemon_pid": daemon.pid,
+                            "daemon_executable": str(Path(f"/proc/{daemon.pid}/exe").resolve()),
+                            "daemon_argv": daemon_command,
+                            "fixture_argv": fixture_command,
+                            "manifest_sha256": hashlib.sha256(
+                                manifest_path.read_bytes()
+                            ).hexdigest()
+                            if bundled
+                            else None,
                             "build_version": build_version,
                             "runtime_version": runtime_version,
                             "requested_version": requested_version,
                             "requested_platform": qt_environment["QT_QPA_PLATFORM"],
-                            **{
-                                name: hashlib.sha256(path.read_bytes()).hexdigest()
-                                for name, path in binaries.items()
-                            },
+                            **binary_hashes,
                             "mapped_libraries": [
                                 {"path": path, "basename": Path(path).name}
                                 for path in sorted(mapped_paths)
@@ -382,6 +456,25 @@ def run_qt(
                 mapped_names = {Path(path).name for path in mapped_paths}
                 for path in binaries.values():
                     assert str(path.resolve()) in mapped_paths, f"Qt binary was not loaded: {path}"
+                assert Path(f"/proc/{fixture.pid}/exe").resolve() == executable.resolve()
+                if bundled:
+                    assert manifest["qt6"]["qtVersion"] == build_version
+                    for name, path in (
+                        ("provider_sha256", provider),
+                        ("consumer_sha256", consumer),
+                    ):
+                        assert path.resolve().is_relative_to((fcitx / "qt6/plugins").resolve())
+                        assert (
+                            binary_hashes[name]
+                            == manifest["files"][path.relative_to(fcitx).as_posix()]["sha256"]
+                        ), f"Relocated Qt binary differs from the manifest: {path}"
+                        assert [
+                            mapped for mapped in mapped_paths if Path(mapped).name == path.name
+                        ] == [str(path.resolve())], f"Qt plugin loaded outside its bundle: {path}"
+                    assert (
+                        binary_hashes["fixture_sha256"]
+                        == manifest["qt6"]["binarySha256"]["native/qt-native-fixture"]
+                    ), "Owned Qt fixture differs from the packaged build provenance"
                 for name in ("Core", "Gui", "Widgets", "DBus", "WaylandClient"):
                     assert f"libQt6{name}.so.{build_version}" in mapped_names, name
                 for path in mapped_paths:

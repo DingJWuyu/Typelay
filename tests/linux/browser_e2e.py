@@ -180,6 +180,43 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(result["snapshot"]["text"], "Hello")
         self.assertLessEqual(result["snapshot"]["observedAtMs"], result["hostUpperAtReturn"])
 
+    def test_source_capture_reuses_description_with_live_focus_and_metadata_checks(self):
+        self.page.keyboard.insert_text("Hello")
+        result = self.page.evaluate("""() => {
+          const description = fixtureCommand({id: 940, op: 'describe'});
+          const first = fixtureCommand({id: 941, op: 'capture', data: {
+            target: description.target, authority: description.authority, requireFocused: true}});
+          if (!first) return {first: false};
+          const second = fixtureCommand({id: 942, op: 'capture', data: {
+            target: first.target, authority: first.authority, requireFocused: true}});
+          if (!second) return {first: true, second: false};
+          window.fixtureCachedCapture = {target: second.target, authority: second.authority, requireFocused: true};
+          window.fixtureCaptureExpires = performance.now() + 150;
+          document.querySelector('#other').focus();
+          const unfocused = fixtureCommand({id: 943, op: 'capture', data: {
+            target: second.target, authority: second.authority, requireFocused: true}});
+          document.querySelector('#source').focus();
+          document.querySelector('#source').setAttribute('autocomplete', 'current-password');
+          const sensitive = fixtureCommand({id: 944, op: 'capture', data: {
+            target: second.target, authority: second.authority, requireFocused: true}});
+          return {first: true, second: true, text: second.text,
+            renewed: first.authority.token !== second.authority.token, unfocused, sensitive};
+        }""")
+        self.assertTrue(result["first"])
+        self.assertTrue(result.get("second"))
+        self.assertEqual(result["text"], "Hello")
+        self.assertTrue(result["renewed"])
+        self.assertIsNone(result["unfocused"])
+        self.assertIsNone(result["sensitive"])
+        self.page.wait_for_function("performance.now() > fixtureCaptureExpires", timeout=1000)
+        expired = self.page.evaluate("""() => {
+          document.querySelector('#source').removeAttribute('autocomplete');
+          const snapshot = fixtureCommand({id: 945, op: 'capture', data: fixtureCachedCapture});
+          return {snapshot, reason: fixtureCommand({id: 946, op: 'describe'}).diagnostics.lastCaptureReason};
+        }""")
+        self.assertIsNone(expired["snapshot"])
+        self.assertEqual(expired["reason"], "authorityExpired")
+
     def test_unrelated_clock_rebase_cannot_extend_published_deadline(self):
         self.page.keyboard.insert_text("Hello")
         template = self.plan({"target": "", "text": "", "selection": {}, "observedAtMs": 0})

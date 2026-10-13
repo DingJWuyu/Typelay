@@ -146,6 +146,21 @@ def build(out, forced_sync_diagnostic=False):
             f"-I{headers}/QtCore/{qt}/QtCore",
         ]
     )
+    runtime_probe = ROOT / "packaging/linux/fcitx-cooperative/qt-runtime-probe.cpp"
+    run(
+        [
+            "c++",
+            "-std=c++17",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-fPIC",
+            runtime_probe,
+            "-o",
+            out / "qt-runtime-probe",
+            *shlex.split(run(["pkg-config", "--cflags", "--libs", "Qt6Core"])),
+        ]
+    )
     (out / "versions.json").write_text(
         json.dumps(
             {
@@ -157,11 +172,24 @@ def build(out, forced_sync_diagnostic=False):
                     str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
                     for path in [
                         ABI,
+                        runtime_probe,
+                        HERE / "run.py",
+                        HERE / "fixture.cpp",
+                        HERE / "qpa_ack.cpp",
                         HERE / "fcitx5-qt.patch",
                         ROOT / "tests/linux/qt_native_fixture.cpp",
                         *sorted((ROOT / "src/TypeLay.Linux/native/qt6").glob("*")),
                     ]
                     if path.is_file()
+                },
+                "binary_sha256": {
+                    name: hashlib.sha256((out / name).read_bytes()).hexdigest()
+                    for name in (
+                        "plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so",
+                        "native/qt6/generic/libtypelay-qt6.so",
+                        "native/qt-native-fixture",
+                        "qt-runtime-probe",
+                    )
                 },
                 "qt6": qt,
                 "packages": run(["pacman", "-Q", "qt6-base", "fcitx5"]),

@@ -92,13 +92,14 @@ jobs:
       options: --shm-size=1g
     timeout-minutes: 30
     env:
+      TYPELAY_EXPECT_QT_VERSION: 6.11.2
       CCACHE_DIR: ${{ github.workspace }}/artifacts/ccache
       CCACHE_BASEDIR: ${{ github.workspace }}
       CCACHE_COMPILERCHECK: content
       CCACHE_MAXSIZE: 512MiB
     steps:
       - name: Install target desktop build dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 gtk4 at-spi2-core json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols ccache opencc procps-ng zstd qt6-base qt6-wayland libxkbcommon libxcb
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 gtk4 at-spi2-core json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols ccache opencc procps-ng zstd qt6-base libxkbcommon libxcb
       - name: Match the target GTK4 upstream release
         run: |
           mkdir -p /tmp/typelay-target-sdk
@@ -110,6 +111,18 @@ jobs:
           echo '894fd81f845eb49137d73056f62b27f2d194d2990ebe6dfdc956cd678db76048  gtk4.pkg.tar.zst.sig' | sha256sum -c -
           pacman -U --noconfirm ./gtk4.pkg.tar.zst
           test "$(pkg-config --modversion gtk4)" = 4.22.5
+      - name: Match the target Qt upstream ABI
+        run: |
+          mkdir -p /tmp/typelay-target-sdk
+          cd /tmp/typelay-target-sdk
+          package='qt6-base-6.11.2-3-x86_64.pkg.tar.zst'
+          curl --fail --location "https://archive.archlinux.org/packages/q/qt6-base/$package" -o "$package"
+          curl --fail --location "https://archive.archlinux.org/packages/q/qt6-base/$package.sig" -o "$package.sig"
+          echo '257c5ef6180119d5b4365bdfe2a2ad051694b5dff390eac8e736dd78b8107b21  qt6-base-6.11.2-3-x86_64.pkg.tar.zst' | sha256sum -c -
+          echo 'abf939ab10c2d7f28af81e5230c72e2acbd803fe43590fda331f474ec871dcfb  qt6-base-6.11.2-3-x86_64.pkg.tar.zst.sig' | sha256sum -c -
+          pacman -U --noconfirm "./$package"
+          test "$(pkg-config --modversion Qt6Core)" = 6.11.2
+          test -f /usr/lib/qt6/plugins/platforms/libqwayland.so
       - name: Initialize the disposable container D-Bus identity
         run: dbus-uuidgen --ensure=/etc/machine-id
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -201,8 +214,16 @@ jobs:
         # fixture failure stays red but must not hide the independent real
         # default-session deployment result for those same built components.
         if: ${{ !cancelled() && (steps.fcitx.outcome == 'success' || steps.fcitx.outcome == 'failure') }}
+        env:
+          QT_PROBE_OUTCOME: ${{ steps.qt.outcome }}
         run: |
-          python packaging/linux/fcitx-cooperative/pack.py --build-output artifacts/linux/fcitx-cooperative-5.1.22 --output artifacts/TypeLay-Fcitx-cooperative.tar.gz
+          set --
+          if [ "$QT_PROBE_OUTCOME" = success ]; then
+            set -- --qt-output artifacts/linux/qt-cooperative
+          else
+            echo "Qt probe did not pass; preserve its failure and collect independent GTK evidence."
+          fi
+          python packaging/linux/fcitx-cooperative/pack.py --build-output artifacts/linux/fcitx-cooperative-5.1.22 "$@" --output artifacts/TypeLay-Fcitx-cooperative.tar.gz
           mkdir -p "artifacts/linux/relocated 输入法"
           tar -xzf artifacts/TypeLay-Fcitx-cooperative.tar.gz -C "artifacts/linux/relocated 输入法"
           # Match the user's profile-writing versions in this disposable container.
@@ -260,14 +281,14 @@ jobs:
           export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
           python tests/linux/native_e2e.py --desktop --desktop-scope gtk4 --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk4-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
-      - name: Exercise research Qt6 QLineEdit with the real local model
-        if: ${{ !cancelled() && steps.models.outcome == 'success' && steps.qt.outcome == 'success' }}
+      - name: Exercise relocated Qt6 widgets with the real local model
+        if: ${{ !cancelled() && steps.models.outcome == 'success' && steps.qt.outcome == 'success' && steps.fcitx-package.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           export XDG_CONFIG_HOME="$PWD/artifacts/linux/qt-desktop-config"
           export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
-          python tests/linux/native_e2e.py --desktop --desktop-scope qt --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/qt-desktop --fcitx-cooperative artifacts/linux/fcitx-cooperative-5.1.22 --qt-cooperative artifacts/linux/qt-cooperative
+          python tests/linux/native_e2e.py --desktop --desktop-scope qt --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/qt-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative" --qt-cooperative artifacts/linux/qt-cooperative
       - name: Verify installed VS Code command with the real local model
         if: ${{ !cancelled() && steps.models.outcome == 'success' }}
         run: |

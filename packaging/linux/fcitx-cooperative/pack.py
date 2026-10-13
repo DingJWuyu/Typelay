@@ -403,7 +403,106 @@ def verify_sources(build):
     return record
 
 
-def manifest(bundle, versions, pins, inputs):
+def copy_qt(qt, bundle):
+    versions = read_object(qt / "versions.json")
+    if (
+        versions.get("qt_build_version") != "6.11.2"
+        or versions.get("fcitx5_qt_source_version") != "5.1.15"
+    ):
+        raise ValueError("Optional Qt bundle requires Qt 6.11.2 and Fcitx Qt 5.1.15")
+    pin = "272b6b9eba97f0ed97e8a5caaf0bb22c6123f462"
+    archive_hash = "b2c5f7c47009656ce79eac0c8f047a73b224210d0bc232150349577525fbd0d3"
+    if versions.get("source_commit") != pin or versions.get("source_sha256") != archive_hash:
+        raise ValueError("Unexpected Fcitx Qt source pin")
+    if sha256(qt / "fcitx5-qt.tar.gz") != archive_hash:
+        raise ValueError("Missing matching original Fcitx Qt archive")
+    files = {
+        "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-qt-v1.h",
+        "packaging/linux/fcitx-cooperative/qt-runtime-probe.cpp",
+        "tests/linux/qt_native_fixture.cpp",
+        *(
+            f"tests/linux/qt_cooperative/{name}"
+            for name in ("run.py", "fixture.cpp", "qpa_ack.cpp", "fcitx5-qt.patch")
+        ),
+        *(
+            str(p.relative_to(ROOT))
+            for p in (ROOT / "src/TypeLay.Linux/native/qt6").iterdir()
+            if p.is_file()
+        ),
+    }
+    inputs = versions.get("build_inputs", {})
+    if set(inputs) != files or any(sha256(ROOT / name) != inputs[name] for name in files):
+        raise ValueError("Qt binaries were built from different checkout inputs")
+    probe = read_object(qt / "result.json")
+    if probe.get("passed") is not True or not probe.get("default_async_required"):
+        raise ValueError("Successful original async Qt regression evidence required")
+    runtime = read_object(qt / "async-runtime.json")
+    if runtime.get("build_version") != "6.11.2" or runtime.get("runtime_version") != "6.11.2":
+        raise ValueError("Qt probe runtime is not version matched")
+    binaries = {
+        "plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so": "qt6/plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so",
+        "native/qt6/generic/libtypelay-qt6.so": "qt6/plugins/generic/libtypelay-qt6.so",
+        "native/qt-native-fixture": None,
+        "qt-runtime-probe": "qt6/bin/qt-runtime-probe",
+    }
+    for name, destination in binaries.items():
+        digest = sha256(qt / name)
+        if versions.get("binary_sha256", {}).get(name) != digest:
+            raise ValueError(f"Qt binary changed after its build: {name}")
+        if destination:
+            target = bundle / destination
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(qt / name, target)
+    upstream = qt / f"fcitx5-qt-{pin}"
+    abi = "src/TypeLay.Linux/native/fcitx5/typelay-fcitx-qt-v1.h"
+    if sha256(upstream / "common" / Path(abi).name) != inputs[abi]:
+        raise ValueError("Qt source ABI differs from the recorded input")
+    subprocess.run(
+        [
+            "patch",
+            "--dry-run",
+            "--reverse",
+            "--force",
+            "--fuzz=0",
+            "-p1",
+            "-i",
+            str(ROOT / "tests/linux/qt_cooperative/fcitx5-qt.patch"),
+        ],
+        cwd=upstream,
+        check=True,
+        timeout=30,
+        stdout=subprocess.PIPE,
+    )
+    for license_name in ("BSD-3-Clause.txt", "LGPL-2.1-or-later.txt"):
+        if not (upstream / "LICENSES" / license_name).is_file():
+            raise ValueError("Missing original Fcitx Qt license")
+    copy_tree(upstream, bundle / "source/upstream/fcitx5-qt")
+    for name in files:
+        target = bundle / "source" / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / name, target)
+    with (bundle / "THIRD_PARTY_NOTICES.md").open("a") as notices:
+        notices.write(
+            "\n## Optional Qt cooperation\nFcitx5-Qt 5.1.15 is modified by TypeLay. "
+            "Original BSD-3-Clause/LGPL-2.1-or-later notices and complete modified "
+            "sources are in source/upstream/fcitx5-qt; the dated patch and build "
+            "recipe are in source/tests/linux/qt_cooperative. Build with the "
+            "Qt 6.11.2 SDK using that run.py and the private Fcitx build. "
+            "The Qt libraries themselves are supplied by the user system.\n"
+        )
+    return {
+        "qtVersion": "6.11.2",
+        "fcitxQtVersion": "5.1.15",
+        "sourceCommit": pin,
+        "sourceSha256": archive_hash,
+        "buildInputs": inputs,
+        "binarySha256": versions["binary_sha256"],
+        "probeEvidenceSha256": sha256(qt / "result.json"),
+        "modelValidation": "required after relocation",
+    }
+
+
+def manifest(bundle, versions, pins, inputs, qt=None):
     files = {}
     for path in sorted(bundle.rglob("*")):
         relative = path.relative_to(bundle).as_posix()
@@ -437,6 +536,7 @@ def manifest(bundle, versions, pins, inputs):
             "libimeDataDirectory": "core/share/libime",
             "libimeModelDirectory": "core/lib/libime",
         },
+        "qt6": qt,
         "files": files,
     }
 
@@ -475,6 +575,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-output", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="Destination .tar.gz archive")
+    parser.add_argument("--qt-output", type=Path, help="Fresh matching Qt build output (optional)")
     args = parser.parse_args()
     build = args.build_output.resolve(strict=True)
     output = args.output.resolve()
@@ -492,8 +593,9 @@ def main():
         launcher = bundle / "fcitx-cooperative.py"
         shutil.copyfile(ROOT / "packaging/linux/fcitx-cooperative/fcitx-cooperative.py", launcher)
         launcher.chmod(0o755)
+        qt = copy_qt(args.qt_output.resolve(strict=True), bundle) if args.qt_output else None
         (bundle / "manifest.json").write_text(
-            json.dumps(manifest(bundle, versions, pins, inputs), indent=2, ensure_ascii=False)
+            json.dumps(manifest(bundle, versions, pins, inputs, qt), indent=2, ensure_ascii=False)
             + "\n",
             encoding="utf-8",
         )

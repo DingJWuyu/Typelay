@@ -127,6 +127,11 @@ class Input:
         self.capture_failures = []
         self.timing_metrics = {}
         self.browser_diagnostics = {}
+        self.browser_capture = None
+        self.browser_capture_generation = 0
+        self.browser_capture_counts = Counter()
+        self.browser_capture_round = 0
+        self.browser_rounds = []
         self.native_publication = None
         self.publication_generation = 0
         self.published_plan = None
@@ -155,11 +160,27 @@ class Input:
             pid, _, _ = peer_credentials(connection)
             peer = Peer(self, connection, pid)
             self.peers.add(peer)
+            self.clear_browser_capture()
         except OSError:
             connection.close()
         return True
 
+    def clear_browser_capture(self):
+        self.browser_capture = None
+        self.browser_capture_generation += 1
+
+    def browser_capture_identity(self, peer):
+        return (
+            peer,
+            peer.lifetime,
+            self.window_epoch,
+            self.user_epoch,
+            self.foreground_epoch,
+            self.content_epoch,
+        )
+
     def lost(self, peer):
+        self.clear_browser_capture()
         if self.published_plan and self.published_plan[0] is peer:
             self.invalidate_publication()
         self.peers.discard(peer)
@@ -209,6 +230,7 @@ class Input:
             self.host.send("state", value)
 
     def changed(self):
+        self.clear_browser_capture()
         window = self.niri.focused or {}
         identity = (self.niri.ready, window.get("id"))
         if identity != self.last_focus:
@@ -220,6 +242,7 @@ class Input:
         self.state()
 
     def set_overlay_focus(self, active):
+        self.clear_browser_capture()
         self.overlay_focused = active
         self.state()
 
@@ -292,6 +315,7 @@ class Input:
             self.timing("captureElapsed", stamp - self.capture_started_at)
             self.timing("snapshotAge", stamp - result["snapshot"]["observedAtMs"])
         if result is None:
+            self.clear_browser_capture()
             self.invalidate_publication()
             stamp = now_ms()
             self.capture_failures.append(
@@ -399,6 +423,17 @@ class Input:
             or not now_ms() < until <= issued["permit"]["expiresAtMs"]
         ):
             return
+        round_timing = issued.get("roundTiming")
+        if round_timing is not None and "previousPermitRemainingMs" in value:
+            remaining = value["previousPermitRemainingMs"]
+            if remaining is None or (
+                type(remaining) in (int, float)
+                and math.isfinite(remaining)
+                and -10000 <= remaining <= 10000
+            ):
+                round_timing.setdefault("firstAckAtMs", now_ms())
+                round_timing.setdefault("readyUntilMs", until)
+                round_timing.setdefault("previousPermitRemainingMs", remaining)
         self.timing("ackRemaining", until - now_ms())
         self.native_publication = {
             "peer": peer,
@@ -431,6 +466,8 @@ class Input:
             "captureFailures": list(self.capture_failures),
             "timingMs": {key: dict(value) for key, value in self.timing_metrics.items()},
             "browser": self.browser_diagnostics,
+            "browserCaptureCounts": dict(self.browser_capture_counts),
+            "browserRounds": [dict(value) for value in self.browser_rounds],
             "compositorReady": self.niri.ready,
             "compositorAgeMs": max(0, now_ms() - self.niri.observed_at),
             "focus": self.focus(),
@@ -459,17 +496,63 @@ class Input:
         if peer not in self.peers:
             return self.captured("unsupported-application")
         publication_generation = self.publication_generation
-        description = await peer.link.ask("describe", {"target": target} if target else {})
+        cached, self.browser_capture = self.browser_capture, None
+        capture_generation = self.browser_capture_generation
+        identity = self.browser_capture_identity(peer)
+        browser_source = peer.backend == "browser" and focus == "Source"
+        reuse = bool(
+            browser_source
+            and cached
+            and cached["identity"] == identity
+            and self.bound == target_id(peer, cached["description"]["target"])
+            and 0 <= now_ms() - cached["description"]["authority"]["observedAtMs"] < 150
+        )
+        counter = "cachedDescribeUsed" if reuse else "describeRpcCount"
+        round_timing = None
+        if browser_source:
+            self.browser_capture_round = min(self.browser_capture_round + 1, 2**31 - 1)
+            round_timing = {
+                "round": self.browser_capture_round,
+                "cached": reuse,
+                "startedMs": self.capture_started_at,
+            }
+            self.browser_rounds.append(round_timing)
+            del self.browser_rounds[:-16]
+            self.browser_capture_counts[counter] = min(
+                self.browser_capture_counts[counter] + 1, 1000000
+            )
+        description = (
+            cached["description"]
+            if reuse
+            else await peer.link.ask("describe", {"target": target} if target else {})
+        )
+        if round_timing is not None:
+            round_timing["describedMs"] = now_ms()
         if not description:
             return self.captured("no-native-field")
         if peer.backend == "browser":
             self.remember_browser_diagnostics(description.get("diagnostics"))
-        self.remember_publication(peer, description, publication_generation)
+        if not reuse:
+            self.remember_publication(peer, description, publication_generation)
         if not await self.approve(peer, description):
             return self.captured("excluded-or-sensitive")
+        if round_timing is not None:
+            round_timing["approvedMs"] = now_ms()
+        if reuse and (
+            capture_generation != self.browser_capture_generation
+            or identity != self.browser_capture_identity(peer)
+        ):
+            return self.captured("window-changing")
         native = await peer.link.ask(
-            "capture", {"target": description["target"], "authority": description["authority"]}
+            "capture",
+            {
+                "target": description["target"],
+                "authority": description["authority"],
+                "requireFocused": browser_source,
+            },
         )
+        if round_timing is not None:
+            round_timing["capturedMs"] = now_ms()
         if not native:
             return self.captured("native-read-declined")
         if not self.fresh():
@@ -485,6 +568,23 @@ class Input:
             return self.captured("no-visible-anchor")
         snapshot, record = self.remember(peer, native, window, geometry)
         self.bound, self.bound_observation = snapshot["target"], record
+        if browser_source:
+            round_timing["snapshotAtMs"] = native["observedAtMs"]
+            record["roundTiming"] = round_timing
+            self.remember_browser_diagnostics(native.get("diagnostics"))
+            self.remember_publication(peer, native, publication_generation)
+            if (
+                capture_generation == self.browser_capture_generation
+                and identity == self.browser_capture_identity(peer)
+                and native["target"] == description["target"]
+            ):
+                # Retain metadata approval inputs only, never the source body.
+                self.browser_capture = {
+                    "identity": identity,
+                    "description": {
+                        key: native[key] for key in ("target", "metadata", "authority")
+                    },
+                }
         self.state()
         return self.captured(
             "supported",
@@ -574,6 +674,28 @@ class Input:
             )
         else:
             permit = value.get("permit")
+            round_timing = record.get("roundTiming")
+            if round_timing is not None and permit:
+                previous = self.issued.get(self.published_plan[1]) if self.published_plan else None
+                old = previous["permit"]["plan"] if previous else None
+                plan = permit["plan"]
+                round_timing.update(
+                    {
+                        "publishedMs": now_ms(),
+                        "permitUntilMs": permit["expiresAtMs"],
+                        "stableCandidate": bool(
+                            old
+                            and all(
+                                old.get(key) == plan.get(key)
+                                for key in ("replacement", "scope", "caret")
+                            )
+                            and all(
+                                old["expected"].get(key) == plan["expected"].get(key)
+                                for key in ("target", "text", "selection")
+                            )
+                        ),
+                    }
+                )
             self.invalidate_publication()
             if permit:
                 self.timing("publishRemaining", permit["expiresAtMs"] - now_ms())
@@ -585,6 +707,7 @@ class Input:
                     "permit": permit,
                     "lease": lease,
                     "time": now_ms(),
+                    "roundTiming": round_timing,
                 }
                 while len(self.issued) > 32:
                     self.issued.popitem(last=False)
@@ -599,6 +722,7 @@ class Input:
             )
 
     def revoke(self, shortcuts=False):
+        self.clear_browser_capture()
         self.invalidate_publication()
         for peer in list(self.peers):
             if peer.lifetime and peer.link.channel.alive:
@@ -669,6 +793,7 @@ class Input:
         elif name == "ui":
             self.ui_event(peer, value)
         elif name == "input":
+            self.clear_browser_capture()
             if self.published_plan and self.published_plan[0] is peer:
                 self.invalidate_publication()
             if peer is self.focused_peer() or (
@@ -687,12 +812,14 @@ class Input:
                     self.bound = target_id(peer, value["target"])
                 self.state()
         elif name == "destroy":
+            self.clear_browser_capture()
             if self.bound == target_id(peer, value["target"]):
                 self.bound = self.bound_observation = None
                 self.window_epoch += 1
                 self.revoke()
                 self.state()
         elif name == "accepted":
+            self.clear_browser_capture()
             if self.published_plan and self.published_plan[0] is peer:
                 self.invalidate_publication()
             issued = self.issued.pop(value["planId"], None)

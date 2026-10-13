@@ -284,7 +284,7 @@
     }
     return true;
   }
-  function capture(field, basis) {
+  function capture(field, basis, requireFocused = false) {
     drainMutations();
     const record = field?.authorities?.get(basis?.token);
     authorityAgeMs = record ? monoNow() - record.mono : null;
@@ -295,6 +295,7 @@
       return noteCapture(lastClockReason);
     }
     if (field.ime !== "Clear") return noteCapture("ime");
+    if (requireFocused && !focused(field)) return noteCapture("postcheck");
     // Body access occurs only after the desktop's metadata approval. Unknown or
     // composing input is not shipped even for preview: there is no committed range API.
     const captured = field.richText ? rich.capture(field.element) : null;
@@ -311,6 +312,7 @@
     if (!result || !approved(field, basis)) return noteCapture("postcheck");
     if (field.ime !== "Clear") return noteCapture("ime");
     if (!issued(field, basis) || !clockValid()) return noteCapture(lastClockReason);
+    if (requireFocused && !focused(field)) return noteCapture("postcheck");
     noteCapture("supported");
     return {...result, diagnostics: diagnostics(), text, selection: captured?.selection || selection(field),
       ime: field.ime, observedAtMs: now(), writeSupported: !field.quarantined};
@@ -600,14 +602,27 @@
     const field = data.target ? targets.get(data.target) : fieldFor(document.activeElement);
     switch (message.op) {
       case "describe": return describe(field);
-      case "capture": return capture(field, data.authority);
+      case "capture": return capture(field, data.authority, data.requireFocused === true);
       case "publish": {
+        const previous = publication, oldBasis = previous?.authority, basis = data.authority;
+        const sameSource = field && previous?.target === field.id && data.target === field.id
+          && field.content === basis?.contentRevision && field.input === basis?.inputRevision
+          && field.focus === basis?.focusRevision
+          && oldBasis?.contentRevision === basis?.contentRevision
+          && oldBasis?.inputRevision === basis?.inputRevision
+          && oldBasis?.focusRevision === basis?.focusRevision
+          && oldBasis?.metadataKey === basis?.metadataKey
+          && previous?.permit?.plan?.expected?.text === data.permit?.plan?.expected?.text;
+        const previousRemaining = sameSource ? Math.min(previous.expiresAtPerformanceMs - monoNow(),
+          previous.expiresAtWallMs - Date.now()) : NaN;
+        const previousPermitRemainingMs = Number.isFinite(previousRemaining)
+          ? Math.max(-10000, Math.min(10000, previousRemaining)) : null;
         const expiresAtPerformanceMs = data.permit ? deadline(data.permit.expiresAtMs, 100) : NaN;
         publication = {...data, expiresAtPerformanceMs,
           expiresAtWallMs: data.permit?.expiresAtMs - clock?.upperWall};
         // Metadata-only acknowledgment of the publication actually received by
         // this document. It grants no permission beyond the existing permit.
-        if (field) send("publication", {target: field.id, ...publicationState(field)});
+        if (field) send("publication", {target: field.id, ...publicationState(field), previousPermitRemainingMs});
         return {published: !data.permit || !!publication && liveDeadline(publication)};
       }
       case "publish-shortcut": shortcut = calibrate(field, data.authority) ? data : null; return null;

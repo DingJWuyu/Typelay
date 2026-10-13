@@ -1,6 +1,6 @@
 # Fcitx 合作组件预览
 
-这套可选组件让 TypeLay 与实际 Fcitx 输入事务协作。已验证范围包括 GTK3、GTK4 的标准 GtkEntry 和原生 GtkEntryBuffer；标准纯文本 TextView 使用原生 TextBuffer，两代已有多行选区、真实模型、Tab 和 IME 实证；GTK3 验证宿主 user-action 分组，GTK4 另验原生 undo/redo。GTK4 须单独以 --gtk4 启动。Qt、非纯文本/自定义控件、通用 Electron 尚未开放。普通 TypeLay 安装不会安装或启用这些组件。
+这套可选组件让 TypeLay 与实际 Fcitx 输入事务协作。已验证范围包括 GTK3、GTK4 的标准 GtkEntry 和原生 GtkEntryBuffer；标准纯文本 TextView 使用原生 TextBuffer，两代已有多行选区、真实模型、Tab 和 IME 实证；GTK3 验证宿主 user-action 分组，GTK4 另验原生 undo/redo。GTK4 须单独以 --gtk4 启动。Qt 的可选同版构建与启动入口见末节；非纯文本/自定义控件、通用 Electron 尚未开放。普通 TypeLay 安装不会安装或启用这些组件。
 
 当前固定 Core 5.1.22、Chinese Addons 5.1.14、GTK IM 5.1.7、完整私有 LibIME 1.1.16。对应组件已在隔离环境完整构建，实际库、模型路径与同版官方包均有校验。搬迁后的私有包已通过默认组件会话、配置/前台重启、原 session bus，以及嵌套 niri 的实际 CPU 模型、自动预览、一次 Tab 写回、编辑后两阶段 Tab 与拼音组合保护。实际按键由隔离桌面自动化送入，不能代替用户 CachyOS 桌面的物理输入验收。
 
@@ -101,3 +101,13 @@ GTK4 应用使用 `python fcitx-cooperative.py launch --gtk4 应用命令`。只
 完整上游 Fcitx 的 IBus 兼容前端会尝试接管 IBus 服务。因此私有进程明确排除该兼容前端，并在启动前检查 session bus 的 IBus owner 和当前用户的 ibus-daemon 进程；检测到活动 IBus 或无法确认时拒绝。原 daemon 的关闭、桌面启动方式与任何冲突输入法的调整仍由用户明确操作。
 
 私有会话的托盘重启沿实际可执行文件 exec，并保留原参数和 IBus 排除项，仍由原前台终端管理。配置菜单运行同目录打包的原 fcitx5-configtool 脚本，由它寻找系统官方配置 GUI；未安装配置 GUI 时按原脚本提示处理，不更改系统安装。
+
+## 可选 Qt 6.11.2 构建与启动
+
+Qt 组件是显式可选内容，只有使用 `pack.py --qt-output <本轮Qt构建目录>` 才进入包。固定 Fcitx5-Qt 5.1.15 和 Qt 6.11.2；包内不带 Qt 系统库，也不安装、升级或替换系统输入法插件。构建记录、每个输入文件与 ELF 的 SHA256、完整修改后的上游源码、BSD/LGPL 许可和重建脚本随包提供。原 GTK3/GTK4 入口不要求系统安装 Qt。
+
+有 Qt 组件的包可执行 `python fcitx-cooperative.py preflight --qt6`，再以 `python fcitx-cooperative.py launch --qt6 应用命令` 逐应用启动。仍须先按前述步骤手动启动同包私有 Fcitx daemon。启动器仅在这个子进程设置 Qt 插件路径、TypeLay generic 插件、原 Fcitx 输入模块与合作开关。无 GUI 的版本探针核实实际 `qVersion()`、编译版本和两个插件的元数据；另独立检查 ELF 动态依赖，未知或混合 Qt ABI 时拒绝。强制同步 Fcitx Qt 模式不支持，不能靠它绕过原异步输入事务。
+
+Qt 系统包的发行修订可与 CI 的 Arch 构建不同；校验明确针对 Qt 6.11.2 上游 ABI，不声称与 CachyOS 包逐字节相同。Qt 6.10 起客户端 Wayland 库及平台插件已在 qt6-base 内，无需安装仅提供 compositor 的 qt6-wayland。应用自带另一套 Qt、Qt5、QtQuick、自绘或富文本不属于本入口的支持范围。标准字段的具体可用范围以当前实际搬迁验收结果为准；打包成功只证明构建和原异步输入回归通过，交付仍须对该包完成真实模型与写回验收。
+
+撤回此逐应用选项只需退出该应用，随后正常启动原应用；不修改 shell 或全局配置。私有 daemon 的整体退出和原输入法恢复沿用前述流程。

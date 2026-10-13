@@ -76,7 +76,7 @@ def paths(first, existing, defaults=()):
     )
 
 
-def environment(*, daemon=False, gtk4=False):
+def environment(*, daemon=False, gtk4=False, qt6=False):
     env = os.environ.copy()
     env["LD_LIBRARY_PATH"] = paths(
         [ROOT / "lib", *([ROOT / "core/lib"] if daemon else [])], env.get("LD_LIBRARY_PATH")
@@ -101,6 +101,18 @@ def environment(*, daemon=False, gtk4=False):
             + ":/usr/share/fcitx5",
             ["/usr/local/share/fcitx5", "/usr/share/fcitx5"],
         )
+    elif qt6:
+        env["QT_PLUGIN_PATH"] = paths([ROOT / "qt6/plugins"], env.get("QT_PLUGIN_PATH"))
+        env["QT_QPA_GENERIC_PLUGINS"] = ",".join(
+            dict.fromkeys(
+                ["typelay", *filter(None, env.get("QT_QPA_GENERIC_PLUGINS", "").split(","))]
+            )
+        )
+        env["QT_IM_MODULE"] = "fcitx5"
+        env["TYPELAY_QT_COOPERATIVE"] = "1"
+        env["TYPELAY_FCITX_COOPERATIVE"] = "1"
+        env.pop("TYPELAY_QT_PROBE", None)
+        env.pop("TYPELAY_QT_DELAY_FIRST_FINISHED", None)
     else:
         env["GTK_IM_MODULE"] = "fcitx"
         env["TYPELAY_FCITX_COOPERATIVE"] = "1"
@@ -110,7 +122,58 @@ def environment(*, daemon=False, gtk4=False):
     return env
 
 
-def verify(*, gtk4=False):
+def verify_qt(manifest):
+    metadata = manifest.get("qt6")
+    if (
+        not isinstance(metadata, dict)
+        or metadata.get("qtVersion") != "6.11.2"
+        or metadata.get("fcitxQtVersion") != "5.1.15"
+    ):
+        raise RuntimeError("This bundle has no matching optional Qt 6.11.2 component")
+    for package, version in (("qt6-base", "6.11.2"),):
+        actual = run(["pacman", "-Q", package]).strip().split()
+        if len(actual) != 2 or actual[0] != package or actual[1].rsplit("-", 1)[0] != version:
+            raise RuntimeError(f"Version-matched user package required: {package} {version}")
+    if os.environ.get("FCITX_QT_USE_SYNC", "").lower() not in ("", "0", "false"):
+        raise RuntimeError("TypeLay Qt cooperation requires the original default async mode")
+    provider = ROOT / "qt6/plugins/platforminputcontexts/libfcitx5platforminputcontextplugin.so"
+    consumer = ROOT / "qt6/plugins/generic/libtypelay-qt6.so"
+    probe = ROOT / "qt6/bin/qt-runtime-probe"
+    env = environment(qt6=True)
+    for binary in (provider, consumer, probe):
+        if not binary.resolve().is_relative_to(ROOT / "qt6"):
+            raise RuntimeError("Qt component escaped the private bundle")
+    platform = Path("/usr/lib/qt6/plugins/platforms/libqwayland.so")
+    for binary in (provider, consumer, probe, platform):
+        output = run(["ldd", "-r", str(binary)], env=env)
+        if "not found" in output or "undefined symbol:" in output:
+            raise RuntimeError(f"Unresolved Qt dependencies: {binary.name}\n{output}")
+        for line in output.splitlines():
+            if "libQt6" in line and "=>" in line:
+                path = Path(line.split("=>", 1)[1].strip().split(" (", 1)[0]).resolve()
+                if path.parent != Path("/usr/lib").resolve() or not path.name.endswith(
+                    ".so.6.11.2"
+                ):
+                    raise RuntimeError(f"Mixed or unsupported Qt runtime: {path.name}")
+    observation = json.loads(run([str(probe), str(provider), str(consumer)], env=env))
+    if observation.get("buildVersion") != "6.11.2" or observation.get("runtimeVersion") != "6.11.2":
+        raise RuntimeError("Actual Qt runtime differs from the private plugin build")
+    expected = {
+        "provider": ("org.qt-project.Qt.QPlatformInputContextFactoryInterface.5.1", "fcitx5"),
+        "consumer": ("org.qt-project.Qt.QGenericPluginFactoryInterface", "typelay"),
+    }
+    for name, (iid, key) in expected.items():
+        plugin = observation.get(name, {})
+        if (
+            plugin.get("IID") != iid
+            or plugin.get("version") != (6 << 16 | 11 << 8)
+            or key not in plugin.get("MetaData", {}).get("Keys", [])
+        ):
+            raise RuntimeError(f"Unexpected Qt plugin metadata: {name}")
+    return observation
+
+
+def verify(*, gtk4=False, qt6=False):
     manifest = json.loads((ROOT / "manifest.json").read_text())
     if manifest.get("schemaVersion") != 1:
         raise RuntimeError("Unsupported bundle manifest")
@@ -194,6 +257,8 @@ def verify(*, gtk4=False):
                             )
     if run([str(ROOT / "core/bin/fcitx5"), "--version"], env=env).strip() != "5.1.22":
         raise RuntimeError("Private daemon version mismatch")
+    if qt6:
+        verify_qt(manifest)
     return manifest
 
 
@@ -232,12 +297,15 @@ def main():
     parser.add_argument("action", choices=("preflight", "daemon", "launch"))
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    gtk4 = args.command[:1] == ["--gtk4"]
+    qt6 = args.command[:1] == ["--qt6"]
+    if gtk4 or qt6:
+        args.command.pop(0)
+        if args.action == "daemon":
+            parser.error("Toolkit options apply to preflight or launch, not daemon")
     if args.action != "launch" and args.command:
         parser.error("Only launch accepts an application command")
-    gtk4 = args.action == "launch" and args.command[:1] == ["--gtk4"]
-    if gtk4:
-        args.command.pop(0)
-    manifest = verify(gtk4=gtk4)
+    manifest = verify(gtk4=gtk4, qt6=qt6)
     print("Private components:", json.dumps(SOURCE_VERSIONS, sort_keys=True), flush=True)
     print("Private installed libraries:", json.dumps(PRIVATE_VERSIONS, sort_keys=True), flush=True)
     print(
@@ -294,8 +362,8 @@ def main():
         raise RuntimeError(
             "The active Fcitx owner is not this private bundle; start its daemon first"
         )
-    env = environment(gtk4=gtk4)
-    if not gtk4:
+    env = environment(gtk4=gtk4, qt6=qt6)
+    if not gtk4 and not qt6:
         env["GTK_IM_MODULE_FILE"] = module_cache(env)
     os.execvpe(args.command[0], args.command, env)
 
