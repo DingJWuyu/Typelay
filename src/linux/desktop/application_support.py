@@ -13,6 +13,7 @@ import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from desktop_component import DesktopComponent
 from wire import now_ms
 
 BROWSERS = ("firefox", "chromium", "google-chrome")
@@ -32,6 +33,7 @@ class ApplicationSupport:
         self.installer = None
         self.last_results = {}
         self.cooperative_directory = None
+        self.desktop_component = DesktopComponent(paths)
         installer_path = paths.home / "install.py"
         if installer_path.is_file():
             specification = importlib.util.spec_from_file_location(
@@ -315,10 +317,44 @@ class ApplicationSupport:
             )
         desktop_state, desktop_reason = "NeedsInstall", "ComponentMissing"
         desktop_details = self.instructions("desktop-text")
+        desktop_actions = ["CheckComponent", "Refresh", "OpenInstructions"]
+        prepared = self.desktop_component.status()
+        if prepared["state"] != "missing":
+            desktop_actions = ["Refresh", "OpenInstructions"]
+            if prepared["state"] == "prepared":
+                desktop_state, desktop_reason = "AwaitingApproval", "UserApprovalRequired"
+                desktop_details = (
+                    "同包桌面接入组件已准备，但尚未启动输入法或连接应用。"
+                    "源码、许可证和原始压缩包已保留。\n\n"
+                    "下一步需要在完成当前输入法候选并保存工作后，明确启动私有输入法会话，"
+                    "再通过该会话重新打开目标应用。本版尚未提供设置内的受管启动操作；"
+                    "请先查看组件文件夹中的 README.md。没有退出任何现有 Fcitx/IBus，"
+                    "没有更改个人输入法配置、全局环境或自动启动项。"
+                )
+            else:
+                desktop_actions.append("Install")
+                desktop_details = (
+                    "安装将从当前 TypeLay 主包校验并展开桌面接入组件到用户目录，"
+                    "保留原始压缩包、源码与许可证。来源信任继承于你取得的主包；"
+                    "自带文件哈希不是发布者签名。只准备文件，不运行包内程序、切换输入法或打开应用。"
+                )
+                if prepared["state"] == "invalid":
+                    desktop_state, desktop_reason = "Error", "ComponentMissing"
+                    desktop_details += "\n组件校验未通过，请使用完整可信的 TypeLay 主包重试。"
         component = self.last_results.get("desktop-text")
+        if (
+            component
+            and component.get("reason") == "cooperative-prepared"
+            and prepared["state"] != "prepared"
+        ):
+            component = None
         if component:
             desktop_state = "AwaitingApproval" if component["ok"] else "Error"
-            desktop_reason = "UserApprovalRequired" if component["ok"] else "DetectionFailed"
+            desktop_reason = (
+                "UserApprovalRequired"
+                if component["ok"]
+                else ("ComponentMissing" if prepared["state"] != "missing" else "DetectionFailed")
+            )
             desktop_details += "\n\n" + component.get("detail", "")
         if "desktop-text" in connected:
             desktop_state, desktop_reason = "Connected", "FieldUnobserved"
@@ -328,7 +364,7 @@ class ApplicationSupport:
                 "state": desktop_state,
                 "reason": desktop_reason,
                 "capabilities": {},
-                "supportedActions": ["CheckComponent", "Refresh", "OpenInstructions"],
+                "supportedActions": desktop_actions,
                 "details": desktop_details,
                 "applicationDetected": True,
             }
@@ -434,8 +470,12 @@ class ApplicationSupport:
             return home / "browser/chromium"
         if identity == "vscode":
             return home / "vscode"
-        if identity == "desktop-text" and self.cooperative_directory:
-            return self.cooperative_directory
+        if identity == "desktop-text":
+            prepared = self.desktop_component.status()
+            if prepared["state"] == "prepared":
+                return prepared["directory"]
+            if self.cooperative_directory:
+                return self.cooperative_directory
         return self.paths.home
 
     def open_browser(self, browser):
@@ -561,7 +601,7 @@ class ApplicationSupport:
             self.open_browser(identity)
             return {"ok": True}
         if action == "Refresh":
-            if identity in BROWSERS:
+            if identity in (*BROWSERS, "desktop-text"):
                 self.last_results.pop(identity, None)
             return {"ok": True}
         if identity in BROWSERS and action == "Install":
@@ -572,6 +612,10 @@ class ApplicationSupport:
             return await self.browser_action(
                 identity, "remove" if action == "Remove" else "connect"
             )
+        if identity == "desktop-text" and action == "Install":
+            result = await asyncio.to_thread(self.desktop_component.prepare)
+            self.last_results[identity] = result
+            return result
         if identity == "desktop-text" and action == "CheckComponent" and directory:
             self.cooperative_directory = Path(directory)
             result = await asyncio.to_thread(self.inspect_component, directory)

@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import time
@@ -636,6 +637,220 @@ class ApplicationSupportTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(reopened.browser_status("chromium")["extensionId"], "d" * 32)
         self.assertEqual(reopened.browser_status("chromium")["state"], "registered")
+
+    def desktop_payload(self, *, extra_entries=(), version="5.1.22"):
+        support = self.package / "support/desktop"
+        support.mkdir(parents=True, exist_ok=True)
+        marker = self.home / "must-not-run-component"
+        content = {
+            "fcitx-cooperative.py": f"from pathlib import Path; Path({str(marker)!r}).touch()".encode(),
+            "core/bin/fcitx5": b"not executable in preparation",
+            "README.md": b"Explicit private session instructions",
+            "THIRD_PARTY_NOTICES.md": b"Third party notices",
+            "source/eng/linux/cooperative/fcitx.py": b"Corresponding rebuild recipe",
+            "source/upstream/fcitx5/LICENSES/LGPL-2.1-or-later.txt": b"License text",
+            "lib/libexample.so.1": b"Cooperative library",
+        }
+        manifest = {
+            "schemaVersion": 1,
+            "bundleName": "TypeLay-Fcitx-cooperative",
+            "coreVersion": version,
+            "versions": {
+                "component_source_versions": {"fcitx5": version},
+                "installed_private_versions": {"Fcitx5Core": version},
+                "server_source_version": version,
+                "server_runtime_version": version,
+                "linked_core_development_version": version,
+            },
+            "qt6": None,
+            "files": {
+                key: {"sha256": hashlib.sha256(value).hexdigest()} for key, value in content.items()
+            },
+        }
+        manifest["files"]["lib/libexample.so"] = {"symlink": "libexample.so.1"}
+        encoded = json.dumps(manifest).encode()
+        archive = support / "TypeLay-Fcitx-cooperative.tar.gz"
+        with tarfile.open(archive, "w:gz") as output:
+            for name, value in {**content, "manifest.json": encoded}.items():
+                item = tarfile.TarInfo("TypeLay-Fcitx-cooperative/" + name)
+                item.mode = 0o755 if name == "fcitx-cooperative.py" else 0o644
+                item.size = len(value)
+                output.addfile(item, io.BytesIO(value))
+            link = tarfile.TarInfo("TypeLay-Fcitx-cooperative/lib/libexample.so")
+            link.type = tarfile.SYMTYPE
+            link.linkname = "libexample.so.1"
+            output.addfile(link)
+            for item, value in extra_entries:
+                output.addfile(item, io.BytesIO(value) if value is not None else None)
+        descriptor = {
+            "schemaVersion": 1,
+            "archive": archive.name,
+            "archiveSha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+            "manifestSha256": hashlib.sha256(encoded).hexdigest(),
+            "sourceVersions": {"fcitx5": "5.1.22"},
+            "privateVersions": {"Fcitx5Core": "5.1.22"},
+            "qtVersion": None,
+            "sourceCommit": "1" * 40,
+        }
+        (support / "component.json").write_text(json.dumps(descriptor))
+        self.write_package_manifest()
+        return descriptor, marker
+
+    def write_package_manifest(self):
+        (self.package / "MANIFEST.sha256").write_text(
+            "".join(
+                f"{hashlib.sha256(path.read_bytes()).hexdigest()}  "
+                f"{path.relative_to(self.package).as_posix()}\n"
+                for path in sorted(self.package.rglob("*"))
+                if path.is_file() and path.name != "MANIFEST.sha256"
+            )
+        )
+
+    def test_bundled_component_prepares_only_after_explicit_install_and_survives_reopen(self):
+        descriptor, marker = self.desktop_payload()
+        managed = self.home / "data/typelay/components/desktop-text"
+        fact = next(row for row in self.support.facts() if row["id"] == "desktop-text")
+        self.assertEqual(fact["state"], "NeedsInstall")
+        self.assertIn("Install", fact["supportedActions"])
+        self.assertNotIn("CheckComponent", fact["supportedActions"])
+        self.assertFalse(managed.exists(), "discovery prepared the component")
+        result = asyncio.run(self.support.execute("desktop-text", "Install"))
+        self.assertTrue(result["ok"], result)
+        prepared = self.support.component_folder("desktop-text")
+        self.assertTrue((prepared / "source/eng/linux/cooperative/fcitx.py").is_file())
+        self.assertTrue((prepared / "lib/libexample.so").is_symlink())
+        self.assertEqual((prepared / "lib/libexample.so").read_bytes(), b"Cooperative library")
+        self.assertFalse(marker.exists(), "preparation executed the packaged launcher")
+        self.assertEqual(
+            hashlib.sha256(
+                (self.package / "support/desktop/TypeLay-Fcitx-cooperative.tar.gz").read_bytes()
+            ).hexdigest(),
+            descriptor["archiveSha256"],
+        )
+        self.assertFalse((prepared.parent / "TypeLay-Fcitx-cooperative.tar.gz").exists())
+        reopened = ApplicationSupport(Paths(self.package))
+        self.assertEqual(reopened.component_folder("desktop-text"), prepared)
+        fact = next(row for row in reopened.facts() if row["id"] == "desktop-text")
+        self.assertEqual(fact["state"], "AwaitingApproval")
+        self.assertFalse(fact["capabilities"])
+        self.assertNotIn("Connect", fact["supportedActions"])
+        self.assertNotIn("Remove", fact["supportedActions"])
+        result = asyncio.run(reopened.execute("desktop-text", "Install"))
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(reopened.component_folder("desktop-text"), prepared)
+        self.assertEqual(
+            os.readlink(managed / "current"), "releases/" + descriptor["archiveSha256"]
+        )
+
+    def test_component_preparation_success_does_not_hide_later_package_damage(self):
+        self.desktop_payload()
+        self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Install"))["ok"])
+        manifest = self.support.component_folder("desktop-text") / "manifest.json"
+        manifest.write_text("changed")
+        fact = next(row for row in self.support.facts() if row["id"] == "desktop-text")
+        self.assertEqual(fact["state"], "Error")
+        self.assertEqual(fact["reason"], "ComponentMissing")
+        self.assertFalse(fact["capabilities"])
+
+    def test_failed_component_update_preserves_previous_release(self):
+        self.desktop_payload()
+        self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Install"))["ok"])
+        original = self.support.component_folder("desktop-text")
+        current = self.home / "data/typelay/components/desktop-text/current"
+        previous = os.readlink(current)
+        self.desktop_payload(version="5.1.99")
+        result = asyncio.run(self.support.execute("desktop-text", "Install"))
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(os.readlink(current), previous)
+        self.assertTrue((original / "core/bin/fcitx5").is_file())
+        self.assertEqual(list(current.parent.glob("releases/.preparing-*")), [])
+
+    def test_component_preparation_refuses_changed_main_package_and_archive(self):
+        for changed in ("component.json", "TypeLay-Fcitx-cooperative.tar.gz"):
+            with self.subTest(changed=changed):
+                self.desktop_payload()
+                path = self.package / "support/desktop" / changed
+                with path.open("ab") as stream:
+                    stream.write(b"changed")
+                result = asyncio.run(self.support.execute("desktop-text", "Install"))
+                self.assertFalse(result["ok"], result)
+                self.assertFalse(
+                    (self.home / "data/typelay/components/desktop-text/current").exists()
+                )
+
+    def test_component_archive_cannot_write_through_links_or_escape_its_release(self):
+        attacks = []
+        for name in ("TypeLay-Fcitx-cooperative/../../escaped", "/tmp/typelay-escaped"):
+            item = tarfile.TarInfo(name)
+            item.size = 6
+            attacks.append((item, b"escape"))
+        for kind in (tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.FIFOTYPE):
+            item = tarfile.TarInfo("TypeLay-Fcitx-cooperative/unsafe")
+            item.type = kind
+            item.linkname = str(self.home / "outside")
+            attacks.append((item, None))
+        duplicate = tarfile.TarInfo("TypeLay-Fcitx-cooperative/core/bin/fcitx5")
+        duplicate.size = 6
+        attacks.append((duplicate, b"escape"))
+        for item, value in attacks:
+            with self.subTest(path=item.name, kind=item.type):
+                self.desktop_payload(extra_entries=[(item, value)])
+                result = asyncio.run(self.support.execute("desktop-text", "Install"))
+                self.assertFalse(result["ok"], result)
+                self.assertFalse((self.home / "outside").exists())
+                managed = self.home / "data/typelay/components/desktop-text"
+                self.assertFalse((managed / "current").exists())
+                self.assertEqual(list(managed.glob("releases/.preparing-*")), [])
+                self.assertFalse((managed / "releases/escaped").exists())
+
+    def test_component_preparation_refuses_symlinked_user_directory(self):
+        self.desktop_payload()
+        outside = self.home / "outside"
+        outside.mkdir()
+        components = self.home / "data/typelay/components"
+        components.symlink_to(outside, target_is_directory=True)
+        result = asyncio.run(self.support.execute("desktop-text", "Install"))
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_component_preparation_respects_existing_install_lock(self):
+        self.desktop_payload()
+        components = self.home / "data/typelay/components"
+        components.mkdir()
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                "import fcntl,sys; f=open(sys.argv[1], 'w'); "
+                "fcntl.flock(f, fcntl.LOCK_EX); print('locked',flush=True); sys.stdin.read()",
+                str(components / "install.lock"),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            self.assertEqual(process.stdout.readline().strip(), "locked")
+            result = asyncio.run(self.support.execute("desktop-text", "Install"))
+            self.assertFalse(result["ok"], result)
+            self.assertFalse((components / "desktop-text/current").exists())
+        finally:
+            process.communicate(timeout=5)
+        self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Install"))["ok"])
+
+    def test_component_refresh_discards_failed_attempt_without_starting_anything(self):
+        self.desktop_payload()
+        self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Install"))["ok"])
+        directory = self.home / "incomplete-selected-bundle"
+        directory.mkdir()
+        result = asyncio.run(self.support.execute("desktop-text", "CheckComponent", str(directory)))
+        self.assertFalse(result["ok"])
+        self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Refresh"))["ok"])
+        fact = next(row for row in self.support.facts() if row["id"] == "desktop-text")
+        self.assertEqual(fact["state"], "AwaitingApproval")
+        self.assertEqual(fact["reason"], "UserApprovalRequired")
+        self.assertFalse(fact["capabilities"])
 
     def test_component_inspection_checks_files_without_executing_package_code(self):
         bundle = self.home / "chosen bundle"

@@ -76,6 +76,46 @@ class DistributionTests(unittest.TestCase):
                 self.assertGreater(notice.stat().st_size, 0)
                 self.assertIn(f"  {notice.relative_to(self.package).as_posix()}\n", manifest)
 
+    def test_desktop_components_prepare_from_the_relocated_main_package(self):
+        descriptor = self.package / "support/desktop/component.json"
+        if not descriptor.exists():
+            self.assertNotEqual(os.environ.get("TYPELAY_REQUIRE_DESKTOP_COMPONENT"), "1")
+            self.skipTest("setup-only package does not include desktop components")
+        # Exercise the shipped public preparation boundary in an isolated process.
+        # Preparation only reads and expands the archive; no cooperative program runs.
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                "import json,sys; from pathlib import Path; from types import SimpleNamespace; "
+                "home=Path(sys.argv[1]); data=Path(sys.argv[2]); "
+                "sys.path.insert(0,str(home/'desktop')); "
+                "from desktop_component import DesktopComponent; "
+                "component=DesktopComponent(SimpleNamespace(home=home,data=data)); "
+                "before=component.status(); first=component.prepare(); "
+                "after=component.status(); again=component.prepare(); "
+                "print(json.dumps({'before':before['state'],'first':first,'after':after['state'],"
+                "'again':again}))",
+                str(self.package),
+                str(self.home / "data/typelay"),
+            ],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assert_success(result)
+        state = json.loads(result.stdout)
+        self.assertEqual(state["before"], "available")
+        self.assertTrue(state["first"]["ok"], state)
+        self.assertEqual(state["after"], "prepared")
+        self.assertTrue(state["again"]["ok"], state)
+        current = self.home / "data/typelay/components/desktop-text/current"
+        self.assertTrue(current.is_symlink())
+        self.assertTrue((current / "TypeLay-Fcitx-cooperative/manifest.json").is_file())
+
     def test_install_relocates_and_reinstalls_without_models_or_shell_edits(self):
         fish = self.home / "config/fish/config.fish"
         fish.parent.mkdir(parents=True)

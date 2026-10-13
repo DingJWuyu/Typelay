@@ -1616,9 +1616,41 @@ def run(arguments):
                 "Selected application primary action fully visible in the default GTK viewport"
             )
             activate_setting(desktop_support["primaryAction"]["label"])
-            settings_control(support["labels"]["chooseComponent"])
+            bundled_component = (package / "support/desktop/component.json").is_file()
+            if bundled_component:
+                assert desktop_support["primaryAction"]["id"] == "Install"
+                settings_control(support["labels"]["confirm"])
+            else:
+                settings_control(support["labels"]["chooseComponent"])
             activate_setting(support["labels"]["cancel"])
             assert not status()["setup"]["onboardingComplete"]
+            if bundled_component:
+                row = next(
+                    row
+                    for row in status()["setup"]["applicationSupport"]["rows"]
+                    if row["id"] == "desktop-text"
+                )
+                assert row["state"] == "NeedsInstall"
+                activate_setting(row["primaryAction"]["label"])
+                activate_setting(support["labels"]["confirm"])
+
+                def prepared_component():
+                    row = next(
+                        row
+                        for row in status()["setup"]["applicationSupport"]["rows"]
+                        if row["id"] == "desktop-text"
+                    )
+                    return row if row["state"] == "AwaitingApproval" else None
+
+                # This includes integrity checking and unpacking the real shipped
+                # archive, not a GUI animation or a readiness sleep.
+                row = wait_for(prepared_component, "same-package preparation failed", timeout=60)
+                assert not any(row["capabilities"].values()), row
+                assert not status()["setup"]["onboardingComplete"]
+                evidence.append(
+                    "Desktop component preparation: cancel leaves files unprepared; explicit "
+                    "approval safely unpacks the shipped archive without claiming a connection"
+                )
 
             # Use the real GTK selection/action interfaces and paste the system
             # clipboard into the existing practice field after closing each dialog.

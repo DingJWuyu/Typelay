@@ -20,6 +20,14 @@ python eng/linux/build.py
 
 输出：`artifacts/TypeLay-Linux-preview-x86_64.tar.gz` 及对应 `.sha256`。包内包括自包含 .NET 宿主、GTK3/GTK4 原生模块、浏览器扩展及本地主机、可选 VS Code VSIX、子进程监督程序、桌面代码、共享 worker、安装脚本和文件校验清单。模型不在包内，也不会在首次启动时无提示下载。
 
+上述普通构建是 setup-only 包。完整桌面接入包在同一干净提交完成 [合作组件构建与打包](fcitx.md#构建与打包) 后，再执行：
+
+```fish
+python eng/linux/build.py --finalize --cooperation-package artifacts/TypeLay-Fcitx-cooperative.tar.gz
+```
+
+finalize 校验主包原始清单、构建提交、合作组件的固定来源及对应源码/构建输入，把原始合作压缩包和描述文件放入 `support/desktop/`，然后更新主包清单与归档，不重新编译。必须使用同一轮受控构建产物；自带哈希只证明完整性，不认证未知包的发布者。完整包保留合作组件要求的源码和许可证，不含模型。CI 对最终归档再验证搬迁、安装与设置所用准备接口。
+
 构建时的外部 .NET SDK/NuGet 获取仍需要网络。模型安装的原生 Python 依赖固定直接版本，通过 uv 为 CPython 3.13 解析 Linux wheel 并生成带哈希的依赖锁。安装记录保留实际解析版本，不声称不同时间解析出的传递依赖完全相同。
 
 ## 变更检查
