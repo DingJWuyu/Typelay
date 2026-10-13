@@ -391,15 +391,20 @@ class DesktopSessionTests(unittest.TestCase):
         _, daemon, tools, owner = self.owned_daemon()
         original = os.pidfd_open
 
-        def changed_owner(pid):
-            handle = original(pid)
-            owner.write_text(json.dumps({"pid": os.getpid()}))
+        def changed_owner(pid, flags=0):
+            handle = original(pid, flags)
+            if pid == daemon["pid"]:
+                owner.write_text(json.dumps({"pid": os.getpid()}))
             return handle
 
         with (
             patch.dict(os.environ, {"PATH": str(tools)}),
             patch.object(os, "pidfd_open", changed_owner),
         ):
+            # Python 3.14's asyncio probes pidfd support with a two-argument self-open.
+            probe = os.pidfd_open(os.getpid(), 0)
+            os.close(probe)
+            self.assertEqual(json.loads(owner.read_text()), {"pid": daemon["pid"]})
             result = asyncio.run(DesktopSession(self.paths).stop_session())
         self.assertFalse(result["ok"], result)
         self.assertEqual(result["reason"], "private-session-owner-changed")
