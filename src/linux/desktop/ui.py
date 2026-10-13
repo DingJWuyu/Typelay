@@ -397,6 +397,8 @@ class ApplicationSupportPane:
         self.capabilities = self.note("", detail_box)
         self.capability_note = self.note("", detail_box)
         self.guidance = self.note("", detail_box)
+        self.shortcut_status = self.note("", detail_box)
+        self.shortcut_status.set_no_show_all(True)
         self.technical = self.note("", detail_box)
         self.technical.set_selectable(True)
         self.secondary = Gtk.Box(spacing=8)
@@ -638,20 +640,13 @@ class Settings:
         self.window.connect("delete-event", self.dismiss)
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         self.window.add(outer)
-        heading = Gtk.Label(xalign=0)
-        heading.set_markup('<span size="xx-large" weight="bold">TypeLay</span>')
-        outer.pack_start(heading, False, False, 0)
-        privacy = Gtk.Label(
-            label="翻译全部在本机执行，输入和译文不会上传。",
-            xalign=0,
-        )
-        privacy.set_line_wrap(True)
-        outer.pack_start(privacy, False, False, 0)
         self.status = Gtk.Label(xalign=0)
         self.status.set_line_wrap(True)
+        self.status.set_no_show_all(True)
         outer.pack_start(self.status, False, False, 0)
         self.tray_notice = Gtk.Label(xalign=0)
         self.tray_notice.set_line_wrap(True)
+        self.tray_notice.set_no_show_all(True)
         outer.pack_start(self.tray_notice, False, False, 0)
         scroll = Gtk.ScrolledWindow()
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
@@ -728,6 +723,12 @@ class Settings:
         )
         note.set_line_wrap(True)
         grid.attach(note, 0, row + 1, 2, 1)
+        privacy = Gtk.Label(
+            label="翻译全部在本机执行，输入和译文不会上传。",
+            xalign=0,
+        )
+        privacy.set_line_wrap(True)
+        grid.attach(privacy, 0, row + 2, 2, 1)
         self.draft_notice = Gtk.Label(xalign=0)
         self.draft_notice.get_accessible().set_name("设置草稿")
         self.draft_notice.set_line_wrap(True)
@@ -736,6 +737,10 @@ class Settings:
         self.message = Gtk.Label(xalign=0)
         self.message.get_accessible().set_name("设置反馈")
         self.message.set_line_wrap(True)
+        self.message.set_no_show_all(True)
+        self.message.connect(
+            "notify::label", lambda label, _property: label.set_visible(bool(label.get_text()))
+        )
         outer.pack_start(self.message, False, False, 0)
         buttons = Gtk.Box(spacing=8)
         outer.pack_end(buttons, False, False, 0)
@@ -927,11 +932,19 @@ class Settings:
             self.install_button.set_label(
                 "修复本地翻译组件…" if self.model_ready else "安装本地翻译组件…"
             )
-        pieces = [
-            value.get(key)
-            for key in ("model", "serviceStatus", "operationStatus", "shortcutStatus")
-        ]
-        self.status.set_text("\n".join(piece for piece in pieces if piece))
+        # The support page owns normal readiness and connection details. Keep
+        # unclassified service/command feedback visible instead of guessing
+        # severity from its text; the two fields can describe the same result.
+        pieces = [value.get("model") if not self.model_ready else None]
+        pieces.extend(value.get(key) for key in ("serviceStatus", "operationStatus"))
+        shortcut_status = value.get("shortcutStatus") or ""
+        self.application_support.shortcut_status.set_text(shortcut_status)
+        self.application_support.shortcut_status.set_visible(bool(shortcut_status))
+        if self.value and self.value["enabled"] and self.value["mode"] == "OnDemand":
+            pieces.append(shortcut_status)
+        message = "\n".join(dict.fromkeys(piece for piece in pieces if piece))
+        self.status.set_text(message)
+        self.status.set_visible(bool(message))
 
     def open_tutorial(self):
         self.tutorial.show()
@@ -972,6 +985,7 @@ class Settings:
         else:
             message = "托盘组件未安装：请安装 libayatana-appindicator。设置和翻译仍可使用。"
         self.tray_notice.set_text(message)
+        self.tray_notice.set_visible(bool(message))
 
     def show(self):
         self.window.show_all()

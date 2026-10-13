@@ -1552,13 +1552,73 @@ def run(arguments):
             # Drive actual GTK actions; the model being ready never completes an
             # application connection or a canceled component selection.
             desktop_support = next(row for row in support["rows"] if row["id"] == "desktop-text")
+            primary = settings_control(desktop_support["primaryAction"]["label"])
+            # A GTK action can activate a clipped button. Check its actual
+            # allocation before any focus/scroll/action changes the first screen.
+            subprocess.run(
+                ["grim", str(arguments.output / "application-support.png")], check=True, timeout=3
+            )
+            assert primary.get_state_set().contains(Atspi.StateType.SHOWING)
+            area = Atspi.Component.get_extents(
+                primary.get_component_iface(), Atspi.CoordType.SCREEN
+            )
+            assert area.width > 0 and area.height > 0
+            viewport_bounds = []
+            ancestor = primary.get_parent()
+            for _ in range(16):
+                assert ancestor is not None and ancestor.get_process_id() == process.pid
+                ancestor.clear_cache()
+                role = ancestor.get_role()
+                if role in (Atspi.Role.SCROLL_PANE, Atspi.Role.VIEWPORT, Atspi.Role.FRAME):
+                    clip = Atspi.Component.get_extents(
+                        ancestor.get_component_iface(), Atspi.CoordType.SCREEN
+                    )
+                    if role == Atspi.Role.FRAME:
+                        frame = clip
+                        assert ancestor.get_name() == "TypeLay 设置"
+                        break
+                    viewport_bounds.append(clip)
+                ancestor = ancestor.get_parent()
+            else:
+                raise AssertionError("settings action exceeds its bounded GTK ancestry")
+            assert viewport_bounds, "application support did not expose its scrolling viewport"
+            (arguments.output / "application-support-layout.json").write_text(
+                json.dumps(
+                    {
+                        "primaryAction": desktop_support["primaryAction"]["label"],
+                        "primaryInFrame": [
+                            area.x - frame.x,
+                            area.y - frame.y,
+                            area.width,
+                            area.height,
+                        ],
+                        "scrollViewportsInFrame": [
+                            [clip.x - frame.x, clip.y - frame.y, clip.width, clip.height]
+                            for clip in viewport_bounds
+                        ],
+                        "frameReportedBounds": [frame.x, frame.y, frame.width, frame.height],
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            # All rectangles come from the same GTK SCREEN coordinate space.
+            # Its Wayland origin need not be the compositor's global origin.
+            for clip in [*viewport_bounds, frame]:
+                assert clip.x <= area.x and clip.y <= area.y, (
+                    "primary action starts outside its viewport or frame"
+                )
+                assert (
+                    area.x + area.width <= clip.x + clip.width
+                    and area.y + area.height <= clip.y + clip.height
+                ), "primary action is clipped on the default application-support screen"
+            evidence.append(
+                "Selected application primary action fully visible in the default GTK viewport"
+            )
             activate_setting(desktop_support["primaryAction"]["label"])
             settings_control(support["labels"]["chooseComponent"])
             activate_setting(support["labels"]["cancel"])
             assert not status()["setup"]["onboardingComplete"]
-            subprocess.run(
-                ["grim", str(arguments.output / "application-support.png")], check=True, timeout=3
-            )
             trial = settings_control(support["labels"]["tryIt"])
             assert Atspi.Component.grab_focus(trial.get_component_iface())
             key("ctrl+Page_Up")
