@@ -5,6 +5,109 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class SessionControllerTests
 {
+    [Theory]
+    [InlineData("wake")]
+    [InlineData("direct")]
+    public void RejectedShortcutReportsWhyWithoutStartingTranslationOrWriting(string kind)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Input.Notices.Enqueue(new(kind, AcceptedAtMs: s.Loop.NowMs,
+            CommandGeneration: s.Input.CommandGeneration, Rejection: Denial.ImeUnclear, CommandSequence: 1));
+        s.Tick();
+        Assert.Contains("未执行", s.Controller.OperationStatus);
+        Assert.Contains("输入法", s.Controller.OperationStatus);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.DirectWrites);
+        Assert.Empty(s.Service.Writes);
+        Assert.False(s.View.Visible);
+    }
+
+    [Fact]
+    public void DirectShortcutWithoutTargetWriteCapabilityExplainsBeforeRunningTheModel()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Source = s.Source with
+        {
+            DirectWriteSupported = false
+        };
+        s.Command("direct");
+        s.Tick();
+        Assert.Contains("不支持", s.Controller.OperationStatus);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.DirectWrites);
+    }
+
+    [Fact]
+    public void LateOrDuplicateShortcutRejectionCannotReplaceANewerCommandStatus()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var rejected = new InputNotice("direct", AcceptedAtMs: s.Loop.NowMs,
+            CommandGeneration: s.Input.CommandGeneration, Rejection: Denial.ImeUnclear, CommandSequence: 2);
+        s.Input.Notices.Enqueue(rejected);
+        s.Tick();
+        string? latest = s.Controller.OperationStatus;
+        Assert.NotNull(latest);
+        s.Input.Notices.Enqueue(rejected with
+        {
+            Rejection = Denial.Unsupported,
+            CommandSequence = 1
+        });
+        s.Input.Notices.Enqueue(rejected with
+        {
+            Rejection = Denial.Unsupported
+        });
+        s.Tick();
+        Assert.Equal(latest, s.Controller.OperationStatus);
+        Assert.Empty(s.Model.Jobs);
+    }
+
+    [Fact]
+    public void ShortcutRejectionDoesNotCancelPriorDirectWorkOrLoseItsNewerFeedback()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Service.DirectReceipt = new(WriteStatus.Verified, Denial.None);
+        s.Input.Notices.Enqueue(new("direct", AcceptedAtMs: s.Loop.NowMs, Source: s.Fresh,
+            CommandGeneration: s.Input.CommandGeneration, CommandSequence: 1));
+        s.Tick();
+        Assert.Single(s.Model.Jobs);
+        s.Input.Notices.Enqueue(new("direct", AcceptedAtMs: s.Loop.NowMs,
+            CommandGeneration: s.Input.CommandGeneration, Rejection: Denial.ImeUnclear, CommandSequence: 2));
+        s.Tick();
+        string? rejection = s.Controller.OperationStatus;
+        Assert.Contains("输入法", rejection);
+        s.CompleteTranslation("translated original field");
+        Assert.Single(s.Service.DirectWrites);
+        Assert.Equal(rejection, s.Controller.OperationStatus);
+    }
+
+    [Fact]
+    public void ShortcutReconfigurationRetiresOldRejectionsAndRestartsSequence()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var old = new InputNotice("direct", AcceptedAtMs: s.Loop.NowMs,
+            CommandGeneration: s.Input.CommandGeneration, Rejection: Denial.ImeUnclear, CommandSequence: 50);
+        s.Input.Notices.Enqueue(old);
+        s.Tick();
+        s.Settings.Update(s.Settings.Value with
+        {
+            DirectShortcut = "Ctrl+F8"
+        });
+        s.Input.Notices.Enqueue(old with
+        {
+            Rejection = Denial.Unsupported,
+            CommandSequence = 51
+        });
+        s.Input.Notices.Enqueue(old with
+        {
+            CommandGeneration = s.Input.CommandGeneration,
+            Rejection = Denial.StaleObservation,
+            CommandSequence = 1
+        });
+        s.Tick();
+        Assert.Contains("过期", s.Controller.OperationStatus);
+        Assert.Empty(s.Model.Jobs);
+    }
+
     [Fact]
     public void AutomaticModeDebouncesTranslationWithoutGrantingDefaultWriteback()
     {

@@ -4,9 +4,13 @@ namespace TypeLay.Runtime;
 
 // CompletedReceipt is only for a platform that already executed the issued plan
 // on its native UI thread. It reports a terminal result, never permission to write.
+// A rejected explicit shortcut carries no executable Source. Positive command
+// sequences increase across all targets in one monitor/configuration generation;
+// a reconnect must create a new generation before resetting its sequence. Zero
+// preserves legacy adapters without asserting ordering or duplicate protection.
 public sealed record InputNotice(string Kind, AcceptancePermit? Permit = null, long AcceptedAtMs = 0,
     long UserEpoch = 0, long ForegroundEpoch = 0, InputSnapshot? Source = null, Guid CommandGeneration = default,
-    WriteReceipt? CompletedReceipt = null);
+    WriteReceipt? CompletedReceipt = null, Denial Rejection = Denial.None, long CommandSequence = 0);
 public sealed record InputLease(InputSnapshot Source, long UserEpoch, long ForegroundEpoch, bool EscapeAllowed);
 public sealed record ShortcutLease(InputSnapshot Source, long ContentEpoch, long ForegroundEpoch);
 

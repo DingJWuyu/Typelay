@@ -12,6 +12,8 @@ public sealed class SessionController : IDisposable
     private readonly TranslationActivation _activation;
     private DirectTranslation? _pendingDirect;
     private bool _directRunning;
+    private long _lastCommandSequence, _commandFeedbackRevision, _pendingDirectFeedbackRevision;
+    private Guid _lastCommandGeneration;
     private long _configurationRevision;
     private readonly ISessionLoop _loop;
     private long _generation, _nextCapture, _permitUntil, _editTransitionUntil, _retryBrokerAt;
@@ -87,6 +89,8 @@ public sealed class SessionController : IDisposable
     private void Configure()
     {
         _configurationRevision++;
+        _commandFeedbackRevision++;
+        _lastCommandSequence = 0;
         if (_pendingDirect is not null)
             SetServiceStatus("设置已改变，未执行本次直接替换。");
         _pendingDirect = null;
@@ -110,15 +114,66 @@ public sealed class SessionController : IDisposable
         {
             if (notice?.CompletedReceipt is not null && notice.Permit is not null)
                 CompleteNativeWrite(notice);
-            else if (notice?.Kind == "wake")
-                Wake(notice);
-            else if (notice?.Kind == "direct")
-                QueueDirect(notice);
+            else if (notice?.Kind is "wake" or "direct")
+                Shortcut(notice);
             else if (notice?.Kind == "escape")
                 _ = Escape();
             else if (notice?.Permit is not null)
                 _ = Accept(notice);
         }
+    }
+    private void Shortcut(InputNotice notice)
+    {
+        if (!_settings.Value.Enabled || _settings.Value.Mode != WorkMode.OnDemand
+            || notice.CommandGeneration != _hook.CommandGeneration || notice.CommandSequence < 0)
+            return;
+        if (_lastCommandGeneration != notice.CommandGeneration)
+        {
+            _lastCommandGeneration = notice.CommandGeneration;
+            _lastCommandSequence = 0;
+        }
+        if (notice.CommandSequence > 0)
+        {
+            if (notice.CommandSequence <= _lastCommandSequence)
+                return;
+            _lastCommandSequence = notice.CommandSequence;
+        }
+        _commandFeedbackRevision++;
+        if (notice.Rejection != Denial.None)
+        {
+            RejectShortcut(notice.Kind, notice.Rejection);
+            return;
+        }
+        if (notice.Source is null)
+        {
+            RejectShortcut(notice.Kind, Denial.Unsupported);
+            return;
+        }
+        if (notice.Kind == "wake")
+            Wake(notice);
+        else
+            QueueDirect(notice);
+    }
+    private void RejectShortcut(string kind, Denial reason)
+    {
+        string action = kind == "wake" ? "唤醒翻译" : "直接替换";
+        string explanation = reason switch
+        {
+            Denial.ImeUnclear => "当前输入框的输入法状态无法确认。",
+            Denial.StaleObservation => "输入观察已过期，请保持输入框焦点后重试。",
+            Denial.SourceChanged or Denial.SelectionChanged or Denial.EpochChanged => "输入内容或选区已变化，请重试。",
+            Denial.NotSourceFocus or Denial.TargetChanged => "输入框焦点已变化，请在目标输入框重试。",
+            Denial.Sensitive or Denial.ReadOnly => "当前字段不允许此操作。",
+            Denial.Unsupported => kind == "direct" ? "当前输入框不支持可靠的直接替换。" : "当前输入框尚未连接或不支持读取。",
+            Denial.PlatformFailure => "输入服务尚未就绪，请在应用支持中检查连接。",
+            _ => "当前输入状态不满足安全条件。"
+        };
+        SetServiceStatus($"未执行本次{action}：{explanation}");
+        Trace("shortcut-rejected", detail: new
+        {
+            action = kind,
+            reason = reason.ToString()
+        });
     }
     private void Tick()
     {
@@ -131,10 +186,10 @@ public sealed class SessionController : IDisposable
             if (!_model.Ready || !_broker.Available || now - pending.TriggeredAtMs > 120_000)
             {
                 _pendingDirect = null;
-                SetServiceStatus("本地服务不可用或等待超时，未执行直接替换。");
+                SetCommandStatus("本地服务不可用或等待超时，未执行直接替换。", _pendingDirectFeedbackRevision);
             }
             else if (!_translationRunning && !_model.Busy)
-                _ = TranslateDirect(pending);
+                _ = TranslateDirect(pending, _pendingDirectFeedbackRevision);
         }
         if (!_broker.Available && !_startingBroker && now >= _retryBrokerAt)
             _ = StartBroker();
@@ -325,15 +380,19 @@ public sealed class SessionController : IDisposable
         if (notice.ForegroundEpoch != _hook.ForegroundEpoch)
         {
             Record("foreground-epoch", true, false);
+            RejectShortcut(notice.Kind, Denial.NotSourceFocus);
             return;
         }
         if (_hook.GetFocus(source.Target) != FocusMember.Source)
         {
             Record("focus", true, true, false);
+            RejectShortcut(notice.Kind, Denial.NotSourceFocus);
             return;
         }
         if (_activation.Wake(source.Target))
         {
+            OperationStatus = null;
+            Changed?.Invoke();
             // Explicit wake can reopen an Esc-suppressed field; repeated wake must
             // not erase a live candidate or a user's translation draft.
             if (_session.State == SessionState.NoSession)
@@ -355,6 +414,11 @@ public sealed class SessionController : IDisposable
             SetServiceStatus("已有一次直接翻译正在处理，未追加操作。");
             return;
         }
+        if (!source.DirectWriteSupported)
+        {
+            RejectShortcut(notice.Kind, Denial.Unsupported);
+            return;
+        }
         if (!_model.Ready)
         {
             SetServiceStatus("本地模型尚未就绪，未执行直接替换。");
@@ -370,9 +434,10 @@ public sealed class SessionController : IDisposable
         // Ending a foreground session never clears a pending direct operation.
         StopSession();
         _pendingDirect = operation;
+        _pendingDirectFeedbackRevision = _commandFeedbackRevision;
         SetServiceStatus("正在直接翻译；可以切换输入框，当前操作仍绑定原输入框。");
     }
-    private async Task TranslateDirect(DirectTranslation operation)
+    private async Task TranslateDirect(DirectTranslation operation, long feedbackRevision)
     {
         _directRunning = true;
         long configuration = _configurationRevision;
@@ -383,27 +448,27 @@ public sealed class SessionController : IDisposable
                 return;
             if (response.Status != "translated")
             {
-                SetServiceStatus(response.Status == "no-translation" ? "当前文本无需翻译，未作替换。" : "直接翻译未完成，原文未作替换。");
+                SetCommandStatus(response.Status == "no-translation" ? "当前文本无需翻译，未作替换。" : "直接翻译未完成，原文未作替换。", feedbackRevision);
                 return;
             }
             var (plan, _) = operation.Complete(response.Text);
             if (plan is null)
             {
-                SetServiceStatus("译文未通过内容校验，未执行直接替换。");
+                SetCommandStatus("译文未通过内容校验，未执行直接替换。", feedbackRevision);
                 return;
             }
             // Never route detached work through foreground-only write/return operations.
             var result = await _broker.WriteDirectAsync(plan, _settings.Value.Excluded);
             if (_disposed)
                 return;
-            SetServiceStatus(result.Status == WriteStatus.Verified ? "已直接替换原输入框文字。"
+            SetCommandStatus(result.Status == WriteStatus.Verified ? "已直接替换原输入框文字。"
                 : result.Reason == Denial.Unsupported ? "当前输入后端尚不支持可靠的直接写回，原文未作替换。"
-                : "直接写回未获确认，请检查原输入框；不会自动重试。");
+                : "直接写回未获确认，请检查原输入框；不会自动重试。", feedbackRevision);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             if (!_disposed)
-                SetServiceStatus("直接翻译或写回服务中断；不会自动重试替换。");
+                SetCommandStatus("直接翻译或写回服务中断；不会自动重试替换。", feedbackRevision);
         }
         finally
         {
@@ -411,6 +476,11 @@ public sealed class SessionController : IDisposable
                 _pendingDirect = null;
             _directRunning = false;
         }
+    }
+    private void SetCommandStatus(string status, long feedbackRevision)
+    {
+        if (feedbackRevision == _commandFeedbackRevision)
+            SetServiceStatus(status);
     }
     private void SetServiceStatus(string status)
     {

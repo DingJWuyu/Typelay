@@ -28,40 +28,51 @@ internal sealed class UiaInputProvider : IDisposable
 
     public (InputSnapshot?, FocusMember) Capture(BrokerRequest request)
     {
+        using var trace = CaptureTrace.Start();
+        (InputSnapshot?, FocusMember) Reject(string reason)
+        {
+            trace?.Result(reason);
+            return Unavailable(request);
+        }
+        trace?.Stage("foreground");
         nint foreground = GetForegroundWindow();
         bool overlay = request.OverlayHwnd != 0 && foreground == (nint)request.OverlayHwnd;
         // An unfocused Chromium edit need not expose a caret/selection. Keep its binding
         // for ReturnToSource, without turning the old observation into a fresh write lease.
         if (overlay)
-            return Unavailable(request);
+            return Reject("overlay-focus");
+        trace?.Stage("managed-focus");
         AutomationElement? focused;
         using (_metadataCache.Activate())
             focused = AutomationElement.FocusedElement;
         if (focused is null || foreground == 0)
-            return Unavailable(request);
+            return Reject("no-focused-element");
         AutomationElement element = focused;
         // Raw and managed providers must refer to the same element, captured in the same MTA.
+        trace?.Stage("raw-focus");
         string token = string.Join('.', element.GetRuntimeId());
         if (_native.BindFocused() != token)
-            return Unavailable(request);
+            return Reject("focused-identity-changed");
         var info = element.Cached;
         if ((info.ControlType != ControlType.Edit && info.ControlType != ControlType.Document)
             || info.IsPassword || !info.IsEnabled || info.IsOffscreen)
-            return Unavailable(request);
+            return Reject("not-editable-visible");
+        trace?.Stage("process-identity");
         using var process = Process.GetProcessById(info.ProcessId);
         string app = process.ProcessName.ToLowerInvariant();
         if ((request.Excluded ?? []).Contains(app, StringComparer.OrdinalIgnoreCase)
             || app is "typelay.app" or "typelay.broker")
-            return Unavailable(request);
+            return Reject("excluded-application");
         long start = process.StartTime.ToUniversalTime().Ticks;
         if (_quarantine.Contains((info.ProcessId, start, token)))
-            return Unavailable(request);
+            return Reject("quarantined-target");
         nint root = foreground;
         bool inDocument = false, rootSeen = false;
         var previousTarget = _previous?.Target.AsWindows();
         bool sameBinding = previousTarget is { } previous && previous.ProcessId == info.ProcessId
             && previous.ProcessStartUtcTicks == start && previous.RootHwnd == (long)root
             && previous.ElementToken == token;
+        trace?.Stage("ancestor-metadata");
         var parent = sameBinding ? null : element;
         rootSeen = sameBinding;
         for (int i = 0; i < 28 && parent is not null; i++)
@@ -77,14 +88,17 @@ internal sealed class UiaInputProvider : IDisposable
         }
         GetWindowThreadProcessId(root, out uint foregroundProcess);
         if (!rootSeen && foregroundProcess != info.ProcessId)
-            return Unavailable(request);
+            return Reject("foreground-owner");
+        trace?.Stage("editable-pattern");
         ValuePattern? value = element.TryGetCurrentPattern(ValuePattern.Pattern, out object vp) ? (ValuePattern)vp : null;
         bool? textReadOnly = value is null ? _native.ReadOnly() : null;
         // Document is also used by rich editors. Require an explicit editable text
         // attribute, never read an ordinary browser page as an input field.
         if (value is null && textReadOnly != false)
-            return Unavailable(request);
+            return Reject("editable-pattern-missing");
+        trace?.Stage("ime");
         ImeState ime = _native.Composition(root); // No composition text is retrieved.
+        trace?.Stage("field-metadata");
         var ariaProperty = AutomationProperty.LookupById(30102);
         string aria = ariaProperty is null ? "" : element.GetCachedPropertyValue(ariaProperty, true) as string ?? "";
         bool multiline = aria.Contains("multiline=true", StringComparison.OrdinalIgnoreCase);
@@ -92,22 +106,24 @@ internal sealed class UiaInputProvider : IDisposable
             aria, info.IsPassword, info.IsEnabled, value?.Current.IsReadOnly ?? textReadOnly != false, info.IsOffscreen,
             inDocument, multiline, value is not null, ime != ImeState.Unknown);
         if (!FieldPolicy.Allows(metadata, request.Excluded ?? []))
-            return Unavailable(request);
+            return Reject("field-policy");
         var rect = info.BoundingRectangle;
         var bounds = new RectPx(rect.X, rect.Y, rect.Width, rect.Height);
         if (!bounds.IsValid)
-            return Unavailable(request);
+            return Reject("invalid-bounds");
         GetWindowRect(root, out var windowRect);
         if (!bounds.Intersects(new(windowRect.Left, windowRect.Top, windowRect.Right - windowRect.Left,
                 windowRect.Bottom - windowRect.Top)))
-            return Unavailable(request);
+            return Reject("outside-window");
         var idBytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{info.ProcessId}/{start}/{root}/{token}"));
         var id = new WindowsTarget(info.ProcessId, start, (long)root, info.NativeWindowHandle,
             value is null ? "uia-text-preview-v2" : "uia-value-text-v2", token, new Guid(idBytes.AsSpan(0, 16)));
+        trace?.Stage("native-capture");
         if (request.CaptureDirect && _edits.Capture(id, bounds, _inputEpoch, _focusEpoch) is { } direct)
         {
+            trace?.Stage("focus-recheck");
             if (!StillFocused(root, token))
-                return Unavailable(request);
+                return Reject("focus-changed-native");
             if (_previous?.Target != direct.Target || _lastFocus != FocusMember.Source)
                 _focusEpoch++;
             if (_previous?.Target != direct.Target || _previous.Text != direct.Text
@@ -122,8 +138,10 @@ internal sealed class UiaInputProvider : IDisposable
                 InputEpoch = _inputEpoch,
                 FocusEpoch = _focusEpoch
             };
+            trace?.Result("observed-native");
             return (_previous, FocusMember.Source);
         }
+        trace?.Stage("caret-geometry");
         // Geometry does not participate in writing. Reuse idle line geometry for
         // at most 200 ms, refreshing immediately after typing or field movement.
         // This avoids repeated remote range calls while a Tab permit is live.
@@ -154,14 +172,16 @@ internal sealed class UiaInputProvider : IDisposable
             // provider cannot report IME state, its ordinary field value can still
             // be translated for display. It is not proof of committed input and
             // must never become a write candidate.
+            trace?.Stage("preview-read");
             string? committedPrefix = ime == ImeState.Composing ? _native.ReadCommittedPrefix(Limits.MaxTextUnits, root) : null;
             string? preview = ime == ImeState.Unknown ? value?.Current.Value ?? _native.ReadText(Limits.MaxTextUnits)?.Document : null;
             if (preview is not null && (preview.Length > Limits.MaxTextUnits || !Utf16.IsWellFormed(preview)
                 || preview.Contains('\0')))
                 preview = null;
             multiline |= preview?.Contains('\n') == true || preview?.Contains('\r') == true;
+            trace?.Stage("focus-recheck");
             if (!StillFocused(root, token))
-                return Unavailable(request);
+                return Reject("focus-changed-preview");
             if (_previous?.Target != id || _previous.PreviewText != preview || _previous.CommittedPrefix != committedPrefix
                 || _lastSourceUserEpoch != request.SourceUserEpoch)
                 _inputEpoch++;
@@ -172,14 +192,16 @@ internal sealed class UiaInputProvider : IDisposable
             _element = element;
             _previous = blocked;
             _application = app;
+            trace?.Result("observed-" + ime.ToString().ToLowerInvariant());
             return (blocked, focus);
         }
+        trace?.Stage("text-read");
         var read = _native.ReadText(Limits.MaxTextUnits);
         string? content = value?.Current.Value ?? read?.Document;
         if (content is null)
-            return Unavailable(request);
+            return Reject("text-unavailable");
         if (content.Length > Limits.MaxTextUnits || !Utf16.IsWellFormed(content) || content.Contains('\0'))
-            return Unavailable(request);
+            return Reject("invalid-text");
         TextRange? selection = read is { } ranges ? TextMapping.Selection(content, ranges.Document, ranges.Prefix,
             ranges.Selection) : null;
         // The provider's value and ranges are separate remote reads. During typing
@@ -187,8 +209,9 @@ internal sealed class UiaInputProvider : IDisposable
         // refusing selection edits and acceptance until a consistent capture arrives.
         bool writeSupported = value is not null && selection is not null;
         selection ??= new TextRange(content.Length, content.Length);
+        trace?.Stage("focus-recheck");
         if (!StillFocused(root, token))
-            return Unavailable(request);
+            return Reject("focus-changed-text");
         if (_previous?.Target != id || _previous.Text != content || _lastSourceUserEpoch != request.SourceUserEpoch)
             _inputEpoch++;
         _lastSourceUserEpoch = request.SourceUserEpoch;
@@ -199,6 +222,7 @@ internal sealed class UiaInputProvider : IDisposable
         _element = element;
         _previous = snapshot;
         _application = app;
+        trace?.Result("observed-clear");
         return (snapshot, focus);
     }
     private static bool StillFocused(nint root, string token) => GetForegroundWindow() == root
