@@ -1,3 +1,4 @@
+using TypeLay.Windows;
 using TypeLay.Windows.Contracts;
 using System.IO;
 using System.Security.Cryptography;
@@ -52,7 +53,7 @@ internal static class Program
                     {
                         try
                         {
-                            File.AppendAllText(trace + ".broker.jsonl", "{\"atMs\":" + Environment.TickCount64
+                            File.AppendAllText(trace + ".broker.jsonl", "{\"atMs\":" + WindowsInterruptClock.NowMs
                             + ",\"operation\":\"" + request.Op + "\",\"errorType\":\"" + ex.GetType().Name + "\"}" + Environment.NewLine);
                         }
                         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }

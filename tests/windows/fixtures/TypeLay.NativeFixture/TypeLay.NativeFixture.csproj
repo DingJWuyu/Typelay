@@ -11,4 +11,7 @@
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/OnDemandHotkeys.cs" Link="Product/OnDemandHotkeys.cs" />
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/Native.cs" Link="Product/Native.cs" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../../../../src/windows/shared/WindowsInterruptClock.cs" Link="Windows/WindowsInterruptClock.cs" />
+  </ItemGroup>
 </Project>

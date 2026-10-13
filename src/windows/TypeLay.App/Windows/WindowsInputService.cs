@@ -1,3 +1,4 @@
+using TypeLay.Windows;
 using TypeLay.Core;
 using TypeLay.Runtime;
 using TypeLay.Windows.Contracts;
@@ -24,7 +25,7 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
     {
         try
         {
-            long startedAt = Environment.TickCount64;
+            long startedAt = WindowsInterruptClock.NowMs;
             long checkGeneration = support?.CheckGeneration ?? 0;
             var result = await broker.CallAsync(Request("capture", context));
             var capture = new InputCapture(result.Snapshot, result.Focus, result.Application, result.UserEpoch, result.ForegroundEpoch);

@@ -1,3 +1,4 @@
+using TypeLay.Windows;
 using TypeLay.Windows.Contracts;
 using System.Diagnostics;
 using System.Windows;
@@ -100,7 +101,7 @@ internal sealed class WpfFixtureBroker : IInputBroker
         var selection = field.Composing ? new TextRange(0, 0)
             : new TextRange(field.Box.SelectionStart, field.Box.SelectionStart + field.Box.SelectionLength);
         return (new(Target(field), text, selection, bounds, field.Box.AcceptsReturn, FieldAccess.Supported,
-            LastIme, Environment.TickCount64, field.InputEpoch, _focusEpoch, WriteSupported: true), focus);
+            LastIme, WindowsInterruptClock.NowMs, field.InputEpoch, _focusEpoch, WriteSupported: true), focus);
     }
 
     public Task<BrokerResponse> CallAsync(BrokerRequest request, TimeSpan? timeout = null)
@@ -142,9 +143,9 @@ internal sealed class WpfFixtureBroker : IInputBroker
         });
         if (request.Plan is not { } plan || fresh is null || focus != FocusMember.Source || _bound is null)
             return new(WriteStatus.RejectedBeforeMutation, Denial.NotSourceFocus);
-        if (Environment.TickCount64 > request.ExpiresAtMs)
+        if (WindowsInterruptClock.NowMs > request.ExpiresAtMs)
             return new(WriteStatus.RejectedBeforeMutation, Denial.StaleObservation);
-        var denial = WriteSafety.Validate(plan, fresh, Environment.TickCount64);
+        var denial = WriteSafety.Validate(plan, fresh, WindowsInterruptClock.NowMs);
         if (denial != Denial.None)
             return new(WriteStatus.RejectedBeforeMutation, denial);
         _bound.Box.Text = plan.ResultText;

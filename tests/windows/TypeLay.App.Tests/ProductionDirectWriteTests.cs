@@ -1,4 +1,5 @@
 using TypeLay.Windows.Contracts;
+using TypeLay.Windows;
 using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
@@ -62,8 +63,11 @@ public sealed class ProductionDirectWriteTests
                 await Focus(a);
                 N.SendString(a, N.WM_SETTEXT, text);
                 N.Send(a, N.EM_SETSEL, (nuint)selection.Start, (nint)selection.End);
+                long sentAt = WindowsInterruptClock.NowMs;
                 var reply = await Call(new(BrokerProtocol.Version, 0, "capture", "", CaptureDirect: true));
+                long receivedAt = WindowsInterruptClock.NowMs;
                 Assert.NotNull(reply.Snapshot);
+                Assert.InRange(reply.Snapshot.ObservedAtMs, sentAt, receivedAt);
                 Assert.True(reply.Snapshot.DirectWriteSupported,
                     "The production source must advertise a coordinated writer before direct translation is allowed.");
                 Assert.Equal(ImeState.Clear, reply.Snapshot.Ime);

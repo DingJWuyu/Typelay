@@ -10,6 +10,7 @@
     <AssemblyName>TypeLay.App</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../shared/WindowsInterruptClock.cs" Link="Windows/WindowsInterruptClock.cs" />
     <ProjectReference Include="../TypeLay.Windows.Contracts/TypeLay.Windows.Contracts.csproj" />
     <ProjectReference Include="../../shared/TypeLay.Runtime/TypeLay.Runtime.csproj" />
     <ProjectReference Include="../../shared/TypeLay.Protocol/TypeLay.Protocol.csproj" />

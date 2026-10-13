@@ -1,3 +1,4 @@
+using TypeLay.Windows;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -25,7 +26,14 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
         output.WriteLine("Installed Chrome version: " + FileVersionInfo.GetVersionInfo(chrome!).ProductVersion);
         string directory = Path.Combine(Path.GetTempPath(), "typelay-browser-" + Guid.NewGuid().ToString("N"));
         string title = "TypeLay browser input regression " + Guid.NewGuid().ToString("N");
+        var repository = new DirectoryInfo(AppContext.BaseDirectory);
+        while (repository is not null && !File.Exists(Path.Combine(repository.FullName, "TypeLay.slnx")))
+            repository = repository.Parent;
+        Assert.NotNull(repository);
+        string diagnostics = Path.Combine(repository.FullName, "artifacts", "test-results", "browser");
+        Directory.CreateDirectory(diagnostics);
         BrowserWindows? windows = null;
+        ChildProcess? ownedBrowser = null;
         bool failed = false;
         try
         {
@@ -37,25 +45,35 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             <style>body{margin:0;height:100vh;display:grid;place-items:center;font:20px sans-serif}input{width:65vw;padding:14px}</style>
             <input id="query" type="search" aria-label="Search" value="ordinary search without punctuation" autofocus>
             <script>
+            let inputClicked = false;
+            document.addEventListener("pointerdown", event => {
+              inputClicked = event.isTrusted && event.target === document.getElementById("query");
+            });
             function reportFocus() {
-              document.title = "{{title}} " +
-                (document.hasFocus() && document.activeElement === document.getElementById("query") ? "focused" : "unfocused");
+              const pageFocused = document.hasFocus();
+              const inputFocused = document.activeElement === document.getElementById("query");
+              const title = "{{title}} " + (pageFocused && inputFocused ? "focused" : "unfocused") +
+                " page=" + pageFocused + " input=" + inputFocused + " click=" + inputClicked;
+              if (document.title !== title) document.title = title;
+              requestAnimationFrame(reportFocus);
             }
-            window.addEventListener("focus", reportFocus);
-            window.addEventListener("blur", reportFocus);
-            document.addEventListener("focusin", reportFocus);
-            document.addEventListener("focusout", reportFocus);
+            // Sample live state without changing focus or enabling UIA, rather
+            // than retaining whichever focus event happened to run last.
             reportFocus();
             </script>
             """, TestContext.Current.CancellationToken);
             var start = new ProcessStartInfo(chrome!) { UseShellExecute = false, RedirectStandardError = true };
+            // Official Chromium file logging, scoped to this disposable profile.
+            // ChildProcess deliberately drains stderr without retaining its text.
+            start.Environment["CHROME_LOG_FILE"] = Path.Combine(diagnostics, "chrome.log");
+            start.ArgumentList.Add("--enable-logging");
             start.ArgumentList.Add("--user-data-dir=" + Path.Combine(directory, "profile"));
             start.ArgumentList.Add("--no-first-run");
             start.ArgumentList.Add("--no-default-browser-check");
             start.ArgumentList.Add("--disable-search-engine-choice-screen");
             start.ArgumentList.Add("--new-window");
             start.ArgumentList.Add(new Uri(page).AbsoluteUri);
-            using var ownedBrowser = new ChildProcess(start);
+            ownedBrowser = new ChildProcess(start);
             var browser = ownedBrowser.Process;
             windows = new(browser, title);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -84,14 +102,15 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
                 await Task.Delay(40, deadline.Token);
             } while (startup.Elapsed < TimeSpan.FromSeconds(6));
             var ready = windows.Read();
-            output.WriteLine($"Browser startup atMs={Environment.TickCount64}: ownedProcesses={windows.ProcessCount}; "
+            output.WriteLine($"Browser startup atMs={WindowsInterruptClock.NowMs}: ownedProcesses={windows.ProcessCount}; "
                 + $"visibleOwnedWindows={ready.Length}; ownedPages={ready.Count(candidate => candidate.Page)}; "
                 + $"foregroundOwned={window != 0 && Native.GetForegroundWindow() == window}; "
                 + $"domFocusConfirmed={ready.Any(candidate => candidate.Handle == window && candidate.Focused)}; "
                 + $"inputClicked={clicked}; "
                 + $"launcherExited={browser.HasExited}");
-            Assert.True(window != 0 && Native.GetForegroundWindow() == window
-                && ready.Any(candidate => candidate.Handle == window && candidate.Focused),
+            bool fixtureReady = window != 0 && Native.GetForegroundWindow() == window
+                && ready.Any(candidate => candidate.Handle == window && candidate.Focused);
+            Assert.True(fixtureReady,
                 "Browser fixture startup failed: the owned local page and DOM input focus were not established; no input capture was attempted.");
             using var broker = new BrokerClient();
             using var input = new WindowsInputService(broker, 0);
@@ -131,6 +150,15 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
         catch
         {
             failed = true;
+            try
+            {
+                if (windows is not null)
+                    await windows.SaveDiagnosticsAsync(diagnostics, output.WriteLine);
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                output.WriteLine("Owned browser diagnostics unavailable: " + error.GetType().Name);
+            }
             throw;
         }
         finally
@@ -140,6 +168,7 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             // the original acquisition failure with a secondary cleanup failure.
             try
             {
+                ownedBrowser?.Dispose();
                 if (windows is not null)
                     await windows.StopAsync();
                 if (Directory.Exists(directory))
@@ -148,7 +177,9 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             catch (Exception error) when (failed && error is IOException or UnauthorizedAccessException
                 or System.ComponentModel.Win32Exception or InvalidOperationException or OperationCanceledException)
             {
-                output.WriteLine("Isolated browser profile cleanup failed: " + error.GetType().Name);
+                output.WriteLine($"Isolated browser profile cleanup failed: {error.GetType().Name}; hresult=0x{error.HResult:x8}");
+                if (error is IOException)
+                    output.WriteLine("Isolated cleanup detail: " + System.Text.Json.JsonSerializer.Serialize(error.Message.Replace(directory, "<isolated-browser>", StringComparison.OrdinalIgnoreCase)));
             }
         }
     }
@@ -162,11 +193,11 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
         {
             if (window == 0 || Native.GetForegroundWindow() != window)
             {
-                output.WriteLine($"Browser focus atMs={Environment.TickCount64}: foregroundOwned=False");
+                output.WriteLine($"Browser focus atMs={WindowsInterruptClock.NowMs}: foregroundOwned=False");
                 return;
             }
             var focus = AutomationElement.FocusedElement?.Current;
-            output.WriteLine($"Browser focus atMs={Environment.TickCount64}: windowReady={window != 0}; "
+            output.WriteLine($"Browser focus atMs={WindowsInterruptClock.NowMs}: windowReady={window != 0}; "
                 + $"foregroundOwned={window != 0 && Native.GetForegroundWindow() == window}; "
                 + $"controlType={focus?.ControlType.Id}; keyboardFocus={focus?.HasKeyboardFocus}; "
                 + $"enabled={focus?.IsEnabled}; offscreen={focus?.IsOffscreen}; password={focus?.IsPassword}");

@@ -88,7 +88,7 @@ public sealed record ApplicationSupportRow(
 public sealed record ApplicationSupportLabels(
     string Confirm, string Cancel, string ChooseComponent, string OpenFolder, string CheckAgain, string Details,
     string PrepareTranslation, string ConnectApplications, string TryIt, string Recovery, string MoreApplications,
-    string OpenBrowser);
+    string OpenBrowser, string Copy);
 
 public sealed record ApplicationSupportView(
     string Title, string Summary, string CapabilityNote, ApplicationSupportRow[] Rows, ApplicationSupportLabels Labels);

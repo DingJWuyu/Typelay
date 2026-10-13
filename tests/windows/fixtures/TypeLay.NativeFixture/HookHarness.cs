@@ -1,3 +1,4 @@
+using TypeLay.Windows;
 using TypeLay.Windows.Contracts;
 using System.Diagnostics;
 using System.Runtime.Versioning;
@@ -49,8 +50,8 @@ internal sealed class HookHarness : IDisposable
                     _accepted++;
             }
         }
-        long now = Environment.TickCount64;
         var snapshot = _adapter.Capture();
+        long now = WindowsInterruptClock.NowMs;
         string field = snapshot is null ? "other" : _descriptor.Fields.Single(f => f.Hwnd == snapshot.Target.AsWindows().ControlHwnd).Name;
         if (snapshot is null)
         {

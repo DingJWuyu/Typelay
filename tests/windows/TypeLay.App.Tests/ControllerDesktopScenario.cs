@@ -1,3 +1,4 @@
+using TypeLay.Windows;
 using TypeLay.Runtime;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -22,7 +23,7 @@ public sealed class ControllerDesktopScenario(WpfDesktopFixture desktop, ITestOu
     private readonly Stopwatch _elapsed = new();
 
     private void Stage(bool stockControls, string name) => _stages.Enqueue(
-        $"{_elapsed.ElapsedMilliseconds} ms tick={Environment.TickCount64} stock-controls={stockControls}: {name}");
+        $"{_elapsed.ElapsedMilliseconds} ms tick={WindowsInterruptClock.NowMs} stock-controls={stockControls}: {name}");
 
     [Fact]
     public async Task OnDemandWakeStaysBoundToTheFocusedFieldAndLosesDisconnectedSupport()

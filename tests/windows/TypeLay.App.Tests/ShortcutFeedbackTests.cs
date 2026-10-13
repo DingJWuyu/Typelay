@@ -1,3 +1,4 @@
+using TypeLay.Windows;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -59,7 +60,7 @@ public sealed class ShortcutFeedbackTests
             Assert.True(refusal.CommandSequence > 0);
             var source = new InputSnapshot(new WindowsTarget(fixture.Id, fixture.StartTime.ToUniversalTime().Ticks,
                 host.RootHwnd, (long)field, "controlled-hook", "field-a", Guid.NewGuid()), "", new(0, 0),
-                new(10, 20, 300, 40), false, FieldAccess.Supported, ImeState.Unknown, Environment.TickCount64,
+                new(10, 20, 300, 40), false, FieldAccess.Supported, ImeState.Unknown, WindowsInterruptClock.NowMs,
                 1, 1, PreviewText: "Do not change this text");
             hook.SetShortcuts([
                 new("wake", 0x86, ShortcutModifiers.Control | ShortcutModifiers.Shift),
@@ -74,7 +75,7 @@ public sealed class ShortcutFeedbackTests
             Assert.True(imeRefusal.CommandSequence > refusal.CommandSequence);
             hook.PublishShortcut(new(source with
             {
-                ObservedAtMs = Environment.TickCount64
+                ObservedAtMs = WindowsInterruptClock.NowMs
             }, hook.ContentEpoch, hook.ForegroundEpoch));
             Keys(0x11, 0x10, 0x86);
             InputNotice? preview = null;

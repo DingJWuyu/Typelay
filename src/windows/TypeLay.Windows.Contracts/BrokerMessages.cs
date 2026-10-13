@@ -2,11 +2,12 @@ using TypeLay.Core;
 
 namespace TypeLay.Windows.Contracts;
 
-// The target identity representation changed in v2. App and Broker ship together;
-// an older peer must fail the handshake instead of silently misreading a binding.
+// App and Broker ship together. v3 fixes all exchanged timestamps to the precise,
+// suspend-inclusive Windows interrupt clock. Reject older peers before any read
+// or write; their coarse expiry checks cannot enforce this clock contract.
 public static class BrokerProtocol
 {
-    public const int Version = 2;
+    public const int Version = 3;
 }
 
 public sealed record BrokerRequest(int Version, long Id, string Op, string Token,

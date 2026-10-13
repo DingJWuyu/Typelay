@@ -33,7 +33,7 @@ def responses(data: bytes) -> list[dict]:
 
 
 def request(identifier: int, operation: str, **changes) -> dict:
-    return {"version": 2, "id": identifier, "op": operation, "token": TOKEN, **changes}
+    return {"version": 3, "id": identifier, "op": operation, "token": TOKEN, **changes}
 
 
 class DistributionTests(unittest.TestCase):
@@ -222,7 +222,7 @@ class DistributionTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "win32", "Production Windows broker")
     def test_broker_rejects_wrong_authentication_and_version(self):
-        for change in ({"token": "2" * 64}, {"version": 1}):
+        for change in ({"token": "2" * 64}, {"version": 1}, {"version": 2}, {"version": 4}):
             with self.subTest(change=change):
                 result = self.broker(frame(request(1, "hello", **change)))
                 self.assertEqual(result.returncode, 3)

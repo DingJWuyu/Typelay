@@ -1,3 +1,4 @@
+using TypeLay.Windows;
 using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
@@ -8,7 +9,7 @@ namespace TypeLay.Broker;
 // window titles, exception messages or keyboard input in a diagnostic sample.
 internal sealed class CaptureTrace(string path) : IDisposable
 {
-    private readonly long _at = Environment.TickCount64;
+    private readonly long _at = WindowsInterruptClock.NowMs;
     private readonly Stopwatch _watch = Stopwatch.StartNew();
     private readonly Dictionary<string, double> _stages = new();
     private string _stage = "start", _result = "exception";

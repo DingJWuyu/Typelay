@@ -16,6 +16,11 @@ from pathlib import Path
 from wire import now_ms
 
 BROWSERS = ("firefox", "chromium", "google-chrome")
+BROWSER_MANAGEMENT_URIS = {
+    "firefox": "about:debugging#/runtime/this-firefox",
+    "chromium": "chrome://extensions/",
+    "google-chrome": "chrome://extensions/",
+}
 
 
 class ApplicationSupport:
@@ -390,11 +395,12 @@ class ApplicationSupport:
             )
         if identity in ("chromium", "google-chrome"):
             return (
-                "1. 打开浏览器扩展页（chrome://extensions/），开启开发者模式，"
-                "选择“加载已解压的扩展程序”，"
+                "1. 打开浏览器后，复制下方管理地址，粘贴到浏览器地址栏并打开。"
+                "浏览器不允许 TypeLay 直接打开这个内部页面。\n"
+                "2. 在扩展页开启开发者模式，选择“加载已解压的扩展程序”，"
                 "选择下方 TypeLay 扩展文件夹。\n"
-                "2. 在浏览器确认网页访问权限，回到此页连接。无需复制扩展 ID。\n"
-                "3. 保存网页中的工作后刷新目标网页，在普通文本框输入后回到这里检查连接。\n\n"
+                "3. 在浏览器确认网页访问权限，回到此页连接。无需复制扩展 ID。\n"
+                "4. 保存网页中的工作后刷新目标网页，在普通文本框输入后回到这里检查连接。\n\n"
                 "随包扩展尚未上架商店，只提供开发加载。TypeLay 只使用浏览器标准配置中与本包路径"
                 "完全匹配的唯一扩展记录；尚未找到或发现多个记录时不会注册。"
                 "若加载后仍没有连接按钮，请保存工作，正常退出并重新打开浏览器后再检查。"
@@ -433,7 +439,7 @@ class ApplicationSupport:
         return self.paths.home
 
     def open_browser(self, browser):
-        """Open only the selected browser's permission UI; never load or approve an extension."""
+        """Launch the selected browser; never load or approve an extension."""
         if browser not in BROWSERS:
             raise ValueError("unknown-browser")
         executable = shutil.which(browser)
@@ -441,14 +447,16 @@ class ApplicationSupport:
             raise OSError("browser-not-installed")
         from gi.repository import Gio, GLib
 
-        uri = (
-            "about:debugging#/runtime/this-firefox"
+        arguments = (
+            [executable, "--new-tab", BROWSER_MANAGEMENT_URIS[browser]]
             if browser == "firefox"
-            else "chrome://extensions/"
+            # Chromium rejects external command-line navigation to internal
+            # extension pages. The user opens the copied address themselves.
+            else [executable, "about:blank"]
         )
         try:
             application = Gio.AppInfo.create_from_commandline(
-                shlex.join([executable, "--new-tab", uri]), None, Gio.AppInfoCreateFlags.NONE
+                shlex.join(arguments), None, Gio.AppInfoCreateFlags.NONE
             )
             if not application.launch([], None):
                 raise OSError("browser-launch-failed")

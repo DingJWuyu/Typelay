@@ -1,7 +1,11 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using TypeLay.App;
 using Xunit;
 
@@ -24,10 +28,10 @@ internal sealed class BrowserWindows
         _processes.Add(owned.Id, owned);
     }
 
-    public (nint Handle, bool Page, bool Focused)[] Read()
+    public (nint Handle, bool Page, bool Focused, string Title)[] Read()
     {
         Discover();
-        var windows = new List<(nint, bool, bool)>();
+        var windows = new List<(nint, bool, bool, string)>();
         EnumWindows((window, _) =>
         {
             Native.GetWindowThreadProcessId(window, out uint processId);
@@ -36,13 +40,77 @@ internal sealed class BrowserWindows
             var title = new StringBuilder(512);
             GetWindowTextW(window, title, title.Capacity);
             windows.Add((window, title.ToString().Contains(_title, StringComparison.Ordinal),
-                title.ToString().Contains(_title + " focused", StringComparison.Ordinal)));
+                title.ToString().Contains(_title + " focused", StringComparison.Ordinal), title.ToString()));
             return true;
         }, 0);
         return windows.ToArray();
     }
 
     public int ProcessCount => _processes.Count;
+
+    public async Task SaveDiagnosticsAsync(string folder, Action<string> log)
+    {
+        // Only this disposable profile's held process identities are eligible.
+        // PrintWindow requests the owned HWND, never another window's screen pixels.
+        var windows = Read().Take(4).ToArray();
+        for (int index = 0; index < windows.Length; index++)
+        {
+            var window = windows[index];
+            var name = new StringBuilder(128);
+            GetClassNameW(window.Handle, name, name.Capacity);
+            log($"Owned browser window {index}: title={JsonSerializer.Serialize(window.Title)}; class={name}; foreground={Native.GetForegroundWindow() == window.Handle}");
+            Native.GetWindowThreadProcessId(window.Handle, out uint processId);
+            if (!_processes.TryGetValue((int)processId, out var owner) || owner.HasExited)
+                continue;
+            string path = Path.Combine(folder, $"owned-window-{index}.png");
+            try
+            {
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                byte[]? png = await Task.Run(() =>
+                {
+                    nint previousDpi = SetThreadDpiAwarenessContext(-4);
+                    if (previousDpi == 0)
+                        return null;
+                    try
+                    {
+                        if (!GetWindowRect(window.Handle, out var bounds))
+                            return null;
+                        int width = bounds.Right - bounds.Left, height = bounds.Bottom - bounds.Top;
+                        if (width <= 0 || height <= 0 || width > 8192 || height > 8192 || (long)width * height > 16_000_000)
+                            return null;
+                        using var bitmap = new Bitmap(width, height);
+                        using var graphics = Graphics.FromImage(bitmap);
+                        Native.GetWindowThreadProcessId(window.Handle, out uint beforePrintProcess);
+                        if (beforePrintProcess != processId || owner.HasExited || deadline.IsCancellationRequested)
+                            return null;
+                        nint dc = graphics.GetHdc();
+                        bool printed;
+                        try
+                        {
+                            printed = PrintWindow(window.Handle, dc, 2);
+                        }
+                        finally { graphics.ReleaseHdc(dc); }
+                        Native.GetWindowThreadProcessId(window.Handle, out uint currentProcess);
+                        if (!printed || currentProcess != processId || owner.HasExited || deadline.IsCancellationRequested)
+                            return null;
+                        using var buffer = new MemoryStream();
+                        bitmap.Save(buffer, ImageFormat.Png);
+                        return buffer.ToArray();
+                    }
+                    finally { SetThreadDpiAwarenessContext(previousDpi); }
+                }).WaitAsync(deadline.Token);
+                // Timed-out work can only discard its bytes. The awaiting test
+                // alone publishes an image after successful bounded completion.
+                if (png is not null)
+                    await File.WriteAllBytesAsync(path, png);
+                log($"Owned browser window {index}: screenshotSaved={png is not null}");
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                log("Owned browser screenshot unavailable: " + error.GetType().Name);
+            }
+        }
+    }
 
     public (uint Dpi, int Width, int Height) ClickPageInput(nint window)
     {
@@ -200,6 +268,7 @@ internal sealed class BrowserWindows
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(nint window);
     [DllImport("user32.dll")] private static extern bool IsChild(nint parent, nint window);
     [DllImport("user32.dll")] private static extern bool GetWindowRect(nint window, out Native.Rect rect);
+    [DllImport("user32.dll")] private static extern bool PrintWindow(nint window, nint deviceContext, uint flags);
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(Native.Point point);
     [DllImport("user32.dll")] private static extern nint SetThreadDpiAwarenessContext(nint context);
     [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);

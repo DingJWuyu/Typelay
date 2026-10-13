@@ -1,3 +1,4 @@
+using TypeLay.Windows;
 using System.Diagnostics;
 using TypeLay.Core;
 using TypeLay.Runtime;
@@ -35,7 +36,7 @@ internal sealed class WindowsApplicationSupport
     {
         CheckGeneration++;
         _requested = id;
-        _requestedAt = Environment.TickCount64;
+        _requestedAt = WindowsInterruptClock.NowMs;
         CheckStarted?.Invoke(id);
     }
     public void CancelCheck()
@@ -55,7 +56,7 @@ internal sealed class WindowsApplicationSupport
             Disconnected();
             return;
         }
-        if (_requested is { } waiting && Environment.TickCount64 - _requestedAt > 10_000)
+        if (_requested is { } waiting && WindowsInterruptClock.NowMs - _requestedAt > 10_000)
         {
             _requested = null;
             _observations.Remove(waiting);
@@ -76,7 +77,7 @@ internal sealed class WindowsApplicationSupport
             && WindowsTarget.TryDecode(source.Target, out var native)
             && Native.GetForegroundWindow() == (nint)native.RootHwnd)
         {
-            long now = Environment.TickCount64;
+            long now = WindowsInterruptClock.NowMs;
             bool fresh = source.ObservedAtMs <= now && now - source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
             bool preview = fresh && source.Access == FieldAccess.Supported && source.Bounds.IsValid
                 && (source.IsUsable || source.PreviewText is not null || source.CommittedPrefix is not null);
@@ -169,6 +170,7 @@ internal sealed class WindowsApplicationSupport
             if (_available == false)
                 return new(id, ApplicationSupportState.Error, ApplicationSupportReason.DetectionFailed,
                     SupportedActions: [ApplicationSupportAction.Refresh, ApplicationSupportAction.OpenInstructions],
+                    Details: "请退出 TypeLay，再从完整安装目录重新启动；仍无法连接时，重新解压完整安装包。不要混用不同版本的 App 与 Broker。",
                     ApplicationDetected: detected);
             if (_observations.TryGetValue(id, out var observed))
             {

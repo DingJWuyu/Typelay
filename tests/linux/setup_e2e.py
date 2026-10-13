@@ -328,6 +328,52 @@ class ApplicationSupportTests(unittest.TestCase):
         self.assertFalse(manifest.exists())
         self.assertEqual(self.support.browser_status("chromium")["state"], "not-registered")
 
+    def test_browser_launch_keeps_firefox_navigation_separate_from_chromium(self):
+        commands = self.home / "commands"
+        commands.mkdir()
+        for browser, expected in (
+            ("chromium", ["about:blank"]),
+            ("google-chrome", ["about:blank"]),
+            ("firefox", ["--new-tab", "about:debugging#/runtime/this-firefox"]),
+        ):
+            with self.subTest(browser=browser):
+                output = self.home / (browser + "-arguments.json")
+                launcher = commands / browser
+                launcher.write_text(
+                    "#!/usr/bin/python3\nimport json,sys\nfrom pathlib import Path\n"
+                    + f"output=Path({str(output)!r})\n"
+                    "temporary=output.with_suffix('.tmp')\n"
+                    "temporary.write_text(json.dumps(sys.argv[1:]))\n"
+                    "temporary.replace(output)\n"
+                )
+                launcher.chmod(0o700)
+                subprocess.run(
+                    [
+                        "/usr/bin/python3",
+                        "-I",
+                        "-B",
+                        "-c",
+                        "import asyncio,sys; from pathlib import Path; "
+                        "from types import SimpleNamespace; sys.path.insert(0, sys.argv[1]); "
+                        "from application_support import ApplicationSupport; "
+                        "support=ApplicationSupport(SimpleNamespace(home=Path(sys.argv[2]))); "
+                        "asyncio.run(support.execute(sys.argv[3], 'OpenInstructions'))",
+                        str(ROOT / "src/linux/desktop"),
+                        str(self.package),
+                        browser,
+                    ],
+                    env={**os.environ, "PATH": str(commands) + os.pathsep + os.environ["PATH"]},
+                    check=True,
+                    timeout=5,
+                    capture_output=True,
+                )
+                deadline = time.monotonic() + 3
+                while not output.exists():
+                    self.assertLess(time.monotonic(), deadline, "Gio did not launch the recorder")
+                    time.sleep(0.01)
+                self.assertEqual(json.loads(output.read_text()), expected)
+                self.assertEqual(self.support.browser_status(browser)["state"], "not-registered")
+
     def test_registration_refuses_foreign_files_and_preserves_browser_permissions(self):
         manifest = self.home / ".mozilla/native-messaging-hosts/org.typelay.browser.json"
         manifest.parent.mkdir(parents=True)

@@ -5,10 +5,11 @@ import os
 import sys
 
 import gi
+from application_support import BROWSER_MANAGEMENT_URIS
 from wire import now_ms
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
 
 
 class Overlay:
@@ -579,21 +580,41 @@ class ApplicationSupportPane:
             text=row["title"],
         )
         folder = self.folder(row["id"])
-        browser = row["id"] in ("firefox", "chromium", "google-chrome")
+        address = BROWSER_MANAGEMENT_URIS.get(row["id"])
+        browser = address is not None
         dialog.format_secondary_text(row.get("details") or row["guidance"])
-        path = Gtk.Entry()
-        path.set_text(str(folder))
-        path.set_editable(False)
-        path.set_hexpand(True)
-        dialog.get_message_area().pack_start(path, False, False, 0)
+        feedback = Gtk.Label(xalign=0)
+        feedback.set_line_wrap(True)
+
+        def copy_value(text):
+            try:
+                Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD).set_text(text, -1)
+                feedback.set_text("已复制。")
+            except GLib.Error:
+                feedback.set_text("未能复制，请选中上方内容后手动复制。")
+
+        def add_value(text):
+            line = Gtk.Box(spacing=8)
+            value = Gtk.Entry()
+            value.set_text(text)
+            value.set_editable(False)
+            value.set_hexpand(True)
+            copy = Gtk.Button(label=labels["copy"])
+            copy.get_accessible().set_name(labels["copy"] + "：" + text)
+            copy.connect("clicked", lambda *_: copy_value(text))
+            line.pack_start(value, True, True, 0)
+            line.pack_start(copy, False, False, 0)
+            dialog.get_message_area().pack_start(line, False, False, 0)
+
+        if address:
+            add_value(address)
+        add_value(str(folder))
         dialog.add_buttons(
             labels["cancel"], Gtk.ResponseType.CANCEL, labels["openFolder"], Gtk.ResponseType.OK
         )
         if browser:
             browser_button = dialog.add_button(labels["openBrowser"], Gtk.ResponseType.APPLY)
             dialog.set_default_response(Gtk.ResponseType.APPLY)
-        feedback = Gtk.Label(xalign=0)
-        feedback.set_line_wrap(True)
         dialog.get_message_area().pack_start(feedback, False, False, 0)
         alive, opening = True, False
 

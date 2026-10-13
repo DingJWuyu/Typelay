@@ -1,3 +1,4 @@
+using TypeLay.Windows;
 using TypeLay.Windows.Contracts;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -152,7 +153,7 @@ internal sealed class UiaInputProvider : IDisposable
         // This avoids repeated remote range calls while a Tab permit is live.
         if (request.Op == "capture" && bounds.Height > 160)
         {
-            long now = Environment.TickCount64;
+            long now = WindowsInterruptClock.NowMs;
             if (_anchorTarget == id && _anchorFieldBounds == bounds && _anchorUserEpoch == request.UserEpoch
                 && now - _anchorAt < 200)
                 bounds = _anchorBounds;
@@ -192,7 +193,7 @@ internal sealed class UiaInputProvider : IDisposable
                 _inputEpoch++;
             _lastSourceUserEpoch = request.SourceUserEpoch;
             var blocked = new InputSnapshot(id, "", new TextRange(0, 0), bounds, multiline,
-                FieldAccess.Supported, ime, Environment.TickCount64, _inputEpoch, _focusEpoch, false,
+                FieldAccess.Supported, ime, WindowsInterruptClock.NowMs, _inputEpoch, _focusEpoch, false,
                 committedPrefix, preview);
             _element = element;
             _previous = blocked;
@@ -223,7 +224,7 @@ internal sealed class UiaInputProvider : IDisposable
         // Known multiline provider metadata OR actual line breaks. A single-line empty input stays single-line.
         multiline |= content.Contains('\n') || content.Contains('\r');
         var snapshot = new InputSnapshot(id, content, selection, bounds, multiline, FieldAccess.Supported,
-            ime, Environment.TickCount64, _inputEpoch, _focusEpoch, writeSupported);
+            ime, WindowsInterruptClock.NowMs, _inputEpoch, _focusEpoch, writeSupported);
         _element = element;
         _previous = snapshot;
         _application = app;
@@ -235,9 +236,9 @@ internal sealed class UiaInputProvider : IDisposable
 
     public WriteReceipt Write(BrokerRequest request)
     {
-        long writeAt = Environment.TickCount64;
+        long writeAt = WindowsInterruptClock.NowMs;
         TraceWrite("start", request, writeAt);
-        if (request.Plan is not { } plan || Environment.TickCount64 > request.ExpiresAtMs)
+        if (request.Plan is not { } plan || WindowsInterruptClock.NowMs > request.ExpiresAtMs)
             return new(WriteStatus.RejectedBeforeMutation, Denial.StaleObservation);
         if (!WindowsTarget.TryDecode(plan.Expected.Target, out var target))
             return new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged);
@@ -251,7 +252,7 @@ internal sealed class UiaInputProvider : IDisposable
             TraceWrite("captured", request, writeAt);
             if (fresh is null || focus != FocusMember.Source)
                 return new(WriteStatus.RejectedBeforeMutation, Denial.NotSourceFocus);
-            Denial reason = WriteSafety.Validate(plan, fresh, Environment.TickCount64);
+            Denial reason = WriteSafety.Validate(plan, fresh, WindowsInterruptClock.NowMs);
             if (reason != Denial.None)
                 return new(WriteStatus.RejectedBeforeMutation, reason);
             if (_element is null || GetForegroundWindow() != (nint)target.RootHwnd)
@@ -260,7 +261,7 @@ internal sealed class UiaInputProvider : IDisposable
                 && _native.Composition((nint)target.RootHwnd) != ImeState.Clear)
                 return new(WriteStatus.RejectedBeforeMutation, Denial.ImeUnclear);
             TraceWrite("ime-checked", request, writeAt);
-            if (Environment.TickCount64 > request.ExpiresAtMs)
+            if (WindowsInterruptClock.NowMs > request.ExpiresAtMs)
                 return new(WriteStatus.RejectedBeforeMutation, Denial.StaleObservation);
             if (string.Join('.', AutomationElement.FocusedElement.GetRuntimeId()) != target.ElementToken)
                 return new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged);
@@ -278,7 +279,7 @@ internal sealed class UiaInputProvider : IDisposable
             if (value.Current.Value != plan.Expected.Text || value.Current.IsReadOnly)
                 return new(WriteStatus.RejectedBeforeMutation, Denial.SourceChanged);
             // The final remote value read also consumes time.
-            if (Environment.TickCount64 > request.ExpiresAtMs)
+            if (WindowsInterruptClock.NowMs > request.ExpiresAtMs)
                 return new(WriteStatus.RejectedBeforeMutation, Denial.StaleObservation);
             TraceWrite("before-mutation", request, writeAt);
             mutation = true;
@@ -305,7 +306,7 @@ internal sealed class UiaInputProvider : IDisposable
             || !WindowsTarget.TryDecode(plan.Expected.Target, out var target)
             || target.Provider != NativeEditTransactions.Provider || !plan.Expected.DirectWriteSupported)
             return new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported);
-        long now = Environment.TickCount64;
+        long now = WindowsInterruptClock.NowMs;
         var basis = plan.Expected with
         {
             ObservedAtMs = now
@@ -354,7 +355,7 @@ internal sealed class UiaInputProvider : IDisposable
         string? path = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
         if (string.IsNullOrWhiteSpace(path))
             return;
-        long now = Environment.TickCount64;
+        long now = WindowsInterruptClock.NowMs;
         try
         {
             System.IO.File.AppendAllText(path + ".write.jsonl", "{\"atMs\":" + now + ",\"stage\":\"" + stage

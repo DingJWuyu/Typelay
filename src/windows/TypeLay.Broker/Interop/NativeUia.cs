@@ -1,3 +1,4 @@
+using TypeLay.Windows;
 using System.Runtime.InteropServices;
 using TypeLay.Core;
 using TypeLay.Protocol;
@@ -241,7 +242,7 @@ internal sealed unsafe class NativeUia : IDisposable
         _lastPrefixStage = _prefixStage;
         try
         {
-            System.IO.File.AppendAllText(path + ".prefix.jsonl", "{\"atMs\":" + Environment.TickCount64
+            System.IO.File.AppendAllText(path + ".prefix.jsonl", "{\"atMs\":" + WindowsInterruptClock.NowMs
             + ",\"stage\":" + _prefixStage + "}" + Environment.NewLine);
         }
         catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException) { }
@@ -280,7 +281,7 @@ internal sealed unsafe class NativeUia : IDisposable
         _imeDiagnostics[stage] = value;
         try
         {
-            System.IO.File.AppendAllText(path + ".imm.jsonl", "{\"atMs\":" + Environment.TickCount64
+            System.IO.File.AppendAllText(path + ".imm.jsonl", "{\"atMs\":" + WindowsInterruptClock.NowMs
             + ",\"stage\":\"" + stage + "\",\"value\":" + value + "}" + Environment.NewLine);
         }
         catch (Exception ex) when (ex is System.IO.IOException or UnauthorizedAccessException) { }

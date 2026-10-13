@@ -1,3 +1,4 @@
+using TypeLay.Windows;
 using TypeLay.Windows.Contracts;
 using System.Diagnostics;
 using System.Runtime.Versioning;
@@ -90,7 +91,7 @@ public sealed class NativeEditAdapter
             bool multiline = (NativeMethods.GetStyle(focus.Control, -16) & 4) != 0;
             ImeState ime = GetFixtureIme(focus.Control);
             InputSnapshot Blocked() => new(target, "", null, bounds, multiline, access, ime,
-                Environment.TickCount64, 0, 0, WriteSupported: true);
+                WindowsInterruptClock.NowMs, 0, 0, WriteSupported: true);
             // Never read a password / PIN / unknown / readonly field, even just for diagnostics.
             if (access != FieldAccess.Supported || ime != ImeState.Clear)
                 return Blocked();
@@ -103,7 +104,7 @@ public sealed class NativeEditAdapter
                 || GetFixtureIme(focus.Control) != ImeState.Clear)
                 return null;
             return new(target, text, selection, bounds, multiline, access, ime,
-                Environment.TickCount64, 0, 0, WriteSupported: true);
+                WindowsInterruptClock.NowMs, 0, 0, WriteSupported: true);
         }
         catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
@@ -121,7 +122,7 @@ public sealed class NativeEditAdapter
             InputSnapshot? fresh = Capture();
             if (fresh is null)
                 return new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged);
-            Denial reason = WriteSafety.Validate(plan, fresh, Environment.TickCount64);
+            Denial reason = WriteSafety.Validate(plan, fresh, WindowsInterruptClock.NowMs);
             if (reason != Denial.None)
                 return new(WriteStatus.RejectedBeforeMutation, reason);
             nint hwnd = (nint)fresh.Target.AsWindows().ControlHwnd;

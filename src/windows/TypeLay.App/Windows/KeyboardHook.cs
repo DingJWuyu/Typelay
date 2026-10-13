@@ -1,3 +1,4 @@
+using TypeLay.Windows;
 using TypeLay.Runtime;
 using TypeLay.Windows.Contracts;
 using System.Collections.Concurrent;
@@ -125,7 +126,7 @@ internal sealed class KeyboardHook : IInputMonitor
             Interlocked.Increment(ref _shortcutTraceDropped);
             return;
         }
-        long now = evaluatedAtMs ?? Environment.TickCount64;
+        long now = evaluatedAtMs ?? WindowsInterruptClock.NowMs;
         // No field text, key values, target identities or configuration text.
         // The low-level hook only queues primitives; serialization and I/O belong to TryRead.
         _shortcutTrace.Enqueue(new
@@ -183,7 +184,7 @@ internal sealed class KeyboardHook : IInputMonitor
             if (dropped != 0)
                 lines.AppendLine(System.Text.Json.JsonSerializer.Serialize(new
                 {
-                    atMs = Environment.TickCount64,
+                    atMs = WindowsInterruptClock.NowMs,
                     operation = "shortcut-trace-overflow",
                     dropped
                 }));
@@ -243,7 +244,7 @@ internal sealed class KeyboardHook : IInputMonitor
         }
         var binding = Volatile.Read(ref _lease);
         var lease = binding?.Observation;
-        long now = Environment.TickCount64;
+        long now = WindowsInterruptClock.NowMs;
         bool fresh = lease is not null && lease.UserEpoch == UserEpoch && lease.ForegroundEpoch == ForegroundEpoch
             && now >= lease.Source.ObservedAtMs && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
         bool source = fresh && Native.GetForegroundWindow() == (nint)binding!.RootHwnd;
@@ -322,7 +323,7 @@ internal sealed class KeyboardHook : IInputMonitor
         long sequence = Interlocked.Increment(ref _commandSequence);
         var nativeLease = Volatile.Read(ref _shortcutLease);
         var lease = nativeLease?.Observation;
-        long now = Environment.TickCount64;
+        long now = WindowsInterruptClock.NowMs;
         long contentEpoch = ContentEpoch, foregroundEpoch = ForegroundEpoch;
         void Reject(Denial reason, string traceReason)
         {

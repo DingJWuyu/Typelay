@@ -120,7 +120,10 @@ class NativeBrowserContract(unittest.TestCase):
                             with context.expect_page(timeout=10_000) as opened:
                                 self.support_action(installed, environment, "OpenInstructions")
                             opened_page = opened.value
-                            opened_page.wait_for_url("chrome://extensions/", timeout=10_000)
+                            # Chromium rejects external internal-page URLs. The
+                            # application opens a normal tab; the user must paste
+                            # the provided management address and approve loading.
+                            opened_page.wait_for_url("about:blank", timeout=10_000)
                         except (PlaywrightError, AssertionError, subprocess.TimeoutExpired):
                             try:
                                 self.save_open_failure(context, opened_page, root)
@@ -237,7 +240,7 @@ class NativeBrowserContract(unittest.TestCase):
         output.mkdir(parents=True, exist_ok=True)
         pages = context.pages[:4]
         report = {
-            "expectedUrl": "chrome://extensions/",
+            "expectedUrl": "about:blank",
             "openedPage": {"url": opened.url, "closed": opened.is_closed()} if opened else None,
             "pages": [
                 {"url": page.url, "closed": page.is_closed(), "selected": page is opened}

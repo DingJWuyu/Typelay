@@ -1,3 +1,4 @@
+using TypeLay.Windows;
 using Microsoft.Win32;
 using System.Windows.Threading;
 using TypeLay.Runtime;
@@ -39,7 +40,7 @@ internal static class WindowsRuntime
     private sealed class DispatcherSessionLoop : ISessionLoop
     {
         private readonly DispatcherTimer _timer = new(DispatcherPriority.Input) { Interval = TimeSpan.FromMilliseconds(20) };
-        public long NowMs => Environment.TickCount64;
+        public long NowMs => WindowsInterruptClock.NowMs;
         public event Action? Tick;
         public DispatcherSessionLoop() => _timer.Tick += (_, _) => Tick?.Invoke();
         public void Start() => _timer.Start();

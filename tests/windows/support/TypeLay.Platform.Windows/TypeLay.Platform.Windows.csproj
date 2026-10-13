@@ -5,4 +5,7 @@
     <ProjectReference Include="../../../../src/windows/TypeLay.Windows.Contracts/TypeLay.Windows.Contracts.csproj" />
     <ProjectReference Include="../../../../src/shared/TypeLay.Core/TypeLay.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../../../../src/windows/shared/WindowsInterruptClock.cs" Link="Windows/WindowsInterruptClock.cs" />
+  </ItemGroup>
 </Project>

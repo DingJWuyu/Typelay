@@ -20,6 +20,12 @@ iframe、Shadow DOM 源字段、其他 contenteditable / 富文本、自绘编�
 
 先安装 Linux 发行包并启动 TypeLay。扩展源码随包放在 `browser/firefox` 与 `browser/chromium`，两者均包含对应 `manifest.json`。保持这个发行目录可用；浏览器加载解压扩展后会引用其文件。
 
+优先使用设置中的“应用支持”：选择浏览器，按接入说明打开浏览器，并复制管理页地址和组件目录。Chromium 不允许外部启动命令直接打开扩展管理内部页，需要用户把 `chrome://extensions/` 粘贴到地址栏后打开；TypeLay 不添加安全绕过参数。两个“复制”按钮只在明确点击时写入相应固定内容，不代表扩展已经安装。
+
+在浏览器加载扩展并批准网页访问后，回到 TypeLay 选择“连接”。Chromium/Chrome 只采用标准浏览器配置中与当前包目录完全匹配的唯一扩展记录，不需要用户手填扩展 ID；找不到或存在多个记录时保持未连接，并说明下一步。登记成功也不等于已经连接，需保存工作并刷新目标网页，等待真实握手和字段检查。
+
+下面的命令是手动管理方式，与设置入口二选一，不需要两套都执行。
+
 Firefox：
 
 ```sh
@@ -42,7 +48,9 @@ Google Chrome 使用 `--browser google-chrome`。不会猜测扩展 ID，也不�
 
 翻译模式、语言方向、排除项及原生写回开关沿用 Linux 设置。已确认输入法状态后，自动模式跟随源字段；按需模式使用设置中的快捷键。只有当前有效许可才拦截真实裸 Tab。点击候选先请求编辑授权；编辑后第一次 Tab 只返回原输入框，下一次 Tab 才接受。Ctrl/Alt/Shift/Meta 修饰键、重复键、组合输入和不可信合成按键不发起新的接受。
 
-先在浏览器移除扩展，再注销指定 host：
+设置中的“移除”只撤销本安装拥有的本地通信注册，不操作浏览器扩展权限，也不结束浏览器进程。若现有会话仍在线，页面会提示需要保存工作并完整退出浏览器；删除注册本身不会立即断开旧连接，关闭单个标签页也不保证会话结束。无需继续使用时，再到浏览器移除扩展。
+
+也可以手动注销指定 host：
 
 ```sh
 python install.py browser-uninstall --browser firefox
@@ -75,8 +83,8 @@ xvfb-run -a python tests/linux/firefox_native_e2e.py --package artifacts/linux/p
 
 它使用独立临时 HOME/profile，通过 WebDriver 安装本次测试的临时附加组件，并连接发行包原生 host。该范围是实际加载、协议、字段读写与身份校验，不等于 Firefox+niri+真实模型完整链路或物理输入法验收。
 
-该检查在临时 HOME 安装发行包并注册唯一测试扩展 ID，使用真实后台脚本、native messaging、host wrapper 与 socket，验证握手、跨标签页路由及控件销毁身份；完成后关闭整个测试浏览器并删除临时目录。socket 对端只提供测试用元数据批准，不是假翻译器，也不代表 niri 前台身份或模型链路验收。
+该检查在临时 HOME 安装发行包，显式加载测试扩展，再通过生产连接操作读取唯一的实际扩展记录并注册，使用真实后台脚本、native messaging、host wrapper 与 socket，验证首次握手、重连、跨标签页路由及控件销毁身份；完成后关闭整个测试浏览器并删除临时目录。socket 对端只提供测试用元数据批准，不是假翻译器，也不代表 niri 前台身份或模型链路验收。
 
 DOM 检查覆盖未知 IME、可信输入后的接受、旧原文、DOM 重建、组合撤销、UTF-16 选区、网页重入改写、密码字段和合成 Tab 拒绝。单独的 DOM 检查不验证 Firefox、native messaging 安装路由、niri 前台身份、物理中文 IME、真实键盘、撤销栈或视觉一致性。Chromium 进程无法启动时检查失败，不跳过成成功。上述未覆盖项仍需对应真实环境验证。
 
-底层依据：[native messaging](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_messaging)、[Chrome native messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)、[标准字段 setRangeText](https://developer.mozilla.org/en-US/docs/Web/API/HTMLInputElement/setRangeText)、[compositionstart](https://developer.mozilla.org/en-US/docs/Web/API/Element/compositionstart_event)。
+底层依据：[Chromium 启动地址校验](https://github.com/chromium/chromium/blob/154.0.8037.97/chrome/browser/ui/startup/url_util.cc)、[native messaging](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_messaging)、[Chrome native messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)、[标准字段 setRangeText](https://developer.mozilla.org/en-US/docs/Web/API/HTMLInputElement/setRangeText)、[compositionstart](https://developer.mozilla.org/en-US/docs/Web/API/Element/compositionstart_event)。

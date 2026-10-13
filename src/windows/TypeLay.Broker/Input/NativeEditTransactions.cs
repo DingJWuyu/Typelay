@@ -1,3 +1,4 @@
+using TypeLay.Windows;
 using TypeLay.Windows.Contracts;
 using System.Diagnostics;
 using System.IO;
@@ -43,7 +44,7 @@ internal sealed class NativeEditTransactions : IDisposable
         if (result.Status != 1 || result.Ime != ImeState.Clear || !result.Selection.IsValid(result.Text))
             return null;
         return new(binding.Target, result.Text, result.Selection, bounds, result.Multiline,
-            FieldAccess.Supported, result.Ime, Environment.TickCount64, inputEpoch, focusEpoch,
+            FieldAccess.Supported, result.Ime, WindowsInterruptClock.NowMs, inputEpoch, focusEpoch,
             WriteSupported: true, DirectWriteSupported: true);
     }
 
@@ -64,7 +65,7 @@ internal sealed class NativeEditTransactions : IDisposable
         {
             Text = result.Text,
             Selection = result.Selection,
-            ObservedAtMs = Environment.TickCount64,
+            ObservedAtMs = WindowsInterruptClock.NowMs,
             Ime = result.Ime
         });
     }
@@ -82,7 +83,7 @@ internal sealed class NativeEditTransactions : IDisposable
             {
                 existing = existing with
                 {
-                    TouchedAt = Environment.TickCount64
+                    TouchedAt = WindowsInterruptClock.NowMs
                 };
                 _bindings[identity.ControlHwnd] = existing;
                 return existing;
@@ -129,7 +130,7 @@ internal sealed class NativeEditTransactions : IDisposable
             Provider = Provider,
             Lifetime = Guid.NewGuid()
         };
-        var binding = new Binding(identity, target, cookie, thread, Environment.TickCount64);
+        var binding = new Binding(identity, target, cookie, thread, WindowsInterruptClock.NowMs);
         _bindings.Add(identity.ControlHwnd, binding);
         return binding;
     }
@@ -148,7 +149,9 @@ internal sealed class NativeEditTransactions : IDisposable
         view.Write(24, binding.Target.ControlHwnd);
         view.Write(32, binding.Target.RootHwnd);
         view.Write(40, binding.Cookie);
-        view.Write(48, Environment.TickCount64 + 500);
+        // Private native-handler budget: both ends explicitly use GetTickCount64.
+        // This field never carries an App/Broker authorization timestamp.
+        view.Write(48, GetTickCount64() + 500UL);
         if (plan is not null)
         {
             view.Write(56, plan.Expected.Text.Length);
@@ -191,7 +194,7 @@ internal sealed class NativeEditTransactions : IDisposable
     }
     private void Prune()
     {
-        long before = Environment.TickCount64 - 240_000;
+        long before = WindowsInterruptClock.NowMs - 240_000;
         foreach (var binding in _bindings.Values.Where(value => value.TouchedAt < before).ToArray())
             Release(binding);
     }
@@ -228,4 +231,5 @@ internal sealed class NativeEditTransactions : IDisposable
     [DllImport("user32.dll")]
     private static extern nint SendMessageTimeoutW(nint hwnd, uint message, nuint wp, nint lp,
         uint flags, uint timeout, out nuint result);
+    [DllImport("kernel32.dll")] private static extern ulong GetTickCount64();
 }

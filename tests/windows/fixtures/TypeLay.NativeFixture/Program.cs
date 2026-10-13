@@ -1,3 +1,4 @@
+using TypeLay.Windows;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
@@ -195,7 +196,7 @@ internal static class Program
             Console.WriteLine(JsonSerializer.Serialize(new
             {
                 operation = "submit-positive-control",
-                atMs = Environment.TickCount64,
+                atMs = WindowsInterruptClock.NowMs,
                 submitCount = _submits
             }));
             Console.Out.Flush();
@@ -206,7 +207,7 @@ internal static class Program
             KillTimer(_root, 2);
             KillTimer(_root, 3);
             _replayIndex = 0;
-            _replayStarted = Environment.TickCount64;
+            _replayStarted = WindowsInterruptClock.NowMs;
             N.SendString(_replayField, N.WM_SETTEXT, "");
             N.SetFocus(_replayField);
             N.SendString(_replayStatus, N.WM_SETTEXT, "Replay running: committed text, not physical IME");
@@ -226,7 +227,7 @@ internal static class Program
             KillTimer(_root, 2);
             KillTimer(_root, 3);
             _focusSwitches = 0;
-            _focusStarted = Environment.TickCount64;
+            _focusStarted = WindowsInterruptClock.NowMs;
             N.SetFocus(_replayField);
             N.SendString(_replayStatus, N.WM_SETTEXT, "Focus replay running: no source mutations");
             if (SetTimer(_root, 3, 20, 0) == 0)
@@ -253,8 +254,8 @@ internal static class Program
         {
             operation = "replay-finish",
             status,
-            atMs = Environment.TickCount64,
-            elapsedMs = Environment.TickCount64 - _replayStarted,
+            atMs = WindowsInterruptClock.NowMs,
+            elapsedMs = WindowsInterruptClock.NowMs - _replayStarted,
             sourceLength = _replayIndex,
             submitCount = _submits
         }));
@@ -271,8 +272,8 @@ internal static class Program
         {
             operation = "focus-replay-finish",
             status,
-            atMs = Environment.TickCount64,
-            elapsedMs = Environment.TickCount64 - _focusStarted,
+            atMs = WindowsInterruptClock.NowMs,
+            elapsedMs = WindowsInterruptClock.NowMs - _focusStarted,
             changes = _focusSwitches,
             finalField = GetFocus() == _replayField ? "a" : "other",
             submitCount = _submits

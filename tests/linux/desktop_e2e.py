@@ -1619,6 +1619,76 @@ def run(arguments):
             settings_control(support["labels"]["chooseComponent"])
             activate_setting(support["labels"]["cancel"])
             assert not status()["setup"]["onboardingComplete"]
+
+            # Use the real GTK selection/action interfaces and paste the system
+            # clipboard into the existing practice field after closing each dialog.
+            # This does not load an extension or complete browser approval.
+            choices = [row for row in support["rows"] if not row["showInMore"]]
+            chromium = next(row for row in choices if row["id"] == "chromium")
+            selector = settings_control(desktop_support["title"])
+            assert selector.get_role() == Atspi.Role.COMBO_BOX
+            assert Atspi.Selection.select_child(
+                selector.get_selection_iface(), choices.index(chromium)
+            )
+            activate_setting(support["labels"]["details"])
+            instructions = next(
+                action
+                for action in [chromium["primaryAction"], *chromium["secondaryActions"]]
+                if action and action["id"] == "OpenInstructions"
+            )
+            for index, expected in enumerate(
+                ("chrome://extensions/", str(package.resolve() / "browser/chromium"))
+            ):
+                activate_setting(instructions["label"])
+                copy_name = support["labels"]["copy"] + "：" + expected
+                copy_button = settings_control(copy_name)
+                assert copy_button.get_state_set().contains(Atspi.StateType.SHOWING)
+                if index == 0:
+                    subprocess.run(
+                        ["grim", str(arguments.output / "application-support-instructions.png")],
+                        check=True,
+                        timeout=3,
+                    )
+                assert Atspi.Component.grab_focus(copy_button.get_component_iface())
+                key("space")
+                settings_control("已复制。")
+                activate_setting(support["labels"]["cancel"])
+                wait_for(
+                    lambda: named(process.pid, copy_name) is None,
+                    "closed instructions retained their copy control",
+                )
+                activate_setting(support["labels"]["tryIt"])
+                practice_window = wait_for(
+                    lambda: (
+                        window
+                        if (
+                            window := contents(request("FocusedWindow"), "FocusedWindow") or {}
+                        ).get("title")
+                        == "TypeLay 首次使用"
+                        else None
+                    ),
+                    "clipboard practice field did not gain compositor focus",
+                )
+                source = settings_control("教程练习原文")
+                assert text(source) == ""
+                assert Atspi.Component.grab_focus(source.get_component_iface())
+                key("ctrl+v")
+                wait_for(
+                    lambda: text(source) == expected,
+                    "copy button did not place the exact address or folder on the clipboard",
+                )
+                request({"Action": {"CloseWindow": {"id": practice_window["id"]}}})
+                wait_for(
+                    lambda: not status()["setup"]["tutorialVisible"],
+                    "closing clipboard practice did not dismiss the window",
+                )
+                assert not status()["setup"]["onboardingComplete"]
+            assert Atspi.Selection.select_child(selector.get_selection_iface(), 0)
+            evidence.append(
+                "Real GTK browser instructions: both copy buttons paste the exact management "
+                "address and component folder after dialog dismissal; reopening works and "
+                "closing practice does not complete onboarding"
+            )
             trial = settings_control(support["labels"]["tryIt"])
             assert Atspi.Component.grab_focus(trial.get_component_iface())
             key("ctrl+Page_Up")
