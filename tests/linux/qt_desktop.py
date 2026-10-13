@@ -15,6 +15,7 @@ from pathlib import Path
 from main import control
 from niri import contents, request
 from paths import Paths, connect_private, peer_credentials
+from wire import now_ms
 
 
 def run_qt(
@@ -70,6 +71,8 @@ def run_qt(
     evidence = []
     state_path = arguments.output / "qt-desktop-state.json"
     state_path.unlink(missing_ok=True)
+    click_trace = arguments.output / "qt-overlay-clicks.jsonl"
+    click_trace.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="typelay-qt-desktop-") as temporary:
         home = Path(temporary)
         config = home / "config/fcitx5"
@@ -231,7 +234,7 @@ def run_qt(
                     fixture.stdin.write(json.dumps({"op": operation, **values}) + "\n")
                     fixture.stdin.flush()
 
-                def click_rectangle(actual, rectangle):
+                def click_rectangle(actual, rectangle, control_name=None):
                     geometry = dict(
                         line.split("=", 1)
                         for line in subprocess.check_output(
@@ -248,6 +251,27 @@ def run_qt(
                     y = rectangle["y"] + rectangle["height"] // 2
                     assert rectangle["width"] > 0 and rectangle["height"] > 0
                     assert 0 <= x < actual["width"] and 0 <= y < actual["height"]
+                    if control_name is not None:
+                        # Pair the requested point with real Qt event observations;
+                        # a visible host state alone does not acknowledge a click.
+                        with click_trace.open("a") as trace:
+                            trace.write(
+                                json.dumps(
+                                    {
+                                        "atMs": now_ms(),
+                                        "observedAtMs": actual["observedAtMs"],
+                                        "role": control_name,
+                                        "instance": actual["overlayControls"][control_name][
+                                            "instance"
+                                        ],
+                                        "overlayEventCount": actual["overlayEventCount"],
+                                        "geometry": rectangle,
+                                        "x": x,
+                                        "y": y,
+                                    }
+                                )
+                                + "\n"
+                            )
                     subprocess.run(
                         [
                             "xdotool",
@@ -274,7 +298,7 @@ def run_qt(
                         else None,
                         f"actual Qt overlay control was unavailable: {name}",
                     )
-                    click_rectangle(actual, actual["overlayControls"][name]["geometry"])
+                    click_rectangle(actual, actual["overlayControls"][name]["geometry"], name)
 
                 def settled(value):
                     # Missing diagnostics remain unknown, never an invented zero.

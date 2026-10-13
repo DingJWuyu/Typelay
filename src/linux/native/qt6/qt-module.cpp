@@ -264,19 +264,22 @@ private slots:
 private:
     bool onThread() const { return QThread::currentThread() == thread(); }
     void traceGate(const char *phase, Target *target, const QJsonObject &basis, qint64 until,
-                   const char *reason = "none") const {
+                   const char *reason = "none", qint64 writeStarted = 0,
+                   qint64 inspectMs = -1, qint64 prepareMs = -1, qint64 selectionMs = -1) const {
         static unsigned traceLines = 0;
         if (!qEnvironmentVariableIsSet("TYPELAY_TRACE") || traceLines >= 128) return;
         ++traceLines;
         const auto expected = basis.value("contextStamp").toObject();
+        const auto current = now();
         const bool field = target && target->field;
         const bool observed = target && target->observed;
         // Fixed phases/reasons and numeric/boolean guards only. Never print
         // field body, labels, metadata hashes, plan strings or target IDs.
         std::fprintf(stderr, "TypeLay Qt6 phase=%s reason=%s remainingMs=%lld field=%d provider=%d focused=%d "
             "published=%d mutating=%d probing=%d flags=%u contentSame=%d inputSame=%d focusSame=%d "
-            "contextSame=%d fieldSame=%d epochSame=%d imeInputSame=%d serverSame=%d appliedSame=%d\n",
-            phase, reason, static_cast<long long>(until - now()), int(field), int(target && target->provider),
+            "contextSame=%d fieldSame=%d epochSame=%d imeInputSame=%d serverSame=%d appliedSame=%d "
+            "writeElapsedMs=%lld initialInspectMs=%lld prepareMs=%lld selectionMs=%lld\n",
+            phase, reason, static_cast<long long>(until - current), int(field), int(target && target->provider),
             int(field && QApplication::focusWidget() == target->field && QGuiApplication::focusObject() == target->field),
             int(!publication_.isEmpty()), int(target && target->mutating), int(target && target->probing),
             observed ? target->state.flags : 0u,
@@ -288,7 +291,9 @@ private:
             int(observed && integer(expected, "epoch") == qint64(target->state.epoch)),
             int(observed && integer(expected, "input") == qint64(target->state.inputEpoch)),
             int(observed && integer(expected, "server") == qint64(target->state.serverSerial)),
-            int(observed && integer(expected, "applied") == qint64(target->state.appliedSerial)));
+            int(observed && integer(expected, "applied") == qint64(target->state.appliedSerial)),
+            static_cast<long long>(writeStarted ? current - writeStarted : -1),
+            static_cast<long long>(inspectMs), static_cast<long long>(prepareMs), static_cast<long long>(selectionMs));
     }
     bool insideOverlay(QObject *object) const {
         for (auto *parent = object; parent; parent = parent->parent()) if (parent == card_) return true;
@@ -764,13 +769,18 @@ private:
         return fd_ >= 0;
     }
     QJsonObject write(Target *target, const QJsonObject &request, bool direct) {
+        // Sample existing operations only; emit their timings with the final
+        // outcome, never add an IM request or logging between safety checks.
+        const qint64 writeStarted = now();
+        qint64 inspectMs = -1, prepareMs = -1, selectionMs = -1;
         const auto plan = request.value("plan").toObject();
         const auto expected = plan.value("expected").toObject();
         const auto basis = request.value("authority").toObject();
         const auto approved = direct ? request.value("approved").toObject() : basis;
         const auto identity = expected.value("target").toObject();
         auto reject = [&](const char *phase, const char *reason) {
-            traceGate(phase, target, basis, integer(request, "expiresAtMs", 0), reason);
+            traceGate(phase, target, basis, integer(request, "expiresAtMs", 0), reason,
+                writeStarted, inspectMs, prepareMs, selectionMs);
             return receipt("RejectedBeforeMutation", reason);
         };
         traceGate("write-enter", target, basis, integer(request, "expiresAtMs", 0));
@@ -778,7 +788,10 @@ private:
             || identity.value("backend").toString() != "linux-qt6" || identity.value("value").toString() != target->id
             || identity.value("lifetime").toString() != lifetime_)
             return reject("write-header", "BadPlan");
-        if (target->mutating || target->quarantined || !inspect(target) || !clearForWrite(target, direct))
+        const qint64 inspectStarted = now();
+        const bool inspected = !target->mutating && !target->quarantined && inspect(target) && clearForWrite(target, direct);
+        inspectMs = now() - inspectStarted;
+        if (!inspected)
             return reject("write-inspect", "ImeUnclear");
         const qint64 until = integer(request, "expiresAtMs", 0), current = now();
         if (until <= current || until - current > (direct ? 250 : 100))
@@ -864,7 +877,10 @@ private:
         // has no preedit to commit; unexpected output still invalidates proof.
         {
             QScopedValueRollback<bool> probing(target->probing, true);
-            if (!capability->prepareCaret(field, &initialState))
+            const qint64 prepareStarted = now();
+            const bool prepared = capability->prepareCaret(field, &initialState);
+            prepareMs = now() - prepareStarted;
+            if (!prepared)
                 return reject("write-prepare", "ImeUnclear");
         }
         if (!unchanged() || !inspect(target) || !clearForWrite(target, direct)
@@ -874,6 +890,7 @@ private:
             return reject("write-after-prepare", "EpochChanged");
         const auto baseline = target->state;
         QScopedValueRollback<bool> mutation(target->mutating, true);
+        const qint64 selectionStarted = now();
         if (auto *line = target->line()) line->setSelection(int(from), int(to - from));
         else {
             QTextCursor cursor(document);
@@ -881,11 +898,13 @@ private:
             cursor.setPosition(int(to), QTextCursor::KeepAnchor);
             target->plain()->setTextCursor(cursor);
         }
+        selectionMs = now() - selectionStarted;
         // Selection signals are application code. Recheck every source/input/IM
         // condition after them and immediately before the first body mutation.
         const auto preparedSelection = QJsonObject{{"start", from}, {"end", to}};
-        if (!unchanged() || selection(target) != preparedSelection || !local(target, baseline) || now() >= until)
+        if (!unchanged() || selection(target) != preparedSelection || !local(target, baseline))
             return reject("write-after-selection", "EpochChanged");
+        if (now() >= until) return reject("write-selection-deadline", "StaleObservation");
         const auto caret = integer(plan, "caret");
         const QJsonObject writtenSelection{{"start", caret}, {"end", caret}};
         auto written = [&] {
@@ -913,7 +932,8 @@ private:
         clearPermit();
         if (!verified) {
             target->quarantined = true;
-            traceGate("write-readback", target, basis, until, "UnknownOutcome");
+            traceGate("write-readback", target, basis, until, "UnknownOutcome",
+                writeStarted, inspectMs, prepareMs, selectionMs);
             return receipt("OutcomeUnknown", "UnknownOutcome");
         }
         auto verifiedSnapshot = expected;
@@ -924,7 +944,7 @@ private:
         verifiedSnapshot.insert("access", "Supported");
         auto outcome = receipt("Verified", "None");
         outcome.insert("verifiedSnapshot", verifiedSnapshot);
-        traceGate("write-verified", target, basis, until, "None");
+        traceGate("write-verified", target, basis, until, "None", writeStarted, inspectMs, prepareMs, selectionMs);
         return outcome;
     }
 

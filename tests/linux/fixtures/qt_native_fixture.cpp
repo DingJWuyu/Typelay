@@ -12,6 +12,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMouseEvent>
 #include <QPlainTextDocumentLayout>
 #include <QPlainTextEdit>
 #include <QPointer>
@@ -24,14 +25,26 @@
 #include <QTimer>
 #include <QToolTip>
 #include <QVBoxLayout>
+#include <cstdio>
 #include <fcntl.h>
+#include <time.h>
 #include <unistd.h>
+
+qint64 observedAtMs() {
+    timespec value{};
+    if (clock_gettime(CLOCK_BOOTTIME, &value) != 0) qFatal("Fixture clock unavailable");
+    return qint64(value.tv_sec) * 1000 + value.tv_nsec / 1000000;
+}
 
 class KeyObserver final : public QObject {
     Q_OBJECT
 public:
     QLineEdit *first = nullptr, *second = nullptr;
     QPlainTextEdit *plain = nullptr;
+    QWidget *window = nullptr;
+    struct OverlayObject { QString role; quint64 instance; QRect bounds; };
+    QHash<QObject *, OverlayObject> overlayObjects;
+    quint64 overlayInstance = 0, overlayEventCount = 0;
     QJsonObject counts;
     bool firstPreedit = false, secondPreedit = false, plainPreedit = false, editorPreedit = false;
     QString shortcutState, commandQueuedAction, commandDispatchedAction;
@@ -57,7 +70,63 @@ public slots:
         if (state == "dispatched") applyCommandAction(commandDispatchedAction);
     }
 public:
+    void overlayEvent(const char *event, const OverlayObject &object, QJsonObject extra = {}) {
+        // Fixed roles and numeric geometry/timing only. Never log widget text,
+        // labels, arbitrary object names or native addresses.
+        if (overlayEventCount >= 160) return;
+        const auto &bounds = object.bounds;
+        extra.insert("sequence", qint64(++overlayEventCount));
+        extra.insert("atMs", observedAtMs());
+        extra.insert("event", QLatin1String(event));
+        extra.insert("role", object.role);
+        extra.insert("instance", qint64(object.instance));
+        extra.insert("geometry", QJsonObject{{"x", bounds.x()}, {"y", bounds.y()},
+            {"width", bounds.width()}, {"height", bounds.height()}});
+        const auto bytes = QJsonDocument(extra).toJson(QJsonDocument::Compact);
+        std::fprintf(stderr, "qt-overlay-event %s\n", bytes.constData());
+    }
+    void observeOverlay(QWidget *widget) {
+        if (!widget || !window || widget->window() != window) return;
+        const auto name = widget->objectName();
+        const bool control = name == QStringLiteral("typelay-menu-trigger")
+            || name == QStringLiteral("typelay-copy") || name == QStringLiteral("typelay-source-auto")
+            || name == QStringLiteral("typelay-source-en");
+        if (!control && name != QStringLiteral("typelay-overlay") && name != QStringLiteral("typelay-menu")) return;
+        const QRect bounds(widget->mapTo(window, QPoint()), widget->size());
+        if (overlayObjects.contains(widget)) { overlayObjects[widget].bounds = bounds; return; }
+        overlayObjects.insert(widget, {name, ++overlayInstance, bounds});
+        connect(widget, &QObject::destroyed, this, [this, widget] {
+            // QWidget geometry is no longer safe to read from destroyed().
+            overlayEvent("destroy", overlayObjects.take(widget));
+        });
+        if (auto *button = qobject_cast<QAbstractButton *>(widget)) {
+            auto record = [this, button](const char *phase) {
+                observeOverlay(button);
+                overlayEvent(phase, overlayObjects.value(button));
+            };
+            connect(button, &QAbstractButton::pressed, this, [record] { record("pressed"); });
+            connect(button, &QAbstractButton::released, this, [record] { record("released"); });
+            connect(button, &QAbstractButton::clicked, this, [record] { record("clicked"); });
+        }
+    }
     bool eventFilter(QObject *object, QEvent *event) override {
+        const auto type = event->type();
+        if (type == QEvent::Show || type == QEvent::Hide || type == QEvent::Move || type == QEvent::Resize
+            || type == QEvent::MouseButtonPress || type == QEvent::MouseButtonRelease) {
+            auto *widget = qobject_cast<QWidget *>(object);
+            observeOverlay(widget);
+            if (overlayObjects.contains(object) && (type == QEvent::Show || type == QEvent::Hide))
+                overlayEvent(type == QEvent::Show ? "show" : "hide", overlayObjects.value(object));
+            if (widget && window && widget->window() == window
+                && (type == QEvent::MouseButtonPress || type == QEvent::MouseButtonRelease)) {
+                const auto *mouse = static_cast<QMouseEvent *>(event);
+                const auto point = widget->mapTo(window, mouse->position().toPoint());
+                const auto observed = overlayObjects.value(object, {QStringLiteral("other"), 0,
+                    QRect(widget->mapTo(window, QPoint()), widget->size())});
+                overlayEvent(type == QEvent::MouseButtonPress ? "mouse-press" : "mouse-release", observed,
+                    {{"x", point.x()}, {"y", point.y()}, {"spontaneous", event->spontaneous()}});
+            }
+        }
         if (object == qApp && event->type() == QEvent::DynamicPropertyChange
             && static_cast<QDynamicPropertyChangeEvent *>(event)->propertyName() == "typelay.qt.native.v1") {
             auto *native = qApp->property("typelay.qt.native.v1").value<QObject *>();
@@ -101,7 +170,7 @@ int main(int argc, char **argv) {
     plain->setAccessibleName(QStringLiteral("Multiline message"));
     plain->setMaximumHeight(140);
     KeyObserver observer;
-    observer.first = first; observer.second = second; observer.plain = plain;
+    observer.first = first; observer.second = second; observer.plain = plain; observer.window = &window;
     app.installEventFilter(&observer);
     QObject::connect(&app, &QApplication::focusChanged, &observer, [&observer] { ++observer.focusTransitions; });
     first->setObjectName(QStringLiteral("first"));
@@ -249,15 +318,20 @@ int main(int argc, char **argv) {
         auto *overlay = window.findChild<QWidget *>(QStringLiteral("typelay-overlay"));
         auto *editor = window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"));
         auto *menu = window.findChild<QWidget *>(QStringLiteral("typelay-menu"));
+        observer.observeOverlay(overlay);
+        observer.observeOverlay(menu);
         QJsonObject overlayControls;
         for (const auto *name : {"typelay-menu-trigger", "typelay-copy", "typelay-source-auto", "typelay-source-en"}) {
             auto *button = window.findChild<QAbstractButton *>(QLatin1String(name));
+            observer.observeOverlay(button);
             if (button) overlayControls.insert(QLatin1String(name), QJsonObject{
                 {"visible", button->isVisible()}, {"enabled", button->isEnabled()},
-                {"checked", button->isChecked()}, {"geometry", rectangle(button)}});
+                {"checked", button->isChecked()}, {"geometry", rectangle(button)},
+                {"instance", qint64(observer.overlayObjects.value(button).instance)}});
         }
         auto *clipboard = QApplication::clipboard();
         QJsonObject state{{"pid", qint64(getpid())}, {"qtVersion", QString::fromLatin1(qVersion())},
+            {"observedAtMs", observedAtMs()}, {"overlayEventCount", qint64(observer.overlayEventCount)},
             {"fullscreen", window.isFullScreen()}, {"width", window.width()}, {"height", window.height()},
             {"scale", window.devicePixelRatioF()}, {"keys", observer.counts},
             {"focusTransitions", qint64(observer.focusTransitions)}, {"firstChangeContext", firstChangeContext},
