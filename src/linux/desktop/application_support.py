@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from desktop_component import DesktopComponent
+from desktop_session import DesktopSession
 from wire import now_ms
 
 BROWSERS = ("firefox", "chromium", "google-chrome")
@@ -34,6 +35,8 @@ class ApplicationSupport:
         self.last_results = {}
         self.cooperative_directory = None
         self.desktop_component = DesktopComponent(paths)
+        self.desktop_session = DesktopSession(paths)
+        self.desktop_session_state = {"state": "unchecked"}
         installer_path = paths.home / "install.py"
         if installer_path.is_file():
             specification = importlib.util.spec_from_file_location(
@@ -315,60 +318,7 @@ class ApplicationSupport:
                     ),
                 }
             )
-        desktop_state, desktop_reason = "NeedsInstall", "ComponentMissing"
-        desktop_details = self.instructions("desktop-text")
-        desktop_actions = ["CheckComponent", "Refresh", "OpenInstructions"]
-        prepared = self.desktop_component.status()
-        if prepared["state"] != "missing":
-            desktop_actions = ["Refresh", "OpenInstructions"]
-            if prepared["state"] == "prepared":
-                desktop_state, desktop_reason = "AwaitingApproval", "UserApprovalRequired"
-                desktop_details = (
-                    "同包桌面接入组件已准备，但尚未启动输入法或连接应用。"
-                    "源码、许可证和原始压缩包已保留。\n\n"
-                    "下一步需要在完成当前输入法候选并保存工作后，明确启动私有输入法会话，"
-                    "再通过该会话重新打开目标应用。本版尚未提供设置内的受管启动操作；"
-                    "请先查看组件文件夹中的 README.md。没有退出任何现有 Fcitx/IBus，"
-                    "没有更改个人输入法配置、全局环境或自动启动项。"
-                )
-            else:
-                desktop_actions.append("Install")
-                desktop_details = (
-                    "安装将从当前 TypeLay 主包校验并展开桌面接入组件到用户目录，"
-                    "保留原始压缩包、源码与许可证。来源信任继承于你取得的主包；"
-                    "自带文件哈希不是发布者签名。只准备文件，不运行包内程序、切换输入法或打开应用。"
-                )
-                if prepared["state"] == "invalid":
-                    desktop_state, desktop_reason = "Error", "ComponentMissing"
-                    desktop_details += "\n组件校验未通过，请使用完整可信的 TypeLay 主包重试。"
-        component = self.last_results.get("desktop-text")
-        if (
-            component
-            and component.get("reason") == "cooperative-prepared"
-            and prepared["state"] != "prepared"
-        ):
-            component = None
-        if component:
-            desktop_state = "AwaitingApproval" if component["ok"] else "Error"
-            desktop_reason = (
-                "UserApprovalRequired"
-                if component["ok"]
-                else ("ComponentMissing" if prepared["state"] != "missing" else "DetectionFailed")
-            )
-            desktop_details += "\n\n" + component.get("detail", "")
-        if "desktop-text" in connected:
-            desktop_state, desktop_reason = "Connected", "FieldUnobserved"
-        facts.append(
-            {
-                "id": "desktop-text",
-                "state": desktop_state,
-                "reason": desktop_reason,
-                "capabilities": {},
-                "supportedActions": desktop_actions,
-                "details": desktop_details,
-                "applicationDetected": True,
-            }
-        )
+        facts.append(self.desktop_fact("desktop-text" in connected))
         facts.append(
             {
                 "id": "vscode",
@@ -417,6 +367,106 @@ class ApplicationSupport:
                 checked_at - timedelta(milliseconds=stamp - observation["atMs"])
             ).isoformat(timespec="milliseconds")
         return facts
+
+    async def refresh(self):
+        """Session checks may use D-Bus and /proc; never block the GTK/input loop."""
+        if (
+            self.desktop_component.status()["state"] != "missing"
+            or self.desktop_component.root.exists()
+        ):
+            self.desktop_session_state = await self.desktop_session.refresh()
+        else:
+            self.desktop_session_state = {"state": "unchecked"}
+
+    def desktop_fact(self, connected=False):
+        prepared = self.desktop_component.status()
+        session = self.desktop_session_state
+        state, reason = "NeedsInstall", "ComponentMissing"
+        details = self.instructions("desktop-text")
+        actions = ["CheckComponent", "Refresh", "OpenInstructions"]
+        if prepared["state"] != "missing":
+            actions = ["Refresh", "OpenInstructions"]
+            if prepared["state"] == "prepared":
+                state, reason = "AwaitingApproval", "UserApprovalRequired"
+                details = (
+                    "此入口仅用于 TypeLay 练习。连接将启动本包的独立练习输入法会话，并打开普通输入框练习。"
+                    "请先完成当前候选并保存工作；已有 Fcitx/IBus 时必须由你自行退出，TypeLay 不会替你停止或切换。"
+                    "练习使用独立配置和词库，不复制或修改个人输入法配置。关闭 TypeLay 不会关闭练习窗口或其进程。"
+                    "移除会结束本次私有输入法；不会自动恢复原输入法，之后需要你自行启动。\n\n"
+                    "移除前请正常关闭练习及其子窗口。移除会结束仅由 TypeLay 启动的练习输入法并删除受管组件；"
+                    "模型、TypeLay 设置和练习配置保留。\n\n"
+                    "源码、许可证在组件文件夹，原始压缩包仍在主包中。准备完成或会话运行都不代表普通字段已经连接。"
+                )
+                if session["state"] == "inactive":
+                    actions.extend(["Connect", "Remove"])
+                elif session["state"] == "active":
+                    details += "\n\n独立练习输入法正在运行，尚需从实际输入框确认连接和能力。"
+                    if session["bundle"] == str(prepared["directory"]):
+                        actions.append("Connect")
+                    else:
+                        details += " 仍是上一版组件的会话，请先结束它再使用新版本。"
+                    if session.get("canStop"):
+                        actions.append("Remove")
+                    else:
+                        details += " 请先正常关闭练习窗口、应用及其子窗口，再重新检查以移除。"
+                elif session["state"] == "conflict":
+                    details += "\n\n" + session.get("detail", "已有输入法正在运行。")
+                    actions.append("Remove")
+                elif session["state"] == "abnormal":
+                    state, reason = "Error", "DetectionFailed"
+                    details += "\n\n" + session["detail"]
+                elif session["state"] == "starting":
+                    details += "\n\n私有会话仍在启动，请稍后检查连接；不会重复启动另一个输入法。"
+                elif session["state"] == "applications-running":
+                    details += (
+                        "\n\n输入法已经退出，但练习或其子窗口仍在运行。请正常关闭后重新检查。"
+                    )
+                elif session["state"] == "unknown":
+                    details += "\n\n" + session["detail"]
+                else:
+                    details += "\n\n请先检查当前会话，再决定是否开始练习。"
+            else:
+                actions.append("Install")
+                details = (
+                    "安装将从当前 TypeLay 主包校验并展开桌面接入组件到用户目录，"
+                    "保留原始压缩包、源码与许可证。来源信任继承于你取得的主包；"
+                    "自带文件哈希不是发布者签名。只准备文件，不运行包内程序、切换输入法或打开应用。"
+                )
+                if prepared["state"] == "invalid":
+                    state, reason = "Error", "ComponentMissing"
+                    details += "\n组件校验未通过，请使用完整可信的 TypeLay 主包重试。"
+        if prepared["state"] != "prepared" and session["state"] == "active":
+            details += "\n\n受管练习会话仍在运行；组件文件变化不会自动停止该会话。"
+            if session.get("canStop"):
+                actions.append("Remove")
+            else:
+                details += " 请先正常关闭练习及子窗口，再重新检查。"
+        if "Connect" in actions:
+            actions.remove("OpenInstructions")
+        result = self.last_results.get("desktop-text")
+        if result:
+            if result.get("reason", "").startswith("cooperative-integrity-"):
+                state = "AwaitingApproval" if result["ok"] else "Error"
+                reason = "UserApprovalRequired" if result["ok"] else "DetectionFailed"
+            elif not result["ok"]:
+                state = "Error"
+                reason = (
+                    "ComponentMissing"
+                    if result.get("reason") == "cooperative-preparation-failed"
+                    else "ActionFailed"
+                )
+            details += "\n\n" + result.get("detail", "")
+        if connected:
+            state, reason = "Connected", "FieldUnobserved"
+        return {
+            "id": "desktop-text",
+            "state": state,
+            "reason": reason,
+            "capabilities": {},
+            "supportedActions": actions,
+            "details": details,
+            "applicationDetected": True,
+        }
 
     def instructions(self, identity):
         """Platform-specific permission steps, without assigning product state."""
@@ -612,6 +662,27 @@ class ApplicationSupport:
             return await self.browser_action(
                 identity, "remove" if action == "Remove" else "connect"
             )
+        if identity == "desktop-text" and action == "Connect":
+            result = await self.desktop_session.start_session()
+            if result["ok"]:
+                result = await self.desktop_session.launch_application(
+                    ["/usr/bin/python3", "-I", "-B", str(self.paths.home / "desktop/practice.py")],
+                    toolkit="gtk3",
+                )
+                if result["ok"]:
+                    result = {
+                        "ok": True,
+                        "reason": "practice-start-requested",
+                        "detail": "已请求打开普通输入框练习，请在窗口中输入后检查真实连接；尚未确认预览或替换能力。",
+                    }
+            self.last_results[identity] = result
+            await self.refresh()
+            return result
+        if identity == "desktop-text" and action == "Remove":
+            result = await self.desktop_session.remove_component()
+            self.last_results[identity] = result
+            await self.refresh()
+            return result
         if identity == "desktop-text" and action == "Install":
             result = await asyncio.to_thread(self.desktop_component.prepare)
             self.last_results[identity] = result

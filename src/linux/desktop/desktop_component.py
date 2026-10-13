@@ -290,6 +290,16 @@ class DesktopComponent:
                         raise ValueError("component-file-invalid")
         self._manifest(bundle, expected, actual)
 
+    def verify_prepared(self):
+        """Execution callers hold the use lock and recheck the exact trusted build."""
+        expected = self._descriptor()
+        with directory(self.root) as root:
+            if os.readlink("current", dir_fd=root) != "releases/" + expected["archiveSha256"]:
+                raise OSError("component-not-prepared")
+        release = self.root / "releases" / expected["archiveSha256"]
+        self._verify_prepared(release, expected)
+        return release / BUNDLE
+
     def prepare(self):
         """Explicit installation only. Retain the prior release; never modify the archive."""
         stage = None

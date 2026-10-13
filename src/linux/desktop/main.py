@@ -274,6 +274,7 @@ async def desktop(paths, background, lock, tutorial=False):
         support = ApplicationSupport(paths)
 
         async def support_view():
+            await support.refresh()
             return await host.ask(
                 "applicationSupport",
                 {

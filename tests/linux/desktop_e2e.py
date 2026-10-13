@@ -1881,6 +1881,157 @@ def run(arguments):
             evidence.append(
                 "First-run application support stays separate from model readiness; explicit local-model trial, completion, persisted restart and optional reopening without intercepting target-app Tab"
             )
+            if bundled_component:
+                from support.gtk_accessibility import focused
+
+                def desktop_row():
+                    view = (status().get("setup") or {}).get("applicationSupport") or {}
+                    return next(
+                        (row for row in view.get("rows", []) if row["id"] == "desktop-text"),
+                        None,
+                    )
+
+                def desktop_action(identity):
+                    row = desktop_row()
+                    action = next(action for action in row["actions"] if action["id"] == identity)
+                    if row["primaryAction"]["id"] != identity:
+                        details = settings_control(support["labels"]["details"])
+                        if not details.get_state_set().contains(Atspi.StateType.EXPANDED):
+                            activate_setting(support["labels"]["details"])
+                    activate_setting(action["label"])
+                    activate_setting(support["labels"]["confirm"])
+
+                # Only this isolated HOME is touched. The private daemon must not
+                # read/write even these synthetic "existing user" profile files.
+                user_profile = Path(os.environ["XDG_CONFIG_HOME"]) / "fcitx5/profile"
+                user_profile.parent.mkdir(parents=True, exist_ok=True)
+                user_profile.write_text("# Existing user profile must remain unchanged\n")
+                before_profile = user_profile.read_bytes()
+                assert control(paths, "settings") is True
+                # A restarted settings window initially opens its general page.
+                wake = settings_control("设置：唤醒翻译")
+                assert Atspi.Component.grab_focus(wake.get_component_iface())
+                key("ctrl+Page_Down")
+                wait_for(
+                    lambda: (row := desktop_row())
+                    and any(a["id"] == "Connect" for a in row["actions"]),
+                    "prepared component did not offer the explicit practice connection",
+                )
+                managed_window = None
+
+                def close_managed_window():
+                    if managed_window is not None and any(
+                        window["id"] == managed_window["id"]
+                        and window.get("pid") == managed_window["pid"]
+                        for window in contents(request("Windows"), "Windows")
+                    ):
+                        request({"Action": {"CloseWindow": {"id": managed_window["id"]}}})
+
+                def cleanup_managed_session():
+                    import asyncio
+
+                    from desktop_session import DesktopSession
+
+                    try:
+                        close_managed_window()
+                        wait_for(
+                            lambda: not any(
+                                managed_window is not None and window["id"] == managed_window["id"]
+                                for window in contents(request("Windows"), "Windows")
+                            ),
+                            "owned practice did not close during cleanup",
+                            timeout=5,
+                        )
+                        # The production method only signals its verified owned
+                        # daemon and refuses while any application still uses it.
+                        asyncio.run(DesktopSession(paths).stop_session())
+                    except (
+                        OSError,
+                        EOFError,
+                        ValueError,
+                        AssertionError,
+                        subprocess.SubprocessError,
+                    ):
+                        print("Managed session cleanup could not confirm completion", flush=True)
+
+                resources.callback(cleanup_managed_session)
+                desktop_action("Connect")
+                managed_window = wait_for(
+                    lambda: next(
+                        (
+                            window
+                            for window in contents(request("Windows"), "Windows")
+                            if window.get("title") == "TypeLay 实操练习"
+                        ),
+                        None,
+                    ),
+                    "approved connection did not open the shipped practice window",
+                    timeout=60,
+                )
+
+                try:
+                    source = wait_for(
+                        lambda: named(managed_window["pid"], "练习输入框"),
+                        "managed practice field missing",
+                    )
+                    wait_for(
+                        lambda: focused(source) and status().get("sourceSupported"),
+                        "managed practice did not connect through the production adapter",
+                    )
+                    typed(original)
+                    wait_for(lambda: text(source) == original, "practice lost keyboard input")
+                    wait_for(ready_to_accept, "managed practice lacked a model candidate")
+                    checkpoint = trace_checkpoint()
+                    key("Tab")
+                    wait_for(lambda: translated(text(source)), "managed practice Tab did not write")
+                    wait_for(lambda: verified_write(checkpoint), "managed write was not verified")
+                    stop()
+                    assert any(
+                        window["id"] == managed_window["id"]
+                        and window.get("pid") == managed_window["pid"]
+                        for window in contents(request("Windows"), "Windows")
+                    ), "closing TypeLay closed the user's practice application"
+                    start()
+                    assert control(paths, "settings") is True
+                    wake = settings_control("设置：唤醒翻译")
+                    assert Atspi.Component.grab_focus(wake.get_component_iface())
+                    key("ctrl+Page_Down")
+                    wait_for(
+                        lambda: (row := desktop_row())
+                        and row["details"]
+                        and not any(a["id"] == "Remove" for a in row["actions"]),
+                        "an application still using the components was offered removal",
+                    )
+                finally:
+                    # A cleanup error must not replace the original test failure.
+                    if sys.exc_info()[0] is None:
+                        close_managed_window()
+                    else:
+                        try:
+                            close_managed_window()
+                        except (OSError, EOFError, ValueError):
+                            print("Managed practice close was not confirmed", flush=True)
+                wait_for(
+                    lambda: (row := desktop_row())
+                    and any(a["id"] == "Remove" for a in row["actions"]),
+                    "normally closed practice did not release its component lease",
+                )
+                desktop_action("Remove")
+                wait_for(
+                    lambda: (row := desktop_row()) and row["state"] == "NeedsInstall",
+                    "explicit removal did not finish the private session and remove components",
+                    timeout=30,
+                )
+                assert user_profile.read_bytes() == before_profile
+                assert paths.settings.is_file() and status().get("modelReady")
+                assert not (paths.data / "components/desktop-text/current").exists()
+                assert (paths.data / "components/desktop-text/practice-profile").is_dir()
+                evidence.append(
+                    "Managed desktop connection: explicit approval opens the shipped practice, "
+                    "real model and one Tab verify; normal client quit preserves the application; normal "
+                    "application close permits explicit private-session stop and component removal, "
+                    "with original user profile, models, settings and practice configuration retained"
+                )
         assert control(paths, "settings") is True
         time.sleep(0.3)
         subprocess.run(["grim", str(arguments.output / "settings.png")], check=True, timeout=3)

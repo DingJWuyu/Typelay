@@ -852,6 +852,60 @@ class ApplicationSupportTests(unittest.TestCase):
         self.assertEqual(fact["reason"], "UserApprovalRequired")
         self.assertFalse(fact["capabilities"])
 
+    def no_input_method_environment(self):
+        commands = self.home / "input-status-tools"
+        commands.mkdir()
+        for name, body in (("gdbus", "print('(false,)')"), ("pgrep", "raise SystemExit(1)")):
+            command = commands / name
+            command.write_text("#!/usr/bin/python3\n" + body + "\n")
+            command.chmod(0o700)
+        return patch.dict(os.environ, {"PATH": str(commands)})
+
+    def test_prepared_component_has_explicit_practice_action_and_safe_reversible_remove(self):
+        self.desktop_payload()
+        self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Install"))["ok"])
+        with self.no_input_method_environment():
+            asyncio.run(self.support.refresh())
+            fact = next(row for row in self.support.facts() if row["id"] == "desktop-text")
+            self.assertEqual(fact["state"], "AwaitingApproval")
+            self.assertIn("Connect", fact["supportedActions"])
+            self.assertIn("Remove", fact["supportedActions"])
+            self.assertNotIn("OpenInstructions", fact["supportedActions"])
+            self.assertFalse(fact["capabilities"])
+            result = asyncio.run(self.support.execute("desktop-text", "Remove"))
+            self.assertTrue(result["ok"], result)
+        fact = next(row for row in self.support.facts() if row["id"] == "desktop-text")
+        self.assertEqual(fact["state"], "NeedsInstall")
+        self.assertIn("Install", fact["supportedActions"])
+        self.assertNotIn("Connect", fact["supportedActions"])
+        self.assertTrue(
+            (self.package / "support/desktop/TypeLay-Fcitx-cooperative.tar.gz").is_file()
+        )
+        self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Install"))["ok"])
+
+    def test_lost_daemon_after_connect_start_keeps_application_support_readable(self):
+        self.desktop_payload()
+        self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Install"))["ok"])
+        # Start may have observed a live daemon that has exited by application launch.
+        # Keep launch/status real, with the OS command boundary reporting no input method.
+        with (
+            self.no_input_method_environment(),
+            patch.object(self.support.desktop_session, "start_session", return_value={"ok": True}),
+        ):
+            result = asyncio.run(self.support.execute("desktop-text", "Connect"))
+            self.assertFalse(result["ok"], result)
+            self.assertEqual(result["state"], "inactive")
+            fact = next(row for row in self.support.facts() if row["id"] == "desktop-text")
+            self.assertEqual(fact["state"], "Error")
+            self.assertEqual(fact["reason"], "ActionFailed")
+            self.assertFalse(fact["capabilities"])
+            self.assertIn("Refresh", fact["supportedActions"])
+            asyncio.run(self.support.execute("desktop-text", "Refresh"))
+            asyncio.run(self.support.refresh())
+            fact = next(row for row in self.support.facts() if row["id"] == "desktop-text")
+            self.assertEqual(fact["state"], "AwaitingApproval")
+            self.assertIn("Connect", fact["supportedActions"])
+
     def test_component_inspection_checks_files_without_executing_package_code(self):
         bundle = self.home / "chosen bundle"
         bundle.mkdir()
@@ -873,6 +927,13 @@ class ApplicationSupportTests(unittest.TestCase):
         result = asyncio.run(self.support.execute("desktop-text", "CheckComponent", str(bundle)))
         self.assertTrue(result["ok"], result)
         self.assertFalse(marker.exists(), "static inspection executed the selected script")
+        with self.no_input_method_environment():
+            result = asyncio.run(self.support.execute("desktop-text", "Connect"))
+        self.assertFalse(result["ok"], result)
+        self.assertFalse(marker.exists(), "selection became an executable launch source")
+        # Re-reading selection remains a static integrity operation.
+        result = asyncio.run(self.support.execute("desktop-text", "CheckComponent", str(bundle)))
+        self.assertTrue(result["ok"], result)
         fact = next(row for row in self.support.facts() if row["id"] == "desktop-text")
         self.assertEqual(fact["state"], "AwaitingApproval")
         self.assertFalse(any(fact["capabilities"].values()))

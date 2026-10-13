@@ -9,6 +9,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -156,17 +157,27 @@ def install(root, command, desktop):
 
 
 def uninstall(root, command, desktop, config, data, cache, purge):
-    # Ask only this program to exit. Do not kill processes by executable name.
-    if command.is_symlink() and os.readlink(command) == str(root / "current/typelay"):
-        try:
-            subprocess.run([str(command), "--quit"], check=False, timeout=5)
-        except FileNotFoundError:
-            # A damaged installation still needs to be removable. Session locks
-            # below remain authoritative, even when the launcher has disappeared.
-            pass
     held = []
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     try:
+        managed = data / "components/desktop-text"
+        if managed.exists() or managed.is_symlink():
+            # Cooperation processes can outlive the UI. Refuse before asking
+            # the UI to exit, and hold the lease until removal is complete.
+            if not (PACKAGE / "desktop/desktop_session.py").is_file():
+                raise OSError("cooperation-session-manager-missing")
+            sys.path.insert(0, str(PACKAGE / "desktop"))
+            from desktop_session import removal_lock
+
+            held.append(removal_lock(data))
+        # Ask only this program to exit. Do not kill processes by executable name.
+        if command.is_symlink() and os.readlink(command) == str(root / "current/typelay"):
+            try:
+                subprocess.run([str(command), "--quit"], check=False, timeout=5)
+            except FileNotFoundError:
+                # A damaged installation still needs to be removable. Session
+                # locks remain authoritative even when the launcher is missing.
+                pass
         if runtime and Path(runtime).is_absolute():
             for path in (Path(runtime) / "typelay").glob("*/desktop.lock"):
                 fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW)

@@ -348,6 +348,9 @@ if __name__ == "__main__":
     arguments, remaining = parser.parse_known_args()
     NativeBrowserContract.package = arguments.package.resolve()
     NativeBrowserContract.executable = arguments.chromium
+    # Import the actual distribution without adding bytecode to its immutable
+    # file inventory; finalization checks that the original package is unchanged.
+    sys.dont_write_bytecode = True
     sys.path.insert(0, str(NativeBrowserContract.package / "desktop"))
     from application_support import ApplicationSupport
     from paths import Paths

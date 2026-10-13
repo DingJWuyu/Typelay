@@ -575,7 +575,11 @@ class ApplicationSupportPane:
                 text=row["title"] + "：" + action["label"],
             )
             consequence = action["confirmationText"]
-            if action["id"] == "Install" and row.get("details"):
+            if (
+                action["id"] == "Install"
+                or row["id"] == "desktop-text"
+                and action["id"] in ("Connect", "Remove")
+            ) and row.get("details"):
                 consequence += "\n\n" + row["details"].split("\n\n", 1)[0]
             dialog.format_secondary_text(consequence)
             dialog.add_buttons(
