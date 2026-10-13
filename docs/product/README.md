@@ -2,6 +2,8 @@
 
 两端共同按[冻结规格 v1.0](TypeLay_产品规格_v1.0.md)及已接受的[ADR-0002：自动/按需与一次性直接替换](../adr/0002-on-demand-and-direct-write.md)验收。增量与冻结基线重叠时，以该已接受增量为准；其余原要求继续有效。本文提供阅读入口与操作摘要，不改写冻结正文。
 
+[统一应用接入与双端体验](application-support.md)是已接受的后续产品增量：设置中的支持管理、状态/动作与用户文案由双方真实消费同一共享定义，Windows/Linux 分别完成相同体验验收。不能用一个平台的完成状态代替另一个平台。
+
 “工作模式”是设置项总称，选项是“自动模式”和“按需模式”。Windows/Linux 的实现范围、测试证据与缺口不是产品要求的替代品。已确认的[浮层原型](../design/TypeLay_UIUX_Prototype.html)和[托盘/设置原型](../design/TypeLay_Tray_Settings_Prototype.html)是交互基线，不是客户端验收证明。
 
 ## 工作模式与按需操作

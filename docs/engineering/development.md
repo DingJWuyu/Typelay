@@ -18,7 +18,7 @@
 
 ## CI
 
-只保留 .github/workflows/check.yml。它接收 trunk 和现有两个 preview 分支的 push/PR 或手动执行；trunk 执行共享、Windows 和 Linux 完整检查。保留 preview 触发器不授权修改那些分支。具体命令与平台以工作流为准，本地按变更风险选择现役场景命令，见[Linux 开发说明](../platforms/linux/development.md#按变更选择场景)。不自动修代码、提交、合并或归档开发环境；权限保持 contents: read。
+只保留 .github/workflows/check.yml。它接收 trunk、现有两个 preview 分支及明确的 work/linux-usability、work/windows-experience 临时分支 push，另保留主线 PR 和手动执行。trunk/PR 执行共享、Windows 和 Linux 完整检查；临时分支按实际完整差异选择平台，共享或工作流变更仍检查双端。保留 preview 触发器不授权修改那些分支。具体命令与平台以工作流为准，本地按变更风险选择现役场景命令，见[Linux 开发说明](../platforms/linux/development.md#按变更选择场景)。不自动修代码、提交、合并或归档开发环境；普通任务权限保持 contents: read。Qt 专属临时迭代额外以 actions: read 读取固定提交 d607db1 的已校验发行 artifact；只有全部被执行的非 Qt 源码未改变才复用，越界回完整检查。该结果只证明本次 Qt 场景，不是产品全验；artifact 失效或校验不符必须失败，不换用未知版本。
 
 CI 发布的 artifact 以提交 SHA 命名，包含对应平台的测试结果、当前运行的发行包和校验和。不要上传 artifacts 的整个目录。工作流日志是对应提交的执行记录，不写回源码树。
 

@@ -1,7 +1,7 @@
 name: TypeLay checks
 on:
   push:
-    branches: [trunk, windows-preview, cachyos-preview]
+    branches: [trunk, windows-preview, cachyos-preview, work/linux-usability, work/windows-experience]
   pull_request:
     branches: [trunk, windows-preview, cachyos-preview]
   workflow_dispatch:
@@ -11,6 +11,59 @@ concurrency:
   group: typelay-checks-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  scope:
+    runs-on: ubuntu-latest
+    outputs:
+      windows: ${{ steps.select.outputs.windows }}
+      linux: ${{ steps.select.outputs.linux }}
+      qt: ${{ steps.select.outputs.qt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Select checks from the actual platform branch changes
+        id: select
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BRANCH: ${{ github.ref_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          python - <<'PYCODE'
+          import os, re, subprocess
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          windows, linux, qt = True, True, False
+          branch = os.environ['BRANCH']
+          if os.environ['EVENT_NAME'] == 'push' and branch in ('work/linux-usability', 'work/windows-experience'):
+              base = git('merge-base', 'origin/trunk', 'HEAD')
+              # All branch commits count, including a changed file later reverted.
+              paths = set(git('log', '-m', '--format=', '--name-only', f'{base}..HEAD').splitlines()) - {''}
+              before = os.environ.get('BEFORE', '')
+              valid_before = bool(re.fullmatch(r'[0-9a-f]{40}', before)) and before != '0' * 40
+              pushed = set(git('log', '-m', '--format=', '--name-only', f'{before}..HEAD').splitlines()) if valid_before else {'.github/'}
+              workflow_changed = any(x.startswith('.github/') for x in pushed)
+              neutral = lambda x: x.startswith(('docs/', '.github/')) or x in ('README.md', 'AGENTS.md', 'GLOSSARY.md')
+              platform_paths = {x for x in paths if not neutral(x)}
+              linux_only = bool(platform_paths) and all(x.startswith(('src/linux/', 'tests/linux/', 'eng/linux/', 'packaging/linux/')) for x in platform_paths)
+              windows_only = bool(platform_paths) and all(x.startswith(('src/windows/', 'tests/windows/', 'eng/windows/', 'packaging/windows/')) for x in platform_paths)
+              if not workflow_changed:
+                  if branch == 'work/linux-usability' and linux_only:
+                      windows = False
+                      allowed = re.compile(r'^(src/linux/native/qt6/|src/linux/native/fcitx5/typelay-fcitx-qt-v1\.h$|eng/linux/cooperative/(qt\.py|qt-runtime-probe\.cpp|patches/fcitx5-qt\.patch)$|tests/linux/qt_cooperative/|tests/linux/qt_desktop\.py$|tests/linux/fixtures/qt_native_fixture\.cpp$)')
+                      if all(allowed.search(x) for x in platform_paths):
+                          # A reused client is valid only if every executed production
+                          # input outside this rebuilt Qt adapter is byte-identical.
+                          unchanged = subprocess.run(['git', 'diff', '--quiet', 'd607db1b8a3fc882cfd4a9c19a6e454d9b610189', 'HEAD', '--', '.', ':!docs/**', ':!tests/**', ':!.github/**', ':!README.md', ':!AGENTS.md', ':!GLOSSARY.md', ':!src/linux/native/qt6/**', ':!src/linux/native/fcitx5/typelay-fcitx-qt-v1.h', ':!eng/linux/cooperative/qt.py', ':!eng/linux/cooperative/qt-runtime-probe.cpp', ':!eng/linux/cooperative/patches/fcitx5-qt.patch']).returncode == 0
+                          qt = unchanged
+                          linux = not qt
+                  elif branch == 'work/windows-experience' and windows_only:
+                      linux = False
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              for name, value in [('windows', windows), ('linux', linux), ('qt', qt)]:
+                  stream.write(f'{name}={str(value).lower()}\n')
+          PYCODE
   shared:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -28,6 +81,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.13'
+      - name: Check repository Python formatting and lint
+        run: |
+          python -m pip install -r eng/requirements.txt
+          python -m ruff check .
+          python -m ruff format --check --diff .
       - name: Verify shared behavior without Windows
         shell: pwsh
         run: ./dev.ps1 shared-check
@@ -41,6 +99,8 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   check:
+    needs: scope
+    if: needs.scope.outputs.windows == 'true'
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
@@ -97,12 +157,14 @@ jobs:
           name: typelay-windows-${{ github.sha }}
           path: |
             artifacts/test-results/
-            artifacts/controller-trace.jsonl
+            artifacts/controller-trace.jsonl*
             artifacts/TypeLay-Windows-preview.zip
             artifacts/TypeLay-Windows-preview.zip.sha256
           if-no-files-found: warn
           retention-days: 14
   linux:
+    needs: scope
+    if: needs.scope.outputs.linux == 'true'
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
@@ -344,3 +406,99 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 # Passing this job does not certify physical Tab, Chinese IME, visual parity or safe universal writeback.
+
+  qt-iteration:
+    name: Linux Qt iteration (not full product acceptance)
+    needs: scope
+    if: needs.scope.outputs.qt == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+      options: --shm-size=1g
+    timeout-minutes: 15
+    env:
+      TYPELAY_EXPECT_QT_VERSION: 6.11.2
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Install isolated Qt iteration dependencies
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf python curl unzip patch extra-cmake-modules libxkbcommon libxcb fcitx5 boost-libs opencc xorg-server-xvfb xdotool dbus gtk3 python-gobject libayatana-appindicator niri mesa grim noto-fonts-cjk uv icu openssl zlib
+      - name: Match the target Qt upstream ABI
+        run: |
+          mkdir -p /tmp/typelay-target-sdk
+          cd /tmp/typelay-target-sdk
+          package='qt6-base-6.11.2-3-x86_64.pkg.tar.zst'
+          curl --fail --location "https://archive.archlinux.org/packages/q/qt6-base/$package" -o "$package"
+          curl --fail --location "https://archive.archlinux.org/packages/q/qt6-base/$package.sig" -o "$package.sig"
+          echo '257c5ef6180119d5b4365bdfe2a2ad051694b5dff390eac8e736dd78b8107b21  qt6-base-6.11.2-3-x86_64.pkg.tar.zst' | sha256sum -c -
+          echo 'abf939ab10c2d7f28af81e5230c72e2acbd803fe43590fda331f474ec871dcfb  qt6-base-6.11.2-3-x86_64.pkg.tar.zst.sig' | sha256sum -c -
+          pacman -U --noconfirm "./$package"
+          test "$(pkg-config --modversion Qt6Core)" = 6.11.2
+          test -f /usr/lib/qt6/plugins/platforms/libqwayland.so
+      - name: Initialize the disposable container D-Bus identity
+        run: dbus-uuidgen --ensure=/etc/machine-id
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Reuse the exact verified cooperation runtime
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/qt-runtime artifacts/qt-probe-root
+          curl --fail --location --retry 2 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            https://api.github.com/repos/DingJWuyu/Typelay/actions/artifacts/11797631952/zip \
+            -o artifacts/qt-runtime/evidence.zip
+          echo '3bf7bf2ebc650efd80f16073a1792633cabdfce45478888d0dadab39a815fa35  artifacts/qt-runtime/evidence.zip' | sha256sum -c -
+          unzip -p artifacts/qt-runtime/evidence.zip TypeLay-Fcitx-cooperative.tar.gz > artifacts/qt-runtime/runtime.tar.gz
+          echo 'afe4f71d8e7476eec1f48ed1c041a5f6f6a4191de66299b58f63a8e9fc5083ac  artifacts/qt-runtime/runtime.tar.gz' | sha256sum -c -
+          tar -xzf artifacts/qt-runtime/runtime.tar.gz -C artifacts/qt-runtime
+          unzip -p artifacts/qt-runtime/evidence.zip TypeLay-Linux-preview-x86_64.tar.gz > artifacts/qt-runtime/client.tar.gz
+          echo '23562c9f82ab9be9a4966978d61c600b3c74d4f07f91e80af0f0400ef6fe190a  artifacts/qt-runtime/client.tar.gz' | sha256sum -c -
+          tar -xzf artifacts/qt-runtime/client.tar.gz -C artifacts/qt-runtime
+          prefix="$PWD/artifacts/qt-runtime/TypeLay-Fcitx-cooperative/core"
+          ln -s "$prefix/bin/fcitx5" artifacts/qt-probe-root/fcitx5
+          ln -s "$prefix" artifacts/qt-probe-root/core-prefix
+          ln -s "$prefix/lib/fcitx5" artifacts/qt-probe-root/lib
+          printf '%s\n' 'sourceCommit=d607db1b8a3fc882cfd4a9c19a6e454d9b610189' 'artifactId=11797631952' > artifacts/qt-runtime/provenance.txt
+      - name: Probe the original Qt input path
+        run: python tests/linux/qt_cooperative/run.py --fcitx-root artifacts/qt-probe-root
+      - name: Install the same real local model for the isolated adapter scenario
+        run: |
+          mkdir -p artifacts/linux/desktop-data artifacts/linux/desktop-cache
+          python artifacts/qt-runtime/TypeLay-Linux-preview/desktop/setup.py "$PWD/artifacts/qt-runtime/TypeLay-Linux-preview" "$PWD/artifacts/linux/desktop-data/typelay" "$PWD/artifacts/linux/desktop-cache/typelay"
+      - name: Exercise the current adapter with the fixed production client
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1280x800x24 > artifacts/qt-runtime/xvfb.log 2>&1 &
+          xvfb=$!
+          trap 'kill "$xvfb" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 100); do
+            if xdotool getdisplaygeometry >/dev/null 2>&1; then break; fi
+            kill -0 "$xvfb"
+            sleep 0.05
+          done
+          xdotool getdisplaygeometry
+          export XDG_CONFIG_HOME="$PWD/artifacts/linux/qt-desktop-config"
+          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
+          export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
+          python tests/linux/native_e2e.py --desktop --desktop-scope qt --package artifacts/qt-runtime/TypeLay-Linux-preview --native artifacts/linux/native --output artifacts/linux/qt-desktop --fcitx-cooperative artifacts/qt-probe-root --qt-cooperative artifacts/linux/qt-cooperative
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: typelay-qt-iteration-${{ github.sha }}
+          path: |
+            artifacts/linux/qt-cooperative/*.json
+            artifacts/linux/qt-cooperative/*.log
+            artifacts/qt-runtime/provenance.txt
+            artifacts/qt-runtime/xvfb.log
+            artifacts/linux/qt-desktop/
+          if-no-files-found: warn
+          retention-days: 14
