@@ -17,8 +17,15 @@ internal sealed class SettingsWindow : Window
     private readonly StackPanel _nav;
     private readonly Action _openTutorial;
     private readonly WindowsApplicationSupport? _support;
+    private readonly SettingsDraftMessages _draftMessages = SettingsDraftPresentation.Create();
     private string _page = "general", _setupStatus = "";
+    private string? _renderedPage, _shortcutFeedback;
     private string? _settingsError;
+    private (string Wake, string Direct)? _shortcutDraft;
+    private TextBox? _wakeShortcutInput, _directShortcutInput;
+    private TextBlock? _shortcutNotice, _shortcutStatus;
+    private Window? _closeDialog;
+    private bool _updatingShortcuts, _emergencyShutdown;
     public Func<string>? ShortcutStatus
     {
         get; set;
@@ -51,7 +58,8 @@ internal sealed class SettingsWindow : Window
         });
         root.RowDefinitions.Add(new());
         var title = new DockPanel { Margin = new(14, 0, 12, 0) };
-        var close = UiTheme.Button("×", Hide);
+        var close = UiTheme.Button("×", () => RequestClose());
+        System.Windows.Automation.AutomationProperties.SetName(close, "关闭设置");
         close.Width = 34;
         close.Height = 30;
         close.BorderThickness = new(0);
@@ -84,10 +92,69 @@ internal sealed class SettingsWindow : Window
         outer.Effect = new DropShadowEffect { BlurRadius = 24, ShadowDepth = 6, Opacity = .18 };
         Content = outer;
         root.SizeChanged += (_, _) => root.Clip = new RectangleGeometry(new Rect(0, 0, root.ActualWidth, root.ActualHeight), 19, 19);
-        Closing += (_, e) => { e.Cancel = true; Hide(); };
+        Closing += (_, e) =>
+        {
+            if (_emergencyShutdown)
+                return;
+            e.Cancel = true;
+            RequestClose();
+        };
         settings.Changed += Refresh;
         model.Changed += Refresh;
         Refresh();
+    }
+    public bool RequestClose()
+    {
+        if (_closeDialog is not null)
+        {
+            _closeDialog.Activate();
+            return false;
+        }
+        if (_shortcutDraft is not null && !ConfirmDiscard())
+            return false;
+        _shortcutDraft = null;
+        _shortcutFeedback = null;
+        _settingsError = null;
+        _support?.CancelCheck();
+        Hide();
+        return true;
+    }
+    // An exceptional stop must not leave input services running behind a prompt.
+    // Normal settings closure and explicit Quit go through RequestClose instead.
+    public void PrepareForEmergencyShutdown() => _emergencyShutdown = true;
+    private bool ConfirmDiscard()
+    {
+        var dialog = new Window
+        {
+            Owner = this,
+            Title = _draftMessages.CloseTitle,
+            Width = 430,
+            SizeToContent = SizeToContent.Height,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ShowInTaskbar = false
+        };
+        dialog.SetResourceReference(BackgroundProperty, "Panel");
+        var body = new StackPanel { Margin = new(22) };
+        body.Children.Add(UiTheme.Text(_draftMessages.CloseMessage, 13));
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 22, 0, 0) };
+        var keep = UiTheme.Button(_draftMessages.KeepEditingLabel, () => dialog.DialogResult = false, primary: true);
+        var discard = UiTheme.Button(_draftMessages.DiscardLabel, () => dialog.DialogResult = true);
+        keep.Margin = new(0, 0, 10, 0);
+        keep.IsCancel = true;
+        keep.IsDefault = _draftMessages.DefaultCloseChoice == SettingsDraftCloseChoice.KeepEditing;
+        discard.IsDefault = _draftMessages.DefaultCloseChoice == SettingsDraftCloseChoice.Discard;
+        actions.Children.Add(keep);
+        actions.Children.Add(discard);
+        body.Children.Add(actions);
+        dialog.Content = body;
+        dialog.Loaded += (_, _) => (keep.IsDefault ? keep : discard).Focus();
+        _closeDialog = dialog;
+        try
+        {
+            return dialog.ShowDialog() == true;
+        }
+        finally { _closeDialog = null; }
     }
     public void ShowPage(string page = "general")
     {
@@ -106,6 +173,14 @@ internal sealed class SettingsWindow : Window
             Dispatcher.BeginInvoke(new Action(Refresh));
             return;
         }
+        // Keep the actual editors mounted during background status refreshes so
+        // neither unsaved text nor keyboard focus and selection are disturbed.
+        if (_page == "shortcuts" && _renderedPage == _page)
+        {
+            RefreshShortcuts();
+            return;
+        }
+        _renderedPage = _page;
         _nav.Children.Clear();
         foreach (var (key, title) in new[] { ("general", "⌂  常规"), ("language", "文  语言"), ("shortcuts", "⌨  快捷键"),
                      ("apps", "▦  " + ApplicationSupportPresentation.Create([]).Title), ("translation", "A  翻译"), ("glossary", "≡  术语表"), ("about", "i  关于与隐私") })
@@ -126,7 +201,7 @@ internal sealed class SettingsWindow : Window
         _content.Children.Clear();
         _progress = null;
         _progressLabel = null;
-        if (_settingsError is { } error)
+        if (_page != "shortcuts" && _settingsError is { } error)
             Note("设置未保存", error);
         switch (_page)
         {
@@ -187,7 +262,7 @@ internal sealed class SettingsWindow : Window
         grid.Children.Add(control);
         _content.Children.Add(grid);
     }
-    private void Note(string title, string text)
+    private TextBlock Note(string title, string text)
     {
         var panel = new StackPanel();
         panel.Children.Add(UiTheme.Text(title, 12, bold: true));
@@ -198,13 +273,15 @@ internal sealed class SettingsWindow : Window
         var box = UiTheme.Border(panel, 13, "Panel2", 14);
         box.Margin = new(0, 4, 0, 12);
         _content.Children.Add(box);
+        return body;
     }
-    private void Save(UserSettings value)
+    private bool Save(UserSettings value)
     {
         try
         {
             _settingsError = null;
             _settings.Update(value);
+            return true;
         }
         catch (ArgumentException)
         {
@@ -216,6 +293,7 @@ internal sealed class SettingsWindow : Window
             _settingsError = "请检查当前用户目录与组织策略。";
             Refresh();
         }
+        return false;
     }
     private void General()
     {
@@ -309,19 +387,78 @@ internal sealed class SettingsWindow : Window
         Row("编辑后返回原输入框", "第一次 Tab 返回；确认焦点后，下一次 Tab 接受。", UiTheme.Text("Tab → Tab", 13, bold: true));
         Row("退出当前翻译", "不修改原文，不发送、不提交。组合输入时优先交还输入法。", UiTheme.Text("Esc", 13, bold: true));
         Rule();
-        var wake = ShortcutInput(_settings.Value.WakeShortcut, "唤醒翻译 UI 快捷键");
-        var direct = ShortcutInput(_settings.Value.DirectShortcut, "直接翻译并替换快捷键");
+        var wake = _wakeShortcutInput = ShortcutInput(_shortcutDraft?.Wake ?? _settings.Value.WakeShortcut, "唤醒翻译 UI 快捷键");
+        var direct = _directShortcutInput = ShortcutInput(_shortcutDraft?.Direct ?? _settings.Value.DirectShortcut, "直接翻译并替换快捷键");
+        wake.TextChanged += (_, _) => ShortcutDraftChanged();
+        direct.TextChanged += (_, _) => ShortcutDraftChanged();
         Row("唤醒翻译 UI", "为当前输入框开启持续翻译；离开后结束。", wake);
         Row("直接翻译并替换", "一次性操作，绑定原输入框，不显示预览、不自动发送。", direct);
-        var save = UiTheme.Button("保存按需快捷键", () => Save(_settings.Value with { WakeShortcut = wake.Text, DirectShortcut = direct.Text }));
+        var save = UiTheme.Button(_draftMessages.SaveLabel, () =>
+        {
+            if (Save(_settings.Value with
+            {
+                WakeShortcut = wake.Text,
+                DirectShortcut = direct.Text
+            }))
+            {
+                _shortcutDraft = null;
+                _shortcutFeedback = _draftMessages.SavedMessage;
+            }
+            else
+                _shortcutFeedback = _draftMessages.InvalidMessage;
+            RefreshShortcuts();
+        });
         save.HorizontalAlignment = HorizontalAlignment.Right;
         save.Margin = new(0, 8, 0, 14);
         _content.Children.Add(save);
-        Note("按需快捷键状态", ShortcutStatus?.Invoke() ?? "仅在启用 TypeLay 的按需模式下生效。自动模式不注册这两个快捷键。");
+        _shortcutNotice = UiTheme.Text("", 12);
+        _shortcutNotice.Margin = new(0, 0, 0, 14);
+        _content.Children.Add(_shortcutNotice);
+        _shortcutStatus = Note("按需快捷键状态", "");
         Note("直接替换的当前范围", "Windows x64 中通过运行时校验的原生 Edit 控件支持后台写回。翻译时可以切换焦点，结果仍只写回原输入框；冲突、输入法状态不明或不兼容控件会安全拒写。不会抢回焦点，也不使用实验性 Tab 写回作为后备。结果与失败原因可在托盘快速面板查看。");
         Note("组合键格式", "例如 Ctrl+Shift+F9。支持 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24，排除系统保留的 F12。组合键被其他应用占用时，设置仍保存，但对应命令不会启用。");
         Rule();
         Note("保留原应用快捷键", "Ctrl / Alt / Shift / Win 与 Tab 的组合交还原应用。没有有效候选时，Tab 不执行接受。");
+        RefreshShortcuts();
+    }
+    private void ShortcutDraftChanged()
+    {
+        if (_updatingShortcuts || _wakeShortcutInput is null || _directShortcutInput is null)
+            return;
+        var value = (_wakeShortcutInput.Text, _directShortcutInput.Text);
+        _shortcutDraft = value == (_settings.Value.WakeShortcut, _settings.Value.DirectShortcut) ? null : value;
+        _shortcutFeedback = null;
+        _settingsError = null;
+        RefreshShortcuts();
+    }
+    private void RefreshShortcuts()
+    {
+        if (_wakeShortcutInput is null || _directShortcutInput is null || _shortcutNotice is null || _shortcutStatus is null)
+            return;
+        if (_shortcutDraft is null)
+        {
+            _updatingShortcuts = true;
+            try
+            {
+                UpdateShortcutText(_wakeShortcutInput, _settings.Value.WakeShortcut);
+                UpdateShortcutText(_directShortcutInput, _settings.Value.DirectShortcut);
+            }
+            finally { _updatingShortcuts = false; }
+        }
+        _shortcutNotice.Text = _settingsError is { } error
+            ? (_shortcutFeedback == _draftMessages.InvalidMessage ? _draftMessages.InvalidMessage : "设置未保存") + "\n" + error
+            : _shortcutFeedback ?? (_shortcutDraft is not null ? _draftMessages.UnsavedNotice : "");
+        _shortcutNotice.Visibility = _shortcutNotice.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        _shortcutStatus.Text = ShortcutStatus?.Invoke() ?? "仅在启用 TypeLay 的按需模式下生效。自动模式不注册这两个快捷键。";
+    }
+    private static void UpdateShortcutText(TextBox input, string value)
+    {
+        if (input.Text == value)
+            return;
+        int start = Math.Min(input.SelectionStart, value.Length);
+        int length = Math.Min(input.SelectionLength, value.Length - start);
+        input.Text = value;
+        input.Select(start, length);
     }
     private static TextBox ShortcutInput(string value, string label)
     {

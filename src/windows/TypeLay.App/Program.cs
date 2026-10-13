@@ -27,6 +27,7 @@ internal static class Program
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         SessionController? session = null;
         ModelClient? model = null;
+        SettingsWindow? settingsWindow = null;
         Forms.NotifyIcon? tray = null;
         Drawing.Icon? icon = null;
         bool disposed = false;
@@ -50,6 +51,7 @@ internal static class Program
             // Never serialize exception messages: provider exceptions may contain user input.
             e.Handled = true;
             Dispose();
+            settingsWindow?.PrepareForEmergencyShutdown();
             MessageBox.Show("TypeLay 已停止，以避免在异常状态下继续读取或写回。请重新启动。错误代码：UI-STOP。", "TypeLay", MessageBoxButton.OK, MessageBoxImage.Error);
             app.Shutdown(2);
         };
@@ -80,8 +82,14 @@ internal static class Program
                 SessionMustEnd = session.StopSession,
                 ShortcutStatus = () => session.ShortcutStatus
             };
+            settingsWindow = window;
+            void Quit()
+            {
+                if (window.RequestClose())
+                    app.Shutdown();
+            }
             overlay.LanguageRequested = () => window.ShowPage("language");
-            var quick = new QuickPanel(settings, model, session, () => window.ShowPage(), () => app.Shutdown());
+            var quick = new QuickPanel(settings, model, session, () => window.ShowPage(), Quit);
             icon = MakeTrayIcon();
             tray = new Forms.NotifyIcon { Icon = icon, Visible = true, Text = "TypeLay · 正在启动" };
             session.OperationFeedback += feedback =>
@@ -109,7 +117,7 @@ internal static class Program
             menu.Items.Add("设置…", null, (_, _) => app.Dispatcher.Invoke(() => window.ShowPage()));
             menu.Items.Add("实操教程", null, (_, _) => app.Dispatcher.Invoke(Tutorial));
             menu.Items.Add(new Forms.ToolStripSeparator());
-            menu.Items.Add("退出 TypeLay", null, (_, _) => app.Dispatcher.Invoke(() => app.Shutdown()));
+            menu.Items.Add("退出 TypeLay", null, (_, _) => app.Dispatcher.Invoke(Quit));
             tray.ContextMenuStrip = menu;
             tray.MouseClick += (_, e) => { if (e.Button == Forms.MouseButtons.Left) app.Dispatcher.Invoke(quick.OpenAtTray); };
             void TrayStatus()

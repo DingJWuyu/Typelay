@@ -9,14 +9,17 @@ import argparse
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import socket
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from playwright.sync_api import sync_playwright
 from support.browser_process import chromium_context
@@ -39,6 +42,25 @@ class NativeBrowserContract(unittest.TestCase):
                 WAYLAND_DISPLAY="typelay-browser-test",
                 NIRI_SOCKET=str(root / "niri-test.sock"),
             )
+            commands = root / "bin"
+            commands.mkdir()
+            browser_launcher = commands / "chromium"
+            # The settings action launches the same real, disposable browser.
+            # Match browser_process's root-only CI flag without adding any
+            # test flags or profile controls to the shipped application.
+            browser_launcher.write_text(
+                "#!/bin/sh\nexec "
+                + shlex.join(
+                    [
+                        self.executable,
+                        f"--user-data-dir={root / 'config/chromium'}",
+                        *(["--no-sandbox"] if os.getuid() == 0 else []),
+                    ]
+                )
+                + ' "$@"\n'
+            )
+            browser_launcher.chmod(0o700)
+            environment["PATH"] = str(commands) + os.pathsep + environment["PATH"]
             runtime = root / "run"
             runtime.mkdir(mode=0o700)
             session_id = hashlib.sha256(
@@ -54,13 +76,32 @@ class NativeBrowserContract(unittest.TestCase):
                 timeout=30,
                 capture_output=True,
             )
-            extension = self.package / "browser/chromium"
+            installed = root / ".local/lib/typelay/current"
+            extension = installed / "browser/chromium"
+            with patch.dict(os.environ, environment):
+                support = ApplicationSupport(Paths(installed))
+                self.assertEqual(support.browser_status("chromium")["state"], "not-registered")
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
                 listener.bind(str(session / "native.sock"))
                 (session / "native.sock").chmod(0o600)
                 listener.listen(1)
                 listener.settimeout(15)
                 with sync_playwright() as playwright:
+                    # Loading is a browser-owned approval in the product. The
+                    # existing isolated fixture loads only this shipped payload,
+                    # then closes normally so Chromium saves its actual record.
+                    with chromium_context(
+                        playwright,
+                        self.executable,
+                        root / "config/chromium",
+                        environment,
+                        [
+                            f"--disable-extensions-except={extension}",
+                            f"--load-extension={extension}",
+                        ],
+                    ) as context:
+                        if not context.service_workers:
+                            context.wait_for_event("serviceworker", timeout=15_000)
                     scope = chromium_context(
                         playwright,
                         self.executable,
@@ -73,27 +114,13 @@ class NativeBrowserContract(unittest.TestCase):
                     )
                     context = scope.__enter__()
                     try:
-                        worker = (
-                            context.service_workers[0]
-                            if context.service_workers
-                            else (context.wait_for_event("serviceworker", timeout=15_000))
-                        )
-                        extension_id = worker.url.split("/")[2]
-                        subprocess.run(
-                            [
-                                "python3",
-                                str(self.package / "install.py"),
-                                "browser-install",
-                                "--browser",
-                                "chromium",
-                                "--extension-id",
-                                extension_id,
-                            ],
-                            env=environment,
-                            check=True,
-                            timeout=30,
-                            capture_output=True,
-                        )
+                        with context.expect_page(timeout=10_000) as opened:
+                            self.support_action(installed, environment, "OpenInstructions")
+                        opened.value.wait_for_url("chrome://extensions/", timeout=10_000)
+                        with patch.dict(os.environ, environment):
+                            self.assertEqual(
+                                support.browser_status("chromium")["state"], "not-registered"
+                            )
                         context.route(
                             "http://127.0.0.1/**",
                             lambda route: route.fulfill(
@@ -104,6 +131,35 @@ class NativeBrowserContract(unittest.TestCase):
                         first = context.new_page()
                         first.goto("http://127.0.0.1/first")
                         first.locator("#source").focus()
+                        first.keyboard.insert_text("Before connection")
+                        listener.setblocking(False)
+                        with self.assertRaises(BlockingIOError):
+                            listener.accept()
+                        listener.settimeout(15)
+                        # Follow the production settings action. Neither the
+                        # user nor this test supplies an extension identifier.
+                        self.support_action(installed, environment, "Connect")
+                        with patch.dict(os.environ, environment):
+                            row = next(fact for fact in support.facts() if fact["id"] == "chromium")
+                            self.assertEqual(row["state"], "Registered")
+                            self.assertFalse(any(row["capabilities"].values()))
+                        # The settings instructions ask the user to reload the
+                        # target page after connecting; no private page is
+                        # automatically reloaded by TypeLay.
+                        first.reload()
+                        first.locator("#source").focus()
+                        first.keyboard.insert_text("First document")
+                        listener.settimeout(15)
+                        connection, _ = listener.accept()
+                        with connection:
+                            connection.settimeout(10)
+                            previous_hello = self.receive(connection)
+                            self.assertEqual(previous_hello["event"], "hello")
+                        # A real native connection just closed. Refresh at once,
+                        # while reconnection is throttled; that user request must
+                        # eventually connect without another focus/click/reload.
+                        first.reload()
+                        first.locator("#source").focus()
                         first.keyboard.insert_text("First document")
                         connection, _ = listener.accept()
                         with connection:
@@ -112,6 +168,9 @@ class NativeBrowserContract(unittest.TestCase):
                             self.assertEqual(hello["event"], "hello")
                             self.assertEqual(hello["data"]["backend"], "browser")
                             self.assertEqual(hello["data"]["protocol"], 2)
+                            self.assertNotEqual(
+                                hello["data"]["lifetime"], previous_hello["data"]["lifetime"]
+                            )
                             self.sequence = 0
                             # Browser callbacks continue in another process while
                             # this test's socket receives the native-host reply.
@@ -161,6 +220,30 @@ class NativeBrowserContract(unittest.TestCase):
                     finally:
                         scope.__exit__(None, None, None)
 
+    def support_action(self, installed, environment, action):
+        # Isolate the product's asyncio loop from Playwright's synchronous loop.
+        process = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                "import asyncio, json, sys; from pathlib import Path; "
+                "sys.path.insert(0, str(Path(sys.argv[1]) / 'desktop')); "
+                "from application_support import ApplicationSupport; from paths import Paths; "
+                "support = ApplicationSupport(Paths(sys.argv[1])); "
+                "result = asyncio.run(support.execute('chromium', sys.argv[2])); "
+                "print(json.dumps(result)); sys.exit(0 if result['ok'] else 1)",
+                str(installed),
+                action,
+            ],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        self.assertEqual(process.returncode, 0, (process.stdout, process.stderr))
+
     def focused_description(self, connection, previous=None):
         deadline = time.monotonic() + 3
         while time.monotonic() < deadline:
@@ -203,4 +286,8 @@ if __name__ == "__main__":
     arguments, remaining = parser.parse_known_args()
     NativeBrowserContract.package = arguments.package.resolve()
     NativeBrowserContract.executable = arguments.chromium
+    sys.path.insert(0, str(NativeBrowserContract.package / "desktop"))
+    from application_support import ApplicationSupport
+    from paths import Paths
+
     unittest.main(argv=[__file__, *remaining])

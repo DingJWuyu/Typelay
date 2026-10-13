@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import stat
@@ -248,6 +249,13 @@ class ApplicationSupport:
                 state, reason = "Error", "ComponentMissing"
                 if (self.paths.home / "MANIFEST.sha256").is_file():
                     actions.append("Install")
+            elif (
+                browser != "firefox"
+                and status["state"] == "not-registered"
+                and len(self.browser_extension_ids(browser)) != 1
+            ):
+                state, reason = "AwaitingApproval", "AwaitingApproval"
+                actions = [action for action in actions if action not in ("Connect", "Repair")]
             if status["state"] == "registered" and browser in connected:
                 state, reason = "Connected", "FieldUnobserved"
             result = self.last_results.get(browser)
@@ -362,17 +370,23 @@ class ApplicationSupport:
         """Platform-specific permission steps, without assigning product state."""
         if identity == "firefox":
             return (
-                "在 Firefox 打开 about:debugging#/runtime/this-firefox，选择“临时载入附加组件”，"
-                "在下方文件夹中选择 manifest.json，然后在浏览器确认网页访问权限。\n"
+                "1. 打开 Firefox 扩展页（about:debugging#/runtime/this-firefox），"
+                "选择“临时载入附加组件”，在下方文件夹中选择 manifest.json。\n"
+                "2. 在浏览器确认网页访问权限，回到此页连接。\n"
+                "3. 保存网页中的工作后刷新目标网页，在普通文本框输入后回到这里检查连接。\n\n"
                 "随包扩展尚未获 Mozilla 签名；临时扩展在 Firefox 退出后失效。"
-                "TypeLay 不关闭签名校验。加载后重新打开目标网页，再回到这里检查连接。"
+                "每次重新启动 Firefox 后需重新临时加载。TypeLay 不关闭签名校验。"
             )
         if identity in ("chromium", "google-chrome"):
             return (
-                "在浏览器打开 chrome://extensions，开启开发者模式，选择“加载已解压的扩展程序”，"
-                "选择下方 TypeLay 扩展文件夹，并在浏览器确认网页访问权限。\n"
-                "完成后回到此页连接。TypeLay 只使用浏览器标准配置中与本包路径完全匹配的扩展记录；"
-                "尚未找到或无法确定唯一记录时不会注册。若浏览器尚未保存记录，请正常退出并重新打开后再检查。"
+                "1. 打开浏览器扩展页（chrome://extensions/），开启开发者模式，"
+                "选择“加载已解压的扩展程序”，"
+                "选择下方 TypeLay 扩展文件夹。\n"
+                "2. 在浏览器确认网页访问权限，回到此页连接。无需复制扩展 ID。\n"
+                "3. 保存网页中的工作后刷新目标网页，在普通文本框输入后回到这里检查连接。\n\n"
+                "随包扩展尚未上架商店，只提供开发加载。TypeLay 只使用浏览器标准配置中与本包路径"
+                "完全匹配的唯一扩展记录；尚未找到或发现多个记录时不会注册。"
+                "若加载后仍没有连接按钮，请保存工作，正常退出并重新打开浏览器后再检查。"
             )
         if identity == "desktop-text":
             return (
@@ -406,6 +420,29 @@ class ApplicationSupport:
         if identity == "desktop-text" and self.cooperative_directory:
             return self.cooperative_directory
         return self.paths.home
+
+    def open_browser(self, browser):
+        """Open only the selected browser's permission UI; never load or approve an extension."""
+        if browser not in BROWSERS:
+            raise ValueError("unknown-browser")
+        executable = shutil.which(browser)
+        if executable is None:
+            raise OSError("browser-not-installed")
+        from gi.repository import Gio, GLib
+
+        uri = (
+            "about:debugging#/runtime/this-firefox"
+            if browser == "firefox"
+            else "chrome://extensions/"
+        )
+        try:
+            application = Gio.AppInfo.create_from_commandline(
+                shlex.join([executable, "--new-tab", uri]), None, Gio.AppInfoCreateFlags.NONE
+            )
+            if not application.launch([], None):
+                raise OSError("browser-launch-failed")
+        except GLib.Error as error:
+            raise OSError("browser-launch-failed") from error
 
     async def install_client(self):
         process = None
@@ -501,6 +538,9 @@ class ApplicationSupport:
             }
 
     async def execute(self, identity, action, directory=None):
+        if identity in BROWSERS and action == "OpenInstructions":
+            self.open_browser(identity)
+            return {"ok": True}
         if action == "Refresh":
             if identity in BROWSERS:
                 self.last_results.pop(identity, None)

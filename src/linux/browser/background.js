@@ -6,7 +6,8 @@ const pending = new Map();
 let native = null;
 let active = null;
 let configuration = null;
-let lastConnect = 0;
+let lastConnect = -Infinity;
+let connectTimer = null;
 
 function disconnect(connection, close = false) {
   if (native !== connection) return;
@@ -26,8 +27,20 @@ function postNative(connection, message) {
   catch { disconnect(connection, true); } // Revoke; never replay a failed request.
 }
 function connect() {
-  if (native || Date.now() - lastConnect < 2000) return;
-  lastConnect = Date.now();
+  if (native || !documents.size) return;
+  const remaining = 2000 - (performance.now() - lastConnect);
+  if (remaining > 0) {
+    if (connectTimer === null) {
+      connectTimer = setTimeout(() => {
+        connectTimer = null;
+        connect();
+      }, remaining);
+    }
+    return;
+  }
+  if (connectTimer !== null) clearTimeout(connectTimer);
+  connectTimer = null;
+  lastConnect = performance.now();
   const connection = api.runtime.connectNative("org.typelay.browser");
   native = connection;
   connection.onDisconnect.addListener(() => disconnect(connection));
@@ -92,6 +105,10 @@ api.runtime.onConnect.addListener(port => {
         if (native) postNative(native, {id, data: null});
       }
     }
-    if (!documents.size && native) disconnect(native, true);
+    if (!documents.size) {
+      if (connectTimer !== null) clearTimeout(connectTimer);
+      connectTimer = null;
+      if (native) disconnect(native, true);
+    }
   });
 });

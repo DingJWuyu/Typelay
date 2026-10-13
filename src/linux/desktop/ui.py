@@ -579,21 +579,65 @@ class ApplicationSupportPane:
             text=row["title"],
         )
         folder = self.folder(row["id"])
-        dialog.format_secondary_text(
-            (row.get("details") or row["guidance"]).split("\n\n", 1)[0] + "\n\n" + str(folder)
-        )
+        browser = row["id"] in ("firefox", "chromium", "google-chrome")
+        dialog.format_secondary_text(row.get("details") or row["guidance"])
+        path = Gtk.Entry()
+        path.set_text(str(folder))
+        path.set_editable(False)
+        path.set_hexpand(True)
+        dialog.get_message_area().pack_start(path, False, False, 0)
         dialog.add_buttons(
             labels["cancel"], Gtk.ResponseType.CANCEL, labels["openFolder"], Gtk.ResponseType.OK
         )
+        if browser:
+            browser_button = dialog.add_button(labels["openBrowser"], Gtk.ResponseType.APPLY)
+            dialog.set_default_response(Gtk.ResponseType.APPLY)
+        feedback = Gtk.Label(xalign=0)
+        feedback.set_line_wrap(True)
+        dialog.get_message_area().pack_start(feedback, False, False, 0)
+        alive, opening = True, False
+
+        def destroyed(_widget):
+            nonlocal alive
+            alive = False
+
+        async def open_browser():
+            nonlocal opening
+            try:
+                if not alive:
+                    return
+                value = await self.action_requested(row["id"], "OpenInstructions")
+                if alive:
+                    if value:
+                        self.render(value)
+                    feedback.set_text("")
+            except (OSError, ValueError, EOFError, TimeoutError):
+                if alive:
+                    feedback.set_text("无法打开所选浏览器。请确认浏览器已安装，再重试接入步骤。")
+            finally:
+                opening = False
+                if alive:
+                    browser_button.set_sensitive(True)
 
         def opened(widget, response):
-            widget.destroy()
-            if response == Gtk.ResponseType.OK:
+            nonlocal opening
+            if not alive:
+                return
+            if response == Gtk.ResponseType.APPLY and browser:
+                if opening:
+                    return
+                opening = True
+                browser_button.set_sensitive(False)
+                self.owner.tasks(open_browser())
+            elif response == Gtk.ResponseType.OK:
                 try:
                     Gio.AppInfo.launch_default_for_uri(folder.as_uri(), None)
                 except GLib.Error:
-                    self.owner.message.set_text("无法打开文件夹：" + str(folder))
+                    feedback.set_text("无法打开文件夹：" + str(folder))
+            else:
+                widget.destroy()
 
+        dialog.connect("destroy", destroyed)
         dialog.connect("response", opened)
         dialog.show_all()
 

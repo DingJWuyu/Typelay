@@ -402,6 +402,44 @@ class ApplicationSupportTests(unittest.TestCase):
         self.assertEqual(result["reason"], "browser-extension-unconfirmed")
         self.assertEqual(self.support.browser_status("chromium")["state"], "not-registered")
 
+    def test_browser_approval_is_the_next_step_until_one_shipped_extension_is_found(self):
+        folder = self.package / "browser/chromium"
+        folder.mkdir(parents=True)
+        shutil.copy2(ROOT / "src/linux/browser/manifest.chromium.json", folder / "manifest.json")
+
+        def row():
+            return next(fact for fact in self.support.facts() if fact["id"] == "chromium")
+
+        self.assertEqual(row()["state"], "AwaitingApproval")
+        self.assertNotIn("Connect", row()["supportedActions"])
+        profile = self.home / "config/chromium/Default"
+        profile.mkdir(parents=True)
+        preferences = profile / "Preferences"
+        preferences.write_text('{"extensions":')
+        self.assertEqual(row()["state"], "AwaitingApproval")
+        preferences.write_text(
+            json.dumps({"extensions": {"settings": {"c" * 32: {"path": str(folder)}}}})
+        )
+        self.assertEqual(row()["state"], "NeedsInstall")
+        self.assertIn("Connect", row()["supportedActions"])
+        preferences.write_text(
+            json.dumps(
+                {
+                    "extensions": {
+                        "settings": {
+                            "c" * 32: {"path": str(folder)},
+                            "d" * 32: {"path": str(folder)},
+                        }
+                    }
+                }
+            )
+        )
+        self.assertEqual(row()["state"], "AwaitingApproval")
+        self.assertNotIn("Connect", row()["supportedActions"])
+        result = asyncio.run(self.support.execute("chromium", "Connect"))
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(self.support.browser_status("chromium")["state"], "not-registered")
+
     def test_recent_live_field_observation_is_separate_from_registration_and_pause(self):
         self.assertTrue(asyncio.run(self.support.browser_action("firefox", "connect"))["ok"])
         peer = SimpleNamespace(

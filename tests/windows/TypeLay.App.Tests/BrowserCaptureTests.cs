@@ -24,20 +24,21 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
         Assert.True(chrome is not null, "This desktop regression requires the runner's installed Google Chrome.");
         output.WriteLine("Installed Chrome version: " + FileVersionInfo.GetVersionInfo(chrome!).ProductVersion);
         string directory = Path.Combine(Path.GetTempPath(), "typelay-browser-" + Guid.NewGuid().ToString("N"));
+        string title = "TypeLay browser input regression " + Guid.NewGuid().ToString("N");
+        BrowserWindows? windows = null;
         bool failed = false;
         try
         {
             Directory.CreateDirectory(directory);
             string page = Path.Combine(directory, "search.html");
             const string initial = "ordinary search without punctuation";
-            await File.WriteAllTextAsync(page, """
-            <!doctype html><meta charset="utf-8"><title>TypeLay browser input regression</title>
-            <style>body{padding:20vh 15vw;font:20px sans-serif}input{width:65vw;padding:14px}</style>
-            <label for="query">Search</label>
-            <input id="query" type="search" value="ordinary search without punctuation" autofocus>
+            await File.WriteAllTextAsync(page, $$"""
+            <!doctype html><meta charset="utf-8"><title>{{title}}</title>
+            <style>body{margin:0;height:100vh;display:grid;place-items:center;font:20px sans-serif}input{width:65vw;padding:14px}</style>
+            <input id="query" type="search" aria-label="Search" value="ordinary search without punctuation" autofocus>
             <script>
             function reportFocus() {
-              document.title = "TypeLay browser input regression " +
+              document.title = "{{title}} " +
                 (document.hasFocus() && document.activeElement === document.getElementById("query") ? "focused" : "unfocused");
             }
             window.addEventListener("focus", reportFocus);
@@ -56,8 +57,42 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             start.ArgumentList.Add(new Uri(page).AbsoluteUri);
             using var ownedBrowser = new ChildProcess(start);
             var browser = ownedBrowser.Process;
+            windows = new(browser, title);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(20));
+            nint window = 0;
+            bool clicked = false;
+            var startup = Stopwatch.StartNew();
+            do
+            {
+                var pages = windows.Read().Where(candidate => candidate.Page).ToArray();
+                Assert.True(pages.Length <= 1, "The isolated page must belong to exactly one owned browser window.");
+                if (pages.Length == 1)
+                {
+                    window = pages[0].Handle;
+                    if (Native.GetForegroundWindow() != window)
+                        Native.SetForegroundWindow(window);
+                    if (Native.GetForegroundWindow() == window && !clicked)
+                    {
+                        var geometry = windows.ClickPageInput(window);
+                        clicked = true;
+                        output.WriteLine($"Clicked owned page input: dpi={geometry.Dpi}; viewportWidth={geometry.Width}; viewportHeight={geometry.Height}");
+                    }
+                    if (Native.GetForegroundWindow() == window && pages[0].Focused)
+                        break;
+                }
+                await Task.Delay(40, deadline.Token);
+            } while (startup.Elapsed < TimeSpan.FromSeconds(6));
+            var ready = windows.Read();
+            output.WriteLine($"Browser startup atMs={Environment.TickCount64}: ownedProcesses={windows.ProcessCount}; "
+                + $"visibleOwnedWindows={ready.Length}; ownedPages={ready.Count(candidate => candidate.Page)}; "
+                + $"foregroundOwned={window != 0 && Native.GetForegroundWindow() == window}; "
+                + $"domFocusConfirmed={ready.Any(candidate => candidate.Handle == window && candidate.Focused)}; "
+                + $"inputClicked={clicked}; "
+                + $"launcherExited={browser.HasExited}");
+            Assert.True(window != 0 && Native.GetForegroundWindow() == window
+                && ready.Any(candidate => candidate.Handle == window && candidate.Focused),
+                "Browser fixture startup failed: the owned local page and DOM input focus were not established; no input capture was attempted.");
             using var broker = new BrokerClient();
             using var input = new WindowsInputService(broker, 0);
             await input.StartAsync().WaitAsync(deadline.Token);
@@ -67,22 +102,20 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
                 var elapsed = Stopwatch.StartNew();
                 do
                 {
-                    Assert.False(browser.HasExited, "The isolated browser must remain running.");
-                    browser.Refresh();
-                    if (browser.MainWindowHandle != 0 && Native.GetForegroundWindow() != browser.MainWindowHandle)
-                        Native.SetForegroundWindow(browser.MainWindowHandle);
+                    Assert.Contains(windows.Read(), candidate => candidate.Handle == window && candidate.Page && candidate.Focused);
+                    Assert.Equal(window, Native.GetForegroundWindow());
                     var observed = await input.CaptureAsync(context).WaitAsync(deadline.Token);
                     if (observed.Snapshot is { } source && observed.Focus == FocusMember.Source
                         && (source.Ime == ImeState.Clear ? source.Text : source.PreviewText) == expected)
                         return source;
                     await Task.Delay(40, deadline.Token);
                 } while (elapsed.Elapsed < TimeSpan.FromSeconds(6));
-                ReportFocus(browser);
+                ReportFocus(window);
                 throw new Xunit.Sdk.XunitException("The ordinary page search field was not captured; inspect the broker's fixed stage/rejection trace.");
             }
             var first = await Observe(initial);
             Assert.True(WindowsTarget.TryDecode(first.Target, out var target));
-            Assert.Equal((long)browser.MainWindowHandle, target.RootHwnd);
+            Assert.Equal((long)window, target.RootHwnd);
             Assert.False(first.DirectWriteSupported);
             if (first.Ime != ImeState.Clear)
                 Assert.False(first.WriteSupported);
@@ -107,30 +140,34 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             // the original acquisition failure with a secondary cleanup failure.
             try
             {
+                if (windows is not null)
+                    await windows.StopAsync();
                 if (Directory.Exists(directory))
                     Directory.Delete(directory, true);
             }
-            catch (Exception error) when (failed && error is IOException or UnauthorizedAccessException)
+            catch (Exception error) when (failed && error is IOException or UnauthorizedAccessException
+                or System.ComponentModel.Win32Exception or InvalidOperationException or OperationCanceledException)
             {
                 output.WriteLine("Isolated browser profile cleanup failed: " + error.GetType().Name);
             }
         }
     }
 
-    private void ReportFocus(Process browser)
+    private void ReportFocus(nint window)
     {
         // Test-owned browser only. Log fixed booleans/control type, not window
         // titles, field text, paths, runtime IDs or user metadata. This separates
         // browser/page readiness from the production broker's rejection reason.
         try
         {
-            browser.Refresh();
-            nint window = browser.MainWindowHandle;
+            if (window == 0 || Native.GetForegroundWindow() != window)
+            {
+                output.WriteLine($"Browser focus atMs={Environment.TickCount64}: foregroundOwned=False");
+                return;
+            }
             var focus = AutomationElement.FocusedElement?.Current;
             output.WriteLine($"Browser focus atMs={Environment.TickCount64}: windowReady={window != 0}; "
                 + $"foregroundOwned={window != 0 && Native.GetForegroundWindow() == window}; "
-                + $"expectedPageTitle={browser.MainWindowTitle.Contains("TypeLay browser input regression", StringComparison.Ordinal)}; "
-                + $"domFocusConfirmed={browser.MainWindowTitle.Contains("TypeLay browser input regression focused", StringComparison.Ordinal)}; "
                 + $"controlType={focus?.ControlType.Id}; keyboardFocus={focus?.HasKeyboardFocus}; "
                 + $"enabled={focus?.IsEnabled}; offscreen={focus?.IsOffscreen}; password={focus?.IsPassword}");
         }

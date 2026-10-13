@@ -5,6 +5,19 @@ namespace TypeLay.Runtime.Tests;
 public sealed class ApplicationSupportPresentationTests
 {
     [Fact]
+    public void BrowserInstructionsHaveASharedLabelWithoutGrantingConnection()
+    {
+        var view = ApplicationSupportPresentation.Create([
+            new("google-chrome", ApplicationSupportState.AwaitingApproval, ApplicationSupportReason.AwaitingApproval,
+                SupportedActions: [ApplicationSupportAction.OpenInstructions])
+        ]);
+        Assert.Equal("打开浏览器扩展页", view.Labels.OpenBrowser);
+        var browser = view.Rows.Single(row => row.Id == "google-chrome");
+        Assert.Equal(ApplicationSupportAction.OpenInstructions, browser.PrimaryAction?.Id);
+        Assert.Equal(new ApplicationSupportCapabilities(), browser.Capabilities);
+    }
+
+    [Fact]
     public void PausedInputCannotRetainConfirmedCapabilities()
     {
         var view = ApplicationSupportPresentation.Create([

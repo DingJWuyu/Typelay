@@ -12,7 +12,7 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 namespace TypeLay.App.Tests;
 
 [CollectionDefinition("Desktop", DisableParallelization = true)]
-public sealed class DesktopCollection
+public sealed class DesktopCollection : ICollectionFixture<WpfDesktopFixture>
 {
 }
 

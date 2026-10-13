@@ -19,7 +19,7 @@ using Xunit;
 namespace TypeLay.App.Tests;
 
 [Collection("Desktop")]
-public sealed class SettingsRenderingTests(ITestOutputHelper testOutput)
+public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutputHelper testOutput)
 {
     private readonly ConcurrentQueue<string> _stages = new();
     private readonly Stopwatch _elapsed = new();
@@ -27,202 +27,416 @@ public sealed class SettingsRenderingTests(ITestOutputHelper testOutput)
     private void Stage(string name) => _stages.Enqueue($"{_elapsed.ElapsedMilliseconds} ms: {name}");
 
     [Fact]
-    public void SettingsUiSavesModeAndShortcutsAndRendersAtSupportedSizes()
+    public async Task SettingsUiSavesModeAndShortcutsAndRendersAtSupportedSizes()
     {
         _elapsed.Start();
-        Exception? failure = null;
-        var thread = new Thread(() =>
+        try
         {
-            Stage("thread-entered");
-            string directory = Path.Combine(Path.GetTempPath(), "typelay-ui-test-" + Guid.NewGuid().ToString("N"));
-            Application? application = null;
+            await desktop.RunAsync(() =>
+            {
+                string directory = Path.Combine(Path.GetTempPath(), "typelay-ui-test-" + Guid.NewGuid().ToString("N"));
+                try
+                {
+                    Stage("settings-create");
+                    var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
+                    Stage("model-create");
+                    using var model = WindowsRuntime.CreateModel(); // No model is started or downloaded by this UI test.
+                    Stage("window-create");
+                    var window = new SettingsWindow(settings, model, () => { }, new WindowsApplicationSupport());
+                    Stage("initial-show");
+                    window.ShowPage();
+                    Stage("initial-layout");
+                    window.UpdateLayout();
+                    Stage("mode-save");
+                    var modes = Descendants(window).OfType<ComboBox>()
+                        .Single(control => AutomationProperties.GetName(control) == "工作模式");
+                    modes.SelectedIndex = 1;
+                    Assert.Equal(WorkMode.OnDemand, WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json")).Value.Mode);
+                    Stage("shortcuts-show");
+                    window.ShowPage("shortcuts");
+                    Stage("shortcuts-layout");
+                    window.UpdateLayout();
+                    Stage("shortcuts-save");
+                    Descendants(window).OfType<TextBox>().Single(control => AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键").Text = "Ctrl+Shift+K";
+                    Descendants(window).OfType<TextBox>().Single(control => AutomationProperties.GetName(control) == "直接翻译并替换快捷键").Text = "Alt+F8";
+                    Descendants(window).OfType<Button>().Single(control => Equals(control.Content, SettingsDraftPresentation.Create().SaveLabel))
+                        .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    var saved = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json")).Value;
+                    Assert.Equal("Ctrl+Shift+K", saved.WakeShortcut);
+                    Assert.Equal("Alt+F8", saved.DirectShortcut);
+                    window.ShowPage("apps");
+                    settings.Update(settings.Value with
+                    {
+                        Enabled = false
+                    });
+                    window.UpdateLayout();
+                    var checks = Descendants(window).OfType<Button>().Where(button => Equals(button.Content, "检查连接")).ToArray();
+                    Assert.NotEmpty(checks);
+                    Assert.All(checks, button => Assert.False(button.IsEnabled));
+                    var resume = Descendants(window).OfType<Button>().Single(button => Equals(button.Content,
+                        ApplicationSupportPresentation.ReasonText(ApplicationSupportReason.Paused)));
+                    Assert.True(resume.IsEnabled);
+                    resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Assert.Contains(Descendants(window).OfType<ComboBox>(), control => AutomationProperties.GetName(control) == "工作模式");
+                    settings.Update(settings.Value with
+                    {
+                        Enabled = true
+                    });
+                    foreach (string theme in new[] { "light", "dark" })
+                    {
+                        Stage($"theme-apply:{theme}");
+                        UiTheme.Apply(theme);
+                        foreach (int width in new[] { 944, 790 })
+                        {
+                            window.Width = width;
+                            window.Height = width == 944 ? 674 : 560;
+                            Stage($"shortcuts-show:{theme}:{width}");
+                            window.ShowPage("shortcuts");
+                            Stage($"shortcuts-layout:{theme}:{width}");
+                            window.UpdateLayout();
+                            foreach (var input in Descendants(window).OfType<TextBox>())
+                                Assert.InRange(input.ActualWidth, 150, window.ActualWidth);
+                            Render(window, $"settings-shortcuts-{theme}-{width}.png");
+                            Stage($"application-support-show:{theme}:{width}");
+                            window.ShowPage("apps");
+                            window.UpdateLayout();
+                            Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "应用支持");
+                            Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "桌面普通输入框");
+                            var supportDetails = Descendants(window).OfType<Expander>()
+                                .Where(expander => Equals(expander.Header, "查看详情")).ToArray();
+                            Assert.NotEmpty(supportDetails);
+                            Assert.All(supportDetails, expander => Assert.False(expander.IsExpanded));
+                            Assert.All(Descendants(window).OfType<Expander>(), expander => Assert.Equal(
+                                Assert.IsType<SolidColorBrush>(window.FindResource("Text")).Color,
+                                Assert.IsType<SolidColorBrush>(expander.Foreground).Color));
+                            Assert.False(Descendants(window).OfType<Button>().Single(button =>
+                                Equals(button.Content, ApplicationSupportPresentation.Create([]).Labels.TryIt)).IsEnabled);
+                            Render(window, $"settings-applications-{theme}-{width}.png");
+                            Stage($"general-show:{theme}:{width}");
+                            window.ShowPage();
+                            Stage($"general-layout:{theme}:{width}");
+                            window.UpdateLayout();
+                            foreach (var selector in Descendants(window).OfType<ComboBox>())
+                            {
+                                Assert.InRange(selector.ActualHeight, 34, 38);
+                                Assert.IsType<Popup>(selector.Template.FindName("PART_Popup", selector));
+                            }
+                            var scroll = Descendants(window).OfType<ScrollViewer>().First();
+                            scroll.ScrollToTop();
+                            window.UpdateLayout();
+                            Render(window, $"settings-general-{theme}-{width}.png");
+                            Stage($"general-scroll:{theme}:{width}");
+                            scroll.ScrollToBottom();
+                            window.UpdateLayout();
+                            Assert.Equal(scroll.ScrollableHeight, scroll.VerticalOffset, precision: 1);
+                            scroll.ScrollToTop();
+                            Stage($"language-show:{theme}:{width}");
+                            window.ShowPage("language");
+                            Stage($"language-layout:{theme}:{width}");
+                            window.UpdateLayout();
+                            // UpdateLayout does not dispatch Loaded. WPF deliberately
+                            // keeps a ComboBox closed until that lifecycle event runs.
+                            Stage($"language-loaded:{theme}:{width}");
+                            window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
+                            Stage($"language-dropdowns:{theme}:{width}");
+                            foreach (var selector in Descendants(window).OfType<ComboBox>().ToArray())
+                            {
+                                Assert.True(selector.IsLoaded, "The language selector must be loaded before user interaction.");
+                                Assert.True(selector.IsEditable);
+                                var editor = Assert.IsType<TextBox>(selector.Template.FindName("PART_EditableTextBox", selector));
+                                Assert.True(editor.IsVisible);
+                                Assert.Equal(selector.Text, editor.Text);
+                                Assert.Equal(Assert.IsType<SolidColorBrush>(window.FindResource("Panel")).Color,
+                                    Assert.IsType<SolidColorBrush>(selector.Background).Color);
+                                Assert.Equal(Assert.IsType<SolidColorBrush>(window.FindResource("Text")).Color,
+                                    Assert.IsType<SolidColorBrush>(editor.Foreground).Color);
+                                Assert.Equal(VerticalAlignment.Center, editor.VerticalContentAlignment);
+                                selector.IsDropDownOpen = true;
+                                window.UpdateLayout();
+                                window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
+                                Assert.True(Assert.IsType<Popup>(selector.Template.FindName("PART_Popup", selector)).IsOpen);
+                                selector.IsDropDownOpen = false;
+                            }
+                            Render(window, $"settings-language-{theme}-{width}.png");
+                        }
+                    }
+                    window.Width = 944;
+                    window.Height = 674;
+                    Stage("capsule-setup");
+                    UiTheme.Apply("light");
+                    window.ShowPage();
+                    window.UpdateLayout();
+                    Stage("capsule-verify");
+                    VerifyEmptyFieldCapsule(window, settings.Value);
+                }
+                finally
+                {
+                    Stage("directory-cleanup");
+                    if (Directory.Exists(directory))
+                        Directory.Delete(directory, true);
+                }
+            });
+        }
+        finally { testOutput.WriteLine(string.Join(Environment.NewLine, _stages)); }
+    }
+
+    [Fact]
+    public async Task UnsavedShortcutDraftSurvivesSettingsRefreshAndPageNavigation()
+    {
+        _elapsed.Start();
+        try
+        {
+            await desktop.RunAsync(() =>
+            {
+                string directory = Path.Combine(Path.GetTempPath(), "typelay-draft-test-" + Guid.NewGuid().ToString("N"));
+                try
+                {
+                    string path = Path.Combine(directory, "settings.json");
+                    var settings = WindowsRuntime.CreateSettings(path);
+                    settings.Update(settings.Value with
+                    {
+                        Mode = WorkMode.OnDemand,
+                        WakeShortcut = "Ctrl+Shift+K",
+                        DirectShortcut = "Alt+F8"
+                    });
+                    using var model = WindowsRuntime.CreateModel(); // No model is started or downloaded by this UI test.
+                    var window = new SettingsWindow(settings, model, () => { }, new WindowsApplicationSupport());
+                    string shortcutStatus = "按需快捷键等待检查";
+                    window.ShortcutStatus = () => shortcutStatus;
+                    Stage("shortcut-draft-entry");
+                    window.ShowPage("shortcuts");
+                    window.UpdateLayout();
+                    const string draft = "Ctrl+Shift+U";
+                    var editor = ShortcutEditor(window);
+                    editor.Text = draft;
+                    window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
+                    Assert.True(editor.Focus());
+                    editor.Select(5, 5);
+                    // A real settings refresh must not replace an unsubmitted edit
+                    // with the shortcut currently stored on disk.
+                    Stage("shortcut-draft-settings-refresh");
+                    shortcutStatus = "按需快捷键状态已刷新";
+                    settings.Update(settings.Value with
+                    {
+                        Theme = "dark"
+                    });
+                    window.UpdateLayout();
+                    Assert.Equal(draft, Descendants(window).OfType<TextBox>().Single(control =>
+                        AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键").Text);
+                    Assert.True(editor.IsKeyboardFocused);
+                    Assert.Equal(5, editor.SelectionStart);
+                    Assert.Equal(5, editor.SelectionLength);
+                    Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == shortcutStatus);
+                    Assert.Equal("Ctrl+Shift+K", WindowsRuntime.CreateSettings(path).Value.WakeShortcut);
+                    Stage("shortcut-draft-page-navigation");
+                    window.ShowPage("apps");
+                    window.ShowPage("shortcuts");
+                    window.UpdateLayout();
+                    Assert.Equal(draft, Descendants(window).OfType<TextBox>().Single(control =>
+                        AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键").Text);
+                    var saved = WindowsRuntime.CreateSettings(path).Value;
+                    Assert.Equal("Ctrl+Shift+K", saved.WakeShortcut);
+                    Assert.Equal("Alt+F8", saved.DirectShortcut);
+                }
+                finally
+                {
+                    Stage("directory-cleanup");
+                    if (Directory.Exists(directory))
+                        Directory.Delete(directory, true);
+                }
+            });
+        }
+        finally { testOutput.WriteLine(string.Join(Environment.NewLine, _stages)); }
+    }
+
+    [Fact]
+    public async Task ShortcutDraftSavesOnlyValidPairsAndRefreshesCleanValues()
+    {
+        await desktop.RunAsync(() =>
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "typelay-shortcut-save-" + Guid.NewGuid().ToString("N"));
             try
             {
-                Stage("application-create");
-                application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-                Stage("theme-initialize");
-                UiTheme.Initialize("light");
-                Stage("settings-create");
-                var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
-                Stage("model-create");
-                using var model = WindowsRuntime.CreateModel(); // No model is started or downloaded by this UI test.
-                Stage("window-create");
-                var window = new SettingsWindow(settings, model, () => { }, new WindowsApplicationSupport());
-                Stage("initial-show");
-                window.ShowPage();
-                Stage("initial-layout");
-                window.UpdateLayout();
-                Stage("mode-save");
-                var modes = Descendants(window).OfType<ComboBox>()
-                    .Single(control => AutomationProperties.GetName(control) == "工作模式");
-                modes.SelectedIndex = 1;
-                Assert.Equal(WorkMode.OnDemand, WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json")).Value.Mode);
-                Stage("shortcuts-show");
-                window.ShowPage("shortcuts");
-                Stage("shortcuts-layout");
-                window.UpdateLayout();
-                Stage("shortcuts-save");
-                Descendants(window).OfType<TextBox>().Single(control => AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键").Text = "Ctrl+Shift+K";
-                Descendants(window).OfType<TextBox>().Single(control => AutomationProperties.GetName(control) == "直接翻译并替换快捷键").Text = "Alt+F8";
-                Descendants(window).OfType<Button>().Single(control => Equals(control.Content, "保存按需快捷键"))
-                    .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                var saved = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json")).Value;
-                Assert.Equal("Ctrl+Shift+K", saved.WakeShortcut);
-                Assert.Equal("Alt+F8", saved.DirectShortcut);
-                window.ShowPage("apps");
+                string path = Path.Combine(directory, "settings.json");
+                var settings = WindowsRuntime.CreateSettings(path);
                 settings.Update(settings.Value with
                 {
-                    Enabled = false
+                    WakeShortcut = "Ctrl+Shift+K",
+                    DirectShortcut = "Alt+F8"
                 });
-                window.UpdateLayout();
-                var checks = Descendants(window).OfType<Button>().Where(button => Equals(button.Content, "检查连接")).ToArray();
-                Assert.NotEmpty(checks);
-                Assert.All(checks, button => Assert.False(button.IsEnabled));
-                var resume = Descendants(window).OfType<Button>().Single(button => Equals(button.Content,
-                    ApplicationSupportPresentation.ReasonText(ApplicationSupportReason.Paused)));
-                Assert.True(resume.IsEnabled);
-                resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                Assert.Contains(Descendants(window).OfType<ComboBox>(), control => AutomationProperties.GetName(control) == "工作模式");
-                settings.Update(settings.Value with
-                {
-                    Enabled = true
-                });
-                foreach (string theme in new[] { "light", "dark" })
-                {
-                    Stage($"theme-apply:{theme}");
-                    UiTheme.Apply(theme);
-                    foreach (int width in new[] { 944, 790 })
-                    {
-                        window.Width = width;
-                        window.Height = width == 944 ? 674 : 560;
-                        Stage($"shortcuts-show:{theme}:{width}");
-                        window.ShowPage("shortcuts");
-                        Stage($"shortcuts-layout:{theme}:{width}");
-                        window.UpdateLayout();
-                        foreach (var input in Descendants(window).OfType<TextBox>())
-                            Assert.InRange(input.ActualWidth, 150, window.ActualWidth);
-                        Render(window, $"settings-shortcuts-{theme}-{width}.png");
-                        Stage($"application-support-show:{theme}:{width}");
-                        window.ShowPage("apps");
-                        window.UpdateLayout();
-                        Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "应用支持");
-                        Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "桌面普通输入框");
-                        var supportDetails = Descendants(window).OfType<Expander>()
-                            .Where(expander => Equals(expander.Header, "查看详情")).ToArray();
-                        Assert.NotEmpty(supportDetails);
-                        Assert.All(supportDetails, expander => Assert.False(expander.IsExpanded));
-                        Assert.All(Descendants(window).OfType<Expander>(), expander => Assert.Equal(
-                            Assert.IsType<SolidColorBrush>(window.FindResource("Text")).Color,
-                            Assert.IsType<SolidColorBrush>(expander.Foreground).Color));
-                        Assert.False(Descendants(window).OfType<Button>().Single(button =>
-                            Equals(button.Content, ApplicationSupportPresentation.Create([]).Labels.TryIt)).IsEnabled);
-                        Render(window, $"settings-applications-{theme}-{width}.png");
-                        Stage($"general-show:{theme}:{width}");
-                        window.ShowPage();
-                        Stage($"general-layout:{theme}:{width}");
-                        window.UpdateLayout();
-                        foreach (var selector in Descendants(window).OfType<ComboBox>())
-                        {
-                            Assert.InRange(selector.ActualHeight, 34, 38);
-                            Assert.IsType<Popup>(selector.Template.FindName("PART_Popup", selector));
-                        }
-                        var scroll = Descendants(window).OfType<ScrollViewer>().First();
-                        scroll.ScrollToTop();
-                        window.UpdateLayout();
-                        Render(window, $"settings-general-{theme}-{width}.png");
-                        Stage($"general-scroll:{theme}:{width}");
-                        scroll.ScrollToBottom();
-                        window.UpdateLayout();
-                        Assert.Equal(scroll.ScrollableHeight, scroll.VerticalOffset, precision: 1);
-                        scroll.ScrollToTop();
-                        Stage($"language-show:{theme}:{width}");
-                        window.ShowPage("language");
-                        Stage($"language-layout:{theme}:{width}");
-                        window.UpdateLayout();
-                        // UpdateLayout does not dispatch Loaded. WPF deliberately
-                        // keeps a ComboBox closed until that lifecycle event runs.
-                        Stage($"language-loaded:{theme}:{width}");
-                        window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
-                        Stage($"language-dropdowns:{theme}:{width}");
-                        foreach (var selector in Descendants(window).OfType<ComboBox>().ToArray())
-                        {
-                            Assert.True(selector.IsLoaded, "The language selector must be loaded before user interaction.");
-                            Assert.True(selector.IsEditable);
-                            var editor = Assert.IsType<TextBox>(selector.Template.FindName("PART_EditableTextBox", selector));
-                            Assert.True(editor.IsVisible);
-                            Assert.Equal(selector.Text, editor.Text);
-                            Assert.Equal(Assert.IsType<SolidColorBrush>(window.FindResource("Panel")).Color,
-                                Assert.IsType<SolidColorBrush>(selector.Background).Color);
-                            Assert.Equal(Assert.IsType<SolidColorBrush>(window.FindResource("Text")).Color,
-                                Assert.IsType<SolidColorBrush>(editor.Foreground).Color);
-                            Assert.Equal(VerticalAlignment.Center, editor.VerticalContentAlignment);
-                            selector.IsDropDownOpen = true;
-                            window.UpdateLayout();
-                            window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
-                            Assert.True(Assert.IsType<Popup>(selector.Template.FindName("PART_Popup", selector)).IsOpen);
-                            selector.IsDropDownOpen = false;
-                        }
-                        Render(window, $"settings-language-{theme}-{width}.png");
-                    }
-                }
-                window.Width = 944;
-                window.Height = 674;
-                Stage("capsule-setup");
-                UiTheme.Apply("light");
-                window.ShowPage();
-                window.UpdateLayout();
-                Stage("capsule-verify");
-                VerifyEmptyFieldCapsule(window, settings.Value);
-                window.Hide();
-                Stage("controller-desktop-scenario");
-                ControllerDesktopScenario.Run();
-                Stage("shortcut-draft-preservation");
+                using var model = WindowsRuntime.CreateModel();
+                var window = new SettingsWindow(settings, model, () => { });
                 window.ShowPage("shortcuts");
                 window.UpdateLayout();
-                const string draft = "Ctrl+Shift+U";
-                Descendants(window).OfType<TextBox>().Single(control =>
-                    AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键").Text = draft;
-                // A real status/settings refresh must not replace an unsubmitted
-                // edit with the value currently stored on disk.
+                var messages = SettingsDraftPresentation.Create();
+                void SaveShortcuts() => Descendants(window).OfType<Button>().Single(button =>
+                    Equals(button.Content, messages.SaveLabel)).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                var wake = ShortcutEditor(window);
+                var direct = ShortcutEditor(window, direct: true);
+                wake.Text = "Ctrl+F12";
+                SaveShortcuts();
+                Assert.Equal("Ctrl+F12", wake.Text);
+                Assert.Contains(Descendants(window).OfType<TextBlock>(), text =>
+                    text.Text.Contains(messages.InvalidMessage, StringComparison.Ordinal) && text.Text.Contains("F12", StringComparison.Ordinal));
+                Assert.Equal("Ctrl+Shift+K", WindowsRuntime.CreateSettings(path).Value.WakeShortcut);
                 settings.Update(settings.Value with
                 {
                     Theme = "dark"
                 });
-                window.UpdateLayout();
-                Assert.Equal(draft, Descendants(window).OfType<TextBox>().Single(control =>
-                    AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键").Text);
-                window.ShowPage("apps");
+                Assert.Equal("Ctrl+F12", wake.Text);
+                Assert.Contains(Descendants(window).OfType<TextBlock>(), text =>
+                    text.Text.Contains(messages.InvalidMessage, StringComparison.Ordinal) && text.Text.Contains("F12", StringComparison.Ordinal));
+                wake.Text = direct.Text;
+                SaveShortcuts();
+                Assert.Equal("Alt+F8", wake.Text);
+                Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text.Contains("不能相同", StringComparison.Ordinal));
+                Assert.Equal("Ctrl+Shift+K", WindowsRuntime.CreateSettings(path).Value.WakeShortcut);
+                wake.Text = "shift+ctrl+u";
+                direct.Text = "alt+f8";
+                SaveShortcuts();
+                Assert.Equal("Ctrl+Shift+U", wake.Text);
+                Assert.Equal("Alt+F8", direct.Text);
+                Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == messages.SavedMessage);
+                var saved = WindowsRuntime.CreateSettings(path).Value;
+                Assert.Equal("Ctrl+Shift+U", saved.WakeShortcut);
+                Assert.Equal("Alt+F8", saved.DirectShortcut);
+                InteractWithCloseDialog(window, window.Close, choice: null);
+                Assert.False(window.IsVisible); // Successful save cleared the draft, so there was no prompt.
                 window.ShowPage("shortcuts");
-                window.UpdateLayout();
-                Assert.Equal(draft, Descendants(window).OfType<TextBox>().Single(control =>
-                    AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键").Text);
-                Assert.Equal(saved.WakeShortcut, WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json")).Value.WakeShortcut);
-                Stage("scenarios-complete");
+                settings.Update(settings.Value with
+                {
+                    WakeShortcut = "Ctrl+Shift+J",
+                    DirectShortcut = "Alt+F7"
+                });
+                Assert.Equal("Ctrl+Shift+J", ShortcutEditor(window).Text);
+                Assert.Equal("Alt+F7", ShortcutEditor(window, direct: true).Text);
+                InteractWithCloseDialog(window, window.Close, choice: null);
+                Assert.False(window.IsVisible);
             }
-            catch (Exception error) { failure = error; }
             finally
             {
-                Stage("application-shutdown");
-                application?.Shutdown();
-                Stage("directory-cleanup");
                 if (Directory.Exists(directory))
                     Directory.Delete(directory, true);
-                Stage("thread-complete");
             }
-        })
+        });
+    }
+
+    [Fact]
+    public async Task ClosingShortcutDraftDefaultsToEditingAndOnlyExplicitDiscardLosesTheDraft()
+    {
+        await desktop.RunAsync(() =>
         {
-            IsBackground = true
-        };
-        thread.SetApartmentState(ApartmentState.STA);
-        Stage("thread-start");
-        thread.Start();
-        bool completed = thread.Join(TimeSpan.FromSeconds(40));
-        // The STA may still be running on timeout; only the test thread writes to xUnit.
-        string[] stages = _stages.ToArray();
-        testOutput.WriteLine(string.Join(Environment.NewLine, stages));
-        Assert.True(completed, $"The WPF desktop scenarios exceeded their deadline. Last stage: {stages.LastOrDefault()}");
+            string directory = Path.Combine(Path.GetTempPath(), "typelay-shortcut-close-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                string path = Path.Combine(directory, "settings.json");
+                var settings = WindowsRuntime.CreateSettings(path);
+                settings.Update(settings.Value with
+                {
+                    WakeShortcut = "Ctrl+Shift+K",
+                    DirectShortcut = "Alt+F8"
+                });
+                using var model = WindowsRuntime.CreateModel();
+                var window = new SettingsWindow(settings, model, () => { });
+                window.ShowPage("shortcuts");
+                window.UpdateLayout();
+                ShortcutEditor(window).Text = "Ctrl+Shift+U";
+                InteractWithCloseDialog(window, () => Descendants(window).OfType<Button>().Single(button =>
+                    AutomationProperties.GetName(button) == "关闭设置").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)),
+                    SettingsDraftCloseChoice.KeepEditing);
+                Assert.True(window.IsVisible);
+                Assert.Equal("Ctrl+Shift+U", ShortcutEditor(window).Text);
+                Assert.Equal("Ctrl+Shift+K", WindowsRuntime.CreateSettings(path).Value.WakeShortcut);
+                window.ShowPage("apps");
+                bool canQuit = true;
+                // The tray and quick-panel Quit actions consume this same result.
+                InteractWithCloseDialog(window, () => canQuit = window.RequestClose(), SettingsDraftCloseChoice.KeepEditing);
+                Assert.False(canQuit);
+                Assert.True(window.IsVisible);
+                window.ShowPage("shortcuts");
+                Assert.Equal("Ctrl+Shift+U", ShortcutEditor(window).Text);
+                InteractWithCloseDialog(window, window.Close, SettingsDraftCloseChoice.Discard);
+                Assert.False(window.IsVisible);
+                var saved = WindowsRuntime.CreateSettings(path).Value;
+                Assert.Equal("Ctrl+Shift+K", saved.WakeShortcut);
+                Assert.Equal("Alt+F8", saved.DirectShortcut);
+                window.ShowPage("shortcuts");
+                Assert.Equal("Ctrl+Shift+K", ShortcutEditor(window).Text);
+                Assert.Equal("Alt+F8", ShortcutEditor(window, direct: true).Text);
+                Assert.DoesNotContain(Descendants(window).OfType<TextBlock>(), text =>
+                    text.IsVisible && text.Text == SettingsDraftPresentation.Create().UnsavedNotice);
+                ShortcutEditor(window).Text = "Ctrl+Shift+U";
+                InteractWithCloseDialog(window, () => canQuit = window.RequestClose(), SettingsDraftCloseChoice.Discard);
+                Assert.True(canQuit);
+                Assert.False(window.IsVisible);
+                Assert.Equal("Ctrl+Shift+K", WindowsRuntime.CreateSettings(path).Value.WakeShortcut);
+                window.ShowPage("shortcuts");
+                ShortcutEditor(window).Text = "Ctrl+Shift+U";
+                InteractWithCloseDialog(window, () =>
+                {
+                    window.PrepareForEmergencyShutdown();
+                    window.Close();
+                }, choice: null);
+                Assert.False(window.IsVisible); // Exception protection cannot wait behind a dirty-draft prompt.
+                Assert.Equal("Ctrl+Shift+K", WindowsRuntime.CreateSettings(path).Value.WakeShortcut);
+            }
+            finally
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, true);
+            }
+        });
+    }
+
+    private static TextBox ShortcutEditor(Window window, bool direct = false) => Descendants(window).OfType<TextBox>()
+        .Single(control => AutomationProperties.GetName(control) == (direct ? "直接翻译并替换快捷键" : "唤醒翻译 UI 快捷键"));
+
+    private static void InteractWithCloseDialog(SettingsWindow window, Action close, SettingsDraftCloseChoice? choice)
+    {
+        var messages = SettingsDraftPresentation.Create();
+        var existingWindows = Application.Current.Windows.Cast<Window>().ToHashSet();
+        Window[] openedWindows = [];
+        Window? dialog = null;
+        Exception? failure = null;
+        // ShowDialog runs a nested dispatcher frame. Queue a real button action,
+        // and abort it if no dialog was expected and closure returns directly.
+        var action = window.Dispatcher.BeginInvoke(new Action(() =>
+        {
+            try
+            {
+                openedWindows = Application.Current.Windows.Cast<Window>().Where(item => !existingWindows.Contains(item)).ToArray();
+                dialog = Assert.Single(openedWindows);
+                Assert.Equal(window, dialog.Owner);
+                Assert.Equal(messages.CloseTitle, dialog.Title);
+                dialog.UpdateLayout();
+                var buttons = Descendants(dialog).OfType<Button>().ToArray();
+                var defaultButton = Assert.Single(buttons, button => button.IsDefault);
+                Assert.Equal(messages.KeepEditingLabel, defaultButton.Content);
+                Assert.True(defaultButton.IsCancel);
+                Assert.Contains(Descendants(dialog).OfType<TextBlock>(), text => text.Text == messages.CloseMessage);
+                var selected = choice == SettingsDraftCloseChoice.Discard
+                    ? buttons.Single(button => Equals(button.Content, messages.DiscardLabel)) : defaultButton;
+                selected.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.False(dialog.IsVisible, "The selected close choice must dismiss the dialog.");
+            }
+            catch (Exception error)
+            {
+                failure = error;
+            }
+            finally
+            {
+                foreach (var opened in openedWindows.Where(item => item.IsVisible))
+                    opened.Close();
+            }
+        }), DispatcherPriority.ContextIdle);
+        try
+        {
+            close();
+        }
+        finally { action.Abort(); }
         if (failure is not null)
             ExceptionDispatchInfo.Capture(failure).Throw();
+        Assert.Equal(choice is not null, dialog is not null);
     }
 
     private void VerifyEmptyFieldCapsule(Window sourceWindow, UserSettings settings)

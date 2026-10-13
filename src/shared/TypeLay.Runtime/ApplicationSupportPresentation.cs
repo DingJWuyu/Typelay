@@ -32,7 +32,7 @@ public static class ApplicationSupportPresentation
             "先准备本地翻译组件，再连接需要使用的应用，最后到实际输入框试一试。模型就绪不代表应用已经连接。",
             "能力表示最近一次检查结果；当前输入框与每次写回仍须单独通过安全检查。自动/按需是触发方式，不是能力等级。",
             rows, new("继续", "取消", "选择接入组件", "打开文件夹", "重新检查", "查看详情",
-                "准备翻译", "连接应用", "试一试", "失败恢复", "其他应用"));
+                "准备翻译", "连接应用", "试一试", "失败恢复", "其他应用", "打开浏览器扩展页"));
     }
 
     private static ApplicationSupportRow Row(Entry entry, ApplicationSupportFact fact)
