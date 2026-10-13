@@ -40,16 +40,21 @@ if (-not $OwnedChild) {
         }
     }
     if (-not $entryFailure -and -not (Test-Path -LiteralPath $OutputPath)) { $entryFailure = 'child-result-missing' }
-    if ($entryFailure -or $cleanupError) {
-        New-Item -ItemType Directory -Path (Split-Path $OutputPath -Parent) -Force | Out-Null
-        # Preserve a child's first failure. The watchdog has its own adjacent terminal record.
-        $watchdogPath = [IO.Path]::ChangeExtension($OutputPath, '.entry.json')
-        [ordered]@{ outcome = 'failed'; failure = $entryFailure; childExitCode = $entryCode;
-            processCleanup = -not $cleanupError; cleanupError = $cleanupError;
-            resourceCleanup = 'unverified-see-child-result'  } |
-            ConvertTo-Json | Set-Content -LiteralPath $watchdogPath -Encoding utf8
-        exit 1
-    }
+    New-Item -ItemType Directory -Path (Split-Path $OutputPath -Parent) -Force | Out-Null
+    # Preserve the child's first failure and distinguish natural exit from Job termination.
+    $watchdogPath = [IO.Path]::ChangeExtension($OutputPath, '.entry.json')
+    [ordered]@{
+        entryOutcome = $(if ($entryFailure -or $cleanupError) { 'failed' } else { 'child-exited' })
+        failure = $entryFailure
+        childExitCode = $entryCode
+        processCleanup = -not $cleanupError
+        cleanupError = $cleanupError
+        resourceCleanup = 'see-child-result'
+        beforeResume = $(if ($null -ne $owned) { $owned.BeforeResume } else { $null })
+        beforeCleanup = $(if ($null -ne $owned) { $owned.BeforeCleanup } else { $null })
+        afterCleanup = $(if ($null -ne $owned) { $owned.AfterCleanup } else { $null })
+    } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $watchdogPath -Encoding utf8
+    if ($entryFailure -or $cleanupError) { exit 1 }
     exit $entryCode
 }
 $pin = Get-Content (Join-Path $fixture 'chrome-for-testing.json') -Raw | ConvertFrom-Json
@@ -64,6 +69,10 @@ New-Item -ItemType Directory -Path $run | Out-Null
 $browserDirectory = Join-Path $run 'browser'
 $buildDirectory = Join-Path $run 'build'
 $code = 1
+$probeExitCode = $null
+$runnerFailure = ''
+$runnerStage = 'extract'
+$runnerCleanupErrors = @()
 try {
     Expand-Archive -LiteralPath $archive -DestinationPath $browserDirectory
     $chrome = Join-Path $browserDirectory 'chrome-win64/chrome.exe'
@@ -71,12 +80,15 @@ try {
     if ($version.ProductVersion -ne $pin.version -or $version.ProductName -ne 'Google Chrome for Testing') {
         throw 'Archive is not the pinned Chrome for Testing win64 build.'
     }
+    $runnerStage = 'build'
     & dotnet build (Join-Path $fixture 'TypeLay.BrowserIdentityFixture.csproj') -c Release -r win-x64 --self-contained false -o $buildDirectory -m:1 -p:TreatWarningsAsErrors=true
     if ($LASTEXITCODE -ne 0) { throw 'Independent fixture build failed.' }
     $arguments = @('--chrome', $chrome, '--output', $OutputPath)
     if ($StrictCsp) { $arguments += '--strict-csp' }
+    $runnerStage = 'probe'
     & (Join-Path $buildDirectory 'TypeLay.BrowserIdentityFixture.exe') @arguments
-    $code = $LASTEXITCODE
+    $probeExitCode = $LASTEXITCODE
+    $code = $probeExitCode
     if (-not (Test-Path -LiteralPath $OutputPath)) { throw 'Probe did not write its result.' }
     $provenancePath = [IO.Path]::ChangeExtension($OutputPath, '.browser.json')
     if (Test-Path -LiteralPath $provenancePath) { throw 'Refusing to replace existing browser provenance.' }
@@ -87,10 +99,23 @@ try {
         officialArchive = $pin.archiveUrl
         archiveSha256 = $actualSha256
     } | ConvertTo-Json | Set-Content -LiteralPath $provenancePath -Encoding utf8
+} catch {
+    $runnerFailure = $_.Exception.GetType().Name + ':' + $_.Exception.HResult.ToString('X8')
+    $code = 1
 } finally {
-    # The fixture terminates its own job before returning. Never kill by process name or PID.
-    foreach ($directory in @($buildDirectory, $browserDirectory)) {
-        if (Test-Path -LiteralPath $directory) { Remove-Item -LiteralPath $directory -Recurse -Force }
+    # Record both areas; one cleanup exception must not mask the probe's original result.
+    foreach ($area in @('build', 'browser')) {
+        $directory = $(if ($area -eq 'build') { $buildDirectory } else { $browserDirectory })
+        try {
+            if (Test-Path -LiteralPath $directory) { Remove-Item -LiteralPath $directory -Recurse -Force }
+        } catch {
+            $runnerCleanupErrors += $area + ':' + $_.Exception.GetType().Name + ':' + $_.Exception.HResult.ToString('X8')
+        }
     }
+    New-Item -ItemType Directory -Path (Split-Path $OutputPath -Parent) -Force | Out-Null
+    [ordered]@{ stage = $runnerStage; failure = $runnerFailure; probeExitCode = $probeExitCode;
+        cleanupErrors = $runnerCleanupErrors } | ConvertTo-Json |
+        Set-Content -LiteralPath ([IO.Path]::ChangeExtension($OutputPath, '.runner.json')) -Encoding utf8
 }
+if ($runnerCleanupErrors.Count -ne 0) { exit 1 }
 exit $code

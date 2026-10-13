@@ -20,12 +20,70 @@ internal static class Windows
     [DllImport("kernel32.dll", SetLastError = true)] internal static extern bool IsProcessInJob(nint process, nint job, out bool result);
 }
 
+// Scalar metadata from exact owned handles. No process command lines, paths, or token contents.
+public sealed class ProcessObservation
+{
+    public uint ProcessId
+    {
+        get; set;
+    }
+    public bool? Exited
+    {
+        get; set;
+    }
+    public uint? ExitCode
+    {
+        get; set;
+    }
+    public uint? JobTotalProcesses
+    {
+        get; set;
+    }
+    public uint? JobActiveProcesses
+    {
+        get; set;
+    }
+    public uint? JobLimitTerminations
+    {
+        get; set;
+    }
+    public string? TokenElevationType
+    {
+        get; set;
+    }
+    public int ProcessQueryError
+    {
+        get; set;
+    }
+    public int JobQueryError
+    {
+        get; set;
+    }
+    public int TokenQueryError
+    {
+        get; set;
+    }
+}
+
 // A suspended launch is assigned before any browser children can escape this run's job.
 // Cleanup closes the job handle; it never finds or kills a process by a reused PID.
 public sealed class OwnedProcess : IDisposable
 {
     private nint _job;
     private nint _process;
+    private uint _processId;
+    public ProcessObservation? BeforeResume
+    {
+        get; private set;
+    }
+    public ProcessObservation? BeforeCleanup
+    {
+        get; private set;
+    }
+    public ProcessObservation? AfterCleanup
+    {
+        get; private set;
+    }
     private readonly string _executable;
 
     public OwnedProcess(string executable, params string[] arguments)
@@ -44,6 +102,7 @@ public sealed class OwnedProcess : IDisposable
             if (!CreateProcessW(_executable, new StringBuilder(command), 0, 0, false, 4, 0, null, ref startup, out var info))
                 throw new Win32Exception();
             _process = info.Process;
+            _processId = info.ProcessId;
             try
             {
                 if (!AssignProcessToJobObject(_job, _process))
@@ -51,6 +110,7 @@ public sealed class OwnedProcess : IDisposable
                     TerminateProcess(_process, 2); // Exact owned suspended process handle.
                     throw new Win32Exception();
                 }
+                BeforeResume = Observe();
                 if (ResumeThread(info.Thread) == uint.MaxValue)
                     throw new Win32Exception();
             }
@@ -77,6 +137,71 @@ public sealed class OwnedProcess : IDisposable
         }
     }
 
+    public static string? CoordinatorElevationType
+    {
+        get
+        {
+            using Process process = Process.GetCurrentProcess();
+            return ReadElevationType(process.Handle, out _);
+        }
+    }
+
+    private static string? ReadElevationType(nint process, out int error)
+    {
+        error = 0;
+        if (!OpenProcessToken(process, 0x0008, out nint token))
+        {
+            error = Marshal.GetLastWin32Error();
+            return null;
+        }
+        try
+        {
+            if (!GetTokenInformation(token, 18, out int elevationType, sizeof(int), out _))
+            {
+                error = Marshal.GetLastWin32Error();
+                return null;
+            }
+            return elevationType switch
+            {
+                1 => "Default",
+                2 => "Full",
+                3 => "Limited",
+                _ => null
+            };
+        }
+        finally { Windows.CloseHandle(token); }
+    }
+
+    public ProcessObservation Observe()
+    {
+        var observation = new ProcessObservation { ProcessId = _processId };
+        uint wait = WaitForSingleObject(_process, 0);
+        if (wait == uint.MaxValue)
+            observation.ProcessQueryError = Marshal.GetLastWin32Error();
+        else
+        {
+            observation.Exited = wait == 0;
+            if (wait == 0)
+            {
+                if (GetExitCodeProcess(_process, out uint exitCode))
+                    observation.ExitCode = exitCode;
+                else
+                    observation.ProcessQueryError = Marshal.GetLastWin32Error();
+            }
+        }
+        if (QueryInformationJobObject(_job, 1, out JobAccounting accounting, (uint)Marshal.SizeOf<JobAccounting>(), 0))
+        {
+            observation.JobTotalProcesses = accounting.TotalProcesses;
+            observation.JobActiveProcesses = accounting.ActiveProcesses;
+            observation.JobLimitTerminations = accounting.TerminatedProcesses;
+        }
+        else
+            observation.JobQueryError = Marshal.GetLastWin32Error();
+        observation.TokenElevationType = ReadElevationType(_process, out int tokenError);
+        observation.TokenQueryError = tokenError;
+        return observation;
+    }
+
     public bool WaitForExit(int milliseconds)
     {
         uint result = WaitForSingleObject(_process, checked((uint)milliseconds));
@@ -101,6 +226,7 @@ public sealed class OwnedProcess : IDisposable
         {
             if (_job != 0)
             {
+                BeforeCleanup = Observe(); // Preserve the original exit before our explicit termination code 2.
                 if (!TerminateJobObject(_job, 2))
                     throw new Win32Exception();
                 var wait = Stopwatch.StartNew();
@@ -110,7 +236,10 @@ public sealed class OwnedProcess : IDisposable
                         (uint)Marshal.SizeOf<JobAccounting>(), 0))
                         throw new Win32Exception();
                     if (accounting.ActiveProcesses == 0)
+                    {
+                        AfterCleanup = Observe();
                         break;
+                    }
                     if (wait.ElapsedMilliseconds >= 5000)
                         throw new TimeoutException("Owned job did not become empty.");
                     Thread.Sleep(10);
@@ -198,5 +327,9 @@ public sealed class OwnedProcess : IDisposable
     private static extern bool QueryInformationJobObject(
         nint job, int kind, out JobAccounting accounting, uint length, nint returnedLength);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool GetExitCodeProcess(nint process, out uint code);
-    [DllImport("kernel32.dll")] private static extern uint WaitForSingleObject(nint handle, uint milliseconds);
+    [DllImport("advapi32.dll", SetLastError = true)] private static extern bool OpenProcessToken(nint process, uint access, out nint token);
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool GetTokenInformation(
+        nint token, int kind, out int information, int length, out int returnedLength);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(nint handle, uint milliseconds);
 }

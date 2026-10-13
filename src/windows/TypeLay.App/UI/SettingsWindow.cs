@@ -617,7 +617,6 @@ internal sealed class SettingsWindow : Window
             else
                 _ = Install();
         }, _install is null);
-        System.Windows.Automation.AutomationProperties.SetName(button, ApplicationSupportPresentation.Create([]).Labels.PrepareTranslation);
         button.Margin = new(0, 0, 8, 0);
         actions.Children.Add(button);
         var runtime = UiTheme.Button("微软运行库说明", () => OpenUri("https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist"));

@@ -48,6 +48,17 @@ MV3 service worker 没有页面原生视图；仅有浏览器 PID 无法区分�
 
 [Chrome 官方说明](https://groups.google.com/a/chromium.org/g/chromium-extensions/c/1-g8EFx2BBY/m/S0ET5wPjCAAJ)指出，Chrome 137 起 branded Chrome 去掉 `--load-extension`，CfT/Chromium 保留。此 runner 只接受 CfT。品牌 Chrome 的最终验收仍需真实的 Load unpacked 与用户批准，不能把 CfT 155 的结果等同于用户使用的品牌 Chrome 154。
 
+## 无事件或清理失败时如何定位
+
+诊断信号只缩小失败位置，不满足任何 HWND、baseline 或字段焦点门。先读 `result.json` 的首个 `failure`，再分别看：
+
+- `loopback` 的固定计数区分 fixture GET 是否到达/响应、报告端点是否收到 OPTIONS/POST、Origin 缺失/不符、格式/schema 拒绝或已接受。只记录类别和数量，不保存 URL、原始 headers、被拒正文或页面错误文本。没有事件不能单独说明失焦。
+- `events` 中 `kind=diagnostic` 的固定阶段区分 worker 启动、内部 port 到达、sender 哪一项被拒、顶层 port 接受、焦点 ready、native 请求和回包。它们不会建立绑定，不改变原生验证门，也不引入浏览器控制通道。
+- `coordinatorElevationType` 与 `browserBeforeResume`、`browserBeforeCleanup`、`browserAfterCleanup` 只保存自有句柄的 PID、退出状态/退出码、Job total/active、固定 token elevation 枚举及 Win32 查询错误码。清理前后必须分开；`TerminateJobObject(..., 2)` 产生的 2 不是启动失败证据。Job limit terminations 只计限制违规终止，不能当全部退出数。
+- `cleanupErrors` 保留异常类型及 HRESULT，区分共享占用和其它失败；不覆盖首错。旁边 `.runner.json` 给出 build/browser 清理区域及 fixture 退出码，`.entry.json` 给出外层自有进程/Job 状态。目录删除失败或 Job 计数本身都不足以证明有 Job 外接力进程。
+
+固定 Chromium 155 的[自动降权条件](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/chrome/browser/chrome_browser_main_win.cc#L1023-L1074)包括 elevated token、feature 与启动环境；[实际实现](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/base/win/elevation_util.cc#L69-L140)可能启动另一进程，原 launcher 最终[返回正常退出码](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/chrome/app/chrome_main.cc#L224-L229)。这些是待观测分支，不是“退出 0 等于降权”或“必然逃 Job”的依据。独立 `user-data-dir` 已[排除另一个 COM isolated-browser 分支](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/chrome/browser/win/isolated_browser/isolated_browser_support.cc#L298-L344)。诊断不改变 Chrome flags/启动权限，不扫描或终止 Job 外进程，不延长 35/180 秒上限。
+
 ## 扩展前的门槛
 
 先取得上述单窗口真实结果，再补实际对抗和生命周期场景；不以 mock、源码字符串测试或首握手替代：
