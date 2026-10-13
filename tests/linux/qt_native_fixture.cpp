@@ -3,6 +3,7 @@
 #include <QIntValidator>
 #include <QInputMethodEvent>
 #include <QEventLoop>
+#include <QDynamicPropertyChangeEvent>
 #include <QHash>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -13,16 +14,43 @@
 #include <QSaveFile>
 #include <QSocketNotifier>
 #include <QTimer>
+#include <QToolTip>
 #include <QVBoxLayout>
 #include <fcntl.h>
 #include <unistd.h>
 
 class KeyObserver final : public QObject {
+    Q_OBJECT
 public:
     QLineEdit *first = nullptr, *second = nullptr;
     QJsonObject counts;
     bool firstPreedit = false, secondPreedit = false, editorPreedit = false;
+    QString shortcutState, commandQueuedAction, commandDispatchedAction;
+    quint64 shortcutId = 0, shortcutActionCount = 0, shortcutActionId = 0;
+    void applyCommandAction(QString &action) {
+        const auto operation = action;
+        action.clear();
+        if (operation.isEmpty()) return;
+        ++shortcutActionCount;
+        shortcutActionId = shortcutId;
+        if (operation == "rewrite") first->setText(QStringLiteral("Application changed this field"));
+        else if (operation == "focus-second") second->setFocus();
+    }
+public slots:
+    void shortcutChanged(const QString &state, quint64 id) {
+        shortcutState = state;
+        shortcutId = id;
+        if (state == "queued") applyCommandAction(commandQueuedAction);
+        if (state == "dispatched") applyCommandAction(commandDispatchedAction);
+    }
+public:
     bool eventFilter(QObject *object, QEvent *event) override {
+        if (object == qApp && event->type() == QEvent::DynamicPropertyChange
+            && static_cast<QDynamicPropertyChangeEvent *>(event)->propertyName() == "typelay.qt.native.v1") {
+            auto *native = qApp->property("typelay.qt.native.v1").value<QObject *>();
+            if (native) connect(native, SIGNAL(shortcutStateChangedV1(QString,quint64)),
+                this, SLOT(shortcutChanged(QString,quint64)), Qt::UniqueConnection);
+        }
         if (event->type() == QEvent::InputMethod) {
             const bool composing = !static_cast<QInputMethodEvent *>(event)->preeditString().isEmpty();
             if (object == first) firstPreedit = composing;
@@ -107,6 +135,11 @@ int main(int argc, char **argv) {
         QJsonObject state{{"pid", qint64(getpid())}, {"qtVersion", QString::fromLatin1(qVersion())},
             {"fullscreen", window.isFullScreen()}, {"width", window.width()}, {"height", window.height()},
             {"scale", window.devicePixelRatioF()}, {"keys", observer.counts},
+            {"shortcutState", observer.shortcutState}, {"shortcutId", qint64(observer.shortcutId)},
+            {"shortcutActionCount", qint64(observer.shortcutActionCount)},
+            {"shortcutActionId", qint64(observer.shortcutActionId)}, {"shortcutHint", QToolTip::text()},
+            {"commandQueuedAction", observer.commandQueuedAction},
+            {"commandDispatchedAction", observer.commandDispatchedAction},
             {"firstPreedit", observer.firstPreedit}, {"secondPreedit", observer.secondPreedit},
             {"editorPreedit", observer.editorPreedit},
             {"first", field(first, firstChanges, firstEdits)},
@@ -167,6 +200,8 @@ int main(int argc, char **argv) {
             }
             else if (op == "on-selection") selectionAction = command.value("action").toString();
             else if (op == "on-text") textAction = command.value("action").toString();
+            else if (op == "on-command-queued") observer.commandQueuedAction = command.value("action").toString();
+            else if (op == "on-command-dispatched") observer.commandDispatchedAction = command.value("action").toString();
             else if (op == "editor-set" && window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor")))
                 window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"))->setPlainText(command.value("text").toString());
             else if (op == "fullscreen") { if (command.value("enabled").toBool()) window.showFullScreen(); else window.showNormal(); }
@@ -180,3 +215,4 @@ int main(int argc, char **argv) {
     QTimer::singleShot(60000, &app, &QCoreApplication::quit);
     return app.exec();
 }
+#include "qt_native_fixture.moc"

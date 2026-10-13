@@ -227,6 +227,19 @@ def run_qt(
                     assert re.search(r"[\u3400-\u9fff]", value["editorText"])
                     return value["editorText"]
 
+                def dormant_source(text):
+                    type_source(text)
+                    captures = (
+                        status().get("input", {}).get("captureCounts", {}).get("supported", 0)
+                    )
+                    wait_for(
+                        lambda: not status().get("overlayVisible")
+                        and status().get("input", {}).get("captureStatus") == "supported"
+                        and status().get("input", {}).get("captureCounts", {}).get("supported", 0)
+                        > captures,
+                        "OnDemand source did not remain dormant with a fresh supported capture",
+                    )
+
                 def set_mode(mode):
                     from gtk_accessibility import Atspi, named
 
@@ -463,15 +476,7 @@ def run_qt(
 
                 set_mode(1)
                 wake_source = "Please send this message today."
-                type_source(wake_source)
-                captures = status().get("input", {}).get("captureCounts", {}).get("supported", 0)
-                wait_for(
-                    lambda: not status().get("overlayVisible")
-                    and status().get("input", {}).get("captureStatus") == "supported"
-                    and status().get("input", {}).get("captureCounts", {}).get("supported", 0)
-                    > captures,
-                    "OnDemand source did not remain dormant before the wake shortcut",
-                )
+                dormant_source(wake_source)
                 key("ctrl+shift+F9")
                 wait_for(
                     ready_to_accept, "real Qt wake shortcut did not request a CPU model candidate"
@@ -499,15 +504,7 @@ def run_qt(
                 command("focus", field="first")
                 wait_for(lambda: state()["first"]["focused"], "direct source did not regain focus")
                 direct_source = "Please send me the final version."
-                type_source(direct_source)
-                captures = status().get("input", {}).get("captureCounts", {}).get("supported", 0)
-                wait_for(
-                    lambda: not status().get("overlayVisible")
-                    and status().get("input", {}).get("captureStatus") == "supported"
-                    and status().get("input", {}).get("captureCounts", {}).get("supported", 0)
-                    > captures,
-                    "direct source did not become dormant and supported",
-                )
+                dormant_source(direct_source)
                 before_changes = state()["first"]["changes"]
                 key("ctrl+shift+F10")
                 wait_for(
@@ -526,6 +523,80 @@ def run_qt(
                 evidence.append(
                     "Qt6 OnDemand: real settings save, default wake shortcut and verified Tab; "
                     "default direct shortcut verifies one native edit without Tab and preserves native undo"
+                )
+
+                changed_source = "Application changed this field"
+                for action in ("rewrite", "focus-second"):
+                    command_source = "Please translate this command safely."
+                    dormant_source(command_source)
+                    before = state()
+                    before_write = trace_checkpoint()
+                    command("on-command-queued", action=action)
+                    wait_for(
+                        lambda: state().get("commandQueuedAction") == action,
+                        "fixture did not arm the real queued-command application action",
+                    )
+                    # The application acts synchronously on the real queued signal,
+                    # before fresh capture, without delaying the input method.
+                    key("ctrl+shift+F10")
+                    after = wait_for(
+                        lambda: value
+                        if (value := state()).get("shortcutId") == before["shortcutId"] + 1
+                        and value.get("shortcutState") == "cancelled"
+                        and value.get("shortcutActionId") == value["shortcutId"]
+                        and value.get("shortcutActionCount") == before["shortcutActionCount"] + 1
+                        and settled(value)
+                        else None,
+                        f"queued Qt command did not cancel after actual {action}",
+                    )
+                    assert after["first"]["text"] == (
+                        changed_source if action == "rewrite" else command_source
+                    )
+                    assert after["first"]["changes"] == before["first"]["changes"] + (
+                        action == "rewrite"
+                    )
+                    assert after["second"]["text"] == other
+                    assert after["second"]["changes"] == before["second"]["changes"]
+                    assert not new_write_outcomes(before_write)
+                    if action == "focus-second":
+                        assert after["second"]["focused"] and not after["first"]["focused"]
+                        command("focus", field="first")
+                        wait_for(
+                            lambda: state()["first"]["focused"],
+                            "cancelled source did not regain focus",
+                        )
+
+                dormant_source("Please translate this original message.")
+                before = state()
+                before_write = trace_checkpoint()
+                command("on-command-dispatched", action="rewrite")
+                wait_for(
+                    lambda: state().get("commandDispatchedAction") == "rewrite",
+                    "fixture did not arm the actual post-snapshot source change",
+                )
+                key("ctrl+shift+F10")
+                wait_for(
+                    lambda: (value := state()).get("shortcutState") == "dispatched"
+                    and value.get("shortcutId") == before["shortcutId"] + 1
+                    and value.get("shortcutActionId") == value["shortcutId"]
+                    and value.get("shortcutActionCount") == before["shortcutActionCount"] + 1
+                    and value["first"]["text"] == changed_source,
+                    "source did not change after the real direct snapshot was dispatched",
+                )
+                wait_for(
+                    lambda: status().get("serviceStatus")
+                    == "直接写回未获确认，请检查原输入框；不会自动重试。",
+                    "real direct translation did not reject its superseded source version",
+                )
+                after = state()
+                assert after["first"]["text"] == changed_source
+                assert after["first"]["changes"] == before["first"]["changes"] + 1
+                assert after["second"]["text"] == other
+                assert after["second"]["changes"] == before["second"]["changes"]
+                assert not new_write_outcomes(before_write)
+                evidence.append(
+                    "Qt6 explicit command safety: real queued input/focus changes cancel without writes; "
+                    "a post-snapshot source edit survives the completed CPU direct translation"
                 )
                 set_mode(0)
 

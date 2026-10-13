@@ -21,6 +21,7 @@
 #include <QSocketNotifier>
 #include <QThread>
 #include <QTimer>
+#include <QToolTip>
 #include <QUuid>
 #include <QVariant>
 #include <QVBoxLayout>
@@ -29,6 +30,7 @@
 #include <cstring>
 #include <cstdio>
 #include <limits>
+#include <optional>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -65,6 +67,10 @@ bool validText(const QString &text) {
 bool boundary(const QString &text, qint64 offset) {
     return offset >= 0 && offset <= text.size()
         && (offset == 0 || offset == text.size() || !text[qsizetype(offset)].isLowSurrogate());
+}
+bool modifierKey(int key) {
+    return key == Qt::Key_Shift || key == Qt::Key_Control || key == Qt::Key_Alt
+        || key == Qt::Key_Meta || key == Qt::Key_AltGr;
 }
 QJsonObject receipt(const char *status, const char *reason) {
     return {{"status", QLatin1String(status)}, {"reason", QLatin1String(reason)}};
@@ -108,9 +114,20 @@ struct Target {
     QPointer<QLineEdit> field;
     QPointer<QObject> provider;
     QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    quint64 content = 1, input = 1, focus = 1, storage = 0;
+    quint64 content = 1, input = 1, focus = 1, storage = 0, selection = 1;
     TypeLayFcitxQtStateV1 state{};
     bool observed = false, probing = false, mutating = false, quarantined = false;
+};
+
+struct ShortcutRequest {
+    Target *target = nullptr;
+    QPointer<QLineEdit> field;
+    QPointer<QObject> provider;
+    QString kind;
+    QJsonObject basis;
+    QJsonValue generation;
+    quint64 id = 0, content = 0, selection = 0, focus = 0, context = 0, binding = 0, connection = 0;
+    qint64 until = 0;
 };
 
 class Native final : public QObject, public TypeLayFcitxQtControlV1 {
@@ -126,6 +143,7 @@ public:
         connect(&reconnect_, &QTimer::timeout, this, &Native::connectPeer);
         reconnect_.start(1000);
         connect(&expiry_, &QTimer::timeout, this, [this] {
+            advanceShortcut();
             if (card_ && (now() > overlayUntil_ || !overlayTarget_ || !overlayTarget_->field
                 || !overlayTarget_->field->window()->isActiveWindow())) hideOverlay();
             refreshHint();
@@ -152,7 +170,7 @@ public:
         if (shortcut.isEmpty() && (event->modifiers() != Qt::NoModifier
             || (event->key() != Qt::Key_Tab && event->key() != Qt::Key_Escape))) return false;
         QScopedValueRollback<bool> handling(handlingKey_, true);
-        if (!shortcut.isEmpty()) return triggerShortcut(shortcut, discover(qobject_cast<QWidget *>(actualField)),
+        if (!shortcut.isEmpty()) return queueShortcut(shortcut, discover(qobject_cast<QWidget *>(actualField)),
             shortcutAuthority_.value("authority").toObject());
         if (actualField == editor_ && editor_ && editor_->hasFocus() && overlayActive()) {
             if (event->key() != Qt::Key_Tab && event->key() != Qt::Key_Escape) return false;
@@ -216,13 +234,19 @@ public:
         return true;
     }
 
+signals:
+    void shortcutStateChangedV1(const QString &state, quint64 id);
+
 private slots:
     void providerChanged(QObject *field, uint causes) {
         auto *target = targets_.value(field, nullptr);
         clearPermit();
         if (!target || sender() != target->provider) return;
-        if (causes & 5u) invalidate(target, false, false);
-        if (causes & 2u) invalidate(target, false, true);
+        if (causes & TlQtBinding) shortcutAuthority_ = {};
+        if (causes & (TlQtInput | TlQtBinding)) invalidate(target, false, false);
+        if (causes & TlQtFocus) invalidate(target, false, true);
+        // TlQtModifier still revokes the live proof. It does not itself edit
+        // source text/selection; actual IM output has separate Input causes.
     }
 
 private:
@@ -271,12 +295,16 @@ private:
             if (!target->mutating) invalidate(target, true, false);
         });
         connect(target->field, &QLineEdit::selectionChanged, this, [this, target] {
+            ++target->selection;
             if (!target->mutating) invalidate(target, false, false);
         });
         connect(target->field, &QLineEdit::cursorPositionChanged, this, [this, target] {
+            ++target->selection;
             if (!target->mutating) invalidate(target, false, false);
         });
         connect(widget, &QObject::destroyed, this, [this, target, widget] {
+            cancelShortcut(target);
+            shortcutAuthority_ = {};
             target->field = nullptr;
             if (overlayTarget_ == target) hideOverlay();
             clearPermit();
@@ -354,6 +382,7 @@ private:
         // never Clear, but is not itself a source-text edit.
         if (!owner) { clearPermit(); return nullptr; }
         if (target->provider != owner) {
+            shortcutAuthority_ = {};
             target->provider = owner;
             target->observed = false;
             invalidate(target, false, false);
@@ -391,6 +420,8 @@ private:
         if (target->observed && stamp(target->state) != stamp(state)) {
             clearPermit();
             if (target->state.contextGeneration != state.contextGeneration
+                || target->state.fieldGeneration != state.fieldGeneration) shortcutAuthority_ = {};
+            if (target->state.contextGeneration != state.contextGeneration
                 || target->state.fieldGeneration != state.fieldGeneration
                 || target->state.inputEpoch != state.inputEpoch) invalidate(target, false, false);
         }
@@ -420,11 +451,18 @@ private:
         if (target->observed) result.insert("contextStamp", stamp(target->state));
         return result;
     }
-    bool authorityMatches(Target *target, const QJsonObject &basis, bool requireFocus) {
+    bool sourceAuthorityMatches(Target *target, const QJsonObject &basis, bool requireFocus) {
+        const auto context = basis.value("contextStamp").toObject();
         return metadataMatches(target, basis) && integer(basis, "contentRevision") == qint64(target->content)
             && integer(basis, "inputRevision") == qint64(target->input)
             && (!requireFocus || (focused() == target && integer(basis, "focusRevision") == qint64(target->focus)))
-            && target->observed && basis.value("contextStamp").toObject() == stamp(target->state);
+            && target->observed && integer(context, "context") == qint64(target->state.contextGeneration)
+            && integer(context, "field") == qint64(target->state.fieldGeneration)
+            && integer(context, "input") == qint64(target->state.inputEpoch);
+    }
+    bool authorityMatches(Target *target, const QJsonObject &basis, bool requireFocus) {
+        return sourceAuthorityMatches(target, basis, requireFocus)
+            && basis.value("contextStamp").toObject() == stamp(target->state);
     }
     QJsonObject describe(Target *target) {
         if (!target || target->mutating || target->probing) return {};
@@ -438,15 +476,16 @@ private:
         const int start = field->selectionStart() < 0 ? field->cursorPosition() : field->selectionStart();
         return {{"start", start}, {"end", start + field->selectionLength()}};
     }
-    QJsonObject capture(Target *target, const QJsonObject &basis) {
+    QJsonObject capture(Target *target, const QJsonObject &basis,
+                        qint64 until = std::numeric_limits<qint64>::max()) {
         const qint64 age = now() - integer(basis, "observedAtMs");
         if (age < 0 || age > 150 || !inspect(target) || !clear(target->state)
-            || !authorityMatches(target, basis, true) || !local(target, target->state)) return {};
+            || !authorityMatches(target, basis, true) || !local(target, target->state) || now() >= until) return {};
         const auto text = target->field->text();
         if (!validText(text)) return {};
         auto result = describe(target);
         if (result.isEmpty() || !authorityMatches(target, basis, true) || !local(target, target->state)
-            || now() - integer(basis, "observedAtMs") > 150) return {};
+            || now() - integer(basis, "observedAtMs") > 150 || now() >= until) return {};
         result.insert("text", text);
         result.insert("selection", selection(target));
         result.insert("ime", "Clear");
@@ -456,7 +495,8 @@ private:
     }
     void invalidate(Target *target, bool textChanged, bool focusChanged) {
         if (!target || !target->field) return;
-        shortcutAuthority_ = {};
+        cancelShortcut(target);
+        if (focusChanged) shortcutAuthority_ = {};
         if (focusChanged) ++target->focus;
         else ++target->input;
         clearPermit();
@@ -487,7 +527,7 @@ private:
     }
     void clearPermit() { publication_ = {}; refreshHint(); }
     QString shortcutKind(const QKeyEvent *event) const {
-        if (!shortcutConfiguration_.value("enabled").toBool() || shortcutAuthority_.isEmpty()) return {};
+        if (!shortcutConfiguration_.value("enabled").toBool()) return {};
         const auto modifiers = event->modifiers();
         if (modifiers & ~(Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier)) return {};
         const int mask = ((modifiers & Qt::ShiftModifier) ? 1 : 0)
@@ -506,7 +546,76 @@ private:
         }
         return {};
     }
+    void cancelShortcut(Target *target = nullptr) {
+        if (!pendingShortcut_ || (target && pendingShortcut_->target != target)) return;
+        const auto request = *pendingShortcut_;
+        pendingShortcut_.reset();
+        traceGate("shortcut-cancelled", request.target, request.basis, request.until);
+        if (request.field && request.field->isVisible() && request.field->window()->isActiveWindow())
+            QToolTip::showText(request.field->mapToGlobal(QPoint(0, request.field->height())),
+                QStringLiteral("快捷键未执行：输入状态已变化，请重试。"), request.field, QRect(), 1500);
+        emit shortcutStateChangedV1(QStringLiteral("cancelled"), request.id);
+    }
+    bool queueShortcut(const QString &kind, Target *target, const QJsonObject &basis) {
+        cancelShortcut(); // A new explicit command replaces no hidden request.
+        const qint64 observed = integer(basis, "observedAtMs"), current = now();
+        if (!target || target != focused() || target->quarantined || target->mutating || !target->observed
+            || !target->provider || observed < 0 || current < observed || current - observed >= 150
+            || !metadataMatches(target, basis) || shortcutAuthority_.isEmpty()
+            || shortcutAuthority_.value("target").toString() != target->id
+            || shortcutAuthority_.value("generation") != shortcutConfiguration_.value("generation")
+            || shortcutAuthority_.value("authority").toObject() != basis
+            || target->field->property(ProviderProperty).value<QObject *>() != target->provider) return false;
+        pendingShortcut_ = ShortcutRequest{target, target->field, target->provider, kind, basis,
+            shortcutConfiguration_.value("generation"), ++shortcutSequence_, target->content,
+            target->selection, target->focus, target->state.contextGeneration, target->state.fieldGeneration,
+            connectionGeneration_, observed + 150};
+        clearPermit();
+        shortcutAuthority_ = {};
+        traceGate("shortcut-queued", target, basis, observed + 150);
+        emit shortcutStateChangedV1(QStringLiteral("queued"), shortcutSequence_);
+        return true; // Only this explicit command is consumed. No body has been read.
+    }
+    bool shortcutUnchanged(const ShortcutRequest &request) {
+        return pendingShortcut_ && pendingShortcut_->id == request.id && request.field && request.provider
+            && request.target->field == request.field && request.target->provider == request.provider
+            && focused() == request.target && request.target->focus == request.focus
+            && request.target->content == request.content && request.target->selection == request.selection
+            && request.target->state.contextGeneration == request.context
+            && request.target->state.fieldGeneration == request.binding
+            && request.field->property(ProviderProperty).value<QObject *>() == request.provider
+            && connectionGeneration_ == request.connection && fd_ >= 0 && now() < request.until
+            && shortcutConfiguration_.value("enabled").toBool()
+            && shortcutConfiguration_.value("generation") == request.generation
+            && metadataMatches(request.target, request.basis);
+    }
+    void advanceShortcut() {
+        if (!pendingShortcut_ || advancingShortcut_) return;
+        QScopedValueRollback<bool> advancing(advancingShortcut_, true);
+        const auto request = *pendingShortcut_;
+        if (!shortcutUnchanged(request)) { cancelShortcut(); return; }
+        // The timer does not grant Clear. Original DBus/output/forward retirement
+        // and the exact provider's fresh proof are still mandatory.
+        if (!inspect(request.target)) return;
+        if (!shortcutUnchanged(request)) { cancelShortcut(); return; }
+        if (!clear(request.target->state)) {
+            if (request.target->state.flags & TlQtComposing) cancelShortcut();
+            return;
+        }
+        const auto description = describe(request.target);
+        if (!shortcutUnchanged(request)) { cancelShortcut(); return; }
+        const auto read = capture(request.target, description.value("authority").toObject(), request.until);
+        if (!shortcutUnchanged(request)) { cancelShortcut(); return; }
+        if (read.isEmpty()) return;
+        pendingShortcut_.reset();
+        clearPermit();
+        sendEvent("shortcut", {{"kind", request.kind}, {"generation", request.generation},
+            {"native", read}, {"acceptedAtMs", now()}});
+        traceGate("shortcut-dispatched", request.target, request.basis, request.until);
+        emit shortcutStateChangedV1(QStringLiteral("dispatched"), request.id);
+    }
     bool triggerShortcut(const QString &kind, Target *target, const QJsonObject &basis) {
+        cancelShortcut(); // An external explicit command cannot race a queued key.
         const qint64 age = now() - integer(basis, "observedAtMs");
         if ((kind != "wake" && kind != "direct") || !shortcutConfiguration_.value("enabled").toBool()
             || shortcutAuthority_.isEmpty() || !target || target != focused() || age < 0 || age > 150
@@ -542,7 +651,12 @@ private:
         const qint64 until = integer(request, "expiresAtMs", 0), current = now();
         if (until <= current || until - current > (direct ? 250 : 100))
             return reject("write-deadline", "StaleObservation");
-        if (!metadataMatches(target, approved) || !authorityMatches(target, basis, true))
+        const qint64 approvedAge = now() - integer(approved, "observedAtMs");
+        const bool authorized = direct
+            ? sourceAuthorityMatches(target, basis, true) && authorityMatches(target, approved, true)
+                && approvedAge >= 0 && approvedAge <= 150
+            : authorityMatches(target, basis, true);
+        if (!metadataMatches(target, approved) || !authorized)
             return reject("write-authority", "EpochChanged");
         QPointer<QLineEdit> field = target->field;
         QPointer<QObject> provider = target->provider;
@@ -814,7 +928,10 @@ private:
                 && input->attributes().isEmpty();
             if (empty) clearPermit();
             else invalidate(target, false, false);
-        } else if (type == QEvent::KeyPress || type == QEvent::MouseButtonPress || type == QEvent::Wheel
+        } else if (type == QEvent::KeyPress) {
+            if (modifierKey(static_cast<QKeyEvent *>(event)->key())) clearPermit();
+            else invalidate(target, false, false);
+        } else if (type == QEvent::MouseButtonPress || type == QEvent::Wheel
             || type == QEvent::TouchBegin) invalidate(target, false, false);
         if (type == QEvent::DynamicPropertyChange) bind(target);
         if (type == QEvent::Hide || type == QEvent::EnabledChange || type == QEvent::ReadOnlyChange) {
@@ -877,10 +994,10 @@ private:
         else if (op == "capture") respondObject(id, capture(target, data.value("authority").toObject()));
         else if (op == "direct") respond(id, write(target, data, true));
         else if (op == "return") returnSource(target, data.value("authority").toObject(), id);
-        else if (op == "quarantine") { ++authorizationGeneration_; if (target) target->quarantined = true; clearPermit(); respond(id); }
+        else if (op == "quarantine") { ++authorizationGeneration_; if (target) target->quarantined = true; cancelShortcut(); clearPermit(); respond(id); }
         else if (op == "revoke") {
             ++authorizationGeneration_; clearPermit();
-            if (integer(data, "shortcuts", 0)) shortcutAuthority_ = {};
+            if (integer(data, "shortcuts", 0)) { cancelShortcut(); shortcutAuthority_ = {}; }
             respond(id);
         }
         else if (op == "publish") {
@@ -894,6 +1011,7 @@ private:
             if (target) { auto report = state; report.insert("target", target->id); sendEvent("publication", report); }
             refreshHint();
         } else if (op == "configure-shortcuts") {
+            cancelShortcut();
             shortcutAuthority_ = {}; shortcutConfiguration_ = data;
             QVariantList keys;
             if (data.value("enabled").toBool()) for (const auto *kind : {"wake", "direct"}) {
@@ -940,6 +1058,7 @@ private:
         if (writer_) writer_->setEnabled(true);
     }
     void disconnectPeer() {
+        cancelShortcut();
         ++connectionGeneration_;
         if (reader_) { reader_->setEnabled(false); reader_->deleteLater(); reader_ = nullptr; }
         if (writer_) { writer_->setEnabled(false); writer_->deleteLater(); writer_ = nullptr; }
@@ -1020,8 +1139,10 @@ private:
     QPointer<QSocketNotifier> reader_, writer_;
     QByteArray incoming_, outgoing_;
     QJsonObject publication_, overlayView_, shortcutConfiguration_, shortcutAuthority_;
+    std::optional<ShortcutRequest> pendingShortcut_;
+    quint64 shortcutSequence_ = 0;
     quint64 connectionGeneration_ = 0, returnGeneration_ = 0, authorizationGeneration_ = 0;
-    bool dispatching_ = false, handlingKey_ = false;
+    bool dispatching_ = false, handlingKey_ = false, advancingShortcut_ = false;
     QPointer<QFrame> card_;
     QPointer<QPlainTextEdit> editor_;
     QPointer<QLabel> hint_, status_, language_;

@@ -16,7 +16,7 @@ enum TypeLayFcitxQtFlagV1 : quint32 {
     TlQtKnown = 1u, TlQtFocused = 2u, TlQtPending = 4u, TlQtComposing = 8u
 };
 enum TypeLayFcitxQtCauseV1 : quint32 {
-    TlQtInput = 1u, TlQtFocus = 2u, TlQtBinding = 4u
+    TlQtInput = 1u, TlQtFocus = 2u, TlQtBinding = 4u, TlQtModifier = 8u
 };
 struct TypeLayFcitxQtStateV1 {
     quint32 size = sizeof(TypeLayFcitxQtStateV1);
