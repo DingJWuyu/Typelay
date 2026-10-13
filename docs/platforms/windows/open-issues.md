@@ -74,3 +74,5 @@
 [CI run 38351805969](https://github.com/DingJWuyu/Typelay/actions/runs/38351805969) 又在同一设置回归的 `ControllerDesktopScenario:89` 超时，断言为 `The source must be observed`。该轮已通过输入服务就绪与 fixture 实际焦点前置，但在首次观察到源应用之前失败，尚未发送 F9。桌面 trace 只留下两条 `shortcut-configure`（最后两快捷键注册均为 true），没有对应的首次 `capture`；不能从这份诊断断言是 IME、许可期限或注册失败，也不能与前述第二次 F9 过期视为同一根因。
 
 此轮只提交 Linux 测试前置修正，Windows 桌面失败仍保留，未通过重跑消除记录；先前相同 Windows 路径曾通过也不能替代这次失败的定位。证据包：artifact `11791695218`，SHA-256 `4b4715d3fe79effe607101ab62ec21433d092a7e26d47de65a20f432ff128754`。后续仍须遵守用户检查 trunk 后回复才开始 Windows 修复的顺序。
+
+[CI run 38363808032](https://github.com/DingJWuyu/Typelay/actions/runs/38363808032) 在结构迁移后通过构建与 254 项共享/Windows DTO 测试，但 `ControllerDesktopScenario:93` 的首次 F9 唤醒失败。实际快捷键于 `atMs=392828` 进入，`reason=future-or-stale`、快照年龄 688ms，IME 为 Clear，内容与前台版本均相等。这次已确定是入口旧快照拒绝，尚未解释产生旧快照的原因，也不能据此宣称结构迁移完全无回归。证据包：artifact `11795703671`，SHA-256 `b4adaab30847d5809800c1cc34908daeed6551cfacacbe722fb2482e8e9b703d`。保留此失败，Windows 业务修复仍等用户检查后回复。

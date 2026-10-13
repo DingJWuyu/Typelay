@@ -59,15 +59,36 @@ jobs:
           python -m pip install -r eng/requirements.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           'C:\Program Files\LLVM\bin' >> $env:GITHUB_PATH
-      - name: Build, behavior regressions, contracts and formatting
+      - name: Build the Windows workspace
+        id: windows-build
+        shell: pwsh
+        run: ./dev.ps1 build
+      - name: Verify Windows behavior and contracts
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
         env:
           TYPELAY_TRACE: ${{ github.workspace }}/artifacts/controller-trace.jsonl
-        run: ./dev.ps1 check
+        run: dotnet test TypeLay.slnx -c Release --no-build --no-restore --logger trx --results-directory artifacts/test-results
+      - name: Verify formatting and Python behavior
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        shell: pwsh
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src/shared/TypeLay.Worker
+        run: |
+          dotnet format TypeLay.slnx --verify-no-changes --no-restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m unittest discover -s tests/shared/worker -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m ruff check .
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m ruff format --check --diff .
+          exit $LASTEXITCODE
       - name: Verify the controlled native adapter
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
         run: ./dev.ps1 native-e2e
       - name: Package and test the relocated distribution
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
         run: ./dev.ps1 pack
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

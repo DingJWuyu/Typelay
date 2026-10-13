@@ -120,6 +120,22 @@ def session(output: Path) -> None:
                 assert len(windows) == 1, f"Expected one owned fixture window: {names}"
                 window = windows[0]
                 run("xdotool", "windowfocus", "--sync", window, env=env)
+                # Window focus and an arbitrary connected IC do not prove that
+                # the focused field's real GClient has reached the daemon.
+                # F24 carries no text; wait for both actual key replies before
+                # selecting the engine on the daemon's most-recent context.
+                handshake_offset = len(trace())
+                run("xdotool", "key", "F24", env=env)
+
+                def focused_client_replied() -> bool:
+                    completed = [
+                        line
+                        for line in trace()[handshake_offset:].splitlines()
+                        if "event=sync-return " in line or "event=reply-callback-exit " in line
+                    ]
+                    return len(completed) >= 2 and "pending=0 " in completed[-1]
+
+                wait_for(focused_client_replied, "focused GClient handled the marker key")
                 run("fcitx5-remote", "-s", "pinyin", env=env)
                 run("fcitx5-remote", "-o", env=env)
                 wait_for(
