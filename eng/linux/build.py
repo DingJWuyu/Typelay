@@ -43,6 +43,7 @@ def build(output, fixture=False):
         "-o",
         output / "app",
     )
+    package_runtime_notices(output)
     run(
         "cmake",
         "-S",
@@ -111,6 +112,59 @@ def build(output, fixture=False):
         checksum = hashlib.file_digest(stream, "sha256").hexdigest()
     archive.with_suffix(archive.suffix + ".sha256").write_text(f"{checksum}  {archive.name}\n")
     print(f"Built {archive.relative_to(ROOT)}")
+
+
+def package_runtime_notices(output):
+    # Resolve the same SDK/runtime selection used by publish, then retain only
+    # packs actually present in this published application's dependency graph.
+    metadata = json.loads(
+        subprocess.check_output(
+            [
+                "dotnet",
+                "msbuild",
+                "src/linux/TypeLay.Linux/TypeLay.Linux.csproj",
+                "-nologo",
+                "-verbosity:quiet",
+                "-target:ResolveFrameworkReferences",
+                "-getItem:ResolvedRuntimePack",
+                "-property:Configuration=Release",
+                "-property:RuntimeIdentifier=linux-x64",
+                "-property:SelfContained=true",
+            ],
+            cwd=ROOT,
+            text=True,
+        )
+    )
+    resolved = {
+        f"runtimepack.{pack['NuGetPackageId']}/{pack['NuGetPackageVersion']}": pack
+        for pack in metadata["Items"]["ResolvedRuntimePack"]
+    }
+    dependencies = json.loads((output / "app/TypeLay.Linux.deps.json").read_text())
+    shipped = [name for name in dependencies["libraries"] if name.startswith("runtimepack.")]
+    if not shipped or any(name not in resolved for name in shipped):
+        raise RuntimeError("published-runtime-pack-resolution-mismatch")
+    for name in shipped:
+        pack = resolved[name]
+        source = Path(pack["PackageDirectory"])
+        notices = [
+            path
+            for path in source.rglob("*")
+            if path.is_file()
+            and any(
+                word in path.name.upper() for word in ("LICENSE", "LICENCE", "COPYING", "NOTICE")
+            )
+        ]
+        if not any("LICENSE" in path.name.upper() for path in notices) or not any(
+            "NOTICE" in path.name.upper() for path in notices
+        ):
+            raise RuntimeError(f"runtime-pack-notices-missing: {name}")
+        destination = (
+            output / "app/licenses" / pack["NuGetPackageId"].lower() / pack["NuGetPackageVersion"]
+        )
+        for notice in notices:
+            target = destination / notice.relative_to(source)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(notice, target)
 
 
 def package_editor(output):

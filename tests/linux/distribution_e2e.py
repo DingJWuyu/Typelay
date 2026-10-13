@@ -62,6 +62,20 @@ class DistributionTests(unittest.TestCase):
     def assert_success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_shipped_runtime_includes_its_upstream_license_and_notices(self):
+        dependencies = json.loads((self.package / "app/TypeLay.Linux.deps.json").read_text())
+        shipped = [name for name in dependencies["libraries"] if name.startswith("runtimepack.")]
+        self.assertTrue(shipped)
+        manifest = (self.package / "MANIFEST.sha256").read_text()
+        for name in shipped:
+            package, version = name.removeprefix("runtimepack.").split("/", 1)
+            directory = self.package / "app/licenses" / package.lower() / version
+            for filename in ("LICENSE.TXT", "THIRD-PARTY-NOTICES.TXT"):
+                notice = directory / filename
+                self.assertTrue(notice.is_file(), notice)
+                self.assertGreater(notice.stat().st_size, 0)
+                self.assertIn(f"  {notice.relative_to(self.package).as_posix()}\n", manifest)
+
     def test_install_relocates_and_reinstalls_without_models_or_shell_edits(self):
         fish = self.home / "config/fish/config.fish"
         fish.parent.mkdir(parents=True)

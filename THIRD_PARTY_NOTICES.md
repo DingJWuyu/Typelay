@@ -8,7 +8,7 @@
 
 ## Linux 系统依赖
 
-Linux 发行包复用共享 .NET Runtime 和 Python worker，GTK、PyGObject、Ayatana AppIndicator 及其 D-Bus 菜单依赖由 CachyOS/Arch 的系统包管理器提供，不将系统库复制进发行包。系统依赖的许可证和 notices 随各自软件包维护；Ayatana 的来源为 https://github.com/AyatanaIndicators/libayatana-appindicator 。Linux 桌面的 TypeLay 托盘 SVG 为本项目资源。
+Linux 自包含发行包包含 .NET 运行时和共享 Python worker 源码；实际运行时包名/版本以 `app/TypeLay.Linux.deps.json` 的 `runtimepack.*` 条目为准。构建按这些条目匹配 SDK 解析的 runtime packs，把原始许可证与第三方 notices 保留在 `app/licenses/<包名>/<版本>/`；缺失或版本不符时打包失败。GTK、PyGObject、Ayatana AppIndicator 及其 D-Bus 菜单依赖由 CachyOS/Arch 的系统包管理器提供，不将系统库复制进发行包。系统依赖的许可证和 notices 随各自软件包维护；Ayatana 的来源为 https://github.com/AyatanaIndicators/libayatana-appindicator 。Linux 桌面的 TypeLay 托盘 SVG 为本项目资源。
 
 ## 首次联网准备
 
