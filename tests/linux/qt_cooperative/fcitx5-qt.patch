@@ -397,7 +397,7 @@
 +    tlOrderTrace("decision", order, int(filtered));
      if (!filtered) {
          forwardEvent(window, keyEvent);
-@@ -1306,3 +1540,317 @@
+@@ -1306,3 +1540,319 @@
  }
  
 +// TypeLay 2026-10-12: exact-object cooperation for the original async IM path.
@@ -455,7 +455,7 @@
 +        !lastWindow_ || source->window()->windowHandle() != lastWindow_ ||
 +        next->window()->windowHandle() != lastWindow_ || focusWindowWrapper() != lastWindow_ ||
 +        !tlFields_.contains(source) || tlPendingDbus || tlPendingForward || tlOutputDepth ||
-+        tlDrainingKeys_ || !tlKeyQueue_.empty() || !preedit_.isEmpty() || !commitPreedit_.isEmpty() ||
++        tlDrainingKeys_ || !tlKeyQueue_.empty() || !preeditList_.isEmpty() || !commitPreedit_.isEmpty() ||
 +        (xkbComposeState_ && xkb_compose_state_get_status(xkbComposeState_.data()) ==
 +         XKB_COMPOSE_COMPOSING)) return candidate;
 +    auto *hybrid = validICByWindow(lastWindow_);
@@ -504,7 +504,7 @@
 +        candidate.proxy->typelayAppliedSerial() == candidate.state.appliedSerial &&
 +        field.generation == candidate.state.fieldGeneration && field.inputEpoch == candidate.state.inputEpoch &&
 +        !tlPendingDbus && !tlPendingForward && !tlOutputDepth && !tlDrainingKeys_ && tlKeyQueue_.empty() &&
-+        preedit_.isEmpty() && commitPreedit_.isEmpty() &&
++        preeditList_.isEmpty() && commitPreedit_.isEmpty() &&
 +        (!xkbComposeState_ || xkb_compose_state_get_status(xkbComposeState_.data()) != XKB_COMPOSE_COMPOSING);
 +    if (!valid) {
 +        if (candidate.source != tlBound_ &&
@@ -542,12 +542,14 @@
 +        tlFields_.value(actual).inputEpoch == record.state.inputEpoch;
 +}
 +
++// TypeLay 2026-10-13: upstream clears the live preedit list on commit,
++// while its preedit_ cursor cache can remain stale after the empty update is elided.
 +bool QFcitxPlatformInputContext::tlLocalClear(QObject *actual) const {
 +    return tlCooperate() && !syncMode_ && !destroy_ && actual &&
 +        QThread::currentThread() == thread() && actual == tlBound_ &&
 +        actual == focusObjectWrapper() && lastWindow_ &&
 +        lastWindow_ == focusWindowWrapper() && !tlPendingDbus &&
-+        !tlPendingForward && !tlOutputDepth && preedit_.isEmpty() &&
++        !tlPendingForward && !tlOutputDepth && preeditList_.isEmpty() &&
 +        commitPreedit_.isEmpty() && (!xkbComposeState_ ||
 +        xkb_compose_state_get_status(xkbComposeState_.data()) != XKB_COMPOSE_COMPOSING);
 +}
@@ -601,7 +603,7 @@
 +    state->flags = (known ? TlQtKnown : 0u) | (focused ? TlQtFocused : 0u) |
 +        ((pending || tlPendingDbus || tlPendingForward || tlOutputDepth ||
 +          serial != state->appliedSerial) ? TlQtPending : 0u) |
-+        ((composing || !preedit_.isEmpty() || !commitPreedit_.isEmpty() ||
++        ((composing || !preeditList_.isEmpty() || !commitPreedit_.isEmpty() ||
 +          (xkbComposeState_ && xkb_compose_state_get_status(xkbComposeState_.data()) ==
 +           XKB_COMPOSE_COMPOSING)) ? TlQtComposing : 0u);
 +    tlProofObject_.clear();
