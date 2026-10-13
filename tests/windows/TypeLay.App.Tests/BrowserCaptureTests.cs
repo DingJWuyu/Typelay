@@ -44,14 +44,20 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             <style>body{margin:0;height:100vh;display:grid;place-items:center;font:20px sans-serif}input{width:65vw;padding:14px}</style>
             <input id="query" type="search" aria-label="Search" value="ordinary search without punctuation" autofocus>
             <script>
+            let inputClicked = false;
+            document.addEventListener("pointerdown", event => {
+              inputClicked = event.isTrusted && event.target === document.getElementById("query");
+            });
             function reportFocus() {
-              document.title = "{{title}} " +
-                (document.hasFocus() && document.activeElement === document.getElementById("query") ? "focused" : "unfocused");
+              const pageFocused = document.hasFocus();
+              const inputFocused = document.activeElement === document.getElementById("query");
+              const title = "{{title}} " + (pageFocused && inputFocused ? "focused" : "unfocused") +
+                " page=" + pageFocused + " input=" + inputFocused + " click=" + inputClicked;
+              if (document.title !== title) document.title = title;
+              requestAnimationFrame(reportFocus);
             }
-            window.addEventListener("focus", reportFocus);
-            window.addEventListener("blur", reportFocus);
-            document.addEventListener("focusin", reportFocus);
-            document.addEventListener("focusout", reportFocus);
+            // Sample live state without changing focus or enabling UIA, rather
+            // than retaining whichever focus event happened to run last.
             reportFocus();
             </script>
             """, TestContext.Current.CancellationToken);
@@ -171,6 +177,8 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
                 or System.ComponentModel.Win32Exception or InvalidOperationException or OperationCanceledException)
             {
                 output.WriteLine($"Isolated browser profile cleanup failed: {error.GetType().Name}; hresult=0x{error.HResult:x8}");
+                if (error is IOException)
+                    output.WriteLine("Isolated cleanup detail: " + System.Text.Json.JsonSerializer.Serialize(error.Message.Replace(directory, "<isolated-browser>", StringComparison.OrdinalIgnoreCase)));
             }
         }
     }
