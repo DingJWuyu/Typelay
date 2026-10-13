@@ -89,6 +89,8 @@ static void report_entry(JsonBuilder *builder, const char *name, GtkWidget *widg
     if (gtk_widget_compute_point(widget, report_window, &origin, &point)) {
         json_builder_set_member_name(builder, "x"); json_builder_add_double_value(builder, point.x);
         json_builder_set_member_name(builder, "y"); json_builder_add_double_value(builder, point.y);
+        json_builder_set_member_name(builder, "width");
+        json_builder_add_int_value(builder, gtk_widget_get_width(widget));
         json_builder_set_member_name(builder, "height");
         json_builder_add_int_value(builder, gtk_widget_get_height(widget));
     }

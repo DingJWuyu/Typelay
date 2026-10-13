@@ -1127,13 +1127,14 @@ def run(arguments):
                         def click_entry(name):
                             value = gtk_state()
                             entry = value[name + "Entry"]
+                            # GtkSearchEntry owns icon clicks without focusing its text.
                             subprocess.run(
                                 [
                                     "xdotool",
                                     "mousemove",
                                     "--window",
                                     nested[0],
-                                    str(int((entry["x"] + 20) * value["scale"])),
+                                    str(int((entry["x"] + entry["width"] / 2) * value["scale"])),
                                     str(int((entry["y"] + entry["height"] / 2) * value["scale"])),
                                     "click",
                                     "1",

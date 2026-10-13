@@ -101,16 +101,29 @@ class BrowserContract(unittest.TestCase):
         )
 
     def capture(self):
-        description = self.command("describe")
-        self.assertIsNotNone(description)
-        return self.command(
-            "capture", {"target": description["target"], "authority": description["authority"]}
+        # Keep setup inside one browser turn so Python/CDP round trips do not
+        # consume the production authority's unchanged lifetime. Never retry.
+        self.sequence += 3
+        result = self.page.evaluate(
+            """id => {
+              const description = fixtureCommand({id, op: 'describe'});
+              if (!description) return {described: false, snapshot: null, diagnostics: null};
+              const snapshot = fixtureCommand({id: id + 1, op: 'capture', data: {
+                target: description.target, authority: description.authority}});
+              const diagnostics = snapshot ? null : fixtureCommand({id: id + 2,
+                op: 'describe', data: {target: description.target}})?.diagnostics ?? null;
+              return {described: true, snapshot, diagnostics};
+            }""",
+            self.sequence - 2,
         )
+        self.capture_diagnostics = result["diagnostics"]
+        self.assertTrue(result["described"], self.capture_diagnostics)
+        return result["snapshot"]
 
     def type_source(self, text="Hello"):
         self.page.keyboard.insert_text(text)
         snapshot = self.capture()
-        self.assertIsNotNone(snapshot)
+        self.assertIsNotNone(snapshot, self.capture_diagnostics)
         return snapshot
 
     @staticmethod
