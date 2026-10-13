@@ -617,6 +617,13 @@
           previous.expiresAtWallMs - Date.now()) : NaN;
         const previousPermitRemainingMs = Number.isFinite(previousRemaining)
           ? Math.max(-10000, Math.min(10000, previousRemaining)) : null;
+        // This publication echoes the new authority issued by its capture.
+        // Recalibrate before freezing this permit's deadlines; the cached
+        // authority used to capture must not age its successor's wall bound.
+        if (data.permit && !calibrate(field, data.authority)) {
+          publication = null;
+          return {published: false};
+        }
         const expiresAtPerformanceMs = data.permit ? deadline(data.permit.expiresAtMs, 100) : NaN;
         publication = {...data, expiresAtPerformanceMs,
           expiresAtWallMs: data.permit?.expiresAtMs - clock?.upperWall};

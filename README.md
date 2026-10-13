@@ -1,6 +1,6 @@
 # TypeLay
 
-Linux 开发分支 `cachyos-preview` 的构建、安装、功能缺口与验收步骤见 [Linux 客户端说明](docs/linux.md)。下面保留 Windows 客户端的使用和维护入口。
+Linux 开发分支 `cachyos-preview` 的构建、安装、功能缺口与验收步骤见 [Linux 客户端说明](docs/linux.md)。下面保留 Windows 客户端的使用和维护入口。 用户报告的待处理 Windows 问题见[临时待办](docs/windows-open-issues.md)，按约定在 Linux 与 trunk 整理后再开始修复。
 
 TypeLay 是 Windows 上的本地输入翻译工具。自动模式跟随当前文本输入框显示译文，支持修改候选，并在满足安全条件时用 Tab 接受；按需模式由快捷键唤醒翻译 UI，或执行一次性直接翻译并替换。当前是 Windows 开发预览，不是已完成通用输入支持的稳定版本。
 

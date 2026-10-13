@@ -440,6 +440,14 @@ def run(arguments):
                 }
                 send_tab()
                 firefox_tab["afterMs"] = now_ms()
+                # Preserve the already-read rounds after injection, before failure
+                # polling can replace them. Do not add a read to the key path.
+                firefox_tab.update(
+                    {
+                        name: ready.get("input", {}).get(name)
+                        for name in ("browserRounds", "browserCaptureCounts")
+                    }
+                )
                 (arguments.output / "firefox-tab.json").write_text(json.dumps(firefox_tab))
                 wait_for(
                     lambda: translated(firefox_value()),
@@ -503,6 +511,12 @@ def run(arguments):
                     }
                     send_tab()
                     rich_tab["afterMs"] = now_ms()
+                    rich_tab.update(
+                        {
+                            name: ready.get("input", {}).get(name)
+                            for name in ("browserRounds", "browserCaptureCounts")
+                        }
+                    )
                     (arguments.output / "rich-tab.json").write_text(json.dumps(rich_tab))
 
                     def rich_value():

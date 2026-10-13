@@ -56,11 +56,13 @@ TYPELAY_HOME 必须指向包含 worker/ 的完整发行根，不能指向源码�
 5. 对焦点切换、字段关闭/复用、源文本并发修改、Broker 超时/崩溃做拒绝测试。不得覆盖新文本、串写其它字段或提交表单。B-01 未关闭前不能勾选安全写回通过。验证浏览器受控组件、撤销栈和事件同步，不能只比对最终文字。
 6. 对照 docs/reference 中已确认原型检查浅/深主题、100%-200% DPI、多屏负坐标、窗口移动、滚动、长文本和展开状态。记录截图、实际时延及设备条件，发现明显异常也要处理。HTML/CSS 与 WPF 控件参数相似不等于视觉一致。
 
-## Qt 独立研究入口
+## Linux 适配器独立验证入口
 
-正常提交、Pull Request 和手动 workflow 仍运行完整检查。仅 `cachyos-preview` 的显式 `research(qt-only):` 提交运行 `Qt isolated input and model (no full product acceptance)`；CI 核对整个 push 中每个提交的变更路径，只允许 Qt 合作研究目录、Qt6 消费者及其专用 IID、fixture 和 desktop helper；越界即失败。共享 Core、Runtime、Protocol、桌面后台与打包代码必须走完整检查。
+正常提交、Pull Request 和手动 workflow 仍运行完整检查。仅 `cachyos-preview` 的显式 `research(qt-only):` 或 `research(browser-only):` 提交运行 `Isolated Linux adapter (no full product acceptance)`。CI 检查整个 push 中每个提交的变更路径，越界即失败；Qt 入口仅接受 Qt 模块/IID/专用 fixture 与 helper，浏览器入口仅接受 `content.js` 与现有 DOM/desktop 测试。共享 Core、Runtime、Protocol、桌面后台与打包代码必须走完整检查。
 
-该入口复用 workflow 中固定 artifact ID、源提交及双层 SHA256 校验的已验证合作运行时及普通客户端，重建当前 Qt 模块并运行原输入队列和真实 niri/本地模型场景。CI 另核固定包源提交以来的非 Qt 产品输入未变化，不能把旧二进制冒作当前共享实现。artifact 过期、依赖不兼容或校验失败都直接报错，不自动换包；更新复用基线须走正常完整检查。研究通过不表示 Qt 产品支持或正式产品验收通过。
+两个入口复用固定 artifact ID、源提交与双层 SHA256 校验的精确客户端和合作运行时。Qt 重建当前插件并验证实际输入队列与 niri/本地模型；浏览器只在临时客户端中替换当前 content.js、重建临时 Firefox 扩展，运行原 DOM 契约及同一 Chromium/Firefox 模型场景。没有另一套控制器或替代模型。对应场景未执行的另一适配器不参与该场景的二进制一致性检查；实际执行的共享/宿主输入仍须与固定包源提交相同。测试代码从本次 checkout 运行，不能把旧共享实现冒作新实现。
+
+基线的各场景结果须独立说明：当前固定包已有实际 GTK/Qt/VSIX 验证，但有尚待修复的 Firefox 许可时效失败，浏览器入口用于重复验证这个已知失败，不宣称基线整体通过。artifact 过期、依赖不兼容或校验失败直接报错，不自动换包。更新复用基线或入口工作流走正常检查；独立场景通过不等于整个平台或真实用户桌面验收通过。
 
 ## 结果表述
 

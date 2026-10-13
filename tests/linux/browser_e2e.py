@@ -266,6 +266,46 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.accepted(), [])
         self.assertEqual(self.page.evaluate("document.activeElement.id"), "other")
 
+    def test_fresh_publication_does_not_inherit_cached_capture_authority_age(self):
+        self.page.keyboard.insert_text("Hello")
+        template = self.plan({"target": "", "text": "", "selection": {}, "observedAtMs": 0})
+        result = self.page.evaluate(
+            """async plan => {
+              const description = fixtureCommand({id: 950, op: 'describe'});
+              const first = description && fixtureCommand({id: 951, op: 'capture', data: {
+                target: description.target, authority: description.authority, requireFocused: true}});
+              if (!first) return {captured: false};
+              // Exercise the cached authority's real age, then keep the capture
+              // response and publication in the same bounded transport turn.
+              const until = performance.now() + 40;
+              while (performance.now() < until) {
+                await new Promise(resolve => setTimeout(resolve, until - performance.now()));
+              }
+              const snapshot = fixtureCommand({id: 952, op: 'capture', data: {
+                target: first.target, authority: first.authority, requireFocused: true}});
+              if (!snapshot) return {captured: false};
+              plan.expected = {...plan.expected, target: {...plan.expected.target, value: snapshot.target},
+                text: snapshot.text, selection: snapshot.selection, observedAtMs: snapshot.observedAtMs};
+              const command = {id: 953, op: 'publish', data: {
+                target: snapshot.target, authority: snapshot.authority, permit: {plan}}};
+              const published = fixtureCommand(command);
+              const acknowledged = fixtureMessages.findLast(item => item.event === 'publication')?.data;
+              return {captured: true, published, acknowledged,
+                authorityAgeMs: snapshot.diagnostics.authorityAgeMs,
+                renewed: snapshot.authority.token !== first.authority.token,
+                deadlineReductionMs: command.data.permit.expiresAtMs - acknowledged?.readyUntilHostMs};
+            }""",
+            template,
+        )
+        self.assertTrue(result["captured"], result)
+        self.assertTrue(result["renewed"], result)
+        self.assertGreaterEqual(result["authorityAgeMs"], 39, result)
+        self.assertTrue(result["published"]["published"], result)
+        self.assertTrue(result["acknowledged"]["ready"], result)
+        # A fresh echoed authority pays bounded clock uncertainty, not the
+        # preceding 40ms refresh interval. This is not desktop latency evidence.
+        self.assertLess(result["deadlineReductionMs"], 25, result)
+
     def test_modified_authority_token_cannot_establish_clock(self):
         self.page.keyboard.insert_text("Hello")
         description = self.command("describe")

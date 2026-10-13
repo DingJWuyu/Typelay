@@ -108,6 +108,6 @@ Qt 组件是显式可选内容，只有使用 `pack.py --qt-output <本轮Qt构�
 
 有 Qt 组件的包可执行 `python fcitx-cooperative.py preflight --qt6`，再以 `python fcitx-cooperative.py launch --qt6 应用命令` 逐应用启动。仍须先按前述步骤手动启动同包私有 Fcitx daemon。启动器仅在这个子进程设置 Qt 插件路径、TypeLay generic 插件、原 Fcitx 输入模块与合作开关。无 GUI 的版本探针核实实际 `qVersion()`、编译版本和两个插件的元数据；另独立检查 ELF 动态依赖，未知或混合 Qt ABI 时拒绝。强制同步 Fcitx Qt 模式不支持，不能靠它绕过原异步输入事务。
 
-Qt 系统包的发行修订可与 CI 的 Arch 构建不同；校验明确针对 Qt 6.11.2 上游 ABI，不声称与 CachyOS 包逐字节相同。Qt 6.10 起客户端 Wayland 库及平台插件已在 qt6-base 内，无需安装仅提供 compositor 的 qt6-wayland。应用自带另一套 Qt、Qt5、QtQuick、自绘或富文本不属于本入口的支持范围。标准字段的具体可用范围以当前实际搬迁验收结果为准；打包成功只证明构建和原异步输入回归通过，交付仍须对该包完成真实模型与写回验收。
+Qt 系统包的发行修订可与 CI 的 Arch 构建不同；校验明确针对 Qt 6.11.2 上游 ABI，不声称与 CachyOS 包逐字节相同。Qt 6.10 起客户端 Wayland 库及平台插件已在 qt6-base 内，无需安装仅提供 compositor 的 qt6-wayland。应用自带另一套 Qt、Qt5、QtQuick、自绘或富文本不属于本入口的支持范围。已用真实搬迁包的 launcher 在 Qt 6.11.2/Wayland 验证标准 QLineEdit 与纯文本 QPlainTextEdit：本地模型、选区/Unicode、Tab、人工编辑回源、原生撤销、按需快捷键和组合拒写。后台直接替换原字段仍是未完成项；物理输入与实际应用需用户机器验证。
 
 撤回此逐应用选项只需退出该应用，随后正常启动原应用；不修改 shell 或全局配置。私有 daemon 的整体退出和原输入法恢复沿用前述流程。
