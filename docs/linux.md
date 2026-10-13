@@ -14,7 +14,7 @@
 
 可选 [Fcitx 合作组件](fcitx-linux.md) 通过实际 IM context 提供在途提交、组合、输出序号与字段绑定，为标准 GTK3/GTK4 GtkEntry/原生 EntryBuffer 与纯文本 TextView/原生 TextBuffer 提供路径；GTK4 通过合作启动器的 --gtk4 显式启用。TextView 拒绝 tags、嵌入对象和只读控件，保留原生 user-action 分组；GTK4 尊重应用已有 undo 开关，GTK3 不额外提供 undo 栈。当前固定完整私有 Fcitx 5.1.22、Chinese Addons 5.1.14、GTK IM 5.1.7 与 LibIME 1.1.16，实际库及模型路径均有校验。隔离 niri 已通过搬迁后的默认组件会话、拒绝重复 daemon、配置/重启、实际按键输入、本地模型、浮层、一次 Tab 和编辑后两阶段 Tab；框架回归覆盖组合、活动临时模式、在途旧提交与重入拒绝。使用需要用户明确切换到私有 daemon 并逐应用启动，普通安装不替换系统输入法。用户个人配置、第三方 addon、真实物理输入和恢复操作仍需目标机器验证；未知组件不会被自动授予 TypeLay 能力。
 
-[Qt6 标准 QLineEdit 合作路径](qt-linux.md) 已有隔离 Wayland/niri 的真实键入、模型、原生浮层、单次 Tab、原生撤销、编辑两阶段 Tab 与拼音组合拒写证据。该模块目前只在 CI 中构建，未进入普通包或用户合作包；用户 Qt ABI 未确认，不能直接安装 CI 插件。按需快捷键及更广控件仍需分别验证。
+[Qt6 标准 QLineEdit 合作路径](qt-linux.md) 已有隔离 Wayland/niri 的真实键入、模型、原生浮层、单次 Tab、原生撤销、编辑两阶段 Tab、Unicode 选区、默认 F9/F10、命令取消、拼音组合拒写及敏感/裁剪字段正文前拒绝证据。该模块目前只在 CI 中构建，未进入普通包或用户合作包。用户已确认 Qt 6.11.2-3.1、Fcitx Qt 5.1.15、GTK4 4.22.5-1.1，当前实测为 Qt 6.12.0、GTK4 4.24.1；同上游版本的 Arch 验证待执行，不能直接安装 CI 插件或声明用户机器通过。
 
 GTK 非纯文本与非标准控件、更广的输入法事务能力、Qt 多行/自绘控件、Electron/VS Code 自动浮层和更广的富文本结构仍是未完成的开发项；终端/命令区按产品策略默认排除。当前交付未达到通用 Linux 输入框移植目标，不能把这些开发缺口留作“只需真机验证”。GTK 父窗口/浏览器视口定位契约见 `docs/adr/0004-linux-native-anchors.md`。
 
@@ -26,11 +26,11 @@ GTK 非纯文本与非标准控件、更广的输入法事务能力、Qt 多行/
 
 | 功能 | 两端共同实现与 Linux 当前范围 | 尚需对齐或验证 |
 | --- | --- | --- |
-| 自动/按需 | 共用自动持续翻译、按需目标唤醒和一次性直接任务；Linux 经浏览器及合作 GTK 输入路径执行 | Qt6 标准单行自动路径已有 CI 证据，按需仍待专项验证且尚无用户版包；通用 Electron/VS Code 自动输入路径未完成 |
+| 自动/按需 | 共用自动持续翻译、按需目标唤醒和一次性直接任务；Linux 经浏览器及合作 GTK 输入路径执行，Qt6 标准单行的自动/按需路径已有隔离 CI 证据 | Qt 尚无用户版包；通用 Electron/VS Code 自动输入路径未完成 |
 | 快捷键 | 共用可配置 F9/F10 组合及固定 Tab/Esc 语义；Linux 提供适配器触发及 niri CLI 入口 | niri 用户绑定不会随设置自动更新，也没有 Windows RegisterHotKey 式全局冲突反馈 |
 | 浮层 | 胶囊、状态、展开、复制、重译、隐藏、排除和语言入口均有实现；Linux 使用原窗口/页面内定位 | 更多菜单布局尚不完全一致；目标桌面缩放、滚动、边缘和主题仍需验收 |
 | 编辑/接受 | 共用人工草稿、第一 Tab 回源、重新核验后第二 Tab 接受；写回默认需显式开启 | 物理键盘、真实应用快速切焦点与各控件原生撤销仍须逐路径验证 |
-| 直接替换 | 绑定原目标生命周期，结果不转移到后来聚焦字段；Linux 在源事件线程写入并回传终端结果 | Windows 后台直接写回也有受限控件范围；不能以其 UIA 非原子路径替代 Linux 安全能力 |
+| 直接替换 | 绑定原目标生命周期，结果不转移到后来聚焦字段；Linux 在源事件线程写入并回传终端结果 | Qt 当前仍要求原字段聚焦，后台切字段写回未完成；Windows 后台直接写回也有受限控件范围，不能以其 UIA 非原子路径替代 Linux 安全能力 |
 | IME/焦点 | 未知状态不授予编辑/接受资格，源框与浮层属于同一会话 | Linux 合作 Fcitx 需用户手动切换私有会话，仍未达到无需输入法协作的通用体验 |
 | 设置/托盘 | 启停、模式、方向、交换、排除、主题、启动项、模型状态和退出已实现 | Linux 设置布局/语言搜索与 Windows 尚有差异；平台菜单形式不要求相同 |
 | 安装/首次使用 | 显式模型安装、校验后启用、设置持久化、单会话与退出清理已有实现 | Linux 已实现下载暂停/验证后续传与显式本地试译引导；独立 GTK 实操窗口复用生产自动胶囊/两阶段 Tab，需已启用合作组件；普通未合作环境仅提供接入指引，真实实操结果以对应提交 CI 为准 |
@@ -106,6 +106,8 @@ python fcitx-cooperative.py launch ~/.local/bin/typelay --practice
 
 按需模式：聚焦时不自动显示或翻译。Ctrl+Shift+F9 唤醒当前输入框；Ctrl+Shift+F10 冻结当前选择范围或整段文本并直接翻译替换，不改变工作模式。即使用户随后切换输入框，也不会把结果写入新的焦点；原目标内容改变、关闭或失去写入权限时拒绝写回。
 
+Qt 的显式 F9/F10 可在原目标的元数据授权内登记一个待捕获请求，固定使用原 150ms 截止；只有真实异步请求/输出/转发均退休且重新证明 Clear 后才读取正文。源正文、选区、焦点或非 modifier 新输入变化会取消，超期也会提示取消，不靠 timer 猜测 Clear。普通 Tab 仍只接受当下完整有效的许可。当前 Qt F10 写回还要求原字段仍聚焦，尚不支持切字段后的后台写回。
+
 快捷键可在设置中修改。输入法组合中的按键不会被当作 TypeLay 命令。输入法状态不能被确认时，不以“看起来没有候选窗”作为替换许可。
 
 需要合成器级快捷键时，可自行在 niri 配置的 binds 区块加入以下内容，路径替换为自己的绝对路径：
@@ -178,7 +180,7 @@ env GDK_BACKEND=x11 dbus-run-session -- xvfb-run -a python tests/linux/tray_e2e.
 
 嵌套测试需要独立 Xvfb、niri、Mesa 软件渲染、D-Bus 和 xdotool。CI 的 XTest 只向独立嵌套合成器注入测试按键，不是生产客户端的输入方案。原生 --gtk-refusal 测试只验证未知 GTK 输入法的拒绝与透传，不验证 GTK 翻译功能；Chromium DOM、本地主机与完整桌面链路有独立用例，不能冒充 Firefox 或物理键盘实测。
 
-Qt 的实现、构建和实际验证边界见 [Qt6 原生输入路径](qt-linux.md)。`tests/linux/qt_cooperative/run.py --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22` 在临时 D-Bus/Xvfb 中验证原默认异步输入、同窗口字段切换和转发按键的真实交付完成；`tests/linux/qt_desktop.py` 复用正式宿主和模型，在嵌套 niri 中验证标准 QLineEdit。强制同步模式有独立上游对照证据，当前不为 TypeLay 授予能力；它不是默认路径通过的条件。provider 依赖匹配的 Qt 私有头，当前 CI 为 Qt 6.12.0、固定 Fcitx Qt 5.1.15；不进入用户包，不能据此声明用户 Qt ABI 兼容。
+Qt 的实现、构建和实际验证边界见 [Qt6 原生输入路径](qt-linux.md)。`tests/linux/qt_cooperative/run.py --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22` 在临时 D-Bus/Xvfb 中验证异步输入、同窗口字段切换和转发按键的真实交付完成。provider 保持异步请求，但以内部 FIFO 按请求序处理实际 finished 回复，避免后到完成的早期键被后续键越过；未完成请求和未退役转发仍为 pending。`tests/linux/qt_desktop.py` 复用正式宿主和模型，在嵌套 niri 中验证标准 QLineEdit。强制同步模式有独立上游对照证据，当前不为 TypeLay 授予能力；它不是默认路径通过的条件。provider 依赖匹配的 Qt 私有头，当前 CI 为 Qt 6.12.0、固定 Fcitx Qt 5.1.15；用户 Qt 6.11.2-3.1 的兼容性仍待同版构建和实际运行验证。
 
 物理 CachyOS + niri 验收必须记录系统/niri/GTK/PyGObject/输入法版本，并逐项保留结果：
 
@@ -195,7 +197,7 @@ Qt 的实现、构建和实际验证边界见 [Qt6 原生输入路径](qt-linux.
 | 网页普通字段 | Firefox/Chromium 扩展安装、input/textarea、切标签页、DOM 重建和框架受控值 | native messaging 路由、真实网页状态与撤销栈；详见浏览器说明 |
 | 富文本 | Tiptap 单段选区替换，保留范围外 marks 与原生撤销语义 | 其他版本、自定义 dispatcher、多段/列表/mention 尚未覆盖 |
 | 合作 GTK | GTK3/GTK4 标准 Entry、纯文本 TextView，模型、选区、编辑回源、组合与敏感字段拒绝 | 两代 Entry/TextView 均已有隔离 niri 证据；GTK3 验证宿主 user-action 分组，GTK4 另验原生 undo/redo，实际应用及物理输入仍需验收 |
-| 合作 Qt6 | 标准 QLineEdit 自动翻译、编辑回源、原生撤销与真实拼音拒写 | 已有 CI Qt 6.12.0 的隔离 niri 证据；用户 Qt ABI 未知，尚无可安装的 Qt 合作包 |
+| 合作 Qt6 | 标准 QLineEdit 自动/按需、F9/F10、Unicode 选区、编辑回源、原生撤销、命令取消、真实拼音与敏感字段拒绝 | 已有 CI Qt 6.12.0 的隔离 niri 证据；用户 Qt 6.11.2-3.1 待同版验证，尚无可安装的 Qt 合作包；后台切字段 F10 和多行源字段未完成 |
 | 其他输入框 | 带 tags/嵌入对象及非标准 GTK 控件、Electron/VS Code 自动浮层、Qt 多行/自绘控件 | 尚未实现，不能标记通过 |
 
 未经实际执行的项目保持未验证。源码中存在实现、单元测试通过和嵌套桌面通过是三个不同层次的证据。

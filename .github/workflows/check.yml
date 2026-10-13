@@ -99,6 +99,17 @@ jobs:
     steps:
       - name: Install target desktop build dependencies
         run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 gtk4 at-spi2-core json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols ccache opencc procps-ng zstd qt6-base qt6-wayland libxkbcommon libxcb
+      - name: Match the target GTK4 upstream release
+        run: |
+          mkdir -p /tmp/typelay-target-sdk
+          cd /tmp/typelay-target-sdk
+          package='gtk4-1%3A4.22.5-1-x86_64.pkg.tar.zst'
+          curl --fail --location "https://archive.archlinux.org/packages/g/gtk4/$package" -o gtk4.pkg.tar.zst
+          curl --fail --location "https://archive.archlinux.org/packages/g/gtk4/$package.sig" -o gtk4.pkg.tar.zst.sig
+          echo '7386543a425d523b76f08a8269b530dcbebc45a53a68cfdef5251e8238d60dc9  gtk4.pkg.tar.zst' | sha256sum -c -
+          echo '894fd81f845eb49137d73056f62b27f2d194d2990ebe6dfdc956cd678db76048  gtk4.pkg.tar.zst.sig' | sha256sum -c -
+          pacman -U --noconfirm ./gtk4.pkg.tar.zst
+          test "$(pkg-config --modversion gtk4)" = 4.22.5
       - name: Initialize the disposable container D-Bus identity
         run: dbus-uuidgen --ensure=/etc/machine-id
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -303,12 +314,26 @@ jobs:
       image: archlinux:base-devel
       options: --shm-size=1g
     timeout-minutes: 15
+    env:
+      TYPELAY_EXPECT_QT_VERSION: 6.11.2
     permissions:
       contents: read
       actions: read
     steps:
       - name: Install isolated Qt research dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf python curl unzip patch qt6-base qt6-wayland extra-cmake-modules libxkbcommon libxcb fcitx5 fcitx5-chinese-addons boost-libs opencc xorg-server-xvfb xdotool dbus gtk3 python-gobject libayatana-appindicator niri mesa grim noto-fonts-cjk uv icu openssl zlib
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf python curl unzip patch extra-cmake-modules libxkbcommon libxcb fcitx5 boost-libs opencc xorg-server-xvfb xdotool dbus gtk3 python-gobject libayatana-appindicator niri mesa grim noto-fonts-cjk uv icu openssl zlib
+      - name: Match the target Qt upstream ABI
+        run: |
+          mkdir -p /tmp/typelay-target-sdk
+          cd /tmp/typelay-target-sdk
+          package='qt6-base-6.11.2-3-x86_64.pkg.tar.zst'
+          curl --fail --location "https://archive.archlinux.org/packages/q/qt6-base/$package" -o "$package"
+          curl --fail --location "https://archive.archlinux.org/packages/q/qt6-base/$package.sig" -o "$package.sig"
+          echo '257c5ef6180119d5b4365bdfe2a2ad051694b5dff390eac8e736dd78b8107b21  qt6-base-6.11.2-3-x86_64.pkg.tar.zst' | sha256sum -c -
+          echo 'abf939ab10c2d7f28af81e5230c72e2acbd803fe43590fda331f474ec871dcfb  qt6-base-6.11.2-3-x86_64.pkg.tar.zst.sig' | sha256sum -c -
+          pacman -U --noconfirm "./$package"
+          test "$(pkg-config --modversion Qt6Core)" = 6.11.2
+          test -f /usr/lib/qt6/plugins/platforms/libqwayland.so
       - name: Initialize the disposable container D-Bus identity
         run: dbus-uuidgen --ensure=/etc/machine-id
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

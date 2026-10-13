@@ -10,6 +10,8 @@ def named(pid, name):
     desktop = Atspi.get_desktop(0)
     for index in range(desktop.get_child_count()):
         app = desktop.get_child_at_index(index)
+        if app is None:
+            continue  # The remote accessibility tree may still be changing.
         try:
             if app.get_process_id() != pid:
                 continue
@@ -20,6 +22,8 @@ def named(pid, name):
             if not pending:
                 break
             node = pending.pop()
+            if node is None:
+                continue  # A child can disappear between count and lookup.
             node.clear_cache()
             if node.get_name() == name:
                 return node
