@@ -15,6 +15,7 @@ from pathlib import Path
 from main import control
 from niri import contents, request
 from paths import Paths, connect_private, peer_credentials
+from wire import now_ms
 
 
 def run_qt(
@@ -70,6 +71,8 @@ def run_qt(
     evidence = []
     state_path = arguments.output / "qt-desktop-state.json"
     state_path.unlink(missing_ok=True)
+    click_trace = arguments.output / "qt-overlay-clicks.jsonl"
+    click_trace.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory(prefix="typelay-qt-desktop-") as temporary:
         home = Path(temporary)
         config = home / "config/fcitx5"
@@ -231,7 +234,7 @@ def run_qt(
                     fixture.stdin.write(json.dumps({"op": operation, **values}) + "\n")
                     fixture.stdin.flush()
 
-                def click_rectangle(actual, rectangle):
+                def click_rectangle(actual, rectangle, control_name=None):
                     geometry = dict(
                         line.split("=", 1)
                         for line in subprocess.check_output(
@@ -248,6 +251,27 @@ def run_qt(
                     y = rectangle["y"] + rectangle["height"] // 2
                     assert rectangle["width"] > 0 and rectangle["height"] > 0
                     assert 0 <= x < actual["width"] and 0 <= y < actual["height"]
+                    if control_name is not None:
+                        # Pair the requested point with real Qt event observations;
+                        # a visible host state alone does not acknowledge a click.
+                        with click_trace.open("a") as trace:
+                            trace.write(
+                                json.dumps(
+                                    {
+                                        "atMs": now_ms(),
+                                        "observedAtMs": actual["observedAtMs"],
+                                        "role": control_name,
+                                        "instance": actual["overlayControls"][control_name][
+                                            "instance"
+                                        ],
+                                        "overlayEventCount": actual["overlayEventCount"],
+                                        "geometry": rectangle,
+                                        "x": x,
+                                        "y": y,
+                                    }
+                                )
+                                + "\n"
+                            )
                     subprocess.run(
                         [
                             "xdotool",
@@ -274,7 +298,7 @@ def run_qt(
                         else None,
                         f"actual Qt overlay control was unavailable: {name}",
                     )
-                    click_rectangle(actual, actual["overlayControls"][name]["geometry"])
+                    click_rectangle(actual, actual["overlayControls"][name]["geometry"], name)
 
                 def settled(value):
                     # Missing diagnostics remain unknown, never an invented zero.
@@ -353,6 +377,7 @@ def run_qt(
                 def set_mode(mode):
                     from support.gtk_accessibility import Atspi, named
 
+                    before_settings = state()
                     paths = Paths(arguments.package)
                     with connect_private(paths.control, 1.5) as connection:
                         host_pid = peer_credentials(connection)[0]
@@ -402,14 +427,16 @@ def run_qt(
                         == names[mode],
                         "real settings combo did not change work mode",
                     )
-                    save = wait_for(
-                        lambda: named(host_pid, "保存设置"), "real settings Save was unavailable"
-                    )
-                    assert Atspi.Action.do_action(save.get_action_iface(), 0)
+                    # Ordinary choices save immediately through SettingsStore;
+                    # the separate draft-save action owns only text settings.
                     wait_for(
                         lambda: json.loads(paths.settings.read_text()).get("Mode") == mode,
                         "production settings did not persist the selected work mode",
                     )
+                    after_settings = state()
+                    for field in ("first", "second"):
+                        assert after_settings[field]["text"] == before_settings[field]["text"]
+                        assert after_settings[field]["changes"] == before_settings[field]["changes"]
                     request({"Action": {"CloseWindow": {"id": settings_window["id"]}}})
                     request({"Action": {"FocusWindow": {"id": window["id"]}}})
                     wait_for(
@@ -597,9 +624,13 @@ def run_qt(
                 )
 
                 clear_source()
+                # The host state can advance before Qt applies its render.
+                # Observe the actual capsule (visible overlay, hidden editor)
+                # before using its controls' geometry for the single click.
                 wait_for(
                     lambda: status().get("viewState") == "IdleCapsule"
-                    and state().get("overlayVisible"),
+                    and (value := state()).get("overlayVisible")
+                    and value.get("editorVisible") is False,
                     "empty Qt source did not retain its language capsule",
                 )
                 settings_path = Paths(arguments.package).settings
@@ -766,6 +797,7 @@ def run_qt(
                     command_source = "Please translate this command safely."
                     dormant_source(command_source)
                     before = state()
+                    before_feedback = status().get("operationFeedback", {}).get("revision", 0)
                     before_write = trace_checkpoint()
                     command("on-command-queued", action=action)
                     wait_for(
@@ -794,6 +826,24 @@ def run_qt(
                     assert after["second"]["text"] == other
                     assert after["second"]["changes"] == before["second"]["changes"]
                     assert not new_write_outcomes(before_write)
+                    explanation = (
+                        "输入内容或选区已变化，请重试。"
+                        if action == "rewrite"
+                        else "输入框焦点已变化，请在目标输入框重试。"
+                    )
+                    feedback_code = (
+                        "shortcut-sourcechanged"
+                        if action == "rewrite"
+                        else "shortcut-notsourcefocus"
+                    )
+                    wait_for(
+                        lambda: (report := status()).get("serviceStatus")
+                        == f"未执行本次直接替换：{explanation}"
+                        and (feedback := report.get("operationFeedback", {})).get("code")
+                        == feedback_code
+                        and feedback.get("revision", 0) > before_feedback,
+                        f"cancelled Qt {action} command did not show its shared refusal reason",
+                    )
                     if action == "focus-second":
                         assert after["second"]["focused"] and not after["first"]["focused"]
                         command("focus", field="first")
@@ -831,7 +881,8 @@ def run_qt(
                 assert after["second"]["changes"] == before["second"]["changes"]
                 assert not new_write_outcomes(before_write)
                 evidence.append(
-                    "Qt6 explicit command safety: real queued input/focus changes cancel without writes; "
+                    "Qt6 explicit command safety: real queued input/focus changes cancel without writes "
+                    "and report distinct shared refusal messages; "
                     "a post-snapshot source edit survives the completed CPU direct translation"
                 )
 

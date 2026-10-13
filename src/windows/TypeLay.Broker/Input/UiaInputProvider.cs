@@ -54,9 +54,14 @@ internal sealed class UiaInputProvider : IDisposable
         if (_native.BindFocused() != token)
             return Reject("focused-identity-changed");
         var info = element.Cached;
-        if ((info.ControlType != ControlType.Edit && info.ControlType != ControlType.Document)
-            || info.IsPassword || !info.IsEnabled || info.IsOffscreen)
-            return Reject("not-editable-visible");
+        if (info.ControlType != ControlType.Edit && info.ControlType != ControlType.Document)
+            return Reject("not-edit-control");
+        if (info.IsPassword)
+            return Reject("password-field");
+        if (!info.IsEnabled)
+            return Reject("disabled-field");
+        if (info.IsOffscreen)
+            return Reject("offscreen-field");
         trace?.Stage("process-identity");
         using var process = Process.GetProcessById(info.ProcessId);
         string app = process.ProcessName.ToLowerInvariant();

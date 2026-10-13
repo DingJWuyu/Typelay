@@ -31,6 +31,6 @@
 
 ## 开发与验收入口
 
-仓库中的[Windows 开发](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/windows/development.md)、[测试说明](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/windows/testing.md)和[架构边界](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/windows/architecture.md)提供源码工作方法。[Windows 待办](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/windows/open-issues.md)保留当前用户问题及 CI 失败证据；按既定安排，先完成 Linux 主线与 trunk 整理，通知用户检查，收到回复后再开始 Windows 修复。
+仓库中的[Windows 开发](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/windows/development.md)、[测试说明](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/windows/testing.md)和[架构边界](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/windows/architecture.md)提供源码工作方法。[Windows 待办](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/windows/open-issues.md)保留当前用户问题及 CI 失败证据。Windows 与 Linux 按[共同应用支持与完整体验](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/product/application-support.md)同步推进，平台底层实现不同不降低产品要求。
 
 共同产品要求见[产品验收基线](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/product/README.md)。发行包中的本页保留完整使用步骤；源码文档可在 [trunk 文档目录](https://github.com/DingJWuyu/Typelay/tree/trunk/docs)查阅。

@@ -59,7 +59,8 @@ internal static class Program
             UiTheme.Initialize(settings.Value.Theme);
             model = WindowsRuntime.CreateModel();
             var overlay = new OverlayWindow(automationTest);
-            session = WindowsRuntime.CreateSession(settings, model, overlay, automationTest);
+            var support = new WindowsApplicationSupport();
+            session = WindowsRuntime.CreateSession(settings, model, overlay, automationTest, support: support);
             void Tutorial()
             {
                 session.StopSession();
@@ -74,7 +75,7 @@ internal static class Program
                     Process.Start(new ProcessStartInfo(file) { UseShellExecute = true });
                 }
             }
-            var window = new SettingsWindow(settings, model, Tutorial)
+            var window = new SettingsWindow(settings, model, Tutorial, support)
             {
                 SessionMustEnd = session.StopSession,
                 ShortcutStatus = () => session.ShortcutStatus
@@ -83,6 +84,24 @@ internal static class Program
             var quick = new QuickPanel(settings, model, session, () => window.ShowPage(), () => app.Shutdown());
             icon = MakeTrayIcon();
             tray = new Forms.NotifyIcon { Icon = icon, Visible = true, Text = "TypeLay · 正在启动" };
+            session.OperationFeedback += feedback =>
+            {
+                if (!disposed)
+                    tray.ShowBalloonTip(5000, "TypeLay", feedback.Message, Forms.ToolTipIcon.Info);
+            };
+            support.CheckStarted += id =>
+            {
+                var target = ApplicationSupportPresentation.Create([]).Rows.Single(row => row.Id == id);
+                tray.ShowBalloonTip(5000, target.Title,
+                    ApplicationSupportPresentation.ReasonText(ApplicationSupportReason.NoFocusedField), Forms.ToolTipIcon.Info);
+            };
+            support.CheckCompleted += id =>
+            {
+                if (disposed)
+                    return;
+                var result = support.Read(settings.Value).Rows.Single(row => row.Id == id);
+                tray.ShowBalloonTip(5000, result.Title, result.ReasonText, Forms.ToolTipIcon.Info);
+            };
             var menu = new Forms.ContextMenuStrip();
             var toggle = new Forms.ToolStripMenuItem("暂停 TypeLay");
             toggle.Click += (_, _) => app.Dispatcher.Invoke(() => settings.Update(settings.Value with { Enabled = !settings.Value.Enabled }));
@@ -102,6 +121,7 @@ internal static class Program
                 toggle.Text = settings.Value.Enabled ? "暂停 TypeLay" : "启用 TypeLay";
             }
             settings.Changed += TrayStatus;
+            settings.Changed += () => { if (!settings.Value.Enabled) support.CancelCheck(); };
             model.Changed += TrayStatus;
             UserPreferenceChangedEventHandler themeChanged = (_, _) => app.Dispatcher.BeginInvoke(new Action(() => UiTheme.Apply(settings.Value.Theme)));
             SystemEvents.UserPreferenceChanged += themeChanged;

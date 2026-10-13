@@ -26,7 +26,6 @@
 #include <QTextFrame>
 #include <QThread>
 #include <QTimer>
-#include <QToolTip>
 #include <QUuid>
 #include <QVariant>
 #include <QVBoxLayout>
@@ -264,19 +263,22 @@ private slots:
 private:
     bool onThread() const { return QThread::currentThread() == thread(); }
     void traceGate(const char *phase, Target *target, const QJsonObject &basis, qint64 until,
-                   const char *reason = "none") const {
+                   const char *reason = "none", qint64 writeStarted = 0,
+                   qint64 inspectMs = -1, qint64 prepareMs = -1, qint64 selectionMs = -1) const {
         static unsigned traceLines = 0;
         if (!qEnvironmentVariableIsSet("TYPELAY_TRACE") || traceLines >= 128) return;
         ++traceLines;
         const auto expected = basis.value("contextStamp").toObject();
+        const auto current = now();
         const bool field = target && target->field;
         const bool observed = target && target->observed;
         // Fixed phases/reasons and numeric/boolean guards only. Never print
         // field body, labels, metadata hashes, plan strings or target IDs.
         std::fprintf(stderr, "TypeLay Qt6 phase=%s reason=%s remainingMs=%lld field=%d provider=%d focused=%d "
             "published=%d mutating=%d probing=%d flags=%u contentSame=%d inputSame=%d focusSame=%d "
-            "contextSame=%d fieldSame=%d epochSame=%d imeInputSame=%d serverSame=%d appliedSame=%d\n",
-            phase, reason, static_cast<long long>(until - now()), int(field), int(target && target->provider),
+            "contextSame=%d fieldSame=%d epochSame=%d imeInputSame=%d serverSame=%d appliedSame=%d "
+            "writeElapsedMs=%lld initialInspectMs=%lld prepareMs=%lld selectionMs=%lld\n",
+            phase, reason, static_cast<long long>(until - current), int(field), int(target && target->provider),
             int(field && QApplication::focusWidget() == target->field && QGuiApplication::focusObject() == target->field),
             int(!publication_.isEmpty()), int(target && target->mutating), int(target && target->probing),
             observed ? target->state.flags : 0u,
@@ -288,7 +290,9 @@ private:
             int(observed && integer(expected, "epoch") == qint64(target->state.epoch)),
             int(observed && integer(expected, "input") == qint64(target->state.inputEpoch)),
             int(observed && integer(expected, "server") == qint64(target->state.serverSerial)),
-            int(observed && integer(expected, "applied") == qint64(target->state.appliedSerial)));
+            int(observed && integer(expected, "applied") == qint64(target->state.appliedSerial)),
+            static_cast<long long>(writeStarted ? current - writeStarted : -1),
+            static_cast<long long>(inspectMs), static_cast<long long>(prepareMs), static_cast<long long>(selectionMs));
     }
     bool insideOverlay(QObject *object) const {
         for (auto *parent = object; parent; parent = parent->parent()) if (parent == card_) return true;
@@ -367,7 +371,7 @@ private:
             connect(plain, &QPlainTextEdit::textChanged, this, [this, target] { syncDocument(target); });
         }
         connect(widget, &QObject::destroyed, this, [this, target, widget] {
-            cancelShortcut(target);
+            cancelShortcut(target, "TargetChanged");
             shortcutAuthority_ = {};
             target->field = nullptr;
             if (overlayTarget_ == target) hideOverlay();
@@ -627,7 +631,7 @@ private:
     }
     void invalidate(Target *target, bool textChanged, bool focusChanged) {
         if (!target || !target->field) return;
-        cancelShortcut(target);
+        cancelShortcut(target, focusChanged ? "NotSourceFocus" : textChanged ? "SourceChanged" : "EpochChanged");
         if (focusChanged) shortcutAuthority_ = {};
         if (focusChanged) ++target->focus;
         else ++target->input;
@@ -678,18 +682,49 @@ private:
         }
         return {};
     }
-    void cancelShortcut(Target *target = nullptr) {
+    void rejectShortcut(const QString &kind, const QJsonValue &generation, quint64 commandId, const char *reason) {
+        if (!shortcutConfiguration_.value("enabled").toBool()
+            || generation != shortcutConfiguration_.value("generation")) return;
+        sendEvent("shortcut-rejected", {{"kind", kind}, {"generation", generation},
+            {"commandId", qint64(commandId)}, {"reason", QLatin1String(reason)}});
+    }
+    quint64 startShortcut(const QString &kind, const QJsonValue &generation, qint64 triggeredAt) {
+        // A delayed compositor command must not cancel a newer native key.
+        // Equal timestamps cannot establish a newer command either.
+        if (triggeredAt <= shortcutStartedAt_) return 0;
+        shortcutStartedAt_ = triggeredAt;
+        const auto commandId = ++shortcutSequence_;
+        // Register the newer command first; an older cancellation must not
+        // supersede its feedback or be mistaken for this command's outcome.
+        sendEvent("shortcut-started", {{"kind", kind}, {"generation", generation},
+            {"commandId", qint64(commandId)}, {"triggeredAtMs", triggeredAt}});
+        cancelShortcut();
+        return commandId;
+    }
+    const char *shortcutRefusal(Target *target, const QJsonObject &basis) {
+        if (!supported(target) || target->quarantined) return "Unsupported";
+        if (target != focused()) return "NotSourceFocus";
+        const auto fields = metadata(target); // Metadata only, never source text.
+        if (fields.value("password").toBool()) return "Sensitive";
+        if (fields.value("readOnly").toBool()) return "ReadOnly";
+        const auto observed = integer(basis, "observedAtMs"), current = now();
+        if (observed < 0 || current < observed || current - observed >= 150) return "StaleObservation";
+        if (!target->provider || !target->observed || !clear(target->state)) return "ImeUnclear";
+        return "EpochChanged";
+    }
+    void cancelShortcut(Target *target = nullptr, const char *reason = "EpochChanged", bool report = true) {
         if (!pendingShortcut_ || (target && pendingShortcut_->target != target)) return;
         const auto request = *pendingShortcut_;
         pendingShortcut_.reset();
-        traceGate("shortcut-cancelled", request.target, request.basis, request.until);
-        if (request.field && request.field->isVisible() && request.field->window()->isActiveWindow())
-            QToolTip::showText(request.field->mapToGlobal(QPoint(0, request.field->height())),
-                QStringLiteral("快捷键未执行：输入状态已变化，请重试。"), request.field, QRect(), 1500);
+        traceGate("shortcut-cancelled", request.target, request.basis, request.until, reason);
+        if (report) rejectShortcut(request.kind, request.generation, request.id, reason);
         emit shortcutStateChangedV1(QStringLiteral("cancelled"), request.id);
     }
     bool queueShortcut(const QString &kind, Target *target, const QJsonObject &basis) {
-        cancelShortcut(); // A new explicit command replaces no hidden request.
+        if (!shortcutConfiguration_.value("enabled").toBool()) return false;
+        const auto generation = shortcutConfiguration_.value("generation");
+        const auto commandId = startShortcut(kind, generation, now());
+        if (!commandId) return false;
         const qint64 observed = integer(basis, "observedAtMs"), current = now();
         if (!target || target != focused() || target->quarantined || target->mutating || !target->observed
             || !target->provider || observed < 0 || current < observed || current - observed >= 150
@@ -697,80 +732,107 @@ private:
             || shortcutAuthority_.value("target").toString() != target->id
             || shortcutAuthority_.value("generation") != shortcutConfiguration_.value("generation")
             || shortcutAuthority_.value("authority").toObject() != basis
-            || target->field->property(ProviderProperty).value<QObject *>() != target->provider) return false;
+            || target->field->property(ProviderProperty).value<QObject *>() != target->provider) {
+            rejectShortcut(kind, generation, commandId, shortcutRefusal(target, basis));
+            emit shortcutStateChangedV1(QStringLiteral("rejected"), commandId);
+            return false; // Feedback does not grant ownership of the key.
+        }
         pendingShortcut_ = ShortcutRequest{target, target->field, target->provider, kind, basis,
-            shortcutConfiguration_.value("generation"), ++shortcutSequence_, target->content,
+            generation, commandId, target->content,
             target->selection, target->focus, target->state.contextGeneration, target->state.fieldGeneration,
             connectionGeneration_, observed + 150};
         clearPermit();
         shortcutAuthority_ = {};
         traceGate("shortcut-queued", target, basis, observed + 150);
-        emit shortcutStateChangedV1(QStringLiteral("queued"), shortcutSequence_);
+        emit shortcutStateChangedV1(QStringLiteral("queued"), commandId);
         return true; // Only this explicit command is consumed. No body has been read.
     }
-    bool shortcutUnchanged(const ShortcutRequest &request) {
-        return pendingShortcut_ && pendingShortcut_->id == request.id && request.field && request.provider
-            && request.target->field == request.field && request.target->provider == request.provider
-            && focused() == request.target && request.target->focus == request.focus
-            && request.target->content == request.content && request.target->selection == request.selection
-            && request.target->state.contextGeneration == request.context
-            && request.target->state.fieldGeneration == request.binding
-            && request.field->property(ProviderProperty).value<QObject *>() == request.provider
-            && connectionGeneration_ == request.connection && fd_ >= 0 && now() < request.until
-            && shortcutConfiguration_.value("enabled").toBool()
-            && shortcutConfiguration_.value("generation") == request.generation
-            && metadataMatches(request.target, request.basis);
+    const char *shortcutFailure(const ShortcutRequest &request) {
+        if (!pendingShortcut_ || pendingShortcut_->id != request.id) return "EpochChanged";
+        if (!request.field || request.target->field != request.field) return "TargetChanged";
+        if (focused() != request.target || request.target->focus != request.focus) return "NotSourceFocus";
+        if (request.target->content != request.content) return "SourceChanged";
+        if (request.target->selection != request.selection) return "SelectionChanged";
+        if (connectionGeneration_ != request.connection || fd_ < 0) return "PlatformFailure";
+        if (now() >= request.until) return "StaleObservation";
+        if (!request.provider || request.target->provider != request.provider
+            || request.target->state.contextGeneration != request.context
+            || request.target->state.fieldGeneration != request.binding
+            || request.field->property(ProviderProperty).value<QObject *>() != request.provider
+            || !shortcutConfiguration_.value("enabled").toBool()
+            || shortcutConfiguration_.value("generation") != request.generation
+            || !metadataMatches(request.target, request.basis)) return "EpochChanged";
+        return nullptr;
     }
     void advanceShortcut() {
         if (!pendingShortcut_ || advancingShortcut_) return;
         QScopedValueRollback<bool> advancing(advancingShortcut_, true);
         const auto request = *pendingShortcut_;
-        if (!shortcutUnchanged(request)) { cancelShortcut(); return; }
+        auto unchanged = [&] {
+            const auto *reason = shortcutFailure(request);
+            if (!reason) return true;
+            if (pendingShortcut_ && pendingShortcut_->id == request.id) cancelShortcut(request.target, reason);
+            return false;
+        };
+        if (!unchanged()) return;
         // The timer does not grant Clear. Original DBus/output/forward retirement
         // and the exact provider's fresh proof are still mandatory.
         if (!inspect(request.target)) return;
-        if (!shortcutUnchanged(request)) { cancelShortcut(); return; }
+        if (!unchanged()) return;
         if (!clear(request.target->state)) {
-            if (request.target->state.flags & TlQtComposing) cancelShortcut();
+            if (request.target->state.flags & TlQtComposing) cancelShortcut(request.target, "ImeUnclear");
             return;
         }
         const auto description = describe(request.target);
-        if (!shortcutUnchanged(request)) { cancelShortcut(); return; }
+        if (!unchanged()) return;
         const auto read = capture(request.target, description.value("authority").toObject(), request.until);
-        if (!shortcutUnchanged(request)) { cancelShortcut(); return; }
+        if (!unchanged()) return;
         if (read.isEmpty()) return;
         pendingShortcut_.reset();
         clearPermit();
         sendEvent("shortcut", {{"kind", request.kind}, {"generation", request.generation},
-            {"native", read}, {"acceptedAtMs", now()}});
+            {"commandId", qint64(request.id)}, {"native", read}, {"acceptedAtMs", now()}});
         traceGate("shortcut-dispatched", request.target, request.basis, request.until);
         emit shortcutStateChangedV1(QStringLiteral("dispatched"), request.id);
     }
-    bool triggerShortcut(const QString &kind, Target *target, const QJsonObject &basis) {
-        cancelShortcut(); // An external explicit command cannot race a queued key.
+    bool triggerShortcut(const QString &kind, Target *target, const QJsonObject &basis, qint64 triggeredAt) {
+        if ((kind != "wake" && kind != "direct") || !shortcutConfiguration_.value("enabled").toBool()) return false;
+        const auto generation = shortcutConfiguration_.value("generation");
+        const auto commandId = startShortcut(kind, generation, triggeredAt);
+        if (!commandId) return false;
+        auto reject = [&](const char *reason) {
+            rejectShortcut(kind, generation, commandId, reason);
+            emit shortcutStateChangedV1(QStringLiteral("rejected"), commandId);
+            return false;
+        };
         const qint64 age = now() - integer(basis, "observedAtMs");
-        if ((kind != "wake" && kind != "direct") || !shortcutConfiguration_.value("enabled").toBool()
-            || shortcutAuthority_.isEmpty() || !target || target != focused() || age < 0 || age > 150
+        if (shortcutAuthority_.isEmpty() || !target || target != focused() || age < 0 || age > 150
             || shortcutAuthority_.value("target").toString() != target->id
             || shortcutAuthority_.value("generation") != shortcutConfiguration_.value("generation")
-            || shortcutAuthority_.value("authority").toObject() != basis
-            || !inspect(target) || !clear(target->state) || !authorityMatches(target, basis, true)) return false;
+            || shortcutAuthority_.value("authority").toObject() != basis) return reject(shortcutRefusal(target, basis));
+        if (!inspect(target) || !clear(target->state)) return reject("ImeUnclear");
+        if (!authorityMatches(target, basis, true)) return reject(shortcutRefusal(target, basis));
         const auto description = describe(target);
         const auto read = capture(target, description.value("authority").toObject());
-        if (read.isEmpty()) return false;
-        const auto generation = shortcutConfiguration_.value("generation");
+        if (read.isEmpty() || generation != shortcutConfiguration_.value("generation")) return reject(shortcutRefusal(target, basis));
         clearPermit(); shortcutAuthority_ = {};
-        sendEvent("shortcut", {{"kind", kind}, {"generation", generation}, {"native", read}, {"acceptedAtMs", now()}});
+        sendEvent("shortcut", {{"kind", kind}, {"generation", generation}, {"commandId", qint64(commandId)},
+            {"native", read}, {"acceptedAtMs", now()}});
         return fd_ >= 0;
     }
     QJsonObject write(Target *target, const QJsonObject &request, bool direct) {
+        // Sample existing operations only; emit their timings with the final
+        // outcome, never add an IM request or logging between safety checks.
+        const qint64 writeStarted = now();
+        qint64 inspectMs = -1, prepareMs = -1, selectionMs = -1;
         const auto plan = request.value("plan").toObject();
         const auto expected = plan.value("expected").toObject();
         const auto basis = request.value("authority").toObject();
         const auto approved = direct ? request.value("approved").toObject() : basis;
         const auto identity = expected.value("target").toObject();
         auto reject = [&](const char *phase, const char *reason) {
-            traceGate(phase, target, basis, integer(request, "expiresAtMs", 0), reason);
+            traceGate(phase, target, basis, integer(request, "expiresAtMs", 0), reason,
+                writeStarted, inspectMs, prepareMs, selectionMs);
             return receipt("RejectedBeforeMutation", reason);
         };
         traceGate("write-enter", target, basis, integer(request, "expiresAtMs", 0));
@@ -778,7 +840,10 @@ private:
             || identity.value("backend").toString() != "linux-qt6" || identity.value("value").toString() != target->id
             || identity.value("lifetime").toString() != lifetime_)
             return reject("write-header", "BadPlan");
-        if (target->mutating || target->quarantined || !inspect(target) || !clearForWrite(target, direct))
+        const qint64 inspectStarted = now();
+        const bool inspected = !target->mutating && !target->quarantined && inspect(target) && clearForWrite(target, direct);
+        inspectMs = now() - inspectStarted;
+        if (!inspected)
             return reject("write-inspect", "ImeUnclear");
         const qint64 until = integer(request, "expiresAtMs", 0), current = now();
         if (until <= current || until - current > (direct ? 250 : 100))
@@ -864,7 +929,10 @@ private:
         // has no preedit to commit; unexpected output still invalidates proof.
         {
             QScopedValueRollback<bool> probing(target->probing, true);
-            if (!capability->prepareCaret(field, &initialState))
+            const qint64 prepareStarted = now();
+            const bool prepared = capability->prepareCaret(field, &initialState);
+            prepareMs = now() - prepareStarted;
+            if (!prepared)
                 return reject("write-prepare", "ImeUnclear");
         }
         if (!unchanged() || !inspect(target) || !clearForWrite(target, direct)
@@ -874,6 +942,7 @@ private:
             return reject("write-after-prepare", "EpochChanged");
         const auto baseline = target->state;
         QScopedValueRollback<bool> mutation(target->mutating, true);
+        const qint64 selectionStarted = now();
         if (auto *line = target->line()) line->setSelection(int(from), int(to - from));
         else {
             QTextCursor cursor(document);
@@ -881,11 +950,13 @@ private:
             cursor.setPosition(int(to), QTextCursor::KeepAnchor);
             target->plain()->setTextCursor(cursor);
         }
+        selectionMs = now() - selectionStarted;
         // Selection signals are application code. Recheck every source/input/IM
         // condition after them and immediately before the first body mutation.
         const auto preparedSelection = QJsonObject{{"start", from}, {"end", to}};
-        if (!unchanged() || selection(target) != preparedSelection || !local(target, baseline) || now() >= until)
+        if (!unchanged() || selection(target) != preparedSelection || !local(target, baseline))
             return reject("write-after-selection", "EpochChanged");
+        if (now() >= until) return reject("write-selection-deadline", "StaleObservation");
         const auto caret = integer(plan, "caret");
         const QJsonObject writtenSelection{{"start", caret}, {"end", caret}};
         auto written = [&] {
@@ -913,7 +984,8 @@ private:
         clearPermit();
         if (!verified) {
             target->quarantined = true;
-            traceGate("write-readback", target, basis, until, "UnknownOutcome");
+            traceGate("write-readback", target, basis, until, "UnknownOutcome",
+                writeStarted, inspectMs, prepareMs, selectionMs);
             return receipt("OutcomeUnknown", "UnknownOutcome");
         }
         auto verifiedSnapshot = expected;
@@ -924,7 +996,7 @@ private:
         verifiedSnapshot.insert("access", "Supported");
         auto outcome = receipt("Verified", "None");
         outcome.insert("verifiedSnapshot", verifiedSnapshot);
-        traceGate("write-verified", target, basis, until, "None");
+        traceGate("write-verified", target, basis, until, "None", writeStarted, inspectMs, prepareMs, selectionMs);
         return outcome;
     }
 
@@ -1275,8 +1347,10 @@ private:
             if (target) { auto report = state; report.insert("target", target->id); sendEvent("publication", report); }
             refreshHint();
         } else if (op == "configure-shortcuts") {
+            if (data.value("generation") != shortcutConfiguration_.value("generation")) shortcutStartedAt_ = -1;
+            shortcutConfiguration_ = data;
             cancelShortcut();
-            shortcutAuthority_ = {}; shortcutConfiguration_ = data;
+            shortcutAuthority_ = {};
             QVariantList keys;
             if (data.value("enabled").toBool()) for (const auto *kind : {"wake", "direct"}) {
                 const auto symbol = integer(data.value(QLatin1String(kind)).toObject(), "keyval", 0);
@@ -1297,7 +1371,8 @@ private:
             const qint64 age = now() - integer(data, "triggeredAtMs");
             respond(id, QJsonObject{{"triggered", age >= 0 && age <= 150
                 && data.value("generation") == shortcutConfiguration_.value("generation")
-                && triggerShortcut(data.value("kind").toString(), target, data.value("authority").toObject())}});
+                && triggerShortcut(data.value("kind").toString(), target, data.value("authority").toObject(),
+                    integer(data, "triggeredAtMs"))}});
         }
         else disconnectPeer();
     }
@@ -1322,7 +1397,7 @@ private:
         if (writer_) writer_->setEnabled(true);
     }
     void disconnectPeer() {
-        cancelShortcut();
+        cancelShortcut(nullptr, "PlatformFailure", false);
         ++connectionGeneration_;
         if (reader_) { reader_->setEnabled(false); reader_->deleteLater(); reader_ = nullptr; }
         if (writer_) { writer_->setEnabled(false); writer_->deleteLater(); writer_ = nullptr; }
@@ -1405,6 +1480,7 @@ private:
     QJsonObject publication_, overlayView_, shortcutConfiguration_, shortcutAuthority_;
     std::optional<ShortcutRequest> pendingShortcut_;
     quint64 shortcutSequence_ = 0;
+    qint64 shortcutStartedAt_ = -1;
     quint64 connectionGeneration_ = 0, returnGeneration_ = 0, authorizationGeneration_ = 0, focusGeneration_ = 0;
     bool dispatching_ = false, handlingKey_ = false, advancingShortcut_ = false;
     QPointer<QFrame> card_;

@@ -25,7 +25,7 @@ internal sealed class KeyboardHook : IInputMonitor
     private HookLease? _lease;
     private HotkeyLease? _shortcutLease;
     private ShortcutConfiguration _shortcuts = new(Guid.NewGuid(), []);
-    private long _contentEpoch;
+    private long _contentEpoch, _commandSequence;
     private uint _mouseButtons;
     private long _userEpoch, _sourceUserEpoch, _foregroundEpoch, _windowEpoch;
     private nint _hook, _mouseHook;
@@ -301,86 +301,84 @@ internal sealed class KeyboardHook : IInputMonitor
         | (_keys[0x10] || _keys[0xA0] || _keys[0xA1] ? ShortcutModifiers.Shift : ShortcutModifiers.None);
     private void TryInvokeShortcut(uint key, bool repeated, bool injected)
     {
-        if (!ShortcutsReady)
+        if (repeated || injected && !_allowInjectedInput || _keys[0x5B] || _keys[0x5C])
         {
-            TraceShortcutKey("not-ready", key);
+            TraceShortcutKey(repeated ? "repeat" : injected && !_allowInjectedInput ? "injected" : "windows-key", key);
             return;
         }
-        if (repeated)
+        var configuration = Volatile.Read(ref _shortcuts);
+        RegisteredShortcut? command = null;
+        foreach (var binding in configuration.Bindings)
+            if (binding.Key == key && binding.Modifiers == CurrentModifiers)
+            {
+                command = binding;
+                break;
+            }
+        if (command is null)
         {
-            TraceShortcutKey("repeat", key);
+            TraceShortcutKey("modifiers", key);
             return;
         }
-        if (injected && !_allowInjectedInput)
-        {
-            TraceShortcutKey("injected", key);
-            return;
-        }
-        if (_keys[0x5B] || _keys[0x5C])
-        {
-            TraceShortcutKey("windows-key", key);
-            return;
-        }
+        long sequence = Interlocked.Increment(ref _commandSequence);
         var nativeLease = Volatile.Read(ref _shortcutLease);
         var lease = nativeLease?.Observation;
         long now = Environment.TickCount64;
+        long contentEpoch = ContentEpoch, foregroundEpoch = ForegroundEpoch;
+        void Reject(Denial reason, string traceReason)
+        {
+            // Matching the user's explicit command is enough to report a refusal,
+            // never enough to read a field or invent an executable source snapshot.
+            _notices.Enqueue(new(command.Action, AcceptedAtMs: now,
+                CommandGeneration: configuration.Generation, Rejection: reason, CommandSequence: sequence));
+            QueueShortcutTrace("key", traceReason, lease, command.Action,
+                contentEpoch: contentEpoch, foregroundEpoch: foregroundEpoch, evaluatedAtMs: now);
+        }
+        if (!ShortcutsReady)
+        {
+            Reject(Denial.PlatformFailure, "not-ready");
+            return;
+        }
         if (lease is null)
         {
-            TraceShortcutKey("no-lease", key, evaluatedAtMs: now);
+            Reject(Denial.StaleObservation, "no-lease");
             return;
         }
-        long contentEpoch = ContentEpoch;
         if (lease.ContentEpoch != contentEpoch)
         {
-            TraceShortcutKey("content-epoch", key, lease, contentEpoch, evaluatedAtMs: now);
+            Reject(Denial.EpochChanged, "content-epoch");
             return;
         }
-        long foregroundEpoch = ForegroundEpoch;
         if (lease.ForegroundEpoch != foregroundEpoch)
         {
-            TraceShortcutKey("foreground-epoch", key, lease, contentEpoch, foregroundEpoch, now);
+            Reject(Denial.NotSourceFocus, "foreground-epoch");
             return;
         }
         if (now < lease.Source.ObservedAtMs || now - lease.Source.ObservedAtMs > Limits.ObservationMaxAgeMs)
         {
-            TraceShortcutKey("future-or-stale", key, lease, contentEpoch, foregroundEpoch, now);
+            Reject(Denial.StaleObservation, "future-or-stale");
             return;
         }
         if (Native.GetForegroundWindow() != (nint)nativeLease!.RootHwnd)
         {
-            TraceShortcutKey("root", key, lease, contentEpoch, foregroundEpoch, now);
+            Reject(Denial.NotSourceFocus, "root");
             return;
         }
         if (lease.Source.Access != FieldAccess.Supported)
         {
-            TraceShortcutKey("access", key, lease, contentEpoch, foregroundEpoch, now);
+            Reject(Denial.Unsupported, "access");
             return;
         }
-        var configuration = Volatile.Read(ref _shortcuts);
-        foreach (var binding in configuration.Bindings)
+        bool previewWake = command.Action == "wake" && lease.Source.Ime == ImeState.Unknown
+            && lease.Source.PreviewText is not null;
+        if (lease.Source.Ime != ImeState.Clear && !previewWake)
         {
-            if (binding.Key == key && binding.Modifiers == CurrentModifiers)
-            {
-                // Showing an ordinary value as read-only preview does not grant
-                // input-method certainty or any permission to replace that value.
-                bool previewWake = binding.Action == "wake" && lease.Source.Ime == ImeState.Unknown
-                    && lease.Source.PreviewText is not null;
-                if (lease.Source.Ime != ImeState.Clear && !previewWake)
-                {
-                    QueueShortcutTrace("key", "ime", lease,
-                        binding.Action is "wake" or "direct" ? binding.Action : "unknown",
-                        contentEpoch: contentEpoch, foregroundEpoch: foregroundEpoch, evaluatedAtMs: now);
-                    return;
-                }
-                _notices.Enqueue(new(binding.Action, AcceptedAtMs: now, ForegroundEpoch: ForegroundEpoch, Source: lease.Source,
-                    CommandGeneration: configuration.Generation));
-                QueueShortcutTrace("key", "notice-enqueued", lease,
-                    binding.Action is "wake" or "direct" ? binding.Action : "unknown",
-                    contentEpoch: contentEpoch, foregroundEpoch: foregroundEpoch, evaluatedAtMs: now);
-                return;
-            }
+            Reject(Denial.ImeUnclear, "ime");
+            return;
         }
-        TraceShortcutKey("modifiers", key, lease, contentEpoch, foregroundEpoch, now);
+        _notices.Enqueue(new(command.Action, AcceptedAtMs: now, ForegroundEpoch: foregroundEpoch, Source: lease.Source,
+            CommandGeneration: configuration.Generation, CommandSequence: sequence));
+        QueueShortcutTrace("key", "notice-enqueued", lease, command.Action,
+            contentEpoch: contentEpoch, foregroundEpoch: foregroundEpoch, evaluatedAtMs: now);
     }
     private nint OnMouse(int code, nint wParam, nint lParam)
     {

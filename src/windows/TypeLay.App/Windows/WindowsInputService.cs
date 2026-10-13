@@ -4,18 +4,35 @@ using TypeLay.Windows.Contracts;
 
 namespace TypeLay.App;
 
-internal sealed class WindowsInputService(IInputBroker broker, nint overlay) : IInputService
+internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
+    WindowsApplicationSupport? support = null, IInputMonitor? monitor = null) : IInputService
 {
     public bool Available => broker.Available;
-    public Task StartAsync() => broker.StartAsync();
+    public async Task StartAsync()
+    {
+        try
+        {
+            await broker.StartAsync();
+        }
+        catch { support?.Disconnected(); throw; }
+    }
     private BrokerRequest Request(string operation, InputContext context) => new(BrokerProtocol.Version, 0, operation, "",
         context.UserEpoch, context.ForegroundEpoch, (long)overlay, context.BoundTarget,
         Excluded: context.Excluded, SourceUserEpoch: context.SourceUserEpoch, CaptureDirect: context.CaptureDirect);
 
     public async Task<InputCapture> CaptureAsync(InputContext context)
     {
-        var result = await broker.CallAsync(Request("capture", context));
-        return new(result.Snapshot, result.Focus, result.Application, result.UserEpoch, result.ForegroundEpoch);
+        try
+        {
+            long startedAt = Environment.TickCount64;
+            long checkGeneration = support?.CheckGeneration ?? 0;
+            var result = await broker.CallAsync(Request("capture", context));
+            var capture = new InputCapture(result.Snapshot, result.Focus, result.Application, result.UserEpoch, result.ForegroundEpoch);
+            support?.Observe(capture, broker.Available && monitor?.Ready == true,
+                monitor?.CanInterceptAcceptance == true, startedAt, checkGeneration);
+            return capture;
+        }
+        catch { support?.Disconnected(); throw; }
     }
     public async Task<bool> ReturnToSourceAsync(InputContext context)
     {
@@ -43,5 +60,9 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay) : I
         return result.Receipt ?? new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
     }
     public async Task ClearAsync(InputContext context) => await broker.CallAsync(Request("clear", context));
-    public void Dispose() => broker.Dispose();
+    public void Dispose()
+    {
+        support?.Disconnected();
+        broker.Dispose();
+    }
 }

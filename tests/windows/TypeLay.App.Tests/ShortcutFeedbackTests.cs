@@ -5,6 +5,7 @@ using System.Text.Json;
 using TypeLay.App;
 using TypeLay.Core;
 using TypeLay.Runtime;
+using TypeLay.Windows.Contracts;
 using TypeLay.Platform.Windows;
 using Xunit;
 using N = TypeLay.Platform.Windows.NativeMethods;
@@ -56,6 +57,32 @@ public sealed class ShortcutFeedbackTests
             Assert.Null(refusal.Source);
             Assert.Equal(hook.CommandGeneration, refusal.CommandGeneration);
             Assert.True(refusal.CommandSequence > 0);
+            var source = new InputSnapshot(new WindowsTarget(fixture.Id, fixture.StartTime.ToUniversalTime().Ticks,
+                host.RootHwnd, (long)field, "controlled-hook", "field-a", Guid.NewGuid()), "", new(0, 0),
+                new(10, 20, 300, 40), false, FieldAccess.Supported, ImeState.Unknown, Environment.TickCount64,
+                1, 1, PreviewText: "Do not change this text");
+            hook.SetShortcuts([
+                new("wake", 0x86, ShortcutModifiers.Control | ShortcutModifiers.Shift),
+                new("direct", 0x87, ShortcutModifiers.Control | ShortcutModifiers.Shift)
+            ]);
+            hook.PublishShortcut(new(source, hook.ContentEpoch, hook.ForegroundEpoch));
+            Keys(0x11, 0x10, 0x87);
+            InputNotice? imeRefusal = null;
+            await Until(() => imeRefusal is not null || hook.TryRead(out imeRefusal), deadline.Token);
+            Assert.Equal(Denial.ImeUnclear, imeRefusal!.Rejection);
+            Assert.Null(imeRefusal.Source);
+            Assert.True(imeRefusal.CommandSequence > refusal.CommandSequence);
+            hook.PublishShortcut(new(source with
+            {
+                ObservedAtMs = Environment.TickCount64
+            }, hook.ContentEpoch, hook.ForegroundEpoch));
+            Keys(0x11, 0x10, 0x86);
+            InputNotice? preview = null;
+            await Until(() => preview is not null || hook.TryRead(out preview), deadline.Token);
+            Assert.Equal("wake", preview!.Kind);
+            Assert.Equal(Denial.None, preview.Rejection);
+            Assert.Equal(ImeState.Unknown, preview.Source!.Ime);
+            Assert.False(preview.Source.WriteSupported);
             Assert.Equal("Do not change this text", N.ReadText(field, Limits.MaxTextUnits));
             Assert.Equal(((nint)host.RootHwnd, field), N.Focused());
             Assert.Equal(0, (long)N.Send((nint)host.RootHwnd, N.FixtureSubmitCount));

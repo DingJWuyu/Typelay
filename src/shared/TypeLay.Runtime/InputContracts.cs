@@ -11,6 +11,11 @@ namespace TypeLay.Runtime;
 public sealed record InputNotice(string Kind, AcceptancePermit? Permit = null, long AcceptedAtMs = 0,
     long UserEpoch = 0, long ForegroundEpoch = 0, InputSnapshot? Source = null, Guid CommandGeneration = default,
     WriteReceipt? CompletedReceipt = null, Denial Rejection = Denial.None, long CommandSequence = 0);
+// Only an explicit command's refusal, cancellation or failure is broadcast.
+// Revision identifies every command, including legacy sequence zero. Hosts may
+// use it for queued UI de-duplication; messages and codes never contain field text.
+public sealed record CommandFeedback(long Revision, Guid CommandGeneration, long CommandSequence,
+    string Code, string Message);
 public sealed record InputLease(InputSnapshot Source, long UserEpoch, long ForegroundEpoch, bool EscapeAllowed);
 public sealed record ShortcutLease(InputSnapshot Source, long ContentEpoch, long ForegroundEpoch);
 

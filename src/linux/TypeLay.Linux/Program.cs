@@ -7,6 +7,7 @@ namespace TypeLay.Linux;
 internal static class Program
 {
     private sealed record PlacementRequest(RectPx Input, RectPx Work, double Width, double Height, double Gap, double MinimumHeight);
+    private sealed record ApplicationSupportRequest(ApplicationSupportFact[] Facts);
     public static int Main(string[] args)
     {
         if (args is ["--version"])
@@ -39,9 +40,11 @@ internal static class Program
             controller.ServiceStatus,
             controller.ShortcutStatus,
             controller.OperationStatus,
+            controller.CommandFeedbackRevision,
             controller.LastApplication
         });
         controller.Changed += Status;
+        controller.OperationFeedback += feedback => link.Send("operationFeedback", feedback);
         model.Changed += Status;
         link.Notification = (operation, value) =>
         {
@@ -89,6 +92,12 @@ internal static class Program
                     return settings.Value.Enabled && FieldPolicy.Allows(DesktopLink.Decode<FieldMetadata>(value), settings.Value.Excluded);
                 case "beginEdit":
                     return view.BeginEditing?.Invoke() ?? false;
+                case "settingsDraft":
+                    return SettingsDraftPresentation.Create();
+                case "applicationSupport":
+                    // The desktop owns detection and explicit installation actions.
+                    // Reading this view never starts either of them.
+                    return ApplicationSupportPresentation.Create(DesktopLink.Decode<ApplicationSupportRequest>(value).Facts);
                 case "place":
                     var placement = DesktopLink.Decode<PlacementRequest>(value);
                     return OverlayPlacement.Place(placement.Input, placement.Work, placement.Width,

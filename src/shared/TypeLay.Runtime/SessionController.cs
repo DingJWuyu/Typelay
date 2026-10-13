@@ -11,9 +11,9 @@ public sealed class SessionController : IDisposable
     private readonly Session _session;
     private readonly TranslationActivation _activation;
     private DirectTranslation? _pendingDirect;
-    private bool _directRunning;
-    private long _lastCommandSequence, _commandFeedbackRevision, _pendingDirectFeedbackRevision;
-    private Guid _lastCommandGeneration;
+    private bool _directRunning, _directWriteSubmitted;
+    private long _lastCommandSequence, _commandSequence, _commandFeedbackRevision, _pendingDirectFeedbackRevision, _pendingDirectSequence;
+    private Guid _lastCommandGeneration, _pendingDirectCommandGeneration;
     private long _configurationRevision;
     private readonly ISessionLoop _loop;
     private long _generation, _nextCapture, _permitUntil, _editTransitionUntil, _retryBrokerAt;
@@ -32,8 +32,12 @@ public sealed class SessionController : IDisposable
     {
         get; private set;
     }
+    // Hosts discard queued feedback older than this revision, including when a
+    // newer command succeeds and deliberately emits no failure notification.
+    public long CommandFeedbackRevision => _commandFeedbackRevision;
     public string ServiceStatus { get; private set; } = "正在连接输入服务";
     public event Action? Changed;
+    public event Action<CommandFeedback>? OperationFeedback;
     public SessionController(SettingsStore settings, ITranslationService model, ISessionView overlay,
         IInputMonitor input, IInputService broker, ISessionLoop loop)
     {
@@ -92,7 +96,11 @@ public sealed class SessionController : IDisposable
         _commandFeedbackRevision++;
         _lastCommandSequence = 0;
         if (_pendingDirect is not null)
-            SetServiceStatus("设置已改变，未执行本次直接替换。");
+            SetServiceStatus(_directWriteSubmitted
+                ? "设置已改变，但写回请求已经发出；结果尚未确认，请检查原输入框，不会自动重试。"
+                : "设置已改变，未执行本次直接替换。",
+                _directWriteSubmitted ? "write-unconfirmed" : "direct-canceled",
+                _pendingDirectCommandGeneration, _pendingDirectSequence);
         _pendingDirect = null;
         _activation.SetMode(_settings.Value.Mode);
         _activation.End();
@@ -139,6 +147,7 @@ public sealed class SessionController : IDisposable
             _lastCommandSequence = notice.CommandSequence;
         }
         _commandFeedbackRevision++;
+        _commandSequence = notice.CommandSequence;
         if (notice.Rejection != Denial.None)
         {
             RejectShortcut(notice.Kind, notice.Rejection);
@@ -160,7 +169,7 @@ public sealed class SessionController : IDisposable
         string explanation = reason switch
         {
             Denial.ImeUnclear => "当前输入框的输入法状态无法确认。",
-            Denial.StaleObservation => "输入观察已过期，请保持输入框焦点后重试。",
+            Denial.StaleObservation => "输入观察尚不可用或已过期，请在目标输入框重试。",
             Denial.SourceChanged or Denial.SelectionChanged or Denial.EpochChanged => "输入内容或选区已变化，请重试。",
             Denial.NotSourceFocus or Denial.TargetChanged => "输入框焦点已变化，请在目标输入框重试。",
             Denial.Sensitive or Denial.ReadOnly => "当前字段不允许此操作。",
@@ -168,7 +177,7 @@ public sealed class SessionController : IDisposable
             Denial.PlatformFailure => "输入服务尚未就绪，请在应用支持中检查连接。",
             _ => "当前输入状态不满足安全条件。"
         };
-        SetServiceStatus($"未执行本次{action}：{explanation}");
+        SetServiceStatus($"未执行本次{action}：{explanation}", "shortcut-" + reason.ToString().ToLowerInvariant());
         Trace("shortcut-rejected", detail: new
         {
             action = kind,
@@ -186,7 +195,7 @@ public sealed class SessionController : IDisposable
             if (!_model.Ready || !_broker.Available || now - pending.TriggeredAtMs > 120_000)
             {
                 _pendingDirect = null;
-                SetCommandStatus("本地服务不可用或等待超时，未执行直接替换。", _pendingDirectFeedbackRevision);
+                SetCommandStatus("本地服务不可用或等待超时，未执行直接替换。", _pendingDirectFeedbackRevision, "service-unavailable");
             }
             else if (!_translationRunning && !_model.Busy)
                 _ = TranslateDirect(pending, _pendingDirectFeedbackRevision);
@@ -411,7 +420,7 @@ public sealed class SessionController : IDisposable
             return;
         if (_pendingDirect is not null || _directRunning)
         {
-            SetServiceStatus("已有一次直接翻译正在处理，未追加操作。");
+            SetServiceStatus("已有一次直接翻译正在处理，未追加操作。", "direct-busy");
             return;
         }
         if (!source.DirectWriteSupported)
@@ -421,13 +430,13 @@ public sealed class SessionController : IDisposable
         }
         if (!_model.Ready)
         {
-            SetServiceStatus("本地模型尚未就绪，未执行直接替换。");
+            SetServiceStatus("本地模型尚未就绪，未执行直接替换。", "model-not-ready");
             return;
         }
         var (operation, reason) = DirectTranslation.Start(source, _settings.Value.Direction, notice.AcceptedAtMs);
         if (operation is null)
         {
-            SetServiceStatus(reason == Denial.NoCandidate ? "没有需要直接翻译的文本。" : "无法确认原输入内容的安全状态，未执行直接替换。");
+            SetServiceStatus(reason == Denial.NoCandidate ? "没有需要直接翻译的文本。" : "无法确认原输入内容的安全状态，未执行直接替换。", "shortcut-" + reason.ToString().ToLowerInvariant());
             return;
         }
         // The trigger's snapshot, not the currently focused field, owns this operation.
@@ -435,6 +444,8 @@ public sealed class SessionController : IDisposable
         StopSession();
         _pendingDirect = operation;
         _pendingDirectFeedbackRevision = _commandFeedbackRevision;
+        _pendingDirectCommandGeneration = notice.CommandGeneration;
+        _pendingDirectSequence = notice.CommandSequence;
         SetServiceStatus("正在直接翻译；可以切换输入框，当前操作仍绑定原输入框。");
     }
     private async Task TranslateDirect(DirectTranslation operation, long feedbackRevision)
@@ -448,44 +459,52 @@ public sealed class SessionController : IDisposable
                 return;
             if (response.Status != "translated")
             {
-                SetCommandStatus(response.Status == "no-translation" ? "当前文本无需翻译，未作替换。" : "直接翻译未完成，原文未作替换。", feedbackRevision);
+                SetCommandStatus(response.Status == "no-translation" ? "当前文本无需翻译，未作替换。" : "直接翻译未完成，原文未作替换。", feedbackRevision,
+                    response.Status == "no-translation" ? "no-translation" : "translation-failed");
                 return;
             }
             var (plan, _) = operation.Complete(response.Text);
             if (plan is null)
             {
-                SetCommandStatus("译文未通过内容校验，未执行直接替换。", feedbackRevision);
+                SetCommandStatus("译文未通过内容校验，未执行直接替换。", feedbackRevision, "translation-invalid");
                 return;
             }
             // Never route detached work through foreground-only write/return operations.
+            _directWriteSubmitted = true;
             var result = await _broker.WriteDirectAsync(plan, _settings.Value.Excluded);
             if (_disposed)
                 return;
             SetCommandStatus(result.Status == WriteStatus.Verified ? "已直接替换原输入框文字。"
                 : result.Reason == Denial.Unsupported ? "当前输入后端尚不支持可靠的直接写回，原文未作替换。"
-                : "直接写回未获确认，请检查原输入框；不会自动重试。", feedbackRevision);
+                : "直接写回未获确认，请检查原输入框；不会自动重试。", feedbackRevision,
+                result.Status == WriteStatus.Verified ? null : "write-unconfirmed");
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             if (!_disposed)
-                SetCommandStatus("直接翻译或写回服务中断；不会自动重试替换。", feedbackRevision);
+                SetCommandStatus("直接翻译或写回服务中断；不会自动重试替换。", feedbackRevision, "service-unavailable");
         }
         finally
         {
             if (ReferenceEquals(_pendingDirect, operation))
                 _pendingDirect = null;
             _directRunning = false;
+            _directWriteSubmitted = false;
         }
     }
-    private void SetCommandStatus(string status, long feedbackRevision)
+    private void SetCommandStatus(string status, long feedbackRevision, string? feedbackCode = null)
     {
         if (feedbackRevision == _commandFeedbackRevision)
-            SetServiceStatus(status);
+            SetServiceStatus(status, feedbackCode);
     }
-    private void SetServiceStatus(string status)
+    private void SetServiceStatus(string status, string? feedbackCode = null,
+        Guid? commandGeneration = null, long? commandSequence = null)
     {
         ServiceStatus = status;
         OperationStatus = status;
+        if (feedbackCode is not null)
+            OperationFeedback?.Invoke(new(_commandFeedbackRevision, commandGeneration ?? _lastCommandGeneration,
+                commandSequence ?? _commandSequence, feedbackCode, status));
         Changed?.Invoke();
     }
     private async Task Translate(TranslationJob job)

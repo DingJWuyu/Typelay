@@ -2,7 +2,7 @@
 
 ## 当前安排
 
-先完成 Linux 主线及 trunk 整合、结构和文档整理，再通知用户亲自检查。**必须等用户检查后回复，才开始 Windows 修复。** 当前仅记录问题和只读核查结果，不修改 Windows 代码、CI 或分支。
+Windows 与 Linux 并行开发，遵循[共同应用支持与完整体验](../../product/application-support.md)。Windows 同步实现应用支持入口、首次准备到实际译文和替换的闭环，并修复以下三类体验问题。共享产品定义只维护一份，各平台提供真实连接事实与本机实现；一端通过不代表双端完成。
 
 本文服务于尚未解决的问题，不作为历史阶段报告保留。未来逐项补齐复现、修复和验收；全部解决后移除本文，将仍有效的支持范围和操作说明并入现役文档。
 
@@ -21,16 +21,12 @@
 - F10 与普通/F9 翻译共享同一个 `ModelClient`，不需要专用模型。统一准备中英双向 Argos 模型及运行组件。F9 已能翻译，不应先让用户重复下载模型。
 - 当前直接替换仅有受限 Windows x64 原生系统 `Edit` 后端。必须获得非零控件 HWND、严格匹配 `Edit` 类名、确认原生 x64、加载 `TypeLay.NativeInput.dll`、成功安装目标线程 hook，并通过输入法、选区、属性和生命周期校验。能读到 UIA 文本不等于能安全写回。
 - `.txt` 是文件类型，不能证明编辑器使用标准 `Edit`；现代记事本也必须检查实际控件，不能承诺此项必过。四个测试位置的实际控件类型均尚未取得。
-- `UiaInputProvider` 在 IME 为 Unknown 时可提供只读 `PreviewText`，但不给写回资格。`KeyboardHook.TryInvokeShortcut` 仅允许 F9 在 Unknown IME 且有预览文本时唤醒；F10 要求 Clear，否则直接返回。
-- 无新鲜快照、焦点/内容版本不符、观察超时、输入观察未就绪等也会在快捷键入口静默返回。它们不会产生新的 `OperationStatus`，能解释一种“F9 可用、F10 无反馈”的程序路径，但目前未证实用户触发的是哪条路径。
-- 命令进入 `QueueDirect` 后，模型未就绪、空文本、翻译中、拒写及结果会记录到托盘快速面板。F10 本身不显示预览胶囊。实验性 Tab 写回不是 F10 的后备，开启它不能补齐直接替换能力。
+- `UiaInputProvider` 在 IME 为 Unknown 时可提供只读 `PreviewText`，但不给写回资格。`KeyboardHook.TryInvokeShortcut` 仅允许 F9 在 Unknown IME 且有预览文本时唤醒；F10 仍要求 Clear。
+- 显式快捷键被拒绝时，当前实现会产生不携带可执行源快照的拒绝通知。共享控制器说明输入法、焦点、版本、观察期限或服务问题，并由 Windows 托盘显示不抢焦点的提示。进行中和成功状态仍留在快速面板，普通输入过程不反复弹通知。旧配置、迟到和重复通知不能覆盖新命令。
+- 真实 Windows 快捷键回归已在修改前复现“无安全观察时没有拒绝通知”；用户四处输入框究竟触发哪条拒绝路径仍需实际采集证明。提示修复不等于直接替换覆盖已经补齐。
+- 模型未就绪、空文本、拒写和取消有可见反馈；已发出写回请求后更改设置只能说明结果待确认，不能宣称原文必然未改变。F10 本身不显示预览胶囊。实验性 Tab 写回不是 F10 的后备，开启它不能补齐直接替换能力。
 
-源码定位（以上述 Windows 提交为准）：
-- `src/windows/TypeLay.App/Windows/KeyboardHook.cs:209-237`
-- `src/shared/TypeLay.Runtime/SessionController.cs:286-366`
-- `src/windows/TypeLay.Broker/Input/NativeEditTransactions.cs:25-47,72-119`
-- `src/windows/TypeLay.Broker/Input/UiaInputProvider.cs:151-198,273-278`
-- `src/windows/TypeLay.App/UI/QuickPanel.cs:170-174`
+源码入口：`KeyboardHook.TryInvokeShortcut`、共享 `SessionController.Shortcut` / `QueueDirect`、`NativeEditTransactions` 与 `UiaInputProvider`。
 
 ## Chrome 页面搜索框未工作
 
@@ -53,15 +49,15 @@
 
 源码入口：`src/shared/TypeLay.Core/Domain.cs` 的 `Limits`、`src/shared/TypeLay.Core/Session.cs` 的 `TakeTranslationJob`、`src/windows/TypeLay.Broker/Interop/NativeUia.cs` 的 `ReadCommittedPrefix`、`src/shared/TypeLay.Worker/typelay_worker/engine.py` 的 `translate_batch`。
 
-## 恢复工作后的最小取证和验收
+## 最小取证和验收
 
-1. 在原输入框按一次 F10 后打开托盘快速面板，记录是否出现新操作反馈及准确文字。不要重复要求已提供的 F9/应用信息，也不先要求重装模型。
+1. 在原输入框按一次 F10，记录托盘提示；系统通知不可见时查看托盘快速面板中的同一操作状态。不要重复要求已提供的 F9/应用信息，也不先要求重装模型。
 2. 对 Chrome 顶栏和中心框使用相同已提交的普通测试文字作对照，记录实际焦点元素、ControlType、HWND 类名、Value/TextPattern 能力、IME 状态和具体采集拒绝位置。避免收集用户真实正文。
 3. 对实时问题分别测试无标点输入后停顿、持续输入、中文组合及提交、加标点；记录源快照更新时间、已提交前缀是否可得、任务派发/推理结束/浮层更新时间，分清输入读取和推理显示延迟。
 4. 先确认安装包对应版本，再用真实 Windows 输入链路重现；当前版本已有状态、IME 和前缀诊断，但没有后来 Linux 分支增加的 `shortcut-*` 入口 trace，不要要求旧包查不存在的日志字段。
 5. 依据 Frozen 产品规格第4节、第9.2节和 Accepted `ADR-0002` 验收：普通网页/桌面自然语言输入可捕获和持续预览；无标点也可更新；F9 唤醒复用正常会话；F10 对具备能力的原控件完成一次替换、不抢焦点、不发送；拒写不绕过安全检查，并检验显式命令的失败反馈。测试应覆盖真实输入法、选区、焦点切换、冲突和撤销，不用源码检查或假模型证明产品可用。
 
-在获得用户检查 trunk 后的回复前，以上步骤仅是待办，不执行 Windows 修复或发布。
+先运行最接近用户路径的最小回归，保留失败证据，再按实际根因修复。Linux 主机不能执行 Windows 桌面交互；Windows Actions 可提供受控桌面证据，真实输入法和用户报告的独立应用仍须各自验收。
 
 ## 独立 CI 待定位项
 
@@ -69,10 +65,10 @@
 
 本轮控制器 trace 显示第一次 F9 的快照年龄为 140ms，已 `notice-enqueued`；第二次 F9 在 `atMs=313046` 被以 `future-or-stale` 拒绝，年龄为 156ms。当时 IME 为 Clear，内容版本 1==1、前台版本 2==2；现有观察期限是 150ms，因此**该次 CI 快捷键入口因快照超过期限 6ms 而拒绝**。这只定位该次 CI 的入口分支，尚未解释快照为什么超时，也不等同于用户 F10 故障根因；不得通过延长期限或重试掩盖失败。
 
-证据包：artifact `11788680275`，SHA-256 `9eed74f6c66aaa5f56552cb1a3d58dce02d9ea54ba75adba420fffe0f940e3c4`。此项保留待后续复现与定位，不改变等待用户检查 trunk 后回复再修 Windows 的安排。
+证据包：artifact `11788680275`，SHA-256 `9eed74f6c66aaa5f56552cb1a3d58dce02d9ea54ba75adba420fffe0f940e3c4`。此项仍需后续复现与定位。
 
 [CI run 38351805969](https://github.com/DingJWuyu/Typelay/actions/runs/38351805969) 又在同一设置回归的 `ControllerDesktopScenario:89` 超时，断言为 `The source must be observed`。该轮已通过输入服务就绪与 fixture 实际焦点前置，但在首次观察到源应用之前失败，尚未发送 F9。桌面 trace 只留下两条 `shortcut-configure`（最后两快捷键注册均为 true），没有对应的首次 `capture`；不能从这份诊断断言是 IME、许可期限或注册失败，也不能与前述第二次 F9 过期视为同一根因。
 
-此轮只提交 Linux 测试前置修正，Windows 桌面失败仍保留，未通过重跑消除记录；先前相同 Windows 路径曾通过也不能替代这次失败的定位。证据包：artifact `11791695218`，SHA-256 `4b4715d3fe79effe607101ab62ec21433d092a7e26d47de65a20f432ff128754`。后续仍须遵守用户检查 trunk 后回复才开始 Windows 修复的顺序。
+此轮只提交 Linux 测试前置修正，Windows 桌面失败仍保留，未通过重跑消除记录；先前相同 Windows 路径曾通过也不能替代这次失败的定位。证据包：artifact `11791695218`，SHA-256 `4b4715d3fe79effe607101ab62ec21433d092a7e26d47de65a20f432ff128754`。需继续区分采集失败、调度延迟和入口拒绝。
 
-[CI run 38363808032](https://github.com/DingJWuyu/Typelay/actions/runs/38363808032) 在结构迁移后通过构建与 254 项共享/Windows DTO 测试，但 `ControllerDesktopScenario:93` 的首次 F9 唤醒失败。实际快捷键于 `atMs=392828` 进入，`reason=future-or-stale`、快照年龄 688ms，IME 为 Clear，内容与前台版本均相等。这次已确定是入口旧快照拒绝，尚未解释产生旧快照的原因，也不能据此宣称结构迁移完全无回归。证据包：artifact `11795703671`，SHA-256 `b4adaab30847d5809800c1cc34908daeed6551cfacacbe722fb2482e8e9b703d`。保留此失败，Windows 业务修复仍等用户检查后回复。
+[CI run 38363808032](https://github.com/DingJWuyu/Typelay/actions/runs/38363808032) 在结构迁移后通过构建与 254 项共享/Windows DTO 测试，但 `ControllerDesktopScenario:93` 的首次 F9 唤醒失败。实际快捷键于 `atMs=392828` 进入，`reason=future-or-stale`、快照年龄 688ms，IME 为 Clear，内容与前台版本均相等。这次已确定是入口旧快照拒绝，尚未解释产生旧快照的原因，也不能据此宣称结构迁移完全无回归。证据包：artifact `11795703671`，SHA-256 `b4adaab30847d5809800c1cc34908daeed6551cfacacbe722fb2482e8e9b703d`。保留此失败，在相同入口检查采集各阶段耗时及拒绝原因。

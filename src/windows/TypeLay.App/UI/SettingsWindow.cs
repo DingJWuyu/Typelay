@@ -16,6 +16,7 @@ internal sealed class SettingsWindow : Window
     private readonly StackPanel _content;
     private readonly StackPanel _nav;
     private readonly Action _openTutorial;
+    private readonly WindowsApplicationSupport? _support;
     private string _page = "general", _setupStatus = "";
     private string? _settingsError;
     public Func<string>? ShortcutStatus
@@ -26,11 +27,12 @@ internal sealed class SettingsWindow : Window
     private ProgressBar? _progress;
     private TextBlock? _progressLabel;
     public Action? SessionMustEnd;
-    public SettingsWindow(SettingsStore settings, ModelClient model, Action openTutorial)
+    public SettingsWindow(SettingsStore settings, ModelClient model, Action openTutorial, WindowsApplicationSupport? support = null)
     {
         _settings = settings;
         _model = model;
         _openTutorial = openTutorial;
+        _support = support;
         Title = "TypeLay 设置";
         Width = 944;
         Height = 674;
@@ -89,6 +91,7 @@ internal sealed class SettingsWindow : Window
     }
     public void ShowPage(string page = "general")
     {
+        _support?.CancelCheck();
         SessionMustEnd?.Invoke();
         _page = page;
         Refresh();
@@ -105,7 +108,7 @@ internal sealed class SettingsWindow : Window
         }
         _nav.Children.Clear();
         foreach (var (key, title) in new[] { ("general", "⌂  常规"), ("language", "文  语言"), ("shortcuts", "⌨  快捷键"),
-                     ("apps", "▦  应用"), ("translation", "A  翻译"), ("glossary", "≡  术语表"), ("about", "i  关于与隐私") })
+                     ("apps", "▦  " + ApplicationSupportPresentation.Create([]).Title), ("translation", "A  翻译"), ("glossary", "≡  术语表"), ("about", "i  关于与隐私") })
         {
             var button = UiTheme.Button(title, () => { _page = key; Refresh(); });
             button.HorizontalContentAlignment = HorizontalAlignment.Left;
@@ -336,9 +339,36 @@ internal sealed class SettingsWindow : Window
     }
     private void Applications()
     {
-        Heading("应用", "永久排除的应用中不显示任何 TypeLay UI。");
+        var view = _support?.Read(_settings.Value) ?? ApplicationSupportPresentation.Create([]);
+        Heading(view.Title, view.Summary);
+        if (!_settings.Value.Enabled)
+        {
+            var resume = UiTheme.Button(ApplicationSupportPresentation.ReasonText(ApplicationSupportReason.Paused),
+                () => ShowPage("general"));
+            resume.HorizontalAlignment = HorizontalAlignment.Left;
+            resume.Margin = new(0, 0, 0, 14);
+            _content.Children.Add(resume);
+        }
+        if (!_model.Ready)
+            InstallCard();
+        else
+            Note(view.Labels.PrepareTranslation, _model.Status);
+        foreach (var row in view.Rows.Where(row => !row.ShowInMore))
+            _content.Children.Add(SupportRow(row, view));
+        var others = new StackPanel();
+        foreach (var row in view.Rows.Where(row => row.ShowInMore))
+            others.Children.Add(SupportRow(row, view));
+        if (others.Children.Count > 0)
+            _content.Children.Add(new Expander { Header = view.Labels.MoreApplications, Content = others, Margin = new(0, 8, 0, 14) });
+        var tryIt = UiTheme.Button(view.Labels.TryIt, _openTutorial);
+        tryIt.IsEnabled = _model.Ready;
+        tryIt.HorizontalAlignment = HorizontalAlignment.Left;
+        tryIt.Margin = new(0, 0, 0, 14);
+        _content.Children.Add(tryIt);
+        Rule();
+        _content.Children.Add(UiTheme.Text("排除的应用", 15, bold: true));
         if (_settings.Value.Excluded.Length == 0)
-            Note("当前没有排除任何应用", "自动识别当前应用的可编辑文本区域，无需选择输入框类型或添加标签。");
+            Note("当前没有排除任何应用", "排除后，该应用的所有输入框均不显示 TypeLay 界面。");
         foreach (string app in _settings.Value.Excluded)
             Row(app + ".exe", "所有该进程名窗口均排除。", UiTheme.Button("移除", () => Save(_settings.Value with { ExcludedApplications = _settings.Value.Excluded.Where(a => a != app).ToArray() })));
         var add = UiTheme.Button("添加应用…", () =>
@@ -355,6 +385,60 @@ internal sealed class SettingsWindow : Window
         _content.Children.Add(add);
         Rule();
         Note("按控件能力提供功能", "普通文本框按当前工作模式启动翻译；仅提供文本读取能力的编辑器可预览译文。密码、敏感字段、代码和终端保持安静；未知输入法状态不接受写回。");
+    }
+    private FrameworkElement SupportRow(ApplicationSupportRow row, ApplicationSupportView view)
+    {
+        var body = new StackPanel();
+        var header = new DockPanel();
+        var detailsBody = new StackPanel();
+        var details = new Expander { Header = view.Labels.Details, Content = detailsBody, Margin = new(0, 10, 0, 0) };
+        void Run(ApplicationSupportActionView action)
+        {
+            if (action.Id == ApplicationSupportAction.Refresh)
+            {
+                _support?.BeginCheck(row.Id);
+                Hide(); // The user's target must regain focus before a real input check can complete.
+            }
+            else if (action.Id == ApplicationSupportAction.OpenInstructions)
+                details.IsExpanded = true;
+        }
+        if (row.PrimaryAction is { } primary)
+        {
+            var next = UiTheme.Button(primary.Label, () => Run(primary));
+            next.IsEnabled = primary.Id != ApplicationSupportAction.Refresh || _settings.Value.Enabled;
+            next.Margin = new(12, 0, 0, 0);
+            DockPanel.SetDock(next, Dock.Right);
+            header.Children.Add(next);
+        }
+        var label = new StackPanel();
+        label.Children.Add(UiTheme.Text(row.Title, 13, bold: true));
+        label.Children.Add(UiTheme.Text(row.StatusText, 11, true));
+        header.Children.Add(label);
+        body.Children.Add(header);
+        var reason = UiTheme.Text(row.ReasonText, 11, true);
+        reason.Margin = new(0, 8, 0, 0);
+        if (row.Reason != ApplicationSupportReason.Paused)
+            body.Children.Add(reason);
+        detailsBody.Children.Add(UiTheme.Text(row.Description, 11, true));
+        detailsBody.Children.Add(UiTheme.Text(row.Guidance, 11, true));
+        detailsBody.Children.Add(UiTheme.Text(row.CapabilitySummary, 11, true));
+        detailsBody.Children.Add(UiTheme.Text(view.CapabilityNote, 10.5, true));
+        if (row.CheckedAt is { } checkedAt)
+            detailsBody.Children.Add(UiTheme.Text(checkedAt.ToLocalTime().ToString("g"), 10.5, true));
+        if (row.Details is { Length: > 0 } extra)
+            detailsBody.Children.Add(UiTheme.Text(extra, 10.5, true));
+        foreach (var action in row.SecondaryActions)
+        {
+            var button = UiTheme.Button(action.Label, () => Run(action));
+            button.IsEnabled = action.Id != ApplicationSupportAction.Refresh || _settings.Value.Enabled;
+            button.HorizontalAlignment = HorizontalAlignment.Left;
+            button.Margin = new(0, 8, 0, 0);
+            detailsBody.Children.Add(button);
+        }
+        body.Children.Add(details);
+        var card = UiTheme.Border(body, 13, "Panel2", 14);
+        card.Margin = new(0, 0, 0, 12);
+        return card;
     }
     private void Translation()
     {

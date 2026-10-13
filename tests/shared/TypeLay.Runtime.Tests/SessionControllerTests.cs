@@ -5,6 +5,39 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class SessionControllerTests
 {
+    [Fact]
+    public void NewLegacyWakePublishesARevisionThatRetiresOlderFailure()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Command("wake");
+        s.Tick();
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Input.Notices.Enqueue(new("direct", AcceptedAtMs: s.Loop.NowMs,
+            CommandGeneration: s.Input.CommandGeneration, Rejection: Denial.ImeUnclear, CommandSequence: 1));
+        s.Tick();
+        Assert.Contains("输入法", s.Controller.OperationStatus);
+        long rejectedRevision = Assert.Single(feedback).Revision;
+        Assert.Equal(rejectedRevision, s.Controller.CommandFeedbackRevision);
+        var changed = new List<(string? Status, long Revision)>();
+        s.Controller.Changed += () => changed.Add((s.Controller.OperationStatus, s.Controller.CommandFeedbackRevision));
+        s.Command("wake"); // Legacy sequence zero remains a distinct user command.
+        s.Tick();
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.True(s.Controller.CommandFeedbackRevision > rejectedRevision);
+        Assert.Contains(changed, status => status.Status is null && status.Revision > rejectedRevision);
+        Assert.Single(feedback);
+        s.Tick(Limits.DebounceMs);
+        s.CompleteTranslation("translated");
+        Assert.True(s.View.Visible);
+        long acceptedRevision = s.Controller.CommandFeedbackRevision;
+        s.Settings.Update(s.Settings.Value with
+        {
+            DirectShortcut = "Ctrl+F8"
+        });
+        Assert.True(s.Controller.CommandFeedbackRevision > acceptedRevision);
+    }
+
     [Theory]
     [InlineData("wake")]
     [InlineData("direct")]
@@ -20,6 +53,49 @@ public sealed class SessionControllerTests
         Assert.Empty(s.Service.DirectWrites);
         Assert.Empty(s.Service.Writes);
         Assert.False(s.View.Visible);
+    }
+
+    [Theory]
+    [InlineData(WriteStatus.Verified, Denial.None)]
+    [InlineData(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome)]
+    public void SettingsCannotClaimCancellationAfterDirectWriteWasSubmitted(WriteStatus terminal, Denial reason)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Service.PendingDirectWrite = new();
+        s.Command("direct");
+        s.Tick();
+        s.CompleteTranslation("translated");
+        Assert.Single(s.Service.DirectWrites);
+        s.Settings.Update(s.Settings.Value with
+        {
+            DirectShortcut = "Ctrl+F8"
+        });
+        var uncertain = Assert.Single(feedback);
+        Assert.Equal("write-unconfirmed", uncertain.Code);
+        Assert.Contains("检查原输入框", uncertain.Message);
+        Assert.DoesNotContain("未执行", uncertain.Message);
+        s.Service.PendingDirectWrite.SetResult(new(terminal, reason));
+        s.Tick();
+        Assert.Single(feedback);
+        Assert.Equal(uncertain.Message, s.Controller.OperationStatus);
+        Assert.Single(s.Service.DirectWrites);
+    }
+
+    [Fact]
+    public void SuccessfulDirectWorkDoesNotBroadcastProgressOrSuccessNotifications()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Service.DirectReceipt = new(WriteStatus.Verified, Denial.None);
+        s.Command("direct");
+        s.Tick();
+        s.CompleteTranslation("translated");
+        Assert.Single(s.Service.DirectWrites);
+        Assert.Contains("已直接替换", s.Controller.OperationStatus);
+        Assert.Empty(feedback);
     }
 
     [Fact]
@@ -41,11 +117,14 @@ public sealed class SessionControllerTests
     public void LateOrDuplicateShortcutRejectionCannotReplaceANewerCommandStatus()
     {
         using var s = new SessionScenario(WorkMode.OnDemand);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
         var rejected = new InputNotice("direct", AcceptedAtMs: s.Loop.NowMs,
             CommandGeneration: s.Input.CommandGeneration, Rejection: Denial.ImeUnclear, CommandSequence: 2);
         s.Input.Notices.Enqueue(rejected);
         s.Tick();
         string? latest = s.Controller.OperationStatus;
+        long revision = s.Controller.CommandFeedbackRevision;
         Assert.NotNull(latest);
         s.Input.Notices.Enqueue(rejected with
         {
@@ -58,6 +137,12 @@ public sealed class SessionControllerTests
         });
         s.Tick();
         Assert.Equal(latest, s.Controller.OperationStatus);
+        Assert.Equal(revision, s.Controller.CommandFeedbackRevision);
+        var only = Assert.Single(feedback);
+        Assert.Equal(s.Input.CommandGeneration, only.CommandGeneration);
+        Assert.Equal(2, only.CommandSequence);
+        Assert.Equal("shortcut-imeunclear", only.Code);
+        Assert.Equal(latest, only.Message);
         Assert.Empty(s.Model.Jobs);
     }
 
@@ -66,6 +151,8 @@ public sealed class SessionControllerTests
     {
         using var s = new SessionScenario(WorkMode.OnDemand);
         s.Service.DirectReceipt = new(WriteStatus.Verified, Denial.None);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
         s.Input.Notices.Enqueue(new("direct", AcceptedAtMs: s.Loop.NowMs, Source: s.Fresh,
             CommandGeneration: s.Input.CommandGeneration, CommandSequence: 1));
         s.Tick();
@@ -78,6 +165,7 @@ public sealed class SessionControllerTests
         s.CompleteTranslation("translated original field");
         Assert.Single(s.Service.DirectWrites);
         Assert.Equal(rejection, s.Controller.OperationStatus);
+        Assert.Equal(rejection, Assert.Single(feedback).Message);
     }
 
     [Fact]
