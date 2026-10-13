@@ -15,6 +15,7 @@ from pathlib import Path
 
 from desktop_component import DesktopComponent
 from desktop_session import DesktopSession
+from fcitx_session_source import detect_fcitx_source
 from wire import now_ms
 
 BROWSERS = ("firefox", "chromium", "google-chrome")
@@ -374,7 +375,10 @@ class ApplicationSupport:
             self.desktop_component.status()["state"] != "missing"
             or self.desktop_component.root.exists()
         ):
-            self.desktop_session_state = await self.desktop_session.refresh()
+            session = await self.desktop_session.refresh()
+            if session["state"] == "conflict" and session.get("reason") == "existing-fcitx-session":
+                session["source"] = await detect_fcitx_source()
+            self.desktop_session_state = session
         else:
             self.desktop_session_state = {"state": "unchecked"}
 
@@ -411,6 +415,17 @@ class ApplicationSupport:
                         details += " 请先正常关闭练习窗口、应用及其子窗口，再重新检查以移除。"
                 elif session["state"] == "conflict":
                     details += "\n\n" + session.get("detail", "已有输入法正在运行。")
+                    source = session.get("source", {}).get("source")
+                    if source == "user-service":
+                        details += (
+                            "\n\n已识别当前 Fcitx 来自专用用户服务。此检查只确认当前启动来源，"
+                            "不会自动停止或恢复服务；结束练习后仍请按原服务方式恢复输入法。"
+                        )
+                    elif session.get("reason") == "existing-fcitx-session":
+                        details += (
+                            "\n\n原输入法的专用启动来源尚未确认。请记下原来的启动方式，"
+                            "自行退出并在练习结束后按原方式恢复；这不表示系统不支持。"
+                        )
                     actions.append("Remove")
                 elif session["state"] == "abnormal":
                     state, reason = "Error", "DetectionFailed"

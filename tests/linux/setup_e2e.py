@@ -746,6 +746,28 @@ class ApplicationSupportTests(unittest.TestCase):
             os.readlink(managed / "current"), "releases/" + descriptor["archiveSha256"]
         )
 
+    def test_detected_system_service_is_information_not_permission_to_connect(self):
+        self.desktop_payload()
+        self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Install"))["ok"])
+        self.support.desktop_session_state = {
+            "state": "conflict",
+            "reason": "existing-fcitx-session",
+            "source": {"source": "user-service", "reason": "dedicated-user-service"},
+        }
+        fact = self.support.desktop_fact()
+        self.assertIn("专用用户服务", fact["details"])
+        self.assertIn("不会自动", fact["details"])
+        self.assertNotIn("Connect", fact["supportedActions"])
+        self.assertFalse(fact["capabilities"])
+        self.support.desktop_session_state["source"] = {
+            "source": "unconfirmed",
+            "reason": "shared-process-group",
+        }
+        fact = self.support.desktop_fact()
+        self.assertIn("尚未确认", fact["details"])
+        self.assertNotIn("Connect", fact["supportedActions"])
+        self.assertIn("不表示系统不支持", fact["details"])
+
     def test_component_preparation_success_does_not_hide_later_package_damage(self):
         self.desktop_payload()
         self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Install"))["ok"])
