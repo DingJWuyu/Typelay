@@ -14,7 +14,7 @@
 +#include <cstdio>
  #include <csignal>
  #include <unistd.h>
-@@ -42,4 +46,57 @@
+@@ -42,4 +46,76 @@
  
  namespace {
 +
@@ -34,6 +34,22 @@
 +// Private counters are authority; public diagnostic properties are never trusted.
 +int tlPendingDbus = 0, tlPendingForward = 0, tlOutputDepth = 0;
 +quint64 tlQueueEpoch = 0;
++// Diagnostic identity only: never participates in authorization or queue ordering.
++struct TlOrder { quint64 id = 0, timestamp = 0; bool release = false; };
++quint64 tlNextOrder = 0;
++TlOrder tlActiveOrder;
++void tlOrderTrace(const char *phase, const TlOrder &order, int result = -1) {
++    static unsigned lines = 0;
++    if (!tlProbe() || !qEnvironmentVariableIsSet("TYPELAY_TRACE") || lines++ >= 4096) return;
++    std::fprintf(stderr, "tlqt-order phase=%s id=%llu timestamp=%llu release=%d result=%d\n",
++        phase, static_cast<unsigned long long>(order.id),
++        static_cast<unsigned long long>(order.timestamp), int(order.release), result);
++}
++struct TlOrderScope {
++    TlOrder previous = tlActiveOrder;
++    explicit TlOrderScope(TlOrder order) { tlActiveOrder = order; }
++    ~TlOrderScope() { tlActiveOrder = previous; }
++};
 +bool tlTraceLine() {
 +    static unsigned lines = 0;
 +    return tlProbe() && lines++ < 256;
@@ -53,12 +69,15 @@
 +};
 +template<class Base> class TlQueued final : public Base {
 +    QPointer<QObject> application_;
++    TlOrder order_ = tlActiveOrder;
 +public:
 +    template<class... Args> explicit TlQueued(Args&&... args)
 +        : Base(std::forward<Args>(args)...), application_(qApp) {
 +        tlCount("tlqtPendingForward", 1);
++        tlOrderTrace("enqueue", order_);
 +    }
 +    ~TlQueued() override {
++        tlOrderTrace("retire", order_);
 +        if (application_) {
 +            tlCount("tlqtPendingForward", -1);
 +            tlCount("tlqtRetired", 1);
@@ -72,7 +91,7 @@
 +}
  
  template <typename T>
-@@ -266,4 +323,11 @@
+@@ -266,4 +342,11 @@
                             : nullptr) {
      registerFcitxQtDBusTypes();
 +    if (tlCooperate()) {
@@ -84,7 +103,7 @@
 +    }
      watcher_->setWatchPortal(true);
  
-@@ -271,4 +335,8 @@
+@@ -271,4 +354,8 @@
      // to event loop to ensure event dispatcher is avaiable.
      QTimer::singleShot(0, this, [this]() {
 +        for (const char *name : {"tlqtPendingDbus", "tlqtPendingForward", "tlqtRetired",
@@ -93,13 +112,13 @@
 +            tlCount(name, 0);
          watcher_->watch();
          fcitx4Watcher_->watch();
-@@ -277,4 +345,5 @@
+@@ -277,4 +364,5 @@
  
  QFcitxPlatformInputContext::~QFcitxPlatformInputContext() {
 +    tlBind(nullptr);
      destroy_ = true;
      watcher_->unwatch();
-@@ -349,4 +418,13 @@
+@@ -349,4 +437,13 @@
          return false;
      }
 +    TlScope output("tlqtOutputDepth");
@@ -113,13 +132,13 @@
 +    }
      QInputMethodEvent e;
      if (!commitPreedit_.isEmpty()) {
-@@ -365,4 +443,5 @@
+@@ -365,4 +462,5 @@
  
  void QFcitxPlatformInputContext::reset() {
 +    if (tlCooperate()) tlChanged(0);
      commitPreedit();
      if (auto *proxy = validIC()) {
-@@ -534,4 +613,10 @@
+@@ -534,4 +632,10 @@
      lastWindow_ = window;
      lastObject_ = realFocusObject;
 +    tlBind(realFocusObject);
@@ -130,13 +149,13 @@
 +    }
      // Always create IC Data for window.
      if (window) {
-@@ -640,4 +725,5 @@
+@@ -640,4 +744,5 @@
  
      if (proxy->isValid() && !uuid.isEmpty()) {
 +        tlCount("tlqtContexts", 1);
          QWindow *window = focusWindowWrapper();
  #ifdef ENABLE_X11
-@@ -690,4 +776,8 @@
+@@ -690,4 +795,8 @@
  
  void QFcitxPlatformInputContext::commitString(const QString &str) {
 +    TlScope output("tlqtOutputDepth");
@@ -145,7 +164,7 @@
 +    if (tlTraceLine()) std::fprintf(stderr, "tlqt-output-commit\n");
      cursorPos_ = 0;
      preeditList_.clear();
-@@ -705,4 +795,12 @@
+@@ -705,4 +814,12 @@
  void QFcitxPlatformInputContext::updateFormattedPreedit(
      const FcitxQtFormattedPreeditList &preeditList, int cursorPos) {
 +    TlScope output("tlqtOutputDepth");
@@ -158,14 +177,14 @@
 +    if (tlTraceLine()) std::fprintf(stderr, "tlqt-output-preedit\n");
      QObject *input = qGuiApp->focusObject();
      if (!input) {
-@@ -792,4 +890,6 @@
+@@ -792,4 +909,6 @@
  void QFcitxPlatformInputContext::deleteSurroundingText(int offset,
                                                         unsigned int _nchar) {
 +    TlScope output("tlqtOutputDepth");
 +    if (tlCooperate()) tlChanged(TlQtInput);
      QObject *input = qGuiApp->focusObject();
      if (!input) {
-@@ -852,4 +952,9 @@
+@@ -852,4 +971,9 @@
  void QFcitxPlatformInputContext::forwardKey(unsigned int keyval,
                                              unsigned int state, bool type) {
 +    TlScope output("tlqtOutputDepth");
@@ -175,7 +194,7 @@
 +
      auto *proxy = qobject_cast<HybridInputContext *>(sender());
      if (!proxy) {
-@@ -873,5 +978,10 @@
+@@ -873,5 +997,10 @@
                                                   const QString &langCode) {
      Q_UNUSED(name);
 -    Q_UNUSED(uniqueName);
@@ -187,13 +206,13 @@
 +    if (tlProbe()) qApp->setProperty("tlqtEngine", uniqueName);
      QLocale newLocale(langCode);
      if (locale_ != newLocale) {
-@@ -882,4 +992,5 @@
+@@ -882,4 +1011,5 @@
  
  void QFcitxPlatformInputContext::serverSideFocusOut() {
 +    if (tlCooperate()) tlChanged(TlQtFocus);
      if (lastObject_ == focusObjectWrapper()) {
          commitPreedit();
-@@ -1044,4 +1155,7 @@
+@@ -1044,4 +1174,7 @@
      ulong time = keyEvent.timestamp();
      // copied from QXcbKeyboard::handleKeyEvent()
 +    const bool trackedAsync = tlProbe() &&
@@ -201,7 +220,7 @@
 +    TlScope forwarding("tlqtPendingForward");
      if (type == QEvent::KeyPress && qtcode == Qt::Key_Menu) {
          QPoint globalPos;
-@@ -1051,10 +1165,22 @@
+@@ -1051,10 +1184,22 @@
              pos = window->mapFromGlobal(globalPos);
          }
 -        QWindowSystemInterface::handleContextMenuEvent(window, false, pos,
@@ -230,14 +249,14 @@
 +    }
  }
  
-@@ -1067,4 +1193,6 @@
+@@ -1067,4 +1212,6 @@
  
          const auto *keyEvent = static_cast<const QKeyEvent *>(event);
 +        if (tlCooperate() && tlControlKey(keyEvent)) return true;
 +        if (tlCooperate()) tlChanged(tlKeyCause(keyEvent->key()));
          quint32 keyval = keyEvent->nativeVirtualKey();
          quint32 keycode = keyEvent->nativeScanCode();
-@@ -1100,4 +1228,12 @@
+@@ -1100,4 +1247,14 @@
              stateToFcitx |= (1U << 31);
          }
 +        if (tlProbe() && syncMode_) {
@@ -247,10 +266,12 @@
 +                qApp->property("tlqtSyncKeySeq").toInt(), int(isRelease),
 +                int(keyEvent->isAutoRepeat()), state, int(keyEvent->key() == Qt::Key_F24));
 +        }
++        const TlOrder submitted{++tlNextOrder, keyEvent->timestamp(), isRelease};
++        tlOrderTrace("submit", submitted);
 +        TlScope submitting("tlqtPendingDbus");
          auto reply = proxy->processKeyEvent(keyval, keycode, stateToFcitx,
                                              isRelease, keyEvent->timestamp());
-@@ -1105,8 +1241,17 @@
+@@ -1105,8 +1262,17 @@
          if (Q_UNLIKELY(syncMode_)) {
              reply.waitForFinished();
 +            tlCount("tlqtSyncReplies", 1);
@@ -269,22 +290,36 @@
 +                if (fallback) {
                      return true;
                  }
-@@ -1118,4 +1263,8 @@
+@@ -1118,4 +1284,10 @@
          auto *watcher = new ProcessKeyWatcher(*keyEvent, focusWindowWrapper(),
                                                reply, proxy);
++        watcher->setProperty("tlOrderId", QVariant::fromValue(submitted.id));
++        watcher->setProperty("tlOrderTimestamp", QVariant::fromValue(submitted.timestamp));
 +        tlCount("tlqtPendingDbus", 1);
 +        connect(watcher, &QObject::destroyed, qApp, [] {
 +            tlCount("tlqtPendingDbus", -1);
 +        });
          connect(watcher, &QDBusPendingCallWatcher::finished, this,
                  &QFcitxPlatformInputContext::processKeyEventFinished);
-@@ -1128,4 +1277,5 @@
+@@ -1128,5 +1300,11 @@
  void QFcitxPlatformInputContext::processKeyEventFinished(
      QDBusPendingCallWatcher *w) {
 +    tlCount("tlqtKeyReplies", 1);
      auto *watcher = static_cast<ProcessKeyWatcher *>(w);
++    const TlOrder order{watcher->property("tlOrderId").toULongLong(),
++                        watcher->property("tlOrderTimestamp").toULongLong(),
++                        watcher->keyEvent().type() == QEvent::KeyRelease};
++    TlOrderScope orderScope(order);
++    tlOrderTrace("reply", order, int(watcher->isError()));
      bool filtered = false;
-@@ -1306,3 +1456,179 @@
+ 
+@@ -1159,4 +1337,5 @@
+     }
+ 
++    tlOrderTrace("decision", order, int(filtered));
+     if (!filtered) {
+         forwardEvent(window, keyEvent);
+@@ -1306,3 +1485,179 @@
  }
  
 +// TypeLay 2026-10-12: exact-object cooperation for the original async IM path.

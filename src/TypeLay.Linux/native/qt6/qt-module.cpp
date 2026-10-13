@@ -861,7 +861,16 @@ private:
                 const bool editing = presentation.value("editorOwnsText").toBool();
                 {
                     QScopedValueRollback<bool> setting(settingText_, true);
-                    if (editor_->toPlainText() != view.value("text").toString()) editor_->setPlainText(view.value("text").toString());
+                    if (editor_->toPlainText() != view.value("text").toString()) {
+                        // Once editing starts, the native editor owns its text,
+                        // caret and undo history. A delayed draft echo is not an edit.
+                        const bool retained = editing && !editor_->isReadOnly();
+                        if (qEnvironmentVariableIsSet("TYPELAY_QT_PROBE")) {
+                            const auto *counter = retained ? "tlqtEditorOwnedRenderSkips" : "tlqtEditorProgrammaticSets";
+                            qApp->setProperty(counter, qApp->property(counter).toInt() + 1);
+                        }
+                        if (!retained) editor_->setPlainText(view.value("text").toString());
+                    }
                 }
                 editor_->setReadOnly(!editing);
                 editor_->setFocusPolicy(editing ? Qt::StrongFocus : Qt::NoFocus);

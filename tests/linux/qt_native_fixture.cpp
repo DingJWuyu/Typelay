@@ -151,7 +151,8 @@ int main(int argc, char **argv) {
             {"editorGeometry", editor ? rectangle(editor) : QJsonObject()}};
         // Read the actual provider's optional research counters without issuing
         // another IM RPC that could perturb the consumer's short-lived proof.
-        for (const auto *name : {"tlqtPendingDbus", "tlqtPendingForward", "tlqtOutputDepth", "tlqtEngine", "tlqtRetired", "tlqtKeyReplies"}) {
+        for (const auto *name : {"tlqtPendingDbus", "tlqtPendingForward", "tlqtOutputDepth", "tlqtEngine", "tlqtRetired", "tlqtKeyReplies",
+                                 "tlqtEditorProgrammaticSets", "tlqtEditorOwnedRenderSkips"}) {
             const auto value = qApp->property(name);
             state.insert(QLatin1String(name), value.isValid() ? QJsonValue::fromVariant(value) : QJsonValue());
         }
