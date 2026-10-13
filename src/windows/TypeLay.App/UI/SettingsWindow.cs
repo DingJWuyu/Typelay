@@ -15,7 +15,7 @@ internal sealed class SettingsWindow : Window
     private readonly ModelClient _model;
     private readonly StackPanel _content;
     private readonly StackPanel _nav;
-    private readonly Action _openTutorial;
+    private readonly Action _openPractice;
     private readonly WindowsApplicationSupport? _support;
     private readonly Func<ModelInstaller> _createInstaller;
     private readonly SettingsDraftMessages _draftMessages = SettingsDraftPresentation.Create();
@@ -39,12 +39,12 @@ internal sealed class SettingsWindow : Window
     private ProgressBar? _progress;
     private TextBlock? _progressLabel;
     public Action? SessionMustEnd;
-    public SettingsWindow(SettingsStore settings, ModelClient model, Action openTutorial, WindowsApplicationSupport? support = null,
+    public SettingsWindow(SettingsStore settings, ModelClient model, Action openPractice, WindowsApplicationSupport? support = null,
         Func<ModelInstaller>? createInstaller = null)
     {
         _settings = settings;
         _model = model;
-        _openTutorial = openTutorial;
+        _openPractice = openPractice;
         _support = support;
         _createInstaller = createInstaller ?? (() => new ModelInstaller());
         Title = "TypeLay 设置";
@@ -349,7 +349,86 @@ internal sealed class SettingsWindow : Window
         Row("外观", "使用系统字体和低干扰浮层。", themes);
         Rule();
         Note("文本与译文保留在本机", "推理完全在本地进行；默认不保存翻译历史，不需要账号或云同步。");
-        Row("实操教程", "输入 → 本地译文 → Tab；编辑 → Tab 返回 → Tab 接受。", UiTheme.Button("打开教程", _openTutorial));
+        var practice = OnDemandPracticePresentation.Create(_settings.Value);
+        Row(practice.Title, practice.Summary, UiTheme.Button(practice.StartLabel, StartPractice));
+    }
+    public void StartPractice()
+    {
+        if (_closeDialog is not null)
+        {
+            _closeDialog.Activate();
+            return;
+        }
+        if (!_model.Ready)
+        {
+            ShowPage("apps");
+            return;
+        }
+        var view = OnDemandPracticePresentation.Create(_settings.Value);
+        if (!_settings.Value.Enabled || view.LanguageNeedsChange)
+        {
+            ShowPage(!_settings.Value.Enabled ? "general" : "language");
+            return;
+        }
+        if (view.ConfirmationText is not null && !ConfirmPractice(view))
+            return;
+        // The modal may have processed other settings/model callbacks. Keep their
+        // latest values and never restore an earlier snapshot on practice close.
+        if (!_model.Ready || !_settings.Value.Enabled
+            || OnDemandPracticePresentation.Create(_settings.Value).LanguageNeedsChange)
+            return;
+        if (_settings.Value.Mode != WorkMode.OnDemand && !Save(_settings.Value with
+        {
+            Mode = WorkMode.OnDemand
+        }))
+        {
+            ShowPage("general"); // The tray entry may have started with settings hidden.
+            return;
+        }
+        SessionMustEnd?.Invoke();
+        try
+        {
+            _openPractice();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+            or System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            MessageBox.Show(this, view.LaunchFailedMessage,
+                view.Title, MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+    }
+    private bool ConfirmPractice(OnDemandPracticeView view)
+    {
+        var dialog = new Window
+        {
+            Owner = IsVisible ? this : null,
+            Title = view.Title,
+            Width = 440,
+            SizeToContent = SizeToContent.Height,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = IsVisible ? WindowStartupLocation.CenterOwner : WindowStartupLocation.CenterScreen,
+            ShowInTaskbar = false
+        };
+        dialog.SetResourceReference(BackgroundProperty, "Panel");
+        var body = new StackPanel { Margin = new(22) };
+        body.Children.Add(UiTheme.Text(view.ConfirmationText!, 13));
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 22, 0, 0) };
+        var cancel = UiTheme.Button(view.CancelLabel, () => dialog.DialogResult = false);
+        cancel.IsCancel = true;
+        cancel.IsDefault = true;
+        cancel.Margin = new(0, 0, 10, 0);
+        var start = UiTheme.Button(view.StartLabel, () => dialog.DialogResult = true, primary: true);
+        actions.Children.Add(cancel);
+        actions.Children.Add(start);
+        body.Children.Add(actions);
+        dialog.Content = body;
+        dialog.Loaded += (_, _) => cancel.Focus();
+        _closeDialog = dialog;
+        try
+        {
+            return dialog.ShowDialog() == true;
+        }
+        finally { _closeDialog = null; }
     }
     private void Languages()
     {
@@ -513,7 +592,7 @@ internal sealed class SettingsWindow : Window
             others.Children.Add(SupportRow(row, view));
         if (others.Children.Count > 0)
             _content.Children.Add(new Expander { Header = view.Labels.MoreApplications, Content = others, Margin = new(0, 8, 0, 14) });
-        var tryIt = UiTheme.Button(view.Labels.TryIt, _openTutorial);
+        var tryIt = UiTheme.Button(view.Labels.TryIt, StartPractice);
         tryIt.IsEnabled = _model.Ready;
         tryIt.HorizontalAlignment = HorizontalAlignment.Left;
         tryIt.Margin = new(0, 0, 0, 14);
@@ -690,7 +769,7 @@ internal sealed class SettingsWindow : Window
                 {
                     OnboardingComplete = true
                 });
-                _setupStatus = "本地翻译已就绪。可打开实操教程。";
+                _setupStatus = "本地翻译已就绪。可打开“" + OnDemandPracticePresentation.Create(_settings.Value).Title + "”。";
             }
             else
                 SetupFailed(SetupFailureCategory.Runtime, "ModelStart");

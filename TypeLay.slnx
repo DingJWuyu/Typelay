@@ -10,6 +10,7 @@
   <Folder Name="/src/windows/">
     <Project Path="src/windows/TypeLay.App/TypeLay.App.csproj" />
     <Project Path="src/windows/TypeLay.Broker/TypeLay.Broker.csproj" />
+    <Project Path="src/windows/TypeLay.Practice/TypeLay.Practice.csproj" />
     <Project Path="src/windows/TypeLay.Windows.Contracts/TypeLay.Windows.Contracts.csproj" />
   </Folder>
   <Folder Name="/tests/shared/">

@@ -1,5 +1,4 @@
 using TypeLay.Runtime;
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Windows;
@@ -27,6 +26,7 @@ internal static class Program
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         SessionController? session = null;
         ModelClient? model = null;
+        PracticeHost? practiceHost = null;
         SettingsWindow? settingsWindow = null;
         Forms.NotifyIcon? tray = null;
         Drawing.Icon? icon = null;
@@ -38,6 +38,7 @@ internal static class Program
             disposed = true;
             session?.Dispose();
             model?.Dispose();
+            practiceHost?.Dispose();
             if (tray is not null)
             {
                 tray.Visible = false;
@@ -63,21 +64,9 @@ internal static class Program
             var overlay = new OverlayWindow(automationTest);
             var support = new WindowsApplicationSupport();
             session = WindowsRuntime.CreateSession(settings, model, overlay, automationTest, support: support);
-            void Tutorial()
-            {
-                session.StopSession();
-                string file = Path.Combine(AppPaths.Home, "assets", "tutorial", "index.html");
-                // A normal browser form, served from a local file. There is no translation mock.
-                try
-                {
-                    Process.Start(new ProcessStartInfo("msedge.exe") { UseShellExecute = true, ArgumentList = { new Uri(file).AbsoluteUri } });
-                }
-                catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
-                {
-                    Process.Start(new ProcessStartInfo(file) { UseShellExecute = true });
-                }
-            }
-            var window = new SettingsWindow(settings, model, Tutorial, support)
+            practiceHost = new PracticeHost();
+            var window = new SettingsWindow(settings, model,
+                () => practiceHost.Open(Path.Combine(AppPaths.Data, "settings.json")), support)
             {
                 SessionMustEnd = session.StopSession,
                 ShortcutStatus = () => session.ShortcutStatus
@@ -92,6 +81,12 @@ internal static class Program
             var quick = new QuickPanel(settings, model, session, () => window.ShowPage(), Quit);
             icon = MakeTrayIcon();
             tray = new Forms.NotifyIcon { Icon = icon, Visible = true, Text = "TypeLay · 正在启动" };
+            practiceHost.Failed += () => app.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (!disposed)
+                    tray.ShowBalloonTip(5000, OnDemandPracticePresentation.Create(settings.Value).Title,
+                        OnDemandPracticePresentation.Create(settings.Value).LaunchFailedMessage, Forms.ToolTipIcon.Info);
+            }));
             session.OperationFeedback += feedback =>
             {
                 if (!disposed)
@@ -115,7 +110,7 @@ internal static class Program
             toggle.Click += (_, _) => app.Dispatcher.Invoke(() => settings.Update(settings.Value with { Enabled = !settings.Value.Enabled }));
             menu.Items.Add(toggle);
             menu.Items.Add("设置…", null, (_, _) => app.Dispatcher.Invoke(() => window.ShowPage()));
-            menu.Items.Add("实操教程", null, (_, _) => app.Dispatcher.Invoke(Tutorial));
+            menu.Items.Add(OnDemandPracticePresentation.Create(settings.Value).Title, null, (_, _) => app.Dispatcher.Invoke(window.StartPractice));
             menu.Items.Add(new Forms.ToolStripSeparator());
             menu.Items.Add("退出 TypeLay", null, (_, _) => app.Dispatcher.Invoke(Quit));
             tray.ContextMenuStrip = menu;

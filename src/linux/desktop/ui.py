@@ -452,7 +452,7 @@ class ApplicationSupportPane:
         self.secondary = Gtk.Box(spacing=8)
         detail_box.pack_start(self.secondary, False, False, 0)
         self.try_button = Gtk.Button()
-        self.try_button.connect("clicked", lambda *_: owner.open_tutorial())
+        self.try_button.connect("clicked", lambda *_: self.open_practice())
         self.box.pack_start(self.try_button, False, False, 0)
         self.recovery = self.note("")
         self.timer = GLib.timeout_add(2000, self.tick)
@@ -502,7 +502,16 @@ class ApplicationSupportPane:
         self.model.set_text(
             "本地翻译组件已就绪" if self.owner.model_ready else "本地翻译组件尚未就绪"
         )
-        self.try_button.set_sensitive(self.owner.model_ready)
+        self.try_button.set_sensitive(self.value is not None)
+
+    def open_practice(self):
+        # The existing desktop row owns package preparation and the explicit
+        # private-input-method confirmation. Opening this entry starts neither.
+        self.selector.set_active_id("desktop-text")
+        self.details.set_expanded(True)
+        actions = self.primary.get_children()
+        if actions:
+            actions[0].grab_focus()
 
     def render_choices(self):
         if not self.value:

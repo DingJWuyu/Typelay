@@ -20,6 +20,7 @@
     <ItemGroup>
       <_BrokerTestFiles Include="$(MSBuildThisFileDirectory)../../../src/windows/TypeLay.Broker/bin/$(Configuration)/net10.0-windows/TypeLay.Broker.*" />
       <_BrokerTestFiles Include="$(MSBuildThisFileDirectory)../../../src/windows/TypeLay.Broker/bin/$(Configuration)/net10.0-windows/TypeLay.NativeInput.dll" />
+      <_BrokerTestFiles Include="$(MSBuildThisFileDirectory)../../../src/windows/TypeLay.App/bin/$(Configuration)/net10.0-windows/TypeLay.Practice.*" />
     </ItemGroup>
     <Copy SourceFiles="@(_BrokerTestFiles)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
   </Target>

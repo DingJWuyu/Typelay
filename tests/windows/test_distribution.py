@@ -1,11 +1,13 @@
 """Test the shipped ZIP after relocation. Model inference and physical GUI input are separate gates."""
 
+import ctypes
 import json
 import os
 import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -73,7 +75,6 @@ class DistributionTests(unittest.TestCase):
             "app",
             "worker",
             "bootstrap",
-            "assets",
         }
         self.assertEqual({p.name for p in self.home.iterdir()}, expected)
         forbidden = {
@@ -90,12 +91,13 @@ class DistributionTests(unittest.TestCase):
         for path in self.home.rglob("*"):
             self.assertFalse(forbidden.intersection(path.relative_to(self.home).parts), str(path))
 
-    def test_runtime_dependencies_and_tutorial_survive_relocation(self):
+    def test_runtime_dependencies_survive_relocation(self):
         for relative in (
             "TypeLay.exe",
             "bootstrap/start.ps1",
             "app/TypeLay.App.exe",
             "app/TypeLay.Broker.exe",
+            "app/TypeLay.Practice.exe",
             "app/TypeLay.Core.dll",
             "app/TypeLay.Protocol.dll",
             "app/TypeLay.Runtime.dll",
@@ -104,7 +106,6 @@ class DistributionTests(unittest.TestCase):
             "app/coreclr.dll",
             "worker/run_worker.py",
             "worker/typelay_worker/engine.py",
-            "assets/tutorial/index.html",
         ):
             with self.subTest(path=relative):
                 self.assertTrue((self.home / relative).is_file(), relative)
@@ -113,6 +114,87 @@ class DistributionTests(unittest.TestCase):
         )
         self.assertNotIn("frameworks", config["runtimeOptions"])
         self.assertNotIn("framework", config["runtimeOptions"])
+
+    def test_relocated_practice_opens_a_real_stock_edit_without_changing_settings(self):
+        settings = Path(self.temporary.name) / "练习 settings.json"
+        original = json.dumps(
+            {
+                "Mode": 1,
+                "OnboardingComplete": False,
+                "ExcludedApplications": ["应用" * 120 + str(i) for i in range(256)],
+            }
+        ).encode()
+        settings.write_bytes(original)
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        user32.GetDlgItem.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user32.GetDlgItem.restype = ctypes.c_void_p
+        user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+        user32.IsWindowVisible.restype = ctypes.c_bool
+        user32.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+        user32.PostMessageW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_uint,
+            ctypes.c_size_t,
+            ctypes.c_ssize_t,
+        ]
+        callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+        user32.EnumWindows.argtypes = [callback_type, ctypes.c_void_p]
+        process = subprocess.Popen(
+            [str(self.home / "app/TypeLay.Practice.exe"), "--settings", str(settings)],
+            cwd=self.temporary.name,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        root = None
+        try:
+            deadline = time.monotonic() + 6
+            while root is None and time.monotonic() < deadline:
+                self.assertIsNone(process.poll(), "Practice exited before opening its input window")
+
+                @callback_type
+                def owned_window(window, _):
+                    nonlocal root
+                    pid = ctypes.c_ulong()
+                    user32.GetWindowThreadProcessId(window, ctypes.byref(pid))
+                    if pid.value == process.pid:
+                        name = ctypes.create_unicode_buffer(128)
+                        user32.GetClassNameW(window, name, len(name))
+                        if (
+                            name.value == "TypeLayPracticeWindow"
+                            and user32.IsWindowVisible(window)
+                            and user32.GetDlgItem(window, 101)
+                        ):
+                            root = window
+                            return False
+                    return True
+
+                user32.EnumWindows(owned_window, None)
+                if root is None:
+                    time.sleep(0.02)
+            self.assertIsNotNone(root, "The relocated practice must create its own window")
+            field = user32.GetDlgItem(root, 101)
+            self.assertTrue(field, "The production practice must expose an ordinary input field")
+            name = ctypes.create_unicode_buffer(128)
+            user32.GetClassNameW(field, name, len(name))
+            self.assertEqual(name.value, "Edit")
+            self.assertEqual(settings.read_bytes(), original)
+            pid = ctypes.c_ulong()
+            user32.GetWindowThreadProcessId(root, ctypes.byref(pid))
+            self.assertIsNone(process.poll())
+            self.assertEqual(pid.value, process.pid)
+            self.assertTrue(user32.PostMessageW(root, 0x0010, 0, 0))
+            stdout, stderr = process.communicate(timeout=5)
+            self.assertEqual(process.returncode, 0)
+            self.assertEqual((stdout, stderr), (b"", b""))
+            self.assertEqual(settings.read_bytes(), original)
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+            process.stdout.close()
+            process.stderr.close()
+            settings.unlink(missing_ok=True)
 
     def test_redistributed_frameworks_keep_their_exact_version_notices(self):
         config = json.loads(

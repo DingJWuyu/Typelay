@@ -343,6 +343,22 @@ async def desktop(paths, background, lock, tutorial=False):
             if operation == "tutorial":
                 components["settings"].open_tutorial()
                 return True
+            if operation == "practiceStatus":
+                return {
+                    **await command("status", None),
+                    "presentation": await host.ask("onDemandPractice", timeout=2),
+                    "practiceEnabled": bool(
+                        components["settings"].value and components["settings"].value["enabled"]
+                    ),
+                }
+            if operation == "startOnDemandPractice":
+                if (
+                    not isinstance(value, dict)
+                    or set(value) != {"confirmedSwitch"}
+                    or type(value["confirmedSwitch"]) is not bool
+                ):
+                    return False
+                return await host.ask("startOnDemandPractice", value["confirmedSwitch"])
             if operation == "finishOnboarding":
                 if (
                     not isinstance(value, dict)

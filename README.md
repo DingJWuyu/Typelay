@@ -30,7 +30,6 @@ eng/windows/                Windows 构建、开发与打包任务
 eng/linux/                  Linux 构建与 cooperative 固定输入/补丁
 packaging/{windows,linux}/  运行时启动、安装与发行包装配
 tests/{shared,windows,linux}/  按实际所有者划分回归及受控工具
-assets/tutorial/            随 Windows 产品分发的本地实操教程
 docs/product/               冻结规格、已接受增量入口与共同产品行为
 docs/design/                已确认 UI 原型
 docs/engineering/           共享架构、开发和验证约定

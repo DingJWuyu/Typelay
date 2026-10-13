@@ -15,6 +15,7 @@
     <ItemGroup>
       <_ContinuousBrokerFiles Include="$(MSBuildThisFileDirectory)../../../../src/windows/TypeLay.Broker/bin/$(Configuration)/net10.0-windows/TypeLay.Broker.*" />
       <_ContinuousBrokerFiles Include="$(MSBuildThisFileDirectory)../../../../src/windows/TypeLay.Broker/bin/$(Configuration)/net10.0-windows/TypeLay.NativeInput.dll" />
+      <_ContinuousBrokerFiles Include="$(MSBuildThisFileDirectory)../../../../src/windows/TypeLay.App/bin/$(Configuration)/net10.0-windows/TypeLay.Practice.*" />
     </ItemGroup>
     <Copy SourceFiles="@(_ContinuousBrokerFiles)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
   </Target>

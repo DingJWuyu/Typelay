@@ -40,7 +40,7 @@ function Publish-Distribution([bool]$SelfContained) {
     $stage = Join-Path $artifacts "$base/TypeLay"
     if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
     New-Item -ItemType Directory -Force $stage | Out-Null
-    foreach ($project in @('TypeLay.App', 'TypeLay.Broker')) {
+    foreach ($project in @('TypeLay.App', 'TypeLay.Broker', 'TypeLay.Practice')) {
         Invoke-Checked dotnet @('publish', "src/windows/$project/$project.csproj", '-c', $Configuration,
             '-r', 'win-x64', '--self-contained', $SelfContained.ToString().ToLowerInvariant(),
             '-o', (Join-Path $stage 'app'), '-p:PublishSingleFile=false', '-p:PublishTrimmed=false')
@@ -74,8 +74,6 @@ function Publish-Distribution([bool]$SelfContained) {
     New-Item -ItemType Directory -Force (Join-Path $stage 'bootstrap') | Out-Null
     Copy-Item 'packaging/windows/start.ps1' (Join-Path $stage 'bootstrap/start.ps1')
     Copy-Item 'packaging/windows/Start-TypeLay.cmd' $stage
-    New-Item -ItemType Directory -Force (Join-Path $stage 'assets/tutorial') | Out-Null
-    Copy-Item 'assets/tutorial/index.html' (Join-Path $stage 'assets/tutorial/index.html')
     Copy-Item 'docs/platforms/windows/README.md' (Join-Path $stage 'README.md')
     Copy-Item 'THIRD_PARTY_NOTICES.md' $stage
     Invoke-Checked python @('eng/windows/build-launcher.py', '--output', (Join-Path $stage 'TypeLay.exe'))

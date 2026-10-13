@@ -128,7 +128,21 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(os.readlink(current.parent / "current"), "previous")
             self.assertEqual((current / "retained").read_text(), "previous usable version")
 
-    def test_desktop_setup_feedback_uses_the_same_shared_presentation(self):
+    def test_desktop_feedback_and_practice_use_shared_presentations(self):
+        settings = self.home / "config/settings.json"
+        settings.parent.mkdir(parents=True)
+        settings.write_text(
+            json.dumps(
+                {
+                    "Schema": 1,
+                    "Source": "en",
+                    "Target": "zh",
+                    "WakeShortcut": "Ctrl+Alt+F6",
+                    "DirectShortcut": "Ctrl+Alt+F7",
+                }
+            )
+        )
+        previous = settings.read_bytes()
         parent, child = socket.socketpair()
         parent.settimeout(5)
         process = None
@@ -174,6 +188,59 @@ class DistributionTests(unittest.TestCase):
                 self.assert_success(cli)
                 self.assertEqual(response["data"], json.loads(cli.stdout))
                 self.assertNotIn("private-token", json.dumps(response))
+            request = json.dumps({"id": 4, "op": "onDemandPractice", "data": None}).encode()
+            parent.sendall(struct.pack("<I", len(request)) + request)
+            length = struct.unpack("<I", receive(4))[0]
+            self.assertLessEqual(length, 16384)
+            response = json.loads(receive(length))
+            self.assertEqual(response["reply"], 4)
+            practice = response["data"]
+            self.assertEqual(practice["title"], "按需翻译练习")
+            self.assertIn("Ctrl+Alt+F6", practice["previewStep"])
+            self.assertIn("Ctrl+Alt+F7", practice["replaceStep"])
+            self.assertEqual(practice["sampleText"], "Hello I would like to try local translation")
+            self.assertTrue(practice["confirmationText"])
+            self.assertFalse(practice["languageNeedsChange"])
+            self.assertEqual(settings.read_bytes(), previous)
+            # Queue preference changes and starts without waiting for settings
+            # notifications. A cold host must refuse even explicit confirmation;
+            # only the real-model desktop regression covers a successful start.
+            for confirmed in (False, True):
+                frames = (
+                    {
+                        "id": 5,
+                        "op": "settings",
+                        "data": {
+                            "enabled": False,
+                            "source": "auto",
+                            "target": "en",
+                            "mode": "Automatic",
+                            "theme": "dark",
+                            "excludedApplications": ["synthetic-private-app"],
+                        },
+                    },
+                    {"id": 6, "op": "startOnDemandPractice", "data": confirmed},
+                )
+                for frame in frames:
+                    request = json.dumps(frame).encode()
+                    parent.sendall(struct.pack("<I", len(request)) + request)
+                replies = {}
+                for _ in range(32):
+                    length = struct.unpack("<I", receive(4))[0]
+                    self.assertLessEqual(length, 16384)
+                    response = json.loads(receive(length))
+                    if "reply" in response:
+                        replies[response["reply"]] = response["data"]
+                    if len(replies) == 2:
+                        break
+                self.assertEqual(replies, {5: True, 6: False})
+                saved = json.loads(settings.read_text())
+                self.assertFalse(saved["Enabled"])
+                self.assertEqual(saved["Mode"], 0)
+                self.assertEqual(saved["Source"], "auto")
+                self.assertEqual(saved["Target"], "en")
+                self.assertEqual(saved["Theme"], "dark")
+                self.assertEqual(saved["ExcludedApplications"], ["synthetic-private-app"])
         finally:
             parent.close()
             child.close()

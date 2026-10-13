@@ -1755,7 +1755,7 @@ def run(arguments):
                     lambda: named(process.pid, copy_name) is None,
                     "closed instructions retained their copy control",
                 )
-                activate_setting(support["labels"]["tryIt"])
+                assert control(paths, "tutorial") is True
                 practice_window = wait_for(
                     lambda: (
                         window
@@ -1801,6 +1801,10 @@ def run(arguments):
                 "switch did not save immediately",
             )
             saved = json.loads(paths.settings.read_text())
+            assert control(paths, "startOnDemandPractice", {"confirmedSwitch": True}) is False, (
+                "practice silently enabled a paused client"
+            )
+            assert not json.loads(paths.settings.read_text())["Enabled"]
             settings_control("保存修改")
             wake = settings_control("设置：唤醒翻译")
             direct = settings_control("设置：直接翻译替换")
@@ -1896,6 +1900,9 @@ def run(arguments):
             assert Atspi.Component.grab_focus(wake.get_component_iface())
             key("ctrl+Page_Down")
             activate_setting(support["labels"]["tryIt"])
+            assert not status()["setup"]["tutorialVisible"]
+            assert selector.get_name() == desktop_support["title"]
+            assert control(paths, "tutorial") is True
             wait_for(
                 lambda: status().get("setup", {}).get("tutorialVisible"),
                 "explicit local-model trial did not open",
@@ -2051,6 +2058,114 @@ def run(arguments):
                     key("Tab")
                     wait_for(lambda: translated(text(source)), "managed practice Tab did not write")
                     wait_for(lambda: verified_write(checkpoint), "managed write was not verified")
+                    latest_preferences = json.loads(paths.settings.read_text())
+                    practice_view = control(paths, "practiceStatus")["presentation"]
+                    assert (
+                        control(paths, "startOnDemandPractice", {"confirmedSwitch": False}) is False
+                    ), "a stale OnDemand button silently changed Automatic mode"
+                    assert json.loads(paths.settings.read_text())["Mode"] == 0
+
+                    def practice_action(label):
+                        node = wait_for(
+                            lambda: named(managed_window["pid"], label),
+                            f"practice action missing: {label}",
+                        )
+                        assert Atspi.Action.do_action(node.get_action_iface(), 0)
+                        return node
+
+                    practice_action(practice_view["startLabel"])
+                    practice_action(practice_view["cancelLabel"])
+                    assert json.loads(paths.settings.read_text())["Mode"] == 0
+                    practice_action(practice_view["startLabel"])
+                    cancel = wait_for(
+                        lambda: named(managed_window["pid"], practice_view["cancelLabel"]),
+                        "practice mode confirmation missing",
+                    )
+                    # Pick the affirmative action in this real dialog, not the
+                    # identically labelled start button behind its modal window.
+                    actions = cancel.get_parent()
+                    confirm = next(
+                        actions.get_child_at_index(index)
+                        for index in range(actions.get_child_count())
+                        if actions.get_child_at_index(index).get_name()
+                        == practice_view["startLabel"]
+                    )
+                    assert Atspi.Action.do_action(confirm.get_action_iface(), 0)
+                    wait_for(
+                        lambda: json.loads(paths.settings.read_text())["Mode"] == 1
+                        and focused(source),
+                        "confirmed practice did not persist OnDemand mode and return to its field",
+                    )
+                    assert json.loads(paths.settings.read_text()) == {
+                        **latest_preferences,
+                        "Mode": 1,
+                    }, "starting practice overwrote another saved preference"
+                    practice_view = control(paths, "practiceStatus")["presentation"]
+                    for key_name in ("previewStep", "replaceStep", "capabilityNote"):
+                        wait_for(
+                            lambda name=key_name: named(managed_window["pid"], practice_view[name]),
+                            f"practice did not render the shared {key_name}",
+                        )
+                    key("alt+r")
+                    wait_for(
+                        lambda: text(source) == "" and focused(source), "practice reset failed"
+                    )
+                    typed(original)
+                    wait_for(lambda: text(source) == original, "on-demand practice lost source")
+                    key("ctrl+shift+F9")
+                    wait_for(ready_to_accept, "practice F9 did not produce the real model preview")
+                    assert text(source) == original, "practice preview changed the source"
+                    checkpoint = trace_checkpoint()
+                    key("ctrl+shift+F10")
+                    wait_for(
+                        lambda: translated(text(source)) and verified_write(checkpoint),
+                        "practice F10 did not replace through the production model/input path",
+                    )
+                    practice_text = text(source)
+                    key("ctrl+a")
+                    assert control(paths, "settings") is True
+                    trial = settings_control(support["labels"]["tryIt"])
+                    assert Atspi.Component.grab_focus(trial.get_component_iface())
+                    key("ctrl+Page_Up")
+                    language = settings_control("设置：源语言")
+                    assert Atspi.Selection.select_child(language.get_selection_iface(), 1)
+                    wait_for(
+                        lambda: json.loads(paths.settings.read_text())["Source"] == "zh",
+                        "practice language change did not save",
+                    )
+                    changed_view = control(paths, "practiceStatus")["presentation"]
+                    assert changed_view["languageNeedsChange"]
+                    assert changed_view["sampleText"] != practice_view["sampleText"]
+                    assert (
+                        control(paths, "startOnDemandPractice", {"confirmedSwitch": True}) is False
+                    ), "practice accepted equal source and target languages"
+                    request({"Action": {"FocusWindow": {"id": managed_window["id"]}}})
+                    wait_for(
+                        lambda: focused(source)
+                        and named(managed_window["pid"], changed_view["currentStateNotice"]),
+                        "practice did not refresh the shared language notice",
+                    )
+                    # Changing the sample changes only the placeholder. Actual
+                    # typing replaces the preserved selection, rather than appending.
+                    assert text(source) == practice_text
+                    typed("Selection survived")
+                    wait_for(
+                        lambda: text(source) == "Selection survived",
+                        "practice settings refresh changed the source selection",
+                    )
+                    assert control(paths, "settings") is True
+                    assert Atspi.Selection.select_child(language.get_selection_iface(), 2)
+                    wait_for(
+                        lambda: json.loads(paths.settings.read_text())["Source"] == "en",
+                        "restoring the source language did not save",
+                    )
+                    assert json.loads(paths.settings.read_text())["Mode"] == 1
+                    evidence.append(
+                        "Shared on-demand practice: cancel and stale unconfirmed start preserve mode; "
+                        "explicit confirmation persists mode; real F9 previews without writes and "
+                        "real F10 retranslates/replaces; presentation refresh preserves source/selection"
+                    )
+                    settings = json.loads(paths.settings.read_text())
                     stop()
                     assert any(
                         window["id"] == managed_window["id"]
@@ -2068,6 +2183,17 @@ def run(arguments):
                         and not any(a["id"] == "Remove" for a in row["actions"]),
                         "an application still using the components was offered removal",
                     )
+                    trial = settings_control(support["labels"]["tryIt"])
+                    assert Atspi.Component.grab_focus(trial.get_component_iface())
+                    key("ctrl+Page_Up")
+                    mode = settings_control("设置：工作模式")
+                    assert Atspi.Selection.select_child(mode.get_selection_iface(), 0)
+                    wait_for(
+                        lambda: json.loads(paths.settings.read_text())["Mode"] == 0,
+                        "the user's later mode change did not save",
+                    )
+                    assert Atspi.Component.grab_focus(wake.get_component_iface())
+                    key("ctrl+Page_Down")
                 finally:
                     # A cleanup error must not replace the original test failure.
                     if sys.exc_info()[0] is None:
@@ -2089,6 +2215,9 @@ def run(arguments):
                     timeout=30,
                 )
                 assert user_profile.read_bytes() == before_profile
+                assert json.loads(paths.settings.read_text())["Mode"] == 0, (
+                    "closing practice overwrote the user's later mode change"
+                )
                 assert paths.settings.is_file() and status().get("modelReady")
                 assert not (paths.data / "components/desktop-text/current").exists()
                 assert (paths.data / "components/desktop-text/practice-profile").is_dir()

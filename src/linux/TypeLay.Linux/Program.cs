@@ -99,6 +99,22 @@ internal static class Program
                     return view.BeginEditing?.Invoke() ?? false;
                 case "settingsDraft":
                     return SettingsDraftPresentation.Create();
+                case "onDemandPractice":
+                    return OnDemandPracticePresentation.Create(settings.Value);
+                case "startOnDemandPractice":
+                    if (value.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+                        || !model.Ready || !settings.Value.Enabled
+                        || settings.Value.Source == settings.Value.Target
+                        || (settings.Value.Mode != WorkMode.OnDemand && !value.GetBoolean()))
+                        return false;
+                    // Check and update on the settings owner's event loop. A GTK
+                    // snapshot may lag an already queued tray or language change.
+                    if (settings.Value.Mode != WorkMode.OnDemand)
+                        settings.Update(settings.Value with
+                        {
+                            Mode = WorkMode.OnDemand
+                        });
+                    return true;
                 case "setupFailure":
                     return SetupPresentation(value.ValueKind == JsonValueKind.String ? value.GetString() : null);
                 case "applicationSupport":

@@ -24,7 +24,7 @@ Windows 轮询、debounce、许可与执行期限不因分层改变。Hook 回�
 
 ## 分发契约
 
-Windows 部署根包含 TypeLay.exe、app/、worker/、bootstrap/、assets/tutorial/、README 与第三方声明。AppPaths.Home 由启动脚本指向整个发行根；Broker 与 App 放在同一个 app/。开机启动指向发行根 TypeLay.exe。App 的安装流程在用户同意后准备运行时与模型，Windows wheel 选择不进入共享安装器。
+Windows 部署根包含 TypeLay.exe、app/、worker/、bootstrap/、README 与第三方声明。AppPaths.Home 由启动脚本指向整个发行根；Broker、App 与独立原生练习宿主 TypeLay.Practice 放在同一个 app/。练习宿主只提供普通 stock Edit 与共同操作说明；翻译和写入仍由正式 App/Broker 处理，不设置输入法状态或绕过权限。开机启动指向发行根 TypeLay.exe。App 的安装流程在用户同意后准备运行时与模型，Windows wheel 选择不进入共享安装器。
 
 ## B-01：非原子写回与按键所有权
 

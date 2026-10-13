@@ -11,6 +11,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../shared/WindowsInterruptClock.cs" Link="Windows/WindowsInterruptClock.cs" />
+    <ProjectReference Include="../TypeLay.Practice/TypeLay.Practice.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../TypeLay.Windows.Contracts/TypeLay.Windows.Contracts.csproj" />
     <ProjectReference Include="../../shared/TypeLay.Runtime/TypeLay.Runtime.csproj" />
     <ProjectReference Include="../../shared/TypeLay.Protocol/TypeLay.Protocol.csproj" />
@@ -19,4 +20,10 @@
     <InternalsVisibleTo Include="TypeLay.DesktopFixture" />
     <InternalsVisibleTo Include="TypeLay.App.Tests" />
   </ItemGroup>
+  <Target Name="CopyPracticeHostForDevelopment" AfterTargets="Build">
+    <ItemGroup>
+      <_PracticeFiles Include="$(MSBuildThisFileDirectory)../TypeLay.Practice/bin/$(Configuration)/net10.0-windows/TypeLay.Practice.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_PracticeFiles)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using TypeLay.App;
 using TypeLay.Core;
 using TypeLay.Platform.Windows;
@@ -39,6 +40,7 @@ internal static class ContinuousTranslationCheck
         var setup = new SceneResult { Outcome = "running", Stage = "prepare-model" };
         var continuous = new SceneResult();
         var direct = new SceneResult();
+        var practice = new SceneResult();
         var cleanupErrors = new List<CleanupError>();
         bool ready = false;
         using var all = new CancellationTokenSource(TimeSpan.FromMinutes(20));
@@ -69,6 +71,12 @@ internal static class ContinuousTranslationCheck
                 direct = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
             else
                 direct = await VerifyDirectAsync(directory, nativeFixture, model, desktop.Token);
+            if (continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0)
+                practice = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
+            else if (desktop.IsCancellationRequested)
+                practice = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
+            else
+                practice = await VerifyPracticeAsync(directory, model, desktop.Token);
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
@@ -83,8 +91,8 @@ internal static class ContinuousTranslationCheck
             Cleanup("model", () => model?.Dispose(), cleanupErrors);
         }
         bool passed = setup.Outcome == "ready" && continuous.Outcome == "passed" && direct.Outcome == "verified"
-            && cleanupErrors.Count == 0;
-        var firstFailure = new[] { setup, continuous, direct }.FirstOrDefault(result => result.Failure != "none");
+            && practice.Outcome == "verified" && cleanupErrors.Count == 0;
+        var firstFailure = new[] { setup, continuous, direct, practice }.FirstOrDefault(result => result.Failure != "none");
         string failure = firstFailure?.Failure ?? (cleanupErrors.Count == 0 ? "none" : "cleanup-failed");
         string stage = passed ? "complete" : firstFailure?.Stage ?? "cleanup";
         await File.WriteAllTextAsync(Path.Combine(directory, "result.json"), JsonSerializer.Serialize(new
@@ -99,10 +107,11 @@ internal static class ContinuousTranslationCheck
             modelSetup = setup,
             continuousPreview = continuous,
             directTranslation = direct,
+            onDemandPractice = practice,
             sourceBackend = "production-broker-stock-edit",
             physicalIme = false
         }, new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
-        Console.WriteLine($"Continuous translation check: {(passed ? "passed" : "failed")}; continuous={continuous.Outcome}; direct={direct.Outcome}; stage={stage}; code={failure}.");
+        Console.WriteLine($"Continuous translation check: {(passed ? "passed" : "failed")}; continuous={continuous.Outcome}; direct={direct.Outcome}; practice={practice.Outcome}; stage={stage}; code={failure}.");
         return passed ? 0 : 1;
     }
 
@@ -395,6 +404,193 @@ internal static class ContinuousTranslationCheck
         return result;
     }
 
+    private static async Task<SceneResult> VerifyPracticeAsync(string directory, ModelClient model,
+        CancellationToken cancellation)
+    {
+        var result = new SceneResult { Outcome = "running", Stage = "practice-model-idle" };
+        ChildProcess? child = null;
+        PracticeHost? host = null;
+        SettingsWindow? window = null;
+        OverlayWindow? overlay = null;
+        SessionController? controller = null;
+        bool pausedUnchanged = false, cancelledUnchanged = false, modePersisted = false, previewUnchanged = false;
+        bool replaced = false, closePreservedLaterSettings = false, saveFailureVisible = false;
+        try
+        {
+            await UntilAsync(() => { Require(model.Ready, "model-unavailable"); return !model.Busy; }, cancellation);
+            string path = Path.Combine(directory, "practice", "settings.json");
+            var settings = CreateSettings(path, WorkMode.Automatic);
+            settings.Update(settings.Value with
+            {
+                OnboardingComplete = false
+            });
+            var view = OnDemandPracticePresentation.Create(settings.Value);
+            var expected = await model.TranslateTextAsync(view.SampleText, settings.Value.Direction).WaitAsync(cancellation);
+            Require(expected.Status == "translated" && expected.Text.Length > 0 && expected.Text != view.SampleText,
+                "practice-reference-translation");
+            host = new PracticeHost(info => child = new ChildProcess(info));
+            window = new SettingsWindow(settings, model, () => host.Open(path));
+            window.ShowPage();
+            window.UpdateLayout();
+            result.Stage = "practice-paused-gate";
+            settings.Update(settings.Value with
+            {
+                Enabled = false
+            });
+            window.StartPractice();
+            pausedUnchanged = child is null && !settings.Value.Enabled && settings.Value.Mode == WorkMode.Automatic;
+            Require(pausedUnchanged, "practice-start-enabled-paused-application");
+            settings.Update(settings.Value with
+            {
+                Enabled = true
+            });
+            window.UpdateLayout();
+            result.Stage = "practice-cancel-mode-change";
+            Choose(false);
+            cancelledUnchanged = child is null && WindowsRuntime.CreateSettings(path).Value.Mode == WorkMode.Automatic
+                && !settings.Value.OnboardingComplete;
+            Require(cancelledUnchanged, "practice-cancel-mutated-settings");
+            result.Stage = "practice-hidden-settings-save-failure";
+            Require(window.RequestClose(), "practice-settings-hide");
+            using (var lockedSettings = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                Choose(true);
+                window.UpdateLayout();
+                saveFailureVisible = window.IsVisible && child is null && settings.Value.Mode == WorkMode.Automatic
+                    && Descendants(window).OfType<TextBlock>().Any(text => text.Text == "设置未保存");
+                Require(saveFailureVisible, "practice-settings-failure-not-visible");
+            }
+            result.Stage = "practice-confirm-mode-change";
+            Choose(true);
+            modePersisted = WindowsRuntime.CreateSettings(path).Value.Mode == WorkMode.OnDemand;
+            Require(modePersisted && child is not null, "practice-start-not-persisted");
+            nint root = 0;
+            await UntilAsync(() =>
+            {
+                Require(!child!.Process.HasExited, "practice-host-exited");
+                child.Process.Refresh();
+                root = child.Process.MainWindowHandle;
+                return root != 0;
+            }, cancellation);
+            N.GetWindowThreadProcessId(root, out uint pid);
+            Require(pid == child!.Process.Id, "practice-window-identity");
+            nint field = GetDlgItem(root, 101);
+            Require(field != 0 && N.GetAncestor(field, 2) == root, "practice-input-window");
+            Require(N.ReadText(field, Limits.MaxTextUnits) == view.SampleText, "practice-sample-not-present");
+            Require(N.SetForegroundWindow(root), "practice-foreground-request");
+            N.PostMessage(root, 0x0007, 0, 0); // Normal root focus behavior; no fixture message.
+            await UntilAsync(() => N.Focused() == (root, field), cancellation);
+            overlay = new OverlayWindow(automationTest: true);
+            var support = new WindowsApplicationSupport();
+            controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true, support: support);
+            window.SessionMustEnd = controller.StopSession;
+            await controller.StartAsync().WaitAsync(cancellation);
+            result.Stage = "practice-native-observation";
+            await UntilAsync(() => support.Read(settings.Value).Rows.Single(row => row.Id == "desktop-text")
+                .Capabilities.DirectReplace, cancellation);
+            string? feedback = null;
+            controller.OperationFeedback += value => feedback ??= value.Code;
+            var editor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
+            result.Stage = "practice-preview-shortcut";
+            Require(new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x78 }.All(key => GetAsyncKeyState(key) >= 0),
+                "practice-key-already-down");
+            SendDirectShortcut(out _, result.CleanupErrors, 0x78);
+            await UntilAsync(() =>
+            {
+                Require(feedback is null, "practice-preview-feedback");
+                Require(N.Focused() == (root, field), "practice-preview-focus");
+                return VisibleTranslation(overlay, editor) && editor.Text == expected.Text;
+            }, cancellation);
+            previewUnchanged = N.ReadText(field, Limits.MaxTextUnits) == view.SampleText;
+            Require(previewUnchanged, "practice-preview-mutated-source");
+            result.Stage = "practice-direct-shortcut";
+            Require(new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x79 }.All(key => GetAsyncKeyState(key) >= 0),
+                "practice-key-already-down");
+            SendDirectShortcut(out _, result.CleanupErrors);
+            await UntilAsync(() =>
+            {
+                Require(feedback is null, "practice-direct-feedback");
+                Require(N.Focused() == (root, field), "practice-direct-focus");
+                return controller.OperationStatus == "已直接替换原输入框文字。";
+            }, cancellation);
+            replaced = N.ReadText(field, Limits.MaxTextUnits) == expected.Text && !overlay.IsVisible;
+            Require(replaced, "practice-direct-result");
+            Require(!settings.Value.OnboardingComplete, "practice-marked-tutorial-complete");
+            result.Stage = "practice-close-keeps-current-settings";
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.Automatic
+            });
+            Require(N.PostMessage(root, 0x0010, 0, 0), "practice-close-request");
+            await child.Process.WaitForExitAsync().WaitAsync(cancellation);
+            closePreservedLaterSettings = WindowsRuntime.CreateSettings(path).Value.Mode == WorkMode.Automatic;
+            Require(closePreservedLaterSettings && child.Process.ExitCode == 0, "practice-close-overwrote-settings");
+            result.Outcome = "verified";
+            result.Stage = "complete";
+
+            void Choose(bool confirm)
+            {
+                var presentation = OnDemandPracticePresentation.Create(settings.Value);
+                var action = Descendants(window).OfType<Button>().Single(button => Equals(button.Content, presentation.StartLabel));
+                Exception? choiceFailure = null;
+                var queued = window.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    Window? dialog = null;
+                    try
+                    {
+                        dialog = Application.Current.Windows.Cast<Window>().Single(item => item.IsVisible && item.Title == presentation.Title);
+                        dialog.UpdateLayout();
+                        var cancel = Descendants(dialog).OfType<Button>().Single(button => Equals(button.Content, presentation.CancelLabel));
+                        Require(cancel.IsDefault && cancel.IsCancel, "practice-default-not-cancel");
+                        var choice = confirm ? Descendants(dialog).OfType<Button>().Single(button => Equals(button.Content, presentation.StartLabel)) : cancel;
+                        choice.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    }
+                    catch (Exception error) when (error is not OutOfMemoryException)
+                    {
+                        choiceFailure = error;
+                        if (dialog is not null)
+                            dialog.DialogResult = false;
+                    }
+                }));
+                using var registration = cancellation.Register(() => window.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    foreach (var dialog in Application.Current.Windows.Cast<Window>().Where(item => item.Title == presentation.Title).ToArray())
+                        dialog.Close();
+                })));
+                try
+                {
+                    action.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                }
+                finally { queued.Abort(); }
+                cancellation.ThrowIfCancellationRequested();
+                if (choiceFailure is not null)
+                    throw choiceFailure;
+            }
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { RecordFailure(result, error); }
+        finally
+        {
+            Cleanup("practice-controller", () => controller?.Dispose(), result.CleanupErrors);
+            Cleanup("practice-overlay", () => overlay?.Close(), result.CleanupErrors);
+            Cleanup("practice-settings", () => { window?.PrepareForEmergencyShutdown(); window?.Close(); }, result.CleanupErrors);
+            await CleanupSourceAsync(child, result.CleanupErrors, cancellation);
+            Cleanup("practice-host", () => host?.Dispose(), result.CleanupErrors);
+            CompleteCleanup(result);
+            result.Facts = new
+            {
+                cancelledUnchanged,
+                modePersisted,
+                previewUnchanged,
+                replaced,
+                closePreservedLaterSettings
+            };
+        }
+        Console.WriteLine($"On-demand practice: {result.Outcome}; stage={result.Stage}; code={result.Failure}.");
+        return result;
+    }
+    [DllImport("user32.dll")]
+    private static extern nint GetDlgItem(nint window, int id);
+
     private static ChildProcess StartSource(string nativeFixture)
     {
         var start = new ProcessStartInfo("dotnet")
@@ -535,10 +731,10 @@ internal static class ContinuousTranslationCheck
         }
     }
 
-    private static void SendDirectShortcut(out uint inserted, List<CleanupError> cleanupErrors)
+    private static void SendDirectShortcut(out uint inserted, List<CleanupError> cleanupErrors, ushort commandKey = 0x79)
     {
         // One Ctrl+Shift+F10 chord, never retried. INPUT is 40 bytes on Windows x64.
-        ushort[] keys = [0x11, 0x10, 0x79];
+        ushort[] keys = [0x11, 0x10, commandKey];
         var input = keys.Select(key => new KeyboardInput { Type = 1, Key = key })
             .Concat(keys.Reverse().Select(key => new KeyboardInput { Type = 1, Key = key, Flags = 2 })).ToArray();
         inserted = SendInput((uint)input.Length, input, Marshal.SizeOf<KeyboardInput>());
@@ -584,6 +780,17 @@ internal static class ContinuousTranslationCheck
     private static extern uint SendInput(uint count, KeyboardInput[] input, int size);
     [DllImport("user32.dll")]
     private static extern short GetAsyncKeyState(int key);
+
+    private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
+    {
+        for (int index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            yield return child;
+            foreach (var descendant in Descendants(child))
+                yield return descendant;
+        }
+    }
 
     private static bool VisibleTranslation(OverlayWindow overlay, TextBox editor) => overlay.IsVisible && editor.IsVisible
         && editor.Text.Any(character => character is >= 'A' and <= 'Z' or >= 'a' and <= 'z');
