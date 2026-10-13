@@ -8,5 +8,14 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../../../../src/windows/TypeLay.App/TypeLay.App.csproj" />
+    <ProjectReference Include="../../../../src/windows/TypeLay.Broker/TypeLay.Broker.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../../support/TypeLay.Platform.Windows/TypeLay.Platform.Windows.csproj" />
   </ItemGroup>
+  <Target Name="CopyProductionBrokerForContinuousCheck" AfterTargets="Build">
+    <ItemGroup>
+      <_ContinuousBrokerFiles Include="$(MSBuildThisFileDirectory)../../../../src/windows/TypeLay.Broker/bin/$(Configuration)/net10.0-windows/TypeLay.Broker.*" />
+      <_ContinuousBrokerFiles Include="$(MSBuildThisFileDirectory)../../../../src/windows/TypeLay.Broker/bin/$(Configuration)/net10.0-windows/TypeLay.NativeInput.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_ContinuousBrokerFiles)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

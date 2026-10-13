@@ -1,5 +1,7 @@
 using TypeLay.Runtime;
+using TypeLay.Windows;
 using TypeLay.Windows.Contracts;
+using System.Diagnostics;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
@@ -21,6 +23,8 @@ internal sealed class OverlayWindow : Window, ISessionView
     private readonly Grid _surface;
     private bool _rendering, _editing, _composing, _expanded, _hasCandidate, _hasPreview;
     private readonly bool _automationTest;
+    private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
+    private int _renderTraceSamples;
     private double _panelWidth = 390;
     private nint _hwnd;
     private (int X, int Y, int Width, int Height)? _placement;
@@ -256,6 +260,11 @@ internal sealed class OverlayWindow : Window, ISessionView
             HideQuietly();
             return;
         }
+        bool trace = _renderTraceSamples < 32 && !string.IsNullOrWhiteSpace(_tracePath);
+        long atMs = trace ? WindowsInterruptClock.NowMs : 0;
+        long started = trace ? Stopwatch.GetTimestamp() : 0;
+        double uiMs = 0, textMs = 0;
+        (double MeasureMs, double ShowMs, double SetWindowPosMs) positionTiming = default;
         bool idle = session.State == SessionState.IdleCapsule;
         if (session.State == SessionState.Invalid && source.Ime == ImeState.Unknown)
             display = display with
@@ -297,21 +306,30 @@ internal sealed class OverlayWindow : Window, ISessionView
                 _editor.Focusable = false;
                 SetNoActivate(true);
                 _editor.SetResourceReference(Control.BackgroundProperty, "Panel");
+                long textStarted = trace ? Stopwatch.GetTimestamp() : 0;
                 string value = idle ? "" : session.Preview.Length > 0 ? session.Preview : statusOverride is not null ? statusOverride + "…" : "正在翻译…";
                 if (_editor.Text != value)
                     _editor.Text = value;
+                if (trace)
+                    textMs = Stopwatch.GetElapsedTime(textStarted).TotalMilliseconds;
             }
             _editor.SetResourceReference(Control.ForegroundProperty,
                 session.State is SessionState.Translating or SessionState.TranslationFailed ? "Muted" : "Text");
-            Position(source, idle);
+            if (trace)
+                uiMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds - textMs;
+            positionTiming = Position(source, idle, trace);
         }
         finally { _rendering = false; }
+        if (trace)
+            TraceRender(atMs, Stopwatch.GetElapsedTime(started).TotalMilliseconds, uiMs, textMs, positionTiming);
     }
-    private void Position(InputSnapshot source, bool idle)
+    private (double MeasureMs, double ShowMs, double SetWindowPosMs) Position(InputSnapshot source, bool idle, bool trace)
     {
+        (double MeasureMs, double ShowMs, double SetWindowPosMs) timing = default;
         double scale = Math.Max(1, Native.GetDpiForWindow((nint)source.Target.AsWindows().RootHwnd) / 96.0);
         _panelWidth = idle ? 140 : Math.Clamp(source.Bounds.Width / scale, 320, 520);
         _editor.MaxHeight = _expanded ? 360 : 160;
+        long measureStarted = trace ? Stopwatch.GetTimestamp() : 0;
         var measure = new FormattedText(_editor.Text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
             new Typeface(FontFamily, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal), 14, Brushes.Black, scale)
         {
@@ -319,6 +337,8 @@ internal sealed class OverlayWindow : Window, ISessionView
             LineHeight = 21.7
         };
         double bodyHeight = Math.Clamp(measure.Height + 24, 54, _editor.MaxHeight);
+        if (trace)
+            timing.MeasureMs = Stopwatch.GetElapsedTime(measureStarted).TotalMilliseconds;
         _editor.Height = bodyHeight;
         double height = idle ? 60 : 34 + bodyHeight + 34 + 26, width = _panelWidth + 26;
         var rect = new Native.Rect
@@ -335,7 +355,7 @@ internal sealed class OverlayWindow : Window, ISessionView
         if (placement is not { } position)
         {
             Hide();
-            return;
+            return timing;
         }
         Width = width;
         Height = height;
@@ -343,15 +363,49 @@ internal sealed class OverlayWindow : Window, ISessionView
         if (showing)
         {
             Opacity = 0;
+            long showStarted = trace ? Stopwatch.GetTimestamp() : 0;
             Show();
+            if (trace)
+                timing.ShowMs = Stopwatch.GetElapsedTime(showStarted).TotalMilliseconds;
             BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(140)));
         }
         var pixels = (X: (int)position.X, Y: (int)position.Y, Width: (int)position.Width, Height: (int)position.Height);
         if (showing || _placement != pixels)
         {
+            long positionStarted = trace ? Stopwatch.GetTimestamp() : 0;
             Native.SetWindowPos(_hwnd, (nint)(-1), pixels.X, pixels.Y, pixels.Width, pixels.Height, 0x0010 | 0x0040);
+            if (trace)
+                timing.SetWindowPosMs = Stopwatch.GetElapsedTime(positionStarted).TotalMilliseconds;
             _placement = pixels;
         }
+        return timing;
+    }
+    private void TraceRender(long atMs, double totalMs, double uiMs, double textMs,
+        (double MeasureMs, double ShowMs, double SetWindowPosMs) timing)
+    {
+        // Bound synchronous diagnostic I/O to 32 slow renders per window. All timing
+        // ends before serialization/writing; no text, metadata or window identity is logged.
+        if (totalMs < 50 || _renderTraceSamples >= 32)
+            return;
+        _renderTraceSamples++;
+        try
+        {
+            string line = System.Text.Json.JsonSerializer.Serialize(new
+            {
+                atMs,
+                operation = "overlay-render",
+                sample = _renderTraceSamples,
+                totalMs,
+                uiMs,
+                textMs,
+                measureMs = timing.MeasureMs,
+                showMs = timing.ShowMs,
+                setWindowPosMs = timing.SetWindowPosMs,
+                otherMs = Math.Max(0, totalMs - uiMs - textMs - timing.MeasureMs - timing.ShowMs - timing.SetWindowPosMs)
+            });
+            File.AppendAllText(_tracePath + ".overlay.jsonl", line + Environment.NewLine);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { }
     }
     public void HideQuietly()
     {

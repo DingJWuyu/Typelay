@@ -34,7 +34,7 @@ Windows 与 Linux 并行开发，遵循[共同应用支持与完整体验](../..
 
 `UiaInputProvider.Capture` 要求原始/托管 UIA runtime ID 一致，并检查字段元数据、边界和焦点。原入口只接受 Edit/Document；Chromium 155 新标签页真实输入框的 `role=combobox` 会映射为 Windows UIA ComboBox。这是与用户现象吻合的源码候选，不是用户机器的采集结论。
 
-当前实现增加 ComboBox 的只读预览路径，但必须同时具有可编辑 ValuePattern 和明确可编辑的 TextPattern；普通选择器、密码、只读或未聚焦字段仍被拒绝。此路径不授予 Tab 或 F10 写回能力。受控真实 UIA/Broker 回归和 Chrome 新标签页验收分别记录，不能互相替代。
+当前实现增加 ComboBox 的只读预览路径，但必须同时具有可编辑 ValuePattern 和明确可编辑的 TextPattern；普通选择器、密码、只读或未聚焦字段仍被拒绝。此路径不授予 Tab 或 F10 写回能力。[Windows 实际回归](https://github.com/DingJWuyu/Typelay/actions/runs/38427227828)已通过受控 WPF UIA ComboBox 到生产 Broker 的无标点采集、追加后版本更新，以及选择器/密码/只读拒绝；它没有启动模型，也不是 Chrome 新标签页实测。
 
 固定版本来源：[新标签页输入模板](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/ui/webui/resources/cr_components/searchbox/searchbox_input.html.ts#L24-L54)、[Blink 的可编辑组合框角色](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/third_party/blink/renderer/modules/accessibility/ax_object.cc#L6252-L6275)、[Windows UIA 类型映射](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/ui/accessibility/platform/ax_platform_node_win.cc#L1502-L1512)。检查到的中央框焦点/输入事件更新本地搜索框并请求补全，未要求迁到顶栏；真实页面仍需观察，不能只从源码保证所有版本/配置相同。
 
@@ -64,6 +64,17 @@ Windows 与 Linux 并行开发，遵循[共同应用支持与完整体验](../..
 5. 依据 Frozen 产品规格第4节、第9.2节和 Accepted `ADR-0002` 验收：普通网页/桌面自然语言输入可捕获和持续预览；无标点也可更新；F9 唤醒复用正常会话；F10 对具备能力的原控件完成一次替换、不抢焦点、不发送；拒写不绕过安全检查，并检验显式命令的失败反馈。测试应覆盖真实输入法、选区、焦点切换、冲突和撤销，不用源码检查或假模型证明产品可用。
 
 先运行最接近用户路径的最小回归，保留失败证据，再按实际根因修复。Linux 主机不能执行 Windows 桌面交互；Windows Actions 可提供受控桌面证据，真实输入法和用户报告的独立应用仍须各自验收。
+
+### 新标签页实机复现
+
+在获准使用的 Windows 验证环境中，先记录完整包的版本/校验和与 Chrome 版本，正常启动客户端并确认模型就绪。使用合成文字，不收集真实聊天或搜索内容。
+
+1. 设置 English → 中文，点 Chrome 的 `+` 新建标签页，点击 `Ask Google` 中央框。观察输入光标是在中央框还是顶栏，输入 `hello I would like to confirm tomorrow`，不加标点、不按 Enter；记录停顿后是否出现真实译文。
+2. 在相同框继续追加 ` afternoon`，记录是否更新；清空后改为中文 → English，用微软拼音输入并提交一小段中文，再继续下一段组合输入，分开记录“已提交文字”和“仍在候选窗口中的文字”。
+3. 按需模式重复该路径，按一次 F9，记录浮层与保持原焦点的结果；按一次 F10，记录明确提示和原文是否变化。只读 ComboBox 预览通过不能作为 F10 写回通过。
+4. 用顶栏和普通网页自然语言输入框分别作对照。失败时先保存不含正文的采集拒绝类别、IME 状态和时间线；现场属性需由获准的诊断操作取得，不能让用户靠文件扩展名或应用名字猜控件能力。
+
+当前 CI 的 Chrome 普通页和 CfT 身份探针均未完成页面前置，无法替代以上步骤。最后一轮自有窗口截图显示 CfT 可见、启用且响应窗口消息，地址栏为测试 loopback 页面，正文空白、无首开或权限弹窗；服务接受了两条扩展 POST，没有识别到页面 GET。导航启动快照只有一次，不能断言整个等待期的状态。未查到端口错配或 HTTP 握手等待自堵的确定原因；按浏览器实验的[停止边界](browser-identity.md#无事件或清理失败时如何定位)保留环境阻塞，不继续增加等待或安全开关。
 
 ## 独立 CI 待定位项
 

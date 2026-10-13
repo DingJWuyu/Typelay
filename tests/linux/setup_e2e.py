@@ -2,10 +2,13 @@
 
 import argparse
 import asyncio
+import contextlib
+import errno
 import hashlib
 import io
 import json
 import os
+import runpy
 import shutil
 import signal
 import subprocess
@@ -16,6 +19,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import zipfile
 from email.message import Message
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -943,6 +947,238 @@ class ApplicationSupportTests(unittest.TestCase):
         self.assertFalse(marker.exists())
 
 
+class InstallationFailureTests(unittest.TestCase):
+    """Exercise the real setup entry point with failing external boundaries."""
+
+    def run_setup(
+        self,
+        failure=None,
+        *,
+        response=None,
+        write_error=None,
+        returncode=0,
+        discarded_archive=False,
+        worker_result=None,
+        close_after_activation=False,
+        cleanup_error=None,
+        expected_code=1,
+    ):
+        with tempfile.TemporaryDirectory(prefix="typelay-install-failure-") as directory:
+            base = Path(directory)
+            current = base / "data/components/old"
+            current.mkdir(parents=True)
+            (current / "retained").write_text("old usable version")
+            (current.parent / "current").symlink_to("old")
+
+            def process(arguments, **options):
+                output = b""
+                if arguments[0] != "uv":
+                    self.assertIn("--self-check", arguments)
+                    output = worker_result
+                elif arguments[1:3] == ["pip", "compile"]:
+                    lock = Path(arguments[arguments.index("--output-file") + 1])
+                    lock.parent.mkdir(parents=True, exist_ok=True)
+                    lock.write_text("controlled dependency lock")
+                if arguments[1:3] == ["python", "find"]:
+                    output = (options["env"]["UV_PYTHON_INSTALL_DIR"] + "/python").encode()
+                return SimpleNamespace(
+                    communicate=lambda **_: (output, None),
+                    returncode=returncode,
+                    poll=lambda: returncode,
+                )
+
+            class Output(io.StringIO):
+                def write(self, text):
+                    if close_after_activation and os.readlink(current.parent / "current") != "old":
+                        raise BrokenPipeError(errno.EPIPE, "private-token")
+                    return super().write(text)
+
+            output = Output()
+
+            def open_response(request, **kwargs):
+                if failure is not None:
+                    raise failure
+                if worker_result is not None:
+                    # These inert archive bytes only exercise install state transitions;
+                    # the external worker port is controlled, not real model inference.
+                    source, target = ("zh", "en") if "zh_en" in request.full_url else ("en", "zh")
+                    archive = io.BytesIO()
+                    with zipfile.ZipFile(archive, "w") as package:
+                        package.writestr(
+                            "metadata.json",
+                            json.dumps(
+                                {
+                                    "from_code": source,
+                                    "to_code": target,
+                                    "package_version": "1.9",
+                                }
+                            ),
+                        )
+                        for name in (
+                            "sentencepiece.model",
+                            "model/config.json",
+                            "model/model.bin",
+                            "model/shared_vocabulary.json",
+                        ):
+                            package.writestr(name, b"inert controlled archive")
+                    return Response(archive.getvalue())
+                return response
+
+            opener = SimpleNamespace(open=open_response)
+            with (
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "setup.py",
+                        "--supervised",
+                        str(base / "home"),
+                        str(base / "data"),
+                        str(base / "cache"),
+                    ],
+                ),
+                patch.object(subprocess, "Popen", side_effect=process),
+                patch.object(setup.urllib.request, "build_opener", return_value=opener),
+                patch.object(signal, "signal"),
+                patch.object(os, "umask"),
+                patch.object(os, "fsync", side_effect=write_error),
+                patch.object(shutil, "rmtree", side_effect=cleanup_error)
+                if cleanup_error
+                else contextlib.nullcontext(),
+                contextlib.redirect_stdout(output),
+                contextlib.redirect_stderr(output),
+                self.assertRaises(SystemExit) as result,
+            ):
+                runpy.run_path(str(ROOT / "src/linux/desktop/setup.py"), run_name="__main__")
+            self.assertEqual(result.exception.code, expected_code)
+            if expected_code:
+                self.assertEqual(os.readlink(current.parent / "current"), "old")
+            else:
+                self.assertNotEqual(os.readlink(current.parent / "current"), "old")
+                self.assertTrue((current.parent / "current/self-check.json").is_file())
+            self.assertEqual((current / "retained").read_text(), "old usable version")
+            if expected_code and cleanup_error is None:
+                self.assertEqual(
+                    sorted(path.name for path in current.parent.iterdir()),
+                    ["current", "install.lock", "old"],
+                )
+            if discarded_archive:
+                self.assertFalse((base / "cache/components/zh_en-1.9.argosmodel").exists())
+            self.assertNotIn(directory, output.getvalue())
+            self.assertNotIn("private-token", output.getvalue())
+            self.assertNotIn("Traceback", output.getvalue())
+            return output.getvalue()
+
+    def test_network_failure_has_safe_diagnostics_and_an_actionable_next_step(self):
+        output = self.run_setup(
+            urllib.error.URLError(
+                ConnectionResetError(errno.ECONNRESET, "https://private-token.example/private-path")
+            )
+        )
+        self.assertIn('"category":"network"', output)
+        self.assertIn('"stage":"model-download"', output)
+        self.assertIn(f'"errno":{errno.ECONNRESET}', output)
+        self.assertIn("检查网络", output)
+        self.assertIn("再次安装", output)
+
+    def test_disk_space_failure_names_the_remedy_without_exposing_the_path(self):
+        output = self.run_setup(
+            response=Response(b"model", headers={"Content-Length": 5}),
+            write_error=OSError(errno.ENOSPC, "private-token", "/private-token/cache"),
+        )
+        self.assertIn('"category":"disk-space"', output)
+        self.assertIn(f'"errno":{errno.ENOSPC}', output)
+        self.assertIn("释放", output)
+        diagnostic = json.loads(
+            next(line for line in output.splitlines() if line.startswith(setup.FAILURE_PREFIX))[
+                len(setup.FAILURE_PREFIX) :
+            ]
+        )
+        self.assertGreaterEqual(diagnostic["dataFreeBytes"], 0)
+        self.assertGreaterEqual(diagnostic["cacheFreeBytes"], 0)
+
+    def test_invalid_archive_is_removed_and_reports_integrity_failure(self):
+        output = self.run_setup(
+            response=Response(b"private-token invalid zip"), discarded_archive=True
+        )
+        self.assertIn('"category":"integrity"', output)
+        self.assertIn('"stage":"model-extract"', output)
+        self.assertIn("重新获取", output)
+
+    def test_permission_failure_has_a_separate_remedy(self):
+        output = self.run_setup(
+            response=Response(b"model"), write_error=PermissionError(errno.EACCES, "private-token")
+        )
+        self.assertIn('"category":"permission"', output)
+        self.assertIn("写入权限", output)
+
+    def test_failed_runtime_keeps_only_the_exit_code(self):
+        output = self.run_setup(returncode=7)
+        self.assertIn('"category":"runtime"', output)
+        self.assertIn('"stage":"runtime"', output)
+        self.assertIn('"exitCode":7', output)
+
+    def test_unknown_exception_cannot_leak_its_type_or_message(self):
+        class PrivateTokenException(Exception):
+            pass
+
+        output = self.run_setup(PrivateTokenException("private-token source text"))
+        self.assertIn('"category":"unknown"', output)
+        self.assertNotIn("PrivateTokenException", output)
+        self.assertIn("原因尚未确定", output)
+
+    def test_failed_self_check_reports_runtime_without_claiming_model_corruption(self):
+        for result in (
+            b'{"status":"failed","reason":"private-token"}',
+            b"private-token invalid JSON",
+        ):
+            with self.subTest(result=result):
+                output = self.run_setup(worker_result=result)
+                self.assertIn('"category":"runtime"', output)
+                self.assertIn('"stage":"self-check"', output)
+                self.assertNotIn("重新获取损坏", output)
+
+    def test_closed_output_after_activation_does_not_turn_success_into_failure(self):
+        self.run_setup(
+            worker_result=b'{"status":"passed"}', close_after_activation=True, expected_code=0
+        )
+
+    def test_cleanup_failure_cannot_replace_the_first_failure_including_unknown(self):
+        for original, expected in (
+            (ConnectionError("private-token"), "network"),
+            (RuntimeError("private-token"), "unknown"),
+        ):
+            with self.subTest(category=expected):
+                output = self.run_setup(
+                    original, cleanup_error=PermissionError(errno.EACCES, "private-token")
+                )
+                diagnostic = None
+                for line in output.splitlines():
+                    diagnostic = setup.failure_code(line, diagnostic)
+                self.assertEqual(diagnostic, expected)
+
+    def test_gui_diagnostics_accept_only_fixed_codes_and_numeric_metadata(self):
+        self.assertEqual(
+            setup.failure_code(
+                'TYPELAY_SETUP_FAILURE={"category":"disk-space","stage":"model-download","errno":28}'
+            ),
+            "disk-space",
+        )
+        for payload in (
+            {"category": "private-token", "stage": "runtime"},
+            {"category": "network", "stage": "private-token"},
+            {"category": "network", "stage": "runtime", "errno": True},
+            {"category": "network", "stage": "runtime", "errno": "private-token"},
+            {"category": "network", "stage": "runtime", "body": "private-token"},
+            {"category": [], "stage": "runtime"},
+        ):
+            with self.subTest(payload=payload):
+                self.assertIsNone(setup.failure_code(setup.FAILURE_PREFIX + json.dumps(payload)))
+        self.assertIsNone(setup.failure_code("plain progress"))
+        self.assertIsNone(setup.failure_code(setup.FAILURE_PREFIX + "private-token"))
+        self.assertNotIn("private-token", setup.failure_message("private-token"))
+
+
 class InstallationProcessTests(unittest.TestCase):
     supervisor = None
 
@@ -1026,7 +1262,7 @@ if __name__ == "__main__":
     mode.add_argument("--http", action="store_true")
     mode.add_argument("--supervisor", type=Path)
     options, remaining = parser.parse_known_args()
-    suite = ["DownloadTests", "ApplicationSupportTests"]
+    suite = ["DownloadTests", "InstallationFailureTests", "ApplicationSupportTests"]
     if options.http:
         suite = "HTTPDownloadTests"
     elif options.supervisor:

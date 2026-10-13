@@ -5,8 +5,10 @@ is built in its final location so absolute venv paths remain valid. The active
 symlink changes only after the real offline worker passes both translation checks.
 """
 
+import errno
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -29,6 +31,98 @@ from paths import private_directory  # noqa: E402
 
 PYTHON = "3.13.16"
 MAX_ARCHIVE = 1024 * 1024 * 1024
+
+
+FAILURE_PREFIX = "TYPELAY_SETUP_FAILURE="
+FAILURE_MESSAGES = {
+    "network": "模型下载连接失败。请检查网络或代理后再次安装；已验证的下载进度可继续使用。",
+    "disk-space": "组件安装空间不足。请释放安装位置和下载缓存所在磁盘的空间后再次安装。",
+    "integrity": "组件校验失败。请再次安装以重新获取损坏的模型；若仍失败，请检查安装包来源。",
+    "permission": "组件文件无法写入。请检查安装位置和下载缓存的写入权限后再次安装。",
+    "runtime": "翻译运行环境安装或自检失败。请确认 uv 可用后再次安装；若仍失败，请提供安装诊断信息。",
+    "unknown": "组件安装失败，原因尚未确定。请再次安装；若仍失败，请提供安装诊断信息。",
+}
+FAILURE_STAGES = {
+    "prepare",
+    "runtime",
+    "dependencies",
+    "model-download",
+    "model-extract",
+    "model-verify",
+    "self-check",
+    "activate",
+}
+
+
+def failure_message(code):
+    return FAILURE_MESSAGES.get(code, FAILURE_MESSAGES["unknown"]) + "原可用版本保持不变。"
+
+
+def failure_code(line, previous=None):
+    """Keep the first valid failure, including unknown, if later cleanup also fails."""
+    if previous is not None:
+        return previous
+    if not line.startswith(FAILURE_PREFIX) or len(line) > 1024:
+        return None
+    try:
+        value = json.loads(line[len(FAILURE_PREFIX) :])
+        if (
+            not isinstance(value, dict)
+            or value.get("category") not in FAILURE_MESSAGES
+            or value.get("stage") not in FAILURE_STAGES
+            or set(value)
+            - {"category", "stage", "errno", "exitCode", "dataFreeBytes", "cacheFreeBytes"}
+            or any(
+                type(number) is not int
+                for key, number in value.items()
+                if key not in ("category", "stage")
+            )
+        ):
+            return None
+        return value["category"]
+    except (ValueError, TypeError):
+        return None
+
+
+def report_failure(error, stage="prepare", data=None, cache=None):
+    cause = error.reason if isinstance(error, urllib.error.URLError) else error
+    number = cause.errno if isinstance(cause, OSError) else None
+    category = "unknown"
+    if number in (errno.ENOSPC, errno.EDQUOT):
+        category = "disk-space"
+    elif number in (errno.EACCES, errno.EPERM, errno.EROFS):
+        category = "permission"
+    elif isinstance(
+        error, (urllib.error.URLError, ConnectionError, TimeoutError, http.client.HTTPException)
+    ) or (isinstance(error, OSError) and error.args == ("model-download-incomplete",)):
+        category = "network"
+    elif isinstance(error, zipfile.BadZipFile) or (
+        isinstance(error, ValueError)
+        and stage in ("model-download", "model-extract", "model-verify")
+    ):
+        category = "integrity"
+    elif (
+        isinstance(error, subprocess.SubprocessError)
+        or (isinstance(error, ValueError) and stage == "self-check")
+        or (isinstance(error, FileNotFoundError) and stage in ("runtime", "dependencies"))
+    ):
+        category = "runtime"
+    diagnostic = {"category": category, "stage": stage}
+    if type(number) is int:
+        diagnostic["errno"] = number
+    if isinstance(error, subprocess.CalledProcessError) and type(error.returncode) is int:
+        diagnostic["exitCode"] = error.returncode
+    for key, path in (("dataFreeBytes", data), ("cacheFreeBytes", cache)):
+        if path is not None:
+            try:
+                diagnostic[key] = shutil.disk_usage(path).free
+            except OSError:
+                pass
+    try:
+        print(FAILURE_PREFIX + json.dumps(diagnostic, separators=(",", ":")), flush=True)
+        print(failure_message(category), flush=True)
+    except OSError:
+        pass
 
 
 def digest(path):
@@ -345,6 +439,7 @@ def install(home, data, cache):
         result = run(["uv", *arguments, "--no-config"], 1200, capture)
         return result.decode().strip() if capture else None
 
+    stage = "runtime"
     try:
         print("正在安装私有 CPython 3.13.16 运行时", flush=True)
         uv("python", "install", PYTHON, "--no-bin")
@@ -356,6 +451,7 @@ def install(home, data, cache):
         venv = version / "runtime/venv"
         uv("venv", venv, "--python", python, "--no-python-downloads")
         executable = venv / "bin/python"
+        stage = "dependencies"
         print("正在解析 Linux 依赖并验证 wheel 哈希", flush=True)
         requirements = version / "runtime/requirements.lock"
         uv(
@@ -388,12 +484,15 @@ def install(home, data, cache):
         models = private_directory(version / "models")
         dependencies = []
         for pair in ("zh_en", "en_zh"):
+            stage = "model-download"
             archive, url = download(pair, download_cache)
+            stage = "model-extract"
             try:
                 extract_model(archive, models / pair, pair)
             except (ValueError, zipfile.BadZipFile):
                 archive.unlink(missing_ok=True)
                 raise
+            stage = "model-verify"
             # No upstream archive hash exists for these pinned Argos entries.
             # This is a recorded first-install TLS download hash, not a publisher pin.
             dependencies.append(
@@ -411,6 +510,7 @@ def install(home, data, cache):
             ],
         }
         (models / "installed.json").write_text(json.dumps(inventory, indent=2), encoding="utf-8")
+        stage = "self-check"
         print("正在校验模型并执行真实中英双向 CPU 翻译自检", flush=True)
         result = run(
             [
@@ -428,12 +528,21 @@ def install(home, data, cache):
         if len(result) > 16384 or json.loads(result).get("status") != "passed":
             raise ValueError("model-self-check")
         (version / "self-check.json").write_bytes(result)
+        stage = "activate"
         pending = components / (".current-" + version.name)
         pending.symlink_to(version.name, target_is_directory=True)
         os.replace(pending, components / "current")
         active = True
-        print("本地翻译组件安装完成，真实双向翻译自检通过。", flush=True)
+        try:
+            print("本地翻译组件安装完成，真实双向翻译自检通过。", flush=True)
+        except OSError:
+            pass
         return 0
+    except Paused:
+        raise
+    except Exception as error:
+        report_failure(error, stage, data, cache)
+        return 1
     finally:
         # A stop between the atomic rename and the next Python instruction must
         # never remove the newly active, fully verified version.
@@ -474,6 +583,6 @@ if __name__ == "__main__":
     except Paused:
         print("安装已暂停，已验证的下载进度会保留。再次安装可继续，原版本保持不变。", flush=True)
         raise SystemExit(75) from None
-    except (OSError, ValueError, subprocess.SubprocessError, zipfile.BadZipFile):
-        print("组件安装失败，原安装保持不变。请检查网络、磁盘空间及 uv 是否已安装。", flush=True)
+    except Exception as error:
+        report_failure(error)
         raise SystemExit(1) from None

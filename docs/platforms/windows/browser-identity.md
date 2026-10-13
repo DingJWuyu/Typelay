@@ -2,6 +2,8 @@
 
 本页约束 `tests/windows/fixtures/TypeLay.BrowserIdentityFixture`。它是独立、metadata-only 的 Windows 实验，不接入 App、Broker、worker、产品支持标记或发行包。它不读取输入正文、不翻译、不写回、不获取 Tab 接受资格。它覆盖普通合成网页，不能代表 Chrome NTP（新标签页）中央搜索框的支持或修复。生产浏览器故障和 B-01/B-02/B-03 的结论不随此探针改变。
 
+当前 CI 首次导航仍停在未取得合成网页的启动前置，真实身份握手尚未成立。窗口证据没有指出可行动的原因；默认工作流不再重复运行本研究探针。只有获得新的可验证线索后，才在获准的临时 Windows 环境按下方显式命令运行。普通 Chrome 产品回归继续独立执行，其失败没有因暂停研究实验而消失。
+
 ## 要回答的问题
 
 MV3 service worker 没有页面原生视图；仅有浏览器 PID 无法区分同一进程的多个窗口。待验证的替代路径是：网页内的可信扩展 iframe 自己调用 `runtime.connectNative`，由 Chrome 将源 frame 的原生根窗口作为 `--parent-window` 传给 host。不能由网页提供 HWND，也不能从 PID 猜目标窗口。

@@ -148,7 +148,7 @@ jobs:
     needs: scope
     if: needs.scope.outputs.windows == 'true'
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -193,17 +193,16 @@ jobs:
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
         run: ./dev.ps1 native-e2e
-      - name: Probe browser window identity (metadata only)
+      - name: Verify continuous translation with the real local model
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
-        timeout-minutes: 5
+        timeout-minutes: 25
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $pin = Get-Content tests/windows/fixtures/TypeLay.BrowserIdentityFixture/chrome-for-testing.json -Raw | ConvertFrom-Json
-          $archive = Join-Path $env:RUNNER_TEMP 'typelay-chrome-for-testing.zip'
-          Invoke-WebRequest -Uri $pin.archiveUrl -OutFile $archive -TimeoutSec 90
-          ./eng/windows/probe-browser-identity.ps1 -ChromeArchive $archive -ExpectedSha256 $pin.archiveSha256 -OutputPath artifacts/browser-identity/result.json
+          dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-continuous artifacts/continuous-translation src/shared/TypeLay.Worker/run_worker.py tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll
           exit $LASTEXITCODE
+      # The metadata-only browser research probe is paused at an unresolved CI startup
+      # precondition. Run its documented script explicitly when new evidence warrants it;
+      # the ordinary Chrome product regression above remains required and keeps its result.
       - name: Package and test the relocated distribution
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
@@ -215,8 +214,9 @@ jobs:
           path: |
             artifacts/test-results/
             artifacts/controller-trace.jsonl*
-            artifacts/browser-identity/result*.json
-            artifacts/browser-identity/result.owned-window-*.bmp
+            artifacts/continuous-translation/result.json
+            artifacts/continuous-translation/trace*.jsonl
+            artifacts/continuous-translation/data/setup-self-check.json
             artifacts/TypeLay-Windows-preview.zip
             artifacts/TypeLay-Windows-preview.zip.sha256
           if-no-files-found: warn

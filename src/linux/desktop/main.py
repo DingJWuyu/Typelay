@@ -13,6 +13,7 @@ import sys
 import uuid
 
 from paths import Paths, connect_private, peer_credentials
+from setup import FAILURE_PREFIX, failure_code, failure_message
 from wire import MAX_FRAME, encode, now_ms, receive_sync
 
 
@@ -207,6 +208,7 @@ async def desktop(paths, background, lock, tutorial=False):
         settings.installation(
             "running", "正在安装组件，完成自检后才会启用新版本；可暂停并保留已验证的下载进度。"
         )
+        failure = None
         try:
             installer = await asyncio.create_subprocess_exec(
                 "/usr/bin/python3",
@@ -224,16 +226,18 @@ async def desktop(paths, background, lock, tutorial=False):
             while line := await installer.stdout.readline():
                 if len(line) > 1024:
                     raise ValueError("setup-output-size")
-                settings.message.set_text(line.decode("utf-8", errors="replace").strip())
+                message = line.decode("utf-8", errors="replace").strip()
+                if message.startswith(FAILURE_PREFIX):
+                    failure = failure_code(message, failure)
+                else:
+                    settings.message.set_text(message)
             code = await installer.wait()
             if pause_installation or code == 75:
                 settings.installation(
                     "paused", "下载已暂停。已验证的进度保留；点击继续，原可用版本不受影响。"
                 )
             elif code != 0:
-                settings.installation(
-                    "failed", "组件安装失败，原版本保持不变。可重试安装并复用已验证的下载进度。"
-                )
+                settings.installation("failed", failure_message(failure))
             else:
                 ready = await host.ask("reloadModel", timeout=125)
                 settings.installation(
@@ -243,9 +247,7 @@ async def desktop(paths, background, lock, tutorial=False):
                     else "组件已安装，但翻译服务启动失败；请退出并重新启动 TypeLay。",
                 )
         except (OSError, ValueError, EOFError, TimeoutError):
-            settings.installation(
-                "failed", "组件安装未完成，请检查网络和磁盘空间；原可用版本不受影响。"
-            )
+            settings.installation("failed", failure_message(failure))
         finally:
             if installer and installer.returncode is None:
                 installer.terminate()

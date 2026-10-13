@@ -13,6 +13,19 @@ internal sealed record DownloadLock(string Name, string Version, string Url, str
 /// <summary>Only this explicit setup path has network access. It never receives source or candidate text.</summary>
 internal sealed class ModelInstaller
 {
+    private readonly string _data, _worker, _cache;
+    private string Runtime => Path.Combine(_data, "runtime");
+    private string Models => Path.Combine(_data, "models");
+    private string Python => Path.Combine(Runtime, "python", "tools", "python.exe");
+
+    public ModelInstaller() : this(AppPaths.Data, AppPaths.Worker) { }
+    internal ModelInstaller(string data, string worker)
+    {
+        _data = Path.GetFullPath(data);
+        _worker = Path.GetFullPath(worker);
+        _cache = Path.Combine(_data, "downloads");
+    }
+
     private static readonly HashSet<string> AllowedHosts = new(StringComparer.OrdinalIgnoreCase)
     { "api.nuget.org", "globalcdn.nuget.org", "pypi.org", "files.pythonhosted.org", "argos-net.com" };
     private readonly HttpClient _http = new(new HttpClientHandler { AllowAutoRedirect = false, AutomaticDecompression = DecompressionMethods.All })
@@ -20,20 +33,20 @@ internal sealed class ModelInstaller
         Timeout = TimeSpan.FromMinutes(15)
     };
     private readonly List<DownloadLock> _locks = [];
-    private readonly string _cache = Path.Combine(AppPaths.Data, "downloads");
     private static readonly (string Name, string Version)[] Wheels =
     [("numpy", "2.3.5"), ("PyYAML", "6.0.3"), ("setuptools", "80.9.0"),
      ("ctranslate2", "4.8.2"), ("sentencepiece", "0.2.2"), ("lingua-language-detector", "2.1.1")];
     private static readonly string[] ModelFiles =
     ["metadata.json", "sentencepiece.model", "model/config.json", "model/model.bin", "model/shared_vocabulary.json"];
 
-    public static bool HasReusableLocalModels => FindLocalPackage("zh_en") is not null && FindLocalPackage("en_zh") is not null;
+    public static bool HasReusableLocalModels => FindLocalPackage("zh_en", AppPaths.Models) is not null
+        && FindLocalPackage("en_zh", AppPaths.Models) is not null;
 
     public async Task InstallAsync(IProgress<SetupProgress> progress, CancellationToken ct)
     {
         Directory.CreateDirectory(_cache);
-        Directory.CreateDirectory(AppPaths.Runtime);
-        string staging = Path.Combine(AppPaths.Data, "staging", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Runtime);
+        string staging = Path.Combine(_data, "staging", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(staging);
         try
         {
@@ -67,7 +80,7 @@ internal sealed class ModelInstaller
             await Task.Run(() => Extract(pythonZip, pythonStage, ct), ct);
             if (!File.Exists(Path.Combine(pythonStage, "tools", "python.exe")))
                 throw new InvalidDataException("python-layout");
-            string pythonTarget = Path.Combine(AppPaths.Runtime, "python");
+            string pythonTarget = Path.Combine(Runtime, "python");
             Promote(pythonStage, pythonTarget);
             _locks.Add(new("python", pythonVersion, pythonUrl, await Hash(pythonZip, ct)));
             string site = Path.Combine(pythonTarget, "tools", "Lib", "site-packages");
@@ -135,7 +148,7 @@ internal sealed class ModelInstaller
                 files,
                 dependencies = _locks
             }, new JsonSerializerOptions { WriteIndented = true }), ct);
-            var start = new ProcessStartInfo(AppPaths.Python)
+            var start = new ProcessStartInfo(Python)
             {
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -145,7 +158,7 @@ internal sealed class ModelInstaller
             };
             start.ArgumentList.Add("-I");
             start.ArgumentList.Add("-B");
-            start.ArgumentList.Add(AppPaths.Worker);
+            start.ArgumentList.Add(_worker);
             start.ArgumentList.Add("--models");
             start.ArgumentList.Add(modelStage);
             start.ArgumentList.Add("--self-check");
@@ -160,10 +173,10 @@ internal sealed class ModelInstaller
                 using var check = JsonDocument.Parse(result);
                 if (check.RootElement.GetProperty("status").GetString() != "passed")
                     throw new InvalidDataException("cpu-self-check-failed");
-                await File.WriteAllTextAsync(Path.Combine(AppPaths.Data, "setup-self-check.json"), result, ct);
+                await File.WriteAllTextAsync(Path.Combine(_data, "setup-self-check.json"), result, ct);
             }
-            Promote(modelStage, AppPaths.Models);
-            await File.WriteAllTextAsync(Path.Combine(AppPaths.Data, "dependency-lock.json"),
+            Promote(modelStage, Models);
+            await File.WriteAllTextAsync(Path.Combine(_data, "dependency-lock.json"),
                 JsonSerializer.Serialize(_locks, new JsonSerializerOptions { WriteIndented = true }), ct);
             progress.Report(new("模型已安装并通过本机 CPU 自检"));
         }
@@ -179,11 +192,11 @@ internal sealed class ModelInstaller
             catch (UnauthorizedAccessException) { }
         }
     }
-    private static string? FindLocalPackage(string pair)
+    private static string? FindLocalPackage(string pair, string models)
     {
         string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         string[] candidates =
-        [Path.Combine(AppPaths.Models, pair),
+        [Path.Combine(models, pair),
          Path.Combine(home, ".local", "share", "argos-translate", "packages", $"translate-{pair}-1_9")];
         foreach (string source in candidates)
         {
@@ -220,7 +233,7 @@ internal sealed class ModelInstaller
     }
     private async Task<bool> TryStageLocalModel(string pair, string destination, IProgress<SetupProgress> progress, CancellationToken ct)
     {
-        string? source = FindLocalPackage(pair);
+        string? source = FindLocalPackage(pair, Models);
         if (source is null)
             return false;
         progress.Report(new(pair == "zh_en" ? "复用本机中文 → English 模型" : "复用本机 English → 中文模型"));
