@@ -290,6 +290,9 @@ jobs:
       - name: Build the relocatable Linux client
         id: build
         run: |
+          # checkout runs as the host UID; this disposable container runs as root.
+          # Trust only this Actions checkout, never every repository on the machine.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           python tests/linux/test_build_bundle.py -v
           python tests/linux/setup_e2e.py -v
           python eng/linux/build.py --with-test-fixture
@@ -466,8 +469,7 @@ jobs:
             artifacts/linux/qt-cooperative/*.log
             artifacts/linux/fcitx-cooperative-5.1.22/*.json
             artifacts/linux/fcitx-cooperative-5.1.22/*.log
-            artifacts/TypeLay-Fcitx-cooperative.tar.gz
-            artifacts/TypeLay-Fcitx-cooperative.tar.gz.sha256
+            ${{ steps.complete-package.outcome != 'success' && 'artifacts/TypeLay-Fcitx-cooperative.tar.gz' || '' }}
             artifacts/linux/desktop-data/typelay/components/*/self-check.json
             artifacts/linux/native/libtypelay-gtk3.so
             artifacts/linux/native/typelay-supervise
