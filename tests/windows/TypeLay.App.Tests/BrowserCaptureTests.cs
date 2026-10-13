@@ -25,7 +25,14 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
         output.WriteLine("Installed Chrome version: " + FileVersionInfo.GetVersionInfo(chrome!).ProductVersion);
         string directory = Path.Combine(Path.GetTempPath(), "typelay-browser-" + Guid.NewGuid().ToString("N"));
         string title = "TypeLay browser input regression " + Guid.NewGuid().ToString("N");
+        var repository = new DirectoryInfo(AppContext.BaseDirectory);
+        while (repository is not null && !File.Exists(Path.Combine(repository.FullName, "TypeLay.slnx")))
+            repository = repository.Parent;
+        Assert.NotNull(repository);
+        string diagnostics = Path.Combine(repository.FullName, "artifacts", "test-results", "browser");
+        Directory.CreateDirectory(diagnostics);
         BrowserWindows? windows = null;
+        ChildProcess? ownedBrowser = null;
         bool failed = false;
         try
         {
@@ -49,13 +56,17 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             </script>
             """, TestContext.Current.CancellationToken);
             var start = new ProcessStartInfo(chrome!) { UseShellExecute = false, RedirectStandardError = true };
+            // Official Chromium file logging, scoped to this disposable profile.
+            // ChildProcess deliberately drains stderr without retaining its text.
+            start.Environment["CHROME_LOG_FILE"] = Path.Combine(diagnostics, "chrome.log");
+            start.ArgumentList.Add("--enable-logging");
             start.ArgumentList.Add("--user-data-dir=" + Path.Combine(directory, "profile"));
             start.ArgumentList.Add("--no-first-run");
             start.ArgumentList.Add("--no-default-browser-check");
             start.ArgumentList.Add("--disable-search-engine-choice-screen");
             start.ArgumentList.Add("--new-window");
             start.ArgumentList.Add(new Uri(page).AbsoluteUri);
-            using var ownedBrowser = new ChildProcess(start);
+            ownedBrowser = new ChildProcess(start);
             var browser = ownedBrowser.Process;
             windows = new(browser, title);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -90,8 +101,9 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
                 + $"domFocusConfirmed={ready.Any(candidate => candidate.Handle == window && candidate.Focused)}; "
                 + $"inputClicked={clicked}; "
                 + $"launcherExited={browser.HasExited}");
-            Assert.True(window != 0 && Native.GetForegroundWindow() == window
-                && ready.Any(candidate => candidate.Handle == window && candidate.Focused),
+            bool fixtureReady = window != 0 && Native.GetForegroundWindow() == window
+                && ready.Any(candidate => candidate.Handle == window && candidate.Focused);
+            Assert.True(fixtureReady,
                 "Browser fixture startup failed: the owned local page and DOM input focus were not established; no input capture was attempted.");
             using var broker = new BrokerClient();
             using var input = new WindowsInputService(broker, 0);
@@ -131,6 +143,15 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
         catch
         {
             failed = true;
+            try
+            {
+                if (windows is not null)
+                    await windows.SaveDiagnosticsAsync(diagnostics, output.WriteLine);
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                output.WriteLine("Owned browser diagnostics unavailable: " + error.GetType().Name);
+            }
             throw;
         }
         finally
@@ -140,6 +161,7 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             // the original acquisition failure with a secondary cleanup failure.
             try
             {
+                ownedBrowser?.Dispose();
                 if (windows is not null)
                     await windows.StopAsync();
                 if (Directory.Exists(directory))
@@ -148,7 +170,7 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             catch (Exception error) when (failed && error is IOException or UnauthorizedAccessException
                 or System.ComponentModel.Win32Exception or InvalidOperationException or OperationCanceledException)
             {
-                output.WriteLine("Isolated browser profile cleanup failed: " + error.GetType().Name);
+                output.WriteLine($"Isolated browser profile cleanup failed: {error.GetType().Name}; hresult=0x{error.HResult:x8}");
             }
         }
     }
