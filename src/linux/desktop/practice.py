@@ -34,6 +34,12 @@ class Practice:
         self.completion_failed = False
         self.request_running = False
         self.request_thread = None
+        self.request_generation = 0
+        self.practice_run = None
+        self.restart_from = None
+        self.restarting = False
+        self.awaiting_binding = False
+        self.start_error = None
         self.window = Gtk.Window(title="TypeLay 实操练习")
         self.window.set_default_size(680, 500)
         self.window.set_border_width(24)
@@ -177,9 +183,20 @@ class Practice:
         ):
             return
         self.completion_failed = False
+        self.request_generation += 1
+        self.restart_from = self.practice_run or self.restart_from
+        self.restarting = self.restarting or self.practice_run is not None
+        self.practice_run = None
+        self.awaiting_binding = True
+        self.start_error = None
+        self.presentation = {**self.presentation, "completed": False}
         self.pending_start = {"confirmedSwitch": confirmed_switch}
         self.set_start_sensitive(False)
         self.complete.set_sensitive(False)
+        self.preview_step.set_text("")
+        self.replace_step.set_text("")
+        self.status.set_text("正在准备本次练习，请稍候再按快捷键。")
+        self.progress.set_text("正在准备本次练习，请稍候再按快捷键。")
         self.poll()
 
     def request_settings(self):
@@ -220,32 +237,41 @@ class Practice:
 
     def request(self, operation, data):
         self.request_running = True
+        generation = self.request_generation
 
         def request():
             try:
                 result = control(self.paths, operation, data)
             except (OSError, EOFError, ValueError):
                 result = None
-            GLib.idle_add(self.respond, operation, result)
+            GLib.idle_add(self.respond, operation, result, generation)
 
         # Socket waits never block the widget/IME thread. Only one bounded
         # control request can be in flight; it never includes practice text.
         self.request_thread = threading.Thread(target=request, name="typelay-practice-status")
         self.request_thread.start()
 
-    def respond(self, operation, result):
+    def respond(self, operation, result, generation):
         self.request_running = False
         if self.closed:
+            return False
+        if generation != self.request_generation:
+            # A status request may already be in flight when Restart is clicked.
+            # Its old run must not restore a ready/completed lesson while Begin waits.
+            self.poll()
             return False
         if operation == "startOnDemandPractice":
             self.pending_start = None
             if result is True:
-                self.source.grab_focus()
+                self.source.grab_focus_without_selecting()
+                self.status.set_text("等待确认本次练习框连接，请稍候再按快捷键。")
                 self.progress.set_text("等待确认本次练习框连接，请稍候再按快捷键。")
             else:
-                self.status.set_text(
-                    "尚未开始练习。请检查当前模式、启用状态、模型和语言设置后重试。"
-                )
+                self.start_error = "未能开始本次练习。请检查当前模式、启用状态、模型和语言设置，再点击开始按钮重试。"
+                self.awaiting_binding = False
+                self.set_start_sensitive(True)
+                self.status.set_text(self.start_error)
+                self.progress.set_text("本次练习尚未开始，未继承之前的进度。")
             self.poll()
             return False
         if operation == "settings":
@@ -278,9 +304,29 @@ class Practice:
                 self.set_start_sensitive(False)
                 self.status.set_text("无法读取练习说明，请检查 TypeLay 客户端版本后重新打开。")
                 return False
+            progress = result.get("progress")
+            if isinstance(progress, dict) and progress.get("runId") == self.restart_from:
+                return False
+            current = isinstance(progress, dict) and progress.get("runId") and not self.start_error
+            if current:
+                self.practice_run = progress["runId"]
+                if progress.get("target") is not None:
+                    self.awaiting_binding = False
+            elif self.awaiting_binding or self.start_error:
+                # Failed or uncertain Begin must not readopt the retired run.
+                view = {**view, "completed": False, "previewStep": "", "replaceStep": ""}
+            else:
+                self.practice_run = None
+            if self.awaiting_binding or self.start_error:
+                view = {**view, "completed": False}
             self.presentation = view
             self.complete.set_sensitive(view.get("completed") is True)
-            self.progress.set_text(view["progressNotice"])
+            if not self.start_error:
+                self.progress.set_text(
+                    view["progressNotice"]
+                    if current or not self.awaiting_binding
+                    else "等待确认本次练习框连接，请稍候再按快捷键。"
+                )
             self.reset_button.set_label(view["restartLabel"] + "(_R)")
             self.reset_button.get_accessible().set_name(view["restartLabel"])
             for label, key in (
@@ -318,6 +364,17 @@ class Practice:
             if view["currentStateNotice"]:
                 self.status.set_text(view["currentStateNotice"])
                 return False
+            if self.start_error:
+                self.status.set_text(self.start_error)
+                return False
+            if self.awaiting_binding:
+                self.status.set_text(self.progress.get_text())
+                return False
+            if current and self.restarting and not progress.get("previewCompleted"):
+                self.status.set_text("练习进度已重置。请按上方第 1 步重新生成预览。")
+                return False
+            if current and progress.get("previewCompleted"):
+                self.restarting = False
             self.status.set_text(view["progressNotice"])
         return False
 

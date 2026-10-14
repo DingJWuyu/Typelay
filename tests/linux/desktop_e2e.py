@@ -2228,6 +2228,23 @@ def run(arguments):
                 )
             )
         if arguments.desktop_scope == "setup":
+            # A separate GTK process exercises only the lesson's asynchronous
+            # control replies. Its private socket cannot touch the managed run.
+            subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(__file__).with_name("practice_window.py")),
+                    json.dumps(control(paths, "practiceStatus")["presentation"]),
+                ],
+                env={**environment, "GTK3_MODULES": "", "GTK_MODULES": ""},
+                check=True,
+                timeout=25,
+            )
+            evidence.append(
+                "real GTK practice controls reject retired status replies, clear restart "
+                "progress immediately, preserve source selection, recover failed starts "
+                "and ignore replies after close; controlled socket, no model/input proof"
+            )
             assert not status().get("setup", {}).get("tutorialVisible")
             support = wait_for(
                 lambda: status().get("setup", {}).get("applicationSupport"),
@@ -3395,11 +3412,18 @@ def run(arguments):
                     # The initial Begin can still be completing after Mode is
                     # saved. Wait for the actual bottom-row restart action.
                     wait_for(restart_ready, "managed practice restart did not become ready")
+                    restarted_notice = "练习进度已重置。请按上方第 1 步重新生成预览。"
+                    assert named(managed_window["pid"], restarted_notice) is None
                     before_restart = text(source)
                     key("alt+r")
                     wait_for(
-                        lambda: text(source) == before_restart and focused(source),
-                        "practice restart did not preserve the user's text",
+                        lambda: named(managed_window["pid"], restarted_notice)
+                        and named(managed_window["pid"], "已识别练习输入框，尚未生成预览。")
+                        and restart_ready(),
+                        "this practice restart did not finish binding its new run",
+                    )
+                    assert text(source) == before_restart and focused(source), (
+                        "practice restart did not preserve the user's text and return focus"
                     )
                     key("ctrl+a")
                     typed(original)
