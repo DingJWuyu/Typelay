@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import math
 import os
 import socket
 import subprocess
@@ -34,6 +35,63 @@ def validated_geometry(source, backend):
     geometry = anchor_geometry(source.get("geometry"), space)
     assert geometry is not None, "GTK reentry requires a valid parent-local source anchor"
     return geometry
+
+
+def parent_geometry_ready(actual, dimensions):
+    values = [actual.get(name) for name in ("width", "height", "scale")]
+    return (
+        actual.get("fullscreen") is True
+        and all(
+            type(value) in (int, float) and math.isfinite(value) and value > 0 for value in values
+        )
+        and values[0] * values[2] == dimensions[0]
+        and values[1] * values[2] == dimensions[1]
+    )
+
+
+def click_point(actual, point, dimensions):
+    assert parent_geometry_ready(actual, dimensions), "GTK parent does not fill the nested client"
+    x, y = point
+    assert all(type(value) in (int, float) and math.isfinite(value) for value in point)
+    assert 0 <= x < actual["width"] and 0 <= y < actual["height"], "click is outside GTK parent"
+    return int(x * actual["scale"]), int(y * actual["scale"])
+
+
+def observe_click_geometry(actual):
+    # Existing fixture time is MONOTONIC; render/click deadlines use BOOTTIME.
+    candidate = actual.get("candidate")
+    return {
+        "stateObservedAtMonoMs": actual.get("observedAtMs"),
+        "parent": {name: actual.get(name) for name in ("fullscreen", "width", "height", "scale")},
+        "previewBounds": (
+            {name: candidate.get(name) for name in ("x", "y", "width", "height")}
+            if isinstance(candidate, dict)
+            else None
+        ),
+    }
+
+
+def click_once(nested, point, evidence):
+    evidence["clickStartedAtMs"] = now_ms()
+    try:
+        subprocess.run(
+            [
+                "xdotool",
+                "mousemove",
+                "--window",
+                nested,
+                str(point[0]),
+                str(point[1]),
+                "click",
+                "1",
+            ],
+            check=True,
+            timeout=3,
+        )
+        evidence["clickCommandSucceeded"] = True
+    finally:
+        # Command return is not the GTK event-delivery timestamp.
+        evidence["clickFinishedAtMs"] = now_ms()
 
 
 def run_reentry_checks(command, environment, output, send_accept, *, gtk4, nested):
@@ -95,6 +153,7 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
         key_held = False
         client = None
         acceptance_phases = {}
+        click_evidence = {}
         publication_event_start = publication_event_end = 0
         try:
             connection, _ = server.accept()
@@ -128,12 +187,25 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                     except FileNotFoundError:
                         return {}
 
+                dimensions = None
+                if stage in ("expand", "resume-editor"):
+                    geometry = dict(
+                        line.split("=", 1)
+                        for line in subprocess.check_output(
+                            ["xdotool", "getwindowgeometry", "--shell", nested],
+                            text=True,
+                            timeout=3,
+                        ).splitlines()
+                    )
+                    dimensions = int(geometry["WIDTH"]), int(geometry["HEIGHT"])
+                    click_evidence = {"clock": "CLOCK_BOOTTIME", "nestedSize": dimensions}
                 initial = wait_for(
                     lambda: (value := state())
                     and value.get("focus") == "fixture-first"
                     and value.get("imeClear")
+                    and (dimensions is None or parent_geometry_ready(value, dimensions))
                     and value,
-                    f"{name}: actual source IME did not become Clear",
+                    f"{name}: actual source IME/parent geometry did not become ready",
                 )
                 generation = str(uuid.uuid4())
                 configuration = {
@@ -172,7 +244,17 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                     return
 
                 if stage == "expand":
-                    check_expand(client, source, generation, runtime, state, initial, nested)
+                    check_expand(
+                        client,
+                        source,
+                        generation,
+                        runtime,
+                        state,
+                        initial,
+                        nested,
+                        dimensions,
+                        click_evidence,
+                    )
                     print(f"{name}: old click did not acquire the newer view revision", flush=True)
                     return
                 if stage.startswith("controller-"):
@@ -180,7 +262,16 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                     print(f"{name}: detached actual consumer no longer acknowledged", flush=True)
                     return
                 if stage == "resume-editor":
-                    check_resume_editor(client, source, generation, state, initial, nested)
+                    check_resume_editor(
+                        client,
+                        source,
+                        generation,
+                        state,
+                        initial,
+                        nested,
+                        dimensions,
+                        click_evidence,
+                    )
                     print(
                         f"{name}: authorized recovery restored actual editor focus without writing",
                         flush=True,
@@ -339,6 +430,41 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                         )
                     except (OSError, KeyError, TypeError, ValueError):
                         pass  # Preserve the original failure and fixture cleanup.
+                if click_evidence:
+                    try:
+                        click_evidence["finalGeometry"] = observe_click_geometry(state())
+                    except (OSError, AssertionError, KeyError, TypeError, ValueError):
+                        pass
+                    try:
+                        observed = click_evidence["uiEvents"] = []
+                        for event in client.events if client else []:
+                            data = event.get("data")
+                            if event.get("event") != "ui" or not isinstance(data, dict):
+                                continue
+                            operation, revision = data.get("operation"), data.get("revision")
+                            observed.append(
+                                {
+                                    "operation": operation
+                                    if operation
+                                    in ("beginEdit", "edit", "expand", "collapse", "return", "exit")
+                                    else "other",
+                                    "revision": revision if type(revision) is int else None,
+                                    "viewRevisionMatches": revision
+                                    == click_evidence.get("revision"),
+                                    "targetMatches": data.get("target") == source["target"],
+                                    "generationMatches": data.get("generation") == generation,
+                                }
+                            )
+                            if len(observed) == 8:
+                                break
+                    except (KeyError, TypeError, UnboundLocalError):
+                        pass
+                    try:
+                        (output / f"{name}-click.json").write_text(
+                            json.dumps(click_evidence, indent=2)
+                        )
+                    except (OSError, TypeError, ValueError):
+                        pass  # Evidence must not replace the original failure or cleanup.
                 fixture.terminate()
                 try:
                     fixture.wait(timeout=3)
@@ -348,16 +474,27 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
 
 
 def render_preview(
-    client, source, generation, revision, label, *, view_state="ValidTranslation", can_edit=False
+    client,
+    source,
+    generation,
+    revision,
+    label,
+    *,
+    view_state="ValidTranslation",
+    can_edit=False,
+    evidence=None,
 ):
-    return client.call(
+    expires = now_ms() + 800
+    if evidence is not None:
+        evidence.update(revision=revision, expiresAtMs=expires, renderStartedAtMs=now_ms())
+    result = client.call(
         "overlay-render",
         {
             "target": source["target"],
             "authority": source["authority"],
             "generation": generation,
             "revision": revision,
-            "expiresAtMs": now_ms() + 800,
+            "expiresAtMs": expires,
             "theme": "system",
             "view": {
                 "state": view_state,
@@ -394,6 +531,11 @@ def render_preview(
         },
     )
 
+    if evidence is not None:
+        evidence["renderReturnedAtMs"] = now_ms()
+        evidence["renderReturnedAtMonoMs"] = time.monotonic_ns() // 1_000_000
+    return result
+
 
 def check_footer(client, source, generation, runtime, state, initial):
     assert render_preview(client, source, generation, 1, "fixture-initial-exit") == {
@@ -426,26 +568,33 @@ def check_footer(client, source, generation, runtime, state, initial):
     assert not any(event.get("event") == "accepted" for event in client.events)
 
 
-def check_expand(client, source, generation, runtime, state, initial, nested):
-    assert render_preview(client, source, generation, 1, "fixture exit")["visible"]
+def check_expand(client, source, generation, runtime, state, initial, nested, dimensions, evidence):
+    assert render_preview(client, source, generation, 1, "fixture exit", evidence=evidence)[
+        "visible"
+    ]
     ready = runtime / "expand-ready"
-    wait_for(lambda: ready.exists() and state().get("candidate"), "real expand button missing")
-    x, y, scale = map(float, ready.read_text().split())
-    (runtime / "arm").touch()
-    subprocess.run(
-        [
-            "xdotool",
-            "mousemove",
-            "--window",
-            nested,
-            str(int(x * scale)),
-            str(int(y * scale)),
-            "click",
-            "1",
-        ],
-        check=True,
-        timeout=3,
+    actual = wait_for(
+        lambda: ready.exists()
+        and (value := state()).get("candidate")
+        and value["observedAtMs"] > evidence["renderReturnedAtMonoMs"]
+        and value,
+        "real expand button/current preview missing",
     )
+    x, y, scale = map(float, ready.read_text().split())
+    # The existing fixture records this center only once. It belongs to revision
+    # 1 (no later render exists yet), but cannot prove the button has not moved.
+    evidence["beforeClick"] = observe_click_geometry(actual)
+    evidence["buttonCenterAtFirstObservation"] = {"x": x, "y": y, "scale": scale}
+    evidence["buttonBoundsCurrent"] = False
+    assert scale == actual["scale"], "button and current parent scales differ"
+    point = click_point(actual, (x, y), dimensions)
+    evidence["pixelPoint"] = point
+    (runtime / "arm").touch()
+    click_once(nested, point, evidence)
+    try:
+        evidence["afterClick"] = observe_click_geometry(state())
+    except (OSError, AssertionError, KeyError, TypeError, ValueError):
+        pass  # A diagnostic read cannot replace the original interaction result.
     wait_for((runtime / "reached.json").exists, "expand notify was not reached", timeout=1)
     # Retained editor ownership legitimately skips a new IME RPC while the
     # source observation is unchanged. Same generation, newer transport view.
@@ -464,7 +613,7 @@ def check_expand(client, source, generation, runtime, state, initial, nested):
     assert state()["second"] == initial["second"]
 
 
-def check_resume_editor(client, source, generation, state, initial, nested):
+def check_resume_editor(client, source, generation, state, initial, nested, dimensions, evidence):
     assert render_preview(client, source, generation, 1, "fixture exit")["visible"]
     described = client.describe()
     assert described["target"] == source["target"] and described["sessionBindings"]["editorReady"]
@@ -472,23 +621,32 @@ def check_resume_editor(client, source, generation, state, initial, nested):
         "capture", {"target": described["target"], "authority": described["authority"]}
     )
     assert source["sessionBindings"] == described["sessionBindings"]
-    assert render_preview(client, source, generation, 2, "fixture exit", can_edit=True)["visible"]
-    actual = wait_for(lambda: (value := state()).get("candidate") and value, "real preview missing")
-    candidate, scale = actual["candidate"], actual["scale"]
-    subprocess.run(
-        [
-            "xdotool",
-            "mousemove",
-            "--window",
-            nested,
-            str(int((candidate["x"] + candidate["width"] / 2) * scale)),
-            str(int((candidate["y"] + candidate["height"] / 2) * scale)),
-            "click",
-            "1",
-        ],
-        check=True,
-        timeout=3,
+    assert render_preview(
+        client, source, generation, 2, "fixture exit", can_edit=True, evidence=evidence
+    )["visible"]
+    actual = wait_for(
+        lambda: (value := state()).get("candidate")
+        and value["observedAtMs"] > evidence["renderReturnedAtMonoMs"]
+        and value,
+        "real current preview missing",
     )
+    candidate = actual["candidate"]
+    evidence["beforeClick"] = observe_click_geometry(actual)
+    assert candidate["width"] > 0 and candidate["height"] > 0
+    point = click_point(
+        actual,
+        (
+            candidate["x"] + candidate["width"] / 2,
+            candidate["y"] + candidate["height"] / 2,
+        ),
+        dimensions,
+    )
+    evidence["pixelPoint"] = point
+    click_once(nested, point, evidence)
+    try:
+        evidence["afterClick"] = observe_click_geometry(state())
+    except (OSError, AssertionError, KeyError, TypeError, ValueError):
+        pass  # A diagnostic read cannot replace the original interaction result.
 
     def edit_requested():
         client.describe(source["target"])

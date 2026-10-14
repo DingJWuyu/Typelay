@@ -61,6 +61,8 @@ cmake --build artifacts/linux/qt-native
 
 F10 的待捕获请求目前继承原观察的截止时间，而不是按下后重新获得 150ms。61f51ca 的实际请求入队时只余 60ms，在真实转发事件尚未全部退休时超期取消；字段版本仍匹配，模型和写回没有执行。provider 在 pending 时直接拒绝 inspect，不发同步 Probe；现日志不足以把这段等待细分为 DBus、QPA 或线程调度。保持原截止与可见拒绝反馈，不给旧证明续期。
 
+F9 唤醒也存在入队前安全拒绝的可用性风险。[实际 CI 证据](https://github.com/DingJWuyu/Typelay/actions/runs/38571156327)中，真实 provider 将 Ctrl+Shift+F9 交给 consumer，但命令以 `StaleObservation` 拒绝，尚未进入待捕获或 dispatch；配置的 F12 接受键尚未按下，后续场景未到达。现有记录缺少该次命令 authority 的 basis，不能区分观察时间戳缺失、未来或已过期，也不能据此归因于配置代次或键对 ACK。`hook-enter` 的负 `remainingMs` 来自空接受 publication 的 `until=0`，不是 wake 授权年龄。新增一次 supported capture 不等于按键当下的原生命令授权已安装且有效；此前两次完整桌面链通过不能消除此风险。该问题须与 100ms 接受许可分别判断，保持命令原有 150ms 截止，不自动重发用户按键。
+
 ### 程序性改文的观察假设
 
 当前 consumer 的正文/选区版本依赖 Qt 控件信号与实际输入事件。标准类型检查不能证明应用不会临时屏蔽通知；例如数据绑定用 `QSignalBlocker` 包住 `setText` 或选区回填时，Qt 不会在解除阻塞后补发信号，见 [QObject::blockSignals](https://doc.qt.io/qt-6/qobject.html#blockSignals)。因此不能把当前范围表述为所有普通 Qt 应用都具备不可遗漏的变更版本。
