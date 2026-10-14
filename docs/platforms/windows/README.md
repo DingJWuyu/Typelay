@@ -38,6 +38,8 @@
 
 下方候选包含该恢复流程，已验证隔离下载失败、损坏缓存、用户暂停与自检失败的分类和恢复入口。
 
+当前源码把准备卡的主要操作按真实阶段排列：准备、暂停、继续或失败重试优先；模型就绪且没有待恢复任务时突出“试一试”，修复作为次级操作。输入服务连接事实与操作错误分别保留。[对应桌面验证](https://github.com/DingJWuyu/Typelay/actions/runs/38650565562)已通过未准备、已安装未就绪、就绪、暂停过渡、失败不被旧就绪状态覆盖及草稿焦点选区回归；浅深色窄窗截图中主要操作完整可见。安装成功后启动模型的卡片阶段尚未单独完成 GUI 验收。该运行仍因 Chrome 启动前置与清理失败而未全绿，下方旧候选不包含此准备卡改动。
+
 ### 当前可验证候选
 
 这是开发候选，不是已完成通用输入验收的正式发布。[已核对的 Actions 运行](https://github.com/DingJWuyu/Typelay/actions/runs/38596552508)对应源码 `9d419b9416db34231009fa3cca31a3d2c1792524`；[下载 Windows artifact](https://github.com/DingJWuyu/Typelay/actions/runs/38596552508/artifacts/11911375765)，其名称为 `typelay-windows-9d419b9416db34231009fa3cca31a3d2c1792524`。取出内层 `TypeLay-Windows-preview.zip`，再完整解压启动。包内附带说明不用于识别构建，请以本节的源码提交及校验和核对。
