@@ -152,13 +152,11 @@ class Tutorial:
 
     def open_connection(self):
         self.dismiss()
-        self.owner.pages.set_current_page(1)
         self.owner.show()
+        self.owner.pages.set_visible_child_name("application-support")
 
     def show(self):
-        support = self.owner.application_support.value
-        if support:
-            self.connection_button.set_label(support["labels"]["connectApplications"])
+        self.owner.tasks(self.owner.application_support.refresh())
         self.window.show_all()
         self.window.present()
         self.source.grab_focus()
@@ -181,24 +179,30 @@ class ApplicationSupportPane:
         self.action_revision = 0
         self.widget = Gtk.ScrolledWindow()
         self.widget.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.box.set_border_width(16)
         self.widget.add(self.box)
-        self.tab = Gtk.Label(label="…")
+        self.title = Gtk.Label(label="应用支持", xalign=0)
+        self.title.get_style_context().add_class("settings-page-title")
+        self.box.pack_start(self.title, False, False, 0)
         self.summary = self.note("")
         self.prepare = self.note("")
         self.model = self.note("")
-        self.box.pack_start(owner.install_button, False, False, 0)
+        prepare_actions = Gtk.Box(spacing=8)
+        prepare_actions.pack_start(owner.install_button, True, True, 0)
         self.try_button = Gtk.Button()
         self.try_button.connect("clicked", lambda *_: self.open_practice())
-        self.box.pack_start(self.try_button, False, False, 0)
+        prepare_actions.pack_start(self.try_button, False, False, 0)
+        self.box.pack_start(prepare_actions, False, False, 0)
         self.connect = self.note("")
         self.selector = Gtk.ComboBoxText()
         self.selector.connect("changed", lambda *_: self.render_selected())
-        self.box.pack_start(self.selector, False, False, 0)
+        choices = Gtk.Box(spacing=8)
+        choices.pack_start(self.selector, True, True, 0)
         self.more = Gtk.CheckButton()
         self.more.connect("toggled", lambda *_: self.render_choices())
-        self.box.pack_start(self.more, False, False, 0)
+        choices.pack_start(self.more, False, False, 0)
+        self.box.pack_start(choices, False, False, 0)
         self.state = self.note("")
         self.reason = self.note("")
         self.desktop_safety = self.note("若原有输入法，请先记下启动方式，并手动退出与恢复。")
@@ -264,10 +268,12 @@ class ApplicationSupportPane:
     def render(self, value):
         self.value = value
         labels = value["labels"]
-        self.tab.set_text(value["title"])
+        self.title.set_text(value["title"])
+        self.owner.pages.child_set_property(self.widget, "title", value["title"])
         self.summary.set_text(value["summary"])
         self.prepare.set_text(labels["prepareTranslation"])
         self.connect.set_text(labels["connectApplications"])
+        self.owner.tutorial.connection_button.set_label(labels["connectApplications"])
         self.more.set_label(labels["moreApplications"])
         self.details.set_label(labels["details"])
         self.try_button.set_label(labels["tryIt"])
@@ -579,8 +585,38 @@ class Settings:
         self.installation_state = "idle"
         self.install_requested, self.pause_requested = install_requested, pause_requested
         self.window = Gtk.Window(title="TypeLay 设置")
-        self.window.set_default_size(660, 640)
-        self.window.set_border_width(24)
+        self.window.set_default_size(880, 720)
+        self.window.set_border_width(16)
+        self.window.get_style_context().add_class("typelay-settings")
+        style = Gtk.CssProvider()
+        style.load_from_data(b"""
+            .typelay-settings { background-color: #f4f5f7; color: #20242b; }
+            .typelay-settings .settings-panel {
+                background-color: #ffffff; border: 1px solid #dde2ea; border-radius: 16px;
+            }
+            .typelay-settings .settings-navigation {
+                background-color: #f4f5f7; border-radius: 16px 0 0 16px; padding: 12px 8px;
+            }
+            .typelay-settings .settings-navigation list { background-color: transparent; }
+            .typelay-settings .settings-navigation row {
+                border-radius: 8px; padding: 12px; margin-bottom: 4px; color: #505967;
+            }
+            .typelay-settings .settings-navigation row:selected {
+                background-color: #eaf0ff; color: #2458b8; font-weight: bold;
+            }
+            .typelay-settings .settings-navigation row:focus {
+                outline: 2px solid #3267e3; outline-offset: -2px;
+            }
+            .typelay-settings .settings-page {
+                background-color: #ffffff; color: #20242b; border-radius: 0 16px 16px 0;
+            }
+            .typelay-settings .settings-page-title { font-size: 20px; font-weight: bold; }
+            .typelay-settings .dim-label { color: #626c7c; opacity: 1; }
+            .typelay-settings .settings-footer { padding: 0 8px; }
+        """)
+        Gtk.StyleContext.add_provider_for_screen(
+            self.window.get_screen(), style, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+        )
         self.window.connect("delete-event", self.dismiss)
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
         self.window.add(outer)
@@ -592,14 +628,23 @@ class Settings:
         self.tray_notice.set_line_wrap(True)
         self.tray_notice.set_no_show_all(True)
         outer.pack_start(self.tray_notice, False, False, 0)
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        self.pages = Gtk.Notebook()
-        outer.pack_start(self.pages, True, True, 0)
-        self.pages.append_page(scroll, Gtk.Label(label="常规"))
-        grid = Gtk.Grid(column_spacing=24, row_spacing=14)
-        grid.set_border_width(12)
-        scroll.add(grid)
+        panel = Gtk.Box()
+        panel.get_style_context().add_class("settings-panel")
+        outer.pack_start(panel, True, True, 0)
+        self.pages = Gtk.Stack()
+        self.pages.set_hexpand(True)
+        self.pages.set_vexpand(True)
+        self.sidebar = Gtk.StackSidebar()
+        self.sidebar.set_stack(self.pages)
+        self.sidebar.set_size_request(156, -1)
+        self.sidebar.get_style_context().add_class("settings-navigation")
+        self.sidebar.get_accessible().set_name("设置导航")
+        panel.pack_start(self.sidebar, False, False, 0)
+        panel.pack_start(self.pages, True, True, 0)
+        grids = {
+            name: self.add_page(name, title)
+            for name, title in (("general", "常规"), ("language", "语言"), ("shortcuts", "快捷键"))
+        }
         self.mode_description = Gtk.Label(xalign=0)
         self.mode_description.get_accessible().set_name("当前工作模式说明")
         self.acceptance_description = Gtk.Label(xalign=0)
@@ -609,10 +654,13 @@ class Settings:
         for label in (self.mode_description, self.acceptance_description, self.save_scope):
             label.set_line_wrap(True)
             label.set_max_width_chars(64)
-        grid.attach(self.save_scope, 0, 0, 2, 1)
+        footer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        footer.get_style_context().add_class("settings-footer")
+        outer.pack_end(footer, False, False, 0)
+        footer.pack_start(self.save_scope, False, False, 0)
         switch_style = Gtk.CssProvider()
         switch_style.load_from_data(
-            b"switch:focus { outline: 2px solid @theme_fg_color; outline-offset: 3px; }"
+            b"switch:focus { outline: 2px solid #3267e3; outline-offset: 3px; }"
         )
         self.controls = {}
         self.control_labels = {}
@@ -634,8 +682,16 @@ class Settings:
                 [("system", "跟随系统"), ("light", "浅色"), ("dark", "深色")],
             ),
         ]
-        row = 1
+        next_rows = {name: 1 for name in grids}
         for key, label, choices in rows:
+            page = (
+                "language"
+                if key in ("source", "target")
+                else "shortcuts"
+                if key in ("wakeShortcut", "directShortcut", "acceptShortcut", "exitShortcut")
+                else "general"
+            )
+            grid, row = grids[page], next_rows[page]
             draft = key in ("wakeShortcut", "directShortcut", "acceptShortcut", "exitShortcut")
             caption = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
             self.control_labels[key] = Gtk.Label(label=label, xalign=0)
@@ -692,8 +748,10 @@ class Settings:
             elif key == "exitShortcut":
                 grid.attach(self.acceptance_description, 0, row, 2, 1)
                 row += 1
+            next_rows[page] = row
+        exclusions_grid = Gtk.Grid(column_spacing=24, row_spacing=14)
         label = Gtk.Label(label="排除的应用\n每行一个可执行文件名\n保存后生效", xalign=0)
-        grid.attach(label, 0, row, 1, 1)
+        exclusions_grid.attach(label, 0, 0, 1, 1)
         self.excluded = Gtk.TextView()
         self.excluded.get_accessible().set_name("设置：排除的应用")
         self.excluded.get_accessible().set_description("每行一个可执行文件名，保存后生效")
@@ -703,29 +761,30 @@ class Settings:
             "changed", lambda *_: self.draft_changed("excludedApplications")
         )
         exclusions = Gtk.ScrolledWindow()
+        exclusions.set_hexpand(True)
         exclusions.set_size_request(-1, 84)
         exclusions.add(self.excluded)
-        grid.attach(exclusions, 1, row, 1, 1)
+        exclusions_grid.attach(exclusions, 1, 0, 1, 1)
         note = Gtk.Label(
             label="密码、敏感字段及无法确认输入法状态的控件不会读取或替换。",
             xalign=0,
         )
         note.set_line_wrap(True)
-        grid.attach(note, 0, row + 1, 2, 1)
+        exclusions_grid.attach(note, 0, 1, 2, 1)
         self.shortcut_scope = Gtk.Label(xalign=0)
         self.shortcut_scope.set_line_wrap(True)
-        grid.attach(self.shortcut_scope, 0, row + 2, 2, 1)
+        grids["shortcuts"].attach(self.shortcut_scope, 0, next_rows["shortcuts"], 2, 1)
         privacy = Gtk.Label(
             label="翻译全部在本机执行，输入和译文不会上传。",
             xalign=0,
         )
         privacy.set_line_wrap(True)
-        grid.attach(privacy, 0, row + 3, 2, 1)
+        grids["general"].attach(privacy, 0, next_rows["general"], 2, 1)
         self.draft_notice = Gtk.Label(xalign=0)
         self.draft_notice.get_accessible().set_name("设置草稿")
         self.draft_notice.set_line_wrap(True)
         self.draft_notice.set_no_show_all(True)
-        outer.pack_start(self.draft_notice, False, False, 0)
+        footer.pack_start(self.draft_notice, False, False, 0)
         self.message = Gtk.Label(xalign=0)
         self.message.get_accessible().set_name("设置反馈")
         self.message.set_line_wrap(True)
@@ -733,9 +792,9 @@ class Settings:
         self.message.connect(
             "notify::label", lambda label, _property: label.set_visible(bool(label.get_text()))
         )
-        outer.pack_start(self.message, False, False, 0)
+        footer.pack_start(self.message, False, False, 0)
         buttons = Gtk.Box(spacing=8)
-        outer.pack_end(buttons, False, False, 0)
+        footer.pack_start(buttons, False, False, 0)
         self.install_button = Gtk.Button(label="安装本地翻译组件…")
         self.install_button.connect("clicked", self.install_clicked)
         quit_button = Gtk.Button(label="退出 TypeLay")
@@ -751,8 +810,26 @@ class Settings:
         self.application_support = ApplicationSupportPane(
             self, support_refresh, support_action, support_folder
         )
-        self.pages.append_page(self.application_support.widget, self.application_support.tab)
+        self.application_support.box.pack_start(Gtk.Separator(), False, False, 8)
+        self.application_support.box.pack_start(exclusions_grid, False, False, 0)
+        self.application_support.widget.get_style_context().add_class("settings-page")
+        self.application_support.widget.get_accessible().set_name("设置页：应用支持")
+        self.pages.add_titled(self.application_support.widget, "application-support", "应用支持")
         self.tasks(self.load_draft_messages())
+
+    def add_page(self, name, title):
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.get_style_context().add_class("settings-page")
+        scroll.get_accessible().set_name("设置页：" + title)
+        grid = Gtk.Grid(column_spacing=24, row_spacing=18)
+        grid.set_border_width(24)
+        heading = Gtk.Label(label=title, xalign=0)
+        heading.get_style_context().add_class("settings-page-title")
+        grid.attach(heading, 0, 0, 2, 1)
+        scroll.add(grid)
+        self.pages.add_titled(scroll, name, title)
+        return grid
 
     async def load_draft_messages(self):
         if self.draft_messages is not None or self.loading_draft_messages:
@@ -816,7 +893,7 @@ class Settings:
         finally:
             self.configuring = False
         if first and not value["onboardingComplete"]:
-            self.pages.set_current_page(1)
+            self.pages.set_visible_child_name("application-support")
 
     def draft_value(self, key):
         if key in ("acceptShortcut", "exitShortcut"):
@@ -1017,8 +1094,10 @@ class Settings:
 
     def show(self):
         self.window.show_all()
-        if self.first_show and self.value and not self.value["onboardingComplete"]:
-            self.pages.set_current_page(1)
+        if self.first_show and (
+            not self.model_ready or (self.value and not self.value["onboardingComplete"])
+        ):
+            self.pages.set_visible_child_name("application-support")
         self.first_show = False
         self.window.present()
         self.tasks(self.load_draft_messages())

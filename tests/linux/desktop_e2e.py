@@ -1430,7 +1430,7 @@ def run(arguments):
                         # Both GTK generations use the same real settings and
                         # source-widget accessibility actions. No resume protocol
                         # event or test-only command stands in for the button.
-                        from support.gtk_accessibility import Atspi, named
+                        from support.gtk_accessibility import Atspi, named, select_settings_page
 
                         def visible_control(pid, name):
                             node = named(pid, name)
@@ -1519,6 +1519,7 @@ def run(arguments):
                             "GTK pause settings window did not map",
                         )
                         request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
+                        select_settings_page(process.pid, "常规")
                         enabled = wait_for(
                             lambda: visible_control(process.pid, "设置：启用 TypeLay"),
                             "GTK pause setting was not accessible and visible",
@@ -2173,7 +2174,15 @@ def run(arguments):
             assert support["title"] == "应用支持"
             assert any(row["id"] == "desktop-text" for row in support["rows"])
             assert not status()["setup"]["onboardingComplete"]
-            from support.gtk_accessibility import Atspi, GLib, named, text
+            from support.gtk_accessibility import (
+                Atspi,
+                GLib,
+                named,
+                select_settings_page,
+                settings_navigation,
+                settings_page_row,
+                text,
+            )
 
             def settings_control(name, timeout=15):
                 return wait_for(
@@ -2184,9 +2193,39 @@ def run(arguments):
 
             def activate_setting(name, timeout=15):
                 node = settings_control(name, timeout)
+                assert node.get_state_set().contains(Atspi.StateType.SHOWING), name
                 action = node.get_action_iface()
                 assert action is not None and Atspi.Action.do_action(action, 0), name
                 return node
+
+            def settings_page(title):
+                row = select_settings_page(process.pid, title)
+                wait_for(
+                    lambda: settings_control("设置页：" + title)
+                    .get_state_set()
+                    .contains(Atspi.StateType.SHOWING),
+                    "selected settings page did not become visible: " + title,
+                )
+                current = settings_navigation(process.pid)
+                index, _ = settings_page_row(current[1], title)
+                assert Atspi.Selection.is_child_selected(current[0], index)
+                assert (
+                    settings_control("保存修改").get_state_set().contains(Atspi.StateType.SHOWING)
+                ), "global save action disappeared during page navigation"
+                return row
+
+            navigation = wait_for(
+                lambda: settings_navigation(process.pid), "settings sidebar was not accessible"
+            )
+            selection, rows = navigation
+            assert len(rows) == 4, "settings sidebar contains an empty or unexpected page"
+            titles = ("常规", "语言", "快捷键", "应用支持")
+            for title in titles:
+                settings_page_row(rows, title)
+            support_index, _ = settings_page_row(rows, "应用支持")
+            assert Atspi.Selection.is_child_selected(selection, support_index), (
+                "first-run settings did not select application support"
+            )
 
             # Drive actual GTK actions; the model being ready never completes an
             # application connection or a canceled component selection.
@@ -2374,9 +2413,28 @@ def run(arguments):
                 "address and component folder after dialog dismissal; reopening works and "
                 "closing practice does not complete onboarding"
             )
-            trial = settings_control(support["labels"]["tryIt"])
-            assert Atspi.Component.grab_focus(trial.get_component_iface())
-            key("ctrl+Page_Up")
+            general_row = settings_page("常规")
+            # Native sidebar rows retain selection, keyboard focus, and page
+            # visibility together. Arrow navigation must not invoke our handlers.
+            assert Atspi.Component.grab_focus(general_row.get_component_iface())
+            for title in ("语言", "快捷键", "应用支持"):
+                key("Down")
+                index, row = settings_page_row(rows, title)
+                wait_for(
+                    lambda index=index, row=row: Atspi.Selection.is_child_selected(selection, index)
+                    and row.get_state_set().contains(Atspi.StateType.FOCUSED)
+                    and settings_control("设置页：" + title)
+                    .get_state_set()
+                    .contains(Atspi.StateType.SHOWING),
+                    "sidebar keyboard navigation did not select and show " + title,
+                )
+            key("Up")
+            shortcuts_index, _ = settings_page_row(rows, "快捷键")
+            wait_for(
+                lambda: Atspi.Selection.is_child_selected(selection, shortcuts_index),
+                "sidebar reverse keyboard navigation did not select shortcuts",
+            )
+            settings_page("常规")
             enabled = settings_control("设置：启用 TypeLay")
             wait_for(
                 lambda: enabled.get_state_set().contains(Atspi.StateType.SHOWING),
@@ -2427,6 +2485,7 @@ def run(arguments):
             )
             assert "即时保存" in text(settings_control("设置保存范围"))
             settings_control("保存修改")
+            settings_page("快捷键")
             wake = settings_control("设置：唤醒翻译")
             direct = settings_control("设置：直接翻译替换")
             assert Atspi.EditableText.set_text_contents(
@@ -2437,6 +2496,7 @@ def run(arguments):
                 "shortcut edit was not retained as draft",
             )
             assert "离开此页后仍会保留" in text(settings_control("设置草稿"))
+            settings_page("常规")
             assert saved["WakeShortcut"] in text(settings_control("当前工作模式说明"))
             assert "Ctrl+Shift+F8" not in text(settings_control("当前工作模式说明"))
             activate_setting("设置：启用 TypeLay")
@@ -2447,6 +2507,7 @@ def run(arguments):
             assert text(wake) == "Ctrl+Shift+F8", (
                 "settings notification overwrote the pending shortcut"
             )
+            settings_page("快捷键")
             assert Atspi.EditableText.set_text_contents(
                 direct.get_editable_text_iface(), "Ctrl+Shift+F8"
             )
@@ -2466,10 +2527,12 @@ def run(arguments):
                 lambda: json.loads(paths.settings.read_text())["WakeShortcut"] == "Ctrl+Shift+F8",
                 "valid shortcut pair did not persist",
             )
+            settings_page("常规")
             wait_for(
                 lambda: "Ctrl+Shift+F8" in text(settings_control("当前工作模式说明")),
                 "saved wake shortcut was not shown in the mode guidance",
             )
+            settings_page("快捷键")
             assert Atspi.EditableText.set_text_contents(
                 wake.get_editable_text_iface(), saved["WakeShortcut"]
             )
@@ -2520,18 +2583,96 @@ def run(arguments):
                 and not status()["setup"]["settingsDraft"],
                 "default session keys were not restored for later desktop scenarios",
             )
+            # One global draft spans all four shortcuts and the separate support
+            # page's exclusions. A language change must save without consuming it.
+            assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 12)
+            assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 11)
+            assert Atspi.EditableText.set_text_contents(
+                wake.get_editable_text_iface(), "Ctrl+Shift+F8"
+            )
+            assert Atspi.EditableText.set_text_contents(
+                direct.get_editable_text_iface(), "Ctrl+Shift+F7"
+            )
+            settings_page("应用支持")
+            excluded = settings_control("设置：排除的应用")
+            assert Atspi.Component.grab_focus(excluded.get_component_iface())
+            assert Atspi.EditableText.set_text_contents(
+                excluded.get_editable_text_iface(), "typelay-navigation-test"
+            )
+            settings_page("语言")
+            source_language = settings_control("设置：源语言")
+            assert Atspi.Selection.select_child(source_language.get_selection_iface(), 0)
+            wait_for(
+                lambda: json.loads(paths.settings.read_text())["Source"] == "auto",
+                "language page did not save its choice independently",
+            )
+            assert status()["setup"]["settingsDraft"]
+            assert json.loads(paths.settings.read_text())["WakeShortcut"] == saved["WakeShortcut"]
+            assert (
+                json.loads(paths.settings.read_text())["ExcludedApplications"]
+                == saved["ExcludedApplications"]
+            )
+            settings_page("常规")
+            activate_setting("保存修改")
+            wait_for(
+                lambda: (value := json.loads(paths.settings.read_text()))["WakeShortcut"]
+                == "Ctrl+Shift+F8"
+                and value["DirectShortcut"] == "Ctrl+Shift+F7"
+                and value["AcceptShortcut"] == "F12"
+                and value["ExitShortcut"] == "F11"
+                and value["ExcludedApplications"] == ["typelay-navigation-test"]
+                and value["Source"] == "auto"
+                and not status()["setup"]["settingsDraft"],
+                "global save did not persist the complete cross-page draft",
+            )
+            settings_page("应用支持")
+            assert text(excluded) == "typelay-navigation-test"
+            assert Atspi.EditableText.set_text_contents(
+                excluded.get_editable_text_iface(), "\n".join(saved["ExcludedApplications"])
+            )
+            settings_page("快捷键")
+            assert Atspi.Selection.is_child_selected(accept_key.get_selection_iface(), 12)
+            assert Atspi.Selection.is_child_selected(exit_key.get_selection_iface(), 11)
+            assert Atspi.EditableText.set_text_contents(
+                wake.get_editable_text_iface(), saved["WakeShortcut"]
+            )
+            assert Atspi.EditableText.set_text_contents(
+                direct.get_editable_text_iface(), saved["DirectShortcut"]
+            )
+            assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 0)
+            assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 0)
+            activate_setting("保存修改")
+            wait_for(
+                lambda: not status()["setup"]["settingsDraft"],
+                "restoring the cross-page draft did not finish",
+            )
+            settings_page("语言")
+            original_source = ("auto", "zh", "en").index(saved["Source"])
+            assert Atspi.Selection.select_child(
+                source_language.get_selection_iface(), original_source
+            )
+            wait_for(
+                lambda: json.loads(paths.settings.read_text())["Source"] == saved["Source"],
+                "language page did not restore the original source",
+            )
+            evidence.append(
+                "Four real sidebar pages: accessibility selection and Up/Down keyboard focus; "
+                "one visible save action persists four shortcut drafts and exclusions across "
+                "pages without overwriting an immediately saved language change"
+            )
+            settings_page("快捷键")
             assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 12)
             assert Atspi.EditableText.set_text_contents(
                 wake.get_editable_text_iface(), "Ctrl+Shift+F8"
             )
-            assert Atspi.Component.grab_focus(wake.get_component_iface())
-            key("ctrl+Page_Down")
-            wait_for(
-                lambda: trial.get_state_set().contains(Atspi.StateType.SHOWING),
-                "application-support page did not become visible with a pending draft",
+            settings_page("应用支持")
+            assert (
+                settings_control("设置页：应用支持")
+                .get_state_set()
+                .contains(Atspi.StateType.SHOWING)
             )
             assert status()["setup"]["settingsDraft"]
-            key("ctrl+Page_Up")
+            settings_page("快捷键")
             assert text(wake) == "Ctrl+Shift+F8", "page navigation discarded the shortcut draft"
             window = wait_for(
                 lambda: next(
@@ -2586,9 +2727,10 @@ def run(arguments):
             assert json.loads(paths.settings.read_text())["AcceptShortcut"] == "Tab"
             assert Atspi.Selection.is_child_selected(accept_key.get_selection_iface(), 0)
             assert "Tab" in text(settings_control("当前接受与退出说明"))
+            settings_page("常规")
             assert saved["WakeShortcut"] in text(settings_control("当前工作模式说明"))
-            assert Atspi.Component.grab_focus(wake.get_component_iface())
-            key("ctrl+Page_Down")
+            settings_page("应用支持")
+            assert Atspi.Component.grab_focus(trial.get_component_iface())
             activate_setting(support["labels"]["tryIt"])
             assert not status()["setup"]["tutorialVisible"]
             assert selector.get_name() == desktop_support["title"]
@@ -2626,6 +2768,10 @@ def run(arguments):
             stop()
             start()
             assert not status().get("setup", {}).get("tutorialVisible")
+            unopened_settings = named(process.pid, "TypeLay 设置")
+            assert unopened_settings is None or not unopened_settings.get_state_set().contains(
+                Atspi.StateType.SHOWING
+            ), "completed onboarding unexpectedly opened settings at background startup"
             assert control(paths, "tutorial") is True
             wait_for(
                 lambda: status().get("setup", {}).get("tutorialVisible"),
@@ -2635,6 +2781,26 @@ def run(arguments):
                 lambda: (contents(request("FocusedWindow"), "FocusedWindow") or {}).get("title")
                 == "TypeLay 首次使用",
                 "reopened tutorial did not gain real compositor focus",
+            )
+            activate_setting(support["labels"]["connectApplications"])
+            wait_for(
+                lambda: settings_control("设置页：应用支持")
+                .get_state_set()
+                .contains(Atspi.StateType.SHOWING),
+                "tutorial opened before settings did not route to application support",
+            )
+            navigation = wait_for(
+                lambda: settings_navigation(process.pid),
+                "tutorial connection route did not expose the settings sidebar",
+            )
+            support_index, _ = settings_page_row(navigation[1], "应用支持")
+            assert Atspi.Selection.is_child_selected(navigation[0], support_index)
+            assert not status()["setup"]["tutorialVisible"]
+            assert control(paths, "tutorial") is True
+            wait_for(
+                lambda: (contents(request("FocusedWindow"), "FocusedWindow") or {}).get("title")
+                == "TypeLay 首次使用",
+                "tutorial did not regain focus after opening application support",
             )
             key("alt+s")
             wait_for(
@@ -2961,13 +3127,26 @@ def run(arguments):
                         lambda: named(managed_window["pid"], "开始练习后，这里会显示进度。"),
                         "reopened practice inherited old completion",
                     )
+                    # A field can retain toolkit focus while Settings remains
+                    # the compositor's active window. Explicitly focus this new
+                    # owned window before testing keyboard input; this does not
+                    # certify automatic activation when opening practice.
+                    request({"Action": {"FocusWindow": {"id": managed_window["id"]}}})
+                    wait_for(
+                        lambda: any(
+                            window["id"] == managed_window["id"]
+                            and window.get("pid") == managed_window["pid"]
+                            and window.get("is_focused") is True
+                            for window in contents(request("Windows"), "Windows")
+                        )
+                        and focused(source),
+                        "reopened owned practice did not receive actual keyboard focus",
+                    )
                     typed(practice_text)
                     wait_for(lambda: text(source) == practice_text, "reopened practice lost input")
                     key("ctrl+a")
                     assert control(paths, "settings") is True
-                    trial = settings_control(support["labels"]["tryIt"])
-                    assert Atspi.Component.grab_focus(trial.get_component_iface())
-                    key("ctrl+Page_Up")
+                    settings_page("语言")
                     language = settings_control("设置：源语言")
                     assert Atspi.Selection.select_child(language.get_selection_iface(), 1)
                     wait_for(
@@ -3015,26 +3194,21 @@ def run(arguments):
                     ), "closing TypeLay closed the user's practice application"
                     start()
                     assert control(paths, "settings") is True
-                    wake = settings_control("设置：唤醒翻译")
-                    assert Atspi.Component.grab_focus(wake.get_component_iface())
-                    key("ctrl+Page_Down")
+                    settings_page("应用支持")
                     wait_for(
                         lambda: (row := desktop_row())
                         and row["details"]
                         and not any(a["id"] == "Remove" for a in row["actions"]),
                         "an application still using the components was offered removal",
                     )
-                    trial = settings_control(support["labels"]["tryIt"])
-                    assert Atspi.Component.grab_focus(trial.get_component_iface())
-                    key("ctrl+Page_Up")
+                    settings_page("常规")
                     mode = settings_control("设置：工作模式")
                     assert Atspi.Selection.select_child(mode.get_selection_iface(), 0)
                     wait_for(
                         lambda: json.loads(paths.settings.read_text())["Mode"] == 0,
                         "the user's later mode change did not save",
                     )
-                    assert Atspi.Component.grab_focus(wake.get_component_iface())
-                    key("ctrl+Page_Down")
+                    settings_page("应用支持")
                 finally:
                     # A cleanup error must not replace the original test failure.
                     if sys.exc_info()[0] is None:

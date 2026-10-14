@@ -390,7 +390,7 @@ def run_qt(
                     )
 
                 def set_mode(mode=None, *, enabled=None, session_keys=None, theme=None):
-                    from support.gtk_accessibility import Atspi, named
+                    from support.gtk_accessibility import Atspi, named, select_settings_page
 
                     before_settings = state()
                     paths = Paths(arguments.package)
@@ -410,6 +410,7 @@ def run_qt(
                         "owned production settings window did not map",
                     )
                     request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
+                    select_settings_page(host_pid, "常规")
                     names = ("自动模式", "按需模式")
 
                     def mode_combo():
@@ -444,7 +445,7 @@ def run_qt(
                             "real settings combo did not change work mode",
                         )
                         # Ordinary choices save immediately through SettingsStore;
-                        # the separate draft-save action owns only text settings.
+                        # the global draft-save action owns all four shortcuts and exclusions.
                         wait_for(
                             lambda: json.loads(paths.settings.read_text()).get("Mode") == mode,
                             "production settings did not persist the selected work mode",
@@ -475,6 +476,7 @@ def run_qt(
                             "production settings did not persist the selected overlay theme",
                         )
                     if session_keys is not None:
+                        select_settings_page(host_pid, "快捷键")
                         accept, exit_key = session_keys
                         for name, key_name, default in (
                             ("接受译文", accept, "Tab"),
@@ -813,7 +815,11 @@ def run_qt(
                 original = "Please send me the latest report."
                 candidate = enter_source(original)
                 initial_application = state()
-                original_theme = json.loads(Paths(arguments.package).settings.read_text())["Theme"]
+                # The sparse desktop fixture omits Theme. SettingsStore applies
+                # UserSettings' default on load without rewriting the file.
+                original_theme = json.loads(Paths(arguments.package).settings.read_text()).get(
+                    "Theme", "system"
+                )
                 theme_observations = []
                 theme_trace = trace_checkpoint()
                 for preference in ("dark", "light", "system"):

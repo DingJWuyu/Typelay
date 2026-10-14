@@ -837,10 +837,16 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
         Assert.Equal(FontWeights.SemiBold, button.FontWeight);
         var background = Assert.IsType<SolidColorBrush>(button.Background).Color;
         Assert.Equal(Assert.IsType<SolidColorBrush>(window.FindResource("AccentSoft")).Color, background);
-        var text = Assert.Single(Descendants(button).OfType<TextBlock>(), text => text.Text == title);
+        var text = Assert.IsType<TextBlock>(button.Content);
+        Assert.Contains(text, Descendants(button));
+        Assert.True(text.IsVisible);
+        // Inline content added before the first measure need not populate the
+        // Text property. Verify the displayed runs against the accessible name.
+        var runs = text.Inlines.OfType<Run>().ToArray();
+        Assert.Equal(title, string.Concat(runs.Select(run => run.Text)));
         // Check the actual label run rather than decorative glyphs or only the
         // Button.Foreground, which a content element could override.
-        var label = Assert.Single(text.Inlines.OfType<Run>(), run => run.Text.Contains(title[3..], StringComparison.Ordinal));
+        var label = Assert.Single(runs, run => run.Text == title[1..]);
         Assert.True(label.FontSize >= 12);
         double first = Luminance(Assert.IsType<SolidColorBrush>(label.Foreground).Color), second = Luminance(background);
         double contrast = (Math.Max(first, second) + 0.05) / (Math.Min(first, second) + 0.05);

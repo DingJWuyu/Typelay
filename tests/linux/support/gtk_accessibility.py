@@ -1,5 +1,7 @@
 """Observe owned GTK test windows through the real desktop accessibility API."""
 
+import time
+
 import gi
 
 gi.require_version("Atspi", "2.0")
@@ -72,3 +74,67 @@ def bounds(node, pid, expected_size):
     assert 0 < area.width <= outer.width and 0 < area.height <= outer.height
     assert 0 <= x <= outer.width - area.width and 0 <= y <= outer.height - area.height
     return (x, y, area.width, area.height), (outer.x, outer.y, outer.width, outer.height)
+
+
+def settings_navigation(pid):
+    """Return the real sidebar selection and its four labelled rows, if mapped."""
+    sidebar = named(pid, "设置导航")
+    pending = [sidebar] if sidebar else []
+    for _ in range(32):
+        if not pending:
+            return None
+        node = pending.pop()
+        if node is None:
+            continue
+        node.clear_cache()
+        selection = node.get_selection_iface()
+        if selection is not None:
+            rows = [node.get_child_at_index(i) for i in range(node.get_child_count())]
+            return selection, rows
+        pending.extend(node.get_child_at_index(i) for i in range(node.get_child_count()))
+    raise AssertionError("settings sidebar exceeds its bounded accessibility tree")
+
+
+def settings_page_row(rows, title):
+    """Locate a sidebar row by its accessible label, not a product page index."""
+    for index, row in enumerate(rows):
+        pending = [row]
+        for _ in range(8):
+            if not pending:
+                break
+            node = pending.pop()
+            if node is None:
+                continue
+            node.clear_cache()
+            if node.get_name() == title:
+                return index, row
+            pending.extend(node.get_child_at_index(i) for i in range(node.get_child_count()))
+    raise AssertionError("settings sidebar page missing: " + title)
+
+
+def select_settings_page(pid, title, timeout=15):
+    """Use GTK's actual sidebar selection interface; never call a UI handler."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        navigation = settings_navigation(pid)
+        if navigation is not None:
+            selection, rows = navigation
+            try:
+                index, row = settings_page_row(rows, title)
+                break
+            except AssertionError:
+                pass  # The mapped window can precede its complete accessibility tree.
+        time.sleep(0.05)
+    else:
+        raise AssertionError("settings sidebar page was not accessible: " + title)
+    assert Atspi.Selection.select_child(selection, index), title
+    while time.monotonic() < deadline:
+        page = named(pid, "设置页：" + title)
+        if (
+            page is not None
+            and page.get_state_set().contains(Atspi.StateType.SHOWING)
+            and Atspi.Selection.is_child_selected(selection, index)
+        ):
+            return row
+        time.sleep(0.05)
+    raise AssertionError("selected settings page did not become visible: " + title)

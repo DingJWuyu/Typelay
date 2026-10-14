@@ -64,6 +64,8 @@ env GDK_BACKEND=x11 dbus-run-session -- xvfb-run -a python tests/linux/tray_e2e.
 
 该回归验证注册、菜单动作、暂停/恢复和持久化，不等同于真实 Waybar、物理鼠标或目标桌面视觉验收。缺少 PyGObject、Ayatana 或显示服务时应报告未执行，不能记为通过。
 
+设置导航的桌面回归位于 `desktop_e2e.py` 的 setup 场景：通过真实 AT-SPI 侧栏选择和上下方向键遍历四页，验证首开应用支持、每页可见性、原生开关焦点、跨页四键/排除草稿、语言即时保存、验证失败与关闭保留/放弃。GTK 暂停及 Qt 设置路径同样先选择实际页面，再操作本页控件。此回归需要下述嵌套桌面环境；静态检查、HTML 原型和共享持久化测试不能代替 GTK 交互、滚动裁剪或截图验收。
+
 嵌套测试需要独立 Xvfb、niri、Mesa 软件渲染、D-Bus 和 xdotool。CI 的 XTest 只向独立嵌套合成器注入测试按键，不是生产客户端的输入方案。原生 --gtk-refusal 测试只验证未知 GTK 输入法的拒绝与透传，不验证 GTK 翻译功能；Chromium DOM、本地主机与完整桌面链路有独立用例，不能冒充 Firefox 或物理键盘实测。
 
 Qt 的原生实现、provider FIFO、实际版本核对、构建和验证边界统一见 [Qt6 原生输入路径](qt.md#构建与验证)。Fcitx 的固定构建与实际打包命令见[合作组件说明](fcitx.md#构建与打包)，不在此复制第二份配方。
