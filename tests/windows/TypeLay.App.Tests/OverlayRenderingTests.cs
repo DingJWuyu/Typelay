@@ -17,6 +17,145 @@ namespace TypeLay.App.Tests;
 public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
 {
     [Fact]
+    public async Task DisabledClientAnimationShowsImmediatelyAndStopsAnExistingFade()
+    {
+        await desktop.RunAsync(() =>
+        {
+            var (window, input, source) = OpenSource();
+            var settings = new UserSettings(Theme: "light");
+            bool animationsEnabled = false;
+            // Only the OS preference reader is supplied. Window visibility,
+            // animation clocks and the dispatcher are the real WPF objects.
+            var overlay = new OverlayWindow(clientAreaAnimation: () => animationsEnabled);
+            overlay.Render(Ready(source, "No animation requested"), settings, false);
+            Assert.True(overlay.IsVisible);
+            Assert.True(N.IsWindowVisible(overlay.Handle));
+            Assert.Equal(1d, overlay.Opacity);
+            Assert.Equal(1d, overlay.GetAnimationBaseValue(UIElement.OpacityProperty));
+            Assert.False(overlay.HasAnimatedProperties);
+
+            overlay.HideQuietly();
+            animationsEnabled = true;
+            overlay.Render(Ready(source, "A fading preview"), settings, true);
+            Assert.True(overlay.HasAnimatedProperties);
+            animationsEnabled = false;
+            overlay.Render(Ready(source, "The latest preview"), settings, false);
+            Assert.Equal("The latest preview", Descendants(overlay).OfType<TextBox>().Single().Text);
+            Assert.Contains("交还应用", VisibleLabels(overlay));
+            Assert.Equal(1d, overlay.Opacity);
+            Assert.False(overlay.HasAnimatedProperties);
+            Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+            Assert.True(input.IsKeyboardFocused);
+
+            var inactive = new Session(settings.Direction);
+            overlay.Render(inactive, settings, false);
+            Assert.False(overlay.IsVisible);
+            Assert.False(N.IsWindowVisible(overlay.Handle));
+            Assert.False(overlay.HasAnimatedProperties);
+
+            animationsEnabled = true;
+            overlay.Render(Ready(source, "A preview before its anchor moves off screen"), settings, false);
+            Assert.True(overlay.HasAnimatedProperties);
+            overlay.RenderPaused(new PauseAnchor(source.Target, new(-1000000, -1000000, 40, 30),
+                FieldAccess.Supported, 1600, source.FocusEpoch), 1);
+            Assert.False(overlay.IsVisible);
+            Assert.False(N.IsWindowVisible(overlay.Handle));
+            Assert.False(overlay.HasAnimatedProperties);
+            Assert.Equal(1d, overlay.Opacity);
+        });
+    }
+
+    [Fact]
+    public async Task InterruptedFadeStaysHiddenAndANewPreviewSettlesWithoutReplayingOnUpdates()
+    {
+        await desktop.RunAsync(async () =>
+        {
+            var (window, input, source) = OpenSource();
+            var settings = new UserSettings(Theme: "light");
+            var overlay = new OverlayWindow(clientAreaAnimation: () => true);
+            overlay.Render(Ready(source, "The old preview"), settings, true);
+            Assert.True(overlay.HasAnimatedProperties);
+            Assert.Equal(1d, overlay.GetAnimationBaseValue(UIElement.OpacityProperty));
+            overlay.HideQuietly();
+            Assert.False(overlay.IsVisible);
+            Assert.False(N.IsWindowVisible(overlay.Handle));
+            Assert.Equal(1d, overlay.Opacity);
+            Assert.False(overlay.HasAnimatedProperties);
+            Assert.Empty(Descendants(overlay).OfType<TextBox>().Single().Text);
+
+            overlay.Render(Ready(source, "The new preview"), settings, true);
+            Assert.True(overlay.HasAnimatedProperties);
+            Assert.Equal(1d, overlay.GetAnimationBaseValue(UIElement.OpacityProperty));
+            double minimumOpacity = 1;
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(180),
+                () => minimumOpacity = Math.Min(minimumOpacity, overlay.Opacity));
+            Assert.InRange(minimumOpacity, 0d, .999999d);
+            Assert.True(overlay.IsVisible);
+            Assert.True(N.IsWindowVisible(overlay.Handle));
+            Assert.Equal(1d, overlay.Opacity);
+            Assert.Equal(1d, overlay.GetAnimationBaseValue(UIElement.OpacityProperty));
+            Assert.Equal("The new preview", Descendants(overlay).OfType<TextBox>().Single().Text);
+            // The completed fade must no longer override later base values.
+            overlay.Opacity = .8;
+            Assert.Equal(.8, overlay.Opacity);
+            overlay.Opacity = 1;
+            Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+            Assert.True(input.IsKeyboardFocused);
+
+            // New content and withdrawn acceptance are immediate; neither
+            // starts a second fade or takes keyboard focus from the source.
+            overlay.Render(Ready(source, "Updated immediately"), settings, false);
+            Assert.Equal("Updated immediately", Descendants(overlay).OfType<TextBox>().Single().Text);
+            Assert.Contains("交还应用", VisibleLabels(overlay));
+            Assert.Equal(1d, overlay.Opacity);
+            minimumOpacity = 1;
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(180),
+                () => minimumOpacity = Math.Min(minimumOpacity, overlay.Opacity));
+            Assert.Equal(1d, minimumOpacity);
+            overlay.HideQuietly();
+            Assert.False(overlay.IsVisible);
+            Assert.False(N.IsWindowVisible(overlay.Handle));
+            Assert.False(overlay.HasAnimatedProperties);
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(180));
+            Assert.False(overlay.IsVisible);
+            Assert.False(N.IsWindowVisible(overlay.Handle));
+            Assert.Equal(1d, overlay.Opacity);
+
+            // Hide during a real rendered fade, then leave the HWND hidden
+            // beyond that fade's deadline before starting another preview.
+            overlay.Render(Ready(source, "Interrupted after a rendered frame"), settings, true);
+            double interruptedOpacity = 1;
+            bool hiddenInFrame = false;
+            await ObserveRenderingFor(TimeSpan.Zero, () =>
+            {
+                if (hiddenInFrame)
+                    return;
+                interruptedOpacity = overlay.Opacity;
+                overlay.HideQuietly();
+                hiddenInFrame = true;
+            });
+            Assert.InRange(interruptedOpacity, 0d, .999999d);
+            bool remainedHidden = true;
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(180), () =>
+                remainedHidden &= !overlay.IsVisible && !N.IsWindowVisible(overlay.Handle));
+            Assert.True(remainedHidden);
+            Assert.False(overlay.IsVisible);
+            Assert.False(N.IsWindowVisible(overlay.Handle));
+            Assert.False(overlay.HasAnimatedProperties);
+            Assert.Equal(1d, overlay.Opacity);
+            overlay.Render(Ready(source, "The next preview after a cancelled fade"), settings, true);
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(180));
+            Assert.True(overlay.IsVisible);
+            Assert.True(N.IsWindowVisible(overlay.Handle));
+            Assert.Equal(1d, overlay.Opacity);
+            Assert.Equal("The next preview after a cancelled fade", Descendants(overlay).OfType<TextBox>().Single().Text);
+            Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+            Assert.True(input.IsKeyboardFocused);
+            Assert.Equal("Source text", input.Text);
+        });
+    }
+
+    [Fact]
     public async Task ConfiguredEditorShortcutsReturnTheDraftBeforeAcceptanceAndExitWithoutChangingSource()
     {
         await desktop.RunAsync(() =>
@@ -719,6 +858,26 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 Assert.Equal(new long[] { 21, 22 }, revisions);
             }
         });
+    }
+
+    private static async Task ObserveRenderingFor(TimeSpan duration, Action? observeFrame = null)
+    {
+        var elapsed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        TimeSpan? firstFrame = null;
+        EventHandler rendering = (_, args) =>
+        {
+            observeFrame?.Invoke();
+            TimeSpan current = ((RenderingEventArgs)args).RenderingTime;
+            firstFrame ??= current;
+            if (current - firstFrame.Value >= duration)
+                elapsed.TrySetResult();
+        };
+        CompositionTarget.Rendering += rendering;
+        try
+        {
+            await elapsed.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        }
+        finally { CompositionTarget.Rendering -= rendering; }
     }
 
     private static (Window Window, TextBox Input, InputSnapshot Source) OpenSource()

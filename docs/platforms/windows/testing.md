@@ -25,6 +25,8 @@ dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release 
 
 `OverlayRenderingTests` 检查实际 HWND 位置/尺寸、源焦点、长词换行、字体变化、短文重显及主题/展开/手动草稿。测量必须与编辑框的 `TextWrapping.Wrap` 一致：[WPF 10.0.12 的 `FormattedText.Trimming` 实现](https://github.com/dotnet/wpf/blob/v10.0.12/src/Microsoft.DotNet.Wpf/src/PresentationCore/System/Windows/Media/FormattedText.cs#L1342-L1360)表明 `None` 才强制拆分超宽单词，默认省略会低估无空格文本高度。保留连续长词反例，不能用插入空格让回归通过；这些合成会话只验证展示，真实模型连续更新由下方独立模式验证。
 
+浮层只在首次出现时使用 140ms 透明度淡入，遵循 Windows 的 [ClientAreaAnimation](https://learn.microsoft.com/en-us/dotnet/api/system.windows.systemparameters.clientareaanimation) 偏好；更新、撤销接受资格和安全隐藏不等待动画。隐藏及重新显示前移除旧时钟，最终基础透明度为 1，以 [FillBehavior.Stop 与移除属性动画](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/graphics-multimedia/how-to-set-a-property-after-animating-it-with-a-storyboard) 避免旧 HoldEnd 值影响后续显示。两项专门 WPF 回归仅替换系统偏好读取，不修改全局设置或模拟动画时钟；通过真实渲染帧、HWND 可见性与源焦点验证禁用动画、显示/隐藏/再显示、最终透明度及更新不重播。此新增回归尚待 Windows 实际运行，不能将本地跨编译计为视觉验收。
+
 ## 会话接受与退出按键回归
 
 `SessionShortcutHookTests` 在自有 WPF 输入框上调用生产低级 Hook，验证 F8/F9 与 F6/F7 重新配置后的按住、重复及成对释放。已消费旧键的松开仍归旧操作，新的绑定不能抢走它；实际源字段收到的 F12 正向屏障用于确认消息已经分发。测试租约是明确的受控输入，不调用写入或模型，不能证明生产字段、物理输入法或真实写回安全。

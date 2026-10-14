@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
 using System.Windows.Automation;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -223,7 +224,14 @@ internal sealed class SettingsWindow : Window
             if (key == _page)
             {
                 button.FontWeight = FontWeights.SemiBold;
-                button.SetResourceReference(Control.ForegroundProperty, "Accent");
+                button.SetResourceReference(Control.ForegroundProperty, "Text");
+                var content = new TextBlock();
+                var icon = new Run(title[..1]);
+                icon.SetResourceReference(TextElement.ForegroundProperty, "Accent");
+                content.Inlines.Add(icon);
+                content.Inlines.Add(title[1..]);
+                button.Content = content;
+                AutomationProperties.SetName(button, title);
             }
             _nav.Children.Add(button);
         }

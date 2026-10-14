@@ -2175,13 +2175,15 @@ def run(arguments):
             assert not status()["setup"]["onboardingComplete"]
             from support.gtk_accessibility import Atspi, GLib, named, text
 
-            def settings_control(name):
+            def settings_control(name, timeout=15):
                 return wait_for(
-                    lambda: named(process.pid, name), f"settings control missing: {name}"
+                    lambda: named(process.pid, name),
+                    f"settings control missing: {name}",
+                    timeout=timeout,
                 )
 
-            def activate_setting(name):
-                node = settings_control(name)
+            def activate_setting(name, timeout=15):
+                node = settings_control(name, timeout)
                 action = node.get_action_iface()
                 assert action is not None and Atspi.Action.do_action(action, 0), name
                 return node
@@ -2663,14 +2665,37 @@ def run(arguments):
                     )
 
                 def desktop_action(identity, cancel=False):
-                    row = desktop_row()
-                    action = next(action for action in row["actions"] if action["id"] == identity)
+                    deadline = time.monotonic() + 15
+
+                    def remaining():
+                        value = deadline - time.monotonic()
+                        assert value > 0, f"settings action timed out: {identity}"
+                        return value
+
+                    def available_action():
+                        row = desktop_row()
+                        if row is not None:
+                            for action in row["actions"]:
+                                if action["id"] == identity:
+                                    return row, action
+                        return None
+
+                    # Owned process exit precedes the next read-only support
+                    # refresh. Wait for the real offered action, never invoke a
+                    # missing action or extend the existing interaction budget.
+                    row, action = wait_for(
+                        available_action,
+                        f"settings action unavailable: {identity}",
+                        timeout=remaining(),
+                    )
                     if row["primaryAction"]["id"] != identity:
-                        details = settings_control(support["labels"]["details"])
+                        details = settings_control(support["labels"]["details"], remaining())
                         if not details.get_state_set().contains(Atspi.StateType.EXPANDED):
-                            activate_setting(support["labels"]["details"])
-                    activate_setting(action["label"])
-                    activate_setting(support["labels"]["cancel" if cancel else "confirm"])
+                            activate_setting(support["labels"]["details"], remaining())
+                    activate_setting(action["label"], remaining())
+                    activate_setting(
+                        support["labels"]["cancel" if cancel else "confirm"], remaining()
+                    )
 
                 # Only this isolated HOME is touched. The private daemon must not
                 # read/write even these synthetic "existing user" profile files.
@@ -2933,9 +2958,7 @@ def run(arguments):
                     )
                     wait_for(lambda: focused(source), "reopened practice did not focus its field")
                     wait_for(
-                        lambda: named(
-                            managed_window["pid"], "练习尚未开始或已重置，请重新开始练习。"
-                        ),
+                        lambda: named(managed_window["pid"], "开始练习后，这里会显示进度。"),
                         "reopened practice inherited old completion",
                     )
                     typed(practice_text)

@@ -11,6 +11,7 @@ using System.Windows.Automation.Peers;
 using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using Run = System.Windows.Documents.Run;
 using System.Windows.Interop;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -126,6 +127,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                                 }
                             }
                             AssertReadableSettingsText(window);
+                            AssertReadableSelectedNavigation(window, "⌨  快捷键");
                             Render(window, $"settings-shortcuts-{theme}-{width}.png");
                             Stage($"application-support-show:{theme}:{width}");
                             window.ShowPage("apps");
@@ -142,6 +144,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                             Assert.False(Descendants(window).OfType<Button>().Single(button =>
                                 Equals(button.Content, ApplicationSupportPresentation.Create([]).Labels.TryIt)).IsEnabled);
                             AssertReadableSettingsText(window);
+                            AssertReadableSelectedNavigation(window, "▦  应用支持");
                             AssertWithinSettingsViewport(window, Descendants(window).OfType<Button>().Single(button =>
                                 Equals(button.Content, ApplicationSupportPresentation.Create([]).Labels.TryIt)));
                             Render(window, $"settings-applications-{theme}-{width}.png");
@@ -158,6 +161,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                             scroll.ScrollToTop();
                             window.UpdateLayout();
                             AssertReadableSettingsText(window);
+                            AssertReadableSelectedNavigation(window, "⌂  常规");
                             var practice = Descendants(window).OfType<Button>().Single(button =>
                                 Equals(button.Content, OnDemandPracticePresentation.Create(settings.Value).StartLabel));
                             AssertWithinSettingsViewport(window, practice);
@@ -195,6 +199,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                                 selector.IsDropDownOpen = false;
                             }
                             AssertReadableSettingsText(window);
+                            AssertReadableSelectedNavigation(window, "文  语言");
                             Render(window, $"settings-language-{theme}-{width}.png");
                         }
                     }
@@ -822,6 +827,26 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
             double contrast = (Math.Max(first, second) + 0.05) / (Math.Min(first, second) + 0.05);
             Assert.True(contrast >= 4.5, $"Text contrast {contrast:F2} is below 4.5: {text.Text}");
         }
+    }
+
+    private static void AssertReadableSelectedNavigation(Window window, string title)
+    {
+        var button = Descendants(window).OfType<Button>().Single(candidate =>
+            new ButtonAutomationPeer(candidate).GetName() == title);
+        Assert.True(button.IsVisible);
+        Assert.Equal(FontWeights.SemiBold, button.FontWeight);
+        var background = Assert.IsType<SolidColorBrush>(button.Background).Color;
+        Assert.Equal(Assert.IsType<SolidColorBrush>(window.FindResource("AccentSoft")).Color, background);
+        var text = Assert.Single(Descendants(button).OfType<TextBlock>(), text => text.Text == title);
+        // Check the actual label run rather than decorative glyphs or only the
+        // Button.Foreground, which a content element could override.
+        var label = Assert.Single(text.Inlines.OfType<Run>(), run => run.Text.Contains(title[3..], StringComparison.Ordinal));
+        Assert.True(label.FontSize >= 12);
+        double first = Luminance(Assert.IsType<SolidColorBrush>(label.Foreground).Color), second = Luminance(background);
+        double contrast = (Math.Max(first, second) + 0.05) / (Math.Min(first, second) + 0.05);
+        Assert.True(contrast >= 4.5, $"Selected navigation contrast {contrast:F2} is below 4.5: {title}");
+        Assert.Equal(Assert.IsType<SolidColorBrush>(window.FindResource("Accent")).Color,
+            Assert.IsType<SolidColorBrush>(text.Inlines.FirstInline.Foreground).Color);
     }
 
     private static double Luminance(Color color)

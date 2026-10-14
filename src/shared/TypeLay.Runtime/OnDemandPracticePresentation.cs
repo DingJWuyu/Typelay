@@ -29,12 +29,12 @@ public static class OnDemandPracticePresentation
             : changeMode ? "当前为自动模式。开始按需练习前，需要确认切换工作模式。" : "";
         bool preview = progress?.PreviewCompleted == true;
         bool replaced = progress?.DirectReplacementCompleted == true;
-        string progressNotice = progress is null ? "练习尚未开始或已重置，请重新开始练习。"
+        string progressNotice = progress is null ? "开始练习后，这里会显示进度。"
             : progress.Target is null ? "练习输入框尚未连接，请点击输入框；若仍未连接，请检查应用支持。"
             : progress.Completed ? "按需练习已完成：已生成预览，并已验证直接替换。"
             : preview ? "已生成预览。请回到练习输入框，完成第 2 步直接替换。"
             : "练习输入框已连接。请先完成第 1 步，生成预览。";
-        return new("按需翻译练习", "在下面的输入框中，试试按需预览和直接替换。练习内容只在本机处理。",
+        return new("按需翻译练习", "用一段原文，练习预览和直接替换。练习内容只在本机处理。",
             english ? "Hello I would like to try local translation" : "你好我想试试本地翻译",
             "练习输入框",
             $"1. 确认框内是待翻译的原文，再按 {settings.WakeShortcut} 查看译文。原文保持不变，可继续输入。" + (preview ? " 已生成预览。" : ""),

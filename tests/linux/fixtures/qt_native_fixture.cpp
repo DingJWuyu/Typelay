@@ -2,6 +2,7 @@
 #include <QApplication>
 #include <QAbstractButton>
 #include <QClipboard>
+#include <QImage>
 #include <QIntValidator>
 #include <QInputMethodEvent>
 #include <QEventLoop>
@@ -13,15 +14,18 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
+#include <QPalette>
 #include <QPlainTextDocumentLayout>
 #include <QPlainTextEdit>
 #include <QPointer>
+#include <QPixmap>
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QTextFrame>
 #include <QTextList>
 #include <QSaveFile>
 #include <QSocketNotifier>
+#include <QStyleHints>
 #include <QTimer>
 #include <QToolTip>
 #include <QVBoxLayout>
@@ -167,6 +171,10 @@ public:
 
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
+    const QPalette initialPalette = app.palette();
+    int applicationThemeChanges = 0;
+    int themeSampleCount = 0;
+    QJsonObject themeSamples;
     QWidget window;
     window.setWindowTitle(QStringLiteral("TypeLay Qt native fixture"));
     auto *layout = new QVBoxLayout(&window);
@@ -282,6 +290,12 @@ int main(int argc, char **argv) {
     QString editorProviderAction;
     auto publish = [&] {
         if (path.isEmpty()) return;
+        const auto paletteState = [](const QPalette &palette) {
+            return QJsonObject{{"window", palette.color(QPalette::Active, QPalette::Window).name()},
+                {"windowText", palette.color(QPalette::Active, QPalette::WindowText).name()},
+                {"base", palette.color(QPalette::Active, QPalette::Base).name()},
+                {"text", palette.color(QPalette::Active, QPalette::Text).name()}};
+        };
         auto field = [&](QLineEdit *edit, int changes, int edits) {
             const auto *label = edit == first ? firstLabel : secondLabel;
             return QJsonObject{{"text", edit->text()}, {"cursor", edit->cursorPosition()},
@@ -328,6 +342,12 @@ int main(int argc, char **argv) {
         auto *overlay = window.findChild<QWidget *>(QStringLiteral("typelay-overlay"));
         auto *editor = window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"));
         auto *menu = window.findChild<QWidget *>(QStringLiteral("typelay-menu"));
+        QJsonObject overlayTextColors;
+        for (const auto *name : {"typelay-status", "typelay-hint"}) {
+            const auto *label = window.findChild<QLabel *>(QLatin1String(name));
+            if (label && label->isVisible()) overlayTextColors.insert(QLatin1String(name),
+                label->palette().color(QPalette::Active, QPalette::WindowText).name());
+        }
         observer.observeOverlay(overlay);
         observer.observeOverlay(menu);
         QJsonObject overlayControls;
@@ -336,12 +356,19 @@ int main(int argc, char **argv) {
             observer.observeOverlay(button);
             if (button) overlayControls.insert(QLatin1String(name), QJsonObject{
                 {"visible", button->isVisible()}, {"enabled", button->isEnabled()},
+                {"underMouse", button->underMouse()},
                 {"checked", button->isChecked()}, {"geometry", rectangle(button)},
+                {"textColor", button->palette().color(QPalette::Active, QPalette::ButtonText).name()},
+                {"backgroundColor", button->palette().color(QPalette::Active, QPalette::Button).name()},
                 {"instance", qint64(observer.overlayObjects.value(button).instance)}});
         }
         auto *clipboard = QApplication::clipboard();
         QJsonObject state{{"pid", qint64(getpid())}, {"qtVersion", QString::fromLatin1(qVersion())},
             {"observedAtMs", observedAtMs()}, {"overlayEventCount", qint64(observer.overlayEventCount)},
+            {"applicationColorScheme", int(app.styleHints()->colorScheme())},
+            {"applicationPalette", paletteState(app.palette())},
+            {"applicationThemeChanges", applicationThemeChanges},
+            {"themeSampleCount", themeSampleCount}, {"themeSamples", themeSamples},
             {"fullscreen", window.isFullScreen()}, {"width", window.width()}, {"height", window.height()},
             {"scale", window.devicePixelRatioF()}, {"keys", observer.counts},
             {"focusTransitions", qint64(observer.focusTransitions)}, {"firstChangeContext", firstChangeContext},
@@ -356,6 +383,9 @@ int main(int argc, char **argv) {
             {"first", field(first, firstChanges, firstEdits)},
             {"second", field(second, secondChanges, secondEdits)},
             {"overlayVisible", overlay && overlay->isVisible()},
+            {"overlayPalette", overlay ? paletteState(overlay->palette()) : QJsonObject()},
+            {"overlayTextColors", overlayTextColors},
+            {"overlayGeometry", overlay ? rectangle(overlay) : QJsonObject()},
             {"overlayMenuVisible", menu && menu->isVisible()}, {"overlayControls", overlayControls},
             {"clipboardText", clipboard->ownsClipboard() ? clipboard->text() : QString()},
             {"editorVisible", editor && editor->isVisible()},
@@ -366,6 +396,16 @@ int main(int argc, char **argv) {
             {"editorProviderAction", editorProviderAction},
             {"editorReadOnly", !editor || editor->isReadOnly()},
             {"editorText", editor ? editor->toPlainText() : QString()},
+            {"editorPalette", editor ? paletteState(editor->palette()) : QJsonObject()},
+            {"editorViewportPalette", editor ? paletteState(editor->viewport()->palette()) : QJsonObject()},
+            {"editorSelectionBackground", editor ? editor->palette().color(QPalette::Active, QPalette::Highlight).name() : QString()},
+            {"editorSelectionText", editor ? editor->palette().color(QPalette::Active, QPalette::HighlightedText).name() : QString()},
+            {"editorAccessibleName", editor ? editor->accessibleName() : QString()},
+            {"editorCursor", editor ? editor->textCursor().position() : -1},
+            {"editorAnchor", editor ? editor->textCursor().anchor() : -1},
+            {"editorUndoSteps", editor ? editor->document()->availableUndoSteps() : 0},
+            {"editorUndoAvailable", editor && editor->document()->isUndoAvailable()},
+            {"editorRedoAvailable", editor && editor->document()->isRedoAvailable()},
             {"editorGeometry", editor ? rectangle(editor) : QJsonObject()}};
         // Read the actual provider's optional research counters without issuing
         // another IM RPC that could perturb the consumer's short-lived proof.
@@ -398,7 +438,43 @@ int main(int argc, char **argv) {
             const bool multiline = command.value("field").toString() == "plain";
             auto *field = command.value("field").toString() == "second" ? second : first;
             QWidget *widget = multiline ? static_cast<QWidget *>(plain) : field;
-            if (op == "plain-visible") { plainLabel->setVisible(command.value("enabled").toBool()); plain->setVisible(command.value("enabled").toBool()); }
+            if (op == "sample-theme") {
+                // Render only two fixed blank surface points on demand. Do not
+                // add painting to the fixture's periodic state observations.
+                auto *overlay = window.findChild<QWidget *>(QStringLiteral("typelay-overlay"));
+                auto *editor = window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"));
+                const auto sample = [](QWidget *surface, const QPoint &point) {
+                    if (!surface || !surface->isVisible() || !surface->rect().contains(point)) return QString();
+                    const auto color = surface->grab(QRect(point, QSize(1, 1))).toImage().pixelColor(0, 0);
+                    return color.alpha() == 255 ? color.name() : QString();
+                };
+                auto *viewport = editor ? editor->viewport() : nullptr;
+                themeSamples = {{"overlay", sample(overlay, QPoint(6, overlay ? overlay->height() / 2 : 0))},
+                    {"editor", sample(viewport, viewport ? QPoint(viewport->width() - 2, viewport->height() - 2) : QPoint())}};
+                ++themeSampleCount;
+            }
+            else if (op == "application-theme") {
+                // Only the owned fixture changes application-wide appearance.
+                // The published value is Qt's real result, not this request.
+                const auto theme = command.value("theme").toString();
+                if (theme == QStringLiteral("system")) {
+                    app.styleHints()->unsetColorScheme();
+                    app.setPalette(initialPalette);
+                } else if (theme == QStringLiteral("light") || theme == QStringLiteral("dark")) {
+                    const bool dark = theme == QStringLiteral("dark");
+                    app.styleHints()->setColorScheme(dark ? Qt::ColorScheme::Dark : Qt::ColorScheme::Light);
+                    auto palette = initialPalette;
+                    const QColor background(dark ? QStringLiteral("#303030") : QStringLiteral("#f0f0f0"));
+                    const QColor foreground(dark ? QStringLiteral("#f0f0f0") : QStringLiteral("#202020"));
+                    for (const auto role : {QPalette::Window, QPalette::Base, QPalette::Button})
+                        palette.setColor(role, background);
+                    for (const auto role : {QPalette::WindowText, QPalette::Text, QPalette::ButtonText})
+                        palette.setColor(role, foreground);
+                    app.setPalette(palette);
+                } else qFatal("Unknown fixture application theme");
+                ++applicationThemeChanges;
+            }
+            else if (op == "plain-visible") { plainLabel->setVisible(command.value("enabled").toBool()); plain->setVisible(command.value("enabled").toBool()); }
             else if (multiline && op == "set") plain->setPlainText(command.value("text").toString());
             else if (multiline && op == "select") {
                 auto selected = plain->textCursor();

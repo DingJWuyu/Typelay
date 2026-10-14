@@ -33,6 +33,7 @@ internal sealed class OverlayWindow : Window, ISessionView
     private long? _pausedRevision, _pressedPauseRevision;
     private bool _rendering, _editing, _composing, _expanded, _hasCandidate, _hasPreview, _editorAccent;
     private readonly bool _automationTest;
+    private readonly Func<bool> _clientAreaAnimation;
     private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
     private int _renderTraceSamples;
     private string? _dotBrushKey, _editorForegroundKey;
@@ -93,9 +94,10 @@ internal sealed class OverlayWindow : Window, ISessionView
         // A configuration change must not transfer an outstanding press to a
         // new action or release a key whose down event the editor consumed.
     }
-    public OverlayWindow(bool automationTest = false)
+    public OverlayWindow(bool automationTest = false, Func<bool>? clientAreaAnimation = null)
     {
         _automationTest = automationTest;
+        _clientAreaAnimation = clientAreaAnimation ?? (() => SystemParameters.ClientAreaAnimation);
         Title = automationTest ? "TypeLay · 自动化测试" : "TypeLay";
         WindowStyle = WindowStyle.None;
         ResizeMode = ResizeMode.NoResize;
@@ -521,11 +523,14 @@ internal sealed class OverlayWindow : Window, ISessionView
         RectPx? placement = OverlayPlacement.Place(bounds, work, width * scale, height * scale, gap: 0, minimumHeight: (idle ? 60 : 126) * scale);
         if (placement is not { } position)
         {
-            Hide();
+            HideImmediately();
             return timing;
         }
         bool showing = !IsVisible;
-        if (showing)
+        bool animate = _clientAreaAnimation();
+        if (showing || !animate)
+            ResetFade();
+        if (showing && animate)
             Opacity = 0;
         var pixels = (X: (int)position.X, Y: (int)position.Y, Width: (int)position.Width, Height: (int)position.Height);
         if (showing || _placement != pixels)
@@ -540,7 +545,7 @@ internal sealed class OverlayWindow : Window, ISessionView
             _placement = positioned ? pixels : null;
             if (!positioned)
             {
-                Hide();
+                HideImmediately();
                 return timing;
             }
         }
@@ -550,7 +555,14 @@ internal sealed class OverlayWindow : Window, ISessionView
             Show();
             if (trace)
                 timing.ShowMs = Stopwatch.GetElapsedTime(showStarted).TotalMilliseconds;
-            BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(140)));
+            // The settled value belongs to the property, not a held animation
+            // clock. Appearance never schedules a later Show or focus change.
+            Opacity = 1;
+            if (animate && IsVisible)
+                BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140))
+                {
+                    FillBehavior = FillBehavior.Stop
+                }, HandoffBehavior.SnapshotAndReplace);
         }
         return timing;
     }
@@ -587,6 +599,16 @@ internal sealed class OverlayWindow : Window, ISessionView
         _pressedPauseRevision = null;
         _resumeButton.Visibility = Visibility.Collapsed;
         ClearSessionContent();
+        HideImmediately();
+    }
+    private void ResetFade()
+    {
+        BeginAnimation(OpacityProperty, null);
+        Opacity = 1;
+    }
+    private void HideImmediately()
+    {
+        ResetFade();
         if (IsVisible)
             Hide();
     }

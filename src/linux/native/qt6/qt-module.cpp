@@ -15,6 +15,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMimeData>
+#include <QPalette>
 #include <QPlainTextDocumentLayout>
 #include <QPlainTextEdit>
 #include <QPointer>
@@ -22,6 +23,7 @@
 #include <QRadioButton>
 #include <QScopedValueRollback>
 #include <QSocketNotifier>
+#include <QStyleHints>
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QTextFrame>
@@ -152,6 +154,8 @@ public:
             for (auto *widget : {old, current}) if (auto *target = discover(widget)) invalidate(target, false, true);
             syncOverlay();
         });
+        connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this,
+            [this](Qt::ColorScheme) { refreshSystemTheme(); });
         connect(&reconnect_, &QTimer::timeout, this, &Native::connectPeer);
         reconnect_.start(1000);
         connect(&expiry_, &QTimer::timeout, this, [this] {
@@ -1123,9 +1127,46 @@ private:
         language_ = nullptr; exit_ = nullptr; footer_ = nullptr; menu_ = nullptr; swap_ = nullptr; resume_ = nullptr;
         sourceLanguages_ = nullptr; targetLanguages_ = nullptr; overlayTarget_ = nullptr;
         overlayView_ = {}; overlayAuthority_ = {}; overlayGeneration_ = QJsonValue(); overlaySourceProvider_ = nullptr; overlayFocused_ = false; composing_ = false;
+        overlayTheme_ = QStringLiteral("system");
         pendingEdit_ = false; pendingResume_ = false;
         card->hide();
         card->deleteLater();
+    }
+    void applyOverlayTheme() {
+        if (!card_) return;
+        bool dark = overlayTheme_ == QStringLiteral("dark");
+        if (overlayTheme_ == QStringLiteral("system")) {
+            const auto scheme = QGuiApplication::styleHints()->colorScheme();
+            const auto palette = QApplication::palette();
+            dark = scheme == Qt::ColorScheme::Dark || (scheme == Qt::ColorScheme::Unknown
+                && palette.color(QPalette::Window).lightness() < palette.color(QPalette::WindowText).lightness());
+        }
+        const auto background = dark ? QStringLiteral("#20242c") : QStringLiteral("#ffffff");
+        const auto foreground = dark ? QStringLiteral("#e8ebf2") : QStringLiteral("#171a21");
+        const auto border = dark ? QStringLiteral("#48515e") : QStringLiteral("#dfe3eb");
+        const auto muted = dark ? QStringLiteral("#aeb7c4") : QStringLiteral("#6c7482");
+        const auto hover = dark ? QStringLiteral("#303741") : QStringLiteral("#f1f3f6");
+        const auto accent = dark ? QStringLiteral("#83a7ff") : QStringLiteral("#3267e3");
+        // Only our child surface is styled. Keep native fonts, layout metrics,
+        // hit areas and the host application's palette/theme unchanged.
+        const auto style = QStringLiteral(
+            "QFrame#typelay-overlay { background:%1; color:%2; border:1px solid %3; border-radius:12px; }"
+            "QFrame#typelay-overlay QLabel, QFrame#typelay-overlay QRadioButton { color:%2; background:transparent; }"
+            "QFrame#typelay-overlay QLabel#typelay-status, QFrame#typelay-overlay QLabel#typelay-hint { color:%4; }"
+            "QFrame#typelay-overlay QPushButton { color:%4; background-color:%1; }"
+            "QFrame#typelay-overlay QPushButton:hover { color:%2; background-color:%5; }"
+            "QFrame#typelay-overlay QPushButton:pressed { color:%2; background-color:%5; }"
+            "QFrame#typelay-overlay QPlainTextEdit#typelay-editor { background:%1; color:%2; border:1px solid transparent;"
+            " selection-background-color:%6; selection-color:%1; }"
+            "QFrame#typelay-overlay QPlainTextEdit#typelay-editor:focus { border-color:%6; }")
+            .arg(background, foreground, border, muted, hover, accent);
+        if (card_->styleSheet() != style) card_->setStyleSheet(style);
+    }
+    void refreshSystemTheme() {
+        // These synchronous notifications repaint only the currently displayed
+        // generation; they neither render text nor renew authority or lifetime.
+        if (overlayTheme_ == QStringLiteral("system") && overlayActive()
+            && overlayGeneration_ == shortcutConfiguration_.value("generation")) applyOverlayTheme();
     }
     void refreshHint() {
         if (!hint_) return;
@@ -1206,6 +1247,7 @@ private:
         language_->setObjectName(QStringLiteral("typelay-menu-trigger"));
         language_->setAccessibleName(QStringLiteral("语言与更多操作"));
         status_ = new QLabel(frame);
+        status_->setObjectName(QStringLiteral("typelay-status"));
         header->addStretch(); header->addWidget(status_);
         resume_ = button(frame, header, QStringLiteral("恢复"), "resume");
         resume_->setObjectName(QStringLiteral("typelay-resume"));
@@ -1217,6 +1259,7 @@ private:
             if (hint_) hint_->setText(QStringLiteral("译文超过 8192 字符限制，此次插入未生效"));
         });
         editor_->setObjectName(QStringLiteral("typelay-editor"));
+        editor_->setAccessibleName(QStringLiteral("译文"));
         editor_->setReadOnly(true);
         editor_->setFocusPolicy(Qt::NoFocus);
         editor_->setTabChangesFocus(false);
@@ -1232,6 +1275,7 @@ private:
         auto *footerLayout = new QHBoxLayout(footer_);
         footerLayout->setContentsMargins(0, 0, 0, 0);
         hint_ = new QLabel(footer_);
+        hint_->setObjectName(QStringLiteral("typelay-hint"));
         footerLayout->addWidget(hint_); footerLayout->addStretch();
         button(footer_, footerLayout, QStringLiteral("重译"), "regenerate");
         button(footer_, footerLayout, QStringLiteral("展开"), "expand");
@@ -1340,14 +1384,8 @@ private:
                 language_->setVisible(!isPaused); resume_->setVisible(isPaused); resume_->setEnabled(!pendingResume_);
                 if (isPaused) menu_->hide();
                 arrangeOverlay();
-                const bool dark = data.value("theme").toString() == "Dark";
-                card_->setStyleSheet(isPaused
-                    ? dark
-                        ? QStringLiteral("QFrame#typelay-overlay { background:#20242c; border:1px solid #48515e; border-radius:12px; } QFrame#typelay-overlay QLabel, QFrame#typelay-overlay QPushButton { color:#aeb7c4; }")
-                        : QStringLiteral("QFrame#typelay-overlay { background:#ffffff; border:1px solid #dfe3eb; border-radius:12px; } QFrame#typelay-overlay QLabel, QFrame#typelay-overlay QPushButton { color:#737b89; }")
-                    : dark
-                        ? QStringLiteral("QFrame#typelay-overlay { background:#20242c; color:#e8ebf2; border:1px solid #596170; border-radius:12px; }")
-                        : QStringLiteral("QFrame#typelay-overlay { background:#ffffff; color:#171a21; border:1px solid #dfe3eb; border-radius:12px; }"));
+                overlayTheme_ = data.value("theme").toString(QStringLiteral("system"));
+                applyOverlayTheme();
                 card_->show(); card_->raise(); syncOverlay();
             }
         } else if (op == "overlay-renew") {
@@ -1378,6 +1416,7 @@ private:
     }
     bool eventFilter(QObject *object, QEvent *event) override {
         if (!onThread()) return false;
+        if (object == qApp && event->type() == QEvent::ApplicationPaletteChange) refreshSystemTheme();
         if (editor_ && (object == editor_ || object == editor_->viewport())) {
             if (object == editor_ && event->type() == QEvent::DynamicPropertyChange
                 && static_cast<QDynamicPropertyChangeEvent *>(event)->propertyName() == ProviderProperty
@@ -1647,6 +1686,7 @@ private:
     QPointer<QSocketNotifier> reader_, writer_;
     QByteArray incoming_, outgoing_;
     QJsonObject publication_, overlayView_, overlayAuthority_, shortcutConfiguration_, shortcutAuthority_;
+    QString overlayTheme_ = QStringLiteral("system");
     std::optional<ShortcutRequest> pendingShortcut_;
     quint64 shortcutSequence_ = 0;
     qint64 shortcutStartedAt_ = -1;

@@ -389,7 +389,7 @@ def run_qt(
                         "OnDemand source did not remain dormant with a fresh supported capture",
                     )
 
-                def set_mode(mode=None, *, enabled=None, session_keys=None):
+                def set_mode(mode=None, *, enabled=None, session_keys=None, theme=None):
                     from support.gtk_accessibility import Atspi, named
 
                     before_settings = state()
@@ -461,6 +461,19 @@ def run_qt(
                             lambda: json.loads(paths.settings.read_text())["Enabled"] is enabled,
                             "production settings did not persist the enable switch",
                         )
+                    if theme is not None:
+                        combo = wait_for(
+                            lambda: named(host_pid, "设置：翻译浮层主题"),
+                            "real overlay-theme combo was not accessible",
+                        )
+                        theme_index = ("system", "light", "dark").index(theme)
+                        assert Atspi.Selection.select_child(
+                            combo.get_selection_iface(), theme_index
+                        )
+                        wait_for(
+                            lambda: json.loads(paths.settings.read_text()).get("Theme") == theme,
+                            "production settings did not persist the selected overlay theme",
+                        )
                     if session_keys is not None:
                         accept, exit_key = session_keys
                         for name, key_name, default in (
@@ -500,6 +513,183 @@ def run_qt(
                         and status().get("sourceSupported"),
                         "source did not regain real focus after saving settings",
                     )
+
+                def application_theme(theme):
+                    changes = state()["applicationThemeChanges"]
+                    command("application-theme", theme=theme)
+                    if theme == "system":
+                        palette = initial_application["applicationPalette"]
+                        schemes = (initial_application["applicationColorScheme"],)
+                    else:
+                        background, foreground = (
+                            ("#303030", "#f0f0f0") if theme == "dark" else ("#f0f0f0", "#202020")
+                        )
+                        palette = {
+                            "window": background,
+                            "windowText": foreground,
+                            "base": background,
+                            "text": foreground,
+                        }
+                        # Public scheme overrides are platform hints. Unknown is
+                        # an observed palette-fallback case, never a claimed
+                        # successful Light/Dark override or a skipped matrix cell.
+                        schemes = (0, 2 if theme == "dark" else 1)
+                    return wait_for(
+                        lambda: value
+                        if (value := state())["applicationThemeChanges"] == changes + 1
+                        and value["applicationPalette"] == palette
+                        and value["applicationColorScheme"] in schemes
+                        else None,
+                        f"Qt did not expose the requested real application appearance: {theme}",
+                    )
+
+                def themed_overlay(theme, *, paused=False):
+                    background, foreground, secondary = (
+                        ("#20242c", "#e8ebf2", "#aeb7c4")
+                        if theme == "dark"
+                        else ("#ffffff", "#171a21", "#6c7482")
+                    )
+
+                    def observed():
+                        value = state()
+                        if (
+                            not value["overlayVisible"]
+                            or value["overlayPalette"].get("window") != background
+                        ):
+                            return None
+                        control_name = "typelay-resume" if paused else "typelay-menu-trigger"
+                        if (
+                            value["overlayControls"].get(control_name, {}).get("textColor")
+                            != secondary
+                        ):
+                            return None
+                        if paused:
+                            return (
+                                value
+                                if not value["editorVisible"]
+                                and value["editorReadOnly"]
+                                and value["editorText"] == ""
+                                and value["overlayControls"][control_name]["visible"]
+                                else None
+                            )
+                        return (
+                            value
+                            if value["editorVisible"]
+                            and value["editorPalette"].get("base") == background
+                            and value["editorPalette"].get("text") == foreground
+                            and value["editorViewportPalette"].get("base") == background
+                            and value["editorAccessibleName"] == "译文"
+                            else None
+                        )
+
+                    return wait_for(
+                        observed,
+                        f"actual Qt {'paused' if paused else 'translation'} colors are not {theme}",
+                    )
+
+                def theme_screenshot(name, theme, *, paused=False):
+                    background = "#20242c" if theme == "dark" else "#ffffff"
+                    control_name = "typelay-resume" if paused else "typelay-menu-trigger"
+                    count = state()["themeSampleCount"]
+                    command("sample-theme")
+                    actual = wait_for(
+                        lambda: value
+                        if (value := state())["themeSampleCount"] == count + 1
+                        and value["themeSamples"]["overlay"] == background
+                        and value["themeSamples"]["editor"] == ("" if paused else background)
+                        else None,
+                        f"actual rendered Qt surfaces did not match the {theme} palette",
+                    )
+
+                    def point_at(rectangle):
+                        x = rectangle["x"] + rectangle["width"] // 2
+                        y = rectangle["y"] + rectangle["height"] // 2
+                        assert actual["fullscreen"] and rectangle["width"] > 0
+                        assert rectangle["height"] > 0
+                        assert 0 <= x < actual["width"] and 0 <= y < actual["height"]
+                        subprocess.run(
+                            [
+                                "xdotool",
+                                "mousemove",
+                                "--window",
+                                nested_window,
+                                str(round(x * actual["scale"])),
+                                str(round(y * actual["scale"])),
+                            ],
+                            check=True,
+                            timeout=3,
+                        )
+
+                    if paused:
+                        point_at(actual["overlayControls"][control_name]["geometry"])
+                        actual = wait_for(
+                            lambda: value
+                            if (value := state())["overlayControls"][control_name]["underMouse"]
+                            else None,
+                            "the actual paused resume button did not receive pointer hover",
+                        )
+
+                    def contrast(foreground, background):
+                        def luminance(color):
+                            channels = [int(color[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+                            return sum(
+                                (v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4)
+                                * weight
+                                for v, weight in zip(channels, (0.2126, 0.7152, 0.0722))
+                            )
+
+                        lower, upper = sorted((luminance(foreground), luminance(background)))
+                        return (upper + 0.05) / (lower + 0.05)
+
+                    # Qt's public palette exposes base colors, not QSS hover
+                    # colors. Check those against the opaque rendered surface;
+                    # paused screenshots separately expose actual pointer hover.
+                    colors = dict(actual["overlayTextColors"])
+                    assert "typelay-status" in colors
+                    ratios = {key: contrast(color, background) for key, color in colors.items()}
+                    control = actual["overlayControls"][control_name]
+                    ratios[control_name] = contrast(
+                        control["textColor"], control["backgroundColor"]
+                    )
+                    if not paused:
+                        ratios["editor"] = contrast(
+                            actual["editorPalette"]["text"], actual["themeSamples"]["editor"]
+                        )
+                        ratios["selection"] = contrast(
+                            actual["editorSelectionText"], actual["editorSelectionBackground"]
+                        )
+                    assert all(value >= 4.5 for value in ratios.values()), ratios
+                    subprocess.run(
+                        ["grim", str(arguments.output / f"qt-theme-{name}.png")],
+                        check=True,
+                        timeout=3,
+                    )
+                    if paused:
+                        point_at(actual["first"]["geometry"])
+                    result = {
+                        "surfaces": actual["themeSamples"],
+                        "basePaletteContrastRatios": ratios,
+                        "hoveredControl": control_name if paused else None,
+                    }
+                    (arguments.output / f"qt-theme-{name}.json").write_text(
+                        json.dumps(result, indent=2) + "\n"
+                    )
+                    return result
+
+                def unchanged_theme_input(before, after):
+                    for field in ("first", "second"):
+                        for name in (
+                            "text",
+                            "changes",
+                            "edits",
+                            "cursor",
+                            "selectionStart",
+                            "selectionLength",
+                            "focused",
+                            "undoAvailable",
+                        ):
+                            assert after[field][name] == before[field][name], (field, name)
+                    assert after["focusTransitions"] == before["focusTransitions"]
 
                 window = wait_for(
                     lambda: next(
@@ -622,6 +812,62 @@ def run_qt(
                 )
                 original = "Please send me the latest report."
                 candidate = enter_source(original)
+                initial_application = state()
+                original_theme = json.loads(Paths(arguments.package).settings.read_text())["Theme"]
+                theme_observations = []
+                theme_trace = trace_checkpoint()
+                for preference in ("dark", "light", "system"):
+                    before_preference = state()
+                    set_mode(theme=preference)
+                    after_preference = wait_for(
+                        lambda: value
+                        if (value := state())["editorVisible"]
+                        and value["editorReadOnly"]
+                        and value["editorText"] == candidate
+                        and ready_to_accept()
+                        else None,
+                        "theme settings did not restore the same real candidate",
+                    )
+                    for name in ("applicationColorScheme", "applicationPalette"):
+                        assert after_preference[name] == before_preference[name], (
+                            "overlay preference changed its host application's appearance",
+                            name,
+                        )
+                    for name in ("overlayGeometry", "editorGeometry"):
+                        assert after_preference[name] == initial_application[name], name
+                    for appearance in ("light", "dark"):
+                        before_appearance = state()
+                        application_theme(appearance)
+                        expected = appearance if preference == "system" else preference
+                        actual = themed_overlay(expected)
+                        unchanged_theme_input(before_appearance, actual)
+                        assert actual["editorText"] == candidate and actual["editorReadOnly"]
+                        for name in ("overlayGeometry", "editorGeometry"):
+                            assert actual[name] == initial_application[name], name
+                        assert not new_write_outcomes(theme_trace)
+                        rendered = theme_screenshot(
+                            f"{preference}-application-{appearance}", expected
+                        )
+                        theme_observations.append(
+                            {
+                                "preference": preference,
+                                "applicationAppearance": appearance,
+                                "observedColorScheme": actual["applicationColorScheme"],
+                                "applicationPalette": actual["applicationPalette"],
+                                "overlayPalette": actual["overlayPalette"],
+                                "editorPalette": actual["editorPalette"],
+                                "renderedSamples": rendered,
+                            }
+                        )
+                (arguments.output / "qt-theme-observations.json").write_text(
+                    json.dumps(theme_observations, indent=2) + "\n"
+                )
+                application_theme("system")
+                evidence.append(
+                    "Qt6 theme: real persisted system/light/dark settings crossed with actual "
+                    "light/dark application palettes; observed Qt color-scheme values and rendered "
+                    "widget palettes, six screenshots, no source mutation or writes"
+                )
                 before_menu = state()
                 assert not before_menu["overlayMenuVisible"]
                 assert not before_menu["overlayControls"]["typelay-copy"]["visible"]
@@ -723,6 +969,67 @@ def run_qt(
                     "actual Qt candidate click did not enter the production editor",
                 )
                 switch_im("keyboard-us")
+                # Synthetic Chinese is inserted through the owned fixture's
+                # real QPlainTextEdit API; this is not physical IME evidence.
+                long_draft = (
+                    "这是一段用于检查翻译浮层的合成中文长文本。切换系统外观时，"
+                    "文字应保持清晰，正文、光标、选区和原生撤销历史都不应发生变化。"
+                ) * 6
+                command("editor-set", text=long_draft)
+                wait_for(
+                    lambda: state()["editorText"] == long_draft
+                    and state()["editorFocused"]
+                    and not state()["editorReadOnly"],
+                    "the actual editor did not retain the synthetic Chinese draft",
+                )
+                key("ctrl+End")
+                typed(" MARK")
+                key("shift+Left")
+                draft_length = len((long_draft + " MARK").encode("utf-16-le")) // 2
+                editing_theme_before = wait_for(
+                    lambda: value
+                    if (value := state())["editorText"] == long_draft + " MARK"
+                    and value["editorCursor"] == draft_length - 1
+                    and value["editorAnchor"] == draft_length
+                    and value["editorUndoAvailable"]
+                    and value["editorUndoSteps"] > 0
+                    and value["editorFocused"]
+                    and settled(value)
+                    else None,
+                    "real editor typing did not establish the selected undoable suffix",
+                )
+                editing_theme_trace = trace_checkpoint()
+                for appearance in ("light", "dark"):
+                    application_theme(appearance)
+                    actual = themed_overlay(appearance)
+                    unchanged_theme_input(editing_theme_before, actual)
+                    for name in (
+                        "editorText",
+                        "editorCursor",
+                        "editorAnchor",
+                        "editorFocused",
+                        "editorReadOnly",
+                        "editorUndoSteps",
+                        "editorUndoAvailable",
+                        "editorRedoAvailable",
+                        "overlayGeometry",
+                        "editorGeometry",
+                    ):
+                        assert actual[name] == editing_theme_before[name], name
+                    assert not new_write_outcomes(editing_theme_trace)
+                    theme_screenshot(f"system-editing-chinese-{appearance}", appearance)
+                key("ctrl+z")
+                wait_for(
+                    lambda: state()["editorText"] == long_draft and state()["editorFocused"],
+                    "theme refresh damaged the editor's actual native undo history",
+                )
+                assert not new_write_outcomes(editing_theme_trace)
+                application_theme("system")
+                evidence.append(
+                    "Qt6 system-theme live changes preserve the synthetic long Chinese draft, "
+                    "actual selection/focus/geometry and native undo; two screenshots and no writes "
+                    "(fixture Chinese insertion, not physical IME validation)"
+                )
                 draft = "Manually edited Qt candidate."
                 key("ctrl+a")
                 typed(draft)
@@ -933,6 +1240,18 @@ def run_qt(
                 paused_capture_counts = dict(status()["input"]["captureCounts"])
                 before = state()["first"]
                 pause_trace = trace_checkpoint()
+                paused_theme_before = state()
+                for appearance in ("light", "dark"):
+                    application_theme(appearance)
+                    actual = themed_overlay(appearance, paused=True)
+                    unchanged_theme_input(paused_theme_before, actual)
+                    assert actual["overlayGeometry"] == paused_theme_before["overlayGeometry"]
+                    assert status()["viewState"] == "Paused"
+                    assert not status().get("acceptanceReady")
+                    assert status()["input"]["captureCounts"] == paused_capture_counts
+                    assert not new_write_outcomes(pause_trace)
+                    theme_screenshot(f"system-paused-{appearance}", appearance, paused=True)
+                application_theme("system")
                 typed("!")
                 wait_for(
                     lambda: state()["first"]["text"] == wake_source + "!"
@@ -982,7 +1301,18 @@ def run_qt(
                 assert state()["first"]["focused"]
                 evidence.append(
                     "Qt6 pause: metadata-only entry, one ordinary character, sensitive-field hiding, "
-                    "no capture/model/write, real resume click preserves OnDemand and still needs F9"
+                    "no capture/model/write, both system colors without an editor, two screenshots; "
+                    "real resume click preserves OnDemand and still needs F9"
+                )
+                if original_theme != "system":
+                    set_mode(theme=original_theme)
+                assert json.loads(Paths(arguments.package).settings.read_text())["Theme"] == (
+                    original_theme
+                )
+                assert state()["applicationPalette"] == initial_application["applicationPalette"]
+                assert (
+                    state()["applicationColorScheme"]
+                    == initial_application["applicationColorScheme"]
                 )
                 dormant_source(wake_source)
                 key("ctrl+shift+F9")

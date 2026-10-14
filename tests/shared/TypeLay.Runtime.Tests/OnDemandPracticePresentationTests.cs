@@ -11,6 +11,8 @@ public sealed class OnDemandPracticePresentationTests
     {
         var view = OnDemandPracticePresentation.Create(new());
         Assert.Equal("按需翻译练习", view.Title);
+        Assert.Equal("用一段原文，练习预览和直接替换。练习内容只在本机处理。", view.Summary);
+        Assert.Equal("开始练习后，这里会显示进度。", view.ProgressNotice);
         Assert.Equal("切换为按需模式并开始练习", view.StartLabel);
         Assert.Contains("所有应用", view.ConfirmationText);
         Assert.Contains("不会自动恢复", view.ConfirmationText);
@@ -67,7 +69,7 @@ public sealed class OnDemandPracticePresentationTests
         Assert.False(view.PreviewCompleted);
         Assert.False(view.DirectReplacementCompleted);
         Assert.False(view.Completed);
-        Assert.Contains("重新开始", view.ProgressNotice);
+        Assert.Equal("开始练习后，这里会显示进度。", view.ProgressNotice);
     }
 
     [Fact]
