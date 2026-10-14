@@ -1926,7 +1926,13 @@ def run(arguments):
                         if not gtk4 and bundled:
                             # The shipped practice window has no test snapshot or
                             # translator. Observe only its owned accessibility tree.
-                            from support.gtk_accessibility import bounds, focused, named, text
+                            from support.gtk_accessibility import (
+                                Atspi,
+                                bounds,
+                                focused,
+                                named,
+                                text,
+                            )
 
                             request({"Action": {"CloseWindow": {"id": window["id"]}}})
                             assert fixture.wait(timeout=5) == 0
@@ -1996,12 +2002,18 @@ def run(arguments):
                                 "practice acceptance did not verify",
                             )
                             assert focused(source)
-                            key("alt+r")
-                            wait_for(
-                                lambda: text(source) == "" and focused(source),
-                                "explicit practice reset did not clear and focus its own field",
+                            accepted_text = text(source)
+                            practice_view = control(paths, "practiceStatus")["presentation"]
+                            restart = wait_for(
+                                lambda: named(practice.pid, practice_view["restartLabel"]),
+                                "manual practice did not expose its restart action",
                             )
+                            assert not restart.get_state_set().contains(
+                                Atspi.StateType.SENSITIVE
+                            ), "a manually launched practice offered managed-run restart"
+                            assert text(source) == accepted_text and focused(source)
                             editing_source = "Please send me the final version."
+                            key("ctrl+a")
                             typed(editing_source)
                             wait_for(
                                 lambda: text(source) == editing_source and ready_to_accept(),
@@ -2237,8 +2249,22 @@ def run(arguments):
                     area.x + area.width <= clip.x + clip.width
                     and area.y + area.height <= clip.y + clip.height
                 ), "primary action is clipped on the default application-support screen"
+            trial = settings_control(support["labels"]["tryIt"])
+            trial_area = Atspi.Component.get_extents(
+                trial.get_component_iface(), Atspi.CoordType.SCREEN
+            )
+            assert trial.get_state_set().contains(Atspi.StateType.SHOWING)
+            assert trial_area.width > 0 and trial_area.height > 0
+            for clip in [*viewport_bounds, frame]:
+                assert (
+                    clip.x <= trial_area.x
+                    and clip.y <= trial_area.y
+                    and trial_area.x + trial_area.width <= clip.x + clip.width
+                    and trial_area.y + trial_area.height <= clip.y + clip.height
+                ), "practice entry is clipped before the user scrolls or focuses it"
             evidence.append(
-                "Selected application primary action fully visible in the default GTK viewport"
+                "Practice entry and selected application primary action fully visible "
+                "in the default GTK viewport"
             )
             activate_setting(desktop_support["primaryAction"]["label"])
             bundled_component = (package / "support/desktop/component.json").is_file()
@@ -2354,16 +2380,50 @@ def run(arguments):
                 lambda: enabled.get_state_set().contains(Atspi.StateType.SHOWING),
                 "general settings page did not become visible",
             )
-            activate_setting("设置：启用 TypeLay")
+            assert enabled.get_state_set().contains(Atspi.StateType.CHECKED)
+            assert enabled.get_state_set().contains(Atspi.StateType.FOCUSABLE)
+            assert enabled.get_description() == "即时保存"
+            assert Atspi.Component.grab_focus(enabled.get_component_iface())
+            wait_for(
+                lambda: enabled.get_state_set().contains(Atspi.StateType.FOCUSED),
+                "native settings switch did not receive keyboard focus",
+            )
+            enabled_area = Atspi.Component.get_extents(
+                enabled.get_component_iface(), Atspi.CoordType.SCREEN
+            )
+            assert enabled_area.width >= 72 and enabled_area.height >= 44
+            subprocess.run(
+                ["grim", str(arguments.output / "settings-switch-focus.png")],
+                check=True,
+                timeout=3,
+            )
+            revision = status()["commandFeedbackRevision"]
+            key("space")
             wait_for(
                 lambda: not json.loads(paths.settings.read_text())["Enabled"],
                 "switch did not save immediately",
+            )
+            wait_for(
+                lambda: not enabled.get_state_set().contains(Atspi.StateType.CHECKED),
+                "native switch accessibility state did not follow the saved disabled value",
             )
             saved = json.loads(paths.settings.read_text())
             assert control(paths, "startOnDemandPractice", {"confirmedSwitch": True}) is False, (
                 "practice silently enabled a paused client"
             )
             assert not json.loads(paths.settings.read_text())["Enabled"]
+            wait_for(
+                lambda: "已暂停" in text(settings_control("当前工作模式说明")),
+                "saved switch state did not reach its adjacent guidance",
+            )
+            wait_for(
+                lambda: status()["commandFeedbackRevision"] >= revision + 1,
+                "saved switch state did not reach the controller status",
+            )
+            assert status()["commandFeedbackRevision"] == revision + 1, (
+                "one keyboard switch activation persisted more than one settings change"
+            )
+            assert "即时保存" in text(settings_control("设置保存范围"))
             settings_control("保存修改")
             wake = settings_control("设置：唤醒翻译")
             direct = settings_control("设置：直接翻译替换")
@@ -2375,6 +2435,8 @@ def run(arguments):
                 "shortcut edit was not retained as draft",
             )
             assert "离开此页后仍会保留" in text(settings_control("设置草稿"))
+            assert saved["WakeShortcut"] in text(settings_control("当前工作模式说明"))
+            assert "Ctrl+Shift+F8" not in text(settings_control("当前工作模式说明"))
             activate_setting("设置：启用 TypeLay")
             wait_for(
                 lambda: json.loads(paths.settings.read_text())["Enabled"],
@@ -2401,6 +2463,10 @@ def run(arguments):
             wait_for(
                 lambda: json.loads(paths.settings.read_text())["WakeShortcut"] == "Ctrl+Shift+F8",
                 "valid shortcut pair did not persist",
+            )
+            wait_for(
+                lambda: "Ctrl+Shift+F8" in text(settings_control("当前工作模式说明")),
+                "saved wake shortcut was not shown in the mode guidance",
             )
             assert Atspi.EditableText.set_text_contents(
                 wake.get_editable_text_iface(), saved["WakeShortcut"]
@@ -2436,6 +2502,9 @@ def run(arguments):
                 and not status()["setup"]["settingsDraft"],
                 "valid session key pair was not persisted together",
             )
+            assert "F7" in text(settings_control("当前接受与退出说明"))
+            assert "F8" in text(settings_control("当前接受与退出说明"))
+            assert "Tab" not in text(settings_control("当前接受与退出说明"))
             assert (
                 json.loads(paths.settings.read_text())["ExperimentalWriteback"]
                 == saved["ExperimentalWriteback"]
@@ -2514,6 +2583,8 @@ def run(arguments):
             assert text(wake) == saved["WakeShortcut"]
             assert json.loads(paths.settings.read_text())["AcceptShortcut"] == "Tab"
             assert Atspi.Selection.is_child_selected(accept_key.get_selection_iface(), 0)
+            assert "Tab" in text(settings_control("当前接受与退出说明"))
+            assert saved["WakeShortcut"] in text(settings_control("当前工作模式说明"))
             assert Atspi.Component.grab_focus(wake.get_component_iface())
             key("ctrl+Page_Down")
             activate_setting(support["labels"]["tryIt"])
@@ -2742,6 +2813,24 @@ def run(arguments):
                             lambda name=key_name: named(managed_window["pid"], practice_view[name]),
                             f"practice did not render the shared {key_name}",
                         )
+
+                    def restart_ready():
+                        close = named(managed_window["pid"], practice_view["closeLabel"])
+                        if close is None:
+                            return False
+                        actions = close.get_parent()
+                        for index in range(actions.get_child_count()):
+                            action = actions.get_child_at_index(index)
+                            if action is None:
+                                continue
+                            action.clear_cache()
+                            if action.get_name() == practice_view["restartLabel"]:
+                                return action.get_state_set().contains(Atspi.StateType.SENSITIVE)
+                        return False
+
+                    # The initial Begin can still be completing after Mode is
+                    # saved. Wait for the actual bottom-row restart action.
+                    wait_for(restart_ready, "managed practice restart did not become ready")
                     before_restart = text(source)
                     key("alt+r")
                     wait_for(

@@ -88,6 +88,41 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
     def latest(self, name):
         return next(value["data"] for value in reversed(self.events) if value.get("event") == name)
 
+    async def test_settings_guidance_tracks_saved_mode_and_shortcuts_in_owner_order(self):
+        self.assertTrue(await self.ask("start"))
+        guidance = [value for value in self.events if value.get("event") == "settingsGuidance"]
+        self.assertEqual(len(guidance), 1, "initial settings omitted their guidance")
+        self.assertIn("自动模式", guidance[0]["data"]["modeDescription"])
+        self.assertIn("即时保存", guidance[0]["data"]["saveScopeDescription"])
+        self.assertIn("排除", guidance[0]["data"]["saveScopeDescription"])
+
+        saved = self.latest("settings")
+        self.events.clear()
+        self.assertTrue(await self.ask("settings", {**saved, "mode": "OnDemand"}))
+        self.assertEqual(
+            [event["event"] for event in self.events if event["event"].startswith("settings")],
+            ["settings", "settingsGuidance"],
+        )
+        self.assertIn("按需模式", self.latest("settingsGuidance")["modeDescription"])
+        draft = self.draft("F7", "F8")
+        draft["shortcuts"].update(wake="Ctrl+F3", direct="Alt+F4")
+        self.assertTrue((await self.ask("saveSettingsDraft", draft))["saved"])
+        guidance = self.latest("settingsGuidance")
+        self.assertIn("Ctrl+F3", guidance["modeDescription"])
+        self.assertIn("Alt+F4", guidance["modeDescription"])
+        self.assertNotIn("Ctrl+Shift+F9", guidance["modeDescription"])
+        self.assertIn("F7", guidance["acceptanceDescription"])
+        self.assertIn("F8", guidance["acceptanceDescription"])
+        self.assertNotIn("Tab", guidance["acceptanceDescription"])
+        before = len(self.events)
+        self.assertFalse((await self.ask("saveSettingsDraft", self.draft("F7", "F7")))["saved"])
+        self.assertFalse(
+            any(event["event"] == "settingsGuidance" for event in self.events[before:]),
+            "a rejected draft was presented as active settings",
+        )
+        self.assertTrue(await self.ask("settings", {**self.latest("settings"), "enabled": False}))
+        self.assertIn("已暂停", self.latest("settingsGuidance")["modeDescription"])
+
     async def test_staged_shortcuts_merge_with_latest_settings_and_emit_one_generation(self):
         self.assertTrue(
             await self.ask(

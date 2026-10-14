@@ -2,6 +2,8 @@ using TypeLay.Runtime;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Automation;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
@@ -225,6 +227,8 @@ internal sealed class SettingsWindow : Window
             }
             _nav.Children.Add(button);
         }
+        string? focusedToggle = Keyboard.FocusedElement is ToggleButton focused && focused.IsDescendantOf(this)
+            ? AutomationProperties.GetName(focused) : null;
         _content.Children.Clear();
         _progress = null;
         _progressLabel = null;
@@ -255,6 +259,9 @@ internal sealed class SettingsWindow : Window
                 About();
                 break;
         }
+        if (focusedToggle is not null)
+            _content.Children.OfType<Grid>().SelectMany(row => row.Children.OfType<ToggleButton>())
+                .SingleOrDefault(toggle => AutomationProperties.GetName(toggle) == focusedToggle)?.Focus();
     }
     private void Heading(string name, string description)
     {
@@ -281,7 +288,7 @@ internal sealed class SettingsWindow : Window
         texts.Children.Add(UiTheme.Text(name, 12.5));
         if (description.Length > 0)
         {
-            var desc = UiTheme.Text(description, 10.5, true);
+            var desc = UiTheme.Text(description, 12, true);
             desc.Margin = new(0, 3, 0, 0);
             texts.Children.Add(desc);
         }
@@ -294,7 +301,7 @@ internal sealed class SettingsWindow : Window
     {
         var panel = new StackPanel();
         panel.Children.Add(UiTheme.Text(title, 12, bold: true));
-        var body = UiTheme.Text(text, 11, true);
+        var body = UiTheme.Text(text, 12, true);
         body.Margin = new(0, 5, 0, 0);
         body.LineHeight = 17;
         panel.Children.Add(body);
@@ -302,6 +309,12 @@ internal sealed class SettingsWindow : Window
         box.Margin = new(0, 4, 0, 12);
         _content.Children.Add(box);
         return body;
+    }
+    private void SaveScopeNote()
+    {
+        var text = UiTheme.Text(SettingsGuidancePresentation.Create(_settings.Value, exclusionsNeedSave: false).SaveScopeDescription, 12, true);
+        text.Margin = new(0, 10, 0, 12);
+        _content.Children.Add(text);
     }
     private bool Save(UserSettings value)
     {
@@ -328,7 +341,12 @@ internal sealed class SettingsWindow : Window
         Heading("常规", "TypeLay 的全局运行方式。");
         if (!_model.Ready)
             InstallCard();
-        Row("启用 TypeLay", "暂停后保留托盘入口，受支持的输入框旁保留可点击恢复的小入口。", UiTheme.Toggle(_settings.Value.Enabled, () => Save(_settings.Value with { Enabled = !_settings.Value.Enabled })));
+        var practice = OnDemandPracticePresentation.Create(_settings.Value, PracticeProgress?.Invoke());
+        Row(practice.Title, practice.Summary, UiTheme.Button(practice.StartLabel, StartPractice));
+        _practiceStatus = UiTheme.Text(practice.ProgressNotice, 12, true);
+        _content.Children.Add(_practiceStatus);
+        SaveScopeNote();
+        Row("启用 TypeLay", "暂停后保留托盘入口，受支持的输入框旁保留可点击恢复的小入口。", UiTheme.Toggle("启用 TypeLay", () => _settings.Value.Enabled, enabled => Save(_settings.Value with { Enabled = enabled })));
         var modes = new ComboBox
         {
             MinWidth = 155,
@@ -337,10 +355,14 @@ internal sealed class SettingsWindow : Window
         };
         System.Windows.Automation.AutomationProperties.SetName(modes, "工作模式");
         modes.SelectionChanged += (_, _) => Save(_settings.Value with { Mode = modes.SelectedIndex == 1 ? WorkMode.OnDemand : WorkMode.Automatic });
-        Row("工作模式", "自动模式保留实时翻译；按需模式保持静默，仅通过快捷键启动。", modes);
-        Row("开发版实验：允许 Tab 写回", "默认关闭。跨进程非原子写回尚未完成实机安全验收；仅使用已备份的测试文本。", UiTheme.Toggle(_settings.Value.ExperimentalWriteback, () =>
+        var guidance = SettingsGuidancePresentation.Create(_settings.Value, exclusionsNeedSave: false);
+        Row("工作模式", guidance.ModeDescription, modes);
+        var acceptance = UiTheme.Text(guidance.AcceptanceDescription, 12, true);
+        acceptance.Margin = new(0, 8, 0, 12);
+        _content.Children.Add(acceptance);
+        Row("开发版实验：允许 Tab 写回", "默认关闭。跨进程非原子写回尚未完成实机安全验收；仅使用已备份的测试文本。", UiTheme.Toggle("开发版实验：允许 Tab 写回", () => _settings.Value.ExperimentalWriteback, enabled =>
         {
-            if (_settings.Value.ExperimentalWriteback)
+            if (!enabled)
             {
                 Save(_settings.Value with
                 {
@@ -355,16 +377,12 @@ internal sealed class SettingsWindow : Window
                     ExperimentalWriteback = true
                 });
         }));
-        Row("登录 Windows 后自动启动", "默认关闭。开启后依赖当前程序所在目录，请勿移动。", UiTheme.Toggle(_settings.Value.Startup, () => Save(_settings.Value with { Startup = !_settings.Value.Startup })));
+        Row("登录 Windows 后自动启动", "默认关闭。开启后依赖当前程序所在目录，请勿移动。", UiTheme.Toggle("登录 Windows 后自动启动", () => _settings.Value.Startup, startup => Save(_settings.Value with { Startup = startup })));
         var themes = new ComboBox { MinWidth = 155, ItemsSource = new[] { "跟随系统", "浅色", "深色" }, SelectedIndex = _settings.Value.Theme switch { "light" => 1, "dark" => 2, _ => 0 } };
         themes.SelectionChanged += (_, _) => Save(_settings.Value with { Theme = themes.SelectedIndex switch { 1 => "light", 2 => "dark", _ => "system" } });
         Row("外观", "使用系统字体和低干扰浮层。", themes);
         Rule();
         Note("文本与译文保留在本机", "推理完全在本地进行；默认不保存翻译历史，不需要账号或云同步。");
-        var practice = OnDemandPracticePresentation.Create(_settings.Value, PracticeProgress?.Invoke());
-        Row(practice.Title, practice.Summary, UiTheme.Button(practice.StartLabel, StartPractice));
-        _practiceStatus = UiTheme.Text(practice.ProgressNotice, 10.5, true);
-        _content.Children.Add(_practiceStatus);
     }
     public void StartPractice()
     {
@@ -447,6 +465,7 @@ internal sealed class SettingsWindow : Window
     private void Languages()
     {
         Heading("语言", "Auto 只用于源语言，目标语言始终明确指定。");
+        SaveScopeNote();
         Row("源语言", "Auto 使用本地语言检测。当前已安装模型仅覆盖中文与英文。", LanguageCombo(true, _settings.Value, value => Save(value)));
         Row("目标语言", "选择希望写回的语言。", LanguageCombo(false, _settings.Value, value => Save(value)));
         var swap = UiTheme.Button("交换", () => Save(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
@@ -509,6 +528,7 @@ internal sealed class SettingsWindow : Window
         direct.TextChanged += (_, _) => ShortcutDraftChanged();
         Row("唤醒翻译 UI", "为当前输入框开启持续翻译；离开后结束。", wake);
         Row("直接翻译并替换", "一次性操作，绑定原输入框，不显示预览、不自动发送。", direct);
+        SaveScopeNote();
         var save = UiTheme.Button(_draftMessages.SaveLabel, () =>
         {
             var submitted = new ShortcutSettingsDraft(wake.Text, direct.Text,
@@ -631,6 +651,11 @@ internal sealed class SettingsWindow : Window
             InstallCard();
         else
             Note(view.Labels.PrepareTranslation, _model.Status);
+        var tryIt = UiTheme.Button(view.Labels.TryIt, StartPractice);
+        tryIt.IsEnabled = _model.Ready;
+        tryIt.HorizontalAlignment = HorizontalAlignment.Left;
+        tryIt.Margin = new(0, 0, 0, 14);
+        _content.Children.Add(tryIt);
         foreach (var row in view.Rows.Where(row => !row.ShowInMore))
             _content.Children.Add(SupportRow(row, view));
         var others = new StackPanel();
@@ -638,13 +663,9 @@ internal sealed class SettingsWindow : Window
             others.Children.Add(SupportRow(row, view));
         if (others.Children.Count > 0)
             _content.Children.Add(new Expander { Header = view.Labels.MoreApplications, Content = others, Margin = new(0, 8, 0, 14) });
-        var tryIt = UiTheme.Button(view.Labels.TryIt, StartPractice);
-        tryIt.IsEnabled = _model.Ready;
-        tryIt.HorizontalAlignment = HorizontalAlignment.Left;
-        tryIt.Margin = new(0, 0, 0, 14);
-        _content.Children.Add(tryIt);
         Rule();
         _content.Children.Add(UiTheme.Text("排除的应用", 15, bold: true));
+        SaveScopeNote();
         if (_settings.Value.Excluded.Length == 0)
             Note("当前没有排除任何应用", "排除后，该应用的所有输入框均不显示 TypeLay 界面。");
         foreach (string app in _settings.Value.Excluded)
@@ -690,21 +711,21 @@ internal sealed class SettingsWindow : Window
         }
         var label = new StackPanel();
         label.Children.Add(UiTheme.Text(row.Title, 13, bold: true));
-        label.Children.Add(UiTheme.Text(row.StatusText, 11, true));
+        label.Children.Add(UiTheme.Text(row.StatusText, 12, true));
         header.Children.Add(label);
         body.Children.Add(header);
-        var reason = UiTheme.Text(row.ReasonText, 11, true);
+        var reason = UiTheme.Text(row.ReasonText, 12, true);
         reason.Margin = new(0, 8, 0, 0);
         if (row.Reason != ApplicationSupportReason.Paused)
             body.Children.Add(reason);
-        detailsBody.Children.Add(UiTheme.Text(row.Description, 11, true));
-        detailsBody.Children.Add(UiTheme.Text(row.Guidance, 11, true));
-        detailsBody.Children.Add(UiTheme.Text(row.CapabilitySummary, 11, true));
-        detailsBody.Children.Add(UiTheme.Text(view.CapabilityNote, 10.5, true));
+        detailsBody.Children.Add(UiTheme.Text(row.Description, 12, true));
+        detailsBody.Children.Add(UiTheme.Text(row.Guidance, 12, true));
+        detailsBody.Children.Add(UiTheme.Text(row.CapabilitySummary, 12, true));
+        detailsBody.Children.Add(UiTheme.Text(view.CapabilityNote, 12, true));
         if (row.CheckedAt is { } checkedAt)
-            detailsBody.Children.Add(UiTheme.Text(checkedAt.ToLocalTime().ToString("g"), 10.5, true));
+            detailsBody.Children.Add(UiTheme.Text(checkedAt.ToLocalTime().ToString("g"), 12, true));
         if (row.Details is { Length: > 0 } extra)
-            detailsBody.Children.Add(UiTheme.Text(extra, 10.5, true));
+            detailsBody.Children.Add(UiTheme.Text(extra, 12, true));
         foreach (var action in row.SecondaryActions)
         {
             var button = UiTheme.Button(action.Label, () => Run(action));
@@ -722,7 +743,7 @@ internal sealed class SettingsWindow : Window
     {
         Heading("翻译", "控制本地模型状态。当前模型采用自然、忠实的单一候选。");
         Row("默认风格", "其他风格尚未接入模型，不提供虚假切换。", new ComboBox { MinWidth = 155, ItemsSource = new[] { "自然" }, SelectedIndex = 0, IsEnabled = false });
-        Row("本地翻译模型", "CTranslate2 · Argos 中英模型 · CPU INT8", UiTheme.Text(_model.Status, 11, true));
+        Row("本地翻译模型", "CTranslate2 · Argos 中英模型 · CPU INT8", UiTheme.Text(_model.Status, 12, true));
         InstallCard();
         Rule();
         Note("较长文本", "当前单段模型输入超过 384 个 token 时停止并提示缩短选区；不会在后台截断原文后给出可接受候选。换行、URL、mention 和编号采用显式结构保护。");
@@ -733,10 +754,10 @@ internal sealed class SettingsWindow : Window
         panel.Children.Add(UiTheme.Text(_model.Installed ? "本地模型与运行组件" : "首次使用 · 准备本地翻译", 13, bold: true));
         var intro = UiTheme.Text(ModelInstaller.HasReusableLocalModels
             ? "已找到本机中英双向 Argos 模型。准备时会校验并复用权重，运行组件仍需单独准备；输入文字不会上传。"
-            : "准备私有运行组件与中英模型。仅在本机推理；无需自行安装 Python，也不上传输入文字。", 11, true);
+            : "准备私有运行组件与中英模型。仅在本机推理；无需自行安装 Python，也不上传输入文字。", 12, true);
         intro.Margin = new(0, 6, 0, 12);
         panel.Children.Add(intro);
-        _progressLabel = UiTheme.Text(_setupStatus.Length > 0 ? _setupStatus : _model.Status, 11, true);
+        _progressLabel = UiTheme.Text(_setupStatus.Length > 0 ? _setupStatus : _model.Status, 12, true);
         panel.Children.Add(_progressLabel);
         _progress = new ProgressBar { Minimum = 0, Maximum = 100, Height = 5, Margin = new(0, 9, 0, 12), IsIndeterminate = _install is not null };
         panel.Children.Add(_progress);
@@ -763,7 +784,7 @@ internal sealed class SettingsWindow : Window
                 Header = "安装诊断",
                 Margin = new(0, 10, 0, 0),
                 Content = UiTheme.Text($"错误类别：{failure.Code}\n安装阶段：{_setupFailureStage}"
-                    + (_setupRecoveryFailure is { } recovery ? $"\n恢复阻塞：{recovery.Code}" : ""), 11, true)
+                    + (_setupRecoveryFailure is { } recovery ? $"\n恢复阻塞：{recovery.Code}" : ""), 12, true)
             };
             panel.Children.Add(details);
         }
@@ -854,7 +875,7 @@ internal sealed class SettingsWindow : Window
     {
         Heading("关于与隐私", "TypeLay · Windows Development Build 0.2.0");
         Note("完全本地的输入翻译", "实际输入与译文不上传云端，不建立翻译历史数据库。运行组件与模型下载使用 HTTPS；推理子进程没有网络下载路径。");
-        Row("本次交付状态", "这是开发版。已完成本机 Windows 构建和 Edge 教程验证；真实中文输入法、独立网站及跨应用适配尚未完成验收。", UiTheme.Text("部分验收", 11, true));
+        Row("本次交付状态", "这是开发版。已完成本机 Windows 构建和 Edge 教程验证；真实中文输入法、独立网站及跨应用适配尚未完成验收。", UiTheme.Text("部分验收", 12, true));
         Row("本地数据", "设置、模型、下载缓存、安装锁与无正文的安装自检结果。", UiTheme.Button("打开目录", () => Process.Start(new ProcessStartInfo(AppPaths.Data) { UseShellExecute = true })));
         Rule();
         Note("范围与已知风险", "当前支持策略严格依赖控件元数据，无法保证所有网页文本框均可用。UIA 的跨进程写回存在非原子竞态；极窄时间窗内可能覆盖最新原文，或安全拒写后消耗一次 Tab。默认关闭实验性写回。该问题没有被标为已解决，当前包不具备日常中文输入验收结论。");

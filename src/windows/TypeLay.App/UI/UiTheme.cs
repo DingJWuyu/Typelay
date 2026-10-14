@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Automation;
 using System.Windows.Markup;
 using System.Windows.Media;
 using Microsoft.Win32;
@@ -11,6 +12,28 @@ internal static class UiTheme
     <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
       <Style TargetType="Expander"><Setter Property="Foreground" Value="{DynamicResource Text}"/></Style>
       <Style TargetType="Button"><Setter Property="FontSize" Value="12"/><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="Background" Value="{DynamicResource Panel}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="11,7"/><Setter Property="Cursor" Value="Hand"/><Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border x:Name="border" CornerRadius="9" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="border" Property="Opacity" Value="0.82"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.40"/><Setter Property="Cursor" Value="Arrow"/></Trigger><Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="border" Property="BorderBrush" Value="{DynamicResource Accent}"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter></Style>
+      <Style x:Key="SettingToggle" TargetType="CheckBox">
+        <Setter Property="Width" Value="48"/>
+        <Setter Property="Height" Value="40"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="CheckBox">
+          <Border x:Name="focus" Background="Transparent" BorderBrush="Transparent" BorderThickness="2" CornerRadius="8">
+            <Border x:Name="track" Width="38" Height="22" CornerRadius="11" Background="#ADB5C1" Padding="3">
+              <Border x:Name="thumb" Width="16" Height="16" CornerRadius="8" Background="White" HorizontalAlignment="Left"/>
+            </Border>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsChecked" Value="True">
+              <Setter TargetName="track" Property="Background" Value="#3A6DE2"/>
+              <Setter TargetName="thumb" Property="HorizontalAlignment" Value="Right"/>
+            </Trigger>
+            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="focus" Property="BorderBrush" Value="{DynamicResource Text}"/></Trigger>
+            <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.4"/><Setter Property="Cursor" Value="Arrow"/></Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
+      </Style>
       <Style TargetType="ComboBoxItem">
         <Setter Property="Foreground" Value="{DynamicResource Text}"/>
         <Setter Property="Background" Value="Transparent"/>
@@ -96,7 +119,7 @@ internal static class UiTheme
         r["Panel2"] = Brush(dark ? "#20242B" : "#F7F8FA");
         r["Line"] = Brush(dark ? "#3B414C" : "#DFE3EB");
         r["Text"] = Brush(dark ? "#E8EBF1" : "#252A31");
-        r["Muted"] = Brush(dark ? "#A6ADBB" : "#808794");
+        r["Muted"] = Brush(dark ? "#A6ADBB" : "#626C7C");
         r["Accent"] = Brush("#3267E3");
         r["AccentSoft"] = Brush(dark ? "#293B61" : "#E9F0FF");
         r["Good"] = Brush("#299766");
@@ -140,27 +163,33 @@ internal static class UiTheme
         border.SetResourceReference(System.Windows.Controls.Border.BorderBrushProperty, "Line");
         return border;
     }
-    public static Button Toggle(bool on, Action toggle)
+    public static CheckBox Toggle(string name, Func<bool> read, Action<bool> change)
     {
-        var circle = new Border
+        var toggle = new CheckBox { IsChecked = read() };
+        toggle.SetResourceReference(FrameworkElement.StyleProperty, "SettingToggle");
+        AutomationProperties.SetName(toggle, name);
+        bool changing = false;
+        void Changed(object sender, RoutedEventArgs args)
         {
-            Width = 16,
-            Height = 16,
-            CornerRadius = new(8),
-            Background = Brushes.White,
-            HorizontalAlignment = on ? HorizontalAlignment.Right : HorizontalAlignment.Left
-        };
-        var button = new Button
-        {
-            Content = circle,
-            Width = 38,
-            Height = 22,
-            Padding = new(3),
-            BorderThickness = new(0),
-            HorizontalContentAlignment = HorizontalAlignment.Stretch
-        };
-        button.Background = on ? Brush("#3A6DE2") : Brush("#ADB5C1");
-        button.Click += (_, _) => toggle();
-        return button;
+            if (changing)
+                return;
+            changing = true;
+            try
+            {
+                change(toggle.IsChecked == true);
+            }
+            finally
+            {
+                // Confirmation may be declined or persistence may fail. Expose
+                // the saved state without treating rollback as another action.
+                toggle.IsChecked = read();
+                changing = false;
+            }
+        }
+        // Native pointer, Space and UI Automation all change IsChecked. Listening
+        // here also supports TogglePattern, which does not raise Button.Click.
+        toggle.Checked += Changed;
+        toggle.Unchecked += Changed;
+        return toggle;
     }
 }

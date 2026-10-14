@@ -109,6 +109,7 @@ class Practice:
         actions = Gtk.Box(spacing=8)
         outer.pack_end(actions, False, False, 0)
         self.reset_button = Gtk.Button.new_with_mnemonic("重新练习(_R)")
+        self.reset_button.set_sensitive(False)
         self.reset_button.connect("clicked", self.reset)
         actions.pack_start(self.reset_button, False, False, 0)
         self.complete = Gtk.Button.new_with_mnemonic("完成并关闭(_D)")
@@ -123,8 +124,18 @@ class Practice:
         actions.pack_end(self.close_button, False, False, 0)
         self.timer = GLib.timeout_add(1000, self.poll)
 
+    def set_start_sensitive(self, enabled):
+        self.start.set_sensitive(enabled)
+        self.reset_button.set_sensitive(enabled)
+
     def start_clicked(self, *_):
-        if self.closed or self.presentation is None or self.pending_start is not None:
+        if (
+            self.closed
+            or self.presentation is None
+            or self.pending_start is not None
+            or self.pending_outcome is not None
+            or not self.start.get_sensitive()
+        ):
             return
         if self.confirmation is not None:
             self.confirmation.present()
@@ -147,6 +158,8 @@ class Practice:
         self.confirmation = dialog
 
         def respond(widget, response):
+            if self.confirmation is not widget:
+                return
             self.confirmation = None
             widget.destroy()
             if response == Gtk.ResponseType.OK and not self.closed:
@@ -156,8 +169,16 @@ class Practice:
         dialog.show_all()
 
     def begin(self, confirmed_switch):
+        if (
+            self.closed
+            or self.pending_start is not None
+            or self.pending_outcome is not None
+            or not self.start.get_sensitive()
+        ):
+            return
+        self.completion_failed = False
         self.pending_start = {"confirmedSwitch": confirmed_switch}
-        self.start.set_sensitive(False)
+        self.set_start_sensitive(False)
         self.complete.set_sensitive(False)
         self.poll()
 
@@ -166,10 +187,7 @@ class Practice:
         self.poll()
 
     def reset(self, *_):
-        if self.closed or self.pending_start is not None or self.presentation is None:
-            return
         # Restart only Runtime progress; the user keeps ownership of their text.
-        self.completion_failed = False
         self.start_clicked()
 
     def finish(self, outcome):
@@ -251,18 +269,20 @@ class Practice:
             self.poll()
         elif not isinstance(result, dict):
             self.complete.set_sensitive(False)
-            self.start.set_sensitive(False)
+            self.set_start_sensitive(False)
             self.status.set_text("未连接当前会话的 TypeLay。请先从应用菜单启动客户端。")
         else:
             view = result.get("presentation")
             if not isinstance(view, dict):
-                self.start.set_sensitive(False)
+                self.complete.set_sensitive(False)
+                self.set_start_sensitive(False)
                 self.status.set_text("无法读取练习说明，请检查 TypeLay 客户端版本后重新打开。")
                 return False
             self.presentation = view
             self.complete.set_sensitive(view.get("completed") is True)
             self.progress.set_text(view["progressNotice"])
             self.reset_button.set_label(view["restartLabel"] + "(_R)")
+            self.reset_button.get_accessible().set_name(view["restartLabel"])
             for label, key in (
                 (self.heading, "title"),
                 (self.summary, "summary"),
@@ -280,7 +300,7 @@ class Practice:
                 view["restartLabel"] if result.get("progress") else view["startLabel"]
             )
             self.close_button.set_label(view["closeLabel"])
-            self.start.set_sensitive(
+            self.set_start_sensitive(
                 result.get("managedPractice", False)
                 and result.get("modelReady", False)
                 and result.get("practiceEnabled", False)

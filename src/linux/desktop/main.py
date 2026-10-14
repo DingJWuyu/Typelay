@@ -164,6 +164,8 @@ async def desktop(paths, background, lock, tutorial=False):
                 and not settings.tutorial.window.get_visible()
             ):
                 settings.show()
+        elif operation == "settingsGuidance":
+            settings.render_guidance(value)
         elif operation == "render":
             overlay.render(value)
         elif operation == "hide":

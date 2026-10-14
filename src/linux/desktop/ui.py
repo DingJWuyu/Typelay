@@ -189,6 +189,9 @@ class ApplicationSupportPane:
         self.prepare = self.note("")
         self.model = self.note("")
         self.box.pack_start(owner.install_button, False, False, 0)
+        self.try_button = Gtk.Button()
+        self.try_button.connect("clicked", lambda *_: self.open_practice())
+        self.box.pack_start(self.try_button, False, False, 0)
         self.connect = self.note("")
         self.selector = Gtk.ComboBoxText()
         self.selector.connect("changed", lambda *_: self.render_selected())
@@ -198,6 +201,10 @@ class ApplicationSupportPane:
         self.box.pack_start(self.more, False, False, 0)
         self.state = self.note("")
         self.reason = self.note("")
+        self.desktop_safety = self.note("若原有输入法，请先记下启动方式，并手动退出与恢复。")
+        self.desktop_safety.set_no_show_all(True)
+        self.primary = Gtk.Box(spacing=8)
+        self.box.pack_start(self.primary, False, False, 0)
         self.desktop_guide = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.desktop_guide.set_no_show_all(True)
         self.box.pack_start(self.desktop_guide, False, False, 0)
@@ -210,8 +217,6 @@ class ApplicationSupportPane:
             "clicked", lambda *_: self.record_original_method(no_original=True)
         )
         self.desktop_guide.pack_start(self.no_original, False, False, 0)
-        self.primary = Gtk.Box(spacing=8)
-        self.box.pack_start(self.primary, False, False, 0)
         self.details = Gtk.Expander()
         self.box.pack_start(self.details, False, False, 0)
         detail_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -226,9 +231,6 @@ class ApplicationSupportPane:
         self.technical.set_selectable(True)
         self.secondary = Gtk.Box(spacing=8)
         detail_box.pack_start(self.secondary, False, False, 0)
-        self.try_button = Gtk.Button()
-        self.try_button.connect("clicked", lambda *_: self.open_practice())
-        self.box.pack_start(self.try_button, False, False, 0)
         self.recovery = self.note("")
         self.timer = GLib.timeout_add(2000, self.tick)
         owner.window.connect("destroy", lambda *_: GLib.source_remove(self.timer))
@@ -321,6 +323,7 @@ class ApplicationSupportPane:
         self.technical.set_text(row.get("details") or "")
         guidance = self.value.get("desktopGuidance")
         if row["id"] == "desktop-text" and guidance:
+            self.desktop_safety.show()
             self.desktop_steps.set_text(guidance["title"] + "\n" + guidance["steps"])
             self.record_original.set_label(
                 "已确认此前无输入法（仅你的确认）"
@@ -338,6 +341,7 @@ class ApplicationSupportPane:
             self.no_original.set_visible(guidance["canRecordNoOriginalMethod"])
             self.no_original.set_sensitive(not self.busy)
         else:
+            self.desktop_safety.hide()
             self.desktop_guide.hide()
         signature = (row["id"], row.get("primaryAction"), row["secondaryActions"], self.busy)
         if signature != self.action_signature:
@@ -594,8 +598,22 @@ class Settings:
         outer.pack_start(self.pages, True, True, 0)
         self.pages.append_page(scroll, Gtk.Label(label="常规"))
         grid = Gtk.Grid(column_spacing=24, row_spacing=14)
-        grid.set_margin_end(12)
+        grid.set_border_width(12)
         scroll.add(grid)
+        self.mode_description = Gtk.Label(xalign=0)
+        self.mode_description.get_accessible().set_name("当前工作模式说明")
+        self.acceptance_description = Gtk.Label(xalign=0)
+        self.acceptance_description.get_accessible().set_name("当前接受与退出说明")
+        self.save_scope = Gtk.Label(xalign=0)
+        self.save_scope.get_accessible().set_name("设置保存范围")
+        for label in (self.mode_description, self.acceptance_description, self.save_scope):
+            label.set_line_wrap(True)
+            label.set_max_width_chars(64)
+        grid.attach(self.save_scope, 0, 0, 2, 1)
+        switch_style = Gtk.CssProvider()
+        switch_style.load_from_data(
+            b"switch:focus { outline: 2px solid @theme_fg_color; outline-offset: 3px; }"
+        )
         self.controls = {}
         self.control_labels = {}
         function_keys = [(f"F{index}", f"F{index}") for index in range(1, 25)]
@@ -616,12 +634,26 @@ class Settings:
                 [("system", "跟随系统"), ("light", "浅色"), ("dark", "深色")],
             ),
         ]
-        for row, (key, label, choices) in enumerate(rows):
+        row = 1
+        for key, label, choices in rows:
+            draft = key in ("wakeShortcut", "directShortcut", "acceptShortcut", "exitShortcut")
+            caption = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
             self.control_labels[key] = Gtk.Label(label=label, xalign=0)
-            grid.attach(self.control_labels[key], 0, row, 1, 1)
+            caption.pack_start(self.control_labels[key], False, False, 0)
+            save_hint = Gtk.Label(label="保存后生效" if draft else "即时保存", xalign=0)
+            save_hint.get_style_context().add_class("dim-label")
+            caption.pack_start(save_hint, False, False, 0)
+            caption.set_valign(Gtk.Align.CENTER)
+            grid.attach(caption, 0, row, 1, 1)
             if choices is True:
                 widget = Gtk.Switch()
                 widget.set_halign(Gtk.Align.END)
+                widget.set_valign(Gtk.Align.CENTER)
+                widget.set_can_focus(True)
+                widget.set_size_request(72, 44)
+                widget.get_style_context().add_provider(
+                    switch_style, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+                )
             elif isinstance(choices, list):
                 widget = Gtk.ComboBoxText()
                 for identity, title in choices:
@@ -635,6 +667,7 @@ class Settings:
             widget.set_hexpand(True)
             self.controls[key] = widget
             widget.get_accessible().set_name("设置：" + label)
+            widget.get_accessible().set_description(save_hint.get_text())
             if isinstance(widget, Gtk.Switch):
                 widget.connect(
                     "notify::active",
@@ -652,10 +685,18 @@ class Settings:
             else:
                 widget.connect("changed", lambda _control, name=key: self.draft_changed(name))
             grid.attach(widget, 1, row, 1, 1)
-        row = len(rows)
-        label = Gtk.Label(label="排除的应用\n每行一个可执行文件名", xalign=0)
+            row += 1
+            if key == "mode":
+                grid.attach(self.mode_description, 0, row, 2, 1)
+                row += 1
+            elif key == "exitShortcut":
+                grid.attach(self.acceptance_description, 0, row, 2, 1)
+                row += 1
+        label = Gtk.Label(label="排除的应用\n每行一个可执行文件名\n保存后生效", xalign=0)
         grid.attach(label, 0, row, 1, 1)
         self.excluded = Gtk.TextView()
+        self.excluded.get_accessible().set_name("设置：排除的应用")
+        self.excluded.get_accessible().set_description("每行一个可执行文件名，保存后生效")
         self.excluded.set_sensitive(False)
         self.excluded.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         self.excluded.get_buffer().connect(
@@ -666,9 +707,7 @@ class Settings:
         exclusions.add(self.excluded)
         grid.attach(exclusions, 1, row, 1, 1)
         note = Gtk.Label(
-            label="普通开关与选择即时保存。唤醒与直接替换仅在按需模式启用；接受与退出用于当前翻译会话。\n"
-            "快捷键修改后与应用排除项一起保存。\n"
-            "密码、敏感字段及无法确认输入法状态的控件不会读取或替换。",
+            label="密码、敏感字段及无法确认输入法状态的控件不会读取或替换。",
             xalign=0,
         )
         note.set_line_wrap(True)
@@ -750,6 +789,11 @@ class Settings:
             self.draft_messages["unsavedNotice"] if dirty and self.draft_messages else ""
         )
         self.draft_notice.set_visible(dirty and self.draft_messages is not None)
+
+    def render_guidance(self, value):
+        self.mode_description.set_text(value["modeDescription"])
+        self.acceptance_description.set_text(value["acceptanceDescription"])
+        self.save_scope.set_text(value["saveScopeDescription"])
 
     def configure(self, value):
         first = self.value is None

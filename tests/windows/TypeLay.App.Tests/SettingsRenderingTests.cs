@@ -4,11 +4,15 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Automation;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Interop;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -121,6 +125,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                                     Assert.InRange(selector.ActualHeight, 34, 38);
                                 }
                             }
+                            AssertReadableSettingsText(window);
                             Render(window, $"settings-shortcuts-{theme}-{width}.png");
                             Stage($"application-support-show:{theme}:{width}");
                             window.ShowPage("apps");
@@ -136,6 +141,9 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                                 Assert.IsType<SolidColorBrush>(expander.Foreground).Color));
                             Assert.False(Descendants(window).OfType<Button>().Single(button =>
                                 Equals(button.Content, ApplicationSupportPresentation.Create([]).Labels.TryIt)).IsEnabled);
+                            AssertReadableSettingsText(window);
+                            AssertWithinSettingsViewport(window, Descendants(window).OfType<Button>().Single(button =>
+                                Equals(button.Content, ApplicationSupportPresentation.Create([]).Labels.TryIt)));
                             Render(window, $"settings-applications-{theme}-{width}.png");
                             Stage($"general-show:{theme}:{width}");
                             window.ShowPage();
@@ -149,6 +157,10 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                             var scroll = Descendants(window).OfType<ScrollViewer>().First();
                             scroll.ScrollToTop();
                             window.UpdateLayout();
+                            AssertReadableSettingsText(window);
+                            var practice = Descendants(window).OfType<Button>().Single(button =>
+                                Equals(button.Content, OnDemandPracticePresentation.Create(settings.Value).StartLabel));
+                            AssertWithinSettingsViewport(window, practice);
                             Render(window, $"settings-general-{theme}-{width}.png");
                             Stage($"general-scroll:{theme}:{width}");
                             scroll.ScrollToBottom();
@@ -182,6 +194,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                                 Assert.True(Assert.IsType<Popup>(selector.Template.FindName("PART_Popup", selector)).IsOpen);
                                 selector.IsDropDownOpen = false;
                             }
+                            AssertReadableSettingsText(window);
                             Render(window, $"settings-language-{theme}-{width}.png");
                         }
                     }
@@ -204,6 +217,208 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
         }
         finally { testOutput.WriteLine(string.Join(Environment.NewLine, _stages)); }
     }
+
+    [Fact]
+    public async Task SettingsTogglesExposeSavedStateAndPersistOnePointerKeyboardOrAutomationAction()
+    {
+        await desktop.RunAsync(async () =>
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "typelay-toggle-ui-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                string path = Path.Combine(directory, "settings.json");
+                var settings = WindowsRuntime.CreateSettings(path);
+                settings.Update(settings.Value);
+                using var model = WindowsRuntime.CreateModel();
+                var window = new SettingsWindow(settings, model, () => { });
+                window.ShowPage();
+                window.UpdateLayout();
+                int saved = 0;
+                settings.Changed += () => saved++;
+                foreach (string name in new[] { "启用 TypeLay", "开发版实验：允许 Tab 写回", "登录 Windows 后自动启动" })
+                {
+                    var toggle = SettingToggle(window, name);
+                    var peer = Assert.IsType<CheckBoxAutomationPeer>(UIElementAutomationPeer.CreatePeerForElement(toggle));
+                    Assert.Equal(name, peer.GetName());
+                    Assert.Equal(AutomationControlType.CheckBox, peer.GetAutomationControlType());
+                    Assert.True(peer.IsKeyboardFocusable());
+                    Assert.InRange(toggle.ActualWidth, 44, 60);
+                    Assert.InRange(toggle.ActualHeight, 36, 48);
+                    Assert.Equal(name == "启用 TypeLay" ? ToggleState.On : ToggleState.Off,
+                        Assert.IsAssignableFrom<IToggleProvider>(peer.GetPattern(PatternInterface.Toggle)).ToggleState);
+                }
+                Assert.Equal(0, saved); // Mounting native checked controls must not save.
+                var enabled = SettingToggle(window, "启用 TypeLay");
+                enabled.BringIntoView();
+                window.UpdateLayout();
+                Assert.True(enabled.Focus());
+                Assert.True(enabled.IsKeyboardFocused);
+                var focusColor = Assert.IsType<SolidColorBrush>(window.FindResource("Text")).Color;
+                Assert.Contains(Descendants(enabled).OfType<Border>(), border => border.BorderThickness.Left >= 2
+                    && border.BorderBrush is SolidColorBrush brush && brush.Color == focusColor);
+                ToggleProvider(enabled).Toggle();
+                Assert.Equal(1, saved);
+                Assert.False(WindowsRuntime.CreateSettings(path).Value.Enabled);
+                enabled = SettingToggle(window, "启用 TypeLay");
+                Assert.Equal(ToggleState.Off, ToggleProvider(enabled).ToggleState);
+                Assert.True(enabled.IsKeyboardFocused); // Refresh keeps the same setting focused.
+
+                await AwaitSettingsSave(settings, () => SendOwnedSpace(window, enabled));
+                await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                Assert.Equal(2, saved);
+                Assert.True(WindowsRuntime.CreateSettings(path).Value.Enabled);
+                enabled = SettingToggle(window, "启用 TypeLay");
+                Assert.True(enabled.IsKeyboardFocused);
+                await AwaitSettingsSave(settings, () => ClickOwnedToggle(window, enabled));
+                await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                Assert.Equal(3, saved);
+                Assert.False(WindowsRuntime.CreateSettings(path).Value.Enabled);
+                Assert.Equal(ToggleState.Off, ToggleProvider(SettingToggle(window, "启用 TypeLay")).ToggleState);
+
+                using var blocked = new FileStream(path + ".tmp", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                ToggleProvider(SettingToggle(window, "启用 TypeLay")).Toggle();
+                Assert.Equal(3, saved);
+                Assert.False(WindowsRuntime.CreateSettings(path).Value.Enabled);
+                Assert.Equal(ToggleState.Off, ToggleProvider(SettingToggle(window, "启用 TypeLay")).ToggleState);
+                Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "设置未保存");
+            }
+            finally
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, true);
+            }
+        });
+    }
+
+    [Fact]
+    public async Task ModeGuidanceUsesSavedShortcutsWithoutDiscardingPendingEdits()
+    {
+        await desktop.RunAsync(() =>
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "typelay-guidance-ui-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
+                settings.Update(settings.Value with
+                {
+                    AcceptShortcut = "F8",
+                    ExitShortcut = "F9"
+                });
+                using var model = WindowsRuntime.CreateModel();
+                var window = new SettingsWindow(settings, model, () => { });
+                window.ShowPage();
+                AssertSavedGuidance(window, settings.Value);
+                Descendants(window).OfType<ComboBox>().Single(control => AutomationProperties.GetName(control) == "工作模式").SelectedIndex = 1;
+                Assert.Equal(WorkMode.OnDemand, settings.Value.Mode);
+                AssertSavedGuidance(window, settings.Value);
+                window.ShowPage("shortcuts");
+                ShortcutEditor(window).Text = "Ctrl+Shift+K";
+                SessionShortcutSelector(window, accept: true).SelectedItem = "F2";
+                window.ShowPage();
+                AssertSavedGuidance(window, settings.Value);
+                Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text.Contains("第一次 F8", StringComparison.Ordinal));
+                Assert.DoesNotContain(Descendants(window).OfType<TextBlock>(), text => text.Text.Contains("第一次 F2", StringComparison.Ordinal));
+                ToggleProvider(SettingToggle(window, "启用 TypeLay")).Toggle();
+                AssertSavedGuidance(window, settings.Value);
+                window.ShowPage("shortcuts");
+                Assert.Equal("Ctrl+Shift+K", ShortcutEditor(window).Text);
+                Assert.Equal("F2", SessionShortcutSelector(window, accept: true).SelectedItem);
+                Descendants(window).OfType<Button>().Single(button => Equals(button.Content, SettingsDraftPresentation.Create().SaveLabel))
+                    .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                window.ShowPage();
+                AssertSavedGuidance(window, settings.Value);
+                Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text.Contains("第一次 F2", StringComparison.Ordinal));
+            }
+            finally
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, true);
+            }
+        });
+    }
+
+    private static void AssertSavedGuidance(Window window, UserSettings settings)
+    {
+        window.UpdateLayout();
+        var guidance = SettingsGuidancePresentation.Create(settings, exclusionsNeedSave: false);
+        var texts = Descendants(window).OfType<TextBlock>().ToArray();
+        Assert.Contains(texts, text => text.Text == guidance.ModeDescription);
+        Assert.Contains(texts, text => text.Text == guidance.AcceptanceDescription);
+        Assert.Contains(texts, text => text.Text == guidance.SaveScopeDescription);
+        var mode = Descendants(window).OfType<ComboBox>().Single(control => AutomationProperties.GetName(control) == "工作模式");
+        Assert.Contains(Descendants(VisualTreeHelper.GetParent(mode)).OfType<TextBlock>(), text => text.Text == guidance.ModeDescription);
+    }
+
+    private static CheckBox SettingToggle(Window window, string name) => Descendants(window).OfType<CheckBox>()
+        .Single(toggle => AutomationProperties.GetName(toggle) == name);
+
+    private static IToggleProvider ToggleProvider(CheckBox toggle) => Assert.IsAssignableFrom<IToggleProvider>(
+        UIElementAutomationPeer.CreatePeerForElement(toggle).GetPattern(PatternInterface.Toggle));
+
+    private static async Task AwaitSettingsSave(SettingsStore settings, Action action)
+    {
+        var saved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void Changed() => saved.TrySetResult();
+        settings.Changed += Changed;
+        try
+        {
+            action();
+            await saved.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        }
+        finally { settings.Changed -= Changed; }
+    }
+
+    private static void SendOwnedSpace(Window window, CheckBox toggle)
+    {
+        Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+        Assert.True(toggle.IsKeyboardFocused);
+        Assert.Equal(ModifierKeys.None, Keyboard.Modifiers);
+        Input[] input = [new() { Type = 1, Key = 0x20 }, new() { Type = 1, Key = 0x20, KeyboardFlags = 2 }];
+        uint sent = SendInput(2, input, Marshal.SizeOf<Input>());
+        if (sent == 1)
+            SendInput(1, [input[1]], Marshal.SizeOf<Input>());
+        Assert.Equal(2u, sent);
+    }
+
+    private static void ClickOwnedToggle(Window window, CheckBox toggle)
+    {
+        toggle.BringIntoView();
+        window.UpdateLayout();
+        var point = toggle.PointToScreen(new Point(toggle.ActualWidth / 2, toggle.ActualHeight / 2));
+        var pixel = new NativePoint { X = (int)point.X, Y = (int)point.Y };
+        nint handle = new WindowInteropHelper(window).Handle;
+        Assert.Equal(handle, WindowFromPoint(pixel));
+        Assert.Equal(0, Native.GetAsyncKeyState(1) & 0x8000);
+        Assert.True(SetCursorPos(pixel.X, pixel.Y));
+        Assert.Equal(handle, WindowFromPoint(pixel));
+        // Actual native pointer and keyboard routes; not physical-input evidence.
+        Input[] input = [new() { MouseFlags = 2 }, new() { MouseFlags = 4 }];
+        uint sent = SendInput(2, input, Marshal.SizeOf<Input>());
+        if (sent == 1)
+            SendInput(1, [input[1]], Marshal.SizeOf<Input>());
+        Assert.Equal(2u, sent);
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X, Y;
+    }
+    [StructLayout(LayoutKind.Explicit, Size = 40)]
+    private struct Input
+    {
+        [FieldOffset(0)] public uint Type;
+        [FieldOffset(8)] public ushort Key;
+        [FieldOffset(12)] public uint KeyboardFlags;
+        [FieldOffset(20)] public uint MouseFlags;
+    }
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint count, Input[] input, int size);
+    [DllImport("user32.dll")]
+    private static extern nint WindowFromPoint(NativePoint point);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetCursorPos(int x, int y);
 
     [Fact]
     public async Task StartupOpensApplicationSetupOnceAndPreservesDismissalAndNavigation()
@@ -562,6 +777,61 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                     Directory.Delete(directory, true);
             }
         });
+    }
+
+    private static void AssertWithinSettingsViewport(Window window, FrameworkElement control)
+    {
+        var viewport = Descendants(window).OfType<ScrollContentPresenter>().First();
+        var bounds = control.TransformToAncestor(viewport).TransformBounds(new Rect(control.RenderSize));
+        Assert.True(control.IsVisible);
+        Assert.InRange(bounds.Top, 0, viewport.ActualHeight);
+        Assert.InRange(bounds.Bottom, 0, viewport.ActualHeight);
+        Assert.InRange(bounds.Left, 0, viewport.ActualWidth);
+        Assert.InRange(bounds.Right, 0, viewport.ActualWidth);
+    }
+
+    private static void AssertReadableSettingsText(Window window)
+    {
+        // Read the real WPF text and its nearest painted background, including
+        // note cards. Template glyphs and disabled controls are not helper copy.
+        foreach (var text in Descendants(window).OfType<TextBlock>().Where(text =>
+            text.IsVisible && text.IsEnabled && text.TemplatedParent is null && text.Text.Length > 0))
+        {
+            Assert.True(text.FontSize >= 12, $"Helper text is too small: {text.Text}");
+            var foreground = Assert.IsType<SolidColorBrush>(text.Foreground).Color;
+            DependencyObject? parent = text;
+            Color? background = null;
+            while (parent is not null)
+            {
+                Brush? brush = parent switch
+                {
+                    Border border => border.Background,
+                    Panel panel => panel.Background,
+                    Control control => control.Background,
+                    _ => null
+                };
+                if (brush is SolidColorBrush solid && solid.Color.A == 255)
+                {
+                    background = solid.Color;
+                    break;
+                }
+                parent = VisualTreeHelper.GetParent(parent);
+            }
+            Assert.NotNull(background);
+            double first = Luminance(foreground), second = Luminance(background.Value);
+            double contrast = (Math.Max(first, second) + 0.05) / (Math.Min(first, second) + 0.05);
+            Assert.True(contrast >= 4.5, $"Text contrast {contrast:F2} is below 4.5: {text.Text}");
+        }
+    }
+
+    private static double Luminance(Color color)
+    {
+        static double Linear(byte channel)
+        {
+            double value = channel / 255.0;
+            return value <= 0.04045 ? value / 12.92 : Math.Pow((value + 0.055) / 1.055, 2.4);
+        }
+        return 0.2126 * Linear(color.R) + 0.7152 * Linear(color.G) + 0.0722 * Linear(color.B);
     }
 
     private static ComboBox SessionShortcutSelector(Window window, bool accept)

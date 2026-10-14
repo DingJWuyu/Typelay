@@ -112,7 +112,7 @@ internal sealed class QuickPanel : Window
         title.Children.Add(sub);
         Grid.SetColumn(title, 1);
         header.Children.Add(title);
-        var toggle = UiTheme.Toggle(_settings.Value.Enabled, () => Save(_settings.Value with { Enabled = !_settings.Value.Enabled }));
+        var toggle = UiTheme.Toggle("启用 TypeLay", () => _settings.Value.Enabled, enabled => Save(_settings.Value with { Enabled = enabled }));
         Grid.SetColumn(toggle, 2);
         header.Children.Add(toggle);
         var headBorder = UiTheme.Border(header, 0);

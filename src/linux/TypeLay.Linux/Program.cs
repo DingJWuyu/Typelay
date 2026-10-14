@@ -164,14 +164,20 @@ internal static class Program
                     if (value.ValueKind != JsonValueKind.Null)
                         return false;
                     // Legacy onboarding completion is only a prompt preference.
-                    settings.Update(settings.Value with { OnboardingComplete = true });
+                    settings.Update(settings.Value with
+                    {
+                        OnboardingComplete = true
+                    });
                     return true;
                 case "finishOnDemandPractice":
                     if (value.ValueKind != JsonValueKind.String || !value.TryGetGuid(out var finishRun)
                         || controller.PracticeProgress is not { Completed: true } finishedPractice
                         || finishedPractice.RunId != finishRun)
                         return false;
-                    settings.Update(settings.Value with { OnboardingComplete = true });
+                    settings.Update(settings.Value with
+                    {
+                        OnboardingComplete = true
+                    });
                     return true;
                 case "beginOnDemandPractice":
                     if (value.ValueKind != JsonValueKind.String || !value.TryGetGuid(out var beginRun)

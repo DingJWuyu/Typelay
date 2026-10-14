@@ -6,7 +6,7 @@
 <title>TypeLay UI/UX Prototype v1.3</title>
 <style>
   :root{
-    --bg:#eef1f6; --panel:#fff; --panel2:#f7f8fb; --line:#dfe3eb; --text:#171a21; --muted:#707887;
+    --bg:#eef1f6; --panel:#fff; --panel2:#f7f8fb; --line:#dfe3eb; --text:#171a21; --muted:#626c7c;
     --accent:#3267e3; --accent2:#e9f0ff; --good:#19764a; --warn:#a86400; --bad:#b13a3a;
     --shadow:0 16px 48px rgba(27,35,54,.16),0 3px 10px rgba(27,35,54,.08);
     --overlay-shadow:0 14px 34px rgba(19,29,52,.18),0 2px 8px rgba(19,29,52,.10);
@@ -72,7 +72,7 @@
   .focusFlow{margin-top:11px;border-top:1px solid #eceef2;padding-top:10px;font-size:11px;line-height:1.6;color:#646c78}.focusFlow b{color:#3e4652}
   .log{margin-top:8px;display:flex;flex-direction:column;gap:5px}.logline{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:9.7px;color:#6e7682;background:#f6f7f9;border-radius:7px;padding:6px 7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .legend{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}.chip{font-size:10px;background:#f2f4f7;color:#68717f;border-radius:99px;padding:4px 7px;border:1px solid #e3e6eb}
-  .notes{font-size:10.5px;line-height:1.55;color:#717986;margin:9px 0 0}.notes strong{color:#424a55}
+  .notes{font-size:12px;line-height:1.55;color:#626c7c;margin:9px 0 0}.notes strong{color:#424a55}
   @media(max-width:980px){body{overflow:auto}.shell{height:auto;min-height:100%;grid-template-columns:1fr}.stage{height:760px}.demo{overflow:visible}.typelay{right:70px}.sidebar{display:none}.appbody{grid-template-columns:1fr}.titlebar{grid-template-columns:160px 1fr 138px}.search{width:90%}}
 </style>
 </head>
@@ -174,6 +174,7 @@
       </div>
       <p class="notes"><strong>Mock：</strong>翻译文本、延迟、输入法提交、选区变化、焦点与失败均由前端脚本模拟；不调用模型、Windows API、UI Automation、全局 Hook 或云端翻译。</p>
       <p class="notes"><strong>按需练习：</strong>真实客户端按本次自有输入框的结果显示“已生成预览”，再由独立直接替换的已验证回执显示两步完成。此原型中的模拟成功不能完成真实练习，也不授予 Tab 写入资格。重新开始保留输入，需要先输入待翻译的原文；完整 Tab 与人工编辑教程仍按各自安全条件验收。<a href="TypeLay_Tray_Settings_Prototype.html">接入与设置说明</a></p>
+      <p class="notes"><strong>操作说明：</strong>只读预览不修改原文；候选通过安全检查后才能接受。编辑后先回到原框，再独立按一次接受键。写回结果未知时应检查原框，不能显示“未替换”或自动重试。真实设置显示当前模式及实际快捷键；此原型仍用默认键演示。</p>
       <p class="notes"><strong>视觉：</strong>系统字体、浅色半透明浮层、低对比边框与轻阴影；语言方向只在展开浮层左上角出现，状态文案只表达用户当前能做什么，不暴露内部技术状态。</p>
     </div>
   </aside>
