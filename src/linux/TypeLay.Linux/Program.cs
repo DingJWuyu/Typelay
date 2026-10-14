@@ -9,6 +9,7 @@ internal static class Program
     private sealed record SettingsDraftRequest(ShortcutSettingsDraft Shortcuts, string[]? ExcludedApplications = null);
     private sealed record PlacementRequest(RectPx Input, RectPx Work, double Width, double Height, double Gap, double MinimumHeight);
     private sealed record ApplicationSupportRequest(ApplicationSupportFact[] Facts);
+    private sealed record PracticeBindingRequest(Guid RunId, TargetId Target);
     public static int Main(string[] args)
     {
         if (args is ["--version"])
@@ -153,7 +154,52 @@ internal static class Program
                         };
                     }
                 case "onDemandPractice":
-                    return OnDemandPracticePresentation.Create(settings.Value);
+                    var practiceProgress = controller.PracticeProgress;
+                    return OnDemandPracticePresentation.Create(settings.Value,
+                        value.ValueKind == JsonValueKind.String && value.TryGetGuid(out var presentationRun)
+                            && practiceProgress?.RunId == presentationRun ? practiceProgress : null);
+                case "onDemandPracticeProgress":
+                    return controller.PracticeProgress;
+                case "dismissOnboarding":
+                    if (value.ValueKind != JsonValueKind.Null)
+                        return false;
+                    // Legacy onboarding completion is only a prompt preference.
+                    settings.Update(settings.Value with { OnboardingComplete = true });
+                    return true;
+                case "finishOnDemandPractice":
+                    if (value.ValueKind != JsonValueKind.String || !value.TryGetGuid(out var finishRun)
+                        || controller.PracticeProgress is not { Completed: true } finishedPractice
+                        || finishedPractice.RunId != finishRun)
+                        return false;
+                    settings.Update(settings.Value with { OnboardingComplete = true });
+                    return true;
+                case "beginOnDemandPractice":
+                    if (value.ValueKind != JsonValueKind.String || !value.TryGetGuid(out var beginRun)
+                        || !controller.BeginOnDemandPractice(beginRun))
+                        return false;
+                    // Explicit restart must request a fresh preview even when
+                    // the ordinary practice field still has the same text.
+                    controller.StopSession();
+                    return true;
+                case "endOnDemandPractice":
+                    return value.ValueKind == JsonValueKind.String && value.TryGetGuid(out var endRun)
+                        && controller.EndOnDemandPractice(endRun);
+                case "bindOnDemandPractice":
+                    if (value.ValueKind != JsonValueKind.Object || value.EnumerateObject().Count() != 2
+                        || !value.TryGetProperty("runId", out var bindingRun)
+                        || bindingRun.ValueKind != JsonValueKind.String || !bindingRun.TryGetGuid(out _)
+                        || !value.TryGetProperty("target", out var bindingTarget)
+                        || bindingTarget.ValueKind != JsonValueKind.Object
+                        || bindingTarget.EnumerateObject().Count() != 3
+                        || !bindingTarget.TryGetProperty("backend", out var backend)
+                        || backend.ValueKind != JsonValueKind.String || backend.GetString() != "linux-gtk3"
+                        || !bindingTarget.TryGetProperty("value", out var field)
+                        || field.ValueKind != JsonValueKind.String || !field.TryGetGuid(out _)
+                        || !bindingTarget.TryGetProperty("lifetime", out var lifetime)
+                        || lifetime.ValueKind != JsonValueKind.String || !lifetime.TryGetGuid(out _))
+                        return false;
+                    var binding = DesktopLink.Decode<PracticeBindingRequest>(value);
+                    return controller.BindOnDemandPractice(binding.RunId, binding.Target);
                 case "startOnDemandPractice":
                     if (value.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
                         || !model.Ready || !settings.Value.Enabled

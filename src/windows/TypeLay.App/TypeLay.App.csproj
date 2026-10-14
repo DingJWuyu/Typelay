@@ -10,6 +10,7 @@
     <AssemblyName>TypeLay.App</AssemblyName>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../shared/PracticeProgressPipe.cs" Link="Windows/PracticeProgressPipe.cs" />
     <Compile Include="../shared/WindowsInterruptClock.cs" Link="Windows/WindowsInterruptClock.cs" />
     <ProjectReference Include="../TypeLay.Practice/TypeLay.Practice.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../TypeLay.Windows.Contracts/TypeLay.Windows.Contracts.csproj" />

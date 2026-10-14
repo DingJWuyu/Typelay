@@ -28,6 +28,7 @@ class Practice:
         self.pending_outcome = None
         self.pending_start = None
         self.pending_settings = False
+        self.close_thread = None
         self.presentation = None
         self.confirmation = None
         self.completion_failed = False
@@ -61,6 +62,7 @@ class Practice:
         self.replace_step = note("")
         self.input_label = note("")
         self.source = Gtk.Entry()
+        Gtk.Buildable.set_name(self.source, "typelay-practice-source")
         self.source.set_max_length(2048)
         self.source.get_accessible().set_name("练习输入框")
         content.pack_start(self.source, False, False, 0)
@@ -69,6 +71,7 @@ class Practice:
         self.start.connect("clicked", self.start_clicked)
         content.pack_start(self.start, False, False, 0)
         self.status = note("等待连接当前 Wayland 会话的 TypeLay；请聚焦上面的练习框。")
+        self.progress = note("尚未开始本次练习。")
         self.capability_note = note("")
         settings = Gtk.Button(label="打开 TypeLay 设置")
         settings.connect("clicked", lambda *_: self.request_settings())
@@ -102,12 +105,14 @@ class Practice:
         instructions.set_max_width_chars(70)
         automatic.add(instructions)
         content.pack_start(automatic, False, False, 0)
+        note("以后不再自动提示；你仍可随时从设置打开练习。")
         actions = Gtk.Box(spacing=8)
         outer.pack_end(actions, False, False, 0)
-        reset = Gtk.Button.new_with_mnemonic("重新练习(_R)")
-        reset.connect("clicked", self.reset)
-        actions.pack_start(reset, False, False, 0)
-        self.complete = Gtk.Button.new_with_mnemonic("我已完成练习(_D)")
+        self.reset_button = Gtk.Button.new_with_mnemonic("重新练习(_R)")
+        self.reset_button.connect("clicked", self.reset)
+        actions.pack_start(self.reset_button, False, False, 0)
+        self.complete = Gtk.Button.new_with_mnemonic("完成并关闭(_D)")
+        self.complete.set_sensitive(False)
         self.complete.connect("clicked", lambda *_: self.finish("completed"))
         actions.pack_start(self.complete, False, False, 0)
         self.skip = Gtk.Button.new_with_mnemonic("跳过教程(_S)")
@@ -153,6 +158,7 @@ class Practice:
     def begin(self, confirmed_switch):
         self.pending_start = {"confirmedSwitch": confirmed_switch}
         self.start.set_sensitive(False)
+        self.complete.set_sensitive(False)
         self.poll()
 
     def request_settings(self):
@@ -160,19 +166,22 @@ class Practice:
         self.poll()
 
     def reset(self, *_):
-        # This is an explicit local-field reset, not a production writeback.
+        if self.closed or self.pending_start is not None or self.presentation is None:
+            return
+        # Restart only Runtime progress; the user keeps ownership of their text.
         self.completion_failed = False
-        self.source.set_text("")
-        self.source.grab_focus()
+        self.start_clicked()
 
     def finish(self, outcome):
         if self.closed or self.pending_outcome is not None:
+            return
+        if outcome == "completed" and not (self.presentation or {}).get("completed"):
             return
         self.pending_outcome = outcome
         self.completion_failed = False
         self.complete.set_sensitive(False)
         self.skip.set_sensitive(False)
-        self.status.set_text("正在保存你明确选择的完成状态…")
+        self.status.set_text("正在关闭首次使用提示…")
         self.poll()
 
     def poll(self):
@@ -214,6 +223,7 @@ class Practice:
             self.pending_start = None
             if result is True:
                 self.source.grab_focus()
+                self.progress.set_text("等待确认本次练习框连接，请稍候再按快捷键。")
             else:
                 self.status.set_text(
                     "尚未开始练习。请检查当前模式、启用状态、模型和语言设置后重试。"
@@ -230,11 +240,9 @@ class Practice:
                 return False
             self.pending_outcome = None
             self.completion_failed = True
-            self.complete.set_sensitive(True)
+            self.complete.set_sensitive(False)
             self.skip.set_sensitive(True)
-            self.status.set_text(
-                "完成状态未保存。请确认 TypeLay 仍在运行后重试；关闭窗口不会标记完成。"
-            )
+            self.status.set_text("未能关闭提示，请重新检查或重新练习后重试。")
         elif (
             self.pending_outcome is not None
             or self.pending_start is not None
@@ -242,6 +250,7 @@ class Practice:
         ):
             self.poll()
         elif not isinstance(result, dict):
+            self.complete.set_sensitive(False)
             self.start.set_sensitive(False)
             self.status.set_text("未连接当前会话的 TypeLay。请先从应用菜单启动客户端。")
         else:
@@ -251,6 +260,9 @@ class Practice:
                 self.status.set_text("无法读取练习说明，请检查 TypeLay 客户端版本后重新打开。")
                 return False
             self.presentation = view
+            self.complete.set_sensitive(view.get("completed") is True)
+            self.progress.set_text(view["progressNotice"])
+            self.reset_button.set_label(view["restartLabel"] + "(_R)")
             for label, key in (
                 (self.heading, "title"),
                 (self.summary, "summary"),
@@ -264,39 +276,43 @@ class Practice:
             # A settings refresh must never replace the user's text or selection.
             self.source.set_placeholder_text(view["sampleText"])
             self.source.get_accessible().set_name(view["inputLabel"])
-            self.start.set_label(view["startLabel"])
+            self.start.set_label(
+                view["restartLabel"] if result.get("progress") else view["startLabel"]
+            )
             self.close_button.set_label(view["closeLabel"])
             self.start.set_sensitive(
-                result.get("modelReady", False)
+                result.get("managedPractice", False)
+                and result.get("modelReady", False)
                 and result.get("practiceEnabled", False)
                 and not view["languageNeedsChange"]
             )
+            if not result.get("managedPractice"):
+                self.complete.set_sensitive(False)
+                self.status.set_text(
+                    "此窗口未绑定当前客户端的受管练习。请从设置的应用支持重新连接并打开练习；历史教程偏好不代表完成。"
+                )
+                return False
             if not result.get("modelReady"):
                 self.status.set_text("本地模型尚未就绪。请在 TypeLay 设置中完成组件安装。")
                 return False
             if view["currentStateNotice"]:
                 self.status.set_text(view["currentStateNotice"])
                 return False
-            if not self.source.has_focus() or not self.window.is_active():
-                return False
-            diagnostic = result.get("input") or {}
-            if not result.get("sourceSupported"):
-                self.status.set_text(
-                    "本练习尚未连接原生输入支持。请使用合作包的 launch 入口，并确认处于同一 niri 会话。"
-                )
-            elif diagnostic.get("captureStatus") in ("native-read-declined", "no-native-field"):
-                self.status.set_text(
-                    "当前尚未取得读取/替换能力。请确认合作组件已启用；输入法候选未结束时先完成或取消。"
-                )
-            else:
-                self.status.set_text(
-                    "本地模型与原生输入连接已就绪。请按上方快捷键练习；能否预览或替换，以真实操作反馈为准。"
-                )
+            self.status.set_text(view["progressNotice"])
         return False
 
     def close(self, *_):
         if not self.closed:
             self.closed = True
+
+            def retire():
+                try:
+                    control(self.paths, "endOnDemandPractice")
+                except (OSError, EOFError, ValueError):
+                    pass
+
+            self.close_thread = threading.Thread(target=retire, name="typelay-practice-close")
+            self.close_thread.start()
             if self.confirmation is not None:
                 self.confirmation.destroy()
                 self.confirmation = None
@@ -315,8 +331,9 @@ class Practice:
             Gtk.main()
         finally:
             self.closed = True
-            if self.request_thread:
-                self.request_thread.join(timeout=2)
+            for thread in (self.request_thread, self.close_thread):
+                if thread:
+                    thread.join(timeout=2)
 
 
 def main():

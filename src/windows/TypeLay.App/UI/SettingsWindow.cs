@@ -39,7 +39,16 @@ internal sealed class SettingsWindow : Window
     }
     private CancellationTokenSource? _install;
     private ProgressBar? _progress;
-    private TextBlock? _progressLabel;
+    private TextBlock? _progressLabel, _practiceStatus;
+    public Func<OnDemandPracticeProgress?>? PracticeProgress
+    {
+        get; set;
+    }
+    public void RefreshPracticeProgress()
+    {
+        if (_practiceStatus is not null)
+            _practiceStatus.Text = OnDemandPracticePresentation.Create(_settings.Value, PracticeProgress?.Invoke()).ProgressNotice;
+    }
     public Action? SessionMustEnd;
     public SettingsWindow(SettingsStore settings, ModelClient model, Action openPractice, WindowsApplicationSupport? support = null,
         Func<ModelInstaller>? createInstaller = null)
@@ -219,6 +228,7 @@ internal sealed class SettingsWindow : Window
         _content.Children.Clear();
         _progress = null;
         _progressLabel = null;
+        _practiceStatus = null;
         if (_page != "shortcuts" && _settingsError is { } error)
             Note("设置未保存", error);
         switch (_page)
@@ -351,8 +361,10 @@ internal sealed class SettingsWindow : Window
         Row("外观", "使用系统字体和低干扰浮层。", themes);
         Rule();
         Note("文本与译文保留在本机", "推理完全在本地进行；默认不保存翻译历史，不需要账号或云同步。");
-        var practice = OnDemandPracticePresentation.Create(_settings.Value);
+        var practice = OnDemandPracticePresentation.Create(_settings.Value, PracticeProgress?.Invoke());
         Row(practice.Title, practice.Summary, UiTheme.Button(practice.StartLabel, StartPractice));
+        _practiceStatus = UiTheme.Text(practice.ProgressNotice, 10.5, true);
+        _content.Children.Add(_practiceStatus);
     }
     public void StartPractice()
     {

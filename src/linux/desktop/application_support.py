@@ -38,6 +38,13 @@ class ApplicationSupport:
         self.desktop_component = DesktopComponent(paths)
         self.desktop_session = DesktopSession(paths)
         self.desktop_session_state = {"state": "unchecked"}
+        self.refresh_revision = 0
+        self.practice_launch = None
+        self.original_method_recorded = False
+        self.no_original_method = False
+        self.original_input_seen = False
+        self.practice_session_started = False
+        self.practice_component_removed = False
         installer_path = paths.home / "install.py"
         if installer_path.is_file():
             specification = importlib.util.spec_from_file_location(
@@ -371,16 +378,116 @@ class ApplicationSupport:
 
     async def refresh(self):
         """Session checks may use D-Bus and /proc; never block the GTK/input loop."""
+        self.refresh_revision += 1
+        revision = self.refresh_revision
         if (
             self.desktop_component.status()["state"] != "missing"
             or self.desktop_component.root.exists()
+            or self.practice_component_removed
+            or self.original_method_recorded
         ):
             session = await self.desktop_session.refresh()
             if session["state"] == "conflict" and session.get("reason") == "existing-fcitx-session":
                 session["source"] = await detect_fcitx_source()
+            if revision != self.refresh_revision:
+                return
             self.desktop_session_state = session
+            if session["state"] == "conflict":
+                self.original_input_seen = True
+                if self.no_original_method:
+                    # New observed input-method activity contradicts the prior
+                    # user statement; do not carry it into a later connection.
+                    self.no_original_method = self.original_method_recorded = False
         else:
             self.desktop_session_state = {"state": "unchecked"}
+
+    def owns_practice(self, pid):
+        return self.desktop_session.owns_application(self.practice_launch, pid)
+
+    def release_practice(self, pid):
+        if self.practice_launch and self.practice_launch["receipt"]["child"]["pid"] == pid:
+            self.practice_launch = None
+
+    def record_original_method(self, no_original=False):
+        # This records the user's understanding only, never a restoration plan.
+        if self.desktop_session_state["state"] not in ("inactive", "conflict", "active"):
+            return False
+        if no_original and (
+            self.original_input_seen or self.desktop_session_state["state"] != "inactive"
+        ):
+            return False
+        self.original_method_recorded = True
+        self.no_original_method = no_original
+        return True
+
+    def desktop_guidance(self):
+        """Small manual sequence from existing facts; no inferred service commands."""
+        session = self.desktop_session_state
+        state = session["state"]
+        running = (
+            {
+                "existing-fcitx-session": "Fcitx",
+                "existing-ibus-session": "IBus",
+            }.get(session.get("reason"))
+            if state == "conflict"
+            else None
+        )
+        observed = (
+            f"检测到 {running} 正在运行。"
+            if running
+            else "当前未检测到 Fcitx/IBus 冲突。"
+            if state == "inactive"
+            else "TypeLay 自有练习输入法正在运行。"
+            if state == "active"
+            else "请正常关闭仍在运行的练习及其子窗口，再重新检查。"
+            if state == "applications-running"
+            else "当前输入法状态尚未确认，请先重新检查；未知状态不能开始或宣告恢复。"
+        )
+        recorded = (
+            "你确认此前未运行输入法，无需恢复；这只是你的确认。"
+            if self.no_original_method
+            else "已由你确认记下原启动方式；TypeLay 没有验证该方式。"
+            if self.original_method_recorded
+            else "请先在自己的记录中记下原输入法如何启动，并确认知道练习后如何恢复。"
+        )
+        restore = "练习后请按原启动方式手动恢复输入法，再点“重新检查”。"
+        if self.practice_component_removed:
+            restore = (
+                "受管组件已移除。"
+                + observed
+                + "这不能证明原启动方式已恢复，请按自己的记录手动恢复并核对，再重新检查。"
+            )
+        elif self.practice_session_started or state in ("active", "applications-running"):
+            restore = "先正常关闭练习及其子窗口，再用本页“移除”确认结束自有输入法；随后手动恢复原输入法并重新检查。"
+        if self.no_original_method:
+            if self.practice_component_removed and state == "inactive":
+                restore = "受管组件已移除，当前未检测到输入法冲突。你此前确认没有原输入法需要恢复。"
+            elif not self.practice_component_removed:
+                restore = "练习后正常关闭练习及子窗口，再确认“移除”并重新检查。你确认此前没有原输入法需要恢复。"
+        exit_step = (
+            "3. 你确认此前未运行输入法；重新检查无冲突后继续。\n"
+            if self.no_original_method
+            else "3. 保存工作、完成候选，由你手动退出原输入法，然后重新检查。\n"
+        )
+        return {
+            "title": "输入法接入与恢复",
+            "steps": (
+                "1. 检查原输入法：" + observed + "\n"
+                "2. 记录恢复方式："
+                + recorded
+                + "\n"
+                + exit_step
+                + "4. 确认无冲突后，使用本页“连接”的确认窗口启动练习。\n"
+                "5. " + restore
+            ),
+            "originalMethodRecorded": self.original_method_recorded,
+            "noOriginalMethod": self.no_original_method,
+            "canRecordNoOriginalMethod": state == "inactive"
+            and not self.original_input_seen
+            and not self.original_method_recorded,
+            "canRecordOriginalMethod": state in ("inactive", "conflict", "active")
+            and not self.original_method_recorded,
+        }
 
     def desktop_fact(self, connected=False):
         prepared = self.desktop_component.status()
@@ -419,7 +526,8 @@ class ApplicationSupport:
                     if source == "user-service":
                         details += (
                             "\n\n已识别当前 Fcitx 来自专用用户服务。此检查只确认当前启动来源，"
-                            "不会自动停止或恢复服务；结束练习后仍请按原服务方式恢复输入法。"
+                            "不会自动停止或恢复服务，也未确认具体服务名称或完整恢复方法；"
+                            "结束练习后仍需按你记下并核对的方式手动恢复输入法。"
                         )
                     elif session.get("reason") == "existing-fcitx-session":
                         details += (
@@ -456,6 +564,8 @@ class ApplicationSupport:
                 actions.append("Remove")
             else:
                 details += " 请先正常关闭练习及子窗口，再重新检查。"
+        if "Connect" in actions and not self.original_method_recorded:
+            actions.remove("Connect")
         if "Connect" in actions:
             actions.remove("OpenInstructions")
         result = self.last_results.get("desktop-text")
@@ -677,14 +787,25 @@ class ApplicationSupport:
             return await self.browser_action(
                 identity, "remove" if action == "Remove" else "connect"
             )
+        if identity == "desktop-text" and action in (
+            "RecordOriginalMethod",
+            "RecordNoOriginalMethod",
+        ):
+            await self.refresh()
+            return {"ok": self.record_original_method(action == "RecordNoOriginalMethod")}
         if identity == "desktop-text" and action == "Connect":
+            if not self.original_method_recorded:
+                return {"ok": False, "reason": "original-method-not-recorded"}
             result = await self.desktop_session.start_session()
             if result["ok"]:
+                self.practice_session_started = True
+                self.practice_component_removed = False
                 result = await self.desktop_session.launch_application(
                     ["/usr/bin/python3", "-I", "-B", str(self.paths.home / "desktop/practice.py")],
                     toolkit="gtk3",
                 )
                 if result["ok"]:
+                    self.practice_launch = result["application"]
                     result = {
                         "ok": True,
                         "reason": "practice-start-requested",
@@ -695,6 +816,8 @@ class ApplicationSupport:
             return result
         if identity == "desktop-text" and action == "Remove":
             result = await self.desktop_session.remove_component()
+            if result["ok"]:
+                self.practice_component_removed = True
             self.last_results[identity] = result
             await self.refresh()
             return result

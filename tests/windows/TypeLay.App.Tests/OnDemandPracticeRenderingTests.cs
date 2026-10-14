@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -7,6 +8,8 @@ using System.Windows.Threading;
 using TypeLay.App;
 using TypeLay.Core;
 using TypeLay.Runtime;
+using TypeLay.Windows.Contracts;
+using N = TypeLay.Platform.Windows.NativeMethods;
 using Xunit;
 
 namespace TypeLay.App.Tests;
@@ -146,6 +149,119 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             }
         });
     }
+
+    [Fact]
+    public Task CurrentPracticeBindsOnlyItsOwnedNativeFieldAndRequiresExplicitRestart() => desktop.RunAsync(async () =>
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(25));
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-practice-progress-" + Guid.NewGuid().ToString("N"));
+        string path = Path.Combine(directory, "settings.json");
+        ChildProcess? child = null, other = null;
+        var overlay = new OverlayWindow(automationTest: true);
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(path);
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.OnDemand,
+                OnboardingComplete = true
+            });
+            using var model = WindowsRuntime.CreateModel(); // Binding/clearing does not need inference or a downloaded model.
+            using var host = new PracticeHost(info => child = new ChildProcess(info));
+            using var unrelated = new PracticeHost(info => other = new ChildProcess(info));
+            var support = new WindowsApplicationSupport();
+            using var controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true,
+                support: support, practice: host);
+            host.Bind(controller);
+            await controller.StartAsync().WaitAsync(deadline.Token);
+            unrelated.Open(path);
+            nint otherRoot = await Window(other!);
+            host.Open(path);
+            Guid firstRun = controller.PracticeProgress!.RunId;
+            nint root = await Window(child!);
+            nint field = GetDlgItem(root, 101);
+            await Focus(root);
+            await Until(() => controller.PracticeProgress?.Target is not null);
+            var first = controller.PracticeProgress!;
+            Assert.False(first.Completed); // Historical onboarding preference is never evidence.
+            Assert.False(first.PreviewCompleted);
+            Assert.False(first.DirectReplacementCompleted);
+            Assert.True(WindowsTarget.TryDecode(first.Target!.Value, out var target));
+            Assert.Equal(child!.Process.Id, target.ProcessId);
+            Assert.Equal(child.Process.StartTime.ToUniversalTime().Ticks, target.ProcessStartUtcTicks);
+            Assert.Equal((long)root, target.RootHwnd);
+            Assert.Equal((long)field, target.ControlHwnd);
+            Assert.Equal("win32-edit-transaction-v2", target.Provider);
+            Assert.NotEqual(Guid.Empty, target.Lifetime);
+
+            settings.Update(settings.Value with
+            {
+                Theme = "dark"
+            });
+            Assert.Null(controller.PracticeProgress);
+            await Until(() => N.ReadText(GetDlgItem(root, 103), 4096)
+                == OnDemandPracticePresentation.Create(settings.Value).ProgressNotice);
+            await Focus(otherRoot);
+            N.Send(GetDlgItem(root, 102), 0x00f5); // Click the real restart button without changing source focus.
+            await Until(() => controller.PracticeProgress is { Target: null } progress && progress.RunId != firstRun);
+            Guid secondRun = controller.PracticeProgress!.RunId;
+            bool checkedOther = false;
+            support.CheckCompleted += _ => checkedOther = true;
+            support.BeginCheck("desktop-text");
+            await Until(() => checkedOther); // A real production capture of the same-titled foreign process completed.
+            Assert.Null(controller.PracticeProgress!.Target);
+            Assert.False(controller.PracticeProgress.Completed);
+            await Focus(root);
+            await Until(() => controller.PracticeProgress?.Target is not null);
+            Assert.Equal(secondRun, controller.PracticeProgress!.RunId);
+            Assert.False(controller.PracticeProgress.PreviewCompleted);
+            Assert.False(controller.PracticeProgress.DirectReplacementCompleted);
+
+            Assert.True(N.PostMessage(root, 0x0010, 0, 0));
+            await child.Process.WaitForExitAsync(deadline.Token);
+            await Until(() => controller.PracticeProgress is null);
+            host.Open(path);
+            Assert.NotEqual(secondRun, controller.PracticeProgress!.RunId);
+            Assert.False(controller.PracticeProgress.Completed);
+            Assert.Equal(WorkMode.OnDemand, settings.Value.Mode);
+            Assert.False(settings.Value.ExperimentalWriteback);
+            Assert.True(settings.Value.OnboardingComplete);
+
+            async Task<nint> Window(ChildProcess process)
+            {
+                nint window = 0;
+                await Until(() =>
+                {
+                    Assert.False(process.Process.HasExited);
+                    process.Process.Refresh();
+                    window = process.Process.MainWindowHandle;
+                    return window != 0 && GetDlgItem(window, 101) != 0;
+                });
+                return window;
+            }
+            async Task Focus(nint window)
+            {
+                Assert.True(N.SetForegroundWindow(window));
+                Assert.True(N.PostMessage(window, 0x0007, 0, 0));
+                await Until(() => N.Focused() == (window, GetDlgItem(window, 101)));
+            }
+            async Task Until(Func<bool> condition)
+            {
+                while (!condition())
+                    await Task.Delay(15, deadline.Token);
+            }
+        }
+        finally
+        {
+            overlay.Close();
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    });
+
+    [DllImport("user32.dll")]
+    private static extern nint GetDlgItem(nint window, int id);
 
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
     {

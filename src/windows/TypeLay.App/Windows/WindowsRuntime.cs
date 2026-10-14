@@ -16,7 +16,8 @@ internal static class WindowsRuntime
         info => new ChildProcess(info));
 
     public static SessionController CreateSession(SettingsStore settings, ModelClient model, OverlayWindow overlay,
-        bool automationTest = false, IInputBroker? broker = null, WindowsApplicationSupport? support = null)
+        bool automationTest = false, IInputBroker? broker = null, WindowsApplicationSupport? support = null,
+        PracticeHost? practice = null)
     {
         var monitor = new KeyboardHook(automationTest, overlay.Handle);
         broker ??= new BrokerClient();
@@ -25,7 +26,7 @@ internal static class WindowsRuntime
         if (support is not null)
             loop.Tick += support.Poll;
         return new(settings, model, overlay, monitor,
-            new WindowsInputService(broker, overlay.Handle, support, monitor), loop);
+            new WindowsInputService(broker, overlay.Handle, support, monitor, practice), loop);
     }
 
     private static void SetStartup(bool enabled)

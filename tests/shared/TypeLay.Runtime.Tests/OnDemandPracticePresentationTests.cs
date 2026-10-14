@@ -18,6 +18,9 @@ public sealed class OnDemandPracticePresentationTests
         Assert.Contains("Ctrl+Shift+F10", view.ReplaceStep);
         Assert.Contains("人工草稿", view.CapabilityNote);
         Assert.Contains("Tab", view.CapabilityNote);
+        Assert.Contains("待翻译的原文", view.PreviewStep);
+        Assert.Contains("只重置进度，保留输入", view.CapabilityNote);
+        Assert.Contains("请先输入新的原文", view.CapabilityNote);
     }
 
     [Fact]
@@ -57,4 +60,40 @@ public sealed class OnDemandPracticePresentationTests
         if (needsChange)
             Assert.Contains("语言设置", view.CurrentStateNotice);
     }
+    [Fact]
+    public void DismissingTheOldTutorialNeverMarksPracticeComplete()
+    {
+        var view = OnDemandPracticePresentation.Create(new(OnboardingComplete: true));
+        Assert.False(view.PreviewCompleted);
+        Assert.False(view.DirectReplacementCompleted);
+        Assert.False(view.Completed);
+        Assert.Contains("重新开始", view.ProgressNotice);
+    }
+
+    [Fact]
+    public void ProgressNamesOnlyTheTwoObservedOnDemandSteps()
+    {
+        var run = new OnDemandPracticeProgress(Guid.NewGuid(), null, Guid.NewGuid(), 0, 1, false, false);
+        var waiting = OnDemandPracticePresentation.Create(new(), run);
+        Assert.Contains("尚未连接", waiting.ProgressNotice);
+        Assert.False(waiting.Completed);
+        run = run with
+        {
+            Target = new("controlled", "practice-field", Guid.NewGuid()),
+            PreviewCompleted = true
+        };
+        var preview = OnDemandPracticePresentation.Create(new(), run);
+        Assert.Contains("已生成预览", preview.ProgressNotice);
+        Assert.DoesNotContain("已完成", preview.ProgressNotice);
+        Assert.False(preview.Completed);
+        var complete = OnDemandPracticePresentation.Create(new(), run with
+        {
+            DirectReplacementCompleted = true
+        });
+        Assert.Equal("按需练习已完成：已生成预览，并已验证直接替换。", complete.ProgressNotice);
+        Assert.True(complete.Completed);
+        Assert.Contains("暂不包含 Tab", complete.CapabilityNote);
+        Assert.Equal("重新开始练习", complete.RestartLabel);
+    }
+
 }

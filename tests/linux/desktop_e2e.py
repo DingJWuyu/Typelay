@@ -2091,12 +2091,19 @@ def run(arguments):
                                 check=True,
                                 timeout=3,
                             )
-                            key("alt+d")
+                            # This manually launched window is outside the
+                            # current managed-run proof. Only explicit skip can
+                            # save the prompt preference after these Tab checks.
+                            assert (
+                                control(paths, "finishOnboarding", {"outcome": "completed"})
+                                is False
+                            )
+                            key("alt+s")
                             assert practice.wait(timeout=5) == 0
                             assert status()["setup"]["onboardingComplete"]
                             assert not status()["setup"]["tutorialVisible"]
                             evidence.append(
-                                "Shipped GTK practice window: production CPU model and one Tab, actual candidate editing and two-stage Tab, explicit completion; accessibility readback without a tutorial controller"
+                                "Shipped GTK practice window: production CPU model and one Tab, actual candidate editing and two-stage Tab, explicit prompt skip; accessibility readback without a tutorial controller"
                             )
 
                         if session_bindings:
@@ -2567,6 +2574,16 @@ def run(arguments):
             if bundled_component:
                 from support.gtk_accessibility import focused
 
+                # Keep the earlier explicit tutorial-dismissal coverage, then
+                # start this independent managed lesson with its prompt pending.
+                # First-run Settings opens Application Support; no skip/dismiss
+                # action is taken before the real two-step completion below.
+                settings = json.loads(paths.settings.read_text())
+                stop()
+                settings["OnboardingComplete"] = False
+                start()
+                assert not status()["setup"]["onboardingComplete"]
+
                 def desktop_row():
                     view = (status().get("setup") or {}).get("applicationSupport") or {}
                     return next(
@@ -2574,7 +2591,7 @@ def run(arguments):
                         None,
                     )
 
-                def desktop_action(identity):
+                def desktop_action(identity, cancel=False):
                     row = desktop_row()
                     action = next(action for action in row["actions"] if action["id"] == identity)
                     if row["primaryAction"]["id"] != identity:
@@ -2582,7 +2599,7 @@ def run(arguments):
                         if not details.get_state_set().contains(Atspi.StateType.EXPANDED):
                             activate_setting(support["labels"]["details"])
                     activate_setting(action["label"])
-                    activate_setting(support["labels"]["confirm"])
+                    activate_setting(support["labels"]["cancel" if cancel else "confirm"])
 
                 # Only this isolated HOME is touched. The private daemon must not
                 # read/write even these synthetic "existing user" profile files.
@@ -2591,10 +2608,14 @@ def run(arguments):
                 user_profile.write_text("# Existing user profile must remain unchanged\n")
                 before_profile = user_profile.read_bytes()
                 assert control(paths, "settings") is True
-                # A restarted settings window initially opens its general page.
-                wake = settings_control("设置：唤醒翻译")
-                assert Atspi.Component.grab_focus(wake.get_component_iface())
-                key("ctrl+Page_Down")
+                # First-run Settings already selected Application Support.
+
+                wait_for(
+                    lambda: (row := desktop_row())
+                    and not any(a["id"] == "Connect" for a in row["actions"]),
+                    "fresh client must require the user's original input-method acknowledgement",
+                )
+                activate_setting("我已记下原输入法的启动方式，并知道如何恢复")
                 wait_for(
                     lambda: (row := desktop_row())
                     and any(a["id"] == "Connect" for a in row["actions"]),
@@ -2638,6 +2659,11 @@ def run(arguments):
                         print("Managed session cleanup could not confirm completion", flush=True)
 
                 resources.callback(cleanup_managed_session)
+                desktop_action("Connect", cancel=True)
+                assert not any(
+                    window.get("title") == "TypeLay 实操练习"
+                    for window in contents(request("Windows"), "Windows")
+                ), "cancelled connection launched practice"
                 desktop_action("Connect")
                 managed_window = wait_for(
                     lambda: next(
@@ -2716,15 +2742,32 @@ def run(arguments):
                             lambda name=key_name: named(managed_window["pid"], practice_view[name]),
                             f"practice did not render the shared {key_name}",
                         )
+                    before_restart = text(source)
                     key("alt+r")
                     wait_for(
-                        lambda: text(source) == "" and focused(source), "practice reset failed"
+                        lambda: text(source) == before_restart and focused(source),
+                        "practice restart did not preserve the user's text",
                     )
+                    key("ctrl+a")
                     typed(original)
                     wait_for(lambda: text(source) == original, "on-demand practice lost source")
+                    wait_for(
+                        lambda: named(
+                            managed_window["pid"], "练习输入框已连接。请先完成第 1 步，生成预览。"
+                        ),
+                        "practice identity was not bound before the first command",
+                    )
+                    assert control(paths, "finishOnboarding", {"outcome": "completed"}) is False
                     key("ctrl+shift+F9")
                     wait_for(ready_to_accept, "practice F9 did not produce the real model preview")
                     assert text(source) == original, "practice preview changed the source"
+                    wait_for(
+                        lambda: named(
+                            managed_window["pid"],
+                            "已生成预览。请回到练习输入框，完成第 2 步直接替换。",
+                        ),
+                        "real practice preview did not advance step one",
+                    )
                     candidate = wait_for(
                         lambda: named(managed_window["pid"], "TypeLay 译文候选"),
                         "practice model preview was not accessible",
@@ -2748,7 +2791,66 @@ def run(arguments):
                     assert not new_write_outcomes(checkpoint), (
                         "practice F10 used the Tab write path"
                     )
+                    wait_for(
+                        lambda: named(
+                            managed_window["pid"], "按需练习已完成：已生成预览，并已验证直接替换。"
+                        ),
+                        "verified direct receipt did not complete the current practice",
+                    )
+                    assert control(paths, "finishOnboarding", {"outcome": "completed"}) is False, (
+                        "unowned control client claimed completion"
+                    )
                     practice_text = text(source)
+                    finished_window = managed_window
+                    assert not status()["setup"]["onboardingComplete"]
+                    assert json.loads(paths.settings.read_text())["OnboardingComplete"] is False
+                    key("alt+d")
+                    wait_for(
+                        lambda: not any(
+                            window["id"] == finished_window["id"]
+                            for window in contents(request("Windows"), "Windows")
+                        ),
+                        "completed managed practice did not save the prompt preference and close",
+                    )
+                    assert json.loads(paths.settings.read_text())["OnboardingComplete"] is True
+                    from desktop_session import receipts
+
+                    wait_for(
+                        lambda: not any(
+                            item["kind"] == "application"
+                            and (item.get("child") or {}).get("pid") == finished_window["pid"]
+                            for item in receipts(paths.data)
+                        ),
+                        "completed practice did not naturally release its owned process receipt",
+                    )
+                    assert control(paths, "settings") is True
+                    desktop_action("Connect")
+                    managed_window = wait_for(
+                        lambda: next(
+                            (
+                                window
+                                for window in contents(request("Windows"), "Windows")
+                                if window.get("title") == "TypeLay 实操练习"
+                                and window["id"] != finished_window["id"]
+                            ),
+                            None,
+                        ),
+                        "reopening practice did not create a fresh owned window",
+                        timeout=60,
+                    )
+                    source = wait_for(
+                        lambda: named(managed_window["pid"], "练习输入框"),
+                        "reopened practice field missing",
+                    )
+                    wait_for(lambda: focused(source), "reopened practice did not focus its field")
+                    wait_for(
+                        lambda: named(
+                            managed_window["pid"], "练习尚未开始或已重置，请重新开始练习。"
+                        ),
+                        "reopened practice inherited old completion",
+                    )
+                    typed(practice_text)
+                    wait_for(lambda: text(source) == practice_text, "reopened practice lost input")
                     key("ctrl+a")
                     assert control(paths, "settings") is True
                     trial = settings_control(support["labels"]["tryIt"])

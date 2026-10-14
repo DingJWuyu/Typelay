@@ -119,6 +119,86 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
         saved = json.loads((self.home / "config/settings.json").read_text())
         self.assertEqual((saved["AcceptShortcut"], saved["ExitShortcut"]), ("F7", "F8"))
 
+    async def test_practice_progress_requires_fresh_run_exact_target_and_real_completion(self):
+        self.assertTrue(
+            await self.ask(
+                "settings", {"enabled": True, "mode": "OnDemand", "source": "en", "target": "zh"}
+            )
+        )
+        run = str(uuid.uuid4())
+        target = {
+            "backend": "linux-gtk3",
+            "value": str(uuid.uuid4()),
+            "lifetime": str(uuid.uuid4()),
+        }
+        self.assertIsNone(await self.ask("onDemandPracticeProgress"))
+        self.assertFalse(await self.ask("finishOnDemandPractice", run))
+        self.assertTrue(await self.ask("beginOnDemandPractice", run))
+        progress = await self.ask("onDemandPracticeProgress")
+        self.assertEqual(progress["runId"], run)
+        self.assertIsNone(progress["target"])
+        self.assertFalse(progress["completed"])
+        self.assertTrue(await self.ask("bindOnDemandPractice", {"runId": run, "target": target}))
+        self.assertFalse(
+            await self.ask(
+                "bindOnDemandPractice",
+                {"runId": run, "target": {**target, "value": str(uuid.uuid4())}},
+            )
+        )
+        for invalid in (
+            {"runId": run, "target": target, "completed": True},
+            {"runId": run, "target": {**target, "backend": "linux-browser"}},
+            {"runId": run, "target": {**target, "lifetime": "unknown"}},
+        ):
+            self.assertFalse(await self.ask("bindOnDemandPractice", invalid))
+        self.assertFalse(
+            await self.ask("finishOnDemandPractice", run), "binding alone completed practice"
+        )
+        view = await self.ask("onDemandPractice", run)
+        self.assertFalse(view["completed"])
+        self.assertIn("已连接", view["progressNotice"])
+        public_view = await self.ask("onDemandPractice")
+        self.assertFalse(public_view["completed"])
+        self.assertIn("尚未开始", public_view["progressNotice"])
+        self.assertTrue(
+            await self.ask(
+                "settings", {"enabled": False, "mode": "OnDemand", "source": "en", "target": "zh"}
+            )
+        )
+        self.assertIsNone(await self.ask("onDemandPracticeProgress"))
+        self.assertFalse(await self.ask("bindOnDemandPractice", {"runId": run, "target": target}))
+        self.assertFalse(await self.ask("finishOnDemandPractice", run))
+        self.assertFalse(self.latest("settings")["onboardingComplete"])
+
+    async def test_tutorial_dismissal_preserves_latest_mode_language_and_practice_state(self):
+        self.assertTrue(
+            await self.ask(
+                "settings", {"enabled": True, "mode": "OnDemand", "source": "en", "target": "zh"}
+            )
+        )
+        self.assertTrue(
+            await self.ask(
+                "settings",
+                {
+                    "enabled": False,
+                    "mode": "Automatic",
+                    "source": "zh",
+                    "target": "en",
+                    "theme": "dark",
+                },
+            )
+        )
+        self.assertTrue(await self.ask("dismissOnboarding"))
+        settings = self.latest("settings")
+        self.assertTrue(settings["onboardingComplete"])
+        self.assertFalse(settings["enabled"])
+        self.assertEqual(
+            (settings["mode"], settings["source"], settings["target"], settings["theme"]),
+            ("Automatic", "zh", "en", "dark"),
+        )
+        self.assertIsNone(await self.ask("onDemandPracticeProgress"))
+        self.assertFalse((await self.ask("onDemandPractice"))["completed"])
+
     async def test_automatic_mode_configures_session_keys_without_enabling_on_demand_keys(self):
         self.assertTrue((await self.ask("saveSettingsDraft", self.draft("F1", "F24")))["saved"])
         configuration = self.latest("shortcuts")

@@ -244,6 +244,74 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertFalse(any(frame["op"] == "capture" for frame in self.native_frames(self.peer)))
         return result
 
+    async def describe_practice(self, peer, description, target=None, before_reply=None):
+        self.focus(peer)
+        self.native_frames(peer)
+        operation = asyncio.create_task(self.input.practice_target(peer.pid, target))
+        await asyncio.sleep(0)
+        requests = self.native_frames(peer)
+        self.assertEqual([frame["op"] for frame in requests], ["describe"])
+        if before_reply:
+            before_reply()
+        peer.link.receive({"id": requests[0]["id"], "data": description})
+        result = await asyncio.wait_for(operation, 1)
+        self.assertTrue(
+            all(frame["op"] == "revoke" for frame in self.native_frames(peer)),
+            "practice identity requested body or grant",
+        )
+        return result
+
+    def test_practice_identity_is_the_authenticated_process_exact_named_field(self):
+        peer = self.connect_peer("gtk3")
+        description = self.description()
+        field = str(uuid.uuid4())
+        description["target"] = description["authority"]["target"] = field
+        description["metadata"].update(automationId="typelay-practice-source", aria="GtkEntry")
+        target = asyncio.run(self.describe_practice(peer, description))
+        self.assertEqual(
+            target, {"backend": "linux-gtk3", "value": field, "lifetime": peer.lifetime}
+        )
+        self.assertEqual(self.host.requests, [], "identity lookup requested capture permissions")
+        for change in ("name", "target", "focus", "peer"):
+            with self.subTest(change=change):
+                other = self.description()
+                other["target"] = other["authority"]["target"] = field
+                other["metadata"].update(automationId="typelay-practice-source", aria="GtkEntry")
+                before = None
+                if change == "name":
+                    other["metadata"]["automationId"] = "another-field"
+                elif change == "target":
+                    other["authority"]["target"] = str(uuid.uuid4())
+                elif change == "focus":
+                    other["focused"] = False
+                else:
+
+                    def before():
+                        self.focus(self.peer)
+
+                self.assertIsNone(
+                    asyncio.run(self.describe_practice(peer, other, before_reply=before))
+                )
+        for key in ("metadata", "authority"):
+            for malformed in (None, [], ["unknown"], "unknown"):
+                with self.subTest(key=key, malformed=malformed):
+                    self.assertIsNone(
+                        asyncio.run(self.describe_practice(peer, {**description, key: malformed}))
+                    )
+        another_field = str(uuid.uuid4())
+        other = dict(
+            description,
+            target=another_field,
+            authority={**description["authority"], "target": another_field},
+        )
+        self.assertIsNone(asyncio.run(self.describe_practice(peer, other, target)))
+        self.assertIsNone(asyncio.run(self.input.practice_target(self.peer.pid)))
+        self.assertIsNone(
+            asyncio.run(
+                self.input.practice_target(peer.pid, {**target, "lifetime": str(uuid.uuid4())})
+            )
+        )
+
     def test_paused_field_observation_returns_only_metadata_anchor_without_capture(self):
         result = asyncio.run(self.observe_pause(self.description()))
         self.assertEqual(result["focus"], "Source")

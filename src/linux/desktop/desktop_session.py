@@ -556,13 +556,28 @@ class DesktopSession:
                 *application,
             ]
             process, name = self._spawn("application", bundle, command, lock)
+            guardian = process_identity(process.pid)
+            if guardian is None:
+                return {"ok": False, "reason": "application-start-unconfirmed"}
             deadline = time.monotonic() + 5
             while process.poll() is None:
-                if any(
-                    item["name"] == name and item["state"] == "running"
-                    for item in receipts(self.paths.data)
-                ):
-                    return {"ok": True, "reason": "application-start-requested"}
+                launched = next(
+                    (
+                        item
+                        for item in receipts(self.paths.data)
+                        if item["name"] == name and item["state"] == "running"
+                    ),
+                    None,
+                )
+                if launched is not None:
+                    application = {"receipt": launched, "guardian": guardian}
+                    if not self.owns_application(application, launched["child"]["pid"]):
+                        return {"ok": False, "reason": "application-start-unconfirmed"}
+                    return {
+                        "ok": True,
+                        "reason": "application-start-requested",
+                        "application": application,
+                    }
                 if time.monotonic() >= deadline:
                     break
                 time.sleep(0.05)
@@ -576,6 +591,32 @@ class DesktopSession:
 
     async def launch_application(self, argv, toolkit="gtk3"):
         return await asyncio.to_thread(self._launch, argv, toolkit)
+
+    def owns_application(self, application, pid):
+        """Receipt plus this launch's actual Popen identity; neither proves itself."""
+        if not isinstance(application, dict) or type(pid) is not int:
+            return False
+        try:
+            launched, guardian = application["receipt"], application["guardian"]
+            child = launched["child"]
+            parent = int(
+                (Path("/proc") / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()[1]
+            )
+            return (
+                launched["kind"] == "application"
+                and launched["bootId"] == boot_identity()
+                and launched["session"] == session_identity()
+                and launched["package"] == str(self.paths.home)
+                and child["pid"] == pid
+                and process_identity(pid) == child
+                and launched["guardian"] == guardian
+                and process_identity(guardian["pid"]) == guardian
+                and parent == guardian["pid"]
+                and launched in receipts(self.paths.data)
+                and process_identity(pid) == child
+            )
+        except (OSError, ValueError, KeyError, TypeError, IndexError, RuntimeError):
+            return False
 
     def _stop(self):
         lock = start = handle = None

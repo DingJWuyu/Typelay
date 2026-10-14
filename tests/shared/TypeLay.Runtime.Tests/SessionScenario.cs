@@ -63,9 +63,9 @@ internal sealed class SessionScenario : IDisposable
         CompleteTranslation("translated");
         Tick();
     }
-    public void CompleteTranslation(string text)
+    public void CompleteTranslation(string text, string status = "translated")
     {
-        Model.Complete(text);
+        Model.Complete(text, status);
         _context.Drain();
     }
     public void CompleteCapture(InputCapture capture)
@@ -93,9 +93,9 @@ internal sealed class SessionScenario : IDisposable
         _context.Drain();
     }
     public InputSnapshot Fresh => Source with { ObservedAtMs = Loop.NowMs };
-    public void Command(string kind) => Input.Notices.Enqueue(new(kind, AcceptedAtMs: Loop.NowMs,
+    public void Command(string kind, long sequence = 0) => Input.Notices.Enqueue(new(kind, AcceptedAtMs: Loop.NowMs,
         UserEpoch: Input.UserEpoch, ForegroundEpoch: Input.ForegroundEpoch,
-        Source: Fresh, CommandGeneration: Input.CommandGeneration, Target: Source.Target, SessionRevision: View.Token.Revision));
+        Source: Fresh, CommandGeneration: Input.CommandGeneration, CommandSequence: sequence, Target: Source.Target, SessionRevision: View.Token.Revision));
     public void FocusAnotherField()
     {
         Source = Source with
@@ -317,11 +317,11 @@ internal sealed class SessionScenario : IDisposable
             Pending = new();
             return Pending.Task;
         }
-        public void Complete(string text)
+        public void Complete(string text, string status = "translated")
         {
             var pending = Pending ?? throw new InvalidOperationException("No pending translation.");
             Pending = null;
-            pending.SetResult(new(1, "translated", text));
+            pending.SetResult(new(1, status, text));
         }
     }
     internal sealed class SessionView : ISessionView

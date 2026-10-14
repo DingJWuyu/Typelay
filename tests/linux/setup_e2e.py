@@ -768,6 +768,118 @@ class ApplicationSupportTests(unittest.TestCase):
         self.assertNotIn("Connect", fact["supportedActions"])
         self.assertIn("不表示系统不支持", fact["details"])
 
+    def test_desktop_guidance_requires_original_method_confirmation_before_connect(self):
+        self.desktop_payload()
+        self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Install"))["ok"])
+        self.support.desktop_session_state = {"state": "inactive"}
+        guidance = self.support.desktop_guidance()
+        self.assertFalse(guidance["originalMethodRecorded"])
+        self.assertTrue(guidance["canRecordOriginalMethod"])
+        self.assertNotIn("Connect", self.support.desktop_fact()["supportedActions"])
+        self.assertTrue(self.support.record_original_method())
+        self.assertIn("Connect", self.support.desktop_fact()["supportedActions"])
+        self.assertIn("由你确认", self.support.desktop_guidance()["steps"])
+        reopened = ApplicationSupport(Paths(self.package))
+        reopened.desktop_session_state = {"state": "inactive"}
+        self.assertFalse(reopened.desktop_guidance()["originalMethodRecorded"])
+        self.assertNotIn("Connect", reopened.desktop_fact()["supportedActions"])
+
+    def test_restoration_guidance_never_treats_detection_as_original_restore_proof(self):
+        self.support.desktop_session_state = {"state": "unknown", "detail": "unknown"}
+        self.assertFalse(self.support.record_original_method())
+        self.assertFalse(self.support.desktop_guidance()["canRecordOriginalMethod"])
+        self.assertIn("尚未确认", self.support.desktop_guidance()["steps"])
+        self.support.practice_component_removed = True
+        for source in ("user-service", "unconfirmed"):
+            self.support.desktop_session_state = {
+                "state": "conflict",
+                "reason": "existing-fcitx-session",
+                "source": {"source": source},
+            }
+            guidance = self.support.desktop_guidance()
+            self.assertIn("检测到 Fcitx 正在运行", guidance["steps"])
+            self.assertIn("不能证明原启动方式已恢复", guidance["steps"])
+            self.assertNotIn("Connect", self.support.desktop_fact()["supportedActions"])
+        self.support.desktop_session_state = {"state": "inactive"}
+        self.assertIn("手动恢复", self.support.desktop_guidance()["steps"])
+        self.assertFalse(self.support.desktop_guidance()["originalMethodRecorded"])
+
+    def test_no_original_method_choice_requires_confirmed_inactive_state(self):
+        self.support.desktop_session_state = {"state": "unknown"}
+        self.assertFalse(self.support.record_original_method(no_original=True))
+        self.support.desktop_session_state = {"state": "conflict"}
+        self.assertFalse(self.support.record_original_method(no_original=True))
+        self.support.desktop_session_state = {"state": "inactive"}
+        self.assertTrue(self.support.record_original_method(no_original=True))
+        self.support.practice_component_removed = True
+        self.assertIn("没有原输入法需要恢复", self.support.desktop_guidance()["steps"])
+        self.support.desktop_session_state = {"state": "unknown"}
+        self.assertIn("不能证明", self.support.desktop_guidance()["steps"])
+
+    def test_restore_recheck_still_observes_session_after_component_files_are_gone(self):
+        from unittest.mock import AsyncMock
+
+        self.support.practice_component_removed = True
+        self.assertFalse(self.support.desktop_component.root.exists())
+        with patch.object(
+            self.support.desktop_session,
+            "refresh",
+            new=AsyncMock(return_value={"state": "conflict", "reason": "existing-ibus-session"}),
+        ):
+            asyncio.run(self.support.refresh())
+        self.assertIn("检测到 IBus 正在运行", self.support.desktop_guidance()["steps"])
+        self.assertIn("不能证明原启动方式已恢复", self.support.desktop_guidance()["steps"])
+
+    def test_late_session_refresh_cannot_replace_newer_guidance_observation(self):
+        self.support.practice_component_removed = True
+
+        async def scenario():
+            old_started, old_release = asyncio.Event(), asyncio.Event()
+            calls = 0
+
+            async def observed():
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    old_started.set()
+                    await old_release.wait()
+                    return {"state": "unknown", "detail": "earlier observation"}
+                return {"state": "inactive"}
+
+            with patch.object(self.support.desktop_session, "refresh", side_effect=observed):
+                old = asyncio.create_task(self.support.refresh())
+                await old_started.wait()
+                await self.support.refresh()
+                old_release.set()
+                await old
+            self.assertIn("当前未检测到 Fcitx/IBus 冲突", self.support.desktop_guidance()["steps"])
+
+        asyncio.run(scenario())
+
+    def test_new_input_method_conflict_retires_no_original_confirmation(self):
+        from unittest.mock import AsyncMock
+
+        self.desktop_payload()
+        self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Install"))["ok"])
+        with self.no_input_method_environment():
+            self.assertTrue(
+                asyncio.run(self.support.execute("desktop-text", "RecordNoOriginalMethod"))["ok"]
+            )
+        with patch.object(
+            self.support.desktop_session,
+            "refresh",
+            new=AsyncMock(return_value={"state": "conflict", "reason": "existing-ibus-session"}),
+        ):
+            asyncio.run(self.support.refresh())
+        guidance = self.support.desktop_guidance()
+        self.assertFalse(guidance["noOriginalMethod"])
+        self.assertFalse(guidance["originalMethodRecorded"])
+        self.assertTrue(guidance["canRecordOriginalMethod"])
+        self.assertFalse(guidance["canRecordNoOriginalMethod"])
+        with patch.dict(os.environ, {"PATH": str(self.home / "input-status-tools")}):
+            asyncio.run(self.support.refresh())
+        self.assertNotIn("Connect", self.support.desktop_fact()["supportedActions"])
+
     def test_component_preparation_success_does_not_hide_later_package_damage(self):
         self.desktop_payload()
         self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Install"))["ok"])
@@ -892,6 +1004,9 @@ class ApplicationSupportTests(unittest.TestCase):
         self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Install"))["ok"])
         with self.no_input_method_environment():
             asyncio.run(self.support.refresh())
+            self.assertTrue(
+                asyncio.run(self.support.execute("desktop-text", "RecordNoOriginalMethod"))["ok"]
+            )
             fact = next(row for row in self.support.facts() if row["id"] == "desktop-text")
             self.assertEqual(fact["state"], "AwaitingApproval")
             self.assertIn("Connect", fact["supportedActions"])
@@ -918,6 +1033,9 @@ class ApplicationSupportTests(unittest.TestCase):
             self.no_input_method_environment(),
             patch.object(self.support.desktop_session, "start_session", return_value={"ok": True}),
         ):
+            self.assertTrue(
+                asyncio.run(self.support.execute("desktop-text", "RecordNoOriginalMethod"))["ok"]
+            )
             result = asyncio.run(self.support.execute("desktop-text", "Connect"))
             self.assertFalse(result["ok"], result)
             self.assertEqual(result["state"], "inactive")

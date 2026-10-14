@@ -6,7 +6,7 @@ using TypeLay.Windows.Contracts;
 namespace TypeLay.App;
 
 internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
-    WindowsApplicationSupport? support = null, KeyboardHook? monitor = null) : IInputService
+    WindowsApplicationSupport? support = null, KeyboardHook? monitor = null, PracticeHost? practice = null) : IInputService
 {
     public bool Available => broker.Available;
     public async Task StartAsync()
@@ -38,6 +38,9 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
                 result.UserEpoch, result.ForegroundEpoch, acknowledgement);
             support?.Observe(capture, broker.Available && monitor?.Ready == true,
                 monitor?.CanInterceptAcceptance == true, startedAt, checkGeneration);
+            // Metadata reaches the owned practice before Runtime publishes the shortcut lease.
+            practice?.ObserveTarget(capture.Snapshot?.Target, capture.Focus,
+                capture.Snapshot?.ObservedAtMs ?? 0, startedAt);
             return capture;
         }
         catch { support?.Disconnected(); throw; }

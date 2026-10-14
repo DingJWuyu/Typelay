@@ -63,6 +63,50 @@ class DesktopSessionTests(unittest.TestCase):
             if process_identity(identity["pid"]) == identity:
                 os.kill(identity["pid"], signal.SIGKILL)
 
+    def test_practice_ownership_requires_this_launch_live_receipt_and_exact_process(self):
+        process, name = self.spawn(self.command())
+        self.until(
+            lambda: any(
+                row["name"] == name and row["state"] == "running" for row in receipts(self.data)
+            )
+        )
+        receipt = next(row for row in receipts(self.data) if row["name"] == name)
+        launched = {"receipt": receipt, "guardian": process_identity(process.pid)}
+        owner = DesktopSession(self.paths)
+        pid = receipt["child"]["pid"]
+        self.assertTrue(owner.owns_application(launched, pid))
+        self.assertFalse(owner.owns_application(None, pid), "reopen adopted a durable receipt")
+        self.assertFalse(owner.owns_application(launched, os.getpid()))
+        changed = {
+            **receipt,
+            "child": {**receipt["child"], "startTime": receipt["child"]["startTime"] + 1},
+        }
+        self.assertFalse(owner.owns_application({**launched, "receipt": changed}, pid))
+        receipt_file = self.managed / "sessions" / name
+        original = receipt_file.read_bytes()
+        try:
+            # Even a syntactically valid same-UID file cannot replace the actual
+            # Popen guardian or claim an unrelated live process as its child.
+            for changed in (
+                {**receipt, "guardian": process_identity(os.getpid())},
+                {**receipt, "child": process_identity(os.getpid())},
+            ):
+                receipt_file.write_text(
+                    json.dumps({key: value for key, value in changed.items() if key != "name"})
+                )
+                self.assertFalse(
+                    owner.owns_application(
+                        {**launched, "receipt": changed}, changed["child"]["pid"]
+                    )
+                )
+        finally:
+            receipt_file.write_bytes(original)
+        self.assertTrue(owner.owns_application(launched, pid))
+        for gate in self.gates:
+            gate.touch()
+        process.wait(timeout=5)
+        self.assertFalse(owner.owns_application(launched, pid), "old receipt survived process exit")
+
     def until(self, predicate):
         deadline = time.monotonic() + 5
         while not predicate():

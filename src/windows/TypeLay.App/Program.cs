@@ -63,14 +63,18 @@ internal static class Program
             model = WindowsRuntime.CreateModel();
             var overlay = new OverlayWindow(automationTest);
             var support = new WindowsApplicationSupport();
-            session = WindowsRuntime.CreateSession(settings, model, overlay, automationTest, support: support);
             practiceHost = new PracticeHost();
+            session = WindowsRuntime.CreateSession(settings, model, overlay, automationTest, support: support, practice: practiceHost);
+            practiceHost.Bind(session);
             var window = new SettingsWindow(settings, model,
                 () => practiceHost.Open(Path.Combine(AppPaths.Data, "settings.json")), support)
             {
                 SessionMustEnd = session.StopSession,
-                ShortcutStatus = () => session.ShortcutStatus
+                ShortcutStatus = () => session.ShortcutStatus,
+                PracticeProgress = () => session.PracticeProgress
             };
+            session.PracticeProgressChanged += _ => window.RefreshPracticeProgress();
+            window.RefreshPracticeProgress();
             settingsWindow = window;
             void Quit()
             {

@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.Win32;
 using TypeLay.Core;
 using TypeLay.Runtime;
+using TypeLay.Windows;
 
 namespace TypeLay.Practice;
 
@@ -14,11 +15,17 @@ internal static class Program
     private const int SettingsLimit = 512 * 1024;
     private const uint RootStyle = 0x00CF0000 | 0x00200000 | 0x02000000; // Overlapped, vertical scroll, clip children.
     private const uint ChildStyle = 0x50000000;
-    private const int EditId = 101, CloseId = 2;
+    private const int EditId = 101, RestartId = 102, ProgressId = 103, PreviewId = 104, ReplaceId = 105, CloseId = 2;
+    private const uint ProgressMessage = 0x8001;
     private static readonly Native.WindowProc Procedure = WindowProc;
     private static readonly List<Control> Controls = [];
     private static nint _window, _instance, _bodyFont, _titleFont, _backgroundBrush;
-    private static Control? _title, _notice, _inputLabel, _edit, _preview, _replace, _close;
+    private static Control? _title, _notice, _inputLabel, _edit, _preview, _replace, _progressNotice, _restart, _close;
+    private static OnDemandPracticeProgress? _progress;
+    private sealed record ProgressUpdate(OnDemandPracticeProgress? Progress, bool Connected);
+    private static ProgressUpdate? _pendingProgress;
+    private static bool _progressConnected, _restartPending;
+    private static Guid _restartFrom;
     private static string _settingsPath = "";
     private static string _theme = "system";
     private static uint _backgroundColor, _textColor;
@@ -31,7 +38,8 @@ internal static class Program
         // This process owns only an ordinary source field. The running App owns
         // the production shortcuts, model, Broker, and this child process.
         if (!OperatingSystem.IsWindows() || RuntimeInformation.ProcessArchitecture != Architecture.X64
-            || args.Length != 2 || args[0] != "--settings" || !Path.IsPathFullyQualified(args[1]))
+            || args.Length is not (2 or 3) || args[0] != "--settings" || !Path.IsPathFullyQualified(args[1])
+            || (args.Length == 3 && args[2] != "--progress"))
             return Fail();
         _settingsPath = args[1];
         if (!TryReadSettings(out var settings))
@@ -69,9 +77,12 @@ internal static class Program
             _inputLabel = Add("Static", presentation.InputLabel);
             _edit = Add("Edit", presentation.SampleText,
                 0x00010000 | 0x00200000 | 0x0004 | 0x0040 | 0x1000, EditId, 0x0200);
-            _preview = Add("Static", presentation.PreviewStep);
-            _replace = Add("Static", presentation.ReplaceStep);
+            _preview = Add("Static", presentation.PreviewStep, id: PreviewId);
+            _replace = Add("Static", presentation.ReplaceStep, id: ReplaceId);
+            _progressNotice = Add("Static", presentation.ProgressNotice, id: ProgressId);
             Add("Static", presentation.CapabilityNote);
+            _restart = Add("Button", presentation.RestartLabel, 0x00010000 | 0x4000, RestartId);
+            Native.EnableWindow(_restart.Handle, false);
             _close = Add("Button", presentation.CloseLabel, 0x00010000 | 0x4000, CloseId);
             RefreshTheme();
             SetFonts();
@@ -80,6 +91,8 @@ internal static class Program
             if (Native.SetTimer(_window, 1, 1000, 0) == 0)
                 return Fail();
 
+            if (args.Length == 3)
+                _ = Task.Run(ReadProgressAsync);
             Native.ShowWindow(_window, 1);
             while (true)
             {
@@ -176,25 +189,88 @@ internal static class Program
 
     private static void RefreshSettings()
     {
-        if (_notice is null || _preview is null || _replace is null)
+        if (_notice is null || _preview is null || _replace is null || _progressNotice is null)
             return;
         bool changed;
         if (!TryReadSettings(out var settings))
         {
             changed = SetText(_notice, SettingsUnavailable)
-                | SetText(_preview, "") | SetText(_replace, "");
+                | SetText(_preview, "") | SetText(_replace, "") | SetText(_progressNotice, "");
         }
         else
         {
             _theme = settings!.Theme;
-            var view = OnDemandPracticePresentation.Create(settings!);
+            var view = OnDemandPracticePresentation.Create(settings!, _progress);
             changed = SetText(_notice, view.CurrentStateNotice)
-                | SetText(_preview, view.PreviewStep) | SetText(_replace, view.ReplaceStep);
+                | SetText(_preview, view.PreviewStep) | SetText(_replace, view.ReplaceStep)
+                | SetText(_progressNotice, view.ProgressNotice);
         }
         // The source field is intentionally never read or reset by refresh.
         if (changed)
             Layout();
         RefreshTheme();
+    }
+
+    private static async Task ReadProgressAsync()
+    {
+        try
+        {
+            var input = Console.OpenStandardInput();
+            while (true)
+            {
+                var progress = await PracticeProgressPipe.ReadAsync(input, CancellationToken.None);
+                QueueProgress(new(progress, true));
+            }
+        }
+        catch (Exception error) when (error is IOException or JsonException or InvalidOperationException)
+        {
+            // Loss of the owner only disables progress. The ordinary field and
+            // production shortcuts remain untouched; stale completion disappears.
+            QueueProgress(new(null, false));
+        }
+    }
+
+    private static void QueueProgress(ProgressUpdate update)
+    {
+        Interlocked.Exchange(ref _pendingProgress, update);
+        Native.PostMessageW(_window, ProgressMessage, 0, 0);
+    }
+
+    private static void ApplyProgress()
+    {
+        var update = Interlocked.Exchange(ref _pendingProgress, null);
+        if (update is null)
+            return;
+        _progressConnected = update.Connected;
+        if (!_restartPending || update.Progress?.RunId != _restartFrom || !update.Connected)
+        {
+            _progress = update.Progress;
+            _restartPending = false;
+        }
+        if (_restart is not null)
+            Native.EnableWindow(_restart.Handle, _progressConnected && !_restartPending);
+        RefreshSettings();
+    }
+
+    private static void RestartPractice()
+    {
+        _restartFrom = _progress?.RunId ?? Guid.Empty;
+        _restartPending = true;
+        _progress = null;
+        Native.EnableWindow(_restart!.Handle, false);
+        RefreshSettings();
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                await PracticeProgressPipe.WriteRestartAsync(Console.OpenStandardOutput(), deadline.Token);
+            }
+            catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException)
+            {
+                QueueProgress(new(null, false));
+            }
+        });
     }
 
     private static void RefreshTheme()
@@ -316,7 +392,7 @@ internal static class Program
                 int height;
                 if (control == _edit)
                     height = Scale(128);
-                else if (control == _close)
+                else if (control == _close || control == _restart)
                     height = Scale(36);
                 else if (control.Text.Length == 0)
                     height = 0;
@@ -327,7 +403,7 @@ internal static class Program
                     Native.DrawTextW(dc, control.Text, -1, ref measure, 0x0010 | 0x0400 | 0x0800 | 0x2000);
                     height = measure.Bottom + Scale(4);
                 }
-                control.Bounds = new(margin, y, control == _close ? Scale(144) : width, height);
+                control.Bounds = new(margin, y, control == _close || control == _restart ? Scale(144) : width, height);
                 if (height != 0)
                     y += height + Scale(control == _inputLabel ? 6 : 12);
             }
@@ -379,6 +455,9 @@ internal static class Program
         {
             switch (message)
             {
+                case ProgressMessage:
+                    ApplyProgress();
+                    return 0;
                 case 0x0002: // WM_DESTROY, including partial construction.
                     Native.KillTimer(window, 1);
                     _window = 0;
@@ -419,10 +498,12 @@ internal static class Program
                     int id = (int)(wParam & 0xffff), notification = (int)((wParam >> 16) & 0xffff);
                     if (id == CloseId && notification == 0)
                         Native.DestroyWindow(window);
+                    else if (id == RestartId && notification == 0 && _progressConnected && !_restartPending)
+                        RestartPractice();
                     else if (id == EditId && notification == 0x0100 && _edit is not null)
                         EnsureVisible(_edit);
-                    else if (id == CloseId && notification == 6 && _close is not null)
-                        EnsureVisible(_close);
+                    else if (notification == 6 && id is CloseId or RestartId)
+                        EnsureVisible(id == CloseId ? _close! : _restart!);
                     return 0;
                 case 0x0113: // WM_TIMER
                     if (wParam == 1)
@@ -557,6 +638,8 @@ internal static class Program
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool IsDialogMessageW(nint window, ref Message message);
         [DllImport("user32.dll")] internal static extern bool TranslateMessage(ref Message message);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern nint DispatchMessageW(ref Message message);
+        [DllImport("user32.dll")] internal static extern bool PostMessageW(nint window, uint message, nuint wParam, nint lParam);
+        [DllImport("user32.dll")] internal static extern bool EnableWindow(nint window, bool enabled);
         [DllImport("user32.dll")] internal static extern void PostQuitMessage(int exitCode);
         [DllImport("user32.dll")] internal static extern bool DestroyWindow(nint window);
         [DllImport("user32.dll")] internal static extern bool ShowWindow(nint window, int command);

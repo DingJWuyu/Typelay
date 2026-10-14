@@ -14,6 +14,9 @@ public sealed class SessionController : IDisposable
     private sealed record PendingWakeCapture(TargetId Target, long Generation, long FeedbackRevision,
         Guid CommandGeneration, long CommandSequence);
     private PendingWakeCapture? _pendingWakeCapture;
+    private OnDemandPracticeProgress? _practiceWakeCommand, _pendingDirectPractice;
+    private Guid _lastRetiredPracticeRun;
+    private long _practiceBoundAt, _practicePreviewAt;
     private DirectTranslation? _pendingDirect;
     private bool _directRunning, _directWriteSubmitted;
     private long _lastCommandSequence, _commandSequence, _commandFeedbackRevision, _pendingDirectFeedbackRevision, _pendingDirectSequence;
@@ -47,6 +50,93 @@ public sealed class SessionController : IDisposable
     public string ServiceStatus { get; private set; } = "正在连接输入服务";
     public event Action? Changed;
     public event Action<CommandFeedback>? OperationFeedback;
+    public OnDemandPracticeProgress? PracticeProgress
+    {
+        get; private set;
+    }
+    public event Action<OnDemandPracticeProgress?>? PracticeProgressChanged;
+
+    // Hosts call Begin only for an explicit new/restarted owned practice window.
+    // Binding must come from that host's native identity verification, before the
+    // command is consumed. Neither registration nor progress changes write safety.
+    public bool BeginOnDemandPractice(Guid runId)
+    {
+        if (_disposed || runId == Guid.Empty || runId == _lastRetiredPracticeRun
+            || !_settings.Value.Enabled || _settings.Value.Mode != WorkMode.OnDemand)
+            return false;
+        if (PracticeProgress?.RunId == runId)
+            return true;
+        if (PracticeProgress is { } previous)
+            _lastRetiredPracticeRun = previous.RunId;
+        _practiceWakeCommand = null;
+        PracticeProgress = new(runId, null, _hook.CommandGeneration, 0, _commandFeedbackRevision, false, false);
+        PracticeProgressChanged?.Invoke(PracticeProgress);
+        return true;
+    }
+    public bool BindOnDemandPractice(Guid runId, TargetId target)
+    {
+        if (_disposed || PracticeProgress is not { } progress || progress.RunId != runId
+            || progress.CommandGeneration != _hook.CommandGeneration
+            || string.IsNullOrWhiteSpace(target.Backend) || string.IsNullOrWhiteSpace(target.Value)
+            || target.Lifetime == Guid.Empty)
+            return false;
+        if (progress.Target is { } existing)
+            return existing == target;
+        _practiceBoundAt = _loop.NowMs;
+        PracticeProgress = progress with
+        {
+            Target = target
+        };
+        PracticeProgressChanged?.Invoke(PracticeProgress);
+        return true;
+    }
+    public bool EndOnDemandPractice(Guid runId)
+    {
+        if (PracticeProgress?.RunId != runId)
+            return false;
+        _lastRetiredPracticeRun = runId;
+        _practiceWakeCommand = null;
+        PracticeProgress = null;
+        PracticeProgressChanged?.Invoke(null);
+        return true;
+    }
+    private OnDemandPracticeProgress? PracticeCommand(InputNotice notice, bool direct)
+    {
+        // AcceptedAtMs is the existing adapter acceptance timestamp, not proof of
+        // a physical key-down. Ties are conservative: queued earlier commands
+        // cannot become practice evidence just because they were drained later.
+        if (PracticeProgress is not { Target: not null } progress || notice.Source?.Target != progress.Target
+            || notice.CommandGeneration == Guid.Empty || notice.CommandGeneration != progress.CommandGeneration
+            || notice.CommandSequence <= 0
+            || notice.AcceptedAtMs <= _practiceBoundAt || notice.AcceptedAtMs > _loop.NowMs
+            || direct && (!progress.PreviewCompleted || progress.DirectReplacementCompleted
+                || notice.AcceptedAtMs <= _practicePreviewAt))
+            return null;
+        return progress with
+        {
+            CommandSequence = notice.CommandSequence,
+            Revision = _commandFeedbackRevision
+        };
+    }
+    private void CompletePracticeCommand(OnDemandPracticeProgress? command, bool direct)
+    {
+        // Begin publishes the current command revision as a watermark. Even a
+        // reused host run ID cannot adopt work accepted before that registration.
+        if (command is null || PracticeProgress is not { } progress || progress.RunId != command.RunId
+            || progress.Target != command.Target || command.CommandGeneration != _hook.CommandGeneration
+            || command.Revision != _commandFeedbackRevision || command.Revision <= progress.Revision
+            || direct && (!command.PreviewCompleted || !progress.PreviewCompleted || progress.DirectReplacementCompleted)
+            || !direct && progress.PreviewCompleted)
+            return;
+        if (!direct)
+            _practicePreviewAt = _loop.NowMs;
+        PracticeProgress = command with
+        {
+            PreviewCompleted = true,
+            DirectReplacementCompleted = direct
+        };
+        PracticeProgressChanged?.Invoke(PracticeProgress);
+    }
     public SessionController(SettingsStore settings, ITranslationService model, ISessionView overlay,
         IInputMonitor input, IInputService broker, ISessionLoop loop)
     {
@@ -109,6 +199,8 @@ public sealed class SessionController : IDisposable
     }
     private void Configure()
     {
+        if (PracticeProgress is { } practice)
+            EndOnDemandPractice(practice.RunId);
         _pendingWakeCapture = null;
         InvalidatePauseAnchor();
         _sessionShortcuts = null;
@@ -608,6 +700,7 @@ public sealed class SessionController : IDisposable
             if (_session.State == SessionState.NoSession)
                 _session.LeaveFamily();
             _generation++;
+            _practiceWakeCommand = PracticeCommand(notice, false);
             _pendingWakeCapture = awaitingCapture
                 ? new(source.Target, _generation, _commandFeedbackRevision, notice.CommandGeneration, notice.CommandSequence)
                 : null;
@@ -647,6 +740,7 @@ public sealed class SessionController : IDisposable
         // Ending a foreground session never clears a pending direct operation.
         StopSession();
         _pendingDirect = operation;
+        _pendingDirectPractice = PracticeCommand(notice, true);
         _pendingDirectFeedbackRevision = _commandFeedbackRevision;
         _pendingDirectCommandGeneration = notice.CommandGeneration;
         _pendingDirectSequence = notice.CommandSequence;
@@ -656,6 +750,7 @@ public sealed class SessionController : IDisposable
     {
         _directRunning = true;
         long configuration = _configurationRevision;
+        var practiceCommand = _pendingDirectPractice;
         try
         {
             var response = await _model.TranslateAsync(operation.Job);
@@ -688,6 +783,11 @@ public sealed class SessionController : IDisposable
                 _ => ("直接写回未获确认，请检查原输入框；不会自动重试。", "write-unconfirmed")
             };
             SetCommandStatus(message, feedbackRevision, code);
+            if (practiceCommand?.Target == plan.Expected.Target
+                && result.Status == WriteStatus.Verified && result.Reason == Denial.None
+                && result.VerifiedSnapshot is { IsUsable: true } after && after.Target == plan.Expected.Target
+                && after.Text == plan.ResultText && after.Selection == new TextRange(plan.Caret, plan.Caret))
+                CompletePracticeCommand(practiceCommand, true);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -734,13 +834,15 @@ public sealed class SessionController : IDisposable
         _translationRunning = true;
         _statusOverride = null;
         Trace("translate-start");
+        var practiceCommand = _practiceWakeCommand;
+        bool completed = false;
         try
         {
             var result = await _model.TranslateAsync(job);
             if (_disposed)
                 return;
             if (result.Status == "translated")
-                _session.Complete(job, result.Text);
+                completed = _session.Complete(job, result.Text);
             else if (result.Status == "no-translation")
                 _session.CompleteNoTranslation(job);
             else if (_session.Fail(job))
@@ -751,6 +853,9 @@ public sealed class SessionController : IDisposable
                     _ => "暂时无法翻译"
                 };
             Render();
+            if (completed && practiceCommand?.Target == job.Basis.Target && job.Kind == TranslationKind.FullOrSelection
+                && _hook.GetFocus(job.Basis.Target) != FocusMember.Other)
+                CompletePracticeCommand(practiceCommand, false);
             Trace("translate-done");
         }
         finally { _translationRunning = false; }
@@ -910,6 +1015,7 @@ public sealed class SessionController : IDisposable
             Trace(reason);
         _activation.End();
         _pendingWakeCapture = null;
+        _practiceWakeCommand = null;
         _sessionShortcuts = null;
         InvalidatePauseAnchor();
         ClearBrokerSnapshot();
@@ -991,6 +1097,8 @@ public sealed class SessionController : IDisposable
     }
     public void Dispose()
     {
+        if (PracticeProgress is { } practice)
+            EndOnDemandPractice(practice.RunId);
         _disposed = true;
         _pendingWakeCapture = null;
         InvalidatePauseAnchor();

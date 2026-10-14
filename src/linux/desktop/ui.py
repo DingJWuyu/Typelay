@@ -82,7 +82,7 @@ class Tutorial:
         )
         actions = Gtk.Box(spacing=8)
         outer.pack_end(actions, False, False, 0)
-        self.complete = Gtk.Button.new_with_mnemonic("我已完成练习(_D)")
+        self.complete = Gtk.Button.new_with_mnemonic("知道了，不再提示(_D)")
         self.complete.connect("clicked", lambda *_: owner.tasks(self.finish()))
         actions.pack_start(self.complete, False, False, 0)
         self.skip = Gtk.Button.new_with_mnemonic("跳过教程(_S)")
@@ -135,13 +135,11 @@ class Tutorial:
         self.complete.set_sensitive(False)
         self.skip.set_sensitive(False)
         try:
-            if await self.owner.host.ask(
-                "settings", {**self.owner.value, "onboardingComplete": True}
-            ):
+            if await self.owner.host.ask("dismissOnboarding"):
                 self.dismiss()
                 self.owner.message.set_text("教程选择已保存；可随时重新打开。")
             else:
-                self.message.set_text("完成状态未保存，请重试。")
+                self.message.set_text("教程提示偏好未保存，请重试。")
         finally:
             self.complete.set_sensitive(True)
             self.skip.set_sensitive(True)
@@ -180,6 +178,7 @@ class ApplicationSupportPane:
         self.rows = {}
         self.visible_ids = []
         self.action_signature = None
+        self.action_revision = 0
         self.widget = Gtk.ScrolledWindow()
         self.widget.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         self.box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
@@ -199,6 +198,18 @@ class ApplicationSupportPane:
         self.box.pack_start(self.more, False, False, 0)
         self.state = self.note("")
         self.reason = self.note("")
+        self.desktop_guide = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.desktop_guide.set_no_show_all(True)
+        self.box.pack_start(self.desktop_guide, False, False, 0)
+        self.desktop_steps = self.note("", self.desktop_guide)
+        self.record_original = Gtk.Button(label="我已记下原输入法的启动方式，并知道如何恢复")
+        self.record_original.connect("clicked", lambda *_: self.record_original_method())
+        self.desktop_guide.pack_start(self.record_original, False, False, 0)
+        self.no_original = Gtk.Button(label="此前未运行输入法，无需恢复")
+        self.no_original.connect(
+            "clicked", lambda *_: self.record_original_method(no_original=True)
+        )
+        self.desktop_guide.pack_start(self.no_original, False, False, 0)
         self.primary = Gtk.Box(spacing=8)
         self.box.pack_start(self.primary, False, False, 0)
         self.details = Gtk.Expander()
@@ -238,9 +249,10 @@ class ApplicationSupportPane:
         if self.pending or self.busy:
             return
         self.pending = True
+        revision = self.action_revision
         try:
             value = await self.refresh_requested()
-            if value:
+            if value and not self.busy and revision == self.action_revision:
                 self.render(value)
         except (OSError, ValueError, EOFError, TimeoutError):
             self.owner.message.set_text("暂时无法读取应用连接状态，请重新打开设置。")
@@ -307,6 +319,26 @@ class ApplicationSupportPane:
         self.capability_note.set_text(self.value["capabilityNote"])
         self.guidance.set_text(row["guidance"])
         self.technical.set_text(row.get("details") or "")
+        guidance = self.value.get("desktopGuidance")
+        if row["id"] == "desktop-text" and guidance:
+            self.desktop_steps.set_text(guidance["title"] + "\n" + guidance["steps"])
+            self.record_original.set_label(
+                "已确认此前无输入法（仅你的确认）"
+                if guidance["noOriginalMethod"]
+                else "已确认记下原启动方式（仅你的确认）"
+                if guidance["originalMethodRecorded"]
+                else "我已记下原输入法的启动方式，并知道如何恢复"
+            )
+            self.record_original.set_sensitive(
+                guidance["canRecordOriginalMethod"] and not self.busy
+            )
+            self.desktop_guide.show()
+            self.desktop_steps.show()
+            self.record_original.show()
+            self.no_original.set_visible(guidance["canRecordNoOriginalMethod"])
+            self.no_original.set_sensitive(not self.busy)
+        else:
+            self.desktop_guide.hide()
         signature = (row["id"], row.get("primaryAction"), row["secondaryActions"], self.busy)
         if signature != self.action_signature:
             self.action_signature = signature
@@ -322,6 +354,24 @@ class ApplicationSupportPane:
             self.secondary.show_all()
         self.selector.set_sensitive(not self.busy)
 
+    def record_original_method(self, no_original=False):
+        if self.busy or not self.value:
+            return
+        guidance = self.value.get("desktopGuidance") or {}
+        if not guidance.get(
+            "canRecordNoOriginalMethod" if no_original else "canRecordOriginalMethod"
+        ):
+            return
+        self.busy = True
+        self.action_revision += 1
+        self.render_selected()
+        self.owner.tasks(
+            self.execute(
+                {"id": "desktop-text"},
+                {"id": "RecordNoOriginalMethod" if no_original else "RecordOriginalMethod"},
+            )
+        )
+
     def add_action(self, box, row, action):
         button = Gtk.Button(label=action["label"])
         button.set_sensitive(not self.busy)
@@ -336,6 +386,7 @@ class ApplicationSupportPane:
             self.open_instructions(row)
             return
         self.busy = True
+        self.action_revision += 1
         self.render_selected()
         if action["id"] == "CheckComponent":
             self.choose_component(row, action)

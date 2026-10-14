@@ -116,6 +116,7 @@ async def desktop(paths, background, lock, tutorial=False):
     from input import Input
     from link import Link
     from overlay import Overlay
+    from practice_session import PracticeSession
     from tray import Tray
     from ui import Settings
 
@@ -291,10 +292,11 @@ async def desktop(paths, background, lock, tutorial=False):
     try:
         components["input"] = Input(GLib, Gdk, paths, host, task)
         support = ApplicationSupport(paths)
+        practice = PracticeSession(host, components["input"], support)
 
         async def support_view():
             await support.refresh()
-            return await host.ask(
+            view = await host.ask(
                 "applicationSupport",
                 {
                     "facts": support.facts(
@@ -307,7 +309,11 @@ async def desktop(paths, background, lock, tutorial=False):
                 timeout=2,
             )
 
+            return {**view, "desktopGuidance": support.desktop_guidance()}
+
         async def support_action(identity, action, directory=None):
+            if identity == "desktop-text" and action in ("Connect", "Remove"):
+                await practice.end(practice.pid)
             await support.execute(identity, action, directory)
             return await support_view()
 
@@ -335,7 +341,7 @@ async def desktop(paths, background, lock, tutorial=False):
             components["settings"].report_tray,
         )
 
-        async def command(operation, value):
+        async def command(operation, value, caller_pid=None):
             if operation in ("wake", "direct"):
                 return await components["input"].trigger(operation, value)
             if operation == "settings":
@@ -345,9 +351,14 @@ async def desktop(paths, background, lock, tutorial=False):
                 components["settings"].open_tutorial()
                 return True
             if operation == "practiceStatus":
+                progress = await practice.progress(caller_pid)
                 return {
-                    **await command("status", None),
-                    "presentation": await host.ask("onDemandPractice", timeout=2),
+                    "modelReady": status.get("modelReady", False),
+                    "managedPractice": support.owns_practice(caller_pid),
+                    "presentation": await host.ask(
+                        "onDemandPractice", progress["runId"] if progress else None, timeout=2
+                    ),
+                    "progress": progress,
                     "practiceEnabled": bool(
                         components["settings"].value and components["settings"].value["enabled"]
                     ),
@@ -359,7 +370,9 @@ async def desktop(paths, background, lock, tutorial=False):
                     or type(value["confirmedSwitch"]) is not bool
                 ):
                     return False
-                return await host.ask("startOnDemandPractice", value["confirmedSwitch"])
+                return await practice.begin(caller_pid, value["confirmedSwitch"])
+            if operation == "endOnDemandPractice":
+                return await practice.end(caller_pid) if value is None else False
             if operation == "finishOnboarding":
                 if (
                     not isinstance(value, dict)
@@ -368,12 +381,10 @@ async def desktop(paths, background, lock, tutorial=False):
                     or components["settings"].value is None
                 ):
                     return False
-                saved = bool(
-                    await host.ask(
-                        "settings",
-                        {**components["settings"].value, "onboardingComplete": True},
-                    )
-                )
+                if value["outcome"] == "completed":
+                    saved = await practice.complete(caller_pid)
+                else:
+                    saved = await host.ask("dismissOnboarding") is True
                 if saved:
                     components["settings"].tutorial.dismiss()
                 return saved
@@ -410,7 +421,7 @@ async def desktop(paths, background, lock, tutorial=False):
             except BlockingIOError:
                 return True
             try:
-                peer_credentials(connection)
+                pid, _, _ = peer_credentials(connection)
                 if len(peers) >= 8:
                     raise OSError("control-capacity")
                 peer = Link(
@@ -418,7 +429,7 @@ async def desktop(paths, background, lock, tutorial=False):
                     connection.fileno(),
                     connection.fileno(),
                     lambda *_: None,
-                    command,
+                    lambda operation, value: command(operation, value, pid),
                     lambda: peers.discard(peer),
                     connection,
                 )

@@ -415,6 +415,7 @@ internal static class ContinuousTranslationCheck
         SessionController? controller = null;
         bool pausedUnchanged = false, cancelledUnchanged = false, modePersisted = false, previewUnchanged = false;
         bool replaced = false, closePreservedLaterSettings = false, saveFailureVisible = false;
+        bool previewProgress = false, completedProgress = false, resetProgress = false;
         string? feedbackCode = null;
         try
         {
@@ -430,7 +431,16 @@ internal static class ContinuousTranslationCheck
             Require(expected.Status == "translated" && expected.Text.Length > 0 && expected.Text != view.SampleText,
                 "practice-reference-translation");
             host = new PracticeHost(info => child = new ChildProcess(info));
-            window = new SettingsWindow(settings, model, () => host.Open(path));
+            overlay = new OverlayWindow(automationTest: true);
+            var support = new WindowsApplicationSupport();
+            controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true, support: support, practice: host);
+            host.Bind(controller);
+            await controller.StartAsync().WaitAsync(cancellation);
+            window = new SettingsWindow(settings, model, () => host.Open(path))
+            {
+                SessionMustEnd = controller.StopSession,
+                PracticeProgress = () => controller.PracticeProgress
+            };
             window.ShowPage();
             window.UpdateLayout();
             result.Stage = "practice-paused-gate";
@@ -481,14 +491,11 @@ internal static class ContinuousTranslationCheck
             Require(N.SetForegroundWindow(root), "practice-foreground-request");
             N.PostMessage(root, 0x0007, 0, 0); // Normal root focus behavior; no fixture message.
             await UntilAsync(() => N.Focused() == (root, field), cancellation);
-            overlay = new OverlayWindow(automationTest: true);
-            var support = new WindowsApplicationSupport();
-            controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true, support: support);
-            window.SessionMustEnd = controller.StopSession;
-            await controller.StartAsync().WaitAsync(cancellation);
             result.Stage = "practice-native-observation";
             await UntilAsync(() => support.Read(settings.Value).Rows.Single(row => row.Id == "desktop-text")
-                .Capabilities.DirectReplace, cancellation);
+                .Capabilities.DirectReplace && controller.PracticeProgress?.Target is not null, cancellation);
+            Require(controller.PracticeProgress is { PreviewCompleted: false, DirectReplacementCompleted: false },
+                "practice-premature-progress");
             controller.OperationFeedback += value => feedbackCode ??= value.Code;
             var editor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
             result.Stage = "practice-preview-shortcut";
@@ -503,6 +510,10 @@ internal static class ContinuousTranslationCheck
             }, cancellation);
             previewUnchanged = N.ReadText(field, Limits.MaxTextUnits) == view.SampleText;
             Require(previewUnchanged, "practice-preview-mutated-source");
+            await UntilAsync(() => controller.PracticeProgress is { PreviewCompleted: true, DirectReplacementCompleted: false }, cancellation);
+            previewProgress = true;
+            await UntilAsync(() => N.ReadText(GetDlgItem(root, 103), 4096)
+                == OnDemandPracticePresentation.Create(settings.Value, controller.PracticeProgress).ProgressNotice, cancellation);
             result.Stage = "practice-direct-shortcut";
             Require(new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x79 }.All(key => GetAsyncKeyState(key) >= 0),
                 "practice-key-already-down");
@@ -515,12 +526,20 @@ internal static class ContinuousTranslationCheck
             }, cancellation);
             replaced = N.ReadText(field, Limits.MaxTextUnits) == expected.Text && !overlay.IsVisible;
             Require(replaced, "practice-direct-result");
+            await UntilAsync(() => controller.PracticeProgress?.Completed == true, cancellation);
+            completedProgress = true;
+            await UntilAsync(() => N.ReadText(GetDlgItem(root, 103), 4096)
+                == OnDemandPracticePresentation.Create(settings.Value, controller.PracticeProgress).ProgressNotice, cancellation);
             Require(!settings.Value.OnboardingComplete, "practice-marked-tutorial-complete");
             result.Stage = "practice-close-keeps-current-settings";
             settings.Update(settings.Value with
             {
                 Mode = WorkMode.Automatic
             });
+            Require(controller.PracticeProgress is null, "practice-settings-reused-completion");
+            resetProgress = true;
+            await UntilAsync(() => N.ReadText(GetDlgItem(root, 103), 4096)
+                == OnDemandPracticePresentation.Create(settings.Value).ProgressNotice, cancellation);
             Require(N.PostMessage(root, 0x0010, 0, 0), "practice-close-request");
             await child.Process.WaitForExitAsync().WaitAsync(cancellation);
             closePreservedLaterSettings = WindowsRuntime.CreateSettings(path).Value.Mode == WorkMode.Automatic;
@@ -585,6 +604,9 @@ internal static class ContinuousTranslationCheck
                 modePersisted,
                 previewUnchanged,
                 replaced,
+                previewProgress,
+                completedProgress,
+                resetProgress,
                 closePreservedLaterSettings
             };
         }

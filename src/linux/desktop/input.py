@@ -226,6 +226,66 @@ class Input:
         # operation even when this process has several compositor windows.
         return peers[0] if len(peers) == 1 else None
 
+    async def practice_target(self, pid, target=None):
+        """Metadata-only identity of the designated field in an already owned process.
+
+        The caller proves managed process ownership. This grants no capture,
+        shortcut, IME, acceptance or write capability.
+        """
+        peers = [
+            peer
+            for peer in self.peers
+            if peer.pid == pid
+            and peer.backend == "gtk3"
+            and peer.lifetime
+            and peer.link.channel.alive
+        ]
+        if len(peers) != 1:
+            return None
+        peer = peers[0]
+        if target is None:
+            if self.focused_peer() is not peer or self.overlay_focused:
+                return None
+        elif target.get("backend") != "linux-gtk3" or target.get("lifetime") != peer.lifetime:
+            return None
+        epoch = self.window_epoch
+        try:
+            description = await peer.link.ask(
+                "describe", {"target": target["value"]} if target else {}
+            )
+            if not isinstance(description, dict):
+                return None
+            metadata, authority = description.get("metadata"), description.get("authority")
+            if not isinstance(metadata, dict) or not isinstance(authority, dict):
+                return None
+            native = description.get("target")
+            if (
+                metadata.get("automationId") != "typelay-practice-source"
+                or metadata.get("aria") != "GtkEntry"
+                or metadata.get("password") is not False
+                or metadata.get("readOnly") is not False
+                or metadata.get("enabled") is not True
+                or not isinstance(native, str)
+                or str(uuid.UUID(native)) != native
+                or authority.get("target") != native
+                or peer not in self.peers
+                or not peer.link.channel.alive
+            ):
+                return None
+            result = target_id(peer, native)
+            if target is not None:
+                return result if result == target else None
+            if (
+                description.get("focused") is not True
+                or epoch != self.window_epoch
+                or self.focused_peer() is not peer
+                or self.overlay_focused
+            ):
+                return None
+            return result
+        except (OSError, EOFError, ValueError, TypeError, TimeoutError):
+            return None
+
     def focus(self):
         if self.bound and self.overlay_focused and self.fresh():
             return "Overlay"
