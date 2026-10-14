@@ -191,7 +191,7 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
         )
         view = await self.ask("onDemandPractice", run)
         self.assertFalse(view["completed"])
-        self.assertIn("已连接", view["progressNotice"])
+        self.assertEqual("已识别练习输入框，尚未生成预览。", view["progressNotice"])
         public_view = await self.ask("onDemandPractice")
         self.assertFalse(public_view["completed"])
         self.assertEqual("开始练习后，这里会显示进度。", public_view["progressNotice"])

@@ -3405,9 +3405,7 @@ def run(arguments):
                     typed(original)
                     wait_for(lambda: text(source) == original, "on-demand practice lost source")
                     wait_for(
-                        lambda: named(
-                            managed_window["pid"], "练习输入框已连接。请先完成第 1 步，生成预览。"
-                        ),
+                        lambda: named(managed_window["pid"], "已识别练习输入框，尚未生成预览。"),
                         "practice identity was not bound before the first command",
                     )
                     assert control(paths, "finishOnboarding", {"outcome": "completed"}) is False
