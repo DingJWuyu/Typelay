@@ -3,6 +3,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Runtime.InteropServices;
 using TypeLay.App;
 using TypeLay.Core;
 using TypeLay.Runtime;
@@ -15,6 +16,350 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
 {
+    [Fact]
+    public async Task ConfiguredEditorShortcutsReturnTheDraftBeforeAcceptanceAndExitWithoutChangingSource()
+    {
+        await desktop.RunAsync(() =>
+        {
+            var (_, input, source) = OpenSource();
+            var settings = new UserSettings(Theme: "light");
+            var session = Ready(source, "An editable preview");
+            int returns = 0, exits = 0;
+            SessionViewToken? editToken = null, returnToken = null, exitToken = null;
+            var overlay = new OverlayWindow
+            {
+                BeginEditing = token =>
+                {
+                    editToken = token;
+                    return session.BeginEdit();
+                },
+                DraftChanged = session.ChangeDraft,
+                ReturnRequested = token =>
+                {
+                    returnToken = token;
+                    returns++;
+                    Assert.True(session.RequestSourceReturn());
+                },
+                EscapeRequested = token =>
+                {
+                    exitToken = token;
+                    exits++;
+                    session.Escape();
+                }
+            };
+            Assert.True(SessionShortcutBindings.TryParse("F12", "F7", out var bindings));
+            overlay.ConfigureSessionShortcuts(bindings!);
+            var context = EditableView(source, bindings!);
+            overlay.Render(session, settings, true, context: context);
+            overlay.UpdateLayout();
+            Assert.Contains("F12", VisibleLabels(overlay));
+            Assert.Contains("F7", VisibleLabels(overlay));
+            Assert.Contains("接受译文", VisibleLabels(overlay));
+            Assert.DoesNotContain("Tab", VisibleLabels(overlay));
+            Assert.DoesNotContain("Esc", VisibleLabels(overlay));
+            var editor = Descendants(overlay).OfType<TextBox>().Single();
+            editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+            {
+                RoutedEvent = Mouse.PreviewMouseDownEvent
+            });
+            editor.Text = "A manual draft";
+            Assert.Equal(context.Token, editToken);
+            overlay.Render(session, settings, false, context: context);
+            Assert.Contains("返回原输入框", VisibleLabels(overlay));
+            Assert.True(EditorKey(editor, Key.F12, Keyboard.PreviewKeyDownEvent).Handled);
+            Assert.Equal(1, returns);
+            Assert.Equal(context.Token, returnToken);
+            Assert.Equal(0, exits);
+            Assert.Equal(SessionState.ReturningToSource, session.State);
+            Assert.Equal("A manual draft", session.Draft);
+            Assert.Equal("Source text", input.Text);
+            Assert.True(EditorKey(editor, Key.F12, Keyboard.PreviewKeyUpEvent).Handled);
+            Assert.True(EditorKey(editor, Key.F7, Keyboard.PreviewKeyDownEvent).Handled);
+            Assert.Equal(1, returns);
+            Assert.Equal(1, exits);
+            Assert.Equal(context.Token, exitToken);
+            Assert.Equal("Source text", input.Text);
+            Assert.True(EditorKey(editor, Key.F7, Keyboard.PreviewKeyUpEvent).Handled);
+        });
+    }
+
+    [Fact]
+    public async Task EditorRequiresDisplayedContextAndDelayedExitRetainsItsOriginalToken()
+    {
+        await desktop.RunAsync(() =>
+        {
+            var (_, input, source) = OpenSource();
+            var settings = new UserSettings(Theme: "light");
+            var session = Ready(source, "An editable preview");
+            var edits = new List<SessionViewToken>();
+            var exits = new List<SessionViewToken>();
+            var overlay = new OverlayWindow
+            {
+                BeginEditing = token =>
+                {
+                    edits.Add(token);
+                    return session.BeginEdit();
+                },
+                EscapeRequested = exits.Add
+            };
+            overlay.Render(session, settings, false);
+            overlay.UpdateLayout();
+            var editor = Descendants(overlay).OfType<TextBox>().Single();
+            void BeginEdit() => editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+            {
+                RoutedEvent = Mouse.PreviewMouseDownEvent
+            });
+            var exit = Descendants(overlay).OfType<Button>().Single(button =>
+                Descendants(button).OfType<TextBlock>().Any(label => label.Text == "退出当前翻译"));
+            BeginEdit();
+            exit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Empty(edits);
+            Assert.Empty(exits);
+            Assert.True(editor.IsReadOnly);
+
+            var context = EditableView(source) with
+            {
+                CanEdit = false
+            };
+            overlay.Render(session, settings, false, context: context);
+            BeginEdit();
+            Assert.Empty(edits);
+            exit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(new[] { context.Token }, exits);
+            exits.Clear();
+            overlay.Render(session, settings, false, context: context with
+            {
+                Token = context.Token with
+                {
+                    Target = new("other", "field", Guid.NewGuid())
+                }
+            });
+            BeginEdit();
+            exit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Empty(edits);
+            Assert.Empty(exits);
+
+            context = context with
+            {
+                CanEdit = true
+            };
+            overlay.Render(session, settings, false, context: context);
+            BeginEdit();
+            Assert.Equal(new[] { context.Token }, edits);
+            Assert.False(editor.IsReadOnly);
+            exit.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+            {
+                RoutedEvent = UIElement.PreviewMouseLeftButtonDownEvent
+            });
+            var next = context with
+            {
+                Token = context.Token with
+                {
+                    Revision = 2
+                }
+            };
+            overlay.Render(session, settings, false, context: next);
+            exit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(new[] { context.Token }, exits);
+
+            var more = Descendants(overlay).OfType<Button>().Single(button => Equals(button.Content, "⋯"));
+            more.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var menu = PresentationSource.CurrentSources.OfType<HwndSource>()
+                .Select(value => value.RootVisual).OfType<DependencyObject>()
+                .SelectMany(root => Descendants(root).Prepend(root))
+                .OfType<ContextMenu>().Single(control => control.IsOpen);
+            overlay.Render(session, settings, false, context: next with
+            {
+                Token = next.Token with
+                {
+                    Revision = 3
+                }
+            });
+            menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "隐藏当前翻译"))
+                .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            menu.IsOpen = false;
+            Assert.Equal(new[] { context.Token, next.Token }, exits);
+
+            overlay.Render(session, settings, false);
+            BeginEdit();
+            exit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Single(edits);
+            Assert.Equal(2, exits.Count);
+            Assert.True(editor.IsReadOnly);
+            Assert.Equal("Source text", input.Text);
+        });
+    }
+
+    [Fact]
+    public async Task EditorKeepsPressedKeyOwnershipAcrossConfigurationAndCompositionChanges()
+    {
+        await desktop.RunAsync(() =>
+        {
+            var (_, input, source) = OpenSource();
+            var settings = new UserSettings(Theme: "light", AcceptShortcut: "F1", ExitShortcut: "F24");
+            var session = Ready(source, "An editable preview");
+            int returns = 0, exits = 0;
+            var overlay = new OverlayWindow
+            {
+                BeginEditing = _ => session.BeginEdit(),
+                ReturnRequested = _ => returns++,
+                EscapeRequested = _ => exits++
+            };
+            overlay.Configure(settings);
+            var context = EditableView(source);
+            overlay.Render(session, settings, true, context: context);
+            overlay.UpdateLayout();
+            // Persisted preferences are deliberately not activated by Configure yet.
+            Assert.Contains("Tab", VisibleLabels(overlay));
+            Assert.Contains("Esc", VisibleLabels(overlay));
+            var editor = Descendants(overlay).OfType<TextBox>().Single();
+            Assert.False(EditorKey(editor, Key.Tab, Keyboard.PreviewKeyDownEvent).Handled);
+            Assert.False(EditorKey(editor, Key.Tab, Keyboard.PreviewKeyUpEvent).Handled);
+            editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+            {
+                RoutedEvent = Mouse.PreviewMouseDownEvent
+            });
+            Assert.True(SessionShortcutBindings.TryParse("F1", "F24", out var bindings));
+            overlay.ConfigureSessionShortcuts(bindings!);
+            Assert.Contains("F1", VisibleLabels(overlay));
+            Assert.Contains("F24", VisibleLabels(overlay));
+
+            EditorComposition(editor, TextCompositionManager.PreviewTextInputStartEvent);
+            Assert.True(overlay.EditingComposition);
+            Assert.False(EditorKey(editor, Key.F1, Keyboard.PreviewKeyDownEvent).Handled);
+            Assert.False(EditorKey(editor, Key.F24, Keyboard.PreviewKeyDownEvent).Handled);
+            EditorComposition(editor, TextCompositionManager.PreviewTextInputEvent);
+            Assert.False(overlay.EditingComposition);
+            // Ending composition does not turn an already-held key into an action.
+            Assert.False(EditorKey(editor, Key.F1, Keyboard.PreviewKeyDownEvent).Handled);
+            Assert.False(EditorKey(editor, Key.F24, Keyboard.PreviewKeyDownEvent).Handled);
+            Assert.Equal(0, returns);
+            Assert.Equal(0, exits);
+            Assert.False(EditorKey(editor, Key.F1, Keyboard.PreviewKeyUpEvent).Handled);
+            Assert.False(EditorKey(editor, Key.F24, Keyboard.PreviewKeyUpEvent).Handled);
+            Assert.False(EditorKey(editor, Key.ImeProcessed, Keyboard.PreviewKeyDownEvent).Handled);
+
+            Assert.True(EditorKey(editor, Key.F1, Keyboard.PreviewKeyDownEvent).Handled);
+            Assert.Equal(1, returns);
+            Assert.True(SessionShortcutBindings.TryParse("F24", "F1", out bindings));
+            overlay.ConfigureSessionShortcuts(bindings!);
+            EditorComposition(editor, TextCompositionManager.PreviewTextInputStartEvent);
+            Assert.True(EditorKey(editor, Key.F1, Keyboard.PreviewKeyDownEvent).Handled);
+            Assert.True(EditorKey(editor, Key.F1, Keyboard.PreviewKeyUpEvent).Handled);
+            Assert.Equal(1, returns);
+            Assert.Equal(0, exits);
+            EditorComposition(editor, TextCompositionManager.PreviewTextInputEvent);
+            Assert.True(EditorKey(editor, Key.F1, Keyboard.PreviewKeyDownEvent).Handled);
+            Assert.True(EditorKey(editor, Key.F1, Keyboard.PreviewKeyUpEvent).Handled);
+            Assert.Equal(1, exits);
+            Assert.True(EditorKey(editor, Key.F24, Keyboard.PreviewKeyDownEvent).Handled);
+            Assert.True(EditorKey(editor, Key.F24, Keyboard.PreviewKeyUpEvent).Handled);
+            Assert.Equal(2, returns);
+
+            overlay.ConfigureSessionShortcuts(SessionShortcutBindings.Default);
+            context = context with
+            {
+                Bindings = SessionShortcutBindings.Default
+            };
+            overlay.Render(session, settings, false, context: context);
+            Assert.Contains("Tab", VisibleLabels(overlay));
+            Assert.Contains("Esc", VisibleLabels(overlay));
+            Assert.Contains("返回原输入框", VisibleLabels(overlay));
+            Assert.True(EditorKey(editor, Key.Tab, Keyboard.PreviewKeyDownEvent).Handled);
+            Assert.True(EditorKey(editor, Key.Tab, Keyboard.PreviewKeyUpEvent).Handled);
+            Assert.True(EditorKey(editor, Key.Escape, Keyboard.PreviewKeyDownEvent).Handled);
+            Assert.True(EditorKey(editor, Key.Escape, Keyboard.PreviewKeyUpEvent).Handled);
+            Assert.Equal(3, returns);
+            Assert.Equal(2, exits);
+            Assert.Equal("Source text", input.Text);
+        });
+    }
+
+    [Fact]
+    public async Task HeldEditorShortcutsDoNotChangeActionAfterRebindingOrReleasingModifiers()
+    {
+        await desktop.RunAsync(async () =>
+        {
+            var (window, input, source) = OpenSource();
+            var settings = new UserSettings(Theme: "light");
+            var session = Ready(source, "An editable preview");
+            int returns = 0, exits = 0;
+            var overlay = new OverlayWindow
+            {
+                BeginEditing = _ => session.BeginEdit(),
+                ReturnRequested = _ => returns++,
+                EscapeRequested = _ => exits++
+            };
+            Assert.True(SessionShortcutBindings.TryParse("F12", "F7", out var bindings));
+            overlay.ConfigureSessionShortcuts(bindings!);
+            var context = EditableView(source, bindings!);
+            overlay.Render(session, settings, true, context: context);
+            overlay.UpdateLayout();
+            var editor = Descendants(overlay).OfType<TextBox>().Single();
+            editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+            {
+                RoutedEvent = Mouse.PreviewMouseDownEvent
+            });
+            Assert.Equal(ModifierKeys.None, Keyboard.Modifiers);
+            foreach (Key key in new[] { Key.F7, Key.F12, Key.LeftCtrl, Key.LeftShift })
+                Assert.False(Native.GetAsyncKeyState(KeyInterop.VirtualKeyFromKey(key)) < 0,
+                    "The fixture must not borrow a key that is already held.");
+            var owned = new HashSet<Key>();
+            bool cleaned = true;
+            Task<KeyEventArgs> Inject(TextBox target, Key key, bool down) => InjectEditorKey(target, key, down, owned);
+            try
+            {
+                Assert.True((await Inject(editor, Key.F12, down: true)).Handled);
+                Assert.Equal(1, returns);
+                Assert.True(SessionShortcutBindings.TryParse("F7", "F12", out bindings));
+                overlay.ConfigureSessionShortcuts(bindings!);
+                var repeat = await Inject(editor, Key.F12, down: true);
+                Assert.True(repeat.IsRepeat);
+                Assert.True(repeat.Handled);
+                Assert.Equal(0, exits);
+                Assert.True((await Inject(editor, Key.F12, down: false)).Handled);
+                Assert.True((await Inject(editor, Key.F12, down: true)).Handled);
+                Assert.True((await Inject(editor, Key.F12, down: false)).Handled);
+                Assert.Equal(1, exits);
+
+                foreach (Key modifier in new[] { Key.LeftCtrl, Key.LeftShift })
+                {
+                    await Inject(editor, modifier, down: true);
+                    Assert.NotEqual(ModifierKeys.None, Keyboard.Modifiers);
+                    Assert.False((await Inject(editor, Key.F7, down: true)).Handled);
+                    await Inject(editor, modifier, down: false);
+                    Assert.Equal(ModifierKeys.None, Keyboard.Modifiers);
+                    Assert.False((await Inject(editor, Key.F7, down: true)).Handled);
+                    Assert.False((await Inject(editor, Key.F7, down: false)).Handled);
+                    Assert.Equal(1, returns);
+                }
+                Assert.True((await Inject(editor, Key.F7, down: true)).Handled);
+                Assert.True((await Inject(editor, Key.F7, down: false)).Handled);
+                Assert.Equal(2, returns);
+                Assert.Equal(1, exits);
+                Assert.True((await Inject(editor, Key.F7, down: true)).Handled);
+                Assert.True(window.Activate());
+                Assert.True(input.Focus());
+                Assert.False((await Inject(input, Key.F7, down: false)).Handled);
+                editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+                {
+                    RoutedEvent = Mouse.PreviewMouseDownEvent
+                });
+                Assert.True((await Inject(editor, Key.F7, down: true)).Handled);
+                Assert.True((await Inject(editor, Key.F7, down: false)).Handled);
+                Assert.Equal(4, returns);
+                Assert.Equal("Source text", input.Text);
+            }
+            finally
+            {
+                // Attempt every owned release, preserving any original failure.
+                foreach (Key key in owned.ToArray())
+                    cleaned &= InjectKey(key, down: false, owned);
+            }
+            Assert.True(cleaned, "The fixture must release every key it injected.");
+        });
+    }
+
     [Fact]
     public async Task PreviewAppearsAtFinalBoundsAndReflowsWithoutTakingSourceFocus()
     {
@@ -137,10 +482,11 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             var settings = new UserSettings(Theme: "light");
             string preview = string.Join("\n", Enumerable.Repeat("Preview line", 12));
             var session = Ready(source, preview);
-            var overlay = new OverlayWindow { BeginEditing = session.BeginEdit, DraftChanged = session.ChangeDraft };
+            var context = EditableView(source);
+            var overlay = new OverlayWindow { BeginEditing = _ => session.BeginEdit(), DraftChanged = session.ChangeDraft };
             void Render()
             {
-                overlay.Render(session, settings, false);
+                overlay.Render(session, settings, false, context: context);
                 overlay.UpdateLayout();
                 AssertNativeSize(overlay);
             }
@@ -212,7 +558,9 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             var session = Ready(source, "A preview that must disappear while paused");
             var revisions = new List<long>();
             var overlay = new OverlayWindow { ResumeRequested = revisions.Add };
-            overlay.Render(session, settings, false);
+            Assert.True(SessionShortcutBindings.TryParse("F24", "F1", out var bindings));
+            overlay.ConfigureSessionShortcuts(bindings!);
+            overlay.Render(session, settings, false, context: EditableView(source, bindings!));
             overlay.UpdateLayout();
             var editor = Descendants(overlay).OfType<TextBox>().Single();
             Assert.NotEmpty(editor.Text);
@@ -235,6 +583,8 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             var labels = Descendants(resume).OfType<TextBlock>().Select(label => label.Text).ToArray();
             Assert.Contains("已暂停", labels);
             Assert.Contains("点击恢复", labels);
+            overlay.ConfigureSessionShortcuts(SessionShortcutBindings.Default);
+            Assert.Equal(new[] { "已暂停", "点击恢复" }, VisibleLabels(overlay));
             resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert.Equal(new long[] { 12 }, revisions);
             Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
@@ -270,6 +620,9 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             overlay.UpdateLayout();
             Assert.True(editor.IsVisible);
             Assert.Equal("A fresh preview after resuming", editor.Text);
+            Assert.Contains("Tab", VisibleLabels(overlay));
+            Assert.Contains("Esc", VisibleLabels(overlay));
+            Assert.Contains("交还应用", VisibleLabels(overlay));
             Assert.False(resume.IsVisible);
             resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             Assert.Equal(new long[] { 12, 13 }, revisions);
@@ -288,11 +641,11 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             var revisions = new List<long>();
             var overlay = new OverlayWindow
             {
-                BeginEditing = session.BeginEdit,
+                BeginEditing = _ => session.BeginEdit(),
                 DraftChanged = session.ChangeDraft,
                 ResumeRequested = revisions.Add
             };
-            overlay.Render(session, settings, false);
+            overlay.Render(session, settings, false, context: EditableView(source));
             overlay.UpdateLayout();
             var editor = Descendants(overlay).OfType<TextBox>().Single();
             editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
@@ -437,6 +790,78 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
 
     private static Color ResourceColor(OverlayWindow overlay, string name) =>
         Assert.IsType<SolidColorBrush>(overlay.FindResource(name)).Color;
+
+    private static SessionViewContext EditableView(InputSnapshot source, SessionShortcutBindings? bindings = null) =>
+        new(new(source.Target, Guid.NewGuid(), 1), bindings ?? SessionShortcutBindings.Default, true);
+
+    private static string[] VisibleLabels(OverlayWindow overlay) =>
+        Descendants(overlay).OfType<TextBlock>().Where(label => label.IsVisible).Select(label => label.Text).ToArray();
+
+    private static KeyEventArgs EditorKey(TextBox editor, Key key, RoutedEvent routedEvent)
+    {
+        // Drive the real WPF editor's routed input boundary. This does not
+        // substitute for physical keys, the low-level hook or a real IME.
+        var input = new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(editor), 0, key)
+        {
+            RoutedEvent = routedEvent
+        };
+        editor.RaiseEvent(input);
+        return input;
+    }
+
+    private static void EditorComposition(TextBox editor, RoutedEvent routedEvent) =>
+        editor.RaiseEvent(new TextCompositionEventArgs(Keyboard.PrimaryDevice,
+            new TextComposition(InputManager.Current, editor, ""))
+        {
+            RoutedEvent = routedEvent
+        });
+
+    private static async Task<KeyEventArgs> InjectEditorKey(TextBox editor, Key key, bool down, HashSet<Key> owned)
+    {
+        Assert.True(editor.IsKeyboardFocused);
+        var received = new TaskCompletionSource<KeyEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var routedEvent = down ? Keyboard.PreviewKeyDownEvent : Keyboard.PreviewKeyUpEvent;
+        KeyEventHandler observe = (_, input) =>
+        {
+            Key actual = input.Key == Key.System ? input.SystemKey : input.Key;
+            if (actual == key)
+                received.TrySetResult(input);
+        };
+        editor.AddHandler(routedEvent, observe, handledEventsToo: true);
+        try
+        {
+            // Actual WPF input processing supplies IsRepeat and modifier state.
+            // Software injection is not evidence of physical key or IME support.
+            Assert.True(InjectKey(key, down, owned));
+            return await received.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        }
+        finally { editor.RemoveHandler(routedEvent, observe); }
+    }
+
+    private static bool InjectKey(Key key, bool down, HashSet<Key> owned)
+    {
+        KeyboardInput[] input = [new() { Type = 1, Key = (ushort)KeyInterop.VirtualKeyFromKey(key), Flags = down ? 0u : 2u }];
+        bool sent = SendInput(1, input, Marshal.SizeOf<KeyboardInput>()) == 1;
+        if (sent)
+        {
+            if (down)
+                owned.Add(key);
+            else
+                owned.Remove(key);
+        }
+        return sent;
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 40)]
+    private struct KeyboardInput
+    {
+        [FieldOffset(0)] public uint Type;
+        [FieldOffset(8)] public ushort Key;
+        [FieldOffset(12)] public uint Flags;
+    }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint count, KeyboardInput[] input, int size);
 
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)
     {

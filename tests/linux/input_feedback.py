@@ -21,6 +21,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from input import Input, Peer  # noqa: E402
+from overlay import Overlay  # noqa: E402
 from wire import Decoder  # noqa: E402
 
 
@@ -74,12 +75,15 @@ class Host:
         self.requests = []
         self.pause_allowed = True
         self.capture_allowed = False
+        self.begin_edit = None
 
-    def send(self, operation, data):
+    def send(self, operation, data=None):
         self.events.append((operation, data))
 
-    async def ask(self, operation, data):
+    async def ask(self, operation, data=None):
         self.requests.append((operation, data))
+        if operation == "beginEdit" and self.begin_edit:
+            return await self.begin_edit(data)
         return (operation == "allowPauseField" and self.pause_allowed) or (
             operation == "allowField" and self.capture_allowed
         )
@@ -118,10 +122,18 @@ class InputFeedbackTests(unittest.TestCase):
         self.configure()
         self.peer = self.connect_peer()
 
-    def configure(self):
+    def configure(self, accept="Tab", exit_key="Esc"):
         self.input.notification(
             "shortcuts",
-            {"enabled": True, "wake": "F9", "direct": "F10", "generation": self.generation},
+            {
+                "enabled": True,
+                "wake": "F9",
+                "direct": "F10",
+                "generation": self.generation,
+                "sessionEnabled": True,
+                "accept": accept,
+                "exit": exit_key,
+            },
         )
 
     def connect_peer(self, backend="qt6"):
@@ -327,7 +339,14 @@ class InputFeedbackTests(unittest.TestCase):
         self.assertIsNone(asyncio.run(timed_out()))
         self.assertEqual(self.host.requests, [])
 
-    async def publish_acceptance(self):
+    async def publish_acceptance(
+        self,
+        *,
+        acknowledgement=True,
+        pause=True,
+        before_publish=None,
+        authority_acknowledgement=None,
+    ):
         self.host.capture_allowed = True
         self.input.notification("settings", {"enabled": True})
         self.focus(self.peer)
@@ -344,6 +363,20 @@ class InputFeedbackTests(unittest.TestCase):
                 await asyncio.sleep(0)
 
         description = self.description()
+        if acknowledgement:
+            description["sessionBindings"] = {
+                "generation": self.generation,
+                "accept": "Tab",
+                "exit": "Esc",
+                "sourceReady": True,
+                "editorReady": True,
+                **(acknowledgement if isinstance(acknowledgement, dict) else {}),
+            }
+        if authority_acknowledgement is not None:
+            description["authority"]["sessionBindings"] = {
+                **description["sessionBindings"],
+                **authority_acknowledgement,
+            }
         await asyncio.wait_for(reply_to("describe", description), 1)
         native = {
             **description,
@@ -356,6 +389,10 @@ class InputFeedbackTests(unittest.TestCase):
         await asyncio.wait_for(reply_to("capture", native), 1)
         capture = await asyncio.wait_for(operation, 1)
         plan_id = str(uuid.uuid4())
+        generation = self.generation
+        if before_publish:
+            before_publish()
+            self.native_frames(self.peer)
         self.input.notification(
             "publish",
             {
@@ -364,6 +401,8 @@ class InputFeedbackTests(unittest.TestCase):
                     "userEpoch": capture["userEpoch"],
                     "foregroundEpoch": capture["foregroundEpoch"],
                     "escapeAllowed": True,
+                    "commandGeneration": generation,
+                    "sessionRevision": 9,
                 },
                 "permit": {
                     "plan": {
@@ -375,10 +414,278 @@ class InputFeedbackTests(unittest.TestCase):
                 },
             },
         )
-        self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["publish"])
+        frames = self.native_frames(self.peer)
+        if (
+            not acknowledgement
+            or isinstance(acknowledgement, dict)
+            or before_publish
+            or authority_acknowledgement is not None
+        ):
+            return frames
+        self.assertEqual([frame["op"] for frame in frames], ["publish"])
+        if not pause:
+            return frames
         self.input.notification("settings", {"enabled": False})
         self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["revoke"])
         return plan_id
+
+    def test_peer_without_binding_acknowledgement_cannot_receive_acceptance_permit(self):
+        frames = asyncio.run(self.publish_acceptance(acknowledgement=False))
+        self.assertFalse(
+            any(frame["op"] == "publish" and frame["data"].get("permit") for frame in frames)
+        )
+
+    def test_binding_acknowledgement_carries_the_generation_on_publication(self):
+        frames = asyncio.run(self.publish_acceptance(pause=False))
+        self.assertEqual(frames[0]["data"].get("generation"), self.generation)
+
+    def test_conflicting_authority_binding_acknowledgement_cannot_authorize_publication(self):
+        frames = asyncio.run(
+            self.publish_acceptance(authority_acknowledgement={"generation": str(uuid.uuid4())})
+        )
+        self.assertFalse(any(frame["op"] == "publish" for frame in frames))
+
+    def test_matching_optional_authority_acknowledgement_preserves_publication(self):
+        frames = asyncio.run(self.publish_acceptance(authority_acknowledgement={}))
+        self.assertEqual([frame["op"] for frame in frames], ["publish"])
+
+    def test_wrong_or_incomplete_binding_acknowledgement_never_authorizes_publication(self):
+        for change in (
+            {"generation": str(uuid.uuid4())},
+            {"accept": "F7"},
+            {"exit": "F8"},
+            {"sourceReady": False},
+            {"sourceReady": 1},
+            {"editorReady": None},
+        ):
+            with self.subTest(change=change):
+                frames = asyncio.run(self.publish_acceptance(acknowledgement=change))
+                self.assertFalse(any(frame["op"] == "publish" for frame in frames))
+
+    def test_configuration_change_rejects_old_target_acknowledgement_and_publication(self):
+        def reconfigure():
+            self.generation = str(uuid.uuid4())
+            self.configure("F7", "F8")
+
+        frames = asyncio.run(self.publish_acceptance(before_publish=reconfigure))
+        self.assertFalse(any(frame["op"] == "publish" for frame in frames))
+
+    def test_delayed_source_exit_cannot_close_a_new_configuration(self):
+        asyncio.run(self.publish_acceptance(pause=False))
+        self.peer.event("escape", {"target": "ordinary-field", "generation": str(uuid.uuid4())})
+        self.assertEqual(self.host.notices, [])
+
+    def test_source_exit_is_bound_to_the_published_target_and_session_revision(self):
+        asyncio.run(self.publish_acceptance(pause=False))
+        for change in ({"target": "other-field"}, {"sessionRevision": 8}):
+            self.peer.event(
+                "escape",
+                {
+                    "target": "ordinary-field",
+                    "generation": self.generation,
+                    "sessionRevision": 9,
+                    **change,
+                },
+            )
+            self.assertEqual(self.host.notices, [])
+        self.peer.event(
+            "escape",
+            {
+                "target": "ordinary-field",
+                "generation": self.generation,
+                "sessionRevision": 9,
+            },
+        )
+        self.assertEqual(len(self.host.notices), 1)
+        self.assertEqual(self.host.notices[0]["sessionRevision"], 9)
+        self.assertEqual(self.host.notices[0]["target"]["value"], "ordinary-field")
+        self.assertEqual(self.host.notices[0]["commandGeneration"], self.generation)
+
+    def test_editor_return_requires_editor_acknowledgement(self):
+        frames = asyncio.run(self.publish_acceptance(acknowledgement={"editorReady": False}))
+        self.assertEqual([frame["op"] for frame in frames], ["publish"])
+        context = {
+            "boundTarget": frames[0]["data"]["lease"]["source"]["target"],
+            "sessionShortcuts": {
+                "generation": self.generation,
+                "bindings": {"accept": "Tab", "exit": "Esc"},
+            },
+        }
+        self.assertFalse(asyncio.run(self.input.request("return", context)))
+        self.assertEqual(self.native_frames(self.peer), [])
+
+    def test_configuration_change_during_return_description_cannot_move_focus(self):
+        async def returning():
+            frames = await self.publish_acceptance(pause=False)
+            context = {
+                "boundTarget": frames[0]["data"]["lease"]["source"]["target"],
+                "sessionShortcuts": {
+                    "generation": self.generation,
+                    "bindings": {"accept": "Tab", "exit": "Esc"},
+                },
+            }
+            operation = asyncio.create_task(self.input.request("return", context))
+            await asyncio.sleep(0)
+            requests = self.native_frames(self.peer)
+            self.assertEqual([frame["op"] for frame in requests], ["describe"])
+            self.generation = str(uuid.uuid4())
+            self.configure("F7", "F8")
+            self.native_frames(self.peer)
+            self.peer.link.receive({"id": requests[0]["id"], "data": self.description()})
+            self.assertFalse(await asyncio.wait_for(operation, 1))
+            self.assertFalse(
+                any(frame["op"] == "return" for frame in self.native_frames(self.peer))
+            )
+
+        asyncio.run(returning())
+
+    async def overlay_scenario(self):
+        publication = (await self.publish_acceptance(pause=False))[0]["data"]
+        jobs = []
+        overlay = Overlay(
+            self.host,
+            self.input,
+            lambda coroutine: jobs.append(asyncio.create_task(coroutine)),
+            lambda: None,
+        )
+        token = {
+            "target": publication["lease"]["source"]["target"],
+            "commandGeneration": self.generation,
+            "revision": 9,
+        }
+        view = {
+            "state": "ValidTranslation",
+            "source": {"target": token["target"]},
+            "viewContext": {
+                "token": token,
+                "bindings": {"accept": "Tab", "exit": "Esc"},
+                "canEdit": True,
+            },
+            "canAccept": True,
+        }
+        overlay.render(view)
+        await self.settle_overlay(jobs)
+        return overlay, jobs, token, view
+
+    async def settle_overlay(self, jobs):
+        received = []
+        async with asyncio.timeout(1):
+            while any(not job.done() for job in jobs):
+                await asyncio.sleep(0)
+                for frame in self.native_frames(self.peer):
+                    received.append(frame)
+                    if frame["op"] == "overlay-render":
+                        self.peer.link.receive(
+                            {
+                                "id": frame["id"],
+                                "data": {
+                                    "visible": True,
+                                    "editing": frame["data"]["view"]["state"]
+                                    == "EditingTranslation",
+                                },
+                            }
+                        )
+                for job in jobs:
+                    if job.done():
+                        job.result()
+        received.extend(self.native_frames(self.peer))
+        return received
+
+    def test_overlay_return_echoes_displayed_token_and_rejects_old_generation(self):
+        async def exercise():
+            overlay, _jobs, token, _view = await self.overlay_scenario()
+            event = {
+                "operation": "return",
+                "target": "ordinary-field",
+                "revision": overlay.revision,
+                "generation": self.generation,
+            }
+            self.peer.event("ui", {**event, "generation": str(uuid.uuid4())})
+            self.assertFalse(any(name == "return" for name, _ in self.host.events))
+            self.peer.event("ui", event)
+            self.assertEqual(
+                [value for name, value in self.host.events if name == "return"], [token]
+            )
+
+        asyncio.run(exercise())
+
+    def test_begin_edit_uses_the_token_returned_after_the_shared_transition(self):
+        async def exercise():
+            overlay, jobs, token, view = await self.overlay_scenario()
+            updated_token = {**token, "revision": 10}
+
+            async def begin_edit(request):
+                self.assertEqual(request, token)
+                overlay.render(
+                    {
+                        **view,
+                        "state": "EditingTranslation",
+                        "viewContext": {
+                            **view["viewContext"],
+                            "token": updated_token,
+                        },
+                    }
+                )
+                return {"allowed": True, "token": updated_token}
+
+            self.host.begin_edit = begin_edit
+            self.peer.event(
+                "ui",
+                {
+                    "operation": "beginEdit",
+                    "target": "ordinary-field",
+                    "revision": overlay.revision,
+                    "generation": self.generation,
+                },
+            )
+            received = await self.settle_overlay(jobs)
+            edits = [frame["data"] for frame in received if frame["op"] == "overlay-edit"]
+            self.assertEqual(
+                edits,
+                [
+                    {
+                        "target": "ordinary-field",
+                        "allowed": True,
+                        "generation": self.generation,
+                        "revision": overlay.revision,
+                    }
+                ],
+            )
+            self.assertEqual(overlay.session_token(), updated_token)
+
+        asyncio.run(exercise())
+
+    def test_old_begin_edit_reply_cannot_enter_a_new_same_target_session(self):
+        async def exercise():
+            overlay, jobs, token, view = await self.overlay_scenario()
+
+            async def begin_edit(_request):
+                overlay.render(
+                    {
+                        **view,
+                        "state": "EditingTranslation",
+                        "viewContext": {
+                            **view["viewContext"],
+                            "token": {**token, "revision": 12},
+                        },
+                    }
+                )
+                return {"allowed": True, "token": {**token, "revision": 10}}
+
+            self.host.begin_edit = begin_edit
+            self.peer.event(
+                "ui",
+                {
+                    "operation": "beginEdit",
+                    "target": "ordinary-field",
+                    "revision": overlay.revision,
+                    "generation": self.generation,
+                },
+            )
+            received = await self.settle_overlay(jobs)
+            self.assertFalse(any(frame["op"] == "overlay-edit" for frame in received))
+
+        asyncio.run(exercise())
 
     def test_pause_preserves_only_once_the_receipt_of_previously_accepted_input(self):
         plan_id = asyncio.run(self.publish_acceptance())
@@ -399,6 +706,46 @@ class InputFeedbackTests(unittest.TestCase):
         self.peer.event("accepted", receipt)
         self.assertEqual(len(self.host.notices), 1)
         self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["quarantine"])
+
+    def test_reconfiguration_preserves_original_uncertain_receipt_without_reissuing_a_write(self):
+        publication = asyncio.run(self.publish_acceptance(pause=False))[0]["data"]
+        original_generation = self.generation
+        self.generation = str(uuid.uuid4())
+        self.configure("F7", "F8")
+        self.native_frames(self.peer)
+        receipt = {
+            "planId": publication["permit"]["plan"]["id"],
+            "acceptedAtMs": 1001,
+            "receipt": {"status": "OutcomeUnknown", "reason": "UnknownOutcome"},
+        }
+        self.peer.event("accepted", receipt)
+        self.assertEqual(len(self.host.notices), 1)
+        notice = self.host.notices[0]
+        self.assertEqual(notice["completedReceipt"], receipt["receipt"])
+        self.assertEqual(notice["permit"], publication["permit"])
+        self.assertEqual(notice["commandGeneration"], original_generation)
+        self.assertEqual(notice["target"], publication["lease"]["source"]["target"])
+        self.assertEqual(self.native_frames(self.peer), [])
+        self.peer.event("accepted", receipt)
+        self.assertEqual(len(self.host.notices), 1)
+        self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["quarantine"])
+
+    def test_another_peer_cannot_consume_the_original_accepted_receipt(self):
+        plan_id = asyncio.run(self.publish_acceptance())
+        other = self.connect_peer()
+        self.native_frames(other)
+        receipt = {
+            "planId": plan_id,
+            "acceptedAtMs": 1001,
+            "receipt": {"status": "OutcomeUnknown", "reason": "UnknownOutcome"},
+        }
+        other.event("accepted", receipt)
+        self.assertEqual(self.host.notices, [])
+        self.assertEqual([frame["op"] for frame in self.native_frames(other)], ["quarantine"])
+        self.peer.event("accepted", receipt)
+        self.assertEqual(len(self.host.notices), 1)
+        self.assertEqual(self.host.notices[0]["completedReceipt"], receipt["receipt"])
+        self.assertEqual(self.native_frames(self.peer), [])
 
     def test_paused_receipt_retention_expires_without_reissuing_the_old_permission(self):
         plan_id = asyncio.run(self.publish_acceptance())

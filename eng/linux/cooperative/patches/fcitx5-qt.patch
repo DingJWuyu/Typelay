@@ -98,15 +98,11 @@
 +}
  
  template <typename T>
-@@ -266,4 +344,11 @@
+@@ -266,4 +344,7 @@
                             : nullptr) {
      registerFcitxQtDBusTypes();
 +    if (tlCooperate()) {
 +        qApp->installEventFilter(this);
-+        connect(qApp, &QGuiApplication::applicationStateChanged, this,
-+                [this](Qt::ApplicationState state) {
-+            if (state != Qt::ApplicationActive) { tlConsumedKey_ = 0; tlConsumedScan_ = 0; }
-+        });
 +    }
      watcher_->setWatchPortal(true);
  
@@ -397,7 +393,7 @@
 +    tlOrderTrace("decision", order, int(filtered));
      if (!filtered) {
          forwardEvent(window, keyEvent);
-@@ -1306,3 +1540,319 @@
+@@ -1306,3 +1540,339 @@
  }
  
 +// TypeLay 2026-10-12: exact-object cooperation for the original async IM path.
@@ -654,6 +650,19 @@
 +    return proxy->typelayPrepareCaret(state->serverSerial);
 +}
 +
++bool QFcitxPlatformInputContext::supportsControlKeys(QObject *actual, quint32 accept, quint32 exit) const {
++    if (!tlCooperate() || syncMode_ || destroy_ || !actual || QThread::currentThread() != thread() ||
++        actual->property(TypeLayFcitxQtProviderPropertyV1).value<QObject *>() != this) return false;
++    const auto keys = qApp->property(TypeLayFcitxQtControlKeysPropertyV1).toList();
++    const auto available = [&](quint32 symbol) {
++        if (!symbol) return false;
++        for (const auto &key : keys)
++            if (key.metaType() == QMetaType::fromType<uint>() && key.toUInt() == symbol) return true;
++        return false;
++    };
++    return accept != exit && available(accept) && available(exit);
++}
++
 +bool QFcitxPlatformInputContext::tlControlKey(const QKeyEvent *event) {
 +    const bool release = event->type() == QEvent::KeyRelease;
 +    bool traceCandidate = event->key() == Qt::Key_Tab || event->key() == Qt::Key_Escape;
@@ -670,15 +679,22 @@
 +            int(!event->nativeScanCode()), tlPendingDbus, tlPendingForward, tlOutputDepth);
 +    };
 +    trace("entry", -1);
-+    if (tlConsumedKey_ && event->nativeScanCode() == tlConsumedScan_) {
-+        if (release && !event->isAutoRepeat()) { tlConsumedKey_ = 0; tlConsumedScan_ = 0; }
-+        trace("paired", 1);
-+        return true;
++    const auto scan = event->nativeScanCode();
++    if (!scan) { trace("precheck", 0); return false; }
++    // Pair configured controls and the finite session-key set, including
++    // currently unbound function keys. Focus/configuration is not a release.
++    const auto held = tlHeldControlKeys_.constFind(scan);
++    if (held != tlHeldControlKeys_.cend()) {
++        const bool consumed = *held;
++        if (release && !event->isAutoRepeat()) tlHeldControlKeys_.remove(scan);
++        trace("paired", int(consumed));
++        return consumed;
 +    }
-+    // Never overwrite an outstanding pair. A distinct key follows the original
-+    // input path; modifiers may change Qt::Key on the matching release.
-+    if (tlConsumedKey_ || !event->nativeScanCode() || release ||
-+        event->isAutoRepeat() || tlControl_) { trace("precheck", 0); return false; }
++    if (release || event->isAutoRepeat()) { trace("precheck", 0); return false; }
++    const bool sessionCandidate = event->key() >= Qt::Key_F1 && event->key() <= Qt::Key_F24;
++    if (!traceCandidate && !sessionCandidate) return false;
++    tlHeldControlKeys_.insert(scan, false);
++    if (tlControl_) { trace("precheck", 0); return false; }
 +    bool candidate = event->modifiers() == Qt::NoModifier &&
 +        (event->key() == Qt::Key_Tab || event->key() == Qt::Key_Escape);
 +    for (const auto &key : qApp->property(TypeLayFcitxQtControlKeysPropertyV1).toList()) {
@@ -697,7 +713,7 @@
 +    if (!self) return consumed;
 +    tlControl_ = false;
 +    trace("consumer-result", int(consumed));
-+    if (consumed) { tlConsumedKey_ = event->key(); tlConsumedScan_ = event->nativeScanCode(); }
++    if (consumed && tlHeldControlKeys_.contains(scan)) tlHeldControlKeys_.insert(scan, true);
 +    return consumed;
 +}
 +
@@ -738,21 +754,23 @@
 +#include <deque>
  #include <qpa/qplatforminputcontext.h>
  #include <unordered_map>
-@@ -104,7 +108,12 @@
+@@ -104,7 +108,14 @@
  };
  
 -class QFcitxPlatformInputContext : public QPlatformInputContext {
-+class QFcitxPlatformInputContext : public QPlatformInputContext, public TypeLayFcitxQtV1 {
++class QFcitxPlatformInputContext : public QPlatformInputContext, public TypeLayFcitxQtV1,
++                                   public TypeLayFcitxQtControlKeysV1 {
      Q_OBJECT
-+    Q_INTERFACES(TypeLayFcitxQtV1)
++    Q_INTERFACES(TypeLayFcitxQtV1 TypeLayFcitxQtControlKeysV1)
  public:
 +    bool inspect(QObject *, TypeLayFcitxQtStateV1 *) override;
 +    bool validateLocal(QObject *, const TypeLayFcitxQtStateV1 *) override;
 +    bool prepareCaret(QObject *, const TypeLayFcitxQtStateV1 *) override;
++    bool supportsControlKeys(QObject *, quint32 accept, quint32 exit) const override;
 +    bool eventFilter(QObject *, QEvent *) override;
      QFcitxPlatformInputContext();
      ~QFcitxPlatformInputContext() override;
-@@ -160,4 +169,46 @@
+@@ -160,4 +169,45 @@
      void processKeyEventFinished(QDBusPendingCallWatcher *);
  
 +Q_SIGNALS:
@@ -790,8 +808,7 @@
 +    quint64 tlProofQueueEpoch_ = 0;
 +    bool tlInspecting_ = false;
 +    bool tlControl_ = false;
-+    quint32 tlConsumedScan_ = 0;
-+    int tlConsumedKey_ = 0;
++    QHash<quint32, bool> tlHeldControlKeys_;
 +    QString tlEngine_;
 +    void tlBind(QObject *, QObject *retained = nullptr);
 +    void tlChanged(quint32);

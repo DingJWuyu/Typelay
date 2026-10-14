@@ -25,8 +25,10 @@ internal sealed class SettingsWindow : Window
     private bool _setupPaused, _startingModel;
     private string? _renderedPage, _shortcutFeedback;
     private string? _settingsError;
-    private (string Wake, string Direct)? _shortcutDraft;
+    private ShortcutSettingsDraft? _shortcutDraft;
     private TextBox? _wakeShortcutInput, _directShortcutInput;
+    private ComboBox? _acceptShortcutInput, _exitShortcutInput;
+    private TextBlock? _returnShortcutHint;
     private TextBlock? _shortcutNotice, _shortcutStatus;
     private Window? _closeDialog;
     private bool _updatingShortcuts, _emergencyShutdown;
@@ -477,10 +479,17 @@ internal sealed class SettingsWindow : Window
     }
     private void Shortcuts()
     {
-        Heading("快捷键", "Tab 与 Esc 保留原有行为。两个按需快捷键可以分别配置。");
-        Row("接受译文", "仅在候选与原文对应、焦点和输入法状态明确时尝试写回。", UiTheme.Text("Tab", 13, bold: true));
-        Row("编辑后返回原输入框", "第一次 Tab 返回；确认焦点后，下一次 Tab 接受。", UiTheme.Text("Tab → Tab", 13, bold: true));
-        Row("退出当前翻译", "不修改原文，不发送、不提交。组合输入时优先交还输入法。", UiTheme.Text("Esc", 13, bold: true));
+        var draft = _shortcutDraft ?? ShortcutSettingsDraft.From(_settings.Value);
+        var messages = SettingsDraftPresentation.SessionShortcuts(SessionShortcutBindings.Restore(draft.Accept, draft.Exit));
+        Heading("快捷键", messages.ScopeNote);
+        var accept = _acceptShortcutInput = SessionShortcutInput(draft.Accept, "Tab", messages.AcceptLabel);
+        var exit = _exitShortcutInput = SessionShortcutInput(draft.Exit, "Esc", messages.ExitLabel);
+        accept.SelectionChanged += (_, _) => ShortcutDraftChanged();
+        exit.SelectionChanged += (_, _) => ShortcutDraftChanged();
+        Row(messages.AcceptLabel, "仅在候选与原文对应、焦点和输入法状态明确时尝试写回。", accept);
+        _returnShortcutHint = UiTheme.Text("", 13, bold: true);
+        Row("编辑后返回原输入框", "第一次返回；重新确认焦点后，再按接受键才尝试写回。", _returnShortcutHint);
+        Row(messages.ExitLabel, "不修改原文，不发送、不提交。组合输入时优先交还输入法。", exit);
         Rule();
         var wake = _wakeShortcutInput = ShortcutInput(_shortcutDraft?.Wake ?? _settings.Value.WakeShortcut, "唤醒翻译 UI 快捷键");
         var direct = _directShortcutInput = ShortcutInput(_shortcutDraft?.Direct ?? _settings.Value.DirectShortcut, "直接翻译并替换快捷键");
@@ -490,11 +499,16 @@ internal sealed class SettingsWindow : Window
         Row("直接翻译并替换", "一次性操作，绑定原输入框，不显示预览、不自动发送。", direct);
         var save = UiTheme.Button(_draftMessages.SaveLabel, () =>
         {
-            if (Save(_settings.Value with
+            var submitted = new ShortcutSettingsDraft(wake.Text, direct.Text,
+                accept.SelectedItem as string ?? "", exit.SelectedItem as string ?? "");
+            if (!submitted.TryApply(_settings.Value, out var latest, out var error))
             {
-                WakeShortcut = wake.Text,
-                DirectShortcut = direct.Text
-            }))
+                _settingsError = SettingsDraftPresentation.ShortcutErrorMessage(error);
+                _shortcutFeedback = _draftMessages.InvalidMessage;
+                RefreshShortcuts();
+                return;
+            }
+            if (Save(latest!))
             {
                 _shortcutDraft = null;
                 _shortcutFeedback = _draftMessages.SavedMessage;
@@ -511,24 +525,27 @@ internal sealed class SettingsWindow : Window
         _content.Children.Add(_shortcutNotice);
         _shortcutStatus = Note("按需快捷键状态", "");
         Note("直接替换的当前范围", "Windows x64 中通过运行时校验的原生 Edit 控件支持后台写回。翻译时可以切换焦点，结果仍只写回原输入框；冲突、输入法状态不明或不兼容控件会安全拒写。不会抢回焦点，也不使用实验性 Tab 写回作为后备。结果与失败原因可在托盘快速面板查看。");
-        Note("组合键格式", "例如 Ctrl+Shift+F9。支持 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24，排除系统保留的 F12。组合键被其他应用占用时，设置仍保存，但对应命令不会启用。");
+        Note("组合键格式", "唤醒与直接替换支持 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24，当前不支持 F12。组合键被其他应用占用时，设置仍保存，但对应命令不会启用。");
         Rule();
-        Note("保留原应用快捷键", "Ctrl / Alt / Shift / Win 与 Tab 的组合交还原应用。没有有效候选时，Tab 不执行接受。");
+        Note("保留原应用快捷键", "Ctrl / Alt / Shift / Win 与接受或退出键的组合交还原应用。没有有效候选时，接受键不执行写回。");
         RefreshShortcuts();
     }
     private void ShortcutDraftChanged()
     {
-        if (_updatingShortcuts || _wakeShortcutInput is null || _directShortcutInput is null)
+        if (_updatingShortcuts || _wakeShortcutInput is null || _directShortcutInput is null
+            || _acceptShortcutInput is null || _exitShortcutInput is null)
             return;
-        var value = (_wakeShortcutInput.Text, _directShortcutInput.Text);
-        _shortcutDraft = value == (_settings.Value.WakeShortcut, _settings.Value.DirectShortcut) ? null : value;
+        var value = new ShortcutSettingsDraft(_wakeShortcutInput.Text, _directShortcutInput.Text,
+            _acceptShortcutInput.SelectedItem as string ?? "", _exitShortcutInput.SelectedItem as string ?? "");
+        _shortcutDraft = value == ShortcutSettingsDraft.From(_settings.Value) ? null : value;
         _shortcutFeedback = null;
         _settingsError = null;
         RefreshShortcuts();
     }
     private void RefreshShortcuts()
     {
-        if (_wakeShortcutInput is null || _directShortcutInput is null || _shortcutNotice is null || _shortcutStatus is null)
+        if (_wakeShortcutInput is null || _directShortcutInput is null || _acceptShortcutInput is null
+            || _exitShortcutInput is null || _shortcutNotice is null || _shortcutStatus is null)
             return;
         if (_shortcutDraft is null)
         {
@@ -537,9 +554,14 @@ internal sealed class SettingsWindow : Window
             {
                 UpdateShortcutText(_wakeShortcutInput, _settings.Value.WakeShortcut);
                 UpdateShortcutText(_directShortcutInput, _settings.Value.DirectShortcut);
+                _acceptShortcutInput.SelectedItem = _settings.Value.AcceptShortcut;
+                _exitShortcutInput.SelectedItem = _settings.Value.ExitShortcut;
             }
             finally { _updatingShortcuts = false; }
         }
+        string accept = _acceptShortcutInput.SelectedItem as string ?? _settings.Value.AcceptShortcut;
+        if (_returnShortcutHint is not null)
+            _returnShortcutHint.Text = accept + " → " + accept;
         _shortcutNotice.Text = _settingsError is { } error
             ? (_shortcutFeedback == _draftMessages.InvalidMessage ? _draftMessages.InvalidMessage : "设置未保存") + "\n" + error
             : _shortcutFeedback ?? (_shortcutDraft is not null ? _draftMessages.UnsavedNotice : "");
@@ -554,6 +576,18 @@ internal sealed class SettingsWindow : Window
         int length = Math.Min(input.SelectionLength, value.Length - start);
         input.Text = value;
         input.Select(start, length);
+    }
+    private static ComboBox SessionShortcutInput(string value, string defaultKey, string label)
+    {
+        var input = new ComboBox
+        {
+            ItemsSource = new[] { defaultKey }.Concat(SessionShortcutBindings.FunctionKeys).ToArray(),
+            SelectedItem = value,
+            Width = 178,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        System.Windows.Automation.AutomationProperties.SetName(input, label);
+        return input;
     }
     private static TextBox ShortcutInput(string value, string label)
     {

@@ -7,7 +7,11 @@ namespace TypeLay.Linux;
 internal sealed class DesktopView(DesktopLink link) : ISessionView
 {
     private string? _last;
-    public Func<bool>? BeginEditing
+    public SessionViewToken? Token
+    {
+        get; private set;
+    }
+    public Func<SessionViewToken, bool>? BeginEditing
     {
         get; set;
     }
@@ -15,11 +19,11 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
     {
         get; set;
     }
-    public Action? ReturnRequested
+    public Action<SessionViewToken>? ReturnRequested
     {
         get; set;
     }
-    public Action? EscapeRequested
+    public Action<SessionViewToken>? EscapeRequested
     {
         get; set;
     }
@@ -40,17 +44,22 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
         get; set;
     }
     public void Configure(UserSettings settings) => link.Send("settings", settings);
-    public void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null)
+    public void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null, SessionViewContext? context = null)
     {
-        var presentation = Presentation.From(session.State, canAccept, session.Preview.Length > 0);
+        var presentation = Presentation.From(session.State, canAccept, session.Preview.Length > 0,
+            shortcuts: context?.Bindings);
         if (!presentation.Visible || session.Current is not { } source)
         {
             HideQuietly();
             return;
         }
+        Token = context?.Token;
         var value = new
         {
             presentation,
+            viewContext = context,
+            sessionShortcuts = SettingsDraftPresentation.SessionShortcuts(
+                context?.Bindings ?? SessionShortcutBindings.Restore(settings.AcceptShortcut, settings.ExitShortcut)),
             canAccept,
             state = session.State,
             source = new
@@ -60,7 +69,7 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
                 source.Ime
             },
             text = presentation.EditorOwnsText ? session.Draft : session.Preview,
-            editable = session.Candidate.Length > 0,
+            editable = session.Candidate.Length > 0 && context?.CanEdit is true,
             status = statusOverride ?? presentation.Status,
             sourceLanguage = settings.Source,
             targetLanguage = settings.Target
@@ -73,6 +82,7 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
     }
     public void RenderPaused(PauseAnchor anchor, long revision)
     {
+        Token = null;
         var value = new
         {
             presentation = Presentation.From(SessionState.Paused, false, hasPauseAnchor: true),
@@ -94,6 +104,7 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
     }
     public void HideQuietly()
     {
+        Token = null;
         if (_last == "hidden")
             return;
         _last = "hidden";

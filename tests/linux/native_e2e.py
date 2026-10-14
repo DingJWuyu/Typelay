@@ -164,6 +164,9 @@ def inside(arguments):
         assert "text" not in description and "selection" not in description
         assert original not in json.dumps(description, ensure_ascii=False)
         target = description["target"]
+        assert description.get("sessionBindings") is None, (
+            "unconfigured GTK claimed session key ownership"
+        )
         geometry = anchor_geometry(description["geometry"])
         assert geometry is not None, "refusal must exercise a visible ordinary GTK field"
         assert (
@@ -222,17 +225,41 @@ def inside(arguments):
                 "expiresAtMs": now_ms() + 250,
             },
         )
-        assert rejected == {"status": "RejectedBeforeMutation", "reason": "ImeUnclear"}, rejected
+        assert rejected == {"status": "RejectedBeforeMutation", "reason": "EpochChanged"}, rejected
         generation = str(uuid.uuid4())
         client.call(
             "configure-shortcuts",
             {
                 "enabled": True,
                 "generation": generation,
+                "sessionEnabled": True,
+                "accept": "F1",
+                "exit": "F24",
                 "wake": {},
                 "direct": {},
             },
         )
+        applied = client.describe(target)
+        assert applied["sessionBindings"] == {
+            "generation": generation,
+            "accept": "F1",
+            "exit": "F24",
+            "sourceReady": True,
+            "editorReady": False,
+        }, "real GTK target did not confirm the installed canonical pair"
+        assert applied["authority"]["sessionBindings"] == applied["sessionBindings"]
+        rejected = client.call(
+            "direct",
+            {
+                "target": target,
+                "generation": generation,
+                "plan": write,
+                "authority": applied["authority"],
+                "approved": applied["authority"],
+                "expiresAtMs": now_ms() + 250,
+            },
+        )
+        assert rejected == {"status": "RejectedBeforeMutation", "reason": "ImeUnclear"}, rejected
         for kind in ("wake", "direct"):
             current = client.describe(target)
             lease = {"target": target, "authority": current["authority"], "generation": generation}
@@ -273,10 +300,22 @@ def inside(arguments):
             {
                 "target": target,
                 "authority": current["authority"],
-                "lease": {"source": write["expected"], "escapeAllowed": True},
+                "generation": generation,
+                "lease": {
+                    "source": write["expected"],
+                    "escapeAllowed": True,
+                    "commandGeneration": generation,
+                    "sessionRevision": 1,
+                },
                 "permit": {"plan": write, "expiresAtMs": now_ms() + 100},
             },
         )
+        for name, index in (("F1", 0), ("F24", 23)):
+            before = state()["functionKeys"][index]
+            key(name)
+            observed = wait_state(lambda value: value["functionKeys"][index]["up"] > before["up"])
+            assert observed["functionKeys"][index]["down"] > before["down"]
+            assert observed["first"] == original
         key("Tab")
         after_tab = wait_state(lambda value: value.get("focus") == "fixture-second")
         assert after_tab["first"] == original and after_tab["second"] == initial["second"]
@@ -293,6 +332,60 @@ def inside(arguments):
         checks.append(
             "Tab belongs to GTK, text remains unchanged by TypeLay, ordinary typing stays Unknown"
         )
+        replacement_generation = str(uuid.uuid4())
+        client.call(
+            "configure-shortcuts",
+            {
+                "enabled": False,
+                "sessionEnabled": True,
+                "generation": replacement_generation,
+                "accept": "Tab",
+                "exit": "Esc",
+                "wake": {},
+                "direct": {},
+            },
+        )
+        reapplied = client.describe(target)
+        assert reapplied["sessionBindings"]["generation"] == replacement_generation
+        assert reapplied["sessionBindings"]["accept"] == "Tab"
+        assert reapplied["sessionBindings"]["sourceReady"] is True, (
+            "automatic mode incorrectly disabled session key ownership"
+        )
+        assert client.call(
+            "return",
+            {"target": target, "authority": current["authority"], "generation": generation},
+        ) == {"returned": False}
+        stale = client.call(
+            "direct",
+            {
+                "target": target,
+                "generation": generation,
+                "plan": write,
+                "authority": reapplied["authority"],
+                "approved": reapplied["authority"],
+                "expiresAtMs": now_ms() + 250,
+            },
+        )
+        assert stale == {"status": "RejectedBeforeMutation", "reason": "EpochChanged"}
+        client.call(
+            "configure-shortcuts",
+            {
+                "enabled": False,
+                "sessionEnabled": True,
+                "generation": str(uuid.uuid4()),
+                "accept": "F7",
+                "exit": "F7",
+                "wake": {},
+                "direct": {},
+            },
+        )
+        assert client.describe(target).get("sessionBindings") is None, (
+            "invalid session pair silently fell back or advertised readiness"
+        )
+        checks.append(
+            "target-specific canonical ACK, automatic-mode session bindings, stale generation refusal and invalid-pair refusal"
+        )
+
         (arguments.output / "native-result.json").write_text(
             json.dumps(
                 {
@@ -340,6 +433,8 @@ def outer(arguments, script=None):
     ]
     if getattr(arguments, "gtk_refusal", False):
         command.append("--gtk-refusal")
+    if getattr(arguments, "gtk_session_bindings", False):
+        command.append("--gtk-session-bindings")
     if arguments.desktop:
         command.extend(
             [
@@ -420,6 +515,11 @@ if __name__ == "__main__":
         action="store_true",
         help="verify GTK Unknown-IME refusal only, not translation support",
     )
+    parser.add_argument(
+        "--gtk-session-bindings",
+        action="store_true",
+        help="exercise configured F1/F24, held editor return and rebinding on real GTK controls",
+    )
     parser.add_argument("--package", type=Path)
     parser.add_argument("--editor-bundle", type=Path)
     parser.add_argument("--fcitx-cooperative", type=Path)
@@ -433,6 +533,10 @@ if __name__ == "__main__":
         parser.error(
             "GTK translation is unsupported; use --gtk-refusal for safety refusal or --desktop for the browser path"
         )
+    if args.gtk_session_bindings and (
+        not args.desktop or args.desktop_scope not in ("gtk", "gtk4")
+    ):
+        parser.error("--gtk-session-bindings requires --desktop --desktop-scope gtk or gtk4")
     if args.desktop and args.gtk_refusal:
         parser.error("--gtk-refusal and --desktop verify different capability scopes")
     if args.desktop and not args.package:

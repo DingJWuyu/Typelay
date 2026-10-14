@@ -115,8 +115,9 @@ async def desktop(paths, background, lock, tutorial=False):
     from gi.repository import Gdk, GLib, Gtk
     from input import Input
     from link import Link
+    from overlay import Overlay
     from tray import Tray
-    from ui import Overlay, Settings
+    from ui import Settings
 
     initialized, _ = Gtk.init_check([])
     if not initialized:

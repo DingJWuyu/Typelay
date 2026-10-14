@@ -507,6 +507,19 @@ def session(out, fcitx, forced_sync_diagnostic=False):
 
                         if mode == "async":
                             assert probe_first()["firstProbeFlags"] == 3
+                            client.stdin.write("probe-control-keys\n")
+                            client.stdin.flush()
+                            keys = wait(
+                                lambda: value
+                                if (value := state()).get("controlKeyProbeCount")
+                                else None,
+                                "real provider did not report dynamic key installation",
+                            )
+                            assert keys["dynamicDefaultKeys"] and keys["dynamicF1F24Keys"]
+                            assert keys["dynamicF12F24Keys"]
+                            assert not keys["dynamicKeysWithoutInstallation"]
+                            assert not keys["dynamicUninstalledFunctionKeys"]
+                            assert not keys["dynamicSameKeyPair"] and not keys["dynamicWrongField"]
                         generation, contexts = s["tlqtBindingEpoch"], s["tlqtContexts"]
                         client.stdin.write("focus2\n")
                         client.stdin.flush()

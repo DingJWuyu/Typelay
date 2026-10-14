@@ -54,3 +54,13 @@ void tl_clear_permit(void);
 gboolean tl_acceptance_ready(Target *target);
 
 JsonObject *tl_geometry(Target *target);
+
+/* Applied locally, never inferred from the peer's platform/hello capability. */
+JsonObject *tl_session_bindings(Target *target);
+gboolean tl_controller_attached(GtkWidget *widget, const char *key);
+gboolean tl_configuration_current(const char *generation);
+gboolean tl_session_matches(JsonObject *bindings);
+guint tl_session_keyval(gboolean accept);
+gboolean tl_view_context_matches(Target *target, JsonObject *view);
+/* One physical candidate-key pair, including editor return and refused presses. */
+gboolean tl_dispatch_key(GdkEvent *event);

@@ -32,7 +32,11 @@ internal sealed class KeyboardHook : IInputMonitor
     private nint _hook, _mouseHook;
     private uint _threadId;
     private readonly bool[] _keys = new bool[256];
-    private bool _escapeDown, _escapeConsumed;
+    private sealed record SessionKeys(uint Accept, uint Exit, SessionShortcutBindings Bindings);
+    private SessionKeys _sessionKeys = new(9, 27, SessionShortcutBindings.Default);
+    private volatile bool _sessionEnabled = true;
+    private uint? _escapeKeyDown;
+    private bool _escapeConsumed;
     public long UserEpoch => Interlocked.Read(ref _userEpoch);
     public long SourceUserEpoch => Interlocked.Read(ref _sourceUserEpoch);
     public long ForegroundEpoch => Interlocked.Read(ref _foregroundEpoch);
@@ -41,11 +45,32 @@ internal sealed class KeyboardHook : IInputMonitor
     public long WindowEpoch => Interlocked.Read(ref _windowEpoch);
     private volatile bool _ready;
     public bool Ready => _ready;
-    public bool CanInterceptAcceptance => Ready;
+    public bool CanInterceptAcceptance => Ready && _sessionEnabled;
     public string ShortcutStatus => _hotkeys.Status;
-    public void ConfigureShortcuts(bool enabled, string wake, string direct)
+    // Staged platform entry point. The shared controller does not activate
+    // custom session bindings until all consumers can confirm the same contract.
+    internal void ConfigureSessionShortcuts(SessionShortcutBindings bindings)
+    {
+        static uint Key(string value) => value switch
+        {
+            "Tab" => 9,
+            "Esc" => 27,
+            _ => 0x6Fu + uint.Parse(value.AsSpan(1), System.Globalization.CultureInfo.InvariantCulture)
+        };
+        _gate.Revoke();
+        Interlocked.Exchange(ref _lease, null);
+        Interlocked.Exchange(ref _sessionKeys, new(Key(bindings.Accept), Key(bindings.Exit), bindings));
+        // Outstanding consumed key releases remain owned by their original press.
+    }
+
+    internal bool HasSessionConfiguration(SessionShortcutConfiguration configuration) => Ready && _sessionEnabled
+        && configuration.Generation == CommandGeneration
+        && configuration.Bindings == Volatile.Read(ref _sessionKeys).Bindings;
+    public void ConfigureShortcuts(bool enabled, string wake, string direct, SessionShortcutBindings sessionBindings, bool sessionEnabled)
     {
         SetShortcuts([]);
+        ConfigureSessionShortcuts(sessionBindings);
+        _sessionEnabled = sessionEnabled;
         _hotkeys.Configure(enabled, wake, direct);
         SetShortcuts(_hotkeys.Bindings);
     }
@@ -78,7 +103,7 @@ internal sealed class KeyboardHook : IInputMonitor
     }
     public void Publish(InputLease lease, AcceptancePermit? permit)
     {
-        if (!WindowsTarget.TryDecode(lease.Source.Target, out var target))
+        if (lease.CommandGeneration != CommandGeneration || !WindowsTarget.TryDecode(lease.Source.Target, out var target))
         {
             Revoke();
             return;
@@ -245,42 +270,45 @@ internal sealed class KeyboardHook : IInputMonitor
         var binding = Volatile.Read(ref _lease);
         var lease = binding?.Observation;
         long now = WindowsInterruptClock.NowMs;
-        bool fresh = lease is not null && lease.UserEpoch == UserEpoch && lease.ForegroundEpoch == ForegroundEpoch
+        bool fresh = _sessionEnabled && lease is not null && lease.CommandGeneration == CommandGeneration && lease.UserEpoch == UserEpoch && lease.ForegroundEpoch == ForegroundEpoch
             && now >= lease.Source.ObservedAtMs && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
         bool source = fresh && Native.GetForegroundWindow() == (nint)binding!.RootHwnd;
-        if (data.Key == 9)
+        var sessionKeys = Volatile.Read(ref _sessionKeys);
+        var decision = _gate.ProcessAcceptanceKey(new(data.Key, down, repeated, data.Key == sessionKeys.Accept),
+            new(lease?.Source.Target, source, lease?.Source.Ime ?? ImeState.Unknown,
+                Modified, injected, fresh, lease?.Source.InputEpoch ?? -1, lease?.Source.FocusEpoch ?? -1, now));
+        if (decision.Permit is not null)
+            _notices.Enqueue(new("accept", decision.Permit, now, UserEpoch, ForegroundEpoch,
+                CommandGeneration: lease!.CommandGeneration, SessionRevision: lease.SessionRevision));
+        if (decision.Consume)
+            return 1;
+        if (_escapeKeyDown == data.Key)
         {
-            var decision = _gate.ProcessTab(down, new(lease?.Source.Target, source,
-                lease?.Source.Ime ?? ImeState.Unknown, Modified, injected, fresh,
-                lease?.Source.InputEpoch ?? -1, lease?.Source.FocusEpoch ?? -1, now));
-            if (decision.Permit is not null)
-                _notices.Enqueue(new("accept", decision.Permit, now, UserEpoch, ForegroundEpoch));
-            if (decision.Consume)
-                return 1;
-        }
-        else if (data.Key == 27)
-        {
+            bool consume = _escapeConsumed;
             if (!down)
             {
-                bool consume = _escapeDown && _escapeConsumed;
-                _escapeDown = _escapeConsumed = false;
-                if (consume)
-                    return 1;
+                _escapeKeyDown = null;
+                _escapeConsumed = false;
             }
-            else if (!_escapeDown)
-            {
-                _escapeDown = true;
-                _escapeConsumed = source && (!injected || _allowInjectedInput) && !Modified
-                    && lease!.Source.Ime == ImeState.Clear && lease.EscapeAllowed;
-                if (_escapeConsumed)
-                {
-                    _gate.Revoke();
-                    _notices.Enqueue(new("escape"));
-                    return 1;
-                }
-            }
-            else if (_escapeConsumed)
+            if (consume)
                 return 1;
+        }
+        else if (down && data.Key == sessionKeys.Exit && !repeated && _escapeKeyDown is null)
+        {
+            _escapeKeyDown = data.Key;
+            _escapeConsumed = source && (!injected || _allowInjectedInput) && !Modified
+                && lease!.Source.Ime == ImeState.Clear && lease.EscapeAllowed;
+            if (_escapeConsumed)
+            {
+                _gate.Revoke();
+                _notices.Enqueue(new("escape", AcceptedAtMs: now, UserEpoch: UserEpoch, ForegroundEpoch: ForegroundEpoch,
+                    CommandGeneration: lease!.CommandGeneration, Target: lease.Source.Target, SessionRevision: lease.SessionRevision));
+                return 1;
+            }
+        }
+        else if (data.Key == sessionKeys.Accept || data.Key == sessionKeys.Exit)
+        {
+            // A passed session key retains the existing Tab/Esc epoch behavior.
         }
         else if (down)
         {

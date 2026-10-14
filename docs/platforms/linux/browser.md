@@ -56,7 +56,9 @@ Google Chrome 使用 `--browser google-chrome`。不会猜测扩展 ID，也不�
 
 ## 使用与卸载
 
-翻译模式、语言方向、排除项及原生写回开关沿用 Linux 设置。已确认输入法状态后，自动模式跟随源字段；按需模式使用设置中的快捷键。只有当前有效许可才拦截真实裸 Tab。点击候选先请求编辑授权；编辑后第一次 Tab 只返回原输入框，下一次 Tab 才接受。Ctrl/Alt/Shift/Meta 修饰键、重复键、组合输入和不可信合成按键不发起新的接受。
+翻译模式、语言方向、排除项及原生写回开关沿用 Linux 设置。已确认输入法状态后，自动模式跟随源字段；按需模式使用设置中的快捷键。接受/退出默认 Tab/Esc，也可分别配置无修饰 F1-F24。只有当前有效许可才拦截真实接受键；按需 wake/direct 的启用不关闭自动模式的会话键。点击候选先请求编辑授权；编辑后第一次接受键只返回原输入框，得到新源观察并释放旧键后，下一次独立按下才接受。Ctrl/Alt/Shift/Meta 修饰键、重复键、组合输入和不可信合成按键不发起新的接受。
+
+配置先撤销旧许可；每个文档的 describe/capture 各自回显 Applied generation、规范键对和 source/editor readiness，不将 native host 或其他标签页的确认转用为当前文档能力。缺少或非法配置保持只读，不能默认授予 Tab/Esc。普通展示、编辑、返回与写入核对配置代次，页面回调重入后仍需写前复核；已经完成的写入回执继续按原 plan 返回。物理按下以 `event.code` 保留到释放，配置、失焦或隐藏不清除所有权，因此已按住的未绑定功能键不能在新配置下因自动重复而接受，旧释放也不会变成新动作。配置确认不保证浏览器或操作系统会把每个功能键交给页面，不通过全局抢键绕过浏览器保留行为。
 
 设置中的“移除”只撤销本安装拥有的本地通信注册，不操作浏览器扩展权限，也不结束浏览器进程。若现有会话仍在线，页面会提示需要保存工作并完整退出浏览器；删除注册本身不会立即断开旧连接，关闭单个标签页也不保证会话结束。无需继续使用时，再到浏览器移除扩展。
 
@@ -95,6 +97,6 @@ xvfb-run -a python tests/linux/firefox_native_e2e.py --package artifacts/linux/p
 
 该检查在临时 HOME 安装发行包，显式加载测试扩展，再通过生产连接操作读取唯一的实际扩展记录并注册，使用真实后台脚本、native messaging、host wrapper 与 socket，验证首次握手、重连、跨标签页路由及控件销毁身份；完成后关闭整个测试浏览器并删除临时目录。socket 对端只提供测试用元数据批准，不是假翻译器，也不代表 niri 前台身份或模型链路验收。
 
-DOM 检查覆盖未知 IME、可信输入后的接受、旧原文、DOM 重建、组合撤销、UTF-16 选区、网页重入改写、密码字段和合成 Tab 拒绝。单独的 DOM 检查不验证 Firefox、native messaging 安装路由、niri 前台身份、物理中文 IME、真实键盘、撤销栈或视觉一致性。Chromium 进程无法启动时检查失败，不跳过成成功。上述未覆盖项仍需对应真实环境验证。
+DOM 检查包括默认键与 F1/F12/F24 的配置回显、缺失/旧代拒绝、预先按住未绑定键后切配置、旧 keyup 归属和编辑返回后第二次独立按下；这些新增场景须以实际运行结果判定，源码存在不等于通过。既有检查覆盖未知 IME、可信输入后的接受、旧原文、DOM 重建、组合撤销、UTF-16 选区、网页重入改写、密码字段和合成 Tab 拒绝。单独的 DOM 检查不验证 Firefox、native messaging 安装路由、niri 前台身份、物理中文 IME、真实键盘、撤销栈或视觉一致性。Chromium 进程无法启动时检查失败，不跳过成成功。上述未覆盖项仍需对应真实环境验证。
 
 底层依据：[Chromium 启动地址校验](https://github.com/chromium/chromium/blob/154.0.8037.97/chrome/browser/ui/startup/url_util.cc)、[native messaging](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_messaging)、[Chrome native messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)、[标准字段 setRangeText](https://developer.mozilla.org/en-US/docs/Web/API/HTMLInputElement/setRangeText)、[compositionstart](https://developer.mozilla.org/en-US/docs/Web/API/Element/compositionstart_event)。

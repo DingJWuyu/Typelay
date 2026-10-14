@@ -473,6 +473,8 @@ static JsonObject *authority(Target *target, const char *key) {
         json_object_set_object_member(value, "contextStamp", stamp);
     }
     json_object_set_int_member(value, "observedAtMs", tl_now());
+    JsonObject *bindings = tl_session_bindings(target);
+    if (bindings) json_object_set_object_member(value, "sessionBindings", bindings);
     return value;
 }
 JsonObject *tl_describe(Target *target) {
@@ -485,6 +487,8 @@ JsonObject *tl_describe(Target *target) {
     json_object_set_string_member(value, "target", target->id);
     json_object_set_object_member(value, "metadata", fields);
     json_object_set_object_member(value, "authority", authority(target, key));
+    JsonObject *bindings = tl_session_bindings(target);
+    if (bindings) json_object_set_object_member(value, "sessionBindings", bindings);
     if (bounds) json_object_set_object_member(value, "geometry", bounds);
     else json_object_set_null_member(value, "geometry");
     json_object_set_boolean_member(value, "focused", tl_focused() == target);
@@ -665,10 +669,17 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     JsonObject *expected = tl_object(plan, "expected");
     if (!target || !plan || !expected || !basis || !approved)
         return receipt("RejectedBeforeMutation", "BadPlan");
+    const char *generation = tl_string(request, "generation");
+    if (!tl_configuration_current(generation)
+        || (!direct && !tl_session_matches(tl_object(basis, "sessionBindings"))))
+        return receipt("RejectedBeforeMutation", "EpochChanged");
     gboolean direct_entry = direct && standard_entry(target);
     if (target->mutating || target->quarantined || !inspect_ime(target)
         || !write_ime_clear(target, direct_entry))
         return receipt("RejectedBeforeMutation", "ImeUnclear");
+    if (!tl_configuration_current(generation)
+        || (!direct && !tl_session_matches(tl_object(basis, "sessionBindings"))))
+        return receipt("RejectedBeforeMutation", "EpochChanged");
     gint64 now = tl_now(), until = tl_integer(request, "expiresAtMs", 0);
     if (until < now || until - now > (direct ? 250 : 100))
         return receipt("RejectedBeforeMutation", "StaleObservation");
@@ -721,7 +732,7 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     g_string_free(computed, TRUE);
     if (!matches) { g_free(after_delete); g_free(text); return receipt("RejectedBeforeMutation", "BadPlan"); }
     if (standard_textview(target)) {
-        JsonObject *reply = write_textview(target, plan, basis, approved, text, after_delete, from, to, caret, until);
+        JsonObject *reply = write_textview(target, plan, basis, approved, text, after_delete, from, to, caret, until, generation, !direct);
         g_free(after_delete); g_free(text);
         return reply;
     }
@@ -809,8 +820,27 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
             return receipt("RejectedBeforeMutation", tl_now() > until ? "StaleObservation" : "ImeUnclear");
         }
     }
-    target->mutating = TRUE;
     tl_clear_permit();
+    if (!tl_configuration_current(generation)
+        || (!direct && !tl_session_matches(tl_object(basis, "sessionBindings")))) {
+        g_object_unref(buffer); g_object_unref(widget); g_free(after_delete); g_free(text);
+        return receipt("RejectedBeforeMutation", "EpochChanged");
+    }
+    gint final_bound = -1;
+    if (!target->dead) g_object_get(target->client, "selection-bound", &final_bound, NULL);
+    if (target->dead || target->widget != widget || target->buffer != buffer
+        || target->storage_revision != storage || target->content_revision != content
+        || target->input_revision != input || target->focus_revision != focus
+        || !validate_ime_locally(target, &state) || !entry_focus_matches(target, &focus_guard)
+        || !tl_metadata_matches(target, approved) || !tl_metadata_matches(target, basis)
+        || gtk_editable_get_position(GTK_EDITABLE(widget)) != old_cursor || final_bound != old_bound
+        || strcmp(gtk_entry_buffer_get_text(GTK_ENTRY_BUFFER(buffer)), text) != 0
+        || tl_now() > until || !tl_configuration_current(generation)
+        || (!direct && !tl_session_matches(tl_object(basis, "sessionBindings")))) {
+        g_object_unref(buffer); g_object_unref(widget); g_free(after_delete); g_free(text);
+        return receipt("RejectedBeforeMutation", "EpochChanged");
+    }
+    target->mutating = TRUE;
     /* Use the standard native buffer operation in this same GUI dispatch.
        GTK4 deleted-text runs its storage closure after ordinary handlers. Any
        application rewriting the field or dispatching nested input invalidates
@@ -820,7 +850,10 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     if (!target->dead) g_object_get(target->client, "selection-bound", &after_bound, NULL);
     guint64 expected_storage = storage + (to > from ? 1u : 0u);
     const char *failure = NULL, *phase = "delete";
-    gboolean intermediate = write_check(removed == (guint)(to - from), "delete-count", &failure)
+    gboolean intermediate = write_check(tl_configuration_current(generation)
+            && (direct || tl_session_matches(tl_object(basis, "sessionBindings"))),
+            "generation", &failure)
+        && write_check(removed == (guint)(to - from), "delete-count", &failure)
         && write_check(!target->dead, "destroyed", &failure)
         && write_check(!target->quarantined, "quarantined", &failure)
         && write_check(target->buffer == buffer, "buffer", &failure)
@@ -833,7 +866,9 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
         && write_check(gtk_editable_get_position(GTK_EDITABLE(widget)) == deleted_cursor
             && after_bound == deleted_bound, "selection", &failure)
         && write_check(tl_metadata_matches(target, approved), "metadata", &failure)
-        && write_check(strcmp(gtk_entry_buffer_get_text(GTK_ENTRY_BUFFER(buffer)), after_delete) == 0, "body", &failure);
+        && write_check(strcmp(gtk_entry_buffer_get_text(GTK_ENTRY_BUFFER(buffer)), after_delete) == 0, "body", &failure)
+        && write_check(tl_configuration_current(generation)
+            && (direct || tl_session_matches(tl_object(basis, "sessionBindings"))), "generation", &failure);
     guint inserted = 0;
     gboolean positioned = FALSE;
     if (intermediate) {
@@ -854,7 +889,9 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
             && write_check(target->focus_revision == focus && entry_focus_matches(target, &focus_guard), "focus", &failure)
             && write_check(gtk_editable_get_position(GTK_EDITABLE(widget)) == expected_cursor
                 && inserted_bound == expected_bound, "selection", &failure)
-            && write_check(tl_metadata_matches(target, approved), "metadata", &failure)) {
+            && write_check(tl_metadata_matches(target, approved), "metadata", &failure)
+            && write_check(tl_configuration_current(generation)
+                && (direct || tl_session_matches(tl_object(basis, "sessionBindings"))), "generation", &failure)) {
             positioned = TRUE;
             phase = "caret";
             gtk_editable_set_position(GTK_EDITABLE(widget), from + replacement_chars);
@@ -870,7 +907,9 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
         && write_check(tl_metadata_matches(target, approved), "metadata", &failure);
     char *after = clear ? read_text(target, &start, &end) : NULL;
     gboolean verified = clear && write_check(after && strcmp(after, result) == 0, "body", &failure)
-        && write_check(start == caret && end == caret, "selection", &failure);
+        && write_check(start == caret && end == caret, "selection", &failure)
+        && write_check(tl_configuration_current(generation)
+            && (direct || tl_session_matches(tl_object(basis, "sessionBindings"))), "generation", &failure);
     if (!verified && g_getenv("TYPELAY_TRACE"))
         g_printerr("TypeLay GTK4 write guard phase=%s check=%s remainingMs=%" G_GINT64_FORMAT
             " storageDelta=%" G_GUINT64_FORMAT " epochBefore=%" G_GUINT64_FORMAT " cachedEpochAfter=%" G_GUINT64_FORMAT "\n",
@@ -896,14 +935,16 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
 static gboolean return_authorized(Target *target, JsonObject *basis) {
     JsonObject *stamp = tl_object(basis, "contextStamp");
     const char *failure = NULL;
-    gboolean allowed = write_check(target && !target->dead, "target", &failure)
+    gboolean allowed = write_check(tl_session_matches(tl_object(basis, "sessionBindings")), "generation", &failure)
+        && write_check(target && !target->dead, "target", &failure)
         && write_check(!target->mutating && !target->im_probing && !target->quarantined, "busy", &failure)
         && write_check(target->thread == g_thread_self() && g_main_depth() == 1, "dispatch", &failure)
         && write_check(bind_context(target) && target->im_observed && stamp, "binding", &failure)
         && write_check((gint64)target->im_state.context_generation == tl_integer(stamp, "context", -1), "context", &failure)
         && write_check((gint64)target->input_revision == tl_integer(basis, "inputRevision", -1), "input", &failure)
         && write_check((gint64)target->content_revision == tl_integer(basis, "contentRevision", -1), "content", &failure)
-        && write_check(tl_metadata_matches(target, basis), "metadata", &failure);
+        && write_check(tl_metadata_matches(target, basis), "metadata", &failure)
+        && write_check(tl_session_matches(tl_object(basis, "sessionBindings")), "generation", &failure);
     if (!allowed && g_getenv("TYPELAY_TRACE"))
         g_printerr("TypeLay GTK4 return check=%s input=%" G_GUINT64_FORMAT " expectedInput=%" G_GINT64_FORMAT
             " atMs=%" G_GINT64_FORMAT "\n", failure, target ? target->input_revision : 0,

@@ -126,6 +126,7 @@ class EditorProbe(unittest.TestCase):
 
     def test_production_capture_publish_and_single_tab_acceptance(self):
         self.isolated(browser_e2e.TRANSPORT + "\n" + CONTENT.read_text())
+        self.isolated("fixtureCommand({id: 1, op: 'configure-shortcuts', data: fixtureBindings})")
         self.page.evaluate("window.editorProbeSetup('guarded')")
         # DOM focus alone does not activate a real Chromium window. Establish
         # the actual keyboard destination before the one trusted IME observation.

@@ -15,6 +15,8 @@ typedef struct {
     JsonObject *approved, *basis;
     guint64 storage, input, focus, content;
     TlFcitxStateV1 state;
+    gboolean session;
+    const char *generation;
 } TextViewWrite;
 
 static void textview_marks(GtkTextBuffer *buffer, gint *cursor, gint *bound) {
@@ -35,7 +37,10 @@ static gboolean textview_body_matches(GtkTextBuffer *buffer, const char *expecte
 static gboolean textview_guard(TextViewWrite *write, const char *text, gint cursor, gint bound,
                                const char **failure) {
     Target *target = write->target;
-    gboolean valid = write_check(!target->dead && target->widget == write->widget, "destroyed", failure)
+    gboolean valid = write_check(tl_configuration_current(write->generation)
+            && (!write->session || tl_session_matches(tl_object(write->basis, "sessionBindings"))),
+            "generation", failure)
+        && write_check(!target->dead && target->widget == write->widget, "destroyed", failure)
         && write_check(!target->quarantined, "quarantined", failure)
         && write_check(target->buffer == G_OBJECT(write->buffer) && standard_textview(target), "buffer", failure)
         && write_check(target->storage_revision == write->storage && target->content_revision == write->content,
@@ -55,13 +60,13 @@ static gboolean textview_guard(TextViewWrite *write, const char *text, gint curs
 }
 static JsonObject *write_textview(Target *target, JsonObject *plan, JsonObject *basis, JsonObject *approved,
                                  const char *text, const char *after_delete, gint from, gint to,
-                                 gint caret, gint64 until) {
+                                 gint caret, gint64 until, const char *generation, gboolean session) {
     const char *replacement = tl_string(plan, "replacement"), *result = tl_string(plan, "resultText");
     TextViewWrite write = {
         .target = target, .widget = g_object_ref(target->widget), .buffer = g_object_ref(GTK_TEXT_BUFFER(target->buffer)),
         .approved = approved, .basis = basis, .storage = target->storage_revision,
         .input = target->input_revision, .focus = target->focus_revision, .content = target->content_revision,
-        .state = target->im_state
+        .state = target->im_state, .session = session, .generation = generation
     };
     gint cursor, bound;
     textview_marks(write.buffer, &cursor, &bound);
@@ -109,8 +114,13 @@ static JsonObject *write_textview(Target *target, JsonObject *plan, JsonObject *
         return receipt("RejectedBeforeMutation", tl_now() > until ? "StaleObservation" : "SourceChanged");
     }
 
-    target->mutating = TRUE;
     tl_clear_permit();
+    if (!textview_guard(&write, text, cursor, bound, &failure) || tl_now() > until) {
+        gtk_text_buffer_end_user_action(write.buffer);
+        g_object_unref(write.buffer); g_object_unref(write.widget);
+        return receipt("RejectedBeforeMutation", "EpochChanged");
+    }
+    target->mutating = TRUE;
     phase = "delete";
     if (to > from) {
         GtkTextIter first, last;

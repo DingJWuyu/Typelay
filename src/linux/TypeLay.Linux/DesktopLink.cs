@@ -29,9 +29,33 @@ internal sealed class DesktopLink : IDisposable
         });
         return new(Wire.Json)
         {
-            Converters = { new JsonStringEnumConverter() },
+            Converters = { new JsonStringEnumConverter(), new SessionShortcutBindingsConverter() },
             TypeInfoResolver = resolver
         };
+    }
+    private sealed class SessionShortcutBindingsConverter : JsonConverter<SessionShortcutBindings>
+    {
+        public override SessionShortcutBindings Read(ref Utf8JsonReader reader, Type typeToConvert,
+            JsonSerializerOptions options)
+        {
+            using var document = JsonDocument.ParseValue(ref reader);
+            var value = document.RootElement;
+            if (value.ValueKind != JsonValueKind.Object
+                || !value.TryGetProperty("accept", out var accept) || accept.ValueKind != JsonValueKind.String
+                || !value.TryGetProperty("exit", out var exit) || exit.ValueKind != JsonValueKind.String
+                || !SessionShortcutBindings.TryParse(accept.GetString(), exit.GetString(), out var bindings)
+                || bindings!.Accept != accept.GetString() || bindings.Exit != exit.GetString())
+                throw new JsonException("session-shortcut-bindings");
+            return bindings;
+        }
+        public override void Write(Utf8JsonWriter writer, SessionShortcutBindings value,
+            JsonSerializerOptions options)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("accept", value.Accept);
+            writer.WriteString("exit", value.Exit);
+            writer.WriteEndObject();
+        }
     }
     private readonly EventLoop _loop;
     private readonly Channel<JsonElement> _output = Channel.CreateBounded<JsonElement>(32);

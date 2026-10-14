@@ -374,7 +374,7 @@ def run_qt(
                         "OnDemand source did not remain dormant with a fresh supported capture",
                     )
 
-                def set_mode(mode=None, *, enabled=None):
+                def set_mode(mode=None, *, enabled=None, session_keys=None):
                     from support.gtk_accessibility import Atspi, named
 
                     before_settings = state()
@@ -445,6 +445,30 @@ def run_qt(
                         wait_for(
                             lambda: json.loads(paths.settings.read_text())["Enabled"] is enabled,
                             "production settings did not persist the enable switch",
+                        )
+                    if session_keys is not None:
+                        accept, exit_key = session_keys
+                        for name, key_name, default in (
+                            ("接受译文", accept, "Tab"),
+                            ("退出当前翻译", exit_key, "Esc"),
+                        ):
+                            combo = wait_for(
+                                lambda: named(host_pid, "设置：" + name),
+                                "real session-key combo was not accessible: " + name,
+                            )
+                            index = 0 if key_name == default else int(key_name[1:])
+                            assert Atspi.Selection.select_child(combo.get_selection_iface(), index)
+                        save = wait_for(
+                            lambda: named(host_pid, "保存修改"), "session key save was unavailable"
+                        )
+                        assert Atspi.Action.do_action(save.get_action_iface(), 0)
+                        wait_for(
+                            lambda: (settings := json.loads(paths.settings.read_text())).get(
+                                "AcceptShortcut"
+                            )
+                            == accept
+                            and settings.get("ExitShortcut") == exit_key,
+                            "production settings did not persist the session key pair",
                         )
                     after_settings = state()
                     for field in ("first", "second"):
@@ -716,6 +740,124 @@ def run_qt(
                 evidence.append(
                     "Wayland Qt6 editor: real candidate click and draft typing; first Tab returns "
                     "without a write, second Tab verifies the exact draft"
+                )
+
+                set_mode(session_keys=("F1", "F24"))
+                function_source = "Please send this note today."
+                function_candidate = enter_source(function_source)
+                before_write = trace_checkpoint()
+                wait_for(ready_to_accept, "F1 source lost its fresh permit")
+                key("F1")
+                wait_for(
+                    lambda: state()["first"]["text"] == function_candidate
+                    and verified_write(before_write),
+                    "configured F1 did not accept the real candidate",
+                )
+                enter_source(function_source + " Thank you.")
+                before_exit = state()["first"]
+                exit_trace = trace_checkpoint()
+                key("F24")
+                wait_for(
+                    lambda: not status().get("overlayVisible")
+                    and not status().get("acceptanceReady"),
+                    "configured F24 did not exit the current source session",
+                )
+                assert state()["first"]["text"] == before_exit["text"]
+                assert not new_write_outcomes(exit_trace)
+
+                set_mode(session_keys=("F24", "F12"))
+                enter_source(editing_source)
+                actual = state()
+                click_rectangle(actual, actual["editorGeometry"])
+                wait_for(
+                    lambda: state().get("editorFocused") and not state().get("editorReadOnly"),
+                    "configured-key candidate could not enter the actual editor",
+                )
+                key("ctrl+a")
+                typed(draft)
+                wait_for(
+                    lambda: state().get("editorText") == draft and settled(state()),
+                    "configured-key editor did not retain the manual draft",
+                )
+                before_return = trace_checkpoint()
+                releases = state()["keys"].get("firstF24Release", 0)
+                subprocess.run(["xdotool", "keydown", "F24"], check=True, timeout=2)
+                try:
+                    wait_for(
+                        lambda: state()["first"]["focused"]
+                        and ready_to_accept("EditedTranslationPending"),
+                        "first F24 did not return with fresh source authority",
+                    )
+                    assert state()["first"]["text"] == editing_source
+                    assert not new_write_outcomes(before_return)
+                    # The original physical down remains held through focus return.
+                    subprocess.run(["xdotool", "keydown", "F24"], check=True, timeout=2)
+                    assert state()["first"]["text"] == editing_source
+                    assert not new_write_outcomes(before_return)
+                finally:
+                    subprocess.run(["xdotool", "keyup", "F24"], check=True, timeout=2)
+                wait_for(
+                    lambda: ready_to_accept("EditedTranslationPending"),
+                    "returned F24 draft permit expired",
+                )
+                assert state()["keys"].get("firstF24Release", 0) == releases
+                before_write = trace_checkpoint()
+                key("F24")
+                wait_for(
+                    lambda: state()["first"]["text"] == draft and verified_write(before_write),
+                    "fresh independent F24 did not accept the returned manual draft",
+                )
+
+                # Lose/replace the actual provider property through the fixture's
+                # public QObject surface. Restoring it must not resurrect a cached
+                # editor route; this is not an old-provider-binary compatibility test.
+                for fault in ("remove", "replace"):
+                    enter_source(editing_source)
+                    actual = state()
+                    click_rectangle(actual, actual["editorGeometry"])
+                    wait_for(
+                        lambda: state().get("editorFocused")
+                        and state().get("editorProviderPresent"),
+                        "provider-loss fixture did not enter the real editor",
+                    )
+                    provider_trace = trace_checkpoint()
+                    for action in (fault, "restore"):
+                        command("editor-provider", action=action)
+                        wait_for(
+                            lambda: (value := state()).get("editorProviderAction") == action
+                            and value.get("editorProviderPresent") == (action != "remove")
+                            and value.get("editorProviderOriginal") == (action == "restore"),
+                            "editor provider fault was not observed on the actual QObject",
+                        )
+                        key("F24")
+                        wait_for(lambda: settled(state()), "refused configured key did not retire")
+                        assert state()["editorFocused"]
+                        assert state()["first"]["text"] == editing_source
+                        assert not new_write_outcomes(provider_trace)
+                    command("focus", field="first")
+                    wait_for(
+                        lambda: state()["first"]["focused"]
+                        and ready_to_accept("EditedTranslationPending"),
+                        "fresh source observation did not recover after provider fault",
+                    )
+
+                set_mode(1, session_keys=("F12", "F1"))
+                dormant_source(function_source)
+                key("ctrl+shift+F9")
+                wait_for(ready_to_accept, "mode switch lost the configured source acceptance route")
+                function_candidate = state()["editorText"]
+                before_write = trace_checkpoint()
+                key("F12")
+                wait_for(
+                    lambda: state()["first"]["text"] == function_candidate
+                    and verified_write(before_write),
+                    "configured F12 did not accept the on-demand candidate",
+                )
+                set_mode(0, session_keys=("Tab", "Esc"))
+                evidence.append(
+                    "Qt6 configured source/editor keys: F1/F24 and F24/F12 through real settings, "
+                    "first held F24 only returns, its release stays consumed, the next down accepts; "
+                    "F12 also accepts after switching to OnDemand, then defaults are restored"
                 )
 
                 clear_source()

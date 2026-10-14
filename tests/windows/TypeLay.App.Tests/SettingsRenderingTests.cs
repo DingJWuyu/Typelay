@@ -300,6 +300,101 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
     }
 
     [Fact]
+    public async Task FourShortcutDraftRejectsDuplicatesAndSurvivesSaveFailureWithoutLosingLatestPreferences()
+    {
+        await desktop.RunAsync(() =>
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "typelay-four-shortcuts-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                string path = Path.Combine(directory, "settings.json");
+                var settings = WindowsRuntime.CreateSettings(path);
+                settings.Update(settings.Value with
+                {
+                    Enabled = false,
+                    Mode = WorkMode.OnDemand
+                });
+                var original = settings.Value;
+                using var model = WindowsRuntime.CreateModel();
+                var window = new SettingsWindow(settings, model, () => { });
+                window.ShowPage("shortcuts");
+                window.UpdateLayout();
+                var wake = ShortcutEditor(window);
+                var direct = ShortcutEditor(window, direct: true);
+                var accept = SessionShortcutSelector(window, accept: true);
+                var exit = SessionShortcutSelector(window, accept: false);
+                Assert.Equal("Tab", accept.SelectedItem);
+                Assert.Equal("Esc", exit.SelectedItem);
+                Assert.Contains("F12", accept.Items.Cast<string>());
+                Assert.Contains("F24", exit.Items.Cast<string>());
+                wake.Text = "ctrl+shift+u";
+                direct.Text = "alt+f8";
+                accept.SelectedItem = "F8";
+                exit.SelectedItem = "F8";
+                Save();
+                Assert.Equal(original, WindowsRuntime.CreateSettings(path).Value);
+                Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text.Contains(
+                    SettingsDraftPresentation.ShortcutErrorMessage(ShortcutDraftError.InvalidSessionBindings), StringComparison.Ordinal));
+                exit.SelectedItem = "F7";
+                accept.SelectedItem = "F12";
+                Directory.CreateDirectory(path + ".tmp");
+                Save();
+                Assert.Equal(original, WindowsRuntime.CreateSettings(path).Value);
+                Assert.Equal("ctrl+shift+u", wake.Text);
+                Assert.Equal("F12", accept.SelectedItem);
+                Assert.Equal("F7", exit.SelectedItem);
+                Assert.Contains(Descendants(window).OfType<TextBlock>(), text =>
+                    text.Text.Contains(SettingsDraftPresentation.Create().InvalidMessage, StringComparison.Ordinal));
+                Directory.Delete(path + ".tmp");
+                settings.Update(settings.Value with
+                {
+                    Theme = "dark",
+                    Mode = WorkMode.Automatic,
+                    Source = "en",
+                    Target = "zh"
+                });
+                var latest = settings.Value;
+                window.UpdateLayout();
+                Assert.Same(wake, ShortcutEditor(window));
+                Assert.Same(accept, SessionShortcutSelector(window, accept: true));
+                Assert.Equal("F12", accept.SelectedItem);
+                window.ShowPage("apps");
+                window.ShowPage("shortcuts");
+                Assert.Equal("F12", SessionShortcutSelector(window, accept: true).SelectedItem);
+                Assert.Equal("F7", SessionShortcutSelector(window, accept: false).SelectedItem);
+                Assert.Equal(latest, WindowsRuntime.CreateSettings(path).Value);
+                Save();
+                Assert.Equal(latest with
+                {
+                    WakeShortcut = "Ctrl+Shift+U",
+                    DirectShortcut = "Alt+F8",
+                    AcceptShortcut = "F12",
+                    ExitShortcut = "F7"
+                }, WindowsRuntime.CreateSettings(path).Value);
+                Assert.False(settings.Value.Enabled);
+                InteractWithCloseDialog(window, window.Close, choice: null);
+                Assert.False(window.IsVisible);
+                window.ShowPage("shortcuts");
+                settings.Update(settings.Value with
+                {
+                    AcceptShortcut = "F1",
+                    ExitShortcut = "F24"
+                });
+                Assert.Equal("F1", SessionShortcutSelector(window, accept: true).SelectedItem);
+                Assert.Equal("F24", SessionShortcutSelector(window, accept: false).SelectedItem);
+
+                void Save() => Descendants(window).OfType<Button>().Single(button =>
+                    Equals(button.Content, SettingsDraftPresentation.Create().SaveLabel)).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            }
+            finally
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, true);
+            }
+        });
+    }
+
+    [Fact]
     public async Task ShortcutDraftSavesOnlyValidPairsAndRefreshesCleanValues()
     {
         await desktop.RunAsync(() =>
@@ -391,10 +486,14 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                 window.ShowPage("shortcuts");
                 window.UpdateLayout();
                 ShortcutEditor(window).Text = "Ctrl+Shift+U";
+                SessionShortcutSelector(window, accept: true).SelectedItem = "F12";
+                SessionShortcutSelector(window, accept: false).SelectedItem = "F7";
                 InteractWithCloseDialog(window, () => Descendants(window).OfType<Button>().Single(button =>
                     AutomationProperties.GetName(button) == "关闭设置").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)),
                     SettingsDraftCloseChoice.KeepEditing);
                 Assert.True(window.IsVisible);
+                Assert.Equal("F12", SessionShortcutSelector(window, accept: true).SelectedItem);
+                Assert.Equal("F7", SessionShortcutSelector(window, accept: false).SelectedItem);
                 Assert.Equal("Ctrl+Shift+U", ShortcutEditor(window).Text);
                 Assert.Equal("Ctrl+Shift+K", WindowsRuntime.CreateSettings(path).Value.WakeShortcut);
                 window.ShowPage("apps");
@@ -410,6 +509,8 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                 var saved = WindowsRuntime.CreateSettings(path).Value;
                 Assert.Equal("Ctrl+Shift+K", saved.WakeShortcut);
                 Assert.Equal("Alt+F8", saved.DirectShortcut);
+                Assert.Equal("Tab", saved.AcceptShortcut);
+                Assert.Equal("Esc", saved.ExitShortcut);
                 window.ShowPage("shortcuts");
                 Assert.Equal("Ctrl+Shift+K", ShortcutEditor(window).Text);
                 Assert.Equal("Alt+F8", ShortcutEditor(window, direct: true).Text);
@@ -436,6 +537,13 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                     Directory.Delete(directory, true);
             }
         });
+    }
+
+    private static ComboBox SessionShortcutSelector(Window window, bool accept)
+    {
+        var labels = SettingsDraftPresentation.SessionShortcuts(SessionShortcutBindings.Default);
+        return Descendants(window).OfType<ComboBox>().Single(control =>
+            AutomationProperties.GetName(control) == (accept ? labels.AcceptLabel : labels.ExitLabel));
     }
 
     private static TextBox ShortcutEditor(Window window, bool direct = false) => Descendants(window).OfType<TextBox>()

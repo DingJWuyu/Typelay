@@ -31,8 +31,8 @@ def wait_for(predicate, description, timeout=15):
     raise AssertionError(description)
 
 
-def prepare_tab(stack):
-    """Preconnect to the existing XTest server; deliver one real key pair later."""
+def prepare_key(stack, name):
+    """Preconnect to XTest; each call delivers one real down or up event."""
     x11 = ctypes.CDLL("libX11.so.6")
     xtst = ctypes.CDLL("libXtst.so.6")
     display_type = ctypes.c_void_p
@@ -55,15 +55,25 @@ def prepare_tab(stack):
     stack.callback(x11.XCloseDisplay, display)
     extension = [ctypes.c_int() for _ in range(4)]
     assert xtst.XTestQueryExtension(display, *(ctypes.byref(value) for value in extension))
-    keycode = x11.XKeysymToKeycode(display, x11.XStringToKeysym(b"Tab"))
-    assert keycode, "XTest DISPLAY has no Tab keycode"
+    keycode = x11.XKeysymToKeycode(display, x11.XStringToKeysym(name.encode("ascii")))
+    assert keycode, f"XTest DISPLAY has no {name} keycode"
+
+    def send_key(down, sync=True):
+        sent = xtst.XTestFakeKeyEvent(display, keycode, int(down), 0)
+        # Flush and wait only for X server processing, not Wayland delivery.
+        if sync:
+            x11.XSync(display, 0)
+        assert sent, f"XTest refused {name} key event"
+
+    return send_key
+
+
+def prepare_tab(stack):
+    send_key = prepare_key(stack, "Tab")
 
     def send_tab():
-        pressed = xtst.XTestFakeKeyEvent(display, keycode, 1, 0)
-        released = xtst.XTestFakeKeyEvent(display, keycode, 0, 0)
-        # Flush and wait only for X server processing, not Wayland delivery.
-        x11.XSync(display, 0)
-        assert pressed and released, "XTest refused the Tab key pair"
+        send_key(True, sync=False)
+        send_key(False)
 
     return send_tab
 
@@ -95,6 +105,9 @@ def run(arguments):
         "ExperimentalWriteback": True,
         "Mode": 0,
     }
+
+    session_bindings = getattr(arguments, "gtk_session_bindings", False)
+    accept_key = "Tab"
 
     def status():
         try:
@@ -735,6 +748,29 @@ def run(arguments):
                             except (FileNotFoundError, json.JSONDecodeError):
                                 return {}
 
+                        def click_entry(name):
+                            value = gtk_state()
+                            entry = value[name + "Entry"]
+                            # GtkSearchEntry owns icon clicks without focusing its text.
+                            subprocess.run(
+                                [
+                                    "xdotool",
+                                    "mousemove",
+                                    "--window",
+                                    nested[0],
+                                    str(int((entry["x"] + entry["width"] / 2) * value["scale"])),
+                                    str(int((entry["y"] + entry["height"] / 2) * value["scale"])),
+                                    "click",
+                                    "1",
+                                ],
+                                check=True,
+                                timeout=3,
+                            )
+                            wait_for(
+                                lambda: gtk_state().get("focus") == "fixture-" + name,
+                                "actual mouse click did not focus the GTK " + name + " entry",
+                            )
+
                         def switch_im(name):
                             subprocess.run(
                                 ["fcitx5-remote", "-s", name],
@@ -811,10 +847,10 @@ def run(arguments):
                         )
                         wait_for(ready_to_accept, "GTK acceptance expired while taking evidence")
                         before_write = trace_checkpoint()
-                        key("Tab")
+                        key(accept_key)
                         wait_for(
                             lambda: translated(gtk_state().get("first")),
-                            "GTK Tab did not apply the real translation",
+                            f"GTK {accept_key} did not apply the real translation",
                         )
                         wait_for(
                             lambda: verified_write(before_write),
@@ -825,10 +861,10 @@ def run(arguments):
                         typed_source = "Please send me the latest report."
                         enter_source(typed_source)
                         before_write = trace_checkpoint()
-                        key("Tab")
+                        key(accept_key)
                         wait_for(
                             lambda: translated(gtk_state().get("first")),
-                            "GTK Tab did not replace the actually typed source",
+                            f"GTK {accept_key} did not replace the actually typed source",
                         )
                         wait_for(
                             lambda: verified_write(before_write),
@@ -836,87 +872,126 @@ def run(arguments):
                         )
                         assert gtk_state()["focus"] == "fixture-first"
                         evidence.append(
-                            "Wayland GTK keyboard-us: actual typed source, CPU translation, one Tab, verified write and retained focus"
+                            "Wayland GTK keyboard-us: actual typed source, CPU translation, one configured acceptance key, verified write and retained focus"
                         )
 
-                        editing_source = "Please review this note."
-                        enter_source(editing_source)
-                        actual = wait_for(
-                            lambda: value
-                            if (value := gtk_state()).get("fullscreen") and value.get("candidate")
-                            else None,
-                            "fullscreen GTK candidate did not expose real widget geometry",
-                        )
-                        geometry = dict(
-                            line.split("=", 1)
-                            for line in subprocess.check_output(
-                                ["xdotool", "getwindowgeometry", "--shell", nested[0]],
-                                text=True,
+                        def edit_and_accept(accept_key, hold_return=False):
+                            editing_source = "Please review this note."
+                            enter_source(editing_source)
+                            actual = wait_for(
+                                lambda: value
+                                if (value := gtk_state()).get("fullscreen")
+                                and value.get("candidate")
+                                else None,
+                                "fullscreen GTK candidate did not expose real widget geometry",
+                            )
+                            geometry = dict(
+                                line.split("=", 1)
+                                for line in subprocess.check_output(
+                                    ["xdotool", "getwindowgeometry", "--shell", nested[0]],
+                                    text=True,
+                                    timeout=3,
+                                ).splitlines()
+                            )
+                            scale = actual["scale"]
+                            assert actual["width"] * scale == int(geometry["WIDTH"])
+                            assert actual["height"] * scale == int(geometry["HEIGHT"])
+                            candidate = actual["candidate"]
+                            x = candidate["x"] + candidate["width"] // 2
+                            y = candidate["y"] + candidate["height"] // 2
+                            assert 0 <= x < actual["width"] and 0 <= y < actual["height"]
+                            subprocess.run(
+                                [
+                                    "xdotool",
+                                    "mousemove",
+                                    "--window",
+                                    nested[0],
+                                    str(x * scale),
+                                    str(y * scale),
+                                    "click",
+                                    "1",
+                                ],
+                                check=True,
                                 timeout=3,
-                            ).splitlines()
-                        )
-                        scale = actual["scale"]
-                        assert actual["width"] * scale == int(geometry["WIDTH"])
-                        assert actual["height"] * scale == int(geometry["HEIGHT"])
-                        candidate = actual["candidate"]
-                        x = candidate["x"] + candidate["width"] // 2
-                        y = candidate["y"] + candidate["height"] // 2
-                        assert 0 <= x < actual["width"] and 0 <= y < actual["height"]
-                        subprocess.run(
-                            [
-                                "xdotool",
-                                "mousemove",
-                                "--window",
-                                nested[0],
-                                str(x * scale),
-                                str(y * scale),
-                                "click",
-                                "1",
-                            ],
-                            check=True,
-                            timeout=3,
-                        )
-                        wait_for(
-                            lambda: gtk_state().get("focus") == "typelay-candidate"
-                            and view("EditingTranslation"),
-                            "clicking the actual GTK candidate did not enter the production editor",
-                        )
-                        switch_im("keyboard-us")
-                        draft = "Manually edited candidate."
-                        key("ctrl+a")
-                        typed(draft)
-                        wait_for(
-                            lambda: (gtk_state().get("candidate") or {}).get("text") == draft
-                            and gtk_state().get("focusedImeClear"),
-                            "real GTK editor did not retain the typed draft",
-                        )
-                        assert gtk_state()["first"] == editing_source
-                        before_return = trace_checkpoint()
-                        key("Tab")
-                        wait_for(
-                            lambda: gtk_state().get("focus") == "fixture-first"
-                            and gtk_state().get("imeClear")
-                            and ready_to_accept("EditedTranslationPending"),
-                            "first editor Tab did not return with the draft awaiting acceptance",
-                        )
-                        assert gtk_state()["first"] == editing_source
-                        assert not new_write_outcomes(before_return), (
-                            "first editor Tab performed a write"
-                        )
-                        before_write = trace_checkpoint()
-                        key("Tab")
-                        wait_for(
-                            lambda: gtk_state().get("first") == draft,
-                            "second Tab did not accept the exact manual draft",
-                        )
-                        wait_for(
-                            lambda: verified_write(before_write),
-                            "manual draft acceptance did not receive a verified write receipt",
-                        )
-                        assert gtk_state()["focus"] == "fixture-first"
-                        evidence.append(
-                            "Wayland GTK editor: actual candidate click and draft typing, first Tab returns without writing, second Tab verifies the exact draft"
-                        )
+                            )
+                            wait_for(
+                                lambda: gtk_state().get("focus") == "typelay-candidate"
+                                and view("EditingTranslation"),
+                                "clicking the actual GTK candidate did not enter the production editor",
+                            )
+                            switch_im("keyboard-us")
+                            draft = "Manually edited candidate."
+                            key("ctrl+a")
+                            typed(draft)
+                            wait_for(
+                                lambda: (gtk_state().get("candidate") or {}).get("text") == draft
+                                and gtk_state().get("focusedImeClear"),
+                                "real GTK editor did not retain the typed draft",
+                            )
+                            assert gtk_state()["first"] == editing_source
+                            before_return = trace_checkpoint()
+                            if hold_return:
+                                subprocess.run(
+                                    ["xdotool", "keydown", accept_key], check=True, timeout=2
+                                )
+                            else:
+                                key(accept_key)
+                            wait_for(
+                                lambda: gtk_state().get("focus") == "fixture-first"
+                                and gtk_state().get("imeClear")
+                                and ready_to_accept("EditedTranslationPending"),
+                                f"first editor {accept_key} did not return with the draft awaiting acceptance",
+                            )
+                            assert gtk_state()["first"] == editing_source
+                            assert not new_write_outcomes(before_return), (
+                                f"first editor {accept_key} performed a write"
+                            )
+                            if hold_return:
+                                # The repeat arrives after a fresh source permit. It still
+                                # belongs to the editor-return press and cannot write.
+                                baseline = gtk_state()["functionKeys"][0].copy()
+                                ordering = gtk_state()["functionKeys"][7]["up"]
+                                subprocess.run(
+                                    ["xdotool", "keydown", accept_key], check=True, timeout=2
+                                )
+                                key("F8")
+                                wait_for(
+                                    lambda: gtk_state()["functionKeys"][7]["up"] > ordering,
+                                    "application did not receive the independent ordering key",
+                                )
+                                assert gtk_state()["first"] == editing_source
+                                assert not new_write_outcomes(before_return)
+                                subprocess.run(
+                                    ["xdotool", "keyup", accept_key], check=True, timeout=2
+                                )
+                                key("F8")
+                                wait_for(
+                                    lambda: gtk_state()["functionKeys"][7]["up"] > ordering + 1,
+                                    "application did not receive the release ordering key",
+                                )
+                                assert gtk_state()["functionKeys"][0] == baseline, (
+                                    "editor return leaked its held repeat or release to the source"
+                                )
+                                wait_for(
+                                    lambda: ready_to_accept("EditedTranslationPending"),
+                                    "source was not recaptured after the ordering key",
+                                )
+                            before_write = trace_checkpoint()
+                            key(accept_key)
+                            wait_for(
+                                lambda: gtk_state().get("first") == draft,
+                                f"second {accept_key} did not accept the exact manual draft",
+                            )
+                            wait_for(
+                                lambda: verified_write(before_write),
+                                "manual draft acceptance did not receive a verified write receipt",
+                            )
+                            assert gtk_state()["focus"] == "fixture-first"
+                            evidence.append(
+                                "Wayland GTK editor: actual candidate click and draft typing, first configured key returns without writing, second independent key verifies the exact draft"
+                            )
+
+                        edit_and_accept("Tab")
 
                         switch_im("pinyin")
                         key("ctrl+a")
@@ -943,7 +1018,7 @@ def run(arguments):
                             "pinyin candidate did not commit normally",
                         )
                         evidence.append(
-                            "Wayland GTK Entry with opt-in Fcitx cooperation: CPU model, native overlay, one Tab and preserved real pinyin composition"
+                            "Wayland GTK Entry with opt-in Fcitx cooperation: CPU model, native overlay, one configured acceptance key and preserved real pinyin composition"
                         )
                         if gtk4:
                             switch_im("keyboard-us")
@@ -1001,12 +1076,12 @@ def run(arguments):
                         )
                         before_write = trace_checkpoint()
                         before_actions = gtk_state().get("userActionsStarted", 0)
-                        key("Tab")
+                        key(accept_key)
                         multiline_after = wait_for(
                             lambda: value
                             if (value := gtk_state()["multiline"]["text"]) != multiline_source
                             else None,
-                            "GTK multiline Tab did not replace the selected range",
+                            f"GTK multiline {accept_key} did not replace the selected range",
                         )
                         wait_for(
                             lambda: verified_write(before_write),
@@ -1050,7 +1125,7 @@ def run(arguments):
                         )
                         switch_im("keyboard-us")
                         evidence.append(
-                            "GTK plain TextView: selected multiline CPU translation, UTF-16 emoji surroundings, one Tab and real pinyin protection"
+                            "GTK plain TextView: selected multiline CPU translation, UTF-16 emoji surroundings, one configured acceptance key and real pinyin protection"
                             + (
                                 "; GTK4 native undo/redo"
                                 if gtk4
@@ -1117,35 +1192,165 @@ def run(arguments):
                             evidence.append(
                                 "GTK4 hidden Entry and GtkPasswordEntry: refused capture, unchanged source and ordinary Tab navigation"
                             )
+                        if session_bindings:
+                            # Keep every original default-key stage above, including
+                            # the TextView/IME checks, before the narrower F-key stage.
+                            click_entry("first")
+                            switch_im("keyboard-us")
+                            enter_source(original)
+                            before_default_exit = trace_checkpoint()
+                            key("Escape")
+                            wait_for(
+                                lambda: not status().get("overlayVisible")
+                                and gtk_state().get("candidate") is None,
+                                "default Escape did not exit the actual GTK session",
+                            )
+                            assert gtk_state()["first"] == original
+                            assert not new_write_outcomes(before_default_exit)
+                            stop()
+                            settings.update({"AcceptShortcut": "F1", "ExitShortcut": "F24"})
+                            start()
+                            request({"Action": {"FocusWindow": {"id": window["id"]}}})
+                            click_entry("first")
+                            switch_im("keyboard-us")
+                            enter_source(original)
+                            # The old default must remain the application's Tab,
+                            # even while a valid F1 acceptance permit exists.
+                            before_navigation = trace_checkpoint()
+                            key("Tab")
+                            wait_for(
+                                lambda: gtk_state().get("focus") == "fixture-second",
+                                "rebinding accept to F1 stole the application's Tab",
+                            )
+                            assert gtk_state()["first"] == original
+                            assert not new_write_outcomes(before_navigation)
+                            key("shift+Tab")
+                            wait_for(
+                                lambda: gtk_state().get("focus") == "fixture-first"
+                                and ready_to_accept(),
+                                "source did not recover after ordinary Tab navigation",
+                            )
+                            before_modified = gtk_state()["functionKeys"][0].copy()
+                            key("ctrl+F1")
+                            wait_for(
+                                lambda: gtk_state()["functionKeys"][0]["up"]
+                                > before_modified["up"],
+                                "modified F1 was intercepted by the session binding",
+                            )
+                            assert gtk_state()["first"] == original
+                            assert not new_write_outcomes(before_navigation)
+                            wait_for(ready_to_accept, "source was not recaptured after modified F1")
+                            before_write = trace_checkpoint()
+                            key("F1")
+                            wait_for(
+                                lambda: translated(gtk_state().get("first"))
+                                and verified_write(before_write),
+                                "configured F1 did not verify its single source write",
+                            )
+                            edit_and_accept("F1", hold_return=True)
+                            # The same fixture stays alive across the real client's
+                            # settings restart. Native ownership must survive both
+                            # overlay destruction and the newly applied generation.
+                            enter_source("Please keep this source until a new key press.")
+                            before_exit = gtk_state()["functionKeys"][23].copy()
+                            subprocess.run(["xdotool", "keydown", "F24"], check=True, timeout=2)
+                            wait_for(
+                                lambda: not status().get("overlayVisible")
+                                and gtk_state().get("candidate") is None,
+                                "configured F24 did not exit the actual GTK session",
+                            )
+                            subprocess.run(["xdotool", "keydown", "F24"], check=True, timeout=2)
+                            subprocess.run(["xdotool", "keyup", "F24"], check=True, timeout=2)
+                            before_order = gtk_state()["functionKeys"][7]["up"]
+                            key("F8")
+                            wait_for(
+                                lambda: gtk_state()["functionKeys"][7]["up"] > before_order,
+                                "source did not process the ordering key after hiding",
+                            )
+                            assert gtk_state()["functionKeys"][23] == before_exit, (
+                                "hidden GTK overlay lost the consumed exit-key pair"
+                            )
+                            # A refused F7 down predates its assignment as accept.
+                            # New publication must not upgrade that held press.
+                            source_before = gtk_state()["first"]
+                            before_f7 = gtk_state()["functionKeys"][6]["down"]
+                            subprocess.run(["xdotool", "keydown", "F7"], check=True, timeout=2)
+                            try:
+                                wait_for(
+                                    lambda: gtk_state()["functionKeys"][6]["down"] > before_f7,
+                                    "unbound F7 did not reach the actual source",
+                                )
+                                key("Tab")
+                                wait_for(
+                                    lambda: gtk_state().get("focus") == "fixture-second",
+                                    "held unbound F7 blocked normal same-window navigation",
+                                )
+                                key("shift+Tab")
+                                wait_for(
+                                    lambda: gtk_state().get("focus") == "fixture-first",
+                                    "source did not regain focus while F7 was held",
+                                )
+                                stop()
+                                settings["AcceptShortcut"] = "F7"
+                                start()
+                                request({"Action": {"FocusWindow": {"id": window["id"]}}})
+                                wait_for(
+                                    ready_to_accept,
+                                    "new F7 configuration did not obtain a fresh source permit",
+                                )
+                                before_repeat = trace_checkpoint()
+                                before_f7 = gtk_state()["functionKeys"][6]["down"]
+                                subprocess.run(["xdotool", "keydown", "F7"], check=True, timeout=2)
+                                wait_for(
+                                    lambda: gtk_state()["functionKeys"][6]["down"] > before_f7,
+                                    "rebound held F7 repeat was stolen from the source",
+                                )
+                                assert gtk_state()["first"] == source_before
+                                assert not new_write_outcomes(before_repeat)
+                            finally:
+                                subprocess.run(["xdotool", "keyup", "F7"], check=True, timeout=2)
+                            wait_for(ready_to_accept, "released F7 did not allow fresh capture")
+                            before_write = trace_checkpoint()
+                            key("F7")
+                            wait_for(
+                                lambda: gtk_state()["first"] != source_before
+                                and verified_write(before_write),
+                                "independent F7 press did not accept after rebinding",
+                            )
+                            evidence.append(
+                                "GTK F1/F24: original editor press only returns; repeat/release "
+                                "stay consumed after focus return/hide; unbound held F7 stays "
+                                "with the source across rebinding until a fresh physical down"
+                            )
+
+                            from gtk_session_reentry import run_reentry_checks
+
+                            with ExitStack() as reentry_resources:
+                                run_reentry_checks(
+                                    fixture.args,
+                                    gtk_environment,
+                                    arguments.output,
+                                    prepare_key(reentry_resources, "F1"),
+                                    gtk4=gtk4,
+                                    nested=nested[0],
+                                )
+                            evidence.append(
+                                "GTK mutation callbacks: delete/insert/final selection "
+                                "generation changes preserve the issued Unknown receipt, "
+                                "stop subsequent actions and quarantine without retry; "
+                                "same-generation controls verify actual body and selection"
+                            )
+
+                            # The remaining original OnDemand/pause/direct stages
+                            # retain their defaults in the next ordinary restart.
+                            settings.update({"AcceptShortcut": "Tab", "ExitShortcut": "Esc"})
+
                         # Restart the same production client with persisted OnDemand
                         # settings. No fake translator or test-only command dispatch.
                         stop()
                         settings["Mode"] = 1
                         start()
                         request({"Action": {"FocusWindow": {"id": window["id"]}}})
-
-                        def click_entry(name):
-                            value = gtk_state()
-                            entry = value[name + "Entry"]
-                            # GtkSearchEntry owns icon clicks without focusing its text.
-                            subprocess.run(
-                                [
-                                    "xdotool",
-                                    "mousemove",
-                                    "--window",
-                                    nested[0],
-                                    str(int((entry["x"] + entry["width"] / 2) * value["scale"])),
-                                    str(int((entry["y"] + entry["height"] / 2) * value["scale"])),
-                                    "click",
-                                    "1",
-                                ],
-                                check=True,
-                                timeout=3,
-                            )
-                            wait_for(
-                                lambda: gtk_state().get("focus") == "fixture-" + name,
-                                "actual mouse click did not focus the GTK " + name + " entry",
-                            )
 
                         # Both GTK generations use the same real settings and
                         # source-widget accessibility actions. No resume protocol
@@ -1161,6 +1366,43 @@ def run(arguments):
                                 node
                                 if states.contains(Atspi.StateType.SHOWING)
                                 and states.contains(Atspi.StateType.ENABLED)
+                                else None
+                            )
+
+                        resume_accessibility = {}
+
+                        def resume_control():
+                            if not gtk4:
+                                return visible_control(fixture.pid, "恢复")
+                            node = named(fixture.pid, "恢复")
+                            resume_accessibility.clear()
+                            resume_accessibility["found"] = node is not None
+                            if node is None:
+                                return None
+                            states = node.get_state_set()
+                            resume_accessibility.update(
+                                ownerMatches=node.get_process_id() == fixture.pid,
+                                nameMatches=node.get_name() == "恢复",
+                                buttonRole=node.get_role() == Atspi.Role.PUSH_BUTTON,
+                                showing=states.contains(Atspi.StateType.SHOWING),
+                                sensitive=states.contains(Atspi.StateType.SENSITIVE),
+                                enabled=states.contains(Atspi.StateType.ENABLED),
+                            )
+                            # GTK 4.22.5 collect_states exports SENSITIVE for an
+                            # actionable widget, but does not export ENABLED:
+                            # https://github.com/GNOME/gtk/blob/4.22.5/gtk/a11y/gtkatspicontext.c
+                            return (
+                                node
+                                if all(
+                                    resume_accessibility[key]
+                                    for key in (
+                                        "ownerMatches",
+                                        "nameMatches",
+                                        "buttonRole",
+                                        "showing",
+                                        "sensitive",
+                                    )
+                                )
                                 else None
                             )
 
@@ -1222,12 +1464,13 @@ def run(arguments):
 
                         def paused_visible():
                             current = status()
-                            resume_visible = visible_control(fixture.pid, "恢复") is not None
+                            resume_visible = resume_control() is not None
                             pause_wait.update(
                                 viewState=current.get("viewState"),
                                 overlayVisible=current.get("overlayVisible") is True,
                                 acceptanceReady=current.get("acceptanceReady") is True,
                                 resumeVisible=resume_visible,
+                                resumeAccessibility=dict(resume_accessibility),
                             )
                             return (
                                 pause_wait["viewState"] == "Paused"
@@ -1290,7 +1533,7 @@ def run(arguments):
                             for line in data[: data.rfind(b"\n") + 1].splitlines()
                         ), "paused GTK source scheduled model work"
                         resume = wait_for(
-                            lambda: visible_control(fixture.pid, "恢复"),
+                            resume_control,
                             "actual GTK resume button disappeared before activation",
                         )
                         action = resume.get_action_iface()
@@ -2019,7 +2262,8 @@ def run(arguments):
             )
             activate_setting("保存修改")
             wait_for(
-                lambda: text(settings_control("设置反馈")) == "未保存：请检查输入。草稿仍保留。",
+                lambda: text(settings_control("设置反馈"))
+                == "唤醒与直接替换请使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，暂不支持 F12；两个快捷键不能相同。",
                 "invalid shortcut pair did not report rejection",
             )
             assert json.loads(paths.settings.read_text())["WakeShortcut"] == saved["WakeShortcut"]
@@ -2041,6 +2285,45 @@ def run(arguments):
                 "saved shortcuts still appeared dirty",
             )
             assert text(settings_control("设置反馈")) == "设置已保存"
+            accept_key = settings_control("设置：接受译文")
+            exit_key = settings_control("设置：退出当前翻译")
+            assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 7)
+            assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 7)
+            wait_for(
+                lambda: status()["setup"]["settingsDraft"],
+                "session key choice saved without explicit draft submission",
+            )
+            assert json.loads(paths.settings.read_text())["AcceptShortcut"] == "Tab"
+            activate_setting("保存修改")
+            wait_for(
+                lambda: text(settings_control("设置反馈"))
+                == "请选择有效且不同的接受与退出快捷键。",
+                "duplicate session key did not reject the complete draft",
+            )
+            assert status()["setup"]["settingsDraft"]
+            assert json.loads(paths.settings.read_text())["ExitShortcut"] == "Esc"
+            assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 8)
+            activate_setting("保存修改")
+            wait_for(
+                lambda: json.loads(paths.settings.read_text())["AcceptShortcut"] == "F7"
+                and json.loads(paths.settings.read_text())["ExitShortcut"] == "F8"
+                and not status()["setup"]["settingsDraft"],
+                "valid session key pair was not persisted together",
+            )
+            assert (
+                json.loads(paths.settings.read_text())["ExperimentalWriteback"]
+                == saved["ExperimentalWriteback"]
+            ), "saving session keys changed experimental writeback"
+            assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 0)
+            assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 0)
+            activate_setting("保存修改")
+            wait_for(
+                lambda: json.loads(paths.settings.read_text())["AcceptShortcut"] == "Tab"
+                and json.loads(paths.settings.read_text())["ExitShortcut"] == "Esc"
+                and not status()["setup"]["settingsDraft"],
+                "default session keys were not restored for later desktop scenarios",
+            )
+            assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 12)
             assert Atspi.EditableText.set_text_contents(
                 wake.get_editable_text_iface(), "Ctrl+Shift+F8"
             )
@@ -2103,6 +2386,8 @@ def run(arguments):
             assert control(paths, "settings") is True
             wake = settings_control("设置：唤醒翻译")
             assert text(wake) == saved["WakeShortcut"]
+            assert json.loads(paths.settings.read_text())["AcceptShortcut"] == "Tab"
+            assert Atspi.Selection.is_child_selected(accept_key.get_selection_iface(), 0)
             assert Atspi.Component.grab_focus(wake.get_component_iface())
             key("ctrl+Page_Down")
             activate_setting(support["labels"]["tryIt"])

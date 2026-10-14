@@ -6,7 +6,7 @@ using TypeLay.Windows.Contracts;
 namespace TypeLay.App;
 
 internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
-    WindowsApplicationSupport? support = null, IInputMonitor? monitor = null) : IInputService
+    WindowsApplicationSupport? support = null, KeyboardHook? monitor = null) : IInputService
 {
     public bool Available => broker.Available;
     public async Task StartAsync()
@@ -28,7 +28,14 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
             long startedAt = WindowsInterruptClock.NowMs;
             long checkGeneration = support?.CheckGeneration ?? 0;
             var result = await broker.CallAsync(Request("capture", context));
-            var capture = new InputCapture(result.Snapshot, result.Focus, result.Application, result.UserEpoch, result.ForegroundEpoch);
+            // The local hook and WPF editor apply the same process-local configuration.
+            // A stale capture cannot acknowledge a replacement configuration.
+            var acknowledgement = result.Snapshot is { } source && context.SessionShortcuts is { } configuration
+                && monitor?.HasSessionConfiguration(configuration) == true
+                ? new SessionShortcutAcknowledgement(source.Target, configuration.Generation, configuration.Bindings,
+                    monitor.CanInterceptAcceptance, monitor.CanInterceptAcceptance) : null;
+            var capture = new InputCapture(result.Snapshot, result.Focus, result.Application,
+                result.UserEpoch, result.ForegroundEpoch, acknowledgement);
             support?.Observe(capture, broker.Available && monitor?.Ready == true,
                 monitor?.CanInterceptAcceptance == true, startedAt, checkGeneration);
             return capture;
@@ -46,15 +53,21 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
     }
     public async Task<bool> ReturnToSourceAsync(InputContext context)
     {
-        if (context.BoundTarget is not { } id || !WindowsTarget.TryDecode(id, out var target))
+        if (!SessionConfigurationCurrent(context) || context.BoundTarget is not { } id || !WindowsTarget.TryDecode(id, out var target))
             return false;
         if (broker.ProcessId != 0)
             Native.AllowSetForegroundWindow((uint)broker.ProcessId);
         Native.SetForegroundWindow((nint)target.RootHwnd);
+        if (!SessionConfigurationCurrent(context))
+            return false;
         return (await broker.CallAsync(Request("return", context), TimeSpan.FromMilliseconds(800))).Status == "focused";
     }
+    private bool SessionConfigurationCurrent(InputContext context) => context.SessionShortcuts is { } configuration
+        && monitor?.HasSessionConfiguration(configuration) == true;
     public async Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs)
     {
+        if (!SessionConfigurationCurrent(context))
+            return new(WriteStatus.RejectedBeforeMutation, Denial.EpochChanged);
         var result = await broker.CallAsync(Request("write", context) with
         {
             Plan = plan,

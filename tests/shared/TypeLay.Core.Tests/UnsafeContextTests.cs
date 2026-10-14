@@ -67,8 +67,8 @@ public sealed class UnsafeContextTests
             "new-focus" => c with { FocusEpoch = 2 },
             _ => throw new ArgumentOutOfRangeException(nameof(reason))
         };
-        var rejected = g.ProcessTab(true, changed);
+        var rejected = g.ProcessAcceptanceKey(new(9, true, false, true), changed);
         Check(!rejected.Consume && rejected.Permit is null);
-        Check(!g.ProcessTab(false, c).Consume);
+        Check(!g.ProcessAcceptanceKey(new(9, false, false, true), c).Consume);
     }
 }

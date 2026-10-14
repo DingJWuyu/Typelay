@@ -13,7 +13,18 @@ typedef struct {
 } EntryEvidence;
 static EntryEvidence first_evidence, second_evidence;
 static JsonObject *first_insert_context, *first_delete_context;
+#include "gtk_reentry.inc"
 
+static guint function_down[24], function_up[24];
+static gboolean observe_key(GtkWidget *widget, GdkEventKey *event, gpointer data) {
+    (void)widget; (void)data;
+    if (event->keyval >= GDK_KEY_F1 && event->keyval <= GDK_KEY_F24) {
+        guint index = event->keyval - GDK_KEY_F1;
+        if (event->type == GDK_KEY_PRESS) function_down[index]++;
+        else function_up[index]++;
+    }
+    return FALSE;
+}
 static GtkWidget *entry_client(GtkWidget *widget) {
     return widget;
 }
@@ -42,18 +53,22 @@ static void entry_inserted(GtkEntryBuffer *buffer, guint position, const char *t
     EntryEvidence *evidence = data;
     evidence->insertions++;
     remember_entry_change(evidence, &first_insert_context);
+    if (evidence == &first_evidence) mutation_barrier("insert");
 }
 static void entry_deleted(GtkEntryBuffer *buffer, guint position, guint count, gpointer data) {
     (void)buffer; (void)position; (void)count;
     EntryEvidence *evidence = data;
     evidence->deletions++;
     remember_entry_change(evidence, &first_delete_context);
+    if (evidence == &first_evidence) mutation_barrier("delete");
 }
 static void watch_entry(GtkWidget *widget, EntryEvidence *evidence) {
     GtkEntryBuffer *buffer = gtk_entry_get_buffer(GTK_ENTRY(widget));
     g_signal_connect_after(buffer, "inserted-text", G_CALLBACK(entry_inserted), evidence);
     g_signal_connect_after(buffer, "deleted-text", G_CALLBACK(entry_deleted), evidence);
     g_signal_connect(entry_client(widget), "notify::has-focus", G_CALLBACK(focus_changed), evidence);
+    g_signal_connect_after(widget, "notify::cursor-position", G_CALLBACK(selection_changed), evidence);
+    g_signal_connect_after(widget, "notify::selection-bound", G_CALLBACK(selection_changed), evidence);
 }
 static guint user_actions_started, user_actions_finished;
 static void action_started(GtkTextBuffer *buffer, gpointer data) {
@@ -115,6 +130,7 @@ static void report_entry(JsonBuilder *builder, const char *name, GtkWidget *widg
     json_builder_end_object(builder);
 }
 static void find_candidate(GtkWidget *widget, gpointer data) {
+    watch_session_button(widget);
     GtkWidget **candidate = data;
     if (GTK_IS_TEXT_VIEW(widget)
         && g_strcmp0(gtk_buildable_get_name(GTK_BUILDABLE(widget)), "typelay-candidate") == 0)
@@ -231,6 +247,15 @@ static gboolean report_state(gpointer unused) {
         }
     }
     json_builder_end_array(builder);
+    json_builder_set_member_name(builder, "functionKeys");
+    json_builder_begin_array(builder);
+    for (guint index = 0; index < G_N_ELEMENTS(function_down); index++) {
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "down"); json_builder_add_int_value(builder, function_down[index]);
+        json_builder_set_member_name(builder, "up"); json_builder_add_int_value(builder, function_up[index]);
+        json_builder_end_object(builder);
+    }
+    json_builder_end_array(builder);
     json_builder_end_object(builder);
     JsonNode *node = json_builder_get_root(builder);
     JsonGenerator *generator = json_generator_new();
@@ -326,6 +351,8 @@ int main(int argc, char **argv) {
         report_window = window;
         report_first = first;
         report_second = second;
+        g_signal_connect(window, "key-press-event", G_CALLBACK(observe_key), NULL);
+        g_signal_connect(window, "key-release-event", G_CALLBACK(observe_key), NULL);
         watch_entry(first, &first_evidence);
         watch_entry(second, &second_evidence);
         g_timeout_add(25, report_state, NULL);

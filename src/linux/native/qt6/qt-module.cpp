@@ -5,6 +5,7 @@
 #include <QButtonGroup>
 #include <QClipboard>
 #include <QCryptographicHash>
+#include <QDynamicPropertyChangeEvent>
 #include <QFrame>
 #include <QGenericPlugin>
 #include <QInputMethodEvent>
@@ -170,6 +171,78 @@ public:
         qDeleteAll(retired_);
     }
 
+    static int sessionKey(const QJsonValue &value, bool accept) {
+        if (!value.isString()) return 0;
+        const auto name = value.toString();
+        if (name == (accept ? QStringLiteral("Tab") : QStringLiteral("Esc")))
+            return accept ? Qt::Key_Tab : Qt::Key_Escape;
+        bool number = false;
+        const int index = name.mid(1).toInt(&number);
+        return name.startsWith('F') && number && index >= 1 && index <= 24
+            && name == QStringLiteral("F") + QString::number(index) ? Qt::Key_F1 + index - 1 : 0;
+    }
+    static quint32 sessionSymbol(int key) {
+        return key == Qt::Key_Tab ? 0xff09u : key == Qt::Key_Escape ? 0xff1bu
+            : key >= Qt::Key_F1 && key <= Qt::Key_F24 ? 0xffbeu + quint32(key - Qt::Key_F1) : 0;
+    }
+    bool sessionApplied() const {
+        const auto accept = sessionKey(shortcutConfiguration_.value("accept"), true);
+        const auto exit = sessionKey(shortcutConfiguration_.value("exit"), false);
+        return shortcutConfiguration_.value("sessionEnabled").isBool()
+            && shortcutConfiguration_.value("generation").isString()
+            && !shortcutConfiguration_.value("generation").toString().isEmpty()
+            && accept && exit && accept != exit;
+    }
+    bool sessionCurrent(const QJsonValue &generation) const {
+        return sessionApplied() && shortcutConfiguration_.value("sessionEnabled").toBool()
+            && generation == shortcutConfiguration_.value("generation");
+    }
+    bool sessionProvider(QObject *field) const {
+        if (!sessionApplied() || !field || qApp->property(TypeLayFcitxQtConsumerPropertyV1).value<QObject *>() != this)
+            return false;
+        const QPointer<QObject> owner = field->property(ProviderProperty).value<QObject *>();
+        auto *keys = owner ? qobject_cast<TypeLayFcitxQtControlKeysV1 *>(owner.data()) : nullptr;
+        return keys && owner->thread() == thread() && keys->supportsControlKeys(field,
+            sessionSymbol(sessionKey(shortcutConfiguration_.value("accept"), true)),
+            sessionSymbol(sessionKey(shortcutConfiguration_.value("exit"), false)));
+    }
+    QJsonObject sessionBindings(Target *target) const {
+        // Source focus moves into our editor without retaining an IME proof on
+        // the source. Keep only the same-generation key-route confirmation from
+        // creation, and verify the actual editor now uses that exact provider.
+        // This grants no Clear state, return authority or source write permit.
+        const bool editorRoute = target && target == overlayTarget_ && overlayActive()
+            && overlayGeneration_ == shortcutConfiguration_.value("generation")
+            && overlaySourceProvider_ && target->provider == overlaySourceProvider_
+            && editor_ && editor_->hasFocus()
+            && editor_->property(ProviderProperty).value<QObject *>() == overlaySourceProvider_
+            && sessionProvider(editor_);
+        const bool enabled = sessionCurrent(shortcutConfiguration_.value("generation"));
+        const bool sourceRoute = target && sessionProvider(target->field);
+        const bool editing = target == overlayTarget_ && editor_ && editor_->hasFocus();
+        return {{"generation", shortcutConfiguration_.value("generation")},
+            {"accept", shortcutConfiguration_.value("accept")}, {"exit", shortcutConfiguration_.value("exit")},
+            {"sourceReady", enabled && (sourceRoute || editorRoute)},
+            {"editorReady", enabled && (editing ? editorRoute : sourceRoute)}};
+    }
+    bool viewCurrent(Target *target, const QJsonObject &data) const {
+        const auto view = data.value("view").toObject();
+        if (!target || !sessionApplied() || data.value("generation") != shortcutConfiguration_.value("generation")) return false;
+        if (view.value("state").toString() == "Paused") return true;
+        const auto context = view.value("viewContext").toObject();
+        const auto token = context.value("token").toObject();
+        const auto identity = token.value("target").toObject();
+        const auto bindings = context.value("bindings").toObject();
+        return shortcutConfiguration_.value("sessionEnabled").toBool()
+            && identity.value("backend").toString() == "linux-qt6" && identity.value("value").toString() == target->id
+            && identity.value("lifetime").toString() == lifetime_ && token.value("commandGeneration") == data.value("generation")
+            && bindings.value("accept") == shortcutConfiguration_.value("accept")
+            && bindings.value("exit") == shortcutConfiguration_.value("exit");
+    }
+    bool overlayCurrent(const QJsonObject &data) const {
+        return sessionCurrent(data.value("generation")) && data.value("generation") == overlayGeneration_
+            && integer(data, "revision", -1) == overlayRevision_;
+    }
     bool filterControlKey(QObject *actualField, QEvent *inputEvent) override {
         if (!inputEvent || inputEvent->type() != QEvent::KeyPress) return false;
         const auto *event = static_cast<QKeyEvent *>(inputEvent);
@@ -178,20 +251,27 @@ public:
         if (handlingKey_ || event->isAutoRepeat() || !onThread()) {
             traceGate("hook-busy-repeat-thread", targets_.value(actualField, nullptr), {}, 0); return false;
         }
+        const auto generation = shortcutConfiguration_.value("generation");
+        const auto acceptKey = sessionKey(shortcutConfiguration_.value("accept"), true);
+        const auto exitKey = sessionKey(shortcutConfiguration_.value("exit"), false);
         const auto shortcut = shortcutKind(event);
         if (shortcut.isEmpty() && (event->modifiers() != Qt::NoModifier
-            || (event->key() != Qt::Key_Tab && event->key() != Qt::Key_Escape))) return false;
+            || (event->key() != acceptKey && event->key() != exitKey)
+            || !sessionCurrent(generation) || !sessionProvider(actualField))) return false;
         QScopedValueRollback<bool> handling(handlingKey_, true);
         if (!shortcut.isEmpty()) return queueShortcut(shortcut, discover(qobject_cast<QWidget *>(actualField)),
             shortcutAuthority_.value("authority").toObject());
         if (actualField == editor_ && editor_ && editor_->hasFocus() && overlayActive()) {
-            if (event->key() != Qt::Key_Tab && event->key() != Qt::Key_Escape) return false;
+            if (overlayGeneration_ != generation || (event->key() != acceptKey && event->key() != exitKey)) return false;
             const QPointer<QPlainTextEdit> editor = editor_;
             auto *source = overlayTarget_;
             TypeLayFcitxQtStateV1 state{};
-            if (!widgetClear(editor, &state) || !editor || editor_ != editor || source != overlayTarget_
-                || !overlayActive() || !editor->hasFocus() || composing_) return false;
-            if (event->key() == Qt::Key_Tab && !editor_->isReadOnly()) {
+            if (!sessionBindings(source).value("editorReady").toBool()
+                || !widgetClear(editor, &state) || !editor || editor_ != editor || source != overlayTarget_
+                || !overlayActive() || !editor->hasFocus() || composing_ || !sessionCurrent(generation)
+                || overlayGeneration_ != generation || !sessionProvider(editor)
+                || !sessionBindings(source).value("editorReady").toBool()) return false;
+            if (event->key() == acceptKey && !editor_->isReadOnly()) {
                 if (!validText(editor->toPlainText())) {
                     if (hint_) hint_->setText(QStringLiteral("译文超过 8192 字符限制，请缩短后再返回"));
                     return false;
@@ -200,32 +280,34 @@ public:
                 ui("return"); // Runtime authorizes return, then issues a fresh source permit.
                 return true;
             }
-            if (event->key() == Qt::Key_Escape) { clearPermit(); ui("escape"); return true; }
+            if (event->key() == exitKey) { clearPermit(); ui("escape"); return true; }
             return false;
         }
         auto *target = discover(qobject_cast<QWidget *>(actualField));
         if (!target || target != focused() || publication_.isEmpty()) {
             traceGate("source-unavailable", target, publication_.value("authority").toObject(), 0); return false;
         }
+        const auto current = publication_;
         if (!inspect(target)) {
             traceGate("source-inspect", target, publication_.value("authority").toObject(), 0); return false;
         }
-        const auto current = publication_;
         const auto basis = current.value("authority").toObject();
-        if (!authorityMatches(target, basis, true) || !clear(target->state)) {
+        if (!authorityMatches(target, basis, true) || !clear(target->state) || publication_ != current
+            || !sessionCurrent(generation) || current.value("generation") != generation || !sessionProvider(target->field)) {
             traceGate("source-authority", target, basis, integer(current.value("permit").toObject(), "expiresAtMs", 0));
             clearPermit(); return false;
         }
-        if (event->key() == Qt::Key_Escape) {
+        if (event->key() == exitKey) {
             const auto lease = current.value("lease").toObject();
             const qint64 age = now() - integer(lease.value("source").toObject(), "observedAtMs");
             clearPermit();
             if (lease.value("escapeAllowed").toBool() && age >= 0 && age <= 150) {
-                sendEvent("escape", {}); return true;
+                sendEvent("escape", {{"target", target->id}, {"generation", current.value("generation")},
+                    {"sessionRevision", lease.value("sessionRevision")}}); return true;
             }
             return false;
         }
-        if (event->key() != Qt::Key_Tab || !ready(target, current)) {
+        if (event->key() != acceptKey || !ready(target, current)) {
             traceGate("source-permit", target, basis, integer(current.value("permit").toObject(), "expiresAtMs", 0));
             clearPermit(); return false;
         }
@@ -237,7 +319,7 @@ public:
         const qint64 accepted = now();
         clearPermit();
         const auto result = write(target, {{"plan", plan}, {"authority", basis},
-            {"expiresAtMs", permit.value("expiresAtMs")}}, false);
+            {"expiresAtMs", permit.value("expiresAtMs")}, {"generation", generation}}, false);
         if (result.value("status").toString() == "RejectedBeforeMutation") {
             traceGate("source-write-rejected", target, basis, integer(permit, "expiresAtMs", 0)); return false;
         }
@@ -588,7 +670,8 @@ private:
         inspect(target);
         if (!supported(target)) return {};
         return {{"target", target->id}, {"metadata", metadata(target)}, {"authority", authority(target)},
-            {"geometry", geometry(target)}, {"focused", target == focused()}, {"publication", publicationState(target)}};
+            {"geometry", geometry(target)}, {"focused", target == focused()}, {"publication", publicationState(target)},
+            {"sessionBindings", sessionBindings(target)}};
     }
     QJsonObject selection(Target *target) const {
         if (const auto *line = target->line()) {
@@ -612,6 +695,7 @@ private:
     }
     QJsonObject capture(Target *target, const QJsonObject &basis,
                         qint64 until = std::numeric_limits<qint64>::max()) {
+        const auto configuration = shortcutConfiguration_;
         const qint64 age = now() - integer(basis, "observedAtMs");
         if (age < 0 || age > 150 || !inspect(target) || !clear(target->state)
             || !authorityMatches(target, basis, true) || !local(target, target->state) || now() >= until) return {};
@@ -622,11 +706,11 @@ private:
         if (!boundary(text, integer(selected, "start")) || !boundary(text, integer(selected, "end"))) return {};
         auto result = describe(target);
         if (result.isEmpty() || !authorityMatches(target, basis, true) || !local(target, target->state)
-            || now() - integer(basis, "observedAtMs") > 150 || now() >= until) return {};
+            || configuration != shortcutConfiguration_ || now() - integer(basis, "observedAtMs") > 150 || now() >= until) return {};
         result.insert("text", text);
         result.insert("selection", selection(target));
         result.insert("ime", "Clear");
-        result.insert("writeSupported", !target->quarantined);
+        result.insert("writeSupported", !target->quarantined && sessionBindings(target).value("sourceReady").toBool());
         result.insert("observedAtMs", now());
         return result;
     }
@@ -645,6 +729,7 @@ private:
     }
     bool ready(Target *target, const QJsonObject &publication) {
         if (!target || target->quarantined || target->mutating || publication.isEmpty()
+            || !sessionCurrent(publication.value("generation")) || !sessionProvider(target->field)
             || !clear(target->state) || !authorityMatches(target, publication.value("authority").toObject(), true)) return false;
         const auto permit = publication.value("permit").toObject();
         const auto plan = permit.value("plan").toObject();
@@ -837,6 +922,9 @@ private:
             return receipt("RejectedBeforeMutation", reason);
         };
         traceGate("write-enter", target, basis, integer(request, "expiresAtMs", 0));
+        const auto generation = request.value("generation");
+        const auto authorization = authorizationGeneration_;
+        if (!sessionCurrent(generation)) return reject("write-generation", "EpochChanged");
         if (!target || plan.isEmpty() || expected.isEmpty() || basis.isEmpty() || approved.isEmpty()
             || identity.value("backend").toString() != "linux-qt6" || identity.value("value").toString() != target->id
             || identity.value("lifetime").toString() != lifetime_)
@@ -857,7 +945,8 @@ private:
                 && integer(approved, "focusRevision") == qint64(target->focus)
                 && approvedAge >= 0 && approvedAge <= 150
             : authorityMatches(target, basis, true);
-        if (!metadataMatches(target, approved) || !authorized)
+        if (!metadataMatches(target, approved) || !authorized || !sessionCurrent(generation)
+            || authorizationGeneration_ != authorization || !sessionProvider(target->field))
             return reject("write-authority", "EpochChanged");
         QPointer<QWidget> field = target->field;
         QPointer<QObject> provider = target->provider;
@@ -909,12 +998,12 @@ private:
             return reject("write-text", "InvalidText");
         const auto initialState = target->state;
         const auto connection = connectionGeneration_;
-        const auto authorization = authorizationGeneration_;
         const auto input = target->input, focus = target->focus, storage = target->storage;
         const auto content = target->content;
         auto unchanged = [&] {
             return field && provider && fd_ >= 0 && connectionGeneration_ == connection
-                && authorizationGeneration_ == authorization && target->field == field && target->provider == provider
+                && authorizationGeneration_ == authorization && sessionCurrent(generation)
+                && sessionProvider(field) && target->field == field && target->provider == provider
                 && focusUnchanged() && target->input == input && target->focus == focus
                 && target->storage == storage && target->content == content
                 && metadataMatches(target, basis) && metadataMatches(target, approved)
@@ -1003,7 +1092,7 @@ private:
 
     void ui(const char *operation, const QJsonValue &value = QJsonValue()) {
         if (overlayTarget_) sendEvent("ui", {{"target", overlayTarget_->id}, {"operation", QLatin1String(operation)},
-            {"revision", overlayRevision_}, {"value", value}});
+            {"revision", overlayRevision_}, {"generation", overlayGeneration_}, {"value", value}});
     }
     bool paused() const {
         return overlayView_.value("state").toString() == "Paused";
@@ -1031,9 +1120,9 @@ private:
         ui("visible", false);
         auto *card = card_.data();
         card_ = nullptr; editor_ = nullptr; hint_ = nullptr; status_ = nullptr;
-        language_ = nullptr; footer_ = nullptr; menu_ = nullptr; swap_ = nullptr; resume_ = nullptr;
+        language_ = nullptr; exit_ = nullptr; footer_ = nullptr; menu_ = nullptr; swap_ = nullptr; resume_ = nullptr;
         sourceLanguages_ = nullptr; targetLanguages_ = nullptr; overlayTarget_ = nullptr;
-        overlayView_ = {}; overlayAuthority_ = {}; overlayFocused_ = false; composing_ = false;
+        overlayView_ = {}; overlayAuthority_ = {}; overlayGeneration_ = QJsonValue(); overlaySourceProvider_ = nullptr; overlayFocused_ = false; composing_ = false;
         pendingEdit_ = false; pendingResume_ = false;
         card->hide();
         card->deleteLater();
@@ -1042,9 +1131,10 @@ private:
         if (!hint_) return;
         const auto presentation = overlayView_.value("presentation").toObject();
         auto hint = presentation.value("tabHint").toString();
-        if (!presentation.value("editorOwnsText").toBool()
-            && (hint == QStringLiteral("Tab 接受译文") || hint == QStringLiteral("Tab 交还应用")))
-            hint = ready(overlayTarget_, publication_) ? QStringLiteral("Tab 接受译文") : QStringLiteral("Tab 交还应用");
+        const auto shortcuts = overlayView_.value("sessionShortcuts").toObject();
+        if (presentation.value("editorOwnsText").toBool()) hint = shortcuts.value("returnHint").toString();
+        else if (hint == shortcuts.value("acceptHint").toString() || hint == shortcuts.value("passThroughHint").toString())
+            hint = shortcuts.value(ready(overlayTarget_, publication_) ? "acceptHint" : "passThroughHint").toString();
         hint_->setText(hint);
     }
     void arrangeOverlay() {
@@ -1076,12 +1166,14 @@ private:
         frame->setFocusPolicy(Qt::NoFocus);
         card_ = frame;
         overlayTarget_ = target;
+        overlaySourceProvider_ = sessionProvider(target->field) ? target->provider : QPointer<QObject>();
         auto *layout = new QVBoxLayout(frame);
         layout->setContentsMargins(12, 8, 12, 8);
         auto button = [&](QWidget *parent, QBoxLayout *box, const QString &label, const char *operation) {
             auto *value = new QPushButton(label, parent);
             value->setFocusPolicy(Qt::NoFocus);
             connect(value, &QPushButton::clicked, this, [this, operation, value] {
+                if (!insideOverlay(value)) return;
                 if (qstrcmp(operation, "resume") == 0) {
                     auto *resumeTarget = overlayTarget_;
                     const auto revision = overlayRevision_;
@@ -1143,7 +1235,7 @@ private:
         footerLayout->addWidget(hint_); footerLayout->addStretch();
         button(footer_, footerLayout, QStringLiteral("重译"), "regenerate");
         button(footer_, footerLayout, QStringLiteral("展开"), "expand");
-        button(footer_, footerLayout, QStringLiteral("Esc 隐藏"), "escape");
+        exit_ = button(footer_, footerLayout, QString(), "escape");
         layout->addWidget(footer_);
         menu_ = new QWidget(frame);
         menu_->setObjectName(QStringLiteral("typelay-menu"));
@@ -1188,6 +1280,7 @@ private:
     QJsonObject overlayCommand(const QString &op, Target *target, const QJsonObject &data) {
         if (op == "overlay-hide") hideOverlay();
         else if (op == "overlay-render") {
+            if (!viewCurrent(target, data)) return {{"visible", false}, {"editing", false}};
             const auto view = data.value("view").toObject();
             const auto presentation = view.value("presentation").toObject();
             const auto basis = data.value("authority").toObject();
@@ -1203,14 +1296,17 @@ private:
                 && until >= current && until - current <= 1000
                 && (isPaused ? pauseCurrent(target, basis) : retainEditor || (inspect(target) && clear(target->state)))
                 && (focused() == target || (!isPaused && target == overlayTarget_ && overlayFocused_))
-                && target->field->window()->isActiveWindow() && !geometry(target).isEmpty();
+                && target->field->window()->isActiveWindow() && !geometry(target).isEmpty() && viewCurrent(target, data);
             if (!valid) hideOverlay();
             else {
                 if (!card_ || overlayTarget_ != target) { hideOverlay(); createOverlay(target); }
                 if (overlayRevision_ != integer(data, "revision", 0)) pendingResume_ = false;
-                overlayView_ = view; overlayAuthority_ = basis;
+                overlayView_ = view; overlayAuthority_ = basis; overlayGeneration_ = data.value("generation");
+                if (focused() == target && sessionProvider(target->field)) overlaySourceProvider_ = target->provider;
+                exit_->setText(view.value("sessionShortcuts").toObject().value("exitHint").toString());
                 overlayUntil_ = until; overlayRevision_ = integer(data, "revision", 0);
-                const bool editing = !isPaused && presentation.value("editorOwnsText").toBool();
+                const bool editing = !isPaused && presentation.value("editorOwnsText").toBool()
+                    && view.value("viewContext").toObject().value("canEdit").toBool();
                 const QString text = isPaused ? QString() : view.value("text").toString();
                 {
                     QScopedValueRollback<bool> setting(settingText_, true);
@@ -1255,20 +1351,27 @@ private:
                 card_->show(); card_->raise(); syncOverlay();
             }
         } else if (op == "overlay-renew") {
+            if (!sessionApplied() || data.value("generation") != shortcutConfiguration_.value("generation"))
+                return {{"visible", false}, {"editing", false}};
             const qint64 until = integer(data, "expiresAtMs", 0), current = now();
-            if (target == overlayTarget_ && overlayActive() && until >= current && until - current <= 1000
+            if (target == overlayTarget_ && overlayActive() && sessionApplied()
+                && data.value("generation") == shortcutConfiguration_.value("generation")
+                && data.value("generation") == overlayGeneration_ && until >= current && until - current <= 1000
                 && metadataMatches(target, data.value("authority").toObject()) && !geometry(target).isEmpty()
-                && (!paused() || pauseCurrent(target, data.value("authority").toObject()))) {
+                && (!paused() || pauseCurrent(target, data.value("authority").toObject()))
+                && data.value("generation") == shortcutConfiguration_.value("generation")
+                && data.value("generation") == overlayGeneration_) {
                 overlayUntil_ = until;
                 overlayAuthority_ = data.value("authority").toObject();
             }
             else hideOverlay();
         } else if (op == "overlay-edit") {
-            if (target == overlayTarget_ && overlayActive() && pendingEdit_ && data.value("allowed").toBool()
+            if (!overlayCurrent(data)) return {{"visible", overlayActive()}, {"editing", editor_ && !editor_->isReadOnly()}};
+            if (target == overlayTarget_ && overlayActive() && overlayCurrent(data) && pendingEdit_ && data.value("allowed").toBool()
                 && overlayView_.value("state").toString() == "EditingTranslation" && !editor_->isReadOnly()) editor_->setFocus();
             pendingEdit_ = false;
             syncOverlay();
-        } else if (op == "overlay-resume" && target == overlayTarget_ && overlayActive() && !paused()) {
+        } else if (op == "overlay-resume" && target == overlayTarget_ && overlayActive() && overlayCurrent(data) && !paused()) {
             editor_->setReadOnly(false); editor_->setFocusPolicy(Qt::StrongFocus); editor_->setFocus(); syncOverlay();
         }
         return {{"visible", overlayActive()}, {"editing", editor_ && !editor_->isReadOnly()}};
@@ -1276,9 +1379,20 @@ private:
     bool eventFilter(QObject *object, QEvent *event) override {
         if (!onThread()) return false;
         if (editor_ && (object == editor_ || object == editor_->viewport())) {
+            if (object == editor_ && event->type() == QEvent::DynamicPropertyChange
+                && static_cast<QDynamicPropertyChangeEvent *>(event)->propertyName() == ProviderProperty
+                && editor_->property(ProviderProperty).value<QObject *>() != overlaySourceProvider_) {
+                // A lost/replaced editor route cannot revive from a later property
+                // restore. Only a newly verified source route can authorize it again.
+                overlaySourceProvider_ = nullptr;
+                clearPermit();
+            }
             if (event->type() == QEvent::MouseButtonPress && editor_->isReadOnly() && overlayActive()) {
-                if (!paused() && overlayView_.value("editable").toBool() && !pendingEdit_
-                    && overlayTarget_ && inspect(overlayTarget_) && clear(overlayTarget_->state)) {
+                if (!paused() && sessionCurrent(overlayGeneration_)
+                    && overlayView_.value("viewContext").toObject().value("canEdit").toBool()
+                    && overlayView_.value("editable").toBool() && !pendingEdit_
+                    && overlayTarget_ && inspect(overlayTarget_) && clear(overlayTarget_->state)
+                    && sessionCurrent(overlayGeneration_) && sessionProvider(overlayTarget_->field)) {
                     pendingEdit_ = true; ui("beginEdit"); return true;
                 }
             }
@@ -1318,10 +1432,12 @@ private:
         }
         return false; // Ordinary Qt/Fcitx input is never replayed or swallowed here.
     }
-    void returnSource(Target *target, const QJsonObject &basis, qint64 id) {
+    void returnSource(Target *target, const QJsonObject &basis, const QJsonValue &bindingGeneration, qint64 id) {
+        if (!sessionCurrent(bindingGeneration)) { respond(id, QJsonObject{{"returned", false}}); return; }
         clearPermit();
-        const bool allowed = target && target == overlayTarget_ && overlayActive() && overlayFocused_
-            && metadataMatches(target, basis) && target->input == quint64(integer(basis, "inputRevision", 0))
+        const bool allowed = sessionCurrent(bindingGeneration) && overlayGeneration_ == bindingGeneration
+            && target && target == overlayTarget_ && overlayActive() && overlayFocused_
+            && sessionBindings(target).value("editorReady").toBool() && metadataMatches(target, basis) && target->input == quint64(integer(basis, "inputRevision", 0))
             && target->content == quint64(integer(basis, "contentRevision", 0))
             && overlayView_.value("presentation").toObject().value("editorOwnsText").toBool();
         if (!allowed) { respond(id, QJsonObject{{"returned", false}}); return; }
@@ -1333,7 +1449,9 @@ private:
             || editor_ != editor || card_ != card || !overlayActive() || overlayTarget_ != target
             || !editor->hasFocus() || !metadataMatches(target, basis)
             || target->input != quint64(integer(basis, "inputRevision", 0))
-            || target->content != quint64(integer(basis, "contentRevision", 0))) {
+            || target->content != quint64(integer(basis, "contentRevision", 0))
+            || !sessionCurrent(bindingGeneration) || overlayGeneration_ != bindingGeneration || !sessionProvider(editor)
+            || !sessionBindings(target).value("editorReady").toBool()) {
             respond(id, QJsonObject{{"returned", false}}); return;
         }
         source->setFocus(Qt::OtherFocusReason);
@@ -1341,8 +1459,9 @@ private:
         const auto connection = connectionGeneration_;
         const qint64 until = now() + 450;
         auto *timer = new QTimer(this);
-        connect(timer, &QTimer::timeout, this, [this, timer, target, basis, id, until, generation, connection] {
+        connect(timer, &QTimer::timeout, this, [this, timer, target, basis, id, until, generation, connection, bindingGeneration] {
             const bool same = generation == returnGeneration_ && connection == connectionGeneration_
+                && sessionCurrent(bindingGeneration)
                 && target->field && focused() == target && metadataMatches(target, basis)
                 && target->input == quint64(integer(basis, "inputRevision", 0))
                 && target->content == quint64(integer(basis, "contentRevision", 0));
@@ -1352,7 +1471,7 @@ private:
                 && qint64(target->state.fieldGeneration) == integer(originalStamp, "field")
                 && qint64(target->state.inputEpoch) == integer(originalStamp, "input")
                 && target->input == quint64(integer(basis, "inputRevision", 0))
-                && local(target, target->state);
+                && local(target, target->state) && sessionCurrent(bindingGeneration);
             if (!done && same && now() < until) return;
             timer->stop(); timer->deleteLater();
             if (connection == connectionGeneration_) respond(id, QJsonObject{{"returned", done && now() <= until}});
@@ -1371,7 +1490,7 @@ private:
         else if (op == "describe") respondObject(id, describe(target));
         else if (op == "capture") respondObject(id, capture(target, data.value("authority").toObject()));
         else if (op == "direct") respond(id, write(target, data, true));
-        else if (op == "return") returnSource(target, data.value("authority").toObject(), id);
+        else if (op == "return") returnSource(target, data.value("authority").toObject(), data.value("generation"), id);
         else if (op == "quarantine") { ++authorizationGeneration_; if (target) target->quarantined = true; cancelShortcut(); clearPermit(); respond(id); }
         else if (op == "revoke") {
             ++authorizationGeneration_; clearPermit();
@@ -1379,16 +1498,20 @@ private:
             respond(id);
         }
         else if (op == "publish") {
+            if (!sessionCurrent(data.value("generation"))) { respond(id, QJsonObject{{"published", false}}); return; }
             ++authorizationGeneration_;
             clearPermit();
-            if (target && focused() == target && metadataMatches(target, data.value("authority").toObject())
-                && inspect(target) && clear(target->state)) publication_ = data;
+            if (target && sessionCurrent(data.value("generation")) && focused() == target
+                && metadataMatches(target, data.value("authority").toObject()) && inspect(target) && clear(target->state)
+                && sessionCurrent(data.value("generation")) && sessionProvider(target->field)) publication_ = data;
             const auto state = publicationState(target);
             respond(id, QJsonObject{{"published", !publication_.isEmpty()
                 && (data.value("permit").isNull() || data.value("permit").isUndefined() || state.value("ready").toBool())}});
             if (target) { auto report = state; report.insert("target", target->id); sendEvent("publication", report); }
             refreshHint();
         } else if (op == "configure-shortcuts") {
+            ++authorizationGeneration_; ++returnGeneration_;
+            clearPermit(); hideOverlay();
             if (data.value("generation") != shortcutConfiguration_.value("generation")) shortcutStartedAt_ = -1;
             shortcutConfiguration_ = data;
             cancelShortcut();
@@ -1402,7 +1525,11 @@ private:
                     else if (symbol >= 'a' && symbol <= 'z') keys.append(quint32(symbol - 'a' + 'A'));
                 }
             }
-            qApp->setProperty("typelay.fcitx.qt.control-keys.v1", keys);
+            if (sessionCurrent(data.value("generation"))) {
+                keys.append(sessionSymbol(sessionKey(data.value("accept"), true)));
+                keys.append(sessionSymbol(sessionKey(data.value("exit"), false)));
+            }
+            qApp->setProperty(TypeLayFcitxQtControlKeysPropertyV1, keys);
             respond(id);
         } else if (op == "publish-shortcut") {
             shortcutAuthority_ = {};
@@ -1527,12 +1654,14 @@ private:
     bool dispatching_ = false, handlingKey_ = false, advancingShortcut_ = false;
     QPointer<QFrame> card_;
     QPointer<QPlainTextEdit> editor_;
+    QPointer<QObject> overlaySourceProvider_;
     QPointer<QLabel> hint_, status_;
-    QPointer<QPushButton> language_, swap_, resume_;
+    QPointer<QPushButton> language_, swap_, resume_, exit_;
     QPointer<QButtonGroup> sourceLanguages_, targetLanguages_;
     QPointer<QWidget> footer_, menu_;
     Target *overlayTarget_ = nullptr;
     qint64 overlayUntil_ = 0, overlayRevision_ = 0;
+    QJsonValue overlayGeneration_;
     bool overlayFocused_ = false, composing_ = false, settingText_ = false, pendingEdit_ = false, expanded_ = false;
     bool pendingResume_ = false;
 };

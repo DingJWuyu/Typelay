@@ -6,7 +6,8 @@ namespace TypeLay.Linux;
 
 internal sealed record DesktopState(bool Ready = false, long UserEpoch = 0, long SourceUserEpoch = 0,
     long ForegroundEpoch = 0, long WindowEpoch = 0, long ContentEpoch = 0,
-    TargetId? Target = null, FocusMember Focus = FocusMember.Other, bool NativeReady = false);
+    TargetId? Target = null, FocusMember Focus = FocusMember.Other, bool NativeReady = false,
+    SessionShortcutAcknowledgement? SessionShortcuts = null);
 
 internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMonitor
 {
@@ -15,8 +16,14 @@ internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMoni
     public bool Available => link.Alive;
     public bool Ready => link.Alive && _state.Ready;
     public bool ShortcutsReady => Ready && _state.NativeReady;
-    public bool CanInterceptAcceptance => ShortcutsReady;
-    public string ShortcutStatus => ShortcutsReady ? "快捷键由当前应用的原生输入适配器处理" : "当前应用尚未连接原生输入适配器";
+    public bool CanInterceptAcceptance => ShortcutsReady
+        && _state.SessionShortcuts is { SourceReady: true } acknowledgement
+        && acknowledgement.Target == _state.Target && acknowledgement.Generation == CommandGeneration
+        && acknowledgement.Bindings == _sessionBindings;
+    private SessionShortcutBindings _sessionBindings = SessionShortcutBindings.Default;
+    public string ShortcutStatus => !ShortcutsReady ? "当前应用尚未连接原生输入适配器"
+        : _state.Target is not null && !CanInterceptAcceptance ? "当前输入框尚未确认接受与退出快捷键；译文仅预览"
+        : "快捷键由当前应用的原生输入适配器处理";
     public long UserEpoch => _state.UserEpoch;
     public long SourceUserEpoch => _state.SourceUserEpoch;
     public long ForegroundEpoch => _state.ForegroundEpoch;
@@ -57,7 +64,7 @@ internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMoni
     }
     public Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs)
     {
-        // Native Tab supplies a completed one-shot receipt in its input notice.
+        // Native acceptance supplies a completed one-shot receipt in its input notice.
         // This platform never executes an additional deferred acceptance write.
         return Task.FromResult(new WriteReceipt(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome));
     }
@@ -72,14 +79,19 @@ internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMoni
         link.Send("clear", context);
         return Task.CompletedTask;
     }
-    public void ConfigureShortcuts(bool enabled, string wake, string direct)
+    public void ConfigureShortcuts(bool enabled, string wake, string direct,
+        SessionShortcutBindings sessionBindings, bool sessionEnabled)
     {
         CommandGeneration = Guid.NewGuid();
+        _sessionBindings = sessionBindings;
         link.Send("shortcuts", new
         {
             enabled,
             wake,
             direct,
+            sessionEnabled,
+            accept = sessionBindings.Accept,
+            exit = sessionBindings.Exit,
             generation = CommandGeneration
         });
     }

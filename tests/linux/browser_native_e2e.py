@@ -187,8 +187,21 @@ class NativeBrowserContract(unittest.TestCase):
                             self.sequence = 0
                             # Browser callbacks continue in another process while
                             # this test's socket receives the native-host reply.
+                            legacy = self.focused_description(connection)
+                            self.assertFalse(legacy["sessionBindings"]["sourceReady"])
+                            self.configure_session(connection)
                             original = self.focused_description(connection)
                             self.assertIsNotNone(original)
+                            self.assertEqual(
+                                original["sessionBindings"],
+                                {
+                                    "generation": "native-default",
+                                    "accept": "Tab",
+                                    "exit": "Esc",
+                                    "sourceReady": True,
+                                    "editorReady": True,
+                                },
+                            )
                             snapshot = self.request(
                                 connection,
                                 "capture",
@@ -208,6 +221,9 @@ class NativeBrowserContract(unittest.TestCase):
                             )
                             self.assertIsNotNone(current)
                             self.assertNotEqual(current["target"], original["target"])
+                            self.assertEqual(
+                                current["sessionBindings"], original["sessionBindings"]
+                            )
                             snapshot = self.request(
                                 connection,
                                 "capture",
@@ -329,6 +345,24 @@ class NativeBrowserContract(unittest.TestCase):
         if not 0 < length <= 256 * 1024:
             raise ValueError("native-frame-size")
         return json.loads(exact(length))
+
+    @staticmethod
+    def configure_session(connection):
+        # Configuration broadcasts deliberately have no process-wide ACK. The
+        # next routed describe/capture confirms each actual document separately.
+        packet = json.dumps(
+            {
+                "op": "configure-shortcuts",
+                "data": {
+                    "generation": "native-default",
+                    "enabled": False,
+                    "sessionEnabled": True,
+                    "accept": "Tab",
+                    "exit": "Esc",
+                },
+            }
+        ).encode()
+        connection.sendall(struct.pack("<I", len(packet)) + packet)
 
     def request(self, connection, operation, data=None):
         self.sequence += 1

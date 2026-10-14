@@ -308,6 +308,7 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           python tests/linux/wire.py -v
+          python tests/linux/session_host_protocol.py --host artifacts/linux/package/app/TypeLay.Linux -v
           Xvfb :99 -screen 0 1280x960x24 -nolisten tcp &
           export DISPLAY=:99
           python tests/linux/native_e2e.py --gtk-refusal --native artifacts/linux/native --output artifacts/linux/nested
@@ -427,7 +428,7 @@ jobs:
           export XDG_CONFIG_HOME="$PWD/artifacts/linux/gtk-desktop-config"
           export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
-          python tests/linux/native_e2e.py --desktop --desktop-scope gtk --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
+          python tests/linux/native_e2e.py --desktop --desktop-scope gtk --gtk-session-bindings --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
       - name: Exercise cooperative GTK4 Entry with the real local model
         if: ${{ needs.scope.outputs.settings != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome == 'success' }}
         run: |
@@ -435,7 +436,7 @@ jobs:
           export XDG_CONFIG_HOME="$PWD/artifacts/linux/gtk4-desktop-config"
           export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
-          python tests/linux/native_e2e.py --desktop --desktop-scope gtk4 --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk4-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
+          python tests/linux/native_e2e.py --desktop --desktop-scope gtk4 --gtk-session-bindings --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk4-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
       - name: Exercise relocated Qt6 widgets with the real local model
         if: ${{ needs.scope.outputs.settings != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.qt.outcome == 'success' && steps.fcitx-package.outcome == 'success' }}
         run: |

@@ -15,6 +15,7 @@ public sealed class SessionController : IDisposable
     private long _lastCommandSequence, _commandSequence, _commandFeedbackRevision, _pendingDirectFeedbackRevision, _pendingDirectSequence;
     private Guid _lastCommandGeneration, _pendingDirectCommandGeneration;
     private long _configurationRevision;
+    private SessionShortcutAcknowledgement? _sessionShortcuts;
     private readonly ISessionLoop _loop;
     private long _generation, _nextCapture, _permitUntil, _editTransitionUntil, _retryBrokerAt;
     private bool _capturing, _writing, _translationRunning, _startingBroker, _returningToSource, _disposed;
@@ -56,8 +57,8 @@ public sealed class SessionController : IDisposable
         _loop.Tick += Tick;
         overlay.BeginEditing = BeginEdit;
         overlay.DraftChanged = text => _session.ChangeDraft(text);
-        overlay.ReturnRequested = () => _ = ReturnFromEditor();
-        overlay.EscapeRequested = () => _ = Escape();
+        overlay.ReturnRequested = token => { if (ViewCommandIsCurrent(token, true)) _ = ReturnFromEditor(); };
+        overlay.EscapeRequested = token => { if (ViewCommandIsCurrent(token, false)) _ = Escape(); };
         overlay.RegenerateRequested = () => _ = Regenerate();
         overlay.ExcludeRequested = () =>
         {
@@ -105,6 +106,7 @@ public sealed class SessionController : IDisposable
     private void Configure()
     {
         InvalidatePauseAnchor();
+        _sessionShortcuts = null;
         _nextCapture = 0;
         _configurationRevision++;
         _commandFeedbackRevision++;
@@ -126,7 +128,7 @@ public sealed class SessionController : IDisposable
         _activation.SetMode(_settings.Value.Mode);
         _activation.End();
         _hook.ConfigureShortcuts(_settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand,
-            _settings.Value.WakeShortcut, _settings.Value.DirectShortcut);
+            _settings.Value.WakeShortcut, _settings.Value.DirectShortcut, CurrentSessionBindings, _settings.Value.Enabled);
         ClearBrokerSnapshot();
         _generation++;
         _hook.Revoke();
@@ -145,7 +147,10 @@ public sealed class SessionController : IDisposable
                 CompleteNativeWrite(notice);
             else if (notice?.Kind is "wake" or "direct")
                 Shortcut(notice);
-            else if (notice?.Kind == "escape")
+            else if (notice?.Kind == "escape" && notice.CommandGeneration == _hook.CommandGeneration
+                && notice.SessionRevision == _generation && notice.UserEpoch == _hook.UserEpoch
+                && notice.ForegroundEpoch == _hook.ForegroundEpoch
+                && notice.Target is { } target && _session.Current?.Target == target && SessionBindingsReady(target, false))
                 _ = Escape();
             else if (notice?.Permit is not null)
                 _ = Accept(notice);
@@ -295,9 +300,19 @@ public sealed class SessionController : IDisposable
             Render();
         }
     }
+    private SessionShortcutBindings CurrentSessionBindings =>
+        SessionShortcutBindings.Restore(_settings.Value.AcceptShortcut, _settings.Value.ExitShortcut);
+    private bool SessionBindingsReady(TargetId target, bool editor) => _settings.Value.Enabled
+        && _hook.Ready && _broker.Available && _sessionShortcuts is { SourceReady: true } acknowledgement
+        && acknowledgement.Target == target && acknowledgement.Generation == _hook.CommandGeneration
+        && acknowledgement.Bindings == CurrentSessionBindings && (!editor || acknowledgement.EditorReady);
+    private bool ViewCommandIsCurrent(SessionViewToken token, bool editor) => !_disposed
+        && token.Revision == _generation && token.CommandGeneration == _hook.CommandGeneration
+        && _session.Current?.Target == token.Target && SessionBindingsReady(token.Target, editor);
     private InputContext Context() => new(_hook.UserEpoch, _hook.ForegroundEpoch,
         _hook.SourceUserEpoch, _session.Current?.Target, _settings.Value.Excluded,
-        _settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand);
+        _settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand,
+        new(_hook.CommandGeneration, CurrentSessionBindings));
     private bool PauseAnchorIsCurrent(long now) => _pauseAnchor is { IsUsable: true } anchor
         && _pauseWindowEpoch == _hook.WindowEpoch && _pauseForegroundEpoch == _hook.ForegroundEpoch
         && anchor.FocusEpoch == _hook.ForegroundEpoch && _hook.GetFocus(anchor.Target) == FocusMember.Source
@@ -451,6 +466,9 @@ public sealed class SessionController : IDisposable
                 return;
             if (result.Focus == FocusMember.Overlay)
                 _editTransitionUntil = 0;
+            _sessionShortcuts = result.SessionShortcuts is { } acknowledgement
+                && acknowledgement.Target == snapshot.Target && acknowledgement.Generation == _hook.CommandGeneration
+                && acknowledgement.Bindings == CurrentSessionBindings ? acknowledgement : null;
             LastApplication = result.Application;
             bool active = _activation.Observe(snapshot.Target, result.Focus);
             if (!active)
@@ -461,11 +479,19 @@ public sealed class SessionController : IDisposable
                     _session.LeaveFamily();
                 }
                 _permitUntil = 0;
-                _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, false), null);
+                _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, false, _hook.CommandGeneration, _generation), null);
                 if (result.Focus == FocusMember.Source)
                     _hook.PublishShortcut(new(snapshot, contentEpoch, request.ForegroundEpoch));
                 _overlay.HideQuietly();
                 return;
+            }
+            if (_session.Current is { } previous && previous.Target != snapshot.Target)
+            {
+                // A pending capture can cross fields before Tick observes focus
+                // leaving. Retire old view tokens even if the user later returns.
+                _generation++;
+                _hook.Revoke();
+                _permitUntil = 0;
             }
             _session.Observe(snapshot, result.Focus, now);
             AcceptancePermit? permit = null;
@@ -473,7 +499,7 @@ public sealed class SessionController : IDisposable
             // must not starve preview capture while the user continues typing.
             bool inputUnchanged = result.UserEpoch == _hook.UserEpoch && result.ForegroundEpoch == _hook.ForegroundEpoch;
             if (inputUnchanged && result.Focus == FocusMember.Source && _model.Ready && _settings.Value.ExperimentalWriteback
-                && snapshot.WriteSupported && _hook.CanInterceptAcceptance)
+                && snapshot.WriteSupported && _hook.CanInterceptAcceptance && SessionBindingsReady(snapshot.Target, false))
             {
                 var context = new AcceptanceContext(FocusMember.Source, false, false, snapshot.Ime,
                     snapshot.InputEpoch, snapshot.FocusEpoch);
@@ -483,8 +509,9 @@ public sealed class SessionController : IDisposable
                         snapshot.ObservedAtMs + Limits.PermitMaxAgeMs);
             }
             _permitUntil = permit?.ExpiresAtMs ?? 0;
-            bool escape = _session.State is not (SessionState.NoSession or SessionState.Paused or SessionState.OutcomeUnknown);
-            _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, escape), permit);
+            bool escape = SessionBindingsReady(snapshot.Target, false)
+                && _session.State is not (SessionState.NoSession or SessionState.Paused or SessionState.OutcomeUnknown);
+            _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, escape, _hook.CommandGeneration, _generation), permit);
             if (result.Focus == FocusMember.Source)
                 _hook.PublishShortcut(new(snapshot, contentEpoch, request.ForegroundEpoch));
             Render();
@@ -701,12 +728,12 @@ public sealed class SessionController : IDisposable
         }
         finally { _translationRunning = false; }
     }
-    private bool BeginEdit()
+    private bool BeginEdit(SessionViewToken token)
     {
         var source = _session.Current;
         // Entering the local editor performs no source mutation. Freshness is required
         // again after returning to the source, before an acceptance permit is issued.
-        if (source is null || source.Ime != ImeState.Clear)
+        if (source is null || source.Ime != ImeState.Clear || !ViewCommandIsCurrent(token, true))
             return false;
         if (!_session.BeginEdit())
             return false;
@@ -777,7 +804,9 @@ public sealed class SessionController : IDisposable
     {
         _hook.Revoke();
         _permitUntil = 0;
-        if (notice.Permit is not { } permit || _loop.NowMs - notice.AcceptedAtMs > Limits.WriteExecutionMaxAgeMs
+        if (notice.Permit is not { } permit || notice.CommandGeneration != _hook.CommandGeneration
+            || !SessionBindingsReady(permit.Plan.Expected.Target, false)
+            || _loop.NowMs - notice.AcceptedAtMs > Limits.WriteExecutionMaxAgeMs
             || notice.UserEpoch != _hook.UserEpoch || notice.ForegroundEpoch != _hook.ForegroundEpoch)
         {
             Render();
@@ -853,6 +882,7 @@ public sealed class SessionController : IDisposable
         if (_session.Current is not null)
             Trace(reason);
         _activation.End();
+        _sessionShortcuts = null;
         InvalidatePauseAnchor();
         ClearBrokerSnapshot();
         _generation++;
@@ -889,7 +919,12 @@ public sealed class SessionController : IDisposable
         }
         string? status = _session.State == SessionState.Translating && !_model.Ready ? "正在准备翻译"
             : _session.State == SessionState.TranslationFailed ? _statusOverride : null;
-        _overlay.Render(_session, _settings.Value, _permitUntil >= _loop.NowMs && _permitUntil != 0, status);
+        // The token orders even a read-only preview; it is not an acknowledgement
+        // or permission. Every action separately checks the target-bound ACK.
+        SessionViewContext? context = _session.Current is { } source
+            ? new(new(source.Target, _hook.CommandGeneration, _generation), CurrentSessionBindings,
+                SessionBindingsReady(source.Target, true)) : null;
+        _overlay.Render(_session, _settings.Value, _permitUntil >= _loop.NowMs && _permitUntil != 0, status, context);
     }
     // Opt-in local diagnostics contain counts and state only, never field text,
     // labels, window titles, exception messages, source or translated content.
@@ -934,7 +969,7 @@ public sealed class SessionController : IDisposable
         _loop.Stop();
         _loop.Tick -= Tick;
         _pendingDirect = null;
-        _hook.ConfigureShortcuts(false, _settings.Value.WakeShortcut, _settings.Value.DirectShortcut);
+        _hook.ConfigureShortcuts(false, _settings.Value.WakeShortcut, _settings.Value.DirectShortcut, CurrentSessionBindings, false);
         _hook.Dispose();
         _broker.Dispose();
         _settings.Changed -= Configure;

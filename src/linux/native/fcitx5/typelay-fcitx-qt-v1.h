@@ -48,6 +48,17 @@ public:
 #define TypeLayFcitxQtV1_iid "org.typelay.FcitxQtProvider/1.0"
 Q_DECLARE_INTERFACE(TypeLayFcitxQtV1, TypeLayFcitxQtV1_iid)
 
+// Additive capability: old V1 providers do not advertise dynamic key ownership.
+// This checks the actual provider/field binding and installed XKB key list without
+// IPC or event iteration. It never establishes an IME proof or grants a permit.
+class TypeLayFcitxQtControlKeysV1 {
+public:
+    virtual ~TypeLayFcitxQtControlKeysV1() = default;
+    virtual bool supportsControlKeys(QObject *actual, quint32 accept, quint32 exit) const = 0;
+};
+#define TypeLayFcitxQtControlKeysV1_iid "org.typelay.FcitxQtControlKeys/1.0"
+Q_DECLARE_INTERFACE(TypeLayFcitxQtControlKeysV1, TypeLayFcitxQtControlKeysV1_iid)
+
 // Called on the UI thread before the original IM key request, only for control
 // keys. True means the consumer synchronously authorized and consumed this key.
 // False leaves original input processing intact. Never retain the event pointer.

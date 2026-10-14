@@ -16,9 +16,14 @@ public interface ISessionLoop
     void Stop();
 }
 
+// Commands return the identity actually displayed, never a freshly substituted
+// token. Revision belongs to the controller's session lifecycle, not repainting.
+public sealed record SessionViewToken(TargetId Target, Guid CommandGeneration, long Revision);
+public sealed record SessionViewContext(SessionViewToken Token, SessionShortcutBindings Bindings, bool CanEdit);
+
 public interface ISessionView
 {
-    Func<bool>? BeginEditing
+    Func<SessionViewToken, bool>? BeginEditing
     {
         get; set;
     }
@@ -26,11 +31,11 @@ public interface ISessionView
     {
         get; set;
     }
-    Action? ReturnRequested
+    Action<SessionViewToken>? ReturnRequested
     {
         get; set;
     }
-    Action? EscapeRequested
+    Action<SessionViewToken>? EscapeRequested
     {
         get; set;
     }
@@ -53,7 +58,7 @@ public interface ISessionView
         get;
     }
     void Configure(UserSettings settings);
-    void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null);
+    void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null, SessionViewContext? context = null);
     void RenderPaused(PauseAnchor anchor, long revision);
     void HideQuietly();
     void ResumeEditor();

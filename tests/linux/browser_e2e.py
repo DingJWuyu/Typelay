@@ -33,7 +33,32 @@ TRANSPORT = """(() => {
   })}};
   window.fixtureMessages = output;
   window.fixtureHostClock = () => ({wallTimeMs: Date.now(), boottimeMs: Math.floor(performance.now()) + 1000000});
+  window.fixtureBindings = {generation: 'browser-default', sessionEnabled: true,
+    enabled: false, accept: 'Tab', exit: 'Esc'};
+  let revision = 0;
+  // Test host builders emit the current protocol. Raw commands below retain
+  // exact missing/stale fields for fail-closed compatibility regression cases.
   window.fixtureCommand = message => {
+    const data = message.data ||= {};
+    if (message.op === 'configure-shortcuts') window.fixtureBindings = {...data};
+    const bindings = window.fixtureBindings;
+    if (['publish', 'direct', 'return', 'overlay-render', 'overlay-renew',
+      'overlay-edit', 'overlay-resume'].includes(message.op)) data.generation ??= bindings.generation;
+    if (message.op === 'overlay-render') revision = Math.max(revision, data.revision || 0);
+    if (message.op === 'overlay-render' && data.view?.state !== 'Paused') {
+      const view = data.view;
+      view.viewContext ??= {token: {target: {backend: 'linux-browser', value: data.target, lifetime: 'test'},
+        commandGeneration: data.generation, revision: data.revision},
+        bindings: {accept: bindings.accept, exit: bindings.exit}, canEdit: !!view.editable};
+      view.sessionShortcuts ??= {acceptLabel: '接受译文', acceptKey: bindings.accept,
+        acceptHint: `${bindings.accept} 接受译文`, passThroughHint: `${bindings.accept} 交还应用`,
+        returnHint: `${bindings.accept} 返回原输入框`, exitLabel: '退出当前翻译',
+        exitKey: bindings.exit, exitHint: `${bindings.exit} 退出当前翻译`};
+    }
+    if (['overlay-edit', 'overlay-resume'].includes(message.op)) data.revision ??= revision;
+    return window.fixtureRawCommand(message);
+  };
+  window.fixtureRawCommand = message => {
     message.clock = fixtureHostClock();
     if (message.data?.permit) message.data.permit.expiresAtMs = message.clock.boottimeMs + 90;
     if (message.op === 'direct') message.data.expiresAtMs = message.clock.boottimeMs + 240;
@@ -99,6 +124,16 @@ class BrowserContract(unittest.TestCase):
         )
         self.page.goto("http://127.0.0.1/fixture")
         self.sequence = 0
+        self.command(
+            "configure-shortcuts",
+            {
+                "generation": "browser-default",
+                "sessionEnabled": True,
+                "enabled": False,
+                "accept": "Tab",
+                "exit": "Esc",
+            },
+        )
         self.page.locator("#source").focus()
 
     def command(self, operation, data=None):
@@ -168,6 +203,252 @@ class BrowserContract(unittest.TestCase):
             "window.fixtureMessages.filter(message => message.event === 'accepted')"
         )
 
+    def test_document_applies_session_bindings_independently_of_on_demand_mode(self):
+        self.command(
+            "configure-shortcuts",
+            {
+                "generation": "session-f1-f24",
+                "enabled": False,
+                "sessionEnabled": True,
+                "accept": "F1",
+                "exit": "F24",
+            },
+        )
+        snapshot = self.type_source()
+        self.assertEqual(
+            snapshot.get("sessionBindings"),
+            {
+                "generation": "session-f1-f24",
+                "accept": "F1",
+                "exit": "F24",
+                "sourceReady": True,
+                "editorReady": True,
+            },
+        )
+        self.command(
+            "publish",
+            {
+                "target": snapshot["target"],
+                "authority": snapshot["authority"],
+                "generation": "session-f1-f24",
+                "permit": {"plan": self.plan(snapshot)},
+            },
+        )
+        self.page.keyboard.press("F1")
+        self.assertEqual(self.page.locator("#source").input_value(), "你好")
+        self.assertEqual(len(self.accepted()), 1)
+
+    def test_legacy_invalid_and_disabled_configuration_remain_read_only(self):
+        for config in (
+            {"enabled": True, "generation": "legacy"},
+            {
+                "enabled": False,
+                "sessionEnabled": True,
+                "generation": "array",
+                "accept": ["F1"],
+                "exit": ["F24"],
+            },
+            {
+                "enabled": False,
+                "sessionEnabled": True,
+                "generation": "same",
+                "accept": "F7",
+                "exit": "F7",
+            },
+            {
+                "enabled": False,
+                "sessionEnabled": True,
+                "generation": "invalid",
+                "accept": "F25",
+                "exit": "Esc",
+            },
+            {
+                "enabled": True,
+                "sessionEnabled": False,
+                "generation": "disabled",
+                "accept": "Tab",
+                "exit": "Esc",
+            },
+        ):
+            with self.subTest(config=config):
+                self.command("configure-shortcuts", config)
+                self.page.locator("#source").focus()
+                self.page.keyboard.press("Control+A")
+                snapshot = self.type_source()
+                self.assertFalse(snapshot["writeSupported"])
+                self.assertFalse(snapshot["sessionBindings"]["sourceReady"])
+                self.assertFalse(snapshot["sessionBindings"]["editorReady"])
+                self.publish(snapshot, self.plan(snapshot))
+                self.page.keyboard.press("Tab")
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.accepted(), [])
+
+    def test_missing_and_old_generation_cannot_publish_or_write(self):
+        snapshot = self.type_source()
+        self.publish(snapshot, self.plan(snapshot))
+        self.command(
+            "configure-shortcuts",
+            {
+                "generation": "next",
+                "enabled": True,
+                "sessionEnabled": True,
+                "accept": "F12",
+                "exit": "F24",
+            },
+        )
+        self.page.keyboard.press("Tab")
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.page.locator("#source").focus()
+        snapshot = self.capture()
+        for generation in (None, "browser-default"):
+            with self.subTest(generation=generation):
+                result = self.page.evaluate(
+                    """data => fixtureRawCommand({id: 5001,
+                  op: 'publish', data})""",
+                    {
+                        "generation": generation,
+                        "target": snapshot["target"],
+                        "authority": snapshot["authority"],
+                        "permit": {"plan": self.plan(snapshot)},
+                    },
+                )
+                self.assertFalse(result["published"])
+                receipt = self.page.evaluate(
+                    """data => fixtureRawCommand({id: 5003,
+                  op: 'direct', data})""",
+                    {
+                        "generation": generation,
+                        "target": snapshot["target"],
+                        "authority": snapshot["authority"],
+                        "approved": snapshot["authority"],
+                        "plan": self.plan(snapshot),
+                    },
+                )
+                self.assertEqual(
+                    receipt, {"status": "RejectedBeforeMutation", "reason": "EpochChanged"}
+                )
+        self.page.keyboard.press("F12")
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
+    def test_already_applied_receipt_survives_configuration_in_input_callback(self):
+        snapshot = self.type_source()
+        self.publish(snapshot, self.plan(snapshot))
+        self.page.evaluate("""document.querySelector('#source').addEventListener('input', () => {
+          fixtureCommand({id: 5002, op: 'configure-shortcuts', data: {
+            generation: 'configured-in-input', enabled: false, sessionEnabled: true,
+            accept: 'F12', exit: 'F24'}});
+        }, {once: true});""")
+        self.page.keyboard.press("Tab")
+        self.assertEqual(self.page.locator("#source").input_value(), "你好")
+        self.assertEqual(len(self.accepted()), 1)
+        self.assertEqual(self.accepted()[0]["data"]["receipt"]["status"], "Verified")
+        self.assertEqual(
+            self.command("describe")["sessionBindings"]["generation"], "configured-in-input"
+        )
+
+    def test_preheld_unbound_key_remains_unowned_after_configuration(self):
+        self.type_source()
+        self.page.keyboard.down("F7")
+        self.command(
+            "configure-shortcuts",
+            {
+                "generation": "held-f7",
+                "enabled": False,
+                "sessionEnabled": True,
+                "accept": "F7",
+                "exit": "F24",
+            },
+        )
+        snapshot = self.capture()
+        self.publish(snapshot, self.plan(snapshot))
+        self.page.keyboard.down("F7")
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+        self.page.keyboard.up("F7")
+        snapshot = self.capture()
+        self.publish(snapshot, self.plan(snapshot))
+        self.page.keyboard.press("F7")
+        self.assertEqual(self.page.locator("#source").input_value(), "你好")
+        self.assertEqual(len(self.accepted()), 1)
+
+    def test_old_consumed_release_keeps_ownership_after_configuration_and_hide(self):
+        self.command(
+            "configure-shortcuts",
+            {
+                "generation": "f12",
+                "enabled": False,
+                "sessionEnabled": True,
+                "accept": "F12",
+                "exit": "F24",
+            },
+        )
+        snapshot = self.type_source()
+        self.page.evaluate("""window.fixtureF12Releases = 0;
+          window.addEventListener('keyup', event => {
+            if (event.code === 'F12') window.fixtureF12Releases++;
+          });""")
+        self.publish(snapshot, self.plan(snapshot))
+        self.page.keyboard.down("F12")
+        self.assertEqual(len(self.accepted()), 1)
+        self.command(
+            "configure-shortcuts",
+            {
+                "generation": "f1",
+                "enabled": True,
+                "sessionEnabled": True,
+                "accept": "F1",
+                "exit": "F12",
+            },
+        )
+        self.command("overlay-hide")
+        self.page.keyboard.down("Control")
+        self.page.keyboard.up("F12")
+        self.page.keyboard.up("Control")
+        self.assertEqual(self.page.evaluate("fixtureF12Releases"), 0)
+        self.assertEqual(len(self.accepted()), 1)
+
+    def test_function_exit_echoes_the_displayed_publication_generation_and_revision(self):
+        self.command(
+            "configure-shortcuts",
+            {
+                "generation": "f12-exit",
+                "enabled": False,
+                "sessionEnabled": True,
+                "accept": "F1",
+                "exit": "F12",
+            },
+        )
+        snapshot = self.type_source()
+        self.command(
+            "publish",
+            {
+                "target": snapshot["target"],
+                "authority": snapshot["authority"],
+                "lease": {
+                    "escapeAllowed": True,
+                    "sessionRevision": 72,
+                    "commandGeneration": "f12-exit",
+                    "source": {"observedAtMs": snapshot["observedAtMs"]},
+                },
+            },
+        )
+        self.page.keyboard.press("F12")
+        escapes = self.page.evaluate(
+            "fixtureMessages.filter(message => message.event === 'escape')"
+        )
+        self.assertEqual(
+            [item["data"] for item in escapes],
+            [
+                {
+                    "target": snapshot["target"],
+                    "generation": "f12-exit",
+                    "sessionRevision": 72,
+                }
+            ],
+        )
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+
     def test_unknown_ime_never_reads_body_then_trusted_input_allows_acceptance(self):
         self.assertIsNone(self.capture())
         snapshot = self.type_source()
@@ -206,7 +487,7 @@ class BrowserContract(unittest.TestCase):
         template = self.plan({"target": "", "text": "", "selection": {}, "observedAtMs": 0})
         result = self.page.evaluate(
             """plan => {
-          fixtureCommand({id: 970, op: 'configure-shortcuts', data: {enabled: false, trace: true}});
+          fixtureCommand({id: 970, op: 'configure-shortcuts', data: {...fixtureBindings, enabled: false, trace: true}});
           const description = fixtureCommand({id: 971, op: 'describe'});
           const snapshot = fixtureCommand({id: 972, op: 'capture', data: {
             target: description.target, authority: description.authority, traceRound: 53}});
@@ -552,6 +833,32 @@ class BrowserContract(unittest.TestCase):
         ]
         self.assertEqual(len(buttons), 1)
         return cdp, buttons[0]["backendDOMNodeId"]
+
+    def test_disabled_session_renders_and_renews_metadata_only_paused_capsule(self):
+        self.command(
+            "configure-shortcuts",
+            {
+                "generation": "paused-disabled",
+                "sessionEnabled": False,
+                "enabled": False,
+                "accept": "F24",
+                "exit": "F1",
+            },
+        )
+        self.page.keyboard.insert_text("Hello")
+        result = self.render_paused()
+        self.assertTrue(result["rendered"]["visible"])
+        self.assertFalse(result["source"]["sessionBindings"]["sourceReady"])
+        self.assertNotIn("text", result["source"])
+        description = self.command("describe")
+        self.command(
+            "overlay-renew",
+            {"target": description["target"], "authority": description["authority"]},
+        )
+        self.paused_button()
+        self.page.keyboard.press("F24")
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
 
     def test_paused_metadata_only_capsule_resumes_once_without_moving_focus(self):
         self.page.keyboard.insert_text("Hello")
@@ -913,13 +1220,33 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.accepted(), [])
 
     def test_editor_draft_survives_render_and_two_separate_tabs_return_then_accept(self):
+        self.check_editor_draft_return_then_accept("Tab", "Esc")
+
+    def test_f24_editor_return_requires_release_and_fresh_second_keydown(self):
+        self.check_editor_draft_return_then_accept("F24", "F1")
+
+    def check_editor_draft_return_then_accept(self, accept, exit_key):
+        self.command(
+            "configure-shortcuts",
+            {
+                "generation": "editor-" + accept,
+                "enabled": False,
+                "sessionEnabled": True,
+                "accept": accept,
+                "exit": exit_key,
+            },
+        )
         self.page.locator("#source").evaluate(
             "element => {element.style.marginTop = '220px'; element.style.width = '480px';}"
         )
         snapshot = self.type_source()
         revision = snapshot["authority"]["inputRevision"]
         view = {
-            "presentation": {"visible": True, "editorOwnsText": False, "tabHint": "Tab 接受译文"},
+            "presentation": {
+                "visible": True,
+                "editorOwnsText": False,
+                "tabHint": f"{accept} 接受译文",
+            },
             "text": "Initial candidate",
             "editable": True,
             "state": "ValidTranslation",
@@ -939,8 +1266,8 @@ class BrowserContract(unittest.TestCase):
         # publication. Read the rendered accessible text, including closed shadow DOM.
         accessibility = self.context.new_cdp_session(self.page).send("Accessibility.getFullAXTree")
         names = [node.get("name", {}).get("value") for node in accessibility["nodes"]]
-        self.assertIn("Tab 交还应用", names)
-        self.assertNotIn("Tab 接受译文", names)
+        self.assertIn(f"{accept} 交还应用", names)
+        self.assertNotIn(f"{accept} 接受译文", names)
         # The real pointer enters the closed-shadow editor; no test-only access
         # to its DOM, value or implementation is exposed by the adapter.
         box = self.page.locator("html > div").bounding_box()
@@ -960,12 +1287,24 @@ class BrowserContract(unittest.TestCase):
         view["text"] = "Stale remote candidate"
         data["revision"] = 3
         self.command("overlay-render", data)
+        stale = {**data, "generation": "obsolete-editor"}
+        self.assertFalse(self.command("overlay-render", stale)["visible"])
+        self.assertFalse(
+            self.command(
+                "return",
+                {
+                    "target": snapshot["target"],
+                    "authority": snapshot["authority"],
+                    "generation": "obsolete-editor",
+                },
+            )["returned"]
+        )
         self.page.keyboard.press("End")
         self.page.keyboard.insert_text("!")
         draft = self.page.evaluate("""window.fixtureMessages.findLast(message =>
           message.event === 'ui' && message.data.operation === 'draft').data.value""")
         self.assertEqual(draft, "Human draft!")
-        self.page.keyboard.press("Tab")
+        self.page.keyboard.down(accept)
         self.assertTrue(
             self.page.evaluate("""window.fixtureMessages.some(message =>
           message.event === 'ui' && message.data.operation === 'return')""")
@@ -986,7 +1325,13 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(returned["selection"], snapshot["selection"])
         self.assertEqual(returned["authority"]["inputRevision"], revision)
         self.publish(returned, self.plan(returned, draft))
-        self.page.keyboard.press("Tab")
+        self.page.keyboard.down(accept)
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+        self.page.keyboard.up(accept)
+        returned = self.capture()
+        self.publish(returned, self.plan(returned, draft))
+        self.page.keyboard.press(accept)
         self.assertEqual(self.page.locator("#source").input_value(), "Human draft!")
         self.assertEqual(len(self.accepted()), 1)
 

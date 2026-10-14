@@ -6,6 +6,7 @@ namespace TypeLay.Linux;
 
 internal static class Program
 {
+    private sealed record SettingsDraftRequest(ShortcutSettingsDraft Shortcuts, string[]? ExcludedApplications = null);
     private sealed record PlacementRequest(RectPx Input, RectPx Work, double Width, double Height, double Gap, double MinimumHeight);
     private sealed record ApplicationSupportRequest(ApplicationSupportFact[] Facts);
     public static int Main(string[] args)
@@ -63,10 +64,10 @@ internal static class Program
                     view.EditingComposition = value.GetBoolean();
                     break;
                 case "return":
-                    view.ReturnRequested?.Invoke();
+                    view.ReturnRequested?.Invoke(DesktopLink.Decode<SessionViewToken>(value));
                     break;
                 case "escape":
-                    view.EscapeRequested?.Invoke();
+                    view.EscapeRequested?.Invoke(DesktopLink.Decode<SessionViewToken>(value));
                     break;
                 case "regenerate":
                     view.RegenerateRequested?.Invoke();
@@ -102,9 +103,55 @@ internal static class Program
                 case "allowPauseField":
                     return !settings.Value.Enabled && FieldPolicy.Allows(DesktopLink.Decode<FieldMetadata>(value), settings.Value.Excluded);
                 case "beginEdit":
-                    return view.BeginEditing?.Invoke() ?? false;
+                    bool allowed = view.BeginEditing?.Invoke(DesktopLink.Decode<SessionViewToken>(value)) ?? false;
+                    return new
+                    {
+                        allowed,
+                        token = allowed ? view.Token : null
+                    };
                 case "settingsDraft":
                     return SettingsDraftPresentation.Create();
+                case "sessionShortcutSettings":
+                    return SettingsDraftPresentation.SessionShortcuts(
+                        SessionShortcutBindings.Restore(settings.Value.AcceptShortcut, settings.Value.ExitShortcut));
+                case "saveSettingsDraft":
+                    var draft = DesktopLink.Decode<SettingsDraftRequest>(value);
+                    if (!draft.Shortcuts.TryApply(settings.Value, out var updated, out var error))
+                        return new
+                        {
+                            saved = false,
+                            message = SettingsDraftPresentation.ShortcutErrorMessage(error)
+                        };
+                    if (draft.ExcludedApplications is { } exclusions)
+                    {
+                        if (exclusions.Length > 256 || exclusions.Any(app => string.IsNullOrWhiteSpace(app) || app.Length > 128))
+                            return new
+                            {
+                                saved = false,
+                                message = SettingsDraftPresentation.Create().InvalidMessage
+                            };
+                        updated = updated! with
+                        {
+                            ExcludedApplications = exclusions
+                        };
+                    }
+                    try
+                    {
+                        settings.Update(updated!);
+                        return new
+                        {
+                            saved = true,
+                            message = SettingsDraftPresentation.Create().SavedMessage
+                        };
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+                    {
+                        return new
+                        {
+                            saved = false,
+                            message = SettingsDraftPresentation.Create().InvalidMessage
+                        };
+                    }
                 case "onDemandPractice":
                     return OnDemandPracticePresentation.Create(settings.Value);
                 case "startOnDemandPractice":

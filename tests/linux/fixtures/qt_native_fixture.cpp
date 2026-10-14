@@ -154,6 +154,13 @@ public:
             + (key->key() == Qt::Key_Tab ? QStringLiteral("Tab") : QStringLiteral("Key"))
             + (event->type() == QEvent::KeyPress ? QStringLiteral("Press") : QStringLiteral("Release"));
         counts.insert(name, counts.value(name).toInt() + 1);
+        if (key->key() >= Qt::Key_F1 && key->key() <= Qt::Key_F24) {
+            const QString functionName = (object == first ? QStringLiteral("first")
+                : object == second ? QStringLiteral("second") : QStringLiteral("plain"))
+                + QStringLiteral("F") + QString::number(key->key() - Qt::Key_F1 + 1)
+                + (event->type() == QEvent::KeyPress ? QStringLiteral("Press") : QStringLiteral("Release"));
+            counts.insert(functionName, counts.value(functionName).toInt() + 1);
+        }
         return false;
     }
 };
@@ -270,6 +277,9 @@ int main(int argc, char **argv) {
         return QJsonObject{{"x", origin.x()}, {"y", origin.y()},
                            {"width", widget->width()}, {"height", widget->height()}};
     };
+    QPointer<QObject> savedEditorProvider;
+    QObject unavailableEditorProvider;
+    QString editorProviderAction;
     auto publish = [&] {
         if (path.isEmpty()) return;
         auto field = [&](QLineEdit *edit, int changes, int edits) {
@@ -350,6 +360,10 @@ int main(int argc, char **argv) {
             {"clipboardText", clipboard->ownsClipboard() ? clipboard->text() : QString()},
             {"editorVisible", editor && editor->isVisible()},
             {"editorFocused", editor && editor->hasFocus()},
+            {"editorProviderPresent", editor && editor->property("typelay.fcitx.qt.provider.v1").value<QObject *>()},
+            {"editorProviderOriginal", editor && savedEditorProvider
+                && editor->property("typelay.fcitx.qt.provider.v1").value<QObject *>() == savedEditorProvider},
+            {"editorProviderAction", editorProviderAction},
             {"editorReadOnly", !editor || editor->isReadOnly()},
             {"editorText", editor ? editor->toPlainText() : QString()},
             {"editorGeometry", editor ? rectangle(editor) : QJsonObject()}};
@@ -440,6 +454,20 @@ int main(int argc, char **argv) {
             else if (op == "on-text") textAction = command.value("action").toString();
             else if (op == "on-command-queued") observer.commandQueuedAction = command.value("action").toString();
             else if (op == "on-command-dispatched") observer.commandDispatchedAction = command.value("action").toString();
+            else if (op == "editor-provider") {
+                auto *editor = window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"));
+                if (editor) {
+                    const auto action = command.value("action").toString();
+                    editorProviderAction = action;
+                    if (action == "restore") editor->setProperty("typelay.fcitx.qt.provider.v1",
+                        QVariant::fromValue(savedEditorProvider.data()));
+                    else {
+                        savedEditorProvider = editor->property("typelay.fcitx.qt.provider.v1").value<QObject *>();
+                        editor->setProperty("typelay.fcitx.qt.provider.v1", action == "replace"
+                            ? QVariant::fromValue<QObject *>(&unavailableEditorProvider) : QVariant());
+                    }
+                }
+            }
             else if (op == "editor-set" && window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor")))
                 window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"))->setPlainText(command.value("text").toString());
             else if (op == "fullscreen") { if (command.value("enabled").toBool()) window.showFullScreen(); else window.showNormal(); }

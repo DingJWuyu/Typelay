@@ -235,7 +235,18 @@ class FirefoxNativeContract(unittest.TestCase):
             self.assertEqual(hello["event"], "hello")
             self.assertEqual(hello["data"]["backend"], "browser")
             self.assertEqual(hello["data"]["protocol"], 2)
+            native.configure_session(connection)
             original = native.focused_description(connection)
+            self.assertEqual(
+                original["sessionBindings"],
+                {
+                    "generation": "native-default",
+                    "accept": "Tab",
+                    "exit": "Esc",
+                    "sourceReady": True,
+                    "editorReady": True,
+                },
+            )
             snapshot = self.capture(native, connection, original, web)
             self.assertEqual(snapshot["text"], "First document")
             replacement = "Translated text"
@@ -245,6 +256,7 @@ class FirefoxNativeContract(unittest.TestCase):
                 connection,
                 "direct",
                 {
+                    "generation": "native-default",
                     "target": original["target"],
                     "authority": snapshot["authority"],
                     "approved": snapshot["authority"],
@@ -323,6 +335,7 @@ class FirefoxNativeContract(unittest.TestCase):
                     connection,
                     "direct",
                     {
+                        "generation": "native-default",
                         "target": rich["target"],
                         "authority": snapshot["authority"],
                         "approved": snapshot["authority"],

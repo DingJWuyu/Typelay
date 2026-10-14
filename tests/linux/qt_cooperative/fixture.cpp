@@ -95,6 +95,26 @@ public:
                        && capability->prepareCaret(first_, &state));
         increment("firstProbeCount");
     }
+    void probeControlKeys() {
+        auto *owner = first_->property(TypeLayFcitxQtProviderPropertyV1).value<QObject *>();
+        auto *capability = owner ? qobject_cast<TypeLayFcitxQtControlKeysV1 *>(owner) : nullptr;
+        const auto previous = qApp->property(TypeLayFcitxQtControlKeysPropertyV1);
+        const auto check = [&](quint32 accept, quint32 exit) {
+            return capability && capability->supportsControlKeys(first_, accept, exit);
+        };
+        qApp->setProperty(TypeLayFcitxQtControlKeysPropertyV1, QVariantList{});
+        counts_.insert("dynamicKeysWithoutInstallation", check(0xff09u, 0xff1bu));
+        qApp->setProperty(TypeLayFcitxQtControlKeysPropertyV1, QVariantList{quint32(0xff09), quint32(0xff1b)});
+        counts_.insert("dynamicDefaultKeys", check(0xff09u, 0xff1bu));
+        counts_.insert("dynamicUninstalledFunctionKeys", check(0xffbeu, 0xffd5u));
+        qApp->setProperty(TypeLayFcitxQtControlKeysPropertyV1, QVariantList{quint32(0xffbe), quint32(0xffc9), quint32(0xffd5)});
+        counts_.insert("dynamicF1F24Keys", check(0xffbeu, 0xffd5u));
+        counts_.insert("dynamicF12F24Keys", check(0xffc9u, 0xffd5u));
+        counts_.insert("dynamicSameKeyPair", check(0xffbeu, 0xffbeu));
+        counts_.insert("dynamicWrongField", capability && capability->supportsControlKeys(root_, 0xffbeu, 0xffd5u));
+        qApp->setProperty(TypeLayFcitxQtControlKeysPropertyV1, previous);
+        increment("controlKeyProbeCount");
+    }
     void armPendingSwitch() { switchPending_ = true; }
 
     void sampleModifiers() {
@@ -248,6 +268,7 @@ int main(int argc, char **argv) {
             if (command == "focus1") first.setFocus(Qt::OtherFocusReason);
             else if (command == "focus2") second.setFocus(Qt::OtherFocusReason);
             else if (command == "probe1") observer.probeFirst();
+            else if (command == "probe-control-keys") observer.probeControlKeys();
             else if (command == "arm-pending-switch") observer.armPendingSwitch();
             else if (command == "sample-modifiers") observer.sampleModifiers();
             else if (command == "quit") { observer.quitting = true; app.quit(); }

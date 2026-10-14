@@ -141,6 +141,7 @@ class Input:
         self.browser_rounds = []
         self.browser_round_owners = {}
         self.tab_capture_rounds = []
+        self.session_publication = None
         self.native_publication = None
         self.publication_generation = 0
         self.published_plan = None
@@ -235,6 +236,11 @@ class Input:
         value = {
             "ready": self.fresh(),
             "nativeReady": self.focused_peer() is not None,
+            "sessionShortcuts": self.current_session_acknowledgement(self.bound_observation)
+            if self.bound_observation
+            and self.bound_observation["peer"] is self.focused_peer()
+            and self.bound_observation["target"] == self.bound
+            else None,
             "target": paused["target"] if paused else self.bound,
             "focus": "Source" if paused else self.focus(),
             "userEpoch": self.user_epoch,
@@ -315,6 +321,45 @@ class Input:
         while len(collection) > (4 if frozen else 128):
             collection.popitem(last=False)
         return snapshot, record
+
+    def session_acknowledgement(self, peer, native):
+        acknowledgement = native.get("sessionBindings")
+        authority = native.get("authority", {})
+        config = self.shortcut_config
+        if (
+            config.get("sessionEnabled") is not True
+            or not isinstance(acknowledgement, dict)
+            or not config.get("generation")
+            or acknowledgement.get("generation") != config["generation"]
+            or acknowledgement.get("accept") != config.get("accept")
+            or acknowledgement.get("exit") != config.get("exit")
+            or type(acknowledgement.get("sourceReady")) is not bool
+            or type(acknowledgement.get("editorReady")) is not bool
+            or native.get("target") != authority.get("target")
+            or ("sessionBindings" in authority and authority["sessionBindings"] != acknowledgement)
+        ):
+            return None
+        return {
+            "target": target_id(peer, native["target"]),
+            "generation": config["generation"],
+            "bindings": {"accept": config["accept"], "exit": config["exit"]},
+            "sourceReady": acknowledgement["sourceReady"],
+            "editorReady": acknowledgement["editorReady"],
+        }
+
+    def current_session_acknowledgement(self, record):
+        acknowledgement = record.get("sessionShortcuts") if record else None
+        config = self.shortcut_config
+        if (
+            config.get("sessionEnabled") is not True
+            or not acknowledgement
+            or acknowledgement["target"] != record["target"]
+            or acknowledgement["generation"] != config.get("generation")
+            or acknowledgement["bindings"]
+            != {"accept": config.get("accept"), "exit": config.get("exit")}
+        ):
+            return None
+        return acknowledgement
 
     async def approve(self, peer, description):
         if not description:
@@ -420,6 +465,7 @@ class Input:
 
     def invalidate_publication(self):
         self.publication_generation += 1
+        self.session_publication = None
         self.native_publication = self.published_plan = self.publication_epochs = None
 
     def remember_publication(self, peer, description, generation):
@@ -640,6 +686,7 @@ class Input:
     async def capture(self, context):
         self.capture_started_at = now_ms()
         settings_generation = self.settings_generation
+        command_generation = self.shortcut_config.get("generation")
         if self.enabled is False:
             return self.captured("paused")
         window_epoch = self.window_epoch
@@ -758,6 +805,12 @@ class Input:
         if geometry is None:
             return self.captured("no-visible-anchor")
         snapshot, record = self.remember(peer, native, window, geometry)
+        acknowledgement = self.session_acknowledgement(peer, native)
+        if command_generation != self.shortcut_config.get(
+            "generation"
+        ) or acknowledgement != self.session_acknowledgement(peer, description):
+            acknowledgement = None
+        record["sessionShortcuts"] = acknowledgement
         self.bound, self.bound_observation = snapshot["target"], record
         if browser_source:
             round_timing["snapshotAtMs"] = native["observedAtMs"]
@@ -773,7 +826,9 @@ class Input:
                 self.browser_capture = {
                     "identity": identity,
                     "description": {
-                        key: native[key] for key in ("target", "metadata", "authority")
+                        key: native[key]
+                        for key in ("target", "metadata", "authority", "sessionBindings")
+                        if key in native
                     },
                 }
         self.state()
@@ -781,6 +836,7 @@ class Input:
             "supported",
             {
                 "snapshot": snapshot,
+                "sessionShortcuts": acknowledgement,
                 "focus": focus,
                 "application": peer.application,
                 "userEpoch": self.user_epoch,
@@ -1028,8 +1084,20 @@ class Input:
             self.shortcut_sequence = 0
             self.shortcut_ordered = False
             self.shortcut_command = None
+        accept, exit_key = value.get("accept"), value.get("exit")
+        functions = {f"F{index}" for index in range(1, 25)}
+        valid_session = (
+            isinstance(accept, str)
+            and isinstance(exit_key, str)
+            and accept in functions | {"Tab"}
+            and exit_key in functions | {"Esc"}
+            and accept != exit_key
+            and isinstance(value.get("generation"), str)
+            and bool(value["generation"])
+        )
         self.shortcut_config = {
             **value,
+            "sessionEnabled": value.get("sessionEnabled") is True and valid_session,
             "wake": binding(value["wake"]),
             "direct": binding(value["direct"]),
             "trace": bool(os.environ.get("TYPELAY_TRACE")),
@@ -1040,6 +1108,7 @@ class Input:
             peer.support_observation = None
             if peer.lifetime:
                 self.configure_peer(peer)
+        self.state()
 
     def publish(self, value, shortcut=False):
         lease = value["lease"]
@@ -1064,6 +1133,13 @@ class Input:
                 },
             )
         else:
+            acknowledgement = self.current_session_acknowledgement(record)
+            if (
+                not acknowledgement
+                or not acknowledgement["sourceReady"]
+                or lease.get("commandGeneration") != acknowledgement["generation"]
+            ):
+                return
             permit = value.get("permit")
             round_timing = record.get("roundTiming")
             if round_timing is not None and permit:
@@ -1088,6 +1164,12 @@ class Input:
                     }
                 )
             self.invalidate_publication()
+            self.session_publication = {
+                "peer": peer,
+                "target": record["target"],
+                "generation": acknowledgement["generation"],
+                "revision": lease.get("sessionRevision"),
+            }
             if permit:
                 self.timing("publishRemaining", permit["expiresAtMs"] - now_ms())
                 self.published_plan = (peer, permit["plan"]["id"])
@@ -1109,6 +1191,7 @@ class Input:
                     "authority": record["authority"],
                     "lease": lease,
                     "permit": permit,
+                    "generation": acknowledgement["generation"],
                     **(
                         {"traceRound": round_timing["round"]}
                         if round_timing is not None and os.environ.get("TYPELAY_TRACE")
@@ -1240,17 +1323,20 @@ class Input:
             self.clear_browser_capture()
             if self.published_plan and self.published_plan[0] is peer:
                 self.invalidate_publication()
-            issued = self.issued.pop(value["planId"], None)
+            issued = self.issued.get(value["planId"])
             if not issued or issued["peer"] is not peer:
                 peer.link.command(
                     "quarantine", {"target": self.bound["value"] if self.bound else ""}
                 )
                 return
+            self.issued.pop(value["planId"])
             receipt = value["receipt"]
             self.host.send(
                 "notice",
                 {
                     "kind": "accept",
+                    "commandGeneration": issued["lease"].get("commandGeneration"),
+                    "target": issued["lease"]["source"]["target"],
                     "permit": issued["permit"],
                     "completedReceipt": receipt,
                     "acceptedAtMs": value["acceptedAtMs"],
@@ -1259,10 +1345,33 @@ class Input:
                 },
             )
         elif name == "escape":
+            record = self.bound_observation
+            acknowledgement = self.current_session_acknowledgement(record)
+            publication = self.session_publication
+            if (
+                not isinstance(value, dict)
+                or not acknowledgement
+                or not acknowledgement["sourceReady"]
+                or not publication
+                or publication["peer"] is not peer
+                or publication["target"] != record["target"]
+                or type(value.get("sessionRevision")) is not int
+                or value["sessionRevision"] != publication["revision"]
+                or record["peer"] is not peer
+                or self.focused_peer() is not peer
+                or self.overlay_focused
+                or value.get("target") != record["target"]["value"]
+                or record["target"] != self.bound
+                or value.get("generation") != acknowledgement["generation"]
+            ):
+                return
             self.host.send(
                 "notice",
                 {
                     "kind": "escape",
+                    "target": record["target"],
+                    "commandGeneration": acknowledgement["generation"],
+                    "sessionRevision": publication["revision"],
                     "userEpoch": self.user_epoch,
                     "foregroundEpoch": self.foreground_epoch,
                 },
@@ -1291,6 +1400,7 @@ class Input:
                     "plan": plan,
                     "authority": record["authority"],
                     "approved": description["authority"],
+                    "generation": generation,
                     "expiresAtMs": now_ms() + 250,
                 },
             ) or refused(True)
@@ -1301,25 +1411,47 @@ class Input:
 
     async def return_to_source(self, context):
         record = self.bound_observation
-        if (
-            not record
-            or self.bound != context.get("boundTarget")
-            or record["peer"] not in self.peers
-            or not self.fresh()
-        ):
+        configuration = context.get("sessionShortcuts")
+
+        def current():
+            acknowledgement = self.current_session_acknowledgement(record)
+            return bool(
+                record
+                and record is self.bound_observation
+                and self.bound == context.get("boundTarget")
+                and record["peer"] in self.peers
+                and self.focused_peer() is record["peer"]
+                and self.fresh()
+                and acknowledgement
+                and acknowledgement["editorReady"]
+                and isinstance(configuration, dict)
+                and configuration.get("generation") == acknowledgement["generation"]
+                and configuration.get("bindings") == acknowledgement["bindings"]
+            )
+
+        if not current():
             return False
         peer, target = record["peer"], record["target"]["value"]
         description = await peer.link.ask("describe", {"target": target})
-        if not await self.approve(peer, description):
+        if not current() or not await self.approve(peer, description) or not current():
             return False
-        if description["authority"]["contentRevision"] != record["authority"]["contentRevision"]:
+        if (
+            self.session_acknowledgement(peer, description)
+            != self.current_session_acknowledgement(record)
+            or description["authority"]["contentRevision"] != record["authority"]["contentRevision"]
+        ):
             return False
-        # The nonmodal native editor shares the source's real GTK toplevel.
-        # Return only within that active parent, never activate another window.
+        # Return only within the same active parent; the native consumer checks
+        # this generation again after focus/provider callbacks, before return.
         response = await peer.link.ask(
-            "return", {"target": target, "authority": record["authority"]}
+            "return",
+            {
+                "target": target,
+                "authority": record["authority"],
+                "generation": configuration["generation"],
+            },
         )
-        if response and response.get("returned"):
+        if current() and response and response.get("returned"):
             self.overlay_focused = False
             self.state()
             return True

@@ -22,7 +22,7 @@ Qt 6.11.2 与固定 Fcitx Qt 5.1.15 的隔离 Wayland/niri 链路已有实际模
 
 Fcitx 按键请求继续异步发出；完成处理增加 provider 内部 FIFO，按真实请求顺序处理已收到 `finished` 的 watcher，运行原有结果、fallback 与转发逻辑。后一个回复先到不能越过尚未完成的前一个请求。请求在 watcher 实际销毁前仍计为 pending，转发事件也必须等 Qt 的真实事件分发结束才 ACK；不以队列空闲猜测或提前读取 `isFinished()` 建立 Clear。
 
-合作 provider 在原始输入请求之前，只对无修饰 Tab/Escape 或已配置的控制键调用消费者。Tab/Escape 仍须当下同步完成全部字段、许可和 IME 检查才可消费，拒绝时原异步处理恰好执行一次。在普通控件的 Tab 回调中，该事件自身仍处于 pending，不能在那里忽略 pending 或延后接受。重复按键与对应释放沿原已消费键配对，不生成第二次接受。
+合作 provider 在原始输入请求之前，只对无修饰 Tab/Escape 或已配置的控制键调用消费者。接受/退出默认 Tab/Esc，也可分别配置无修饰 F1-F24；按需 wake/direct 的启用与会话键启用独立。配置先撤销旧许可，额外 XKB 键仍经既有 `control-keys.v1` 属性安装。新增独立 `TypeLayFcitxQtControlKeysV1` 能力接口验证实际字段的 provider 与已安装键集，不改变旧 `TypeLayFcitxQtV1` ABI；只有旧接口的 provider 保持只读，不能仅凭可转换旧 IID 推断动态按键能力。describe/capture 回显当次目标的 Applied generation、规范键对及 source/editor readiness；编辑器使用同一个已安装消费者和 provider 路由；移入编辑器后只保留该目标、该代次的源按键路由确认，并核验实际编辑器绑定的是同一个 provider。编辑器 provider 丢失或更换会撤销这项确认，恢复属性本身不使其复活；该确认从不代替源 IME 或写入许可。接受/退出仍须当下同步完成全部字段、许可和 IME 检查才可消费，拒绝时原异步处理恰好执行一次。在普通控件的 Tab 回调中，该事件自身仍处于 pending，不能在那里忽略 pending 或延后接受。重复按键与对应释放按实际 native scan code 沿原按下动作配对，不生成第二次接受。未绑定键的按下同样保留，因此配置、隐藏或焦点切换不能把已按住的功能键变成新的接受。publish、直接写入、普通展示、编辑和返回都绑定配置 generation；provider/选区回调重入后写前再次核对，已经完成的写入回执仍按原 plan 返回。
 
 F9/F10 是显式命令：有效的当前目标/元数据授权可登记最多一个待捕获请求，此时不读取正文。请求固定继承原授权的 150ms 截止，不因新发布或轮询续期；已有 25ms tick 只检查真实 pending 是否退休并重新取得 Clear，随后才捕获同一原字段。正文、选区、焦点、非 modifier 新输入、配置变更、显式撤销授权及超期都会取消，并给出短提示，不在取消后重试。纯 modifier 事件仍撤销即时 IME 证明，但不伪装成源正文变化；实际组合、提交或输入法变化继续使请求失效。
 
@@ -50,6 +50,8 @@ cmake --build artifacts/linux/qt-native
 输出 `qt6/generic/libtypelay-qt6.so` 与 `qt-native-fixture`。仅在已验证的隔离合作环境中，为该测试进程追加插件目录和 `typelay` generic plugin，并设置 `TYPELAY_FCITX_COOPERATIVE=1`。普通安装器不会修改系统 Qt 插件目录、系统输入法或用户会话。
 
 `tests/linux/fixtures/qt_native_fixture.cpp` 提供两个真实 QLineEdit 和按场景启用的标准 QPlainTextEdit、原生 undo/redo 与文档变更状态、输入事件计数、字段保护配置及一次性应用回调干扰。它只使用合成正文。生产模块不输出字段正文或任意元数据日志。`tests/linux/qt_desktop.py` 使用正式宿主、真实本地模型与嵌套 niri 路径进行集成验收，覆盖上述前台单行/多行、同窗 QLineEdit 后台写回和原文冲突拒绝；发行回归另外从搬迁后的可选包执行启动器，不用源码构建目录代替。执行结果以当前提交 CI 为准。测试记录实际 fixture PID 的库和 Wayland 插件映射，并核对构建、请求与运行版本均为 6.11.2，拒绝混版或 XCB 替代；`qt_cooperative` 另用真实完成顺序扰动检查异步 FIFO 和实际字段内容，不能用正文长度代替内容完整性。
+
+会话键新增回归复用 `qt_cooperative` 的实际 provider 键集能力查询，以及 `qt_desktop.py` 的真实设置 UI、F1/F12/F24、编辑返回后释放与第二次按下、按需切换和默认键恢复。旧 provider 完整二进制的兼容性、这些新场景的运行结果仍须在实际合作构建环境确认，不能以源码检查代替。配置确认也不保证桌面或应用会把每个功能键交给该字段；客户端不通过全局抢键绕过已有处理。
 
 编译与 offscreen 加载只证明构建/加载，不证明 socket、Fcitx 输入、物理 Tab、真实中文 IME、多屏缩放或完整产品 UI 通过。QTextEdit、其他 Qt 富文本结构和应用自绘编辑器仍未实现；本路径不能代表通用 Qt 输入框全部完成。
 

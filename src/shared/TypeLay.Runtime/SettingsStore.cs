@@ -1,10 +1,13 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using TypeLay.Core;
 namespace TypeLay.Runtime;
 
 public sealed record UserSettings(int Schema = 1, bool Enabled = true, string Source = "auto", string Target = "en",
     string[]? ExcludedApplications = null, bool Startup = false, string Theme = "system", bool OnboardingComplete = false, bool ExperimentalWriteback = false,
-    WorkMode Mode = WorkMode.Automatic, string WakeShortcut = "Ctrl+Shift+F9", string DirectShortcut = "Ctrl+Shift+F10")
+    WorkMode Mode = WorkMode.Automatic, string WakeShortcut = "Ctrl+Shift+F9", string DirectShortcut = "Ctrl+Shift+F10",
+    [property: JsonConverter(typeof(SessionShortcutPreferenceConverter))] string AcceptShortcut = "Tab",
+    [property: JsonConverter(typeof(SessionShortcutPreferenceConverter))] string ExitShortcut = "Esc")
 {
     public string[] Excluded => ExcludedApplications ?? [];
     public LanguageDirection Direction => new(Source, Target);
@@ -46,21 +49,23 @@ public sealed class SettingsStore
                 WakeShortcut = "Ctrl+Shift+F9",
                 DirectShortcut = "Ctrl+Shift+F10"
             };
+        var sessionKeys = SessionShortcutBindings.Restore(Value.AcceptShortcut, Value.ExitShortcut);
+        Value = Value with
+        {
+            AcceptShortcut = sessionKeys.Accept,
+            ExitShortcut = sessionKeys.Exit
+        };
     }
     public void Update(UserSettings settings)
     {
         settings.Direction.Validate();
         if (settings.Source is not ("auto" or "zh" or "en") || settings.Target is not ("zh" or "en"))
             throw new ArgumentException("请选择支持的源语言和目标语言。");
-        if (!Enum.IsDefined(settings.Mode)
-            || !TranslationShortcut.TryParse(settings.WakeShortcut, out var wake)
-            || !TranslationShortcut.TryParse(settings.DirectShortcut, out var direct) || wake == direct)
-            throw new ArgumentException("请选择有效模式和两个不同的快捷键组合。");
-        settings = settings with
-        {
-            WakeShortcut = wake!.ToString(),
-            DirectShortcut = direct!.ToString()
-        };
+        if (!Enum.IsDefined(settings.Mode))
+            throw new ArgumentException("请选择有效的工作模式。");
+        if (!ShortcutSettingsDraft.From(settings).TryApply(settings, out var canonical, out var error))
+            throw new ArgumentException(SettingsDraftPresentation.ShortcutErrorMessage(error));
+        settings = canonical!;
         if (settings.Startup != Value.Startup)
             _setStartup(settings.Startup);
         string temporary = _path + ".tmp";
@@ -84,4 +89,19 @@ public sealed class SettingsStore
             ExcludedApplications = Value.Excluded.Append(app).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
         });
     }
+}
+
+// These newly introduced preferences must not make an older settings file lose
+// unrelated preferences when their JSON value has an invalid type.
+internal sealed class SessionShortcutPreferenceConverter : JsonConverter<string>
+{
+    public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.String)
+            return reader.GetString();
+        reader.Skip();
+        return null;
+    }
+    public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options) =>
+        writer.WriteStringValue(value);
 }

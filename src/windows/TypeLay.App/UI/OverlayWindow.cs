@@ -18,8 +18,15 @@ internal sealed class OverlayWindow : Window, ISessionView
     private readonly TextBox _editor;
     private readonly TextBlock _language, _status, _tabHint;
     private readonly Border _dot, _headerBorder, _footerBorder;
-    private readonly Border _escapeKeycap;
+    private readonly Border _acceptKeycap, _escapeKeycap;
     private readonly TextBlock _escapeLabel;
+    private readonly HashSet<Key> _pressedShortcutKeys = [];
+    private readonly HashSet<Key> _consumedShortcutKeys = [];
+    private Key _acceptKey = Key.Tab, _exitKey = Key.Escape;
+    private SessionShortcutMessages _shortcutMessages = SettingsDraftPresentation.SessionShortcuts(SessionShortcutBindings.Default);
+    private SessionViewContext? _viewContext;
+    private SessionViewToken? _pressedExitToken;
+    private bool _exitPressPending;
     private readonly Grid _surface;
     private readonly Button _resumeButton;
     private readonly TextBlock _pausedStatus, _resumeHint;
@@ -35,7 +42,7 @@ internal sealed class OverlayWindow : Window, ISessionView
     private nint _hwnd;
     private (int X, int Y, int Width, int Height)? _placement;
     public nint Handle => _hwnd;
-    public Func<bool>? BeginEditing
+    public Func<SessionViewToken, bool>? BeginEditing
     {
         get; set;
     }
@@ -43,11 +50,11 @@ internal sealed class OverlayWindow : Window, ISessionView
     {
         get; set;
     }
-    public Action? ReturnRequested
+    public Action<SessionViewToken>? ReturnRequested
     {
         get; set;
     }
-    public Action? EscapeRequested
+    public Action<SessionViewToken>? EscapeRequested
     {
         get; set;
     }
@@ -72,6 +79,19 @@ internal sealed class OverlayWindow : Window, ISessionView
     {
         _measurementKey = null;
         UiTheme.Apply(settings.Theme);
+    }
+    internal void ConfigureSessionShortcuts(SessionShortcutBindings bindings)
+    {
+        if (_shortcutMessages.AcceptKey == bindings.Accept && _shortcutMessages.ExitKey == bindings.Exit)
+            return;
+        static Key EditorKey(string value) => value == "Esc" ? Key.Escape : Enum.Parse<Key>(value);
+        _acceptKey = EditorKey(bindings.Accept);
+        _exitKey = EditorKey(bindings.Exit);
+        _shortcutMessages = SettingsDraftPresentation.SessionShortcuts(bindings);
+        ((TextBlock)_acceptKeycap.Child).Text = _shortcutMessages.AcceptKey;
+        ((TextBlock)_escapeKeycap.Child).Text = _shortcutMessages.ExitKey;
+        // A configuration change must not transfer an outstanding press to a
+        // new action or release a key whose down event the editor consumed.
     }
     public OverlayWindow(bool automationTest = false)
     {
@@ -150,21 +170,50 @@ internal sealed class OverlayWindow : Window, ISessionView
             Activate();
             _editor.Focus();
         };
-        _editor.TextChanged += (_, _) => { if (_editing && !_rendering) DraftChanged?.Invoke(_editor.Text); };
+        _editor.TextChanged += (_, _) => { if (_editing && _viewContext?.CanEdit == true && !_rendering) DraftChanged?.Invoke(_editor.Text); };
+        _editor.GotKeyboardFocus += (_, _) =>
+        {
+            // Key-up can go to the source after a return. Reconcile on re-entry,
+            // and remember any key held before the editor acquired focus.
+            _pressedShortcutKeys.RemoveWhere(key => !Keyboard.IsKeyDown(key));
+            _consumedShortcutKeys.RemoveWhere(key => !Keyboard.IsKeyDown(key));
+            foreach (Key key in Enumerable.Range((int)Key.F1, 24).Select(value => (Key)value).Append(Key.Tab).Append(Key.Escape))
+                if (Keyboard.IsKeyDown(key))
+                    _pressedShortcutKeys.Add(key);
+        };
         _editor.PreviewKeyDown += (_, e) =>
         {
-            if (_composing || e.Key == Key.ImeProcessed || Keyboard.Modifiers != ModifierKeys.None)
+            Key key = ShortcutEventKey(e);
+            if (key is not (Key.Tab or Key.Escape) && (key < Key.F1 || key > Key.F24))
                 return;
-            if (e.Key == Key.Tab && _editing)
+            if (!_pressedShortcutKeys.Add(key) || e.IsRepeat)
             {
-                e.Handled = true;
-                ReturnRequested?.Invoke();
+                if (_consumedShortcutKeys.Contains(key))
+                    e.Handled = true;
+                return;
             }
-            else if (e.Key == Key.Escape && _editing)
+            if (_composing || e.Key == Key.ImeProcessed || Keyboard.Modifiers != ModifierKeys.None
+                || _viewContext is not { } context)
+                return;
+            if (key == _acceptKey && _editing && context.CanEdit)
             {
+                _consumedShortcutKeys.Add(key);
                 e.Handled = true;
-                EscapeRequested?.Invoke();
+                ReturnRequested?.Invoke(context.Token);
             }
+            else if (key == _exitKey && _editing)
+            {
+                _consumedShortcutKeys.Add(key);
+                e.Handled = true;
+                EscapeRequested?.Invoke(context.Token);
+            }
+        };
+        _editor.PreviewKeyUp += (_, e) =>
+        {
+            Key key = ShortcutEventKey(e);
+            _pressedShortcutKeys.Remove(key);
+            if (_consumedShortcutKeys.Remove(key))
+                e.Handled = true;
         };
         TextCompositionManager.AddPreviewTextInputStartHandler(_editor, (_, _) => _composing = true);
         TextCompositionManager.AddPreviewTextInputUpdateHandler(_editor, (_, e) => _composing = !string.IsNullOrEmpty(e.TextComposition.CompositionText));
@@ -174,17 +223,30 @@ internal sealed class OverlayWindow : Window, ISessionView
         _surface.Children.Add(_editor);
         var footer = new DockPanel { Margin = new(13, 0, 10, 0), LastChildFill = false };
         var tab = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        tab.Children.Add(Keycap("Tab"));
+        _acceptKeycap = Keycap(_shortcutMessages.AcceptKey);
+        tab.Children.Add(_acceptKeycap);
         _tabHint = UiTheme.Text("交还应用", 10.5, muted: true);
         tab.Children.Add(_tabHint);
         footer.Children.Add(tab);
-        _escapeKeycap = Keycap("Esc");
-        _escapeLabel = UiTheme.Text("退出翻译", 10.5, true);
+        _escapeKeycap = Keycap(_shortcutMessages.ExitKey);
+        _escapeLabel = UiTheme.Text(_shortcutMessages.ExitLabel, 10.5, true);
         var escape = new StackPanel { Orientation = Orientation.Horizontal };
         escape.Children.Add(_escapeKeycap);
         escape.Children.Add(_escapeLabel);
         var esc = new Button { Content = escape, BorderThickness = new(0), Background = Brushes.Transparent, Margin = new(12, 0, 0, 0), Padding = new(0) };
-        esc.Click += (_, _) => { if (!_composing) EscapeRequested?.Invoke(); };
+        esc.PreviewMouseLeftButtonDown += (_, _) =>
+        {
+            _pressedExitToken = _viewContext?.Token;
+            _exitPressPending = true;
+        };
+        esc.Click += (_, _) =>
+        {
+            var token = _exitPressPending ? _pressedExitToken : _viewContext?.Token;
+            _pressedExitToken = null;
+            _exitPressPending = false;
+            if (!_composing && token is not null)
+                EscapeRequested?.Invoke(token);
+        };
         footer.Children.Add(esc);
         var more = new Button { Content = "⋯", FontSize = 15, BorderThickness = new(0), Background = Brushes.Transparent, Padding = new(7, 0, 2, 0) };
         DockPanel.SetDock(more, Dock.Right);
@@ -243,6 +305,12 @@ internal sealed class OverlayWindow : Window, ISessionView
         cap.VerticalAlignment = VerticalAlignment.Center;
         return cap;
     }
+    private static Key ShortcutEventKey(KeyEventArgs input) => input.Key switch
+    {
+        Key.System => input.SystemKey,
+        Key.ImeProcessed => input.ImeProcessedKey,
+        _ => input.Key
+    };
     private nint WindowMessage(nint hwnd, int msg, nint wp, nint lp, ref bool handled)
     {
         if (msg == 0x21) // Register the editing transition before Windows changes foreground ownership.
@@ -262,11 +330,11 @@ internal sealed class OverlayWindow : Window, ISessionView
     }
     private bool StartEdit()
     {
-        if (_pausedRevision is not null)
+        if (_pausedRevision is not null || _viewContext is not { CanEdit: true } context)
             return false;
         if (_editing)
             return true;
-        if (BeginEditing?.Invoke() != true)
+        if (BeginEditing?.Invoke(context.Token) != true)
             return false;
         _editing = true;
         _editor.IsReadOnly = false;
@@ -296,9 +364,11 @@ internal sealed class OverlayWindow : Window, ISessionView
             _editor.Focus();
         }
     }
-    public void Render(Session session, UserSettings settings, bool permit, string? statusOverride = null)
+    public void Render(Session session, UserSettings settings, bool permit, string? statusOverride = null, SessionViewContext? context = null)
     {
-        var display = Presentation.From(session.State, permit, session.Preview.Length > 0);
+        _viewContext = context is not null && session.Current?.Target == context.Token.Target ? context : null;
+        ConfigureSessionShortcuts(_viewContext?.Bindings ?? SessionShortcutBindings.Default);
+        var display = Presentation.From(session.State, permit, session.Preview.Length > 0, shortcuts: _viewContext?.Bindings);
         if (!display.Visible || session.Current is not { } source)
         {
             HideQuietly();
@@ -347,10 +417,13 @@ internal sealed class OverlayWindow : Window, ISessionView
                 _dot.SetResourceReference(Border.BackgroundProperty, dotBrushKey);
                 _dotBrushKey = dotBrushKey;
             }
-            _tabHint.Text = display.TabHint.Replace("Tab ", "", StringComparison.Ordinal);
+            string shortcutHint = session.State == SessionState.EditingTranslation ? _shortcutMessages.ReturnHint
+                : permit && session.State is SessionState.ValidTranslation or SessionState.EditedTranslationPending
+                    ? _shortcutMessages.AcceptHint : _shortcutMessages.PassThroughHint;
+            _tabHint.Text = shortcutHint[(_shortcutMessages.AcceptKey.Length + 1)..];
             _escapeKeycap.Visibility = source.Ime == ImeState.Clear ? Visibility.Visible : Visibility.Collapsed;
-            _escapeLabel.Text = source.Ime == ImeState.Clear ? "退出翻译" : "隐藏当前翻译";
-            if (!display.EditorOwnsText)
+            _escapeLabel.Text = source.Ime == ImeState.Clear ? _shortcutMessages.ExitLabel : "隐藏当前翻译";
+            if (!display.EditorOwnsText || _viewContext?.CanEdit != true)
             {
                 _editing = false;
                 _composing = false;
@@ -519,6 +592,7 @@ internal sealed class OverlayWindow : Window, ISessionView
     }
     private void ClearSessionContent()
     {
+        _viewContext = null;
         _measurementKey = null;
         _editing = false;
         _composing = false;
@@ -544,6 +618,7 @@ internal sealed class OverlayWindow : Window, ISessionView
     }
     private void OpenMenu(Button anchor)
     {
+        var viewToken = _viewContext?.Token;
         var menu = new ContextMenu();
         void Add(string text, Action action, bool enabled = true)
         {
@@ -556,7 +631,11 @@ internal sealed class OverlayWindow : Window, ISessionView
         Add(_expanded ? "收起编辑面板" : "展开编辑面板", () => _expanded = !_expanded);
         menu.Items.Add(new Separator());
         Add("不要在这个应用中显示", () => ExcludeRequested?.Invoke());
-        Add("隐藏当前翻译", () => EscapeRequested?.Invoke());
+        Add("隐藏当前翻译", () =>
+        {
+            if (viewToken is not null)
+                EscapeRequested?.Invoke(viewToken);
+        }, viewToken is not null);
         menu.PlacementTarget = anchor;
         menu.IsOpen = true;
     }

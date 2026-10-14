@@ -1,275 +1,12 @@
 """GTK settings and a source-bound native view for the shared session controller."""
 
 import asyncio
-import json
-import os
-import sys
 
 import gi
 from application_support import BROWSER_MANAGEMENT_URIS
-from wire import now_ms
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
-
-
-class Overlay:
-    """The shared view rendered in its actual GTK parent, without global coordinates."""
-
-    def __init__(self, host, input_service, tasks, settings_requested):
-        self.host, self.input, self.tasks = host, input_service, tasks
-        self.settings_requested = settings_requested
-        self.value = self.settings = self.peer = None
-        self.visible = self.editing = self.acceptance_ready = False
-        self.revision = 0
-        self.edit_trace_count = 0
-        self.pending = False
-        self.lock = asyncio.Lock()
-        self.input.ui_event = self.event
-        self.timer = self.input.glib.timeout_add(200, self.renew)
-
-    def configure(self, settings):
-        self.settings = settings
-        if self.value:
-            self.schedule()
-
-    def current_record(self):
-        paused = bool(self.value and self.value.get("state") == "Paused")
-        record = self.input.current_pause_record() if paused else self.input.bound_observation
-        if (
-            not self.value
-            or not record
-            or record["target"] != self.value["source"]["target"]
-            or record["peer"] not in self.input.peers
-            or record["peer"] is not self.input.focused_peer()
-            or not self.input.fresh()
-        ):
-            return None
-        return record
-
-    def schedule(self):
-        self.revision += 1
-        if not self.pending:
-            self.pending = True
-            self.tasks(self.update())
-
-    def render(self, value):
-        self.value = value
-        self.schedule()
-
-    async def send_view(self):
-        async with self.lock:
-            record = self.current_record()
-            paused_view = bool(self.value and self.value.get("state") == "Paused")
-            if paused_view:
-                self.trace_edit("pause-view-request", hasRecord=record is not None)
-            if record is None:
-                self.conceal("observation-unavailable")
-                return False
-            peer = record["peer"]
-            revision = self.revision
-            if self.peer and self.peer is not peer and self.peer.link.channel.alive:
-                self.peer.link.command("overlay-hide")
-            self.peer = peer
-            reply = await peer.link.ask(
-                "overlay-render",
-                {
-                    "target": record["target"]["value"],
-                    "authority": record["authority"],
-                    "view": self.value,
-                    "revision": revision,
-                    "theme": (self.settings or {}).get("theme", "system"),
-                    "expiresAtMs": now_ms() + 800,
-                },
-            )
-            if paused_view:
-                self.trace_edit(
-                    "pause-view-reply",
-                    requestRevision=revision,
-                    current=self.peer is peer and self.revision == revision,
-                    visible=isinstance(reply, dict) and reply.get("visible") is True,
-                )
-            if self.peer is peer and self.revision == revision:
-                self.visible = bool(reply and reply.get("visible"))
-                self.editing = bool(reply and reply.get("editing"))
-                self.acceptance_ready = self.visible and self.value.get("canAccept", False)
-            return True
-
-    async def update(self):
-        try:
-            while self.value:
-                revision = self.revision
-                if not await self.send_view():
-                    break
-                if revision == self.revision:
-                    break
-        except (OSError, EOFError, TimeoutError):
-            self.conceal("transport-unavailable")
-        finally:
-            self.pending = False
-
-    def renew(self):
-        record = self.current_record()
-        if self.value and record:
-            if self.peer is record["peer"] and self.visible:
-                self.peer.link.command(
-                    "overlay-renew",
-                    {
-                        "target": record["target"]["value"],
-                        "authority": record["authority"],
-                        "expiresAtMs": now_ms() + 800,
-                    },
-                )
-            elif not self.pending:
-                self.schedule()
-        elif self.value:
-            self.conceal("observation-unavailable")
-        return not self.input.closing
-
-    def trace_edit(self, stage, **fields):
-        if os.environ.get("TYPELAY_TRACE") and self.edit_trace_count < 96:
-            self.edit_trace_count += 1
-            try:
-                print(
-                    "typelay-edit "
-                    + json.dumps(
-                        {"stage": stage, "atMs": now_ms(), "revision": self.revision, **fields}
-                    ),
-                    file=sys.stderr,
-                    flush=True,
-                )
-            except OSError:
-                pass
-
-    def event(self, peer, event):
-        if isinstance(event, dict) and event.get("operation") == "beginEdit":
-            self.trace_edit(
-                "event",
-                eventRevision=(event["revision"] if type(event.get("revision")) is int else None),
-                hasView=self.value is not None,
-                peerMatches=peer is self.peer,
-                targetMatches=bool(
-                    self.value and event.get("target") == self.value["source"]["target"]["value"]
-                ),
-            )
-        if (
-            not self.value
-            or peer is not self.peer
-            or event["target"] != self.value["source"]["target"]["value"]
-        ):
-            return
-        operation, value = event["operation"], event.get("value")
-        if self.value.get("state") == "Paused":
-            if operation == "resume":
-                if (
-                    type(event.get("revision")) is int
-                    and event["revision"] == self.revision
-                    and self.visible
-                    and self.current_record() is not None
-                ):
-                    revision = self.value["pauseRevision"]
-                    # Consume the displayed action before dispatching it. The
-                    # controller reobserves metadata and owns the settings write.
-                    self.hide()
-                    self.host.send("resume", revision)
-            elif operation == "visible":
-                self.visible = value is True
-            return
-        if operation == "visible":
-            self.visible = value is True
-            if not self.visible:
-                self.editing = self.acceptance_ready = False
-                self.input.set_overlay_focus(False)
-        elif operation == "focus":
-            self.input.set_overlay_focus(value is True and peer is self.input.focused_peer())
-        elif operation == "beginEdit":
-            self.tasks(self.begin_edit(peer, event["target"]))
-        elif operation == "settings":
-            self.settings_requested()
-        elif operation == "languages":
-            self.tasks(self.set_languages(value))
-        elif operation == "expand":
-            self.schedule()
-        elif operation in ("return", "escape", "regenerate", "exclude"):
-            self.host.send(operation)
-        elif operation in ("draft", "composition"):
-            self.host.send(operation, value)
-
-    async def begin_edit(self, peer, target):
-        try:
-            requested_revision = self.revision
-            allowed = await self.host.ask("beginEdit")
-            self.trace_edit(
-                "host-reply",
-                requestedRevision=requested_revision,
-                allowed=allowed is True,
-                peerMatches=self.peer is peer,
-                targetMatches=bool(
-                    self.value and self.value["source"]["target"]["value"] == target
-                ),
-                editing=bool(self.value and self.value.get("state") == "EditingTranslation"),
-            )
-            if (
-                allowed is not True
-                or not self.value
-                or self.peer is not peer
-                or self.value["source"]["target"]["value"] != target
-                or self.value.get("state") != "EditingTranslation"
-            ):
-                return
-            # The state transition's render precedes the reply on the host channel;
-            # flush it before asking GTK to focus its editor. No source text is changed.
-            value, revision = self.value, self.revision
-            sent = await self.send_view()
-            self.trace_edit(
-                "render-reply",
-                requestedRevision=revision,
-                sent=sent,
-                sameView=self.value is value,
-                peerMatches=self.peer is peer,
-                visible=self.visible,
-            )
-            if (
-                sent
-                and self.value is value
-                and self.revision == revision
-                and self.peer is peer
-                and self.visible
-            ):
-                peer.link.command("overlay-edit", {"target": target, "allowed": True})
-        except (OSError, EOFError, TimeoutError):
-            self.conceal("transport-unavailable")
-
-    async def set_languages(self, value):
-        if self.settings and isinstance(value, dict):
-            await self.host.ask(
-                "settings",
-                {**self.settings, "source": value.get("source"), "target": value.get("target")},
-            )
-
-    def resume(self):
-        if self.peer and self.value:
-            self.peer.link.command(
-                "overlay-resume", {"target": self.value["source"]["target"]["value"]}
-            )
-
-    def conceal(self, reason):
-        # A transient missing/stale native observation must hide the actual UI,
-        # but cannot discard the host's desired view: DesktopView deduplicates
-        # unchanged renders. Renew retries only after this same target regains
-        # a current, focused native observation, with a new display authority.
-        if self.value and self.peer and os.environ.get("TYPELAY_TRACE"):
-            print(f"typelay-overlay conceal reason={reason} atMs={now_ms()}", file=sys.stderr)
-        self.revision += 1
-        if self.peer and self.peer.link.channel.alive:
-            self.peer.link.command("overlay-hide")
-        self.peer = None
-        self.visible = self.editing = self.acceptance_ready = False
-        self.input.set_overlay_focus(False)
-
-    def hide(self):
-        self.conceal("host-hide")
-        self.value = None
 
 
 class Tutorial:
@@ -809,6 +546,8 @@ class Settings:
         grid.set_margin_end(12)
         scroll.add(grid)
         self.controls = {}
+        self.control_labels = {}
+        function_keys = [(f"F{index}", f"F{index}") for index in range(1, 25)]
         rows = [
             ("enabled", "启用 TypeLay", True),
             ("mode", "工作模式", [("Automatic", "自动模式"), ("OnDemand", "按需模式")]),
@@ -816,6 +555,8 @@ class Settings:
             ("target", "目标语言", [("en", "英语"), ("zh", "中文")]),
             ("wakeShortcut", "唤醒翻译", ""),
             ("directShortcut", "直接翻译替换", ""),
+            ("acceptShortcut", "接受译文", [("Tab", "Tab")] + function_keys),
+            ("exitShortcut", "退出当前翻译", [("Esc", "Esc")] + function_keys),
             ("experimentalWriteback", "启用原生输入框替换", True),
             ("startup", "登录 niri 时启动", True),
             (
@@ -825,7 +566,8 @@ class Settings:
             ),
         ]
         for row, (key, label, choices) in enumerate(rows):
-            grid.attach(Gtk.Label(label=label, xalign=0), 0, row, 1, 1)
+            self.control_labels[key] = Gtk.Label(label=label, xalign=0)
+            grid.attach(self.control_labels[key], 0, row, 1, 1)
             if choices is True:
                 widget = Gtk.Switch()
                 widget.set_halign(Gtk.Align.END)
@@ -833,6 +575,8 @@ class Settings:
                 widget = Gtk.ComboBoxText()
                 for identity, title in choices:
                     widget.append(identity, title)
+                if key in ("acceptShortcut", "exitShortcut"):
+                    widget.set_sensitive(False)
             else:
                 widget = Gtk.Entry()
                 widget.set_max_length(64)
@@ -847,6 +591,8 @@ class Settings:
                         name, control.get_active()
                     ),
                 )
+            elif key in ("acceptShortcut", "exitShortcut"):
+                widget.connect("changed", lambda _control, name=key: self.draft_changed(name))
             elif isinstance(widget, Gtk.ComboBoxText):
                 widget.connect(
                     "changed",
@@ -869,18 +615,22 @@ class Settings:
         exclusions.add(self.excluded)
         grid.attach(exclusions, 1, row, 1, 1)
         note = Gtk.Label(
-            label="普通开关与选择即时保存。快捷键仅在按需模式启用，修改后与应用排除项一起保存。\n"
+            label="普通开关与选择即时保存。唤醒与直接替换仅在按需模式启用；接受与退出用于当前翻译会话。\n"
+            "快捷键修改后与应用排除项一起保存。\n"
             "密码、敏感字段及无法确认输入法状态的控件不会读取或替换。",
             xalign=0,
         )
         note.set_line_wrap(True)
         grid.attach(note, 0, row + 1, 2, 1)
+        self.shortcut_scope = Gtk.Label(xalign=0)
+        self.shortcut_scope.set_line_wrap(True)
+        grid.attach(self.shortcut_scope, 0, row + 2, 2, 1)
         privacy = Gtk.Label(
             label="翻译全部在本机执行，输入和译文不会上传。",
             xalign=0,
         )
         privacy.set_line_wrap(True)
-        grid.attach(privacy, 0, row + 2, 2, 1)
+        grid.attach(privacy, 0, row + 3, 2, 1)
         self.draft_notice = Gtk.Label(xalign=0)
         self.draft_notice.get_accessible().set_name("设置草稿")
         self.draft_notice.set_line_wrap(True)
@@ -920,9 +670,15 @@ class Settings:
         self.loading_draft_messages = True
         try:
             messages = await self.host.ask("settingsDraft", timeout=2)
-            if not isinstance(messages, dict):
+            shortcuts = await self.host.ask("sessionShortcutSettings", timeout=2)
+            if not isinstance(messages, dict) or not isinstance(shortcuts, dict):
                 raise ValueError("settings-draft-unavailable")
             self.draft_messages = messages
+            for key, label in (("acceptShortcut", "acceptLabel"), ("exitShortcut", "exitLabel")):
+                self.control_labels[key].set_text(shortcuts[label])
+                self.controls[key].get_accessible().set_name("设置：" + shortcuts[label])
+                self.controls[key].set_sensitive(True)
+            self.shortcut_scope.set_text(shortcuts["scopeNote"])
             self.save_button.set_label(messages["saveLabel"])
             self.save_button.show()
             for widget in self.controls.values():
@@ -968,6 +724,8 @@ class Settings:
             self.pages.set_current_page(1)
 
     def draft_value(self, key):
+        if key in ("acceptShortcut", "exitShortcut"):
+            return self.controls[key].get_active_id()
         if key != "excludedApplications":
             return self.controls[key].get_text()
         buffer = self.excluded.get_buffer()
@@ -1017,9 +775,29 @@ class Settings:
         async with self.settings_lock:
             draft = {key: self.draft_value(key) for key in self.dirty_controls}
             try:
-                saved = await self.host.ask("settings", {**self.value, **draft})
+                shortcuts = {
+                    name: draft.get(key, self.value[key])
+                    for name, key in (
+                        ("wake", "wakeShortcut"),
+                        ("direct", "directShortcut"),
+                        ("accept", "acceptShortcut"),
+                        ("exit", "exitShortcut"),
+                    )
+                }
+                response = await self.host.ask(
+                    "saveSettingsDraft",
+                    {
+                        "shortcuts": shortcuts,
+                        **(
+                            {"excludedApplications": draft["excludedApplications"]}
+                            if "excludedApplications" in draft
+                            else {}
+                        ),
+                    },
+                )
+                saved = isinstance(response, dict) and response.get("saved") is True
             except (OSError, ValueError, EOFError, TimeoutError):
-                saved = False
+                response, saved = None, False
             if saved:
                 for key, value in draft.items():
                     if self.draft_value(key) == value:
@@ -1027,7 +805,9 @@ class Settings:
                 self.configure(self.value)
             self.render_draft()
             self.message.set_text(
-                self.draft_messages["savedMessage" if saved else "invalidMessage"]
+                response["message"]
+                if isinstance(response, dict) and isinstance(response.get("message"), str)
+                else self.draft_messages["savedMessage" if saved else "invalidMessage"]
             )
 
     def dismiss(self, *_, quit_requested=None):

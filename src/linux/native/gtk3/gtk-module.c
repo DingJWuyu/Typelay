@@ -19,7 +19,11 @@ static char *lifetime;
 static JsonObject *publication, *shortcut_configuration, *shortcut_authority;
 static guint shortcut_key;
 static gboolean shortcut_consumed;
-static gboolean tab_down, tab_consumed, escape_down, escape_consumed;
+/* Bounded session candidates, retained across configuration, field focus and
+ * popover destruction. A refused physical down never becomes a later accept. */
+static struct { guint keycode; guint64 sequence; gboolean consumed; } held_keys[64];
+static guint64 held_sequence, configuration_sequence;
+static gboolean configuring, held_overflow;
 static gboolean initialized;
 static guint64 connection_generation, return_generation, shortcut_sequence;
 static gint64 shortcut_started_at = -1;
@@ -44,6 +48,66 @@ JsonObject *tl_object(JsonObject *object, const char *member) {
     JsonNode *node = json_object_get_member(object, member);
     return JSON_NODE_HOLDS_OBJECT(node) ? json_node_get_object(node) : NULL;
 }
+static gboolean boolean(JsonObject *object, const char *member) {
+    JsonNode *node = object ? json_object_get_member(object, member) : NULL;
+    return node && JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_BOOLEAN
+        && json_node_get_boolean(node);
+}
+static guint session_key(const char *value, gboolean accept) {
+    if (g_strcmp0(value, accept ? "Tab" : "Esc") == 0) return accept ? GDK_KEY_Tab : GDK_KEY_Escape;
+    /* Canonical only: no aliases, leading zeros, modifiers or unknown keys. */
+    for (guint index = 1; index <= 24; index++) {
+        char canonical[4];
+        g_snprintf(canonical, sizeof canonical, "F%u", index);
+        if (g_strcmp0(value, canonical) == 0) return GDK_KEY_F1 + index - 1;
+    }
+    return 0;
+}
+static gboolean valid_pair(void) {
+    guint accept = session_key(tl_string(shortcut_configuration, "accept"), TRUE);
+    guint exit = session_key(tl_string(shortcut_configuration, "exit"), FALSE);
+    return accept && exit && accept != exit;
+}
+gboolean tl_configuration_current(const char *generation) {
+    return !configuring && generation && g_uuid_string_is_valid(generation)
+        && g_strcmp0(generation, tl_string(shortcut_configuration, "generation")) == 0;
+}
+guint tl_session_keyval(gboolean accept) {
+    return !configuring && boolean(shortcut_configuration, "sessionEnabled") && valid_pair()
+        ? session_key(tl_string(shortcut_configuration, accept ? "accept" : "exit"), accept) : 0;
+}
+gboolean tl_session_matches(JsonObject *bindings) {
+    return tl_session_keyval(TRUE) && tl_configuration_current(tl_string(bindings, "generation"))
+        && g_strcmp0(tl_string(bindings, "accept"), tl_string(shortcut_configuration, "accept")) == 0
+        && g_strcmp0(tl_string(bindings, "exit"), tl_string(shortcut_configuration, "exit")) == 0;
+}
+JsonObject *tl_session_bindings(Target *target) {
+    const char *generation = tl_string(shortcut_configuration, "generation");
+    if (!tl_configuration_current(generation) || !valid_pair()) return NULL;
+    JsonObject *bindings = json_object_new();
+    json_object_set_string_member(bindings, "generation", generation);
+    json_object_set_string_member(bindings, "accept", tl_string(shortcut_configuration, "accept"));
+    json_object_set_string_member(bindings, "exit", tl_string(shortcut_configuration, "exit"));
+    GtkWidget *top = target && !target->dead ? gtk_widget_get_toplevel(target->widget) : NULL;
+    gboolean source = initialized && target && !target->dead && GTK_IS_WINDOW(top)
+        && boolean(shortcut_configuration, "sessionEnabled");
+    json_object_set_boolean_member(bindings, "sourceReady", source);
+    /* Read-only rendering can create the editor before its separate capability
+       is confirmed. Never infer an installed editor from a source hook/hello. */
+    json_object_set_boolean_member(bindings, "editorReady", source && tl_overlay_bindings_ready(target));
+    return bindings;
+}
+gboolean tl_view_context_matches(Target *target, JsonObject *view) {
+    JsonObject *context = tl_object(view, "viewContext"), *token = tl_object(context, "token");
+    JsonObject *source = tl_object(token, "target"), *bindings = tl_object(context, "bindings");
+    return target && !target->dead && tl_session_keyval(TRUE)
+        && tl_configuration_current(tl_string(token, "commandGeneration"))
+        && g_strcmp0(tl_string(source, "backend"), "linux-gtk3") == 0
+        && g_strcmp0(tl_string(source, "value"), target->id) == 0
+        && g_strcmp0(tl_string(source, "lifetime"), lifetime) == 0
+        && g_strcmp0(tl_string(bindings, "accept"), tl_string(shortcut_configuration, "accept")) == 0
+        && g_strcmp0(tl_string(bindings, "exit"), tl_string(shortcut_configuration, "exit")) == 0;
+}
 JsonObject *tl_copy(JsonObject *object) {
     JsonObject *copy = json_object_new();
     GList *members = json_object_get_members(object);
@@ -67,6 +131,8 @@ static void clear_shortcut(void) {
 }
 static void disconnect_peer(void) {
     connection_generation++;
+    configuration_sequence++;
+    configuring = FALSE;
     if (connection >= 0) { close(connection); connection = -1; }
     tl_overlay_hide();
     tl_clear_permit();
@@ -126,7 +192,6 @@ void tl_invalidate(Target *target, gboolean text_changed, gboolean focus_changed
     if (focus_changed) {
         target->focus_revision++;
         clear_shortcut();
-        tab_down = escape_down = tab_consumed = escape_consumed = FALSE;
     }
     tl_clear_permit();
     /* Input dispatched by an application's nested loop must still invalidate
@@ -187,6 +252,8 @@ static gboolean await_return(gpointer data) {
    metadata and revisions, never source text or a second provider RPC. */
 static const char *publication_failure(Target *target, JsonObject *current) {
     if (!current || publication != current) return "not-published";
+    if (!tl_configuration_current(tl_string(current, "generation"))
+        || !tl_session_matches(tl_object(tl_object(current, "authority"), "sessionBindings"))) return "generation";
     if (!target || target->dead || target != tl_focused()) return "focus";
     if (target->quarantined || target->mutating || target->im_probing) return "unavailable";
     if (!target->ime_known || target->composing) return "ime";
@@ -291,7 +358,8 @@ static void command(JsonObject *frame) {
     else if (strcmp(operation, "return") == 0) {
         return_generation++;
         JsonObject *basis = tl_object(data, "authority");
-        gboolean focused = tl_return(target, basis);
+        gboolean focused = tl_configuration_current(tl_string(data, "generation"))
+            && tl_session_matches(tl_object(basis, "sessionBindings")) && tl_return(target, basis);
         gboolean ready = focused && tl_return_ready(target, basis);
         if (focused && !ready) {
             PendingReturn *pending = g_new0(PendingReturn, 1);
@@ -309,9 +377,20 @@ static void command(JsonObject *frame) {
         if (target) target->quarantined = TRUE;
         tl_clear_permit(); clear_shortcut(); respond(id, NULL);
     } else if (strcmp(operation, "configure-shortcuts") == 0) {
+        /* Revoke first. No callback may observe a new binding with an old permit.
+           Nested GTK callbacks may install a newer request while revoking UI. */
+        guint64 sequence = ++configuration_sequence;
+        configuring = TRUE;
+        tl_clear_permit();
+        if (sequence != configuration_sequence) { respond(id, NULL); return; }
         clear_shortcut();
+        return_generation++;
+        tl_overlay_hide();
+        if (sequence != configuration_sequence) { respond(id, NULL); return; }
+        JsonObject *next = data ? tl_copy(data) : NULL;
         if (shortcut_configuration) json_object_unref(shortcut_configuration);
-        shortcut_configuration = data ? tl_copy(data) : NULL;
+        shortcut_configuration = next;
+        configuring = FALSE;
         respond(id, NULL);
     } else if (strcmp(operation, "trigger-shortcut") == 0) {
         JsonObject *basis = tl_object(data, "authority");
@@ -336,7 +415,11 @@ static void command(JsonObject *frame) {
     } else if (strcmp(operation, "publish") == 0) {
         tl_clear_permit();
         JsonObject *basis = tl_object(data, "authority");
-        if (target && target == tl_focused() && tl_metadata_matches(target, basis)) publication = tl_copy(data);
+        if (target && target == tl_focused() && tl_metadata_matches(target, basis)
+            && tl_configuration_current(tl_string(data, "generation"))
+            && tl_session_matches(tl_object(basis, "sessionBindings"))
+            && g_strcmp0(tl_string(tl_object(data, "lease"), "commandGeneration"), tl_string(data, "generation")) == 0)
+            publication = tl_copy(data);
         /* The observation may revoke publication; reacquire it only afterwards. */
         if (publication) (void)tl_ime_clear(target);
         refresh_acceptance();
@@ -612,47 +695,53 @@ static gboolean shortcut_event(GdkEventKey *event) {
     if (shortcut_key == event->hardware_keycode) shortcut_consumed = consumed;
     return consumed;
 }
-static gboolean key_event(GdkEventKey *event) {
-    gboolean down = event->type == GDK_KEY_PRESS;
-    gboolean is_tab = event->keyval == GDK_KEY_Tab || event->keyval == GDK_KEY_ISO_Left_Tab;
-    gboolean is_escape = event->keyval == GDK_KEY_Escape;
-    if (!is_tab && !is_escape) return FALSE;
-    gboolean *held = is_tab ? &tab_down : &escape_down, *consumed = is_tab ? &tab_consumed : &escape_consumed;
-    if (!down) { gboolean result = *held && *consumed; *held = *consumed = FALSE; return result; }
-    if (*held) return *consumed;
-    *held = TRUE; *consumed = FALSE;
+static gboolean acceptance_event(GdkEventKey *event) {
+    gboolean is_accept = event->keyval == tl_session_keyval(TRUE);
+    gboolean is_exit = event->keyval == tl_session_keyval(FALSE);
+    if (!is_accept && !is_exit) return FALSE;
+    gboolean consumed = FALSE;
     Target *target = tl_focused();
     JsonObject *current = publication ? json_object_ref(publication) : NULL;
     gboolean clear = tl_ime_clear(target);
     guint modified = event->state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_MOD1_MASK | GDK_MOD3_MASK
         | GDK_MOD4_MASK | GDK_MOD5_MASK | GDK_SUPER_MASK | GDK_HYPER_MASK | GDK_META_MASK);
-    if (!clear || !publication || modified || event->send_event) {
-        if (is_tab) trace_tab(!clear ? "ime" : !publication ? "not-published"
+    if (!clear || !current || publication != current || !tl_session_matches(tl_object(tl_object(current, "authority"), "sessionBindings")) || modified || event->send_event) {
+        if (is_accept) trace_tab(!clear ? "ime" : !publication ? "not-published"
             : modified ? "modified" : "nonphysical", target, current, NULL);
         if (current) json_object_unref(current);
         tl_clear_permit(); return FALSE;
     }
-    JsonObject *basis = tl_object(publication, "authority");
+    JsonObject *basis = tl_object(current, "authority");
     if (g_strcmp0(target->id, tl_string(basis, "target")) != 0
         || (gint64)target->input_revision != tl_integer(basis, "inputRevision", -1)
         || (gint64)target->focus_revision != tl_integer(basis, "focusRevision", -1)
         || !tl_metadata_matches(target, basis)) {
-        if (is_tab) trace_tab("authority", target, current, NULL);
+        if (is_accept) trace_tab("authority", target, current, NULL);
         json_object_unref(current);
         tl_clear_permit(); return FALSE;
     }
-    if (is_escape) {
-        JsonObject *lease = tl_object(publication, "lease");
+    if (is_exit) {
+        JsonObject *lease = tl_object(current, "lease");
         JsonObject *source = tl_object(lease, "source");
         gint64 age = tl_now() - tl_integer(source, "observedAtMs", 0);
         gboolean allowed = lease && json_object_has_member(lease, "escapeAllowed")
-            && json_object_get_boolean_member(lease, "escapeAllowed") && age >= 0 && age <= 150;
+            && json_object_get_boolean_member(lease, "escapeAllowed") && age >= 0 && age <= 150
+            && tl_integer(lease, "sessionRevision", -1) >= 0
+            && tl_configuration_current(tl_string(current, "generation"))
+            && g_strcmp0(tl_string(lease, "commandGeneration"), tl_string(current, "generation")) == 0;
+        JsonObject *message = json_object_new();
+        if (allowed) {
+            json_object_set_string_member(message, "target", target->id);
+            json_object_set_string_member(message, "generation", tl_string(current, "generation"));
+            json_object_set_int_member(message, "sessionRevision", tl_integer(lease, "sessionRevision", -1));
+        }
         json_object_unref(current);
         tl_clear_permit();
-        if (allowed) { tl_send_event("escape", json_object_new()); *consumed = TRUE; }
-        return *consumed;
+        if (allowed) { tl_send_event("escape", message); consumed = TRUE; }
+        else json_object_unref(message);
+        return consumed;
     }
-    JsonObject *permit = tl_object(publication, "permit"), *plan = tl_object(permit, "plan");
+    JsonObject *permit = tl_object(current, "permit"), *plan = tl_object(permit, "plan");
     const char *id = tl_string(plan, "id");
     const char *failure = publication_failure(target, current);
     if (failure) {
@@ -661,6 +750,7 @@ static gboolean key_event(GdkEventKey *event) {
         tl_clear_permit(); return FALSE;
     }
     JsonObject *request = json_object_new();
+    json_object_set_string_member(request, "generation", tl_string(current, "generation"));
     json_object_set_object_member(request, "plan", tl_copy(plan));
     json_object_set_object_member(request, "authority", tl_copy(basis));
     json_object_set_int_member(request, "expiresAtMs", tl_integer(permit, "expiresAtMs", 0));
@@ -677,25 +767,57 @@ static gboolean key_event(GdkEventKey *event) {
         json_object_set_int_member(message, "acceptedAtMs", accepted);
         json_object_set_object_member(message, "receipt", reply);
         tl_send_event("accepted", message);
-        *consumed = TRUE;
+        consumed = TRUE;
     } else {
         trace_tab("write-rejected", target, current, reply);
         json_object_unref(reply);
     }
     json_object_unref(current);
     g_free(plan_id);
-    return *consumed;
+    return consumed;
+}
+gboolean tl_dispatch_key(GdkEvent *event) {
+    if (!event || (event->type != GDK_KEY_PRESS && event->type != GDK_KEY_RELEASE)) return FALSE;
+    GdkEventKey *key = &event->key;
+    guint keyval = key->keyval, keycode = key->hardware_keycode;
+    gboolean down = event->type == GDK_KEY_PRESS, physical = !key->send_event;
+    GdkModifierType state = key->state;
+    if (!physical || !keycode) return FALSE;
+    gint empty = -1;
+    for (guint index = 0; index < G_N_ELEMENTS(held_keys); index++) {
+        if (held_keys[index].keycode == keycode) {
+            gboolean consumed = held_keys[index].consumed;
+            if (!down) { held_keys[index].keycode = 0; (void)shortcut_event(key); }
+            return consumed;
+        }
+        if (!held_keys[index].keycode && empty < 0) empty = (gint)index;
+    }
+    gboolean candidate = keyval == GDK_KEY_Tab || keyval == GDK_KEY_ISO_Left_Tab
+        || keyval == GDK_KEY_Escape || (keyval >= GDK_KEY_F1 && keyval <= GDK_KEY_F24);
+    if (!candidate) return shortcut_event(key);
+    if (!down || held_overflow) return FALSE;
+    /* Saturation must never turn an untracked held press into a fresh command
+       when another slot is released. Remain fail-closed for this module lifetime. */
+    if (empty < 0) { held_overflow = TRUE; return FALSE; }
+    guint64 sequence = ++held_sequence;
+    held_keys[empty].keycode = keycode;
+    held_keys[empty].sequence = sequence;
+    held_keys[empty].consumed = FALSE;
+    gboolean consumed = tl_overlay_key(keyval, state) || shortcut_event(key) || acceptance_event(key);
+    if (held_keys[empty].keycode == keycode && held_keys[empty].sequence == sequence)
+        held_keys[empty].consumed = consumed;
+    return consumed;
 }
 static void dispatch(GdkEvent *event, gpointer data) {
     (void)data;
     /* Keyboard focus leaving a surface can deliver its release to another
-       process. Field/config changes keep the pair; surface loss retires it. */
+       process. Only the older command-hotkey latch is retired here; session
+       candidates stay fail-closed until an observed release, including popovers. */
     if (event->type == GDK_FOCUS_CHANGE && !event->focus_change.in && !event->focus_change.send_event) {
         shortcut_key = 0; shortcut_consumed = FALSE;
     }
-    if (tl_overlay_event(event)) return;
+    if (tl_dispatch_key(event)) return;
     if (event->type == GDK_KEY_PRESS || event->type == GDK_KEY_RELEASE) {
-        if (shortcut_event(&event->key) || key_event(&event->key)) return;
         if (event->type == GDK_KEY_PRESS) {
             Target *target = tl_focused();
             if (target) tl_invalidate(target, FALSE, FALSE);

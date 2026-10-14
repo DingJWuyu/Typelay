@@ -5,6 +5,153 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class SessionControllerTests
 {
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("generation")]
+    [InlineData("target")]
+    [InlineData("bindings")]
+    [InlineData("source")]
+    public void UnconfirmedSessionBindingsKeepPreviewWithoutAcceptanceOrEditing(string mismatch)
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.Service.TransformAcknowledgement = acknowledgement => mismatch switch
+        {
+            "missing" => null,
+            "generation" => acknowledgement with { Generation = Guid.NewGuid() },
+            "target" => acknowledgement with { Target = new("controlled", "other", Guid.NewGuid()) },
+            "bindings" => acknowledgement with { Bindings = SessionShortcutBindings.Restore("F8", "F7") },
+            _ => acknowledgement with { SourceReady = false }
+        };
+        s.ReadyCandidate();
+        Assert.Equal("translated", s.View.Preview);
+        Assert.Null(s.Input.Permit);
+        Assert.NotNull(s.View.Context);
+        Assert.Equal(s.Input.CommandGeneration, s.View.Token.CommandGeneration);
+        Assert.Equal(s.Source.Target, s.View.Token.Target);
+        Assert.False(s.View.Context.CanEdit);
+        Assert.False(s.View.BeginEditing!(s.View.Token));
+        Assert.All(s.Input.PublishedLeases, lease => Assert.False(lease.EscapeAllowed));
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void SourceAcknowledgementDoesNotImplyEditorSupport()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.Service.TransformAcknowledgement = acknowledgement => acknowledgement with { EditorReady = false };
+        s.ReadyCandidate();
+        Assert.NotNull(s.Input.Permit);
+        Assert.False(s.View.Context!.CanEdit);
+        Assert.False(s.View.BeginEditing!(s.View.Token));
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void SessionBindingsRemainActiveInAutomaticModeAndUseTheApprovedViewToken()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.Settings.Update(s.Settings.Value with
+        {
+            AcceptShortcut = "F8",
+            ExitShortcut = "F7"
+        });
+        s.ReadyCandidate();
+        Assert.False(s.Input.ShortcutsEnabled);
+        Assert.True(s.Input.SessionEnabled);
+        Assert.Equal("F8", s.View.Context!.Bindings.Accept);
+        Assert.Equal("F7", s.View.Context.Bindings.Exit);
+        var obsolete = s.View.Token;
+        Assert.True(s.View.BeginEditing!(obsolete));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("keep manual draft");
+        s.View.ReturnRequested!(obsolete);
+        s.View.EscapeRequested!(obsolete);
+        Assert.Equal(0, s.Service.Returns);
+        Assert.Equal(SessionState.EditingTranslation, s.View.State);
+        s.View.ReturnRequested!(s.View.Token);
+        Assert.Equal(1, s.Service.Returns);
+        Assert.Empty(s.Service.Writes);
+        s.Tick();
+        Assert.Equal("keep manual draft", s.View.Preview);
+        Assert.NotNull(s.Input.Permit);
+    }
+
+    [Fact]
+    public void ReconfigurationRetiresQueuedViewAndSourceEscapeCommands()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        var token = s.View.Token;
+        var lease = s.Input.PublishedLeases.Last();
+        s.Settings.Update(s.Settings.Value with
+        {
+            AcceptShortcut = "F8",
+            ExitShortcut = "F7"
+        });
+        s.ReadyCandidate();
+        s.Input.Notices.Enqueue(new("escape", AcceptedAtMs: s.Loop.NowMs,
+            UserEpoch: s.Input.UserEpoch, ForegroundEpoch: s.Input.ForegroundEpoch,
+            CommandGeneration: lease.CommandGeneration, Target: lease.Source.Target, SessionRevision: lease.SessionRevision));
+        Assert.False(s.View.BeginEditing!(token));
+        s.View.ReturnRequested!(token);
+        s.View.EscapeRequested!(token);
+        s.Tick();
+        Assert.Equal("translated", s.View.Preview);
+        Assert.Equal(0, s.Service.Returns);
+        Assert.Empty(s.Service.Writes);
+        Assert.NotEqual(token.CommandGeneration, s.View.Token.CommandGeneration);
+    }
+
+    [Fact]
+    public void ReturningToAnEarlierFieldDuringCaptureDoesNotReviveItsOldViewToken()
+    {
+        using var s = new SessionScenario();
+        s.ReadyCandidate();
+        var original = s.Source;
+        var token = s.View.Token;
+        CompleteFieldChange(original with
+        {
+            Target = new("controlled", "field-b", Guid.NewGuid())
+        });
+        CompleteFieldChange(original);
+        s.Tick(Limits.DebounceMs);
+        s.CompleteTranslation("new translation");
+        s.Tick();
+        s.View.EscapeRequested!(token);
+        Assert.Equal("new translation", s.View.Preview);
+        Assert.True(s.View.Visible);
+        Assert.NotEqual(token.Revision, s.View.Token.Revision);
+
+        void CompleteFieldChange(InputSnapshot next)
+        {
+            s.Service.PendingCapture = new();
+            s.Tick();
+            s.Source = next;
+            s.Input.FocusedTarget = next.Target;
+            // Same top-level window: the change completes inside the outstanding
+            // capture, before Tick can retire the old family by polling focus.
+            s.CompleteCapture(new(s.Fresh, FocusMember.Source, "controlled", s.Input.UserEpoch, s.Input.ForegroundEpoch,
+                new(next.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true)));
+        }
+    }
+
+    [Fact]
+    public void OldEscapeCannotDismissANewSessionAtTheSameTargetAndConfiguration()
+    {
+        using var s = new SessionScenario();
+        s.ReadyCandidate();
+        var lease = s.Input.PublishedLeases.Last();
+        s.Controller.StopSession();
+        s.ReadyCandidate();
+        Assert.NotEqual(lease.SessionRevision, s.View.Token.Revision);
+        s.Input.Notices.Enqueue(new("escape", AcceptedAtMs: s.Loop.NowMs,
+            UserEpoch: s.Input.UserEpoch, ForegroundEpoch: s.Input.ForegroundEpoch,
+            CommandGeneration: lease.CommandGeneration, Target: lease.Source.Target, SessionRevision: lease.SessionRevision));
+        s.Tick();
+        Assert.Equal("translated", s.View.Preview);
+        Assert.True(s.View.Visible);
+    }
+
     [Fact]
     public void ResumeRecoveryDoesNotEraseANewerUnconfirmedNativeWriteStatus()
     {
@@ -116,7 +263,7 @@ public sealed class SessionControllerTests
         });
         s.Tick();
         long revision = s.View.PauseRevision;
-        s.View.EscapeRequested!();
+        s.View.EscapeRequested!(s.View.Token);
         s.View.RegenerateRequested!();
         s.View.ExcludeRequested!();
         Assert.True(s.View.Visible);
@@ -405,7 +552,7 @@ public sealed class SessionControllerTests
     {
         using var s = new SessionScenario(experimental: true);
         s.ReadyCandidate();
-        Assert.True(s.View.BeginEditing!());
+        Assert.True(s.View.BeginEditing!(s.View.Token));
         s.View.DraftChanged!("private draft");
         int captures = s.Service.Captures;
         int jobs = s.Model.Jobs.Count;
@@ -762,7 +909,7 @@ public sealed class SessionControllerTests
         s.ReadyCandidate();
         Assert.Equal("untrusted text", s.Model.Jobs.Single().SourceText);
         Assert.Equal("translated", s.View.Preview);
-        Assert.False(s.View.BeginEditing!());
+        Assert.False(s.View.BeginEditing!(s.View.Token));
         Assert.Null(s.Input.Permit);
         Assert.Empty(s.Service.Writes);
     }
@@ -902,19 +1049,19 @@ public sealed class SessionControllerTests
         using var s = new SessionScenario(experimental: true);
         s.ReadyCandidate();
         Assert.NotNull(s.Input.Permit);
-        Assert.True(s.View.BeginEditing!());
+        Assert.True(s.View.BeginEditing!(s.View.Token));
         s.Input.InEditor = true;
         s.View.DraftChanged!("manual draft");
         s.Tick();
         Assert.Null(s.Input.Permit);
-        s.View.ReturnRequested!();
+        s.View.ReturnRequested!(s.View.Token);
         Assert.Equal(1, s.Service.Returns);
         Assert.Empty(s.Service.Writes);
         s.Tick();
         Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
         Assert.Equal("manual draft", s.View.Preview);
         var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
-        s.Input.Notices.Enqueue(new("accept", permit, s.Loop.NowMs, s.Input.UserEpoch, s.Input.ForegroundEpoch));
+        s.Input.Notices.Enqueue(new("accept", permit, s.Loop.NowMs, s.Input.UserEpoch, s.Input.ForegroundEpoch, CommandGeneration: s.Input.CommandGeneration));
         s.Tick();
         Assert.Equal("manual draft", Assert.Single(s.Service.Writes).Replacement);
         Assert.Equal(SessionState.OutcomeUnknown, s.View.State);
@@ -927,11 +1074,11 @@ public sealed class SessionControllerTests
     {
         using var s = new SessionScenario();
         s.ReadyCandidate();
-        Assert.True(s.View.BeginEditing!());
+        Assert.True(s.View.BeginEditing!(s.View.Token));
         s.Input.InEditor = true;
         s.View.DraftChanged!("keep draft");
         s.Service.ReturnAllowed = false;
-        s.View.ReturnRequested!();
+        s.View.ReturnRequested!(s.View.Token);
         Assert.Equal(1, s.View.Resumes);
         Assert.Equal(SessionState.EditingTranslation, s.View.State);
         Assert.Equal("keep draft", s.View.Draft);
@@ -945,12 +1092,12 @@ public sealed class SessionControllerTests
     {
         using var s = new SessionScenario(experimental: true);
         s.ReadyCandidate();
-        Assert.True(s.View.BeginEditing!());
+        Assert.True(s.View.BeginEditing!(s.View.Token));
         s.Input.InEditor = true;
         s.View.DraftChanged!("retained draft");
         var pending = s.Service.PendingReturn = new();
         int captures = s.Service.Captures;
-        s.View.ReturnRequested!();
+        s.View.ReturnRequested!(s.View.Token);
         s.Tick(200);
         Assert.Equal(captures, s.Service.Captures);
         Assert.Null(s.Input.Permit);
@@ -974,7 +1121,7 @@ public sealed class SessionControllerTests
         var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
         s.Service.PendingCapture = new();
         s.Tick();
-        s.Input.Notices.Enqueue(new("accept", permit, s.Loop.NowMs, s.Input.UserEpoch, s.Input.ForegroundEpoch));
+        s.Input.Notices.Enqueue(new("accept", permit, s.Loop.NowMs, s.Input.UserEpoch, s.Input.ForegroundEpoch, CommandGeneration: s.Input.CommandGeneration));
         var changed = s.Fresh with
         {
             Text = "new observation",
@@ -1020,7 +1167,7 @@ public sealed class SessionControllerTests
         s.CompleteCapture(new(null));
         s.FocusAnotherField();
         s.ReadyCandidate();
-        Assert.True(s.View.BeginEditing!());
+        Assert.True(s.View.BeginEditing!(s.View.Token));
         s.Input.InEditor = true;
         s.View.DraftChanged!("keep newer draft");
         s.Input.Notices.Enqueue(new("accept", permit, CompletedReceipt:
@@ -1029,7 +1176,7 @@ public sealed class SessionControllerTests
         Assert.Empty(s.Service.Writes);
         Assert.Equal(SessionState.EditingTranslation, s.View.State);
         Assert.Contains("原目标已隔离", s.Controller.ServiceStatus);
-        s.View.ReturnRequested!();
+        s.View.ReturnRequested!(s.View.Token);
         s.Tick();
         Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
         Assert.Equal("keep newer draft", s.View.Preview);
@@ -1044,7 +1191,7 @@ public sealed class SessionControllerTests
         s.ReadyCandidate();
         var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
         long accepted = expired ? s.Loop.NowMs - Limits.WriteExecutionMaxAgeMs - 1 : s.Loop.NowMs;
-        s.Input.Notices.Enqueue(new("accept", permit, accepted, s.Input.UserEpoch, s.Input.ForegroundEpoch));
+        s.Input.Notices.Enqueue(new("accept", permit, accepted, s.Input.UserEpoch, s.Input.ForegroundEpoch, CommandGeneration: s.Input.CommandGeneration));
         if (!expired)
             s.Input.UserEpoch++;
         s.Tick();

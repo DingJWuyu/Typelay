@@ -11,21 +11,21 @@ public sealed class AcceptanceBehaviorTests
     {
         var (g, p, c) = NewGate();
         g.Publish(p);
-        Check(g.ProcessTab(true, c).Permit == p);
-        Check(g.ProcessTab(true, c).Permit is null);
-        Check(g.ProcessTab(false, c).Consume);
-        Check(!g.ProcessTab(false, c).Consume);
+        Check(g.ProcessAcceptanceKey(new(9, true, false, true), c).Permit == p);
+        Check(g.ProcessAcceptanceKey(new(9, true, false, true), c).Permit is null);
+        Check(g.ProcessAcceptanceKey(new(9, false, false, true), c).Consume);
+        Check(!g.ProcessAcceptanceKey(new(9, false, false, true), c).Consume);
     }
 
     [Fact(DisplayName = "passed-held-tab-cannot-start-accepting-on-repeat")]
     public void PassedHeldTabCannotStartAcceptingOnRepeat()
     {
         var (g, p, c) = NewGate();
-        Check(!g.ProcessTab(true, c).Consume);
+        Check(!g.ProcessAcceptanceKey(new(9, true, false, true), c).Consume);
         g.Publish(p);
-        Check(!g.ProcessTab(true, c).Consume);
-        Check(!g.ProcessTab(false, c).Consume);
-        Check(g.ProcessTab(true, c).Consume);
+        Check(!g.ProcessAcceptanceKey(new(9, true, false, true), c).Consume);
+        Check(!g.ProcessAcceptanceKey(new(9, false, false, true), c).Consume);
+        Check(g.ProcessAcceptanceKey(new(9, true, false, true), c).Consume);
     }
 
     [Fact(DisplayName = "expired-permit-passes-tab")]
@@ -33,7 +33,7 @@ public sealed class AcceptanceBehaviorTests
     {
         var (g, p, c) = NewGate();
         g.Publish(p);
-        Check(!g.ProcessTab(true, c with
+        Check(!g.ProcessAcceptanceKey(new(9, true, false, true), c with
         {
             NowMs = 1401
         }).Consume);
@@ -44,7 +44,7 @@ public sealed class AcceptanceBehaviorTests
     {
         var (g, p, c) = NewGate();
         g.Publish(p);
-        Check(!g.ProcessTab(true, c with
+        Check(!g.ProcessAcceptanceKey(new(9, true, false, true), c with
         {
             ProviderLeaseFresh = false
         }).Consume);
@@ -55,7 +55,7 @@ public sealed class AcceptanceBehaviorTests
     {
         var (g, p, c) = NewGate();
         g.Publish(p);
-        Check(!g.ProcessTab(true, c with
+        Check(!g.ProcessAcceptanceKey(new(9, true, false, true), c with
         {
             Ime = ImeState.Unknown
         }).Consume);
@@ -66,7 +66,7 @@ public sealed class AcceptanceBehaviorTests
     {
         var (g, p, c) = NewGate();
         g.Publish(p);
-        Check(!g.ProcessTab(true, c with
+        Check(!g.ProcessAcceptanceKey(new(9, true, false, true), c with
         {
             Target = B
         }).Consume);
@@ -77,11 +77,11 @@ public sealed class AcceptanceBehaviorTests
     {
         var (g, p, c) = NewGate();
         g.Publish(p);
-        Check(!g.ProcessTab(true, c with
+        Check(!g.ProcessAcceptanceKey(new(9, true, false, true), c with
         {
             Injected = true
         }).Consume);
-        Check(!g.ProcessTab(true, c).Consume);
+        Check(!g.ProcessAcceptanceKey(new(9, true, false, true), c).Consume);
     }
 
     [Fact(DisplayName = "automation-injected-tab-consumes-one-down-up-pair")]
@@ -93,10 +93,10 @@ public sealed class AcceptanceBehaviorTests
             Injected = true
         };
         g.Publish(p);
-        Check(g.ProcessTab(true, c).Permit == p);
+        Check(g.ProcessAcceptanceKey(new(9, true, false, true), c).Permit == p);
         g.Publish(p);
-        Check(g.ProcessTab(true, c).Permit is null);
-        Check(g.ProcessTab(false, c).Consume && !g.ProcessTab(false, c).Consume);
+        Check(g.ProcessAcceptanceKey(new(9, true, false, true), c).Permit is null);
+        Check(g.ProcessAcceptanceKey(new(9, false, false, true), c).Consume && !g.ProcessAcceptanceKey(new(9, false, false, true), c).Consume);
     }
 
     [Fact(DisplayName = "gate-revoke-prevents-accept")]
@@ -105,7 +105,7 @@ public sealed class AcceptanceBehaviorTests
         var (g, p, c) = NewGate();
         g.Publish(p);
         g.Revoke();
-        Check(!g.ProcessTab(true, c).Consume);
+        Check(!g.ProcessAcceptanceKey(new(9, true, false, true), c).Consume);
     }
 
     [Fact(DisplayName = "broker-timeout-cannot-extend-tab-permit")]
@@ -124,4 +124,64 @@ public sealed class AcceptanceBehaviorTests
         Check(thrown);
     }
 
+    [Fact]
+    public void ConfiguredFunctionKeyUsesTheSamePermitOnce()
+    {
+        var (gate, permit, context) = NewGate();
+        gate.Publish(permit);
+        Assert.Equal(permit, gate.ProcessAcceptanceKey(new(119, true, false, true), context).Permit);
+        Assert.Null(gate.ProcessAcceptanceKey(new(119, true, true, true), context).Permit);
+        Assert.True(gate.ProcessAcceptanceKey(new(119, false, false, true), context).Consume);
+    }
+
+    [Fact]
+    public void OldConsumedKeyKeepsItsReleaseAcrossRebindingAndFocusLoss()
+    {
+        var (gate, permit, context) = NewGate();
+        gate.Publish(permit);
+        Assert.True(gate.ProcessAcceptanceKey(new(9, true, false, true), context).Consume);
+        gate.Revoke();
+        gate.Publish(permit);
+        Assert.False(gate.ProcessAcceptanceKey(new(119, true, false, true), context).Consume);
+        Assert.False(gate.ProcessAcceptanceKey(new(119, false, false, true), context).Consume);
+        var unfocused = context with
+        {
+            SourceFocused = false,
+            NowMs = 9000
+        };
+        Assert.True(gate.ProcessAcceptanceKey(new(9, true, true, false), unfocused).Consume);
+        Assert.True(gate.ProcessAcceptanceKey(new(9, false, false, false), unfocused).Consume);
+        Assert.False(gate.ProcessAcceptanceKey(new(9, false, false, false), unfocused).Consume);
+        Assert.False(gate.ProcessAcceptanceKey(new(119, true, false, true), context).Consume);
+    }
+
+    [Fact]
+    public void AKeyAlreadyHeldBeforeItBecomesTheBindingCannotAcceptOnRepeat()
+    {
+        var (gate, permit, context) = NewGate();
+        Assert.False(gate.ProcessAcceptanceKey(new(119, true, false, false), context).Consume);
+        gate.Publish(permit);
+        Assert.False(gate.ProcessAcceptanceKey(new(119, true, true, true), context).Consume);
+        Assert.False(gate.ProcessAcceptanceKey(new(119, false, false, true), context).Consume);
+        Assert.Equal(permit, gate.ProcessAcceptanceKey(new(119, true, false, true), context).Permit);
+    }
+
+    [Fact]
+    public void AConfiguredFunctionKeyStillRejectsUnclearImeOrAnExpiredPermit()
+    {
+        foreach (bool expired in new[] { false, true })
+        {
+            var (gate, permit, context) = NewGate();
+            gate.Publish(permit);
+            context = expired ? context with
+            {
+                NowMs = 1401
+            } : context with
+            {
+                Ime = ImeState.Unknown
+            };
+            Assert.False(gate.ProcessAcceptanceKey(new(119, true, false, true), context).Consume);
+            Assert.False(gate.ProcessAcceptanceKey(new(119, false, false, true), context).Consume);
+        }
+    }
 }

@@ -6,6 +6,16 @@ namespace TypeLay.Core.Tests;
 public sealed class IdleCapsuleBehaviorTests
 {
     [Fact]
+    public void ConfiguredAcceptanceHintPreservesTwoStageEditingAndPausedMessage()
+    {
+        var bindings = SessionShortcutBindings.Restore("F8", "F7");
+        Assert.Equal("F8 接受译文", Presentation.From(SessionState.ValidTranslation, true, shortcuts: bindings).TabHint);
+        Assert.Equal("F8 交还应用", Presentation.From(SessionState.ValidTranslation, false, shortcuts: bindings).TabHint);
+        Assert.Equal("F8 返回原输入框", Presentation.From(SessionState.EditingTranslation, false, shortcuts: bindings).TabHint);
+        Assert.Equal("点击恢复", Presentation.From(SessionState.Paused, false, hasPauseAnchor: true, shortcuts: bindings).TabHint);
+    }
+
+    [Fact]
     public void EnteringAnEmptySupportedFieldShowsLanguageUiWithoutTranslating()
     {
         var session = NewSession();

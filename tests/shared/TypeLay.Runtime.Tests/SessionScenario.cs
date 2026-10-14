@@ -95,7 +95,7 @@ internal sealed class SessionScenario : IDisposable
     public InputSnapshot Fresh => Source with { ObservedAtMs = Loop.NowMs };
     public void Command(string kind) => Input.Notices.Enqueue(new(kind, AcceptedAtMs: Loop.NowMs,
         UserEpoch: Input.UserEpoch, ForegroundEpoch: Input.ForegroundEpoch,
-        Source: Fresh, CommandGeneration: Input.CommandGeneration));
+        Source: Fresh, CommandGeneration: Input.CommandGeneration, Target: Source.Target, SessionRevision: View.Token.Revision));
     public void FocusAnotherField()
     {
         Source = Source with
@@ -183,9 +183,16 @@ internal sealed class SessionScenario : IDisposable
         }
         public FocusMember GetFocus(TargetId target) => InEditor ? FocusMember.Overlay
             : target == FocusedTarget ? FocusMember.Source : FocusMember.Other;
-        public void ConfigureShortcuts(bool enabled, string wake, string direct)
+        public SessionShortcutBindings SessionBindings { get; private set; } = SessionShortcutBindings.Default;
+        public bool SessionEnabled
+        {
+            get; private set;
+        }
+        public void ConfigureShortcuts(bool enabled, string wake, string direct, SessionShortcutBindings sessionBindings, bool sessionEnabled)
         {
             ShortcutsEnabled = enabled;
+            SessionBindings = sessionBindings;
+            SessionEnabled = sessionEnabled;
             CommandGeneration = Guid.NewGuid();
         }
         public bool TryRead(out InputNotice? notice) => Notices.TryDequeue(out notice);
@@ -247,11 +254,14 @@ internal sealed class SessionScenario : IDisposable
             Available = true;
             return Task.CompletedTask;
         }
+        public Func<SessionShortcutAcknowledgement, SessionShortcutAcknowledgement?> TransformAcknowledgement { get; set; } = value => value;
         public Task<InputCapture> CaptureAsync(InputContext context)
         {
             Captures++;
             return PendingCapture?.Task ?? Task.FromResult(new InputCapture(host.Fresh,
-                host.Input.GetFocus(host.Source.Target), "org.typelay.ControlledApp", context.UserEpoch, context.ForegroundEpoch));
+                host.Input.GetFocus(host.Source.Target), "org.typelay.ControlledApp", context.UserEpoch, context.ForegroundEpoch,
+                TransformAcknowledgement(new(host.Source.Target, host.Input.CommandGeneration, host.Input.SessionBindings,
+                    host.Input.SessionEnabled, host.Input.SessionEnabled))));
         }
         public List<InputContext> PauseRequests { get; } = [];
         public TaskCompletionSource<PauseObservation>? PendingPauseObservation
@@ -316,7 +326,7 @@ internal sealed class SessionScenario : IDisposable
     }
     internal sealed class SessionView : ISessionView
     {
-        public Func<bool>? BeginEditing
+        public Func<SessionViewToken, bool>? BeginEditing
         {
             get; set;
         }
@@ -324,11 +334,11 @@ internal sealed class SessionScenario : IDisposable
         {
             get; set;
         }
-        public Action? ReturnRequested
+        public Action<SessionViewToken>? ReturnRequested
         {
             get; set;
         }
-        public Action? EscapeRequested
+        public Action<SessionViewToken>? EscapeRequested
         {
             get; set;
         }
@@ -377,8 +387,14 @@ internal sealed class SessionScenario : IDisposable
         public void Configure(UserSettings settings)
         {
         }
-        public void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null)
+        public SessionViewContext? Context
         {
+            get; private set;
+        }
+        public SessionViewToken Token => Context?.Token ?? new(new("none", "none", Guid.Empty), Guid.Empty, -1);
+        public void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null, SessionViewContext? context = null)
+        {
+            Context = context;
             State = session.State;
             Preview = session.Preview;
             Draft = session.Draft;
@@ -387,6 +403,7 @@ internal sealed class SessionScenario : IDisposable
         }
         public void RenderPaused(PauseAnchor anchor, long revision)
         {
+            Context = null;
             Anchor = anchor;
             PauseRevision = revision;
             State = SessionState.Paused;
@@ -396,6 +413,7 @@ internal sealed class SessionScenario : IDisposable
         }
         public void HideQuietly()
         {
+            Context = null;
             Visible = false;
             Anchor = null;
         }

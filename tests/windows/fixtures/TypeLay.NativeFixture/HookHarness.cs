@@ -70,7 +70,7 @@ internal sealed class HookHarness : IDisposable
             var permit = plan is null ? null : new AcceptancePermit(plan, snapshot.InputEpoch, snapshot.FocusEpoch,
                 snapshot.ObservedAtMs, snapshot.ObservedAtMs + Limits.PermitMaxAgeMs);
             bool escape = _session.State is SessionState.ValidTranslation or SessionState.Translating;
-            _hook.Publish(new(snapshot, _hook.UserEpoch, _hook.ForegroundEpoch, escape), permit);
+            _hook.Publish(new(snapshot, _hook.UserEpoch, _hook.ForegroundEpoch, escape, _hook.CommandGeneration), permit);
         }
         string report = JsonSerializer.Serialize(new
         {
