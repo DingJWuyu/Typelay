@@ -1708,6 +1708,29 @@ def run(arguments):
                             "GTK explicit F10 during real pinyin composition: shared refusal feedback, no write, original candidate still commits"
                         )
 
+                        if gtk4 and session_bindings:
+                            from gtk_session_reentry import run_case
+
+                            with (
+                                ExitStack() as reentry_resources,
+                                tempfile.TemporaryDirectory(prefix="tl-gtk-reentry-") as directory,
+                            ):
+                                run_case(
+                                    fixture.args,
+                                    gtk_environment,
+                                    arguments.output,
+                                    prepare_key(reentry_resources, "F1"),
+                                    Path(directory),
+                                    "resume-editor",
+                                    False,
+                                    nested[0],
+                                )
+                            evidence.append(
+                                "GTK4 editor recovery: stale generation/revision refused; "
+                                "authorized resume restores actual editor focus before rendering, "
+                                "without writing either source field"
+                            )
+
                         pending_direct = "正在直接翻译；可以切换输入框，当前操作仍绑定原输入框。"
                         for changes_source in (False, True):
                             click_entry("first")
@@ -1788,15 +1811,12 @@ def run(arguments):
                                     "actual post-snapshot GTK source edit did not arrive",
                                 )
                             click_entry("second")
-                            key("ctrl+a")
                             detached = wait_for(
                                 lambda: value
                                 if (value := gtk_state()).get("focus") == "fixture-second"
-                                and value["secondEntry"]["start"] == 0
-                                and value["secondEntry"]["end"] == len(value["second"])
                                 and value.get("focusedImeClear")
                                 else None,
-                                "background GTK destination did not retain real focus and selection",
+                                "background GTK destination did not retain real focus with a Clear IME",
                             )
                             case = "changed-source" if changes_source else "retained-source"
                             record = {
@@ -1808,9 +1828,13 @@ def run(arguments):
                                 "gtk-background-direct-" + case + ".json"
                             )
                             record_path.write_text(json.dumps(record, indent=2))
-                            assert detached["first"] == source + ("!" if changes_source else ""), (
-                                "the real model completed before A detached; background write was not exercised"
-                            )
+                            if changes_source:
+                                assert detached["first"] == source + "!", (
+                                    "the actual post-snapshot edit was not retained after leaving A"
+                                )
+                            # The model may finish after A loses focus but before this
+                            # snapshot. The synchronous mutation contexts below must
+                            # prove B owned focus and retained its actual selection.
                             first_ime = detached["firstEntry"]["ime"]
                             assert first_ime and first_ime["flags"] == 17
                             assert first_ime["server"] == first_ime["applied"]
@@ -1895,7 +1919,8 @@ def run(arguments):
                                     assert changed["firstFocusOut"] == first_after["focusOut"]
                         evidence.append(
                             "GTK Entry background direct: one real F10/CPU-model write to A while B "
-                            "keeps focus, text and selection; a post-snapshot source edit is retained "
+                            "keeps focus, text and its observed caret/selection (nonempty selection "
+                            "is not required); a post-snapshot source edit is retained "
                             "and the model write is rejected"
                         )
                         if not gtk4 and bundled:

@@ -41,7 +41,7 @@ def run_reentry_checks(command, environment, output, send_accept, *, gtk4, neste
     # Only the generation changes, so nested IME dispatch cannot fake a pass.
     stages = ["delete", "insert", "selection", "footer", "expand"]
     if gtk4:
-        stages.extend(["controller-source", "controller-editor", "resume-editor"])
+        stages.extend(["controller-source", "controller-editor"])
     for stage in stages:
         mutation = stage in ("delete", "insert", "selection")
         for change_generation in (False, True) if mutation else (False,):
