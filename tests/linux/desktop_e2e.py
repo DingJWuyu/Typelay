@@ -108,6 +108,8 @@ def run(arguments):
 
     session_bindings = getattr(arguments, "gtk_session_bindings", False)
     accept_key = "Tab"
+    gtk_acceptance_phases = []
+    last_acceptance_observation = None
 
     def status():
         try:
@@ -120,7 +122,17 @@ def run(arguments):
         return data if data.get("viewState") == state and data.get("overlayVisible") else None
 
     def ready_to_accept(state="ValidTranslation"):
+        nonlocal last_acceptance_observation
+        started = now_ms()
         data = view(state)
+        finished = now_ms()
+        if data and data.get("acceptanceReady"):
+            last_acceptance_observation = {
+                "statusStartedAtMs": started,
+                "statusReceivedAtMs": finished,
+                "acceptanceRemainingMs": data.get("acceptanceRemainingMs"),
+                "nativePublications": data.get("input", {}).get("nativePublications", []),
+            }
         return data if data and data.get("acceptanceReady") else None
 
     def typed(text):
@@ -196,7 +208,9 @@ def run(arguments):
     resources = ExitStack()
     try:
         send_tab = (
-            prepare_tab(resources) if arguments.desktop_scope in ("all", "browser", "qt") else None
+            prepare_tab(resources)
+            if arguments.desktop_scope in ("all", "browser", "qt", "gtk4")
+            else None
         )
         start()
         # A duplicate background request must use the existing real session.
@@ -876,7 +890,23 @@ def run(arguments):
                         )
                         wait_for(ready_to_accept, "GTK acceptance expired while taking evidence")
                         before_write = trace_checkpoint()
-                        key(accept_key)
+                        key_started = now_ms()
+                        if gtk4:
+                            # One preconnected native injection, with no process
+                            # startup after readiness. This does not alter TTL.
+                            send_tab()
+                        else:
+                            key(accept_key)
+                        key_finished = now_ms()
+                        gtk_acceptance_phases.append(
+                            {
+                                "stage": "default-first-accept",
+                                "gtk": 4 if gtk4 else 3,
+                                "readiness": last_acceptance_observation,
+                                "keySendStartedAtMs": key_started,
+                                "keySendFinishedAtMs": key_finished,
+                            }
+                        )
                         wait_for(
                             lambda: translated(gtk_state().get("first")),
                             f"GTK {accept_key} did not apply the real translation",
@@ -2823,6 +2853,13 @@ def run(arguments):
             pass  # Diagnostic failures must not replace the original assertion.
         raise
     finally:
+        if gtk_acceptance_phases:
+            try:
+                (arguments.output / "gtk-acceptance-phases.json").write_text(
+                    json.dumps(gtk_acceptance_phases, indent=2)
+                )
+            except OSError:
+                pass  # Preserve the actual acceptance failure and cleanup.
         resources.close()
         for child in (process,):
             if child is not None and child.poll() is None:

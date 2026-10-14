@@ -851,10 +851,18 @@ def run_qt(
                         assert not new_write_outcomes(provider_trace)
                     command("focus", field="first")
                     wait_for(
-                        lambda: state()["first"]["focused"]
-                        and ready_to_accept("EditedTranslationPending"),
-                        "fresh source observation did not recover after provider fault",
+                        lambda: (value := state())["first"]["focused"] and settled(value),
+                        "actual source focus did not settle after provider fault",
                     )
+                    assert state()["first"]["text"] == editing_source
+                    assert not new_write_outcomes(provider_trace)
+                    # A declined capture can safely end the old editor session.
+                    # Recovery must establish a new source/candidate, not revive
+                    # that session's draft or its withdrawn acceptance permit.
+                    recovery_source = "Please send the updated note."
+                    enter_source(recovery_source)
+                    assert state()["first"]["text"] == recovery_source
+                    assert not new_write_outcomes(provider_trace)
 
                 set_mode(1, session_keys=("F12", "F1"))
                 dormant_source(function_source)

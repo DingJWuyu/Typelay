@@ -769,6 +769,138 @@ class InputFeedbackTests(unittest.TestCase):
             )
         )
 
+    def test_refusal_diagnostic_is_whitelisted_and_logged_after_the_real_notice(self):
+        command = self.command()
+        output = io.StringIO()
+        refusal = {
+            **command,
+            "reason": "EpochChanged",
+            "diagnostic": {"phase": "ime", "gate": "input-revision"},
+        }
+        with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), contextlib.redirect_stderr(output):
+            self.peer.event("shortcut-rejected", refusal)
+            self.peer.event("shortcut-rejected", refusal)
+        lines = output.getvalue().splitlines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(
+            json.loads(lines[0].split(" ", 1)[1]),
+            {
+                "sequence": 1,
+                "atMs": 1000,
+                "phase": "ime",
+                "gate": "input-revision",
+                "reason": "EpochChanged",
+            },
+        )
+        self.assertEqual(len(self.host.notices), 1)
+        self.assertEqual(self.host.notices[0]["rejection"], "EpochChanged")
+        self.assertNotIn("diagnostic", self.host.notices[0])
+
+    def test_invalid_or_missing_refusal_diagnostic_cannot_change_rejection_or_log_text(self):
+        output = io.StringIO()
+        invalid = [
+            None,
+            "PRIVATE",
+            [],
+            {"phase": [], "gate": "input-revision"},
+            {"phase": "ime", "gate": "PRIVATE"},
+            {"phase": "PRIVATE", "gate": "input-revision"},
+            {"phase": "ime", "gate": "input-revision", "body": "PRIVATE"},
+        ]
+        with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), contextlib.redirect_stderr(output):
+            for index, diagnostic in enumerate(invalid, 1):
+                command = self.command(command_id=index)
+                self.peer.event(
+                    "shortcut-rejected",
+                    {
+                        **command,
+                        "reason": "EpochChanged",
+                        "diagnostic": diagnostic,
+                    },
+                )
+        self.assertEqual(output.getvalue(), "")
+        self.assertEqual(len(self.host.notices), len(invalid))
+        self.assertTrue(all(n["rejection"] == "EpochChanged" for n in self.host.notices))
+
+    def test_refusal_trace_is_bounded_and_stderr_failure_cannot_hide_the_notice(self):
+        output = io.StringIO()
+        with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), contextlib.redirect_stderr(output):
+            for index in range(1, 98):
+                command = self.command(command_id=index)
+                self.peer.event(
+                    "shortcut-rejected",
+                    {
+                        **command,
+                        "reason": "EpochChanged",
+                        "diagnostic": {"phase": "ime", "gate": "input-revision"},
+                    },
+                )
+        self.assertEqual(len(output.getvalue().splitlines()), 96)
+        self.assertEqual(len(self.host.notices), 97)
+        # A fresh monitor tests the write failure before its diagnostic cap.
+        self.input.shortcut_diagnostic_count = 0
+        command = self.command(command_id=98)
+
+        def unavailable(*_args, **_kwargs):
+            self.assertEqual(len(self.host.notices), 98)
+            raise OSError("closed diagnostic stream")
+
+        with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), patch("builtins.print", unavailable):
+            self.peer.event(
+                "shortcut-rejected",
+                {
+                    **command,
+                    "reason": "EpochChanged",
+                    "diagnostic": {"phase": "ime", "gate": "input-revision"},
+                },
+            )
+        self.assertEqual(self.host.notices[-1]["rejection"], "EpochChanged")
+
+    def test_native_publication_trace_observes_queue_handoff_without_new_protocol_fields(self):
+        output = io.StringIO()
+        with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), contextlib.redirect_stderr(output):
+            frames = asyncio.run(self.publish_acceptance(pause=False))
+        self.assertEqual(output.getvalue(), "")
+        records = self.input.diagnostics()["nativePublications"]
+        self.assertEqual(len(records), 1)
+        diagnostic = records[0]
+        self.assertEqual(
+            diagnostic,
+            {
+                "planId": frames[0]["data"]["permit"]["plan"]["id"],
+                "receivedAtMs": 1000,
+                "sendStartedAtMs": 1000,
+                "sendReturnedAtMs": 1000,
+                "permitUntilMs": 1150,
+            },
+        )
+        self.assertEqual(frames[0]["id"], 0)
+        self.assertNotIn("diagnostic", frames[0]["data"])
+        self.assertNotIn("text", diagnostic)
+
+    def test_native_publication_does_not_write_a_diagnostic_stream(self):
+        with (
+            patch.dict(os.environ, {"TYPELAY_TRACE": "1"}),
+            patch("builtins.print", side_effect=AssertionError("publication must not log")),
+        ):
+            frames = asyncio.run(self.publish_acceptance(pause=False))
+        self.assertEqual([frame["op"] for frame in frames], ["publish"])
+        self.assertEqual(frames[0]["id"], 0)
+        self.assertIsNotNone(frames[0]["data"]["permit"])
+
+    def test_native_publication_metadata_is_bounded_and_status_returns_copies(self):
+        with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}):
+            for _ in range(193):
+                frames = asyncio.run(self.publish_acceptance(pause=False))
+                self.assertIsNotNone(frames[0]["data"]["permit"])
+        records = self.input.diagnostics()["nativePublications"]
+        self.assertEqual(len(records), 192)
+        first = dict(records[0])
+        records[0]["planId"] = "changed by caller"
+        records.clear()
+        self.assertEqual(self.input.diagnostics()["nativePublications"][0], first)
+        self.assertEqual(len(self.input.publish_diagnostics), 192)
+
     def test_cancelled_explicit_command_reaches_host_without_reading_source(self):
         command = self.command()
         self.peer.event("shortcut-rejected", {**command, "reason": "ImeUnclear"})

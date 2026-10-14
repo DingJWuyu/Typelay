@@ -340,6 +340,62 @@ static void trace_tab(const char *reason, Target *target, JsonObject *current, J
         observed >= 0 ? now - observed : -1, target ? target->input_revision : 0,
         tl_integer(basis, "inputRevision", -1), safe_receipt);
 }
+typedef struct {
+    gint64 entered_at, inspect_started_at, inspect_finished_at, gate_at;
+    gboolean inspected;
+    guint publication_count;
+} AcceptanceTiming;
+typedef struct {
+    AcceptanceTiming timing;
+    char plan_id[37];
+    gint64 finished_at, expires_at;
+    gboolean allowed;
+} AcceptancePhase;
+static AcceptancePhase acceptance_publications[192];
+static guint acceptance_published_count;
+static void print_acceptance_phase(const char *operation, const AcceptancePhase *phase) {
+    const AcceptanceTiming *timing = &phase->timing;
+    g_printerr("TypeLay GTK%d acceptance-timing operation=%s planId=%s"
+        " enteredAtMs=%" G_GINT64_FORMAT " inspectStartedAtMs=%" G_GINT64_FORMAT
+        " inspectFinishedAtMs=%" G_GINT64_FORMAT " gateAtMs=%" G_GINT64_FORMAT
+        " finishedAtMs=%" G_GINT64_FORMAT " expiresAtMs=%" G_GINT64_FORMAT
+        " inspected=%d gateAllowed=%d\n", GTK_MAJOR_VERSION, operation, phase->plan_id,
+        timing->entered_at, timing->inspect_started_at, timing->inspect_finished_at,
+        timing->gate_at, phase->finished_at, phase->expires_at, timing->inspected, phase->allowed);
+}
+static void trace_acceptance_timing(const char *operation, JsonObject *request,
+                                   const AcceptanceTiming *timing, gboolean allowed) {
+    static guint key_count;
+    JsonObject *permit = tl_object(request, "permit");
+    const char *id = tl_string(tl_object(permit, "plan"), "id");
+    if (!g_getenv("TYPELAY_TRACE") || !id || !g_uuid_string_is_valid(id)) return;
+    AcceptancePhase phase = {.timing = *timing, .finished_at = tl_now(),
+        .expires_at = tl_integer(permit, "expiresAtMs", 0), .allowed = allowed};
+    g_strlcpy(phase.plan_id, id, sizeof(phase.plan_id));
+    /* Publish completion means response queued, not received by the host.
+       Keep only bounded owned values here: no diagnostic stderr write while
+       the published permit is live, and no retained JSON/widget references. */
+    if (strcmp(operation, "publish") == 0) {
+        if (acceptance_published_count < G_N_ELEMENTS(acceptance_publications))
+            acceptance_publications[acceptance_published_count++] = phase;
+        return;
+    }
+    if (key_count >= 192) return;
+    key_count++;
+    /* Emit only after this key's refusal or original write receipt was queued.
+       Snapshot the cache boundary before that probe: even a same-millisecond
+       reentrant publication cannot stand in for the original plan. Missing
+       history remains missing rather than fabricated. */
+    for (guint index = timing->publication_count; index > 0; index--) {
+        const AcceptancePhase *published = &acceptance_publications[index - 1];
+        if (strcmp(published->plan_id, id) == 0 && published->expires_at == phase.expires_at
+            && published->finished_at <= timing->inspect_started_at) {
+            print_acceptance_phase("publish", published);
+            break;
+        }
+    }
+    print_acceptance_phase("key", &phase);
+}
 static void command(JsonObject *frame) {
     const char *operation = tl_string(frame, "op");
     gint64 id = tl_integer(frame, "id", 0);
@@ -413,6 +469,7 @@ static void command(JsonObject *frame) {
         if (tl_integer(data, "shortcuts", 0)) clear_shortcut();
         respond(id, NULL);
     } else if (strcmp(operation, "publish") == 0) {
+        AcceptanceTiming timing = {.entered_at = tl_now()};
         tl_clear_permit();
         JsonObject *basis = tl_object(data, "authority");
         if (target && target == tl_focused() && tl_metadata_matches(target, basis)
@@ -421,16 +478,22 @@ static void command(JsonObject *frame) {
             && g_strcmp0(tl_string(tl_object(data, "lease"), "commandGeneration"), tl_string(data, "generation")) == 0)
             publication = tl_copy(data);
         /* The observation may revoke publication; reacquire it only afterwards. */
+        timing.inspect_started_at = tl_now();
+        timing.inspected = publication != NULL;
         if (publication) (void)tl_ime_clear(target);
+        timing.inspect_finished_at = tl_now();
         refresh_acceptance();
         JsonObject *state = publication_state(target), *reply = json_object_new();
-        json_object_set_boolean_member(reply, "published", publication
-            && (!tl_object(data, "permit") || json_object_get_boolean_member(state, "ready")));
+        gboolean published = publication
+            && (!tl_object(data, "permit") || json_object_get_boolean_member(state, "ready"));
+        timing.gate_at = tl_now();
+        json_object_set_boolean_member(reply, "published", published);
         if (target) {
             json_object_set_string_member(state, "target", target->id);
             tl_send_event("publication", state);
         } else json_object_unref(state);
         respond(id, reply);
+        trace_acceptance_timing("publish", data, &timing, published);
     } else { disconnect_peer(); }
 }
 static gboolean read_input(GIOChannel *channel, GIOCondition condition, gpointer data) {
@@ -654,6 +717,14 @@ rejected:
     if (shortcut_current(&attempt)) {
         message = shortcut_message(&attempt);
         json_object_set_string_member(message, "reason", reason);
+        static guint diagnostic_count;
+        if (g_getenv("TYPELAY_TRACE") && diagnostic_count < 96) {
+            diagnostic_count++;
+            JsonObject *diagnostic = json_object_new();
+            json_object_set_string_member(diagnostic, "phase", phase);
+            json_object_set_string_member(diagnostic, "gate", failure);
+            json_object_set_object_member(message, "diagnostic", diagnostic);
+        }
         tl_send_event("shortcut-rejected", message);
     }
 finished:
@@ -695,17 +766,22 @@ static gboolean shortcut_event(GdkEventKey *event) {
     if (shortcut_key == event->hardware_keycode) shortcut_consumed = consumed;
     return consumed;
 }
-static gboolean acceptance_event(GdkEventKey *event) {
+static gboolean acceptance_event(GdkEventKey *event, gint64 entered_at) {
     gboolean is_accept = event->keyval == tl_session_keyval(TRUE);
     gboolean is_exit = event->keyval == tl_session_keyval(FALSE);
     if (!is_accept && !is_exit) return FALSE;
     gboolean consumed = FALSE;
     Target *target = tl_focused();
     JsonObject *current = publication ? json_object_ref(publication) : NULL;
+    AcceptanceTiming timing = {.entered_at = entered_at, .inspect_started_at = tl_now(),
+        .inspected = TRUE, .publication_count = acceptance_published_count};
     gboolean clear = tl_ime_clear(target);
+    timing.inspect_finished_at = tl_now();
     guint modified = event->state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_MOD1_MASK | GDK_MOD3_MASK
         | GDK_MOD4_MASK | GDK_MOD5_MASK | GDK_SUPER_MASK | GDK_HYPER_MASK | GDK_META_MASK);
     if (!clear || !current || publication != current || !tl_session_matches(tl_object(tl_object(current, "authority"), "sessionBindings")) || modified || event->send_event) {
+        timing.gate_at = tl_now();
+        if (is_accept) trace_acceptance_timing("key", current, &timing, FALSE);
         if (is_accept) trace_tab(!clear ? "ime" : !publication ? "not-published"
             : modified ? "modified" : "nonphysical", target, current, NULL);
         if (current) json_object_unref(current);
@@ -716,6 +792,8 @@ static gboolean acceptance_event(GdkEventKey *event) {
         || (gint64)target->input_revision != tl_integer(basis, "inputRevision", -1)
         || (gint64)target->focus_revision != tl_integer(basis, "focusRevision", -1)
         || !tl_metadata_matches(target, basis)) {
+        timing.gate_at = tl_now();
+        if (is_accept) trace_acceptance_timing("key", current, &timing, FALSE);
         if (is_accept) trace_tab("authority", target, current, NULL);
         json_object_unref(current);
         tl_clear_permit(); return FALSE;
@@ -744,7 +822,9 @@ static gboolean acceptance_event(GdkEventKey *event) {
     JsonObject *permit = tl_object(current, "permit"), *plan = tl_object(permit, "plan");
     const char *id = tl_string(plan, "id");
     const char *failure = publication_failure(target, current);
+    timing.gate_at = tl_now();
     if (failure) {
+        trace_acceptance_timing("key", current, &timing, FALSE);
         trace_tab(failure, target, current, NULL);
         json_object_unref(current);
         tl_clear_permit(); return FALSE;
@@ -772,6 +852,7 @@ static gboolean acceptance_event(GdkEventKey *event) {
         trace_tab("write-rejected", target, current, reply);
         json_object_unref(reply);
     }
+    trace_acceptance_timing("key", current, &timing, TRUE);
     json_object_unref(current);
     g_free(plan_id);
     return consumed;
@@ -790,6 +871,7 @@ static void trace_session_key(guint keyval, const char *phase, gboolean consumed
 }
 gboolean tl_dispatch_key(GdkEvent *event) {
     if (!event || (event->type != GDK_KEY_PRESS && event->type != GDK_KEY_RELEASE)) return FALSE;
+    gint64 entered_at = tl_now();
     GdkEventKey *key = &event->key;
     guint keyval = key->keyval, keycode = key->hardware_keycode;
     gboolean down = event->type == GDK_KEY_PRESS, physical = !key->send_event;
@@ -816,7 +898,7 @@ gboolean tl_dispatch_key(GdkEvent *event) {
     held_keys[empty].keycode = keycode;
     held_keys[empty].sequence = sequence;
     held_keys[empty].consumed = FALSE;
-    gboolean consumed = tl_overlay_key(keyval, state) || shortcut_event(key) || acceptance_event(key);
+    gboolean consumed = tl_overlay_key(keyval, state) || shortcut_event(key) || acceptance_event(key, entered_at);
     if (held_keys[empty].keycode == keycode && held_keys[empty].sequence == sequence)
         held_keys[empty].consumed = consumed;
     trace_session_key(keyval, "press", consumed);

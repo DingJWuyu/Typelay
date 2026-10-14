@@ -85,6 +85,9 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
             command, env=child_environment, stdout=sys.stdout, stderr=sys.stderr
         )
         key_held = False
+        client = None
+        acceptance_phases = {}
+        publication_event_start = publication_event_end = 0
         try:
             connection, _ = server.accept()
             with connection:
@@ -195,9 +198,22 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
 
                 (runtime / "arm").touch()
                 write, published = publication(source, generation, replacement)
-                assert client.call("publish", published) == {"published": True}, name
+                acceptance_phases = {
+                    "planId": write["id"],
+                    "expiresAtMs": published["permit"]["expiresAtMs"],
+                    "authorityObservedAtMs": source["authority"]["observedAtMs"],
+                    "publishStartedAtMs": now_ms(),
+                }
+                publication_event_start = len(client.events)
+                reply = client.call("publish", published)
+                acceptance_phases["publishReceivedAtMs"] = now_ms()
+                publication_event_end = len(client.events)
+                acceptance_phases["published"] = reply == {"published": True}
+                assert acceptance_phases["published"], name
                 key_held = True
+                acceptance_phases["keySendStartedAtMs"] = now_ms()
                 send_accept(True)  # One down only; never retry or renew this permit.
+                acceptance_phases["keySendFinishedAtMs"] = now_ms()
                 reached_path = runtime / "reached.json"
                 wait_for(reached_path.exists, f"{name}: mutation callback not reached", timeout=1)
                 reached = json.loads(reached_path.read_text())
@@ -290,6 +306,29 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                 if key_held:
                     send_accept(False)
             finally:
+                if acceptance_phases:
+                    # Save after the attempted key, never spend its original
+                    # deadline on diagnostic I/O. A refusal has no planId, so
+                    # retain this request's public event interval, not later
+                    # publications. Never save target or source/replacement.
+                    try:
+                        acceptance_phases["publicationEvents"] = [
+                            {
+                                "ready": event["data"].get("ready"),
+                                "readyUntilHostMs": event["data"].get("readyUntilHostMs"),
+                            }
+                            for event in client.events[
+                                publication_event_start:publication_event_end
+                            ]
+                            if event.get("event") == "publication"
+                            and event["data"].get("target") == source["target"]
+                            and event["data"].get("planId") in (None, acceptance_phases["planId"])
+                        ][:8]
+                        (output / f"{name}-acceptance-phases.json").write_text(
+                            json.dumps(acceptance_phases, indent=2)
+                        )
+                    except (OSError, KeyError, TypeError, ValueError):
+                        pass  # Preserve the original failure and fixture cleanup.
                 fixture.terminate()
                 try:
                     fixture.wait(timeout=3)

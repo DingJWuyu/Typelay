@@ -10,6 +10,7 @@ import math
 import os
 import socket
 import sys
+import uuid
 from collections import Counter, OrderedDict
 
 from geometry import anchor_geometry
@@ -153,6 +154,8 @@ class Input:
         self.shortcut_sequence = 0
         self.shortcut_ordered = False
         self.shortcut_command = None
+        self.shortcut_diagnostic_count = 0
+        self.publish_diagnostics = []
         self.closing = False
         self.niri = Niri(glib, self.changed)
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -545,6 +548,7 @@ class Input:
             "captureCounts": dict(self.capture_counts),
             "captureFailures": list(self.capture_failures),
             "timingMs": {key: dict(value) for key, value in self.timing_metrics.items()},
+            "nativePublications": [dict(value) for value in self.publish_diagnostics],
             "browser": self.browser_diagnostics,
             "browserCaptureCounts": dict(self.browser_capture_counts),
             "browserRounds": [dict(value) for value in self.browser_rounds],
@@ -998,6 +1002,58 @@ class Input:
                 notice["source"] = snapshot
                 notice["acceptedAtMs"] = value["acceptedAtMs"]
         self.host.send("notice", notice)
+        if rejected and os.environ.get("TYPELAY_TRACE"):
+            diagnostic = value.get("diagnostic")
+            if not isinstance(diagnostic, dict) or set(diagnostic) != {"phase", "gate"}:
+                return
+            phase, gate = diagnostic["phase"], diagnostic["gate"]
+            phases = {"authority", "ime", "describe", "capture"}
+            gates = {
+                "connection",
+                "configuration",
+                "superseded",
+                "target-missing",
+                "target-destroyed",
+                "focus",
+                "unavailable",
+                "ime",
+                "authority-missing",
+                "authority-revoked",
+                "authority-generation",
+                "authority-target",
+                "source-revision",
+                "input-revision",
+                "authority-age",
+                "metadata",
+                "description",
+                "capture",
+            }
+            if (
+                type(phase) is not str
+                or phase not in phases
+                or type(gate) is not str
+                or gate not in gates
+                or self.shortcut_diagnostic_count >= 96
+            ):
+                return
+            self.shortcut_diagnostic_count += 1
+            try:
+                print(
+                    "typelay-shortcut-diagnostic "
+                    + json.dumps(
+                        {
+                            "sequence": command["sequence"],
+                            "atMs": now_ms(),
+                            "phase": phase,
+                            "gate": gate,
+                            "reason": notice["rejection"],
+                        },
+                        separators=(",", ":"),
+                    ),
+                    file=sys.stderr,
+                )
+            except OSError:
+                pass  # Diagnostics cannot replace or interrupt the original refusal.
 
     async def trigger(self, kind, request):
         """Compositor commands may use only the already-bound native shortcut lease."""
@@ -1111,6 +1167,11 @@ class Input:
         self.state()
 
     def publish(self, value, shortcut=False):
+        received_at = (
+            now_ms()
+            if os.environ.get("TYPELAY_TRACE") and len(self.publish_diagnostics) < 192
+            else None
+        )
         lease = value["lease"]
         record = self.observations.get(observation_key(lease["source"]))
         if not record or record["peer"] not in self.peers or not self.fresh():
@@ -1184,6 +1245,7 @@ class Input:
                 }
                 while len(self.issued) > 32:
                     self.issued.popitem(last=False)
+            send_started = now_ms() if received_at is not None else None
             peer.link.command(
                 "publish",
                 {
@@ -1199,6 +1261,34 @@ class Input:
                     ),
                 },
             )
+            send_returned = now_ms() if received_at is not None else None
+            if (
+                received_at is not None
+                and permit
+                and peer.backend in ("gtk3", "gtk4", "qt6")
+                and len(self.publish_diagnostics) < 192
+            ):
+                identity = permit.get("plan", {}).get("id")
+                until = permit.get("expiresAtMs")
+                try:
+                    canonical = str(uuid.UUID(identity)) if type(identity) is str else None
+                except ValueError:
+                    canonical = None
+                if canonical != identity or canonical is None or type(until) is not int:
+                    return
+                # Keep bounded metadata in memory: synchronous logging here could
+                # delay Channel backpressure or the native reply. The existing
+                # status request serializes it outside this publication call.
+                # Returned means queue handoff, not native acknowledgement.
+                self.publish_diagnostics.append(
+                    {
+                        "planId": canonical,
+                        "receivedAtMs": received_at,
+                        "sendStartedAtMs": send_started,
+                        "sendReturnedAtMs": send_returned,
+                        "permitUntilMs": until,
+                    }
+                )
 
     def revoke(self, shortcuts=False):
         self.clear_browser_capture()
