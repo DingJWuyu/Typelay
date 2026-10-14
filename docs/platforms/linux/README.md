@@ -31,7 +31,7 @@ GTK 非纯文本/非标准控件、Qt QTextEdit/富文本/自绘控件、Electro
 | 编辑/接受 | 共用人工草稿、第一 Tab 回源、重新核验后第二 Tab 接受；写回默认需显式开启 | 物理键盘、真实应用快速切焦点与各控件原生撤销仍须逐路径验证 |
 | 直接替换 | 绑定原目标生命周期，在源事件线程写入；实际类型恰为标准 GTK3/GTK4 Entry、Qt QLineEdit 的字段已验证同窗后台写原字段、保持另一字段焦点/正文及原文冲突拒绝 | TextView/QPlainTextEdit 后台与跨窗口/应用后台未覆盖；不能把前台多行通过外推为后台能力，也不能转写新焦点 |
 | IME/焦点 | 未知状态不授予编辑/接受资格，源框与浮层属于同一会话 | Linux 合作 Fcitx 需用户手动切换私有会话，仍未达到无需输入法协作的通用体验 |
-| 设置/托盘与暂停 | 启停、模式、方向、交换、排除、主题、启动项、模型状态和退出已实现，托盘保留恢复入口 | Linux 设置布局仍有差异，平台菜单形式不要求相同；共同暂停交互缺口见产品说明 |
+| 设置/托盘与暂停 | 启停、模式、方向、交换、排除、主题、启动项、模型状态和退出已实现，托盘保留恢复入口 | Linux 设置布局仍有差异，平台菜单形式不要求相同；普通安全字段的弱化恢复入口与暂停限制见产品说明 |
 | 安装/首次使用 | 显式模型安装、校验后启用、设置持久化、单会话与退出清理已有实现 | Linux 已实现下载暂停/验证后续传与显式本地试译引导；独立 GTK 实操窗口复用生产自动胶囊/两阶段 Tab，需已启用合作组件；普通未合作环境仅提供接入指引，真实实操结果以对应提交 CI 为准 |
 
 共同未完要求统一见[产品开发缺口](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/product/README.md#当前共同开发缺口)，不属于平台天然限制或仅待真机测试。共享边界见 [架构约束](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/engineering/architecture.md)，Windows 未结问题见 [Windows 待办](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/windows/open-issues.md)。

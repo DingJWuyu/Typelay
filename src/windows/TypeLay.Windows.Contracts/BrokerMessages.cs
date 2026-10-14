@@ -17,4 +17,4 @@ public sealed record BrokerRequest(int Version, long Id, string Op, string Token
 public sealed record BrokerResponse(int Version, long Id, string Status,
     InputSnapshot? Snapshot = null, FocusMember Focus = FocusMember.Other,
     WriteReceipt? Receipt = null, string? Application = null,
-    long UserEpoch = 0, long ForegroundEpoch = 0);
+    long UserEpoch = 0, long ForegroundEpoch = 0, PauseAnchor? PauseAnchor = null);

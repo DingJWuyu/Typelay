@@ -374,7 +374,7 @@ def run_qt(
                         "OnDemand source did not remain dormant with a fresh supported capture",
                     )
 
-                def set_mode(mode):
+                def set_mode(mode=None, *, enabled=None):
                     from support.gtk_accessibility import Atspi, named
 
                     before_settings = state()
@@ -418,21 +418,34 @@ def run_qt(
                             "production settings accessibility tree exceeds its bound"
                         )
 
-                    combo = wait_for(mode_combo, "real work-mode combo was not accessible")
-                    assert Atspi.Selection.select_child(combo.get_selection_iface(), mode)
-                    wait_for(
-                        lambda: Atspi.Selection.get_selected_child(
-                            combo.get_selection_iface(), 0
-                        ).get_name()
-                        == names[mode],
-                        "real settings combo did not change work mode",
-                    )
-                    # Ordinary choices save immediately through SettingsStore;
-                    # the separate draft-save action owns only text settings.
-                    wait_for(
-                        lambda: json.loads(paths.settings.read_text()).get("Mode") == mode,
-                        "production settings did not persist the selected work mode",
-                    )
+                    if mode is not None:
+                        combo = wait_for(mode_combo, "real work-mode combo was not accessible")
+                        assert Atspi.Selection.select_child(combo.get_selection_iface(), mode)
+                        wait_for(
+                            lambda: Atspi.Selection.get_selected_child(
+                                combo.get_selection_iface(), 0
+                            ).get_name()
+                            == names[mode],
+                            "real settings combo did not change work mode",
+                        )
+                        # Ordinary choices save immediately through SettingsStore;
+                        # the separate draft-save action owns only text settings.
+                        wait_for(
+                            lambda: json.loads(paths.settings.read_text()).get("Mode") == mode,
+                            "production settings did not persist the selected work mode",
+                        )
+                    if enabled is not None:
+                        switch = wait_for(
+                            lambda: named(host_pid, "设置：启用 TypeLay"),
+                            "real enable switch was not accessible",
+                        )
+                        if json.loads(paths.settings.read_text())["Enabled"] is not enabled:
+                            action = switch.get_action_iface()
+                            assert action and Atspi.Action.do_action(action, 0)
+                        wait_for(
+                            lambda: json.loads(paths.settings.read_text())["Enabled"] is enabled,
+                            "production settings did not persist the enable switch",
+                        )
                     after_settings = state()
                     for field in ("first", "second"):
                         assert after_settings[field]["text"] == before_settings[field]["text"]
@@ -744,6 +757,69 @@ def run_qt(
                 set_mode(1)
                 wake_source = "Please send this message today."
                 dormant_source(wake_source)
+                set_mode(enabled=False)
+                wait_for(
+                    lambda: status().get("viewState") == "Paused"
+                    and status().get("overlayVisible")
+                    and state().get("overlayControls", {}).get("typelay-resume", {}).get("visible"),
+                    "paused Qt source did not show the actual weakened resume entry",
+                )
+                paused_settings = json.loads(Paths(arguments.package).settings.read_text())
+                paused_capture_counts = dict(status()["input"]["captureCounts"])
+                before = state()["first"]
+                pause_trace = trace_checkpoint()
+                typed("!")
+                wait_for(
+                    lambda: state()["first"]["text"] == wake_source + "!"
+                    and state()["first"]["changes"] == before["changes"] + 1
+                    and status().get("overlayVisible")
+                    and status().get("viewState") == "Paused",
+                    "ordinary input during pause was lost, replayed or translated",
+                )
+                assert not status().get("acceptanceReady")
+                assert not state()["overlayControls"]["typelay-menu-trigger"]["visible"]
+                key("ctrl+shift+F9")
+                command("metadata", text="Password")
+                wait_for(
+                    lambda: state()["first"]["accessibleName"] == "Password"
+                    and not status().get("overlayVisible"),
+                    "paused entry survived a sensitive metadata change",
+                )
+                assert state()["first"]["text"] == wake_source + "!"
+                command("metadata", text="Message one")
+                wait_for(
+                    lambda: status().get("viewState") == "Paused"
+                    and status().get("overlayVisible"),
+                    "ordinary Qt metadata did not restore the paused entry",
+                )
+                assert status()["input"]["captureCounts"] == paused_capture_counts
+                assert not new_write_outcomes(pause_trace)
+                with (arguments.output / "controller.jsonl").open("rb") as trace:
+                    trace.seek(pause_trace)
+                    data = trace.read()
+                assert not any(
+                    json.loads(line)["operation"] == "translate-start"
+                    for line in data[: data.rfind(b"\n") + 1].splitlines()
+                ), "paused source scheduled model work"
+                click_overlay("typelay-resume")
+                wait_for(
+                    lambda: json.loads(Paths(arguments.package).settings.read_text())["Enabled"]
+                    and not status().get("overlayVisible")
+                    and status()["input"]["captureCounts"].get("supported", 0)
+                    > paused_capture_counts.get("supported", 0),
+                    "resume did not return OnDemand to its dormant state",
+                )
+                assert json.loads(Paths(arguments.package).settings.read_text()) == {
+                    **paused_settings,
+                    "Enabled": True,
+                }, "resume changed preferences beyond Enabled"
+                assert state()["first"]["text"] == wake_source + "!"
+                assert state()["first"]["focused"]
+                evidence.append(
+                    "Qt6 pause: metadata-only entry, one ordinary character, sensitive-field hiding, "
+                    "no capture/model/write, real resume click preserves OnDemand and still needs F9"
+                )
+                dormant_source(wake_source)
                 key("ctrl+shift+F9")
                 wait_for(
                     ready_to_accept, "real Qt wake shortcut did not request a CPU model candidate"
@@ -855,6 +931,7 @@ def run_qt(
                 dormant_source("Please translate this original message.")
                 before = state()
                 before_write = trace_checkpoint()
+                before_feedback = status().get("operationFeedback", {}).get("revision", 0)
                 command("on-command-dispatched", action="rewrite")
                 wait_for(
                     lambda: state().get("commandDispatchedAction") == "rewrite",
@@ -870,8 +947,11 @@ def run_qt(
                     "source did not change after the real direct snapshot was dispatched",
                 )
                 wait_for(
-                    lambda: status().get("serviceStatus")
-                    == "直接写回未获确认，请检查原输入框；不会自动重试。",
+                    lambda: (report := status()).get("serviceStatus")
+                    == "输入内容、选区或字段已变化，TypeLay 未替换文字。请确认目标输入框后再操作。"
+                    and (feedback := report.get("operationFeedback", {})).get("code")
+                    == "write-rejected"
+                    and feedback.get("revision", 0) > before_feedback,
                     "real direct translation did not reject its superseded source version",
                 )
                 after = state()
@@ -911,6 +991,7 @@ def run_qt(
                     )
                     before_verified = native_verified_count()
                     before_write = trace_checkpoint()
+                    before_feedback = status().get("operationFeedback", {}).get("revision", 0)
                     command("on-command-dispatched", action=action)
                     wait_for(
                         lambda: state().get("commandDispatchedAction") == action,
@@ -930,12 +1011,20 @@ def run_qt(
                     terminal = (
                         "已直接替换原输入框文字。"
                         if succeeds
-                        else "直接写回未获确认，请检查原输入框；不会自动重试。"
+                        else "输入内容、选区或字段已变化，TypeLay 未替换文字。请确认目标输入框后再操作。"
                     )
                     after = wait_for(
                         lambda: value
                         if (value := state())["first"]["changes"] > before["first"]["changes"]
-                        and status().get("serviceStatus") == terminal
+                        and (report := status()).get("serviceStatus") == terminal
+                        and (
+                            succeeds
+                            or (
+                                (feedback := report.get("operationFeedback", {})).get("code")
+                                == "write-rejected"
+                                and feedback.get("revision", 0) > before_feedback
+                            )
+                        )
                         else None,
                         "background direct translation did not reach its expected real outcome",
                     )

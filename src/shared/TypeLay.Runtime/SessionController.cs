@@ -18,6 +18,10 @@ public sealed class SessionController : IDisposable
     private readonly ISessionLoop _loop;
     private long _generation, _nextCapture, _permitUntil, _editTransitionUntil, _retryBrokerAt;
     private bool _capturing, _writing, _translationRunning, _startingBroker, _returningToSource, _disposed;
+    private PauseAnchor? _pauseAnchor;
+    private long _pauseViewRevision, _pauseWindowEpoch, _pauseForegroundEpoch;
+    private bool _observingPause, _resumingPause;
+    private const string ResumeSaveFailureStatus = "恢复设置未能保存，TypeLay 仍处于暂停状态。请检查设置存储后重试。";
     private string? _statusOverride;
     private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
     private string? _lastTrace;
@@ -55,7 +59,15 @@ public sealed class SessionController : IDisposable
         overlay.ReturnRequested = () => _ = ReturnFromEditor();
         overlay.EscapeRequested = () => _ = Escape();
         overlay.RegenerateRequested = () => _ = Regenerate();
-        overlay.ExcludeRequested = () => { if (LastApplication is { } app) _settings.Exclude(app); StopSession(); };
+        overlay.ExcludeRequested = () =>
+        {
+            if (_disposed || !_settings.Value.Enabled)
+                return;
+            if (LastApplication is { } app)
+                _settings.Exclude(app);
+            StopSession();
+        };
+        overlay.ResumeRequested = revision => _ = ResumePause(revision);
         settings.Changed += Configure;
     }
     public async Task StartAsync()
@@ -92,8 +104,17 @@ public sealed class SessionController : IDisposable
     }
     private void Configure()
     {
+        InvalidatePauseAnchor();
+        _nextCapture = 0;
         _configurationRevision++;
         _commandFeedbackRevision++;
+        if (_settings.Value.Enabled && OperationStatus == ResumeSaveFailureStatus)
+        {
+            OperationStatus = null;
+            if (ServiceStatus == ResumeSaveFailureStatus)
+                ServiceStatus = !_broker.Available ? "输入服务连接中断，正在重试"
+                    : _hook.Ready ? "输入服务已连接（开发版）" : "输入监听未能初始化";
+        }
         _lastCommandSequence = 0;
         if (_pendingDirect is not null)
             SetServiceStatus(_directWriteSubmitted
@@ -207,10 +228,27 @@ public sealed class SessionController : IDisposable
             if (_hook.GetFocus(current.Target) == FocusMember.Other)
                 StopSession("focus-left");
         }
-        if (!_hook.Ready || !_broker.Available || !_settings.Value.Enabled)
+        if (!_hook.Ready || !_broker.Available)
         {
             _hook.Revoke();
+            InvalidatePauseAnchor();
             _overlay.HideQuietly();
+            return;
+        }
+        if (!_settings.Value.Enabled)
+        {
+            _hook.Revoke();
+            _permitUntil = 0;
+            if (_pauseAnchor is not null && !PauseAnchorIsCurrent(now))
+            {
+                InvalidatePauseAnchor();
+                _overlay.HideQuietly();
+            }
+            if (!_observingPause && !_resumingPause && now >= _nextCapture)
+            {
+                _nextCapture = now + 35;
+                _ = ObservePause();
+            }
             return;
         }
         // Focus restoration may await the real input context. A concurrent read
@@ -260,6 +298,118 @@ public sealed class SessionController : IDisposable
     private InputContext Context() => new(_hook.UserEpoch, _hook.ForegroundEpoch,
         _hook.SourceUserEpoch, _session.Current?.Target, _settings.Value.Excluded,
         _settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand);
+    private bool PauseAnchorIsCurrent(long now) => _pauseAnchor is { IsUsable: true } anchor
+        && _pauseWindowEpoch == _hook.WindowEpoch && _pauseForegroundEpoch == _hook.ForegroundEpoch
+        && anchor.FocusEpoch == _hook.ForegroundEpoch && _hook.GetFocus(anchor.Target) == FocusMember.Source
+        && now >= anchor.ObservedAtMs && now - anchor.ObservedAtMs <= Limits.ObservationMaxAgeMs;
+    private void InvalidatePauseAnchor()
+    {
+        _pauseAnchor = null;
+        _pauseViewRevision++;
+    }
+    private bool PauseObservationIsCurrent(PauseObservation result, InputContext request, long windowEpoch)
+    {
+        long now = _loop.NowMs;
+        return !_disposed && !_settings.Value.Enabled && _hook.Ready && _broker.Available
+            && windowEpoch == _hook.WindowEpoch && request.ForegroundEpoch == _hook.ForegroundEpoch
+            && result.ForegroundEpoch == request.ForegroundEpoch && result.Focus == FocusMember.Source
+            && result.Anchor is { IsUsable: true } anchor && anchor.FocusEpoch == request.ForegroundEpoch
+            && now >= anchor.ObservedAtMs && now - anchor.ObservedAtMs <= Limits.ObservationMaxAgeMs
+            && _hook.GetFocus(anchor.Target) == FocusMember.Source
+            && !string.IsNullOrWhiteSpace(result.Application)
+            && !_settings.Value.Excluded.Contains(result.Application, StringComparer.OrdinalIgnoreCase);
+    }
+    private async Task ObservePause()
+    {
+        _observingPause = true;
+        long generation = _generation;
+        long revision = _pauseViewRevision;
+        long windowEpoch = _hook.WindowEpoch;
+        var request = Context() with
+        {
+            BoundTarget = null,
+            CaptureDirect = false
+        };
+        try
+        {
+            var result = await _broker.ObservePauseAsync(request);
+            if (_disposed || generation != _generation || revision != _pauseViewRevision || _settings.Value.Enabled)
+                return;
+            if (!PauseObservationIsCurrent(result, request, windowEpoch))
+            {
+                InvalidatePauseAnchor();
+                _overlay.HideQuietly();
+                return;
+            }
+            if (_pauseAnchor?.Target != result.Anchor!.Target)
+                _pauseViewRevision++;
+            _pauseAnchor = result.Anchor;
+            _pauseWindowEpoch = windowEpoch;
+            _pauseForegroundEpoch = request.ForegroundEpoch;
+            _overlay.RenderPaused(_pauseAnchor, _pauseViewRevision);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            if (!_disposed && generation == _generation && revision == _pauseViewRevision)
+            {
+                InvalidatePauseAnchor();
+                _overlay.HideQuietly();
+            }
+        }
+        finally { _observingPause = false; }
+    }
+    private async Task ResumePause(long revision)
+    {
+        if (_disposed || _settings.Value.Enabled || _resumingPause || revision != _pauseViewRevision)
+            return;
+        if (!PauseAnchorIsCurrent(_loop.NowMs) || !_hook.Ready || !_broker.Available)
+        {
+            InvalidatePauseAnchor();
+            _overlay.HideQuietly();
+            return;
+        }
+        var target = _pauseAnchor!.Target;
+        long generation = _generation;
+        long windowEpoch = _hook.WindowEpoch;
+        var request = Context() with
+        {
+            BoundTarget = null,
+            CaptureDirect = false
+        };
+        _resumingPause = true;
+        _commandFeedbackRevision++;
+        bool saving = false;
+        try
+        {
+            // A click is not proof that the field's metadata stayed safe. Re-read
+            // metadata only, then retire the action if any configuration/view won.
+            var result = await _broker.ObservePauseAsync(request);
+            if (_disposed || generation != _generation || revision != _pauseViewRevision || _settings.Value.Enabled)
+                return;
+            if (!PauseObservationIsCurrent(result, request, windowEpoch) || result.Anchor!.Target != target)
+            {
+                InvalidatePauseAnchor();
+                _overlay.HideQuietly();
+                return;
+            }
+            saving = true;
+            _settings.Update(_settings.Value with
+            {
+                Enabled = true
+            });
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            if (!_disposed && generation == _generation && revision == _pauseViewRevision)
+            {
+                InvalidatePauseAnchor();
+                _overlay.HideQuietly();
+                if (saving && !_settings.Value.Enabled)
+                    SetServiceStatus(ResumeSaveFailureStatus, "resume-failed", Guid.Empty, 0);
+            }
+        }
+        finally { _resumingPause = false; }
+    }
     private async Task Capture()
     {
         _capturing = true;
@@ -661,7 +811,7 @@ public sealed class SessionController : IDisposable
     }
     private async Task Escape()
     {
-        if (_overlay.EditingComposition)
+        if (_disposed || !_settings.Value.Enabled || _overlay.EditingComposition)
             return;
         if (_session.State == SessionState.EditingTranslation)
         {
@@ -679,7 +829,7 @@ public sealed class SessionController : IDisposable
     }
     private async Task Regenerate()
     {
-        if (_overlay.EditingComposition)
+        if (_disposed || !_settings.Value.Enabled || _overlay.EditingComposition)
             return;
         if (_session.State == SessionState.EditingTranslation)
         {
@@ -703,6 +853,7 @@ public sealed class SessionController : IDisposable
         if (_session.Current is not null)
             Trace(reason);
         _activation.End();
+        InvalidatePauseAnchor();
         ClearBrokerSnapshot();
         _generation++;
         _hook.Revoke();
@@ -731,6 +882,11 @@ public sealed class SessionController : IDisposable
     {
         if (_disposed)
             return;
+        if (!_settings.Value.Enabled && PauseAnchorIsCurrent(_loop.NowMs))
+        {
+            _overlay.RenderPaused(_pauseAnchor!, _pauseViewRevision);
+            return;
+        }
         string? status = _session.State == SessionState.Translating && !_model.Ready ? "正在准备翻译"
             : _session.State == SessionState.TranslationFailed ? _statusOverride : null;
         _overlay.Render(_session, _settings.Value, _permitUntil >= _loop.NowMs && _permitUntil != 0, status);
@@ -773,6 +929,8 @@ public sealed class SessionController : IDisposable
     public void Dispose()
     {
         _disposed = true;
+        InvalidatePauseAnchor();
+        _overlay.HideQuietly();
         _loop.Stop();
         _loop.Tick -= Tick;
         _pendingDirect = null;

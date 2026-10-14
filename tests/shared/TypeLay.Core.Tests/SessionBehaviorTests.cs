@@ -303,13 +303,21 @@ public sealed class SessionBehaviorTests
         Check(s.State == SessionState.Translating);
     }
 
-    [Fact(DisplayName = "pause-clears-content-and-hides-ui")]
-    public void PauseClearsContentAndHidesUi()
+    [Fact(DisplayName = "pause-clears-content-without-creating-a-text-session")]
+    public void PauseClearsContentWithoutCreatingATextSession()
     {
         var (s, a) = Ready();
+        Check(s.BeginEdit());
+        s.ChangeDraft("private draft");
         s.SetPaused(true);
         s.Observe(a, FocusMember.Source, 2000);
-        Check(s.Current is null && s.Candidate == "" && !Presentation.From(s.State, false).Visible);
+        Check(s.Current is null && s.Candidate == "" && s.Preview == "" && s.Draft == "");
+        Check(s.State == SessionState.Paused && s.TakeTranslationJob(3000) is null);
+        Check(!Presentation.From(s.State, false).Visible);
+        var paused = Presentation.From(s.State, true, hasPreview: true, hasPauseAnchor: true);
+        Check(paused.Visible && paused.Kind == OverlayKind.Paused);
+        Check(paused.Status == "已暂停" && paused.TabHint == "点击恢复");
+        Check(!paused.ShowEscape && !paused.EditorOwnsText);
     }
 
     [Fact(DisplayName = "own-write-does-not-retranslate-on-caret-change")]

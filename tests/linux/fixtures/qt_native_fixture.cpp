@@ -90,7 +90,7 @@ public:
         const auto name = widget->objectName();
         const bool control = name == QStringLiteral("typelay-menu-trigger")
             || name == QStringLiteral("typelay-copy") || name == QStringLiteral("typelay-source-auto")
-            || name == QStringLiteral("typelay-source-en");
+            || name == QStringLiteral("typelay-source-en") || name == QStringLiteral("typelay-resume");
         if (!control && name != QStringLiteral("typelay-overlay") && name != QStringLiteral("typelay-menu")) return;
         const QRect bounds(widget->mapTo(window, QPoint()), widget->size());
         if (overlayObjects.contains(widget)) { overlayObjects[widget].bounds = bounds; return; }
@@ -321,7 +321,7 @@ int main(int argc, char **argv) {
         observer.observeOverlay(overlay);
         observer.observeOverlay(menu);
         QJsonObject overlayControls;
-        for (const auto *name : {"typelay-menu-trigger", "typelay-copy", "typelay-source-auto", "typelay-source-en"}) {
+        for (const auto *name : {"typelay-menu-trigger", "typelay-copy", "typelay-source-auto", "typelay-source-en", "typelay-resume"}) {
             auto *button = window.findChild<QAbstractButton *>(QLatin1String(name));
             observer.observeOverlay(button);
             if (button) overlayControls.insert(QLatin1String(name), QJsonObject{

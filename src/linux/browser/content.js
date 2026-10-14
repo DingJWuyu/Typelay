@@ -25,7 +25,7 @@
   const areaValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").get;
   const send = (event, data) => { if (alive) port.postMessage({event, data}); };
   const ui = (operation, value) => {
-    if (overlay) send("ui", {target: overlay.field.id, operation, value});
+    if (overlay) send("ui", {target: overlay.field.id, operation, revision: overlay.revision, value});
   };
   const monoNow = performance.now.bind(performance);
   // Firefox StaticPrefList.yaml currently uses 1000us plus bounded jitter;
@@ -260,10 +260,15 @@
       geometry: geometry(field), focused: focused(field), diagnostics: diagnostics(),
       publication: publicationState(field, meta)};
   }
-  function approved(field, basis) {
-    const meta = field && metadata(field);
+  function approved(field, basis, domOnly = false) {
+    const meta = field && metadata(field, domOnly);
     return !!meta && !meta.password && meta.enabled && !meta.readOnly && !meta.offscreen
       && basis?.target === field.id && basis.metadataKey === JSON.stringify(meta);
+  }
+  function pauseCurrent(field, basis, domOnly = false) {
+    return !!field && field.ime === "Clear" && focused(field) && approved(field, basis, domOnly)
+      && field.content === basis.contentRevision && field.input === basis.inputRevision
+      && field.focus === basis.focusRevision;
   }
   function read(field) {
     if (field.richText) return rich.read(field.element);
@@ -437,11 +442,14 @@
     if (!focusChanged) field.input++;
     if (textChanged) field.content++;
     if (focusChanged) field.focus++;
+    if (overlay?.paused && overlay.field === field) hide();
     refreshHint();
     send("input", {target: field.id, textChanged, focusChanged, focused: focused(field)});
   }
   function mutations(records) {
+    if (records.length && overlay?.paused && !pauseCurrent(overlay.field, overlay.authority, true)) hide();
     for (const record of records) {
+      if (record.type === "attributes") continue;
       if (!mutating) {
         for (const field of targets.values()) {
           if (field.richText && (record.target === field.element || field.element.contains(record.target))) {
@@ -464,7 +472,7 @@
     }
   }
   const observer = new MutationObserver(mutations);
-  observer.observe(document, {subtree: true, childList: true, characterData: true});
+  observer.observe(document, {subtree: true, childList: true, characterData: true, attributes: true});
   function drainMutations() { mutations(observer.takeRecords()); }
   function hide() {
     clearTimeout(hintTimer); hintTimer = null;
@@ -477,7 +485,7 @@
   function refreshHint() {
     clearTimeout(hintTimer); hintTimer = null;
     const current = overlay;
-    if (!current) return;
+    if (!current || current.paused) return;
     // UI refresh must not open a page-owned rich-editor callback after a
     // capture result has passed its final IME/source guard.
     const state = publicationState(current.field, null, true);
@@ -495,9 +503,11 @@
     refreshHint();
     if (!overlay) return;
     const geo = geometry(overlay.field);
-    if (!geo || !overlay.host.isConnected || !document.hasFocus() || !fresh(overlay.renewed, 800)) { hide(); return; }
+    if (!geo || !overlay.host.isConnected || !document.hasFocus() || !fresh(overlay.renewed, 800)
+      || overlay.paused && !pauseCurrent(overlay.field, overlay.authority, true)) { hide(); return; }
     const {bounds} = geo, host = overlay.host;
-    const width = Math.min(innerWidth - 16, Math.max(180, Math.min(overlay.expanded ? 720 : 520, overlay.expanded ? Math.max(520, bounds.width) : bounds.width)));
+    const width = overlay.paused ? Math.min(innerWidth - 16, 160)
+      : Math.min(innerWidth - 16, Math.max(180, Math.min(overlay.expanded ? 720 : 520, overlay.expanded ? Math.max(520, bounds.width) : bounds.width)));
     host.style.width = `${width}px`;
     sizeEditor();
     host.style.left = `${Math.max(8, Math.min(innerWidth - width - 8, bounds.x + bounds.width - width))}px`;
@@ -506,7 +516,16 @@
       bounds.y >= height + 8 ? bounds.y - height - 6 : bounds.y + bounds.height + 6))}px`;
   }
   function render(field, data) {
-    const view = data.view;
+    if (overlay && overlay.field === field && data.revision < (overlay.revision || 0)) {
+      return {visible: overlay.host.isConnected, editing: overlay.editing};
+    }
+    const view = data.view, paused = view?.state === "Paused";
+    if (paused) publication = shortcut = null;
+    // A paused view has no capture. Echoing its metadata authority establishes
+    // the same bounded host clock proof without reading source text/selection.
+    if (paused && (!pauseCurrent(field, data.authority) || !calibrate(field, data.authority))) {
+      hide(); return {visible: false};
+    }
     if (!approved(field, data.authority) || field.ime !== "Clear" || !document.hasFocus()
       || !fresh(data.expiresAtMs - 800, 800) || !view?.presentation?.visible
       || (!focused(field) && overlay?.field !== field)) { hide(); return {visible: false}; }
@@ -516,12 +535,35 @@
       host.style.cssText = "all:initial;position:fixed;z-index:2147483647;display:block;max-width:calc(100vw - 16px)";
       const shadow = host.attachShadow({mode: "closed"});
       const style = document.createElement("style");
-      style.textContent = ":host{color-scheme:light dark}section{font:13px system-ui;color:light-dark(#252a31,#eef1f6);background:light-dark(#fff,#252830);border:1px solid #9299a477;border-radius:14px;box-shadow:0 8px 28px #0003;overflow:hidden}header,footer{padding:8px 12px;font-size:11px;display:flex;align-items:center;gap:8px}header{border-bottom:1px solid #9299a433}footer{border-top:1px solid #9299a433;flex-wrap:wrap}.more-actions{display:flex;flex-direction:column;gap:4px;padding:8px 12px;border-top:1px solid #9299a433}.more-actions button{text-align:left}textarea{box-sizing:border-box;display:block;resize:none;width:100%;min-height:64px;max-height:160px;border:0;padding:12px 14px;outline:none;font:14px/1.55 system-ui;background:transparent;color:inherit}textarea:focus{box-shadow:inset 0 0 0 2px #3267e355}button{font:inherit;color:inherit;border:0;border-radius:5px;padding:3px 5px;background:transparent;cursor:pointer}button:hover{background:#9299a422}[hidden]{display:none!important}";
+      style.textContent = ":host{color-scheme:light dark}section{font:13px system-ui;color:light-dark(#252a31,#eef1f6);background:light-dark(#fff,#252830);border:1px solid #9299a477;border-radius:14px;box-shadow:0 8px 28px #0003;overflow:hidden}header,footer{padding:8px 12px;font-size:11px;display:flex;align-items:center;gap:8px}header{border-bottom:1px solid #9299a433}footer{border-top:1px solid #9299a433;flex-wrap:wrap}.more-actions{display:flex;flex-direction:column;gap:4px;padding:8px 12px;border-top:1px solid #9299a433}.more-actions button{text-align:left}textarea{box-sizing:border-box;display:block;resize:none;width:100%;min-height:64px;max-height:160px;border:0;padding:12px 14px;outline:none;font:14px/1.55 system-ui;background:transparent;color:inherit}textarea:focus{box-shadow:inset 0 0 0 2px #3267e355}button{font:inherit;color:inherit;border:0;border-radius:5px;padding:3px 5px;background:transparent;cursor:pointer}button:hover{background:#9299a422}section.paused{color:light-dark(#737b89,#aeb7c4);box-shadow:0 2px 8px #0001}section.paused header{border-bottom:0;justify-content:space-between}button[aria-disabled=true]{cursor:default;opacity:.5}[hidden]{display:none!important}";
       const panel = document.createElement("section"), header = document.createElement("header");
       const language = document.createElement("button"), status = document.createElement("span");
       language.title = "语言和设置";
       language.addEventListener("click", () => ui("settings"));
-      header.append(language, status);
+      const resume = document.createElement("button");
+      resume.textContent = "恢复";
+      resume.tabIndex = -1;
+      resume.hidden = true;
+      resume.addEventListener("pointerdown", event => event.preventDefault());
+      resume.addEventListener("click", event => {
+        const current = overlay;
+        if (!event.isTrusted || !current?.paused || current.resume !== resume || current.resumePending) return;
+        const {field, authority, revision, renewed} = current;
+        drainMutations();
+        if (overlay !== current) return;
+        if (!fresh(renewed, 800)) { hide(); return; }
+        const allowed = pauseCurrent(field, authority);
+        // The page-owned probe can synchronously occupy the event loop past
+        // expiry or replace the rendered view. Timers cannot guard this return.
+        if (overlay !== current || current.field !== field || current.authority !== authority
+          || current.revision !== revision || current.renewed !== renewed
+          || !current.paused || current.resumePending) return;
+        if (!allowed || !fresh(renewed, 800)) { hide(); return; }
+        current.resumePending = true;
+        current.resume.setAttribute("aria-disabled", "true");
+        ui("resume");
+      });
+      header.append(language, status, resume);
       const editor = document.createElement("textarea");
       editor.setAttribute("aria-label", "TypeLay 译文");
       editor.readOnly = true;
@@ -597,24 +639,31 @@
       }
       panel.append(header, editor, footer, menu); shadow.append(style, panel);
       document.documentElement.append(host);
-      overlay = {field, host, editor, language, status, hint, footer, more, menu, editing: false, composing: false, expanded: false};
+      overlay = {field, host, panel, editor, language, status, resume, hint, footer, more, menu, editing: false, composing: false, expanded: false};
     }
     if (data.revision < (overlay.revision || 0)) return {visible: true, editing: overlay.editing};
+    if (overlay.revision !== data.revision) overlay.resumePending = false;
     overlay.revision = data.revision;
+    overlay.paused = paused;
+    overlay.authority = data.authority;
+    overlay.resume.setAttribute("aria-disabled", String(!!overlay.resumePending));
+    overlay.resume.hidden = !paused;
+    overlay.language.hidden = paused;
+    overlay.panel.classList.toggle("paused", paused);
     overlay.renewed = data.expiresAtMs - 800;
-    overlay.editable = view.editable;
+    overlay.editable = !paused && view.editable;
     overlay.host.style.colorScheme = ["light", "dark"].includes(data.theme) ? data.theme : "light dark";
     overlay.language.textContent = `${view.sourceLanguage} → ${view.targetLanguage}`;
-    overlay.status.textContent = view.status || "";
+    overlay.status.textContent = paused ? "已暂停" : view.status || "";
     overlay.tabHint = view.presentation.tabHint;
-    overlay.editor.hidden = !view.text && view.state === "IdleCapsule";
+    overlay.editor.hidden = paused || !view.text && view.state === "IdleCapsule";
     overlay.footer.hidden = overlay.editor.hidden;
     if (overlay.footer.hidden) {
       overlay.menu.hidden = true;
       overlay.more.setAttribute("aria-expanded", "false");
     }
-    if (!view.presentation.editorOwnsText) {
-      overlay.editor.value = view.text || "";
+    if (paused || !view.presentation.editorOwnsText) {
+      overlay.editor.value = paused ? "" : view.text || "";
       overlay.editing = false; overlay.editor.readOnly = true;
     } else if (!overlay.editing) overlay.editor.value = view.text || "";
     sizeEditor(); position();
@@ -696,17 +745,20 @@
       }
       case "overlay-render": return render(field, data);
       case "overlay-renew":
-        if (overlay?.field === field && approved(field, data.authority) && fresh(data.expiresAtMs - 800, 800)) {
+        if (overlay?.field === field && approved(field, data.authority)
+          && (!overlay.paused || pauseCurrent(field, data.authority) && calibrate(field, data.authority))
+          && fresh(data.expiresAtMs - 800, 800)) {
+          overlay.authority = data.authority;
           overlay.renewed = data.expiresAtMs - 800; position();
         } else hide();
         return null;
       case "overlay-edit":
-        if (overlay?.field === field && data.allowed === true && document.hasFocus() && field.ime === "Clear") {
+        if (overlay?.field === field && !overlay.paused && data.allowed === true && document.hasFocus() && field.ime === "Clear") {
           overlay.editing = true; overlay.editor.readOnly = false; overlay.editor.focus({preventScroll: true});
         }
         return null;
       case "overlay-resume":
-        if (overlay?.field === field && document.hasFocus()) {
+        if (overlay?.field === field && !overlay.paused && document.hasFocus()) {
           overlay.status.textContent = "无法返回原输入框，请点击译文继续编辑";
         }
         return null;

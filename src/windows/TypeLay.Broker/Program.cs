@@ -42,6 +42,7 @@ internal static class Program
                         "direct-write" => new(BrokerProtocol.Version, request.Id, "receipt", Receipt: provider.WriteDirect(request)),
                         "return" => new(BrokerProtocol.Version, request.Id, provider.ReturnToSource(request.BoundTarget) ? "focused" : "denied"),
                         "capture" => Observe(provider, request),
+                        "observe-pause" => ObservePause(provider, request),
                         "quit" => new(BrokerProtocol.Version, request.Id, "bye"),
                         _ => new(BrokerProtocol.Version, request.Id, "unsupported")
                     };
@@ -102,5 +103,11 @@ internal static class Program
         var (snapshot, focus) = provider.Capture(request);
         return new(BrokerProtocol.Version, request.Id, snapshot is null ? "silent" : "observed", snapshot, focus,
             Application: provider.Application, UserEpoch: request.UserEpoch, ForegroundEpoch: request.ForegroundEpoch);
+    }
+    private static BrokerResponse ObservePause(UiaInputProvider provider, BrokerRequest request)
+    {
+        var (anchor, focus) = provider.ObservePause(request);
+        return new(BrokerProtocol.Version, request.Id, anchor is null ? "silent" : "pause-anchor", Focus: focus,
+            Application: provider.Application, ForegroundEpoch: request.ForegroundEpoch, PauseAnchor: anchor);
     }
 }

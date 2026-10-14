@@ -21,6 +21,9 @@ internal sealed class OverlayWindow : Window, ISessionView
     private readonly Border _escapeKeycap;
     private readonly TextBlock _escapeLabel;
     private readonly Grid _surface;
+    private readonly Button _resumeButton;
+    private readonly TextBlock _pausedStatus, _resumeHint;
+    private long? _pausedRevision, _pressedPauseRevision;
     private bool _rendering, _editing, _composing, _expanded, _hasCandidate, _hasPreview, _editorAccent;
     private readonly bool _automationTest;
     private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
@@ -57,6 +60,10 @@ internal sealed class OverlayWindow : Window, ISessionView
         get; set;
     }
     public Action? LanguageRequested
+    {
+        get; set;
+    }
+    public Action<long>? ResumeRequested
     {
         get; set;
     }
@@ -187,6 +194,32 @@ internal sealed class OverlayWindow : Window, ISessionView
         _footerBorder.BorderThickness = new(0, 1, 0, 0);
         Grid.SetRow(_footerBorder, 2);
         _surface.Children.Add(_footerBorder);
+        var paused = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        _pausedStatus = UiTheme.Text("", 10.5, muted: true);
+        _resumeHint = UiTheme.Text("", 10.5, muted: true);
+        _resumeHint.Margin = new(10, 0, 0, 0);
+        paused.Children.Add(_pausedStatus);
+        paused.Children.Add(_resumeHint);
+        _resumeButton = new Button
+        {
+            Content = paused,
+            BorderThickness = new(0),
+            Background = Brushes.Transparent,
+            Padding = new(12, 0, 10, 0),
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            Focusable = false,
+            IsTabStop = false,
+            Visibility = Visibility.Collapsed
+        };
+        _resumeButton.PreviewMouseLeftButtonDown += (_, _) => _pressedPauseRevision = _pausedRevision;
+        _resumeButton.Click += (_, _) =>
+        {
+            long? revision = _pressedPauseRevision ?? _pausedRevision;
+            _pressedPauseRevision = null;
+            if (_pausedRevision is not null && _resumeButton.IsVisible && revision is { } value)
+                ResumeRequested?.Invoke(value);
+        };
+        _surface.Children.Add(_resumeButton);
         var outer = UiTheme.Border(_surface, 16);
         outer.ClipToBounds = true;
         outer.Margin = new(12);
@@ -229,6 +262,8 @@ internal sealed class OverlayWindow : Window, ISessionView
     }
     private bool StartEdit()
     {
+        if (_pausedRevision is not null)
+            return false;
         if (_editing)
             return true;
         if (BeginEditing?.Invoke() != true)
@@ -287,6 +322,10 @@ internal sealed class OverlayWindow : Window, ISessionView
         _rendering = true;
         try
         {
+            _pausedRevision = null;
+            _pressedPauseRevision = null;
+            _resumeButton.Visibility = Visibility.Collapsed;
+            _headerBorder.Visibility = Visibility.Visible;
             _editor.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
             _footerBorder.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
             _surface.RowDefinitions[2].Height = new(idle ? 0 : 34);
@@ -339,17 +378,39 @@ internal sealed class OverlayWindow : Window, ISessionView
             }
             if (trace)
                 uiMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds - textMs;
-            positionTiming = Position(source, idle, trace);
+            positionTiming = Position(source.Target, source.Bounds, idle, trace);
         }
         finally { _rendering = false; }
         if (trace)
             TraceRender(atMs, Stopwatch.GetElapsedTime(started).TotalMilliseconds, uiMs, textMs, positionTiming);
     }
-    private (double MeasureMs, double ShowMs, double SetWindowPosMs) Position(InputSnapshot source, bool idle, bool trace)
+    public void RenderPaused(PauseAnchor anchor, long revision)
+    {
+        var display = Presentation.From(SessionState.Paused, false, hasPauseAnchor: true);
+        if (!display.Visible || display.Kind != OverlayKind.Paused || !anchor.IsUsable
+            || !WindowsTarget.TryDecode(anchor.Target, out var target) || target.RootHwnd == 0)
+        {
+            HideQuietly();
+            return;
+        }
+        ClearSessionContent();
+        _pausedRevision = revision;
+        _pausedStatus.Text = display.Status;
+        _resumeHint.Text = display.TabHint;
+        _headerBorder.Visibility = Visibility.Collapsed;
+        _editor.Visibility = Visibility.Collapsed;
+        _footerBorder.Visibility = Visibility.Collapsed;
+        _surface.RowDefinitions[2].Height = new(0);
+        _resumeButton.Visibility = Visibility.Visible;
+        Position(anchor.Target, anchor.Bounds, true, false);
+        if (!IsVisible)
+            _pausedRevision = null;
+    }
+    private (double MeasureMs, double ShowMs, double SetWindowPosMs) Position(TargetId target, RectPx bounds, bool idle, bool trace)
     {
         (double MeasureMs, double ShowMs, double SetWindowPosMs) timing = default;
-        double scale = Math.Max(1, Native.GetDpiForWindow((nint)source.Target.AsWindows().RootHwnd) / 96.0);
-        _panelWidth = idle ? 140 : Math.Clamp(source.Bounds.Width / scale, 320, 520);
+        double scale = Math.Max(1, Native.GetDpiForWindow((nint)target.AsWindows().RootHwnd) / 96.0);
+        _panelWidth = idle ? 140 : Math.Clamp(bounds.Width / scale, 320, 520);
         _editor.MaxHeight = _expanded ? 360 : 160;
         var measurementKey = (_editor.Text, _panelWidth, scale, FontFamily, CultureInfo.CurrentUICulture);
         if (!idle && _measurementKey != measurementKey)
@@ -376,15 +437,15 @@ internal sealed class OverlayWindow : Window, ISessionView
         double height = idle ? 60 : 34 + bodyHeight + 34 + 26, width = _panelWidth + 26;
         var rect = new Native.Rect
         {
-            Left = (int)source.Bounds.X,
-            Top = (int)source.Bounds.Y,
-            Right = (int)source.Bounds.Right,
-            Bottom = (int)source.Bounds.Bottom
+            Left = (int)bounds.X,
+            Top = (int)bounds.Y,
+            Right = (int)bounds.Right,
+            Bottom = (int)bounds.Bottom
         };
         var monitor = new Native.MonitorInfo { Size = System.Runtime.InteropServices.Marshal.SizeOf<Native.MonitorInfo>() };
         Native.GetMonitorInfoW(Native.MonitorFromRect(ref rect, 2), ref monitor);
         var work = new RectPx(monitor.Work.Left, monitor.Work.Top, monitor.Work.Right - monitor.Work.Left, monitor.Work.Bottom - monitor.Work.Top);
-        RectPx? placement = OverlayPlacement.Place(source.Bounds, work, width * scale, height * scale, gap: 0, minimumHeight: (idle ? 60 : 126) * scale);
+        RectPx? placement = OverlayPlacement.Place(bounds, work, width * scale, height * scale, gap: 0, minimumHeight: (idle ? 60 : 126) * scale);
         if (placement is not { } position)
         {
             Hide();
@@ -449,6 +510,15 @@ internal sealed class OverlayWindow : Window, ISessionView
     }
     public void HideQuietly()
     {
+        _pausedRevision = null;
+        _pressedPauseRevision = null;
+        _resumeButton.Visibility = Visibility.Collapsed;
+        ClearSessionContent();
+        if (IsVisible)
+            Hide();
+    }
+    private void ClearSessionContent()
+    {
         _measurementKey = null;
         _editing = false;
         _composing = false;
@@ -460,12 +530,17 @@ internal sealed class OverlayWindow : Window, ISessionView
         {
             _editor.Clear();
             _editor.IsUndoEnabled = false;
+            _editor.IsReadOnly = true;
+            _editor.Focusable = false;
+            if (_editorAccent)
+            {
+                _editor.SetResourceReference(Control.BackgroundProperty, "Panel");
+                _editorAccent = false;
+            }
             _status.Text = "";
         }
         finally { _rendering = false; }
         SetNoActivate(true);
-        if (IsVisible)
-            Hide();
     }
     private void OpenMenu(Button anchor)
     {

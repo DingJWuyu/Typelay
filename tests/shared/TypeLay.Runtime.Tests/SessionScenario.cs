@@ -49,6 +49,8 @@ internal sealed class SessionScenario : IDisposable
         Controller.StartAsync().GetAwaiter().GetResult();
     }
 
+    public void BlockSettingsWrites() => Directory.CreateDirectory(Path.Combine(_directory, "settings.json.tmp"));
+    public void AllowSettingsWrites() => Directory.Delete(Path.Combine(_directory, "settings.json.tmp"));
     public void Tick(long elapsed = 40)
     {
         Loop.Advance(elapsed);
@@ -71,6 +73,16 @@ internal sealed class SessionScenario : IDisposable
         var pending = Service.PendingCapture ?? throw new InvalidOperationException("No pending capture.");
         Service.PendingCapture = null;
         pending.SetResult(capture);
+        _context.Drain();
+    }
+    public PauseObservation FreshPause => new(
+        new(Source.Target, Source.Bounds, Source.Access, Loop.NowMs, Input.ForegroundEpoch),
+        Input.GetFocus(Source.Target), "org.typelay.ControlledApp", Input.ForegroundEpoch);
+    public void CompletePauseObservation(PauseObservation observation)
+    {
+        var pending = Service.PendingPauseObservation ?? throw new InvalidOperationException("No pending pause observation.");
+        Service.PendingPauseObservation = null;
+        pending.SetResult(observation);
         _context.Drain();
     }
     public void FailCapture()
@@ -177,8 +189,18 @@ internal sealed class SessionScenario : IDisposable
             CommandGeneration = Guid.NewGuid();
         }
         public bool TryRead(out InputNotice? notice) => Notices.TryDequeue(out notice);
-        public void Publish(InputLease lease, AcceptancePermit? permit) => Permit = permit;
-        public void PublishShortcut(ShortcutLease lease) => Shortcut = lease;
+        public List<InputLease> PublishedLeases { get; } = [];
+        public List<ShortcutLease> PublishedShortcuts { get; } = [];
+        public void Publish(InputLease lease, AcceptancePermit? permit)
+        {
+            PublishedLeases.Add(lease);
+            Permit = permit;
+        }
+        public void PublishShortcut(ShortcutLease lease)
+        {
+            PublishedShortcuts.Add(lease);
+            Shortcut = lease;
+        }
         public void Revoke()
         {
             Permit = null;
@@ -230,6 +252,20 @@ internal sealed class SessionScenario : IDisposable
             Captures++;
             return PendingCapture?.Task ?? Task.FromResult(new InputCapture(host.Fresh,
                 host.Input.GetFocus(host.Source.Target), "org.typelay.ControlledApp", context.UserEpoch, context.ForegroundEpoch));
+        }
+        public List<InputContext> PauseRequests { get; } = [];
+        public TaskCompletionSource<PauseObservation>? PendingPauseObservation
+        {
+            get; set;
+        }
+        public PauseObservation? PauseResult
+        {
+            get; set;
+        }
+        public Task<PauseObservation> ObservePauseAsync(InputContext context)
+        {
+            PauseRequests.Add(context);
+            return PendingPauseObservation?.Task ?? Task.FromResult(PauseResult ?? host.FreshPause);
         }
         public async Task<bool> ReturnToSourceAsync(InputContext context)
         {
@@ -304,6 +340,18 @@ internal sealed class SessionScenario : IDisposable
         {
             get; set;
         }
+        public Action<long>? ResumeRequested
+        {
+            get; set;
+        }
+        public long PauseRevision
+        {
+            get; private set;
+        }
+        public PauseAnchor? Anchor
+        {
+            get; private set;
+        }
         public bool EditingComposition
         {
             get; set;
@@ -337,7 +385,20 @@ internal sealed class SessionScenario : IDisposable
             CanAccept = canAccept;
             Visible = session.State is not (SessionState.NoSession or SessionState.Paused);
         }
-        public void HideQuietly() => Visible = false;
+        public void RenderPaused(PauseAnchor anchor, long revision)
+        {
+            Anchor = anchor;
+            PauseRevision = revision;
+            State = SessionState.Paused;
+            Preview = Draft = "";
+            CanAccept = false;
+            Visible = true;
+        }
+        public void HideQuietly()
+        {
+            Visible = false;
+            Anchor = null;
+        }
         public void ResumeEditor() => Resumes++;
     }
 }

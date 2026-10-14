@@ -27,7 +27,7 @@ Windows 与 Linux 并行开发，遵循[共同应用支持与完整体验](../..
 - 模型未就绪、空文本、拒写和取消有可见反馈；已发出写回请求后更改设置只能说明结果待确认，不能宣称原文必然未改变。F10 本身不显示预览胶囊。实验性 Tab 写回不是 F10 的后备，开启它不能补齐直接替换能力。
 - [真实 Windows 模型检查](https://github.com/DingJWuyu/Typelay/actions/runs/38441769291)已在独立 x64 stock Edit 上通过完整 F10 路径：生产原生采集确认能力后，仅注入一次 Ctrl+Shift+F10，取得 Verified 回执，原字段内容与同一本地模型的独立推理结果相符，焦点保持、未提交、未显示浮层，清理和提交计数正控均通过。295ms 是该次观察的按键到确认耗时，不是延迟保证。此结果只证明既有原生 Edit 后端和显式自动化模式，不能关闭用户四处输入框的问题，也不代表物理输入法验收。
 
-按需练习的多行 stock Edit 已在真实运行中出现“预览成功、F10 写前拒绝”：回执为 `RejectedBeforeMutation / Sensitive`。采集阶段允许明确可编辑的 TextPattern，而原直接写回阶段把缺少 ValuePattern 一律当成只读；Windows 多行 Edit 正常可以只提供 TextPattern。当前修正对原绑定元素重查 [TextPattern.IsReadOnlyAttribute](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.textpattern.isreadonlyattribute?view=windowsdesktop-10.0)，只有明确 `false` 才继续；未知或混合属性仍拒绝，最终原生类、只读/密码、IME、寿命和文本原子检查不变。该修正待同一真实多行练习回归确认，不能扩展为通用 UIA 或现代记事本支持。
+按需练习的多行 stock Edit 已在真实运行中出现“预览成功、F10 写前拒绝”：回执为 `RejectedBeforeMutation / Sensitive`。采集阶段允许明确可编辑的 TextPattern，而原直接写回阶段把缺少 ValuePattern 一律当成只读；Windows 多行 Edit 正常可以只提供 TextPattern。当前修正对原绑定元素重查 [TextPattern.IsReadOnlyAttribute](https://learn.microsoft.com/en-us/dotnet/api/system.windows.automation.textpattern.isreadonlyattribute?view=windowsdesktop-10.0)，只有明确 `false` 才继续；未知或混合属性仍拒绝，最终原生类、只读/密码、IME、寿命和文本原子检查不变。[同一真实多行练习回归](https://github.com/DingJWuyu/Typelay/actions/runs/38527315890)已确认修正：一次 F9 预览保持原文，再一次 F10 取得 Verified 回执并与同一真实模型的独立结果匹配，焦点及关闭后的用户设置保持。该结果不能扩展为通用 UIA 或现代记事本支持。
 
 源码入口：`KeyboardHook.TryInvokeShortcut`、共享 `SessionController.Shortcut` / `QueueDirect`、`NativeEditTransactions` 与 `UiaInputProvider`。
 

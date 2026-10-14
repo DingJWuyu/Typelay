@@ -156,7 +156,8 @@ public:
         connect(&expiry_, &QTimer::timeout, this, [this] {
             advanceShortcut();
             if (card_ && (now() > overlayUntil_ || !overlayTarget_ || !overlayTarget_->field
-                || !overlayTarget_->field->window()->isActiveWindow())) hideOverlay();
+                || !overlayTarget_->field->window()->isActiveWindow()
+                || (paused() && !pauseCurrent(overlayTarget_, overlayAuthority_)))) hideOverlay();
             refreshHint();
         });
         expiry_.start(25);
@@ -1004,6 +1005,15 @@ private:
         if (overlayTarget_) sendEvent("ui", {{"target", overlayTarget_->id}, {"operation", QLatin1String(operation)},
             {"revision", overlayRevision_}, {"value", value}});
     }
+    bool paused() const {
+        return overlayView_.value("state").toString() == "Paused";
+    }
+    bool pauseCurrent(Target *target, QJsonObject basis) {
+        // Provider inspection may dispatch source invalidation. Keep a copy of
+        // the rendered authority and recheck all metadata generations after it.
+        return inspect(target) && clear(target->state) && authorityMatches(target, basis, true)
+            && local(target, target->state) && !geometry(target).isEmpty();
+    }
     bool overlayActive() const {
         return card_ && card_->isVisible() && overlayTarget_ && overlayTarget_->field
             && overlayTarget_->field->window()->isActiveWindow() && now() <= overlayUntil_;
@@ -1012,7 +1022,7 @@ private:
         const bool focusedEditor = overlayActive() && insideOverlay(QApplication::focusWidget());
         if (focusedEditor != overlayFocused_) { overlayFocused_ = focusedEditor; ui("focus", focusedEditor); }
         auto *source = focused();
-        if (card_ && source && source != overlayTarget_) hideOverlay();
+        if (card_ && source != overlayTarget_ && (paused() || source)) hideOverlay();
     }
     void hideOverlay() {
         if (!card_) return;
@@ -1021,9 +1031,10 @@ private:
         ui("visible", false);
         auto *card = card_.data();
         card_ = nullptr; editor_ = nullptr; hint_ = nullptr; status_ = nullptr;
-        language_ = nullptr; footer_ = nullptr; menu_ = nullptr; swap_ = nullptr;
+        language_ = nullptr; footer_ = nullptr; menu_ = nullptr; swap_ = nullptr; resume_ = nullptr;
         sourceLanguages_ = nullptr; targetLanguages_ = nullptr; overlayTarget_ = nullptr;
-        overlayView_ = {}; overlayFocused_ = false; composing_ = false; pendingEdit_ = false;
+        overlayView_ = {}; overlayAuthority_ = {}; overlayFocused_ = false; composing_ = false;
+        pendingEdit_ = false; pendingResume_ = false;
         card->hide();
         card->deleteLater();
     }
@@ -1040,7 +1051,7 @@ private:
         if (!card_ || !overlayTarget_ || !overlayTarget_->field) return;
         auto *field = overlayTarget_->field.data();
         auto *top = field->window();
-        const bool capsule = overlayView_.value("state").toString() == "IdleCapsule";
+        const bool capsule = paused() || overlayView_.value("state").toString() == "IdleCapsule";
         const int width = qMin(capsule && !menu_->isVisible() ? 160 : qBound(390, field->width(), 520),
             qMax(1, top->width() - 16));
         editor_->setFixedHeight(expanded_ ? 280 : 100);
@@ -1070,7 +1081,19 @@ private:
         auto button = [&](QWidget *parent, QBoxLayout *box, const QString &label, const char *operation) {
             auto *value = new QPushButton(label, parent);
             value->setFocusPolicy(Qt::NoFocus);
-            connect(value, &QPushButton::clicked, this, [this, operation] {
+            connect(value, &QPushButton::clicked, this, [this, operation, value] {
+                if (qstrcmp(operation, "resume") == 0) {
+                    auto *target = overlayTarget_;
+                    const auto revision = overlayRevision_;
+                    if (value != resume_ || !paused() || pendingResume_) return;
+                    if (!overlayActive() || !pauseCurrent(target, overlayAuthority_)) { hideOverlay(); return; }
+                    if (overlayTarget_ != target || overlayRevision_ != revision || !paused() || !overlayActive()) return;
+                    pendingResume_ = true;
+                    resume_->setEnabled(false);
+                    ui("resume");
+                    return;
+                }
+                if (paused()) return;
                 if (qstrcmp(operation, "menu") == 0) {
                     menu_->setVisible(!menu_->isVisible());
                 } else if (qstrcmp(operation, "expand") == 0) {
@@ -1092,6 +1115,9 @@ private:
         language_->setAccessibleName(QStringLiteral("语言与更多操作"));
         status_ = new QLabel(frame);
         header->addStretch(); header->addWidget(status_);
+        resume_ = button(frame, header, QStringLiteral("恢复"), "resume");
+        resume_->setObjectName(QStringLiteral("typelay-resume"));
+        resume_->hide();
         layout->addLayout(header);
         auto *translationEditor = new TranslationEditor(frame);
         editor_ = translationEditor;
@@ -1166,23 +1192,29 @@ private:
             const auto presentation = view.value("presentation").toObject();
             const auto basis = data.value("authority").toObject();
             const qint64 until = integer(data, "expiresAtMs", 0), current = now();
-            const bool retainEditor = target && target == overlayTarget_
+            if (overlayTarget_ == target && integer(data, "revision", 0) < overlayRevision_)
+                return {{"visible", overlayActive()}, {"editing", editor_ && !editor_->isReadOnly()}};
+            const bool isPaused = view.value("state").toString() == "Paused";
+            const bool retainEditor = !isPaused && target && target == overlayTarget_
                 && presentation.value("editorOwnsText").toBool() && target->field
                 && integer(basis, "inputRevision") == qint64(target->input)
                 && integer(basis, "contentRevision") == qint64(target->content);
             const bool valid = metadataMatches(target, basis) && presentation.value("visible").toBool()
                 && until >= current && until - current <= 1000
-                && (retainEditor || (inspect(target) && clear(target->state)))
-                && (focused() == target || (target == overlayTarget_ && overlayFocused_))
+                && (isPaused ? pauseCurrent(target, basis) : retainEditor || (inspect(target) && clear(target->state)))
+                && (focused() == target || (!isPaused && target == overlayTarget_ && overlayFocused_))
                 && target->field->window()->isActiveWindow() && !geometry(target).isEmpty();
             if (!valid) hideOverlay();
             else {
                 if (!card_ || overlayTarget_ != target) { hideOverlay(); createOverlay(target); }
-                overlayView_ = view; overlayUntil_ = until; overlayRevision_ = integer(data, "revision", 0);
-                const bool editing = presentation.value("editorOwnsText").toBool();
+                if (overlayRevision_ != integer(data, "revision", 0)) pendingResume_ = false;
+                overlayView_ = view; overlayAuthority_ = basis;
+                overlayUntil_ = until; overlayRevision_ = integer(data, "revision", 0);
+                const bool editing = !isPaused && presentation.value("editorOwnsText").toBool();
+                const QString text = isPaused ? QString() : view.value("text").toString();
                 {
                     QScopedValueRollback<bool> setting(settingText_, true);
-                    if (editor_->toPlainText() != view.value("text").toString()) {
+                    if (editor_->toPlainText() != text) {
                         // Once editing starts, the native editor owns its text,
                         // caret and undo history. A delayed draft echo is not an edit.
                         const bool retained = editing && !editor_->isReadOnly();
@@ -1190,7 +1222,7 @@ private:
                             const auto *counter = retained ? "tlqtEditorOwnedRenderSkips" : "tlqtEditorProgrammaticSets";
                             qApp->setProperty(counter, qApp->property(counter).toInt() + 1);
                         }
-                        if (!retained) editor_->setPlainText(view.value("text").toString());
+                        if (!retained) editor_->setPlainText(text);
                     }
                 }
                 editor_->setReadOnly(!editing);
@@ -1205,28 +1237,38 @@ private:
                 sourceLanguages_->button(source == QStringLiteral("auto") ? 0 : source == QStringLiteral("zh") ? 1 : 2)->setChecked(true);
                 targetLanguages_->button(destination == QStringLiteral("zh") ? 1 : 2)->setChecked(true);
                 swap_->setEnabled(source != QStringLiteral("auto"));
-                status_->setText(view.value("status").toString());
+                status_->setText(isPaused ? QStringLiteral("已暂停") : view.value("status").toString());
                 refreshHint();
-                const bool capsule = view.value("state").toString() == "IdleCapsule";
-                editor_->setVisible(!capsule); footer_->setVisible(!capsule); status_->setVisible(!capsule);
+                const bool capsule = isPaused || view.value("state").toString() == "IdleCapsule";
+                editor_->setVisible(!capsule); footer_->setVisible(!capsule); status_->setVisible(isPaused || !capsule);
+                language_->setVisible(!isPaused); resume_->setVisible(isPaused); resume_->setEnabled(!pendingResume_);
+                if (isPaused) menu_->hide();
                 arrangeOverlay();
                 const bool dark = data.value("theme").toString() == "Dark";
-                card_->setStyleSheet(dark
-                    ? QStringLiteral("QFrame#typelay-overlay { background:#20242c; color:#e8ebf2; border:1px solid #596170; border-radius:12px; }")
-                    : QStringLiteral("QFrame#typelay-overlay { background:#ffffff; color:#171a21; border:1px solid #dfe3eb; border-radius:12px; }"));
+                card_->setStyleSheet(isPaused
+                    ? dark
+                        ? QStringLiteral("QFrame#typelay-overlay { background:#20242c; border:1px solid #48515e; border-radius:12px; } QFrame#typelay-overlay QLabel, QFrame#typelay-overlay QPushButton { color:#aeb7c4; }")
+                        : QStringLiteral("QFrame#typelay-overlay { background:#ffffff; border:1px solid #dfe3eb; border-radius:12px; } QFrame#typelay-overlay QLabel, QFrame#typelay-overlay QPushButton { color:#737b89; }")
+                    : dark
+                        ? QStringLiteral("QFrame#typelay-overlay { background:#20242c; color:#e8ebf2; border:1px solid #596170; border-radius:12px; }")
+                        : QStringLiteral("QFrame#typelay-overlay { background:#ffffff; color:#171a21; border:1px solid #dfe3eb; border-radius:12px; }"));
                 card_->show(); card_->raise(); syncOverlay();
             }
         } else if (op == "overlay-renew") {
             const qint64 until = integer(data, "expiresAtMs", 0), current = now();
             if (target == overlayTarget_ && overlayActive() && until >= current && until - current <= 1000
-                && metadataMatches(target, data.value("authority").toObject()) && !geometry(target).isEmpty()) overlayUntil_ = until;
+                && metadataMatches(target, data.value("authority").toObject()) && !geometry(target).isEmpty()
+                && (!paused() || pauseCurrent(target, data.value("authority").toObject()))) {
+                overlayUntil_ = until;
+                overlayAuthority_ = data.value("authority").toObject();
+            }
             else hideOverlay();
         } else if (op == "overlay-edit") {
             if (target == overlayTarget_ && overlayActive() && pendingEdit_ && data.value("allowed").toBool()
                 && overlayView_.value("state").toString() == "EditingTranslation" && !editor_->isReadOnly()) editor_->setFocus();
             pendingEdit_ = false;
             syncOverlay();
-        } else if (op == "overlay-resume" && target == overlayTarget_ && overlayActive()) {
+        } else if (op == "overlay-resume" && target == overlayTarget_ && overlayActive() && !paused()) {
             editor_->setReadOnly(false); editor_->setFocusPolicy(Qt::StrongFocus); editor_->setFocus(); syncOverlay();
         }
         return {{"visible", overlayActive()}, {"editing", editor_ && !editor_->isReadOnly()}};
@@ -1235,7 +1277,7 @@ private:
         if (!onThread()) return false;
         if (editor_ && (object == editor_ || object == editor_->viewport())) {
             if (event->type() == QEvent::MouseButtonPress && editor_->isReadOnly() && overlayActive()) {
-                if (overlayView_.value("editable").toBool() && !pendingEdit_
+                if (!paused() && overlayView_.value("editable").toBool() && !pendingEdit_
                     && overlayTarget_ && inspect(overlayTarget_) && clear(overlayTarget_->state)) {
                     pendingEdit_ = true; ui("beginEdit"); return true;
                 }
@@ -1477,7 +1519,7 @@ private:
     int fd_ = -1;
     QPointer<QSocketNotifier> reader_, writer_;
     QByteArray incoming_, outgoing_;
-    QJsonObject publication_, overlayView_, shortcutConfiguration_, shortcutAuthority_;
+    QJsonObject publication_, overlayView_, overlayAuthority_, shortcutConfiguration_, shortcutAuthority_;
     std::optional<ShortcutRequest> pendingShortcut_;
     quint64 shortcutSequence_ = 0;
     qint64 shortcutStartedAt_ = -1;
@@ -1486,12 +1528,13 @@ private:
     QPointer<QFrame> card_;
     QPointer<QPlainTextEdit> editor_;
     QPointer<QLabel> hint_, status_;
-    QPointer<QPushButton> language_, swap_;
+    QPointer<QPushButton> language_, swap_, resume_;
     QPointer<QButtonGroup> sourceLanguages_, targetLanguages_;
     QPointer<QWidget> footer_, menu_;
     Target *overlayTarget_ = nullptr;
     qint64 overlayUntil_ = 0, overlayRevision_ = 0;
     bool overlayFocused_ = false, composing_ = false, settingText_ = false, pendingEdit_ = false, expanded_ = false;
+    bool pendingResume_ = false;
 };
 
 class Plugin final : public QGenericPlugin {

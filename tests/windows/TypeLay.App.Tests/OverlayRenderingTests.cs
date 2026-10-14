@@ -202,6 +202,172 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         });
     }
 
+    [Fact]
+    public async Task PausedCapsuleClearsPreviewAndResumesWithTheDisplayedRevisionWithoutTakingFocus()
+    {
+        await desktop.RunAsync(() =>
+        {
+            var (window, input, source) = OpenSource();
+            var settings = new UserSettings(Theme: "light");
+            var session = Ready(source, "A preview that must disappear while paused");
+            var revisions = new List<long>();
+            var overlay = new OverlayWindow { ResumeRequested = revisions.Add };
+            overlay.Render(session, settings, false);
+            overlay.UpdateLayout();
+            var editor = Descendants(overlay).OfType<TextBox>().Single();
+            Assert.NotEmpty(editor.Text);
+            var anchor = new PauseAnchor(source.Target, source.Bounds, FieldAccess.Supported, 1600, source.FocusEpoch);
+            overlay.RenderPaused(anchor, 12);
+            overlay.UpdateLayout();
+            Assert.True(overlay.IsVisible);
+            Assert.True(N.IsWindowVisible(overlay.Handle));
+            AssertAnchored(overlay, source.Bounds);
+            AssertNativeSize(overlay);
+            Assert.InRange(overlay.Height, 59, 61);
+            Assert.InRange(overlay.Width, 165, 167);
+            Assert.Empty(editor.Text);
+            Assert.False(editor.IsVisible);
+            Assert.True(editor.IsReadOnly);
+            Assert.False(editor.Focusable);
+            Assert.False(editor.CanUndo);
+            var resume = Descendants(overlay).OfType<Button>().Single(button => button.IsVisible);
+            Assert.False(resume.Focusable);
+            var labels = Descendants(resume).OfType<TextBlock>().Select(label => label.Text).ToArray();
+            Assert.Contains("已暂停", labels);
+            Assert.Contains("点击恢复", labels);
+            resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(new long[] { 12 }, revisions);
+            Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+            Assert.True(input.IsKeyboardFocused);
+            Assert.Equal("Source text", input.Text);
+
+            // Moving the field changes only the metadata anchor; no source snapshot is needed.
+            window.Left += 30;
+            window.UpdateLayout();
+            anchor = anchor with
+            {
+                Bounds = InputBounds(input),
+                ObservedAtMs = 1700
+            };
+            overlay.RenderPaused(anchor, 13);
+            overlay.UpdateLayout();
+            AssertAnchored(overlay, anchor.Bounds);
+            resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(new long[] { 12, 13 }, revisions);
+            Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+            Assert.True(input.IsKeyboardFocused);
+
+            overlay.HideQuietly();
+            resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(new long[] { 12, 13 }, revisions);
+            Assert.False(overlay.IsVisible);
+            source = source with
+            {
+                Bounds = anchor.Bounds
+            };
+            session = Ready(source, "A fresh preview after resuming");
+            overlay.Render(session, settings, false);
+            overlay.UpdateLayout();
+            Assert.True(editor.IsVisible);
+            Assert.Equal("A fresh preview after resuming", editor.Text);
+            Assert.False(resume.IsVisible);
+            resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(new long[] { 12, 13 }, revisions);
+            AssertNativeSize(overlay);
+        });
+    }
+
+    [Fact]
+    public async Task PausingAnEditedDraftClearsEditorOwnershipAndRetainsThePressedRevision()
+    {
+        await desktop.RunAsync(() =>
+        {
+            var (window, input, source) = OpenSource();
+            var settings = new UserSettings(Theme: "light");
+            var session = Ready(source, "An editable preview");
+            var revisions = new List<long>();
+            var overlay = new OverlayWindow
+            {
+                BeginEditing = session.BeginEdit,
+                DraftChanged = session.ChangeDraft,
+                ResumeRequested = revisions.Add
+            };
+            overlay.Render(session, settings, false);
+            overlay.UpdateLayout();
+            var editor = Descendants(overlay).OfType<TextBox>().Single();
+            editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+            {
+                RoutedEvent = Mouse.PreviewMouseDownEvent
+            });
+            editor.Text = "A private manual draft";
+            Assert.Equal(editor.Text, session.Draft);
+            Assert.True(editor.IsKeyboardFocused);
+            Assert.True(window.Activate());
+            Assert.True(input.Focus());
+
+            var anchor = new PauseAnchor(source.Target, source.Bounds, FieldAccess.Supported, 1600, source.FocusEpoch);
+            overlay.RenderPaused(anchor, 21);
+            overlay.UpdateLayout();
+            Assert.Empty(editor.Text);
+            Assert.False(editor.CanUndo);
+            Assert.False(editor.Focusable);
+            Assert.True(editor.IsReadOnly);
+            Assert.False(overlay.EditingComposition);
+            Assert.Equal("A private manual draft", session.Draft);
+            Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+            Assert.True(input.IsKeyboardFocused);
+            var resume = Descendants(overlay).OfType<Button>().Single(button => button.IsVisible);
+            // An anchor refresh between mouse-down and Click must not relabel an old press.
+            resume.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+            {
+                RoutedEvent = UIElement.PreviewMouseLeftButtonDownEvent
+            });
+            overlay.RenderPaused(anchor with
+            {
+                ObservedAtMs = 1700
+            }, 22);
+            resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(new long[] { 21 }, revisions);
+            resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(new long[] { 21, 22 }, revisions);
+
+            overlay.RenderPaused(anchor with
+            {
+                Access = FieldAccess.Sensitive
+            }, 23);
+            Assert.False(overlay.IsVisible);
+            resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(new long[] { 21, 22 }, revisions);
+            overlay.RenderPaused(anchor, 24);
+            Assert.True(overlay.IsVisible);
+            overlay.RenderPaused(anchor with
+            {
+                Bounds = new(0, 0, 0, 0)
+            }, 25);
+            Assert.False(overlay.IsVisible);
+            Assert.Empty(editor.Text);
+            TargetId[] invalidTargets =
+            [
+                default,
+                new("other-platform", "field", Guid.NewGuid()),
+                new("windows", "invalid-binding", Guid.NewGuid()),
+                (source.Target.AsWindows() with { RootHwnd = 0 }).Id
+            ];
+            foreach (var target in invalidTargets)
+            {
+                overlay.RenderPaused(anchor, 26);
+                Assert.True(overlay.IsVisible);
+                overlay.RenderPaused(anchor with
+                {
+                    Target = target
+                }, 27);
+                Assert.False(overlay.IsVisible);
+                resume.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Assert.Equal(new long[] { 21, 22 }, revisions);
+            }
+        });
+    }
+
     private static (Window Window, TextBox Input, InputSnapshot Source) OpenSource()
     {
         var input = new TextBox

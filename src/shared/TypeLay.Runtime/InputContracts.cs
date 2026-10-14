@@ -26,6 +26,11 @@ public sealed record InputContext(long UserEpoch, long ForegroundEpoch, long Sou
 public sealed record InputCapture(InputSnapshot? Snapshot, FocusMember Focus = FocusMember.Other,
     string? Application = null, long UserEpoch = 0, long ForegroundEpoch = 0);
 
+// The service must authorize metadata before reading it and must not capture
+// field text, selections or native write bindings for this observation.
+public sealed record PauseObservation(PauseAnchor? Anchor, FocusMember Focus = FocusMember.Other,
+    string? Application = null, long ForegroundEpoch = 0);
+
 /// <summary>Desktop observations, target-bound operations and explicit refusal results.</summary>
 public interface IInputService : IDisposable
 {
@@ -35,6 +40,7 @@ public interface IInputService : IDisposable
     }
     Task StartAsync();
     Task<InputCapture> CaptureAsync(InputContext context);
+    Task<PauseObservation> ObservePauseAsync(InputContext context);
     Task<bool> ReturnToSourceAsync(InputContext context);
     Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs);
     Task<WriteReceipt> WriteDirectAsync(WritePlan plan, string[] excluded);

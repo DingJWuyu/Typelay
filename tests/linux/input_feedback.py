@@ -71,9 +71,18 @@ class Listener:
 class Host:
     def __init__(self):
         self.events = []
+        self.requests = []
+        self.pause_allowed = True
+        self.capture_allowed = False
 
     def send(self, operation, data):
         self.events.append((operation, data))
+
+    async def ask(self, operation, data):
+        self.requests.append((operation, data))
+        return (operation == "allowPauseField" and self.pause_allowed) or (
+            operation == "allowField" and self.capture_allowed
+        )
 
     @property
     def notices(self):
@@ -170,6 +179,248 @@ class InputFeedbackTests(unittest.TestCase):
         }
         peer.event("shortcut-started", value)
         return value
+
+    def description(self):
+        return {
+            "target": "ordinary-field",
+            "metadata": {
+                "process": "",
+                "label": "Message",
+                "automationId": "message",
+                "help": "",
+                "aria": "",
+                "password": False,
+                "enabled": True,
+                "readOnly": False,
+                "offscreen": False,
+                "inDocument": False,
+                "multiline": False,
+                "hasValue": True,
+                "hasTextEdit": True,
+            },
+            "authority": {
+                "target": "ordinary-field",
+                "metadataKey": "metadata",
+                "inputRevision": 1,
+                "contentRevision": 1,
+                "focusRevision": 1,
+                "observedAtMs": 1000,
+            },
+            "focused": True,
+            "geometry": {
+                "space": "qt-toplevel",
+                "scale": 1,
+                "frameWidth": 100,
+                "frameHeight": 100,
+                "bounds": {"x": 2, "y": 3, "width": 20, "height": 10},
+            },
+        }
+
+    async def observe_pause(self, description, before_reply=None):
+        self.input.notification("settings", {"enabled": False})
+        self.focus(self.peer)
+        self.native_frames(self.peer)
+        operation = asyncio.create_task(self.input.request("observePause", {"boundTarget": None}))
+        await asyncio.sleep(0)
+        requests = self.native_frames(self.peer)
+        self.assertEqual([frame["op"] for frame in requests], ["describe"])
+        self.assertEqual(requests[0]["data"], {})
+        if before_reply:
+            before_reply()
+        self.peer.link.receive({"id": requests[0]["id"], "data": description})
+        result = await asyncio.wait_for(operation, 1)
+        self.assertFalse(any(frame["op"] == "capture" for frame in self.native_frames(self.peer)))
+        return result
+
+    def test_paused_field_observation_returns_only_metadata_anchor_without_capture(self):
+        result = asyncio.run(self.observe_pause(self.description()))
+        self.assertEqual(result["focus"], "Source")
+        self.assertEqual(
+            result["anchor"],
+            {
+                "target": {
+                    "backend": "linux-qt6",
+                    "value": "ordinary-field",
+                    "lifetime": self.peer.lifetime,
+                },
+                "bounds": {"x": 2, "y": 3, "width": 20, "height": 10},
+                "access": "Supported",
+                "observedAtMs": 1000,
+                "focusEpoch": 2,
+            },
+        )
+        self.assertEqual([name for name, _ in self.host.requests], ["allowPauseField"])
+
+    def test_paused_policy_refusal_never_requests_source_capture(self):
+        self.host.pause_allowed = False
+        self.assertIsNone(asyncio.run(self.observe_pause(self.description())))
+        self.assertEqual([name for name, _ in self.host.requests], ["allowPauseField"])
+
+    def test_paused_unknown_metadata_cannot_become_a_safe_empty_field(self):
+        for key in self.description()["metadata"]:
+            with self.subTest(key=key):
+                description = self.description()
+                del description["metadata"][key]
+                self.assertIsNone(asyncio.run(self.observe_pause(description)))
+        self.assertEqual(self.host.requests, [])
+
+    def test_paused_late_description_after_resume_cannot_rebind_source(self):
+        self.assertIsNone(
+            asyncio.run(
+                self.observe_pause(
+                    self.description(),
+                    lambda: self.input.notification("settings", {"enabled": True}),
+                )
+            )
+        )
+        states = [value for name, value in self.host.events if name == "state"]
+        self.assertIsNone(states[-1]["target"])
+
+    def test_paused_late_description_after_field_focus_change_is_rejected(self):
+        def change_field():
+            self.peer.event(
+                "input",
+                {
+                    "target": "new-field",
+                    "textChanged": False,
+                    "focusChanged": True,
+                    "focused": True,
+                },
+            )
+
+        self.assertIsNone(asyncio.run(self.observe_pause(self.description(), change_field)))
+        states = [value for name, value in self.host.events if name == "state"]
+        self.assertIsNone(states[-1]["target"])
+
+    def test_paused_stale_or_unfocused_description_cannot_display_entry(self):
+        for replacement in ({"focused": False}, {"geometry": None}):
+            with self.subTest(replacement=replacement):
+                self.assertIsNone(
+                    asyncio.run(self.observe_pause({**self.description(), **replacement}))
+                )
+        description = self.description()
+        description["authority"]["observedAtMs"] = 849
+        self.assertIsNone(asyncio.run(self.observe_pause(description)))
+
+    def test_paused_anchor_expires_and_cannot_authorize_a_capture(self):
+        asyncio.run(self.observe_pause(self.description()))
+        self.clock.return_value = 1151
+        self.input.expire()
+        states = [value for name, value in self.host.events if name == "state"]
+        self.assertIsNone(states[-1]["target"])
+        self.assertEqual(states[-1]["focus"], "Other")
+        self.assertIsNone(asyncio.run(self.input.request("capture", {})))
+        self.assertFalse(
+            any(frame["op"] in ("describe", "capture") for frame in self.native_frames(self.peer))
+        )
+
+    def test_paused_describe_timeout_does_not_fall_back_to_source_capture(self):
+        async def timed_out():
+            self.input.notification("settings", {"enabled": False})
+            self.focus(self.peer)
+            self.native_frames(self.peer)
+            result = await asyncio.wait_for(self.input.request("observePause", {}), 1)
+            requests = self.native_frames(self.peer)
+            self.assertEqual([frame["op"] for frame in requests], ["describe"])
+            return result
+
+        self.assertIsNone(asyncio.run(timed_out()))
+        self.assertEqual(self.host.requests, [])
+
+    async def publish_acceptance(self):
+        self.host.capture_allowed = True
+        self.input.notification("settings", {"enabled": True})
+        self.focus(self.peer)
+        self.native_frames(self.peer)
+        operation = asyncio.create_task(self.input.request("capture", {}))
+
+        async def reply_to(expected, result):
+            while True:
+                requests = self.native_frames(self.peer)
+                if requests:
+                    self.assertEqual([frame["op"] for frame in requests], [expected])
+                    self.peer.link.receive({"id": requests[0]["id"], "data": result})
+                    return
+                await asyncio.sleep(0)
+
+        description = self.description()
+        await asyncio.wait_for(reply_to("describe", description), 1)
+        native = {
+            **description,
+            "text": "Original source",
+            "selection": {"start": 0, "end": 0},
+            "ime": "Clear",
+            "observedAtMs": 1000,
+            "writeSupported": True,
+        }
+        await asyncio.wait_for(reply_to("capture", native), 1)
+        capture = await asyncio.wait_for(operation, 1)
+        plan_id = str(uuid.uuid4())
+        self.input.notification(
+            "publish",
+            {
+                "lease": {
+                    "source": capture["snapshot"],
+                    "userEpoch": capture["userEpoch"],
+                    "foregroundEpoch": capture["foregroundEpoch"],
+                    "escapeAllowed": True,
+                },
+                "permit": {
+                    "plan": {
+                        "id": plan_id,
+                        "expected": capture["snapshot"],
+                        "replacement": "Translation",
+                    },
+                    "expiresAtMs": 1150,
+                },
+            },
+        )
+        self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["publish"])
+        self.input.notification("settings", {"enabled": False})
+        self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["revoke"])
+        return plan_id
+
+    def test_pause_preserves_only_once_the_receipt_of_previously_accepted_input(self):
+        plan_id = asyncio.run(self.publish_acceptance())
+        receipt = {
+            "planId": plan_id,
+            "acceptedAtMs": 1001,
+            "receipt": {"status": "Verified", "reason": "None"},
+        }
+        self.peer.event("accepted", receipt)
+        self.assertEqual(len(self.host.notices), 1)
+        self.assertEqual(self.host.notices[0]["completedReceipt"], receipt["receipt"])
+        self.assertFalse(
+            any(
+                frame["op"] in ("publish", "capture", "direct")
+                for frame in self.native_frames(self.peer)
+            )
+        )
+        self.peer.event("accepted", receipt)
+        self.assertEqual(len(self.host.notices), 1)
+        self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["quarantine"])
+
+    def test_paused_receipt_retention_expires_without_reissuing_the_old_permission(self):
+        plan_id = asyncio.run(self.publish_acceptance())
+        self.clock.return_value = 2001
+        self.input.expire()
+        self.peer.event(
+            "accepted",
+            {
+                "planId": plan_id,
+                "acceptedAtMs": 1001,
+                "receipt": {"status": "Verified", "reason": "None"},
+            },
+        )
+        self.assertEqual(self.host.notices, [])
+        self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["quarantine"])
+        self.assertIsNone(asyncio.run(self.input.request("capture", {})))
+        self.assertFalse(
+            any(
+                frame["op"] in ("publish", "capture", "direct")
+                for frame in self.native_frames(self.peer)
+            )
+        )
 
     def test_cancelled_explicit_command_reaches_host_without_reading_source(self):
         command = self.command()

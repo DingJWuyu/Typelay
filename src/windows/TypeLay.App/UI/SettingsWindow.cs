@@ -316,7 +316,7 @@ internal sealed class SettingsWindow : Window
         Heading("常规", "TypeLay 的全局运行方式。");
         if (!_model.Ready)
             InstallCard();
-        Row("启用 TypeLay", "暂停后保留托盘入口，输入框旁不显示翻译界面。", UiTheme.Toggle(_settings.Value.Enabled, () => Save(_settings.Value with { Enabled = !_settings.Value.Enabled })));
+        Row("启用 TypeLay", "暂停后保留托盘入口，受支持的输入框旁保留可点击恢复的小入口。", UiTheme.Toggle(_settings.Value.Enabled, () => Save(_settings.Value with { Enabled = !_settings.Value.Enabled })));
         var modes = new ComboBox
         {
             MinWidth = 155,

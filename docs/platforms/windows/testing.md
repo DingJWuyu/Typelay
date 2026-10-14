@@ -25,6 +25,16 @@ dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release 
 
 `OverlayRenderingTests` 检查实际 HWND 位置/尺寸、源焦点、长词换行、字体变化、短文重显及主题/展开/手动草稿。测量必须与编辑框的 `TextWrapping.Wrap` 一致：[WPF 10.0.12 的 `FormattedText.Trimming` 实现](https://github.com/dotnet/wpf/blob/v10.0.12/src/Microsoft.DotNet.Wpf/src/PresentationCore/System/Windows/Media/FormattedText.cs#L1342-L1360)表明 `None` 才强制拆分超宽单词，默认省略会低估无空格文本高度。保留连续长词反例，不能用插入空格让回归通过；这些合成会话只验证展示，真实模型连续更新由下方独立模式验证。
 
+## 暂停入口回归
+
+`PausedInputTests` 通过生产 Broker 的 `observe-pause` 观察自有 WPF 字段。真实 UIA Value getter 计数在暂停期间必须为零，普通 capture 的正向对照必须实际读取它；密码、只读、敏感、排除、无可用 pattern 以及缺 ValuePattern 的 ComboBox 都须受控拒绝。观察只返回元数据，不能将无 Snapshot 的异常响应误当通过。
+
+同套件的真实会话场景在安全字段间切换，覆盖密码隐藏、应用排除及恢复，并对自有浮层按钮仅注入一次鼠标点击，核对恢复后的持久化设置、源焦点及按需模式不变。`OverlayRenderingTests` 覆盖暂停 HWND 几何、文本/撤销清除、移动、旧代次点击和回到普通预览。共享 Runtime 另覆盖迟到观察、过期/旧目标和设置保存失败；本地可编译及静态审查不代表 Windows 桌面通过。
+
+```powershell
+dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release --no-build --filter 'FullyQualifiedName~PausedInputTests|FullyQualifiedName~OverlayRenderingTests'
+```
+
 ## 受控工具的边界
 
 `ModelInstallerTests` 通过生产 `InstallAsync` 验证安装失败与显式重试：HTTP 超时和用户暂停分别处理，CPU 自检失败不标为暂停，损坏模型元数据或布局的对应缓存会被清除；清除受阻时保留完整性首因并说明恢复阻塞。权限/空间/取消/CPU 失败不误删完好的下载。测试只替换 HTTP 与子进程系统边界，使用隔离目录、真实 ZIP/哈希/文件锁及自有受控子进程，不连接公网、不读写用户模型。受控小包只验证恢复，不能证明真实模型可用；实际安装/推理仍由下方独立模式验证。

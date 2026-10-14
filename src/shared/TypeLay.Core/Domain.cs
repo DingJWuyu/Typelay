@@ -84,6 +84,16 @@ public sealed record InputSnapshot(TargetId Target, string Text, TextRange? Sele
         && TranslationScope == other.TranslationScope;
 }
 
+// Paused observation is deliberately separate from InputSnapshot: it cannot
+// carry source text, selection, translation work or any write capability.
+public sealed record PauseAnchor(TargetId Target, RectPx Bounds, FieldAccess Access,
+    long ObservedAtMs, long FocusEpoch)
+{
+    public bool IsUsable => Access == FieldAccess.Supported && Bounds.IsValid
+        && !string.IsNullOrWhiteSpace(Target.Backend) && !string.IsNullOrWhiteSpace(Target.Value)
+        && Target.Lifetime != Guid.Empty;
+}
+
 public static class Limits
 {
     public const int MaxTextUnits = 8192;

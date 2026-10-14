@@ -74,6 +74,10 @@ internal static class Program
                 case "exclude":
                     view.ExcludeRequested?.Invoke();
                     break;
+                case "resume":
+                    if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out long revision))
+                        view.ResumeRequested?.Invoke(revision);
+                    break;
                 case "quit":
                     loop.Quit();
                     break;
@@ -95,6 +99,8 @@ internal static class Program
                     return true;
                 case "allowField":
                     return settings.Value.Enabled && FieldPolicy.Allows(DesktopLink.Decode<FieldMetadata>(value), settings.Value.Excluded);
+                case "allowPauseField":
+                    return !settings.Value.Enabled && FieldPolicy.Allows(DesktopLink.Decode<FieldMetadata>(value), settings.Value.Excluded);
                 case "beginEdit":
                     return view.BeginEditing?.Invoke() ?? false;
                 case "settingsDraft":

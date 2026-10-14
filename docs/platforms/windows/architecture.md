@@ -26,6 +26,12 @@ Windows 轮询、debounce、许可与执行期限不因分层改变。Hook 回�
 
 Windows 部署根包含 TypeLay.exe、app/、worker/、bootstrap/、README 与第三方声明。AppPaths.Home 由启动脚本指向整个发行根；Broker、App 与独立原生练习宿主 TypeLay.Practice 放在同一个 app/。练习宿主只提供普通 stock Edit 与共同操作说明；翻译和写入仍由正式 App/Broker 处理，不设置输入法状态或绕过权限。开机启动指向发行根 TypeLay.exe。App 的安装流程在用户同意后准备运行时与模型，Windows wheel 选择不进入共享安装器。
 
+## 暂停时的最小观测
+
+暂停使用独立的 `observe-pause` Broker 操作；返回 `PauseAnchor`，不构造 `InputSnapshot`，不读取值、正文、选区或光标，也不调用原生 Edit 采集和 IME 组合正文接口。元数据须确认真实前台元素、进程/字段寿命、可编辑属性、可见边界及非敏感/非排除状态；ComboBox 与正常预览一致，需要 ValuePattern 和明确可编辑的 TextPattern。未知状态没有弱入口。
+
+WPF 暂停视图清除文本及撤销状态，只显示共享呈现定义中的恢复按钮，不抢焦点。按钮回传显示代次；共享控制器复读专用元数据，验证目标、前台/窗口版本及观察时效后，才将最新设置的 `Enabled` 改为 `true`。模式等其他偏好保持；失败、离焦、断开或旧观察到达均不能让退役入口复活。保存失败仍保持暂停并通过现有反馈说明原因。
+
 ## B-01：非原子写回与按键所有权
 
 **B-01：非原子写回与按键所有权，发布阻塞。** UIA 读原文、比较与 SetValue 不是原子事务，写后核验不能恢复被并发覆盖的新文本。Hook 同步消费 Tab 后，异步 Broker 仍可能拒写。`ExperimentalWriteback` 默认关闭；测试开启时只使用已备份非敏感内容。关闭此项需要与目标文本变化可靠协调的写入机制及物理按键所有权证据，增加重读、缩短期限或盲目补发 Tab 均不足以解决。
@@ -34,7 +40,7 @@ Windows 部署根包含 TypeLay.exe、app/、worker/、bootstrap/、README 与�
 
 ## 自有练习入口与未实现方向
 
-**当前事实：**“试一试”打开随包浏览器教程页，尚无 Windows 生产原生练习窗口。`CaptureDirect` 目前仅在按需模式请求系统 Edit 的原生能力，Tab 接受仍受默认关闭的 `ExperimentalWriteback` 门控。直接替换可用不代表自动模式或两阶段 Tab 教程已经完成；完整教程目标继续以[产品基线](../../product/README.md)为准。
+**当前事实：**“试一试”打开随包的独立原生按需练习窗口，使用当前配置的 F9/F10 和同一生产模型。真实多行 stock Edit 的预览后直接替换已取得 Verified 回执；软件键自动化仍不等于物理输入法验收。`CaptureDirect` 目前仅在按需模式请求系统 Edit 的原生能力，Tab 接受仍受默认关闭的 `ExperimentalWriteback` 门控。直接替换可用不代表自动模式或两阶段 Tab 教程已经完成；完整教程目标继续以[产品基线](../../product/README.md)为准。
 
 **宿主归属：**生产练习应使用独立进程中的未修改系统 Edit，复用现有 Runtime、模型、浮层、Broker 与 NativeInput；练习窗口只提供普通输入和说明。App/Broker 自身排除及用户排除继续生效，测试 fixture/support 不进入产品。仅承载现有 F9/F10 时应明确称为“按需翻译练习”，说明按需模式及实际配置的快捷键，不宣称覆盖完整 Tab 流程。
 

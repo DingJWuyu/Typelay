@@ -1147,6 +1147,151 @@ def run(arguments):
                                 "actual mouse click did not focus the GTK " + name + " entry",
                             )
 
+                        # Both GTK generations use the same real settings and
+                        # source-widget accessibility actions. No resume protocol
+                        # event or test-only command stands in for the button.
+                        from support.gtk_accessibility import Atspi, named
+
+                        def visible_control(pid, name):
+                            node = named(pid, name)
+                            if node is None:
+                                return None
+                            states = node.get_state_set()
+                            return (
+                                node
+                                if states.contains(Atspi.StateType.SHOWING)
+                                and states.contains(Atspi.StateType.ENABLED)
+                                else None
+                            )
+
+                        click_entry("first")
+                        switch_im("keyboard-us")
+                        key("ctrl+a")
+                        key("BackSpace")
+                        wait_for(
+                            lambda: gtk_state().get("first") == "" and gtk_state().get("imeClear"),
+                            "GTK pause source did not clear through real input",
+                        )
+                        pause_source = "Please review this paused message."
+                        typed(pause_source)
+                        wait_for(
+                            lambda: gtk_state().get("first") == pause_source
+                            and gtk_state().get("imeClear"),
+                            "GTK pause source did not receive actual keyboard input",
+                        )
+                        before_wake = status()["input"]["captureCounts"].get("supported", 0)
+                        wait_for(
+                            lambda: not status().get("overlayVisible")
+                            and status()["input"]["captureCounts"].get("supported", 0)
+                            > before_wake,
+                            "GTK pause source did not become dormant with a fresh shortcut lease",
+                        )
+                        key("ctrl+shift+F9")
+                        wait_for(ready_to_accept, "GTK pause setup did not obtain a real candidate")
+                        assert control(paths, "settings") is True
+                        settings_window = wait_for(
+                            lambda: next(
+                                (
+                                    item
+                                    for item in contents(request("Windows"), "Windows")
+                                    if item.get("pid") == process.pid
+                                    and item.get("title") == "TypeLay 设置"
+                                ),
+                                None,
+                            ),
+                            "GTK pause settings window did not map",
+                        )
+                        request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
+                        enabled = wait_for(
+                            lambda: visible_control(process.pid, "设置：启用 TypeLay"),
+                            "GTK pause setting was not accessible and visible",
+                        )
+                        assert json.loads(paths.settings.read_text())["Enabled"]
+                        action = enabled.get_action_iface()
+                        assert action and Atspi.Action.do_action(action, 0)
+                        wait_for(
+                            lambda: not json.loads(paths.settings.read_text())["Enabled"],
+                            "real GTK settings switch did not pause TypeLay",
+                        )
+                        paused_settings = json.loads(paths.settings.read_text())
+                        assert paused_settings["Mode"] == 1
+                        request({"Action": {"CloseWindow": {"id": settings_window["id"]}}})
+                        request({"Action": {"FocusWindow": {"id": window["id"]}}})
+                        click_entry("first")
+                        wait_for(
+                            lambda: view("Paused")
+                            and visible_control(fixture.pid, "恢复")
+                            and not status().get("acceptanceReady"),
+                            "paused GTK source did not show its actual weakened resume button",
+                        )
+                        before_pause_input = gtk_state()
+                        assert before_pause_input["first"] == pause_source
+                        assert before_pause_input["candidate"] is None
+                        paused_captures = dict(status()["input"]["captureCounts"])
+                        pause_trace = trace_checkpoint()
+                        key("End")
+                        key("exclam")
+                        typed_while_paused = wait_for(
+                            lambda: value
+                            if (value := gtk_state()).get("first") == pause_source + "!"
+                            and value["firstEntry"]["insertions"]
+                            == before_pause_input["firstEntry"]["insertions"] + 1
+                            and value.get("imeClear")
+                            and view("Paused")
+                            else None,
+                            "ordinary GTK input during pause was lost, replayed or translated",
+                        )
+                        assert (
+                            typed_while_paused["firstEntry"]["deletions"]
+                            == before_pause_input["firstEntry"]["deletions"]
+                        )
+                        assert typed_while_paused["second"] == before_pause_input["second"]
+                        assert typed_while_paused["candidate"] is None
+                        assert not status().get("acceptanceReady")
+                        assert status()["input"]["captureCounts"] == paused_captures
+                        assert not new_write_outcomes(pause_trace)
+                        with trace_path.open("rb") as trace:
+                            trace.seek(pause_trace)
+                            data = trace.read()
+                        assert not any(
+                            json.loads(line)["operation"] == "translate-start"
+                            for line in data[: data.rfind(b"\n") + 1].splitlines()
+                        ), "paused GTK source scheduled model work"
+                        resume = wait_for(
+                            lambda: visible_control(fixture.pid, "恢复"),
+                            "actual GTK resume button disappeared before activation",
+                        )
+                        action = resume.get_action_iface()
+                        assert action and Atspi.Action.do_action(action, 0)
+                        wait_for(
+                            lambda: json.loads(paths.settings.read_text())["Enabled"]
+                            and not status().get("overlayVisible")
+                            and status()["input"]["captureCounts"].get("supported", 0)
+                            > paused_captures.get("supported", 0),
+                            "GTK resume did not leave OnDemand dormant with a fresh observation",
+                        )
+                        assert json.loads(paths.settings.read_text()) == {
+                            **paused_settings,
+                            "Enabled": True,
+                        }, "GTK resume changed preferences beyond Enabled"
+                        assert gtk_state()["first"] == pause_source + "!"
+                        assert gtk_state()["focus"] == "fixture-first"
+                        key("ctrl+shift+F9")
+                        wait_for(
+                            ready_to_accept,
+                            "resumed OnDemand GTK source did not wake on the next real F9",
+                        )
+                        assert gtk_state()["first"] == pause_source + "!"
+                        evidence.append(
+                            "GTK pause: real settings switch and native resume button, one ordinary "
+                            "character, no capture/model/write while paused; resume changes only Enabled "
+                            "and OnDemand remains dormant until the next real F9"
+                        )
+                        click_entry("second")
+                        wait_for(
+                            lambda: not status().get("overlayVisible"),
+                            "GTK pause scenario did not retire its explicit wake after leaving",
+                        )
                         click_entry("first")
                         switch_im("pinyin")
                         key("ctrl+a")
@@ -1262,6 +1407,9 @@ def run(arguments):
                             assert first_before["end"] == len(source)
                             assert status().get("serviceStatus") != pending_direct
                             before_write = trace_checkpoint()
+                            before_feedback = (
+                                status().get("operationFeedback", {}).get("revision", 0)
+                            )
                             key("ctrl+shift+F10")
                             dispatched_at = now_ms()
                             wait_for(
@@ -1324,12 +1472,22 @@ def run(arguments):
                                     first_ime["input"] == dispatched["firstEntry"]["ime"]["input"]
                                 )
                             terminal = (
-                                "直接写回未获确认，请检查原输入框；不会自动重试。"
+                                "输入内容、选区或字段已变化，TypeLay 未替换文字。请确认目标输入框后再操作。"
                                 if changes_source
                                 else "已直接替换原输入框文字。"
                             )
                             wait_for(
-                                lambda: status().get("serviceStatus") == terminal,
+                                lambda: (report := status()).get("serviceStatus") == terminal
+                                and (
+                                    not changes_source
+                                    or (
+                                        (feedback := report.get("operationFeedback", {})).get(
+                                            "code"
+                                        )
+                                        == "write-rejected"
+                                        and feedback.get("revision", 0) > before_feedback
+                                    )
+                                ),
                                 "background GTK direct translation did not reach its real terminal outcome",
                             )
                             terminal_at = now_ms()
@@ -1602,7 +1760,7 @@ def run(arguments):
             assert support["title"] == "应用支持"
             assert any(row["id"] == "desktop-text" for row in support["rows"])
             assert not status()["setup"]["onboardingComplete"]
-            from support.gtk_accessibility import Atspi, named, text
+            from support.gtk_accessibility import Atspi, GLib, named, text
 
             def settings_control(name):
                 return wait_for(
@@ -1881,8 +2039,24 @@ def run(arguments):
                 "closing a draft did not default to keeping the user's work",
             )
             key("Return")
+
+            def close_prompt_gone():
+                try:
+                    return named(process.pid, "放弃修改") is None
+                except GLib.Error as error:
+                    # Only the known closing-dialog child race is transient.
+                    # Re-read the real tree; a vanished child is not proof that
+                    # every copy of the prompt has closed.
+                    if error.domain == "atspi_error" and re.fullmatch(
+                        r'Method "GetChildAtIndex".*object /org/a11y/atspi/accessible/\d+ does not exist\s*',
+                        error.message,
+                        flags=re.DOTALL,
+                    ):
+                        return False
+                    raise
+
             wait_for(
-                lambda: named(process.pid, "放弃修改") is None,
+                close_prompt_gone,
                 "default keep-editing action did not dismiss the close prompt",
             )
             assert status()["setup"]["settingsDraft"]

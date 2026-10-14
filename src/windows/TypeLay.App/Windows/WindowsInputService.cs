@@ -35,6 +35,15 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
         }
         catch { support?.Disconnected(); throw; }
     }
+    public async Task<PauseObservation> ObservePauseAsync(InputContext context)
+    {
+        var result = await broker.CallAsync(Request("observe-pause", context) with
+        {
+            BoundTarget = null,
+            CaptureDirect = false
+        });
+        return new(result.PauseAnchor, result.Focus, result.Application, result.ForegroundEpoch);
+    }
     public async Task<bool> ReturnToSourceAsync(InputContext context)
     {
         if (context.BoundTarget is not { } id || !WindowsTarget.TryDecode(id, out var target))

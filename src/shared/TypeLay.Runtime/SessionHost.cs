@@ -42,12 +42,19 @@ public interface ISessionView
     {
         get; set;
     }
+    // Return the exact revision from RenderPaused. The controller owns resume
+    // validation and setting changes; the view must never save cached settings.
+    Action<long>? ResumeRequested
+    {
+        get; set;
+    }
     bool EditingComposition
     {
         get;
     }
     void Configure(UserSettings settings);
     void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null);
+    void RenderPaused(PauseAnchor anchor, long revision);
     void HideQuietly();
     void ResumeEditor();
 }

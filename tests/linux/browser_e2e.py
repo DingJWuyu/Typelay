@@ -18,6 +18,7 @@ from support.browser_process import chromium_context
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTENT = ROOT / "src/linux/browser/content.js"
+BRIDGE = ROOT / "src/linux/browser/editor-bridge.js"
 FIXTURE = """<!doctype html><meta charset='utf-8'>
 <label>Message <textarea id='source'></textarea></label>
 <input id='other'><input id='password' type='password'>
@@ -83,7 +84,14 @@ class BrowserContract(unittest.TestCase):
               Object.defineProperty(performance, 'now', {
                 value: () => origin + Math.floor((nativeNow() - origin) / 100) * 100});
             })();"""
-        self.context.add_init_script(clock_setup + TRANSPORT + "\n" + CONTENT.read_text())
+        bridge = (
+            BRIDGE.read_text()
+            if self._testMethodName == "test_paused_page_probe_cannot_outlive_display_deadline"
+            else ""
+        )
+        self.context.add_init_script(
+            clock_setup + TRANSPORT + "\n" + bridge + "\n" + CONTENT.read_text()
+        )
         self.page = self.context.new_page()
         self.page.route(
             "http://127.0.0.1/fixture",
@@ -502,6 +510,213 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(result["reason"], "ImeUnclear")
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(second.locator("#source").input_value(), "Second tab")
+
+    def render_paused(self, revision=7):
+        # The real paused flow only describes metadata. It must establish its
+        # own clock proof without obtaining a source text/selection capture.
+        self.sequence += 2
+        return self.page.evaluate(
+            """({id, revision}) => {
+              const source = fixtureCommand({id, op: 'describe'});
+              if (!source) return {source, rendered: {visible: false}};
+              const rendered = fixtureCommand({id: id + 1, op: 'overlay-render', data: {
+                target: source.target, authority: source.authority, revision,
+                view: {state: 'Paused', canAccept: false, pauseRevision: 3,
+                  source: {target: {backend: 'linux-browser', value: source.target,
+                    lifetime: 'fixture'}, bounds: source.geometry.bounds},
+                  presentation: {kind: 'Paused', visible: true, status: '已暂停',
+                    tabHint: '点击恢复', dot: 'Neutral', editorOwnsText: false,
+                    showEscape: false}}}});
+              return {source, rendered};
+            }""",
+            {"id": self.sequence - 1, "revision": revision},
+        )
+
+    def paused_button(self):
+        cdp = self.context.new_cdp_session(self.page)
+        self.addCleanup(cdp.detach)
+        nodes = [
+            node
+            for node in cdp.send("Accessibility.getFullAXTree")["nodes"]
+            if not node.get("ignored")
+        ]
+        names = [node.get("name", {}).get("value") for node in nodes]
+        self.assertIn("已暂停", names)
+        for name in ["TypeLay 译文", "更多", "复制译文", "Tab 接受译文"]:
+            self.assertNotIn(name, names)
+        buttons = [
+            node
+            for node in nodes
+            if node.get("role", {}).get("value") == "button"
+            and node.get("name", {}).get("value") == "恢复"
+        ]
+        self.assertEqual(len(buttons), 1)
+        return cdp, buttons[0]["backendDOMNodeId"]
+
+    def test_paused_metadata_only_capsule_resumes_once_without_moving_focus(self):
+        self.page.keyboard.insert_text("Hello")
+        result = self.render_paused()
+        self.assertTrue(result["rendered"]["visible"])
+        self.assertFalse(result["rendered"]["editing"])
+        self.assertNotIn("text", result["source"])
+        self.assertNotIn("selection", result["source"])
+        cdp, button = self.paused_button()
+        border = cdp.send("DOM.getBoxModel", {"backendNodeId": button})["model"]["border"]
+        x, y = (border[0] + border[4]) / 2, (border[1] + border[5]) / 2
+        self.page.mouse.dblclick(x, y)
+        resumed = self.page.evaluate("""fixtureMessages.filter(message =>
+          message.event === 'ui' && message.data.operation === 'resume')""")
+        self.assertEqual(len(resumed), 1)
+        self.assertEqual(resumed[0]["data"]["target"], result["source"]["target"])
+        self.assertEqual(resumed[0]["data"]["revision"], 7)
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+        self.assertFalse(
+            self.page.evaluate("""fixtureMessages.some(message =>
+          ['shortcut', 'escape', 'accepted'].includes(message.event))""")
+        )
+
+    def test_paused_keeps_tab_in_application_and_rejects_late_editor_commands(self):
+        self.page.keyboard.insert_text("Hello")
+        result = self.render_paused()
+        self.assertTrue(result["rendered"]["visible"])
+        target = result["source"]["target"]
+        self.command("overlay-edit", {"target": target, "allowed": True})
+        self.command("overlay-resume", {"target": target})
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+        self.paused_button()
+        self.page.keyboard.press("Tab")
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "other")
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+        self.assertFalse(
+            self.page.evaluate("""fixtureMessages.some(message =>
+          message.event === 'ui' && ['resume', 'return', 'beginEdit'].includes(message.data.operation))""")
+        )
+
+    def test_paused_page_probe_cannot_outlive_display_deadline(self):
+        # A hostile page can reply to the production bridge's public probe.
+        # This tests rejection only, not a Tiptap model or write capability.
+        self.page.evaluate("""() => {
+          const root = document.createElement('div');
+          root.id = 'rich-source'; root.className = 'ProseMirror';
+          root.contentEditable = 'true';
+          root.style.cssText = 'width:480px;min-height:80px;margin-top:220px';
+          document.body.append(root);
+          root.addEventListener('typelay-editor-request', event => {
+            const request = JSON.parse(event.detail);
+            if (request.op !== 'probe') return;
+            if (window.fixtureBlockProbe) {
+              window.fixtureBlockProbe = false;
+              while (performance.now() <= window.fixturePausedDeadline + 2) {
+                // Deliberately exhaust the actual displayed view's budget.
+              }
+              window.fixtureProbeBlocked = true;
+            }
+            root.dispatchEvent(new CustomEvent('typelay-editor-response', {
+              bubbles: true, detail: JSON.stringify({id: request.id,
+                result: {kind: 'tiptap', supported: true}})}));
+          });
+          root.focus();
+        }""")
+        self.page.keyboard.insert_text("Hello")
+        self.assertTrue(self.render_paused()["rendered"]["visible"])
+        cdp, button = self.paused_button()
+        border = cdp.send("DOM.getBoxModel", {"backendNodeId": button})["model"]["border"]
+        # Renew through the normal metadata-only message immediately before the
+        # pointer. No timers can conceal the view while the probe is on-stack.
+        renewed = self.page.evaluate("""() => {
+          const source = fixtureCommand({id: 1200, op: 'describe'});
+          const request = {id: 1201, op: 'overlay-renew', data: {
+            target: source.target, authority: source.authority}};
+          fixtureCommand(request);
+          window.fixturePausedDeadline = request.data.expiresAtMs - 1000000;
+          window.fixtureBlockProbe = true;
+          return source.focused;
+        }""")
+        self.assertTrue(renewed)
+        self.page.mouse.click((border[0] + border[4]) / 2, (border[1] + border[5]) / 2)
+        self.assertTrue(self.page.evaluate("window.fixtureProbeBlocked"))
+        self.assertFalse(
+            self.page.evaluate("""fixtureMessages.some(message =>
+          message.event === 'ui' && message.data.operation === 'resume')""")
+        )
+        self.assertEqual(self.page.locator("#rich-source").inner_text(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
+    def test_older_paused_frame_preserves_current_preview_and_acceptance(self):
+        self.page.keyboard.insert_text("Hello")
+        template = self.plan({"target": "", "text": "", "selection": {}, "observedAtMs": 0})
+        result = self.page.evaluate(
+            """plan => {
+              const source = fixtureCommand({id: 1210, op: 'describe'});
+              const snapshot = fixtureCommand({id: 1211, op: 'capture', data: {
+                target: source.target, authority: source.authority}});
+              if (!snapshot) return {captured: false};
+              plan.expected = {...plan.expected, target: {...plan.expected.target, value: snapshot.target},
+                text: snapshot.text, selection: snapshot.selection, observedAtMs: snapshot.observedAtMs};
+              const latest = fixtureCommand({id: 1212, op: 'overlay-render', data: {
+                target: snapshot.target, authority: snapshot.authority, revision: 8,
+                view: {state: 'ValidTranslation', text: 'Fresh candidate', editable: true,
+                  presentation: {visible: true, editorOwnsText: false, tabHint: 'Tab 接受译文'}}}});
+              const published = fixtureCommand({id: 1213, op: 'publish', data: {
+                target: snapshot.target, authority: snapshot.authority, permit: {plan}}});
+              // An already-expired token in an older frame must never reach
+              // calibration, revoke the newer permit, or hide the newer view.
+              const older = fixtureCommand({id: 1214, op: 'overlay-render', data: {
+                target: snapshot.target, authority: {...snapshot.authority, token: 'expired-token'},
+                revision: 7, view: {state: 'Paused', presentation: {visible: true}}}});
+              const current = fixtureCommand({id: 1215, op: 'describe'});
+              return {captured: true, latest, published, older, publication: current?.publication};
+            }""",
+            template,
+        )
+        self.assertTrue(result["captured"], result)
+        self.assertTrue(result["latest"]["visible"], result)
+        self.assertTrue(result["published"]["published"], result)
+        self.assertTrue(result["older"]["visible"], result)
+        self.assertTrue(result["publication"]["ready"], result)
+        self.assertEqual(result["publication"]["planId"], "test-plan")
+        cdp = self.context.new_cdp_session(self.page)
+        self.addCleanup(cdp.detach)
+        candidates = [
+            node.get("value", {}).get("value")
+            for node in cdp.send("Accessibility.getFullAXTree")["nodes"]
+            if not node.get("ignored") and node.get("name", {}).get("value") == "TypeLay 译文"
+        ]
+        self.assertEqual(candidates, ["Fresh candidate"])
+
+    def test_paused_unknown_and_composing_ime_remain_invisible(self):
+        self.assertFalse(self.render_paused()["rendered"]["visible"])
+        self.page.keyboard.insert_text("Hello")
+        self.page.locator("#source").dispatch_event("compositionstart", {"data": "x"})
+        self.assertFalse(self.render_paused()["rendered"]["visible"])
+        self.assertEqual(self.accepted(), [])
+
+    def test_paused_stale_metadata_and_untrusted_click_cannot_resume(self):
+        self.page.keyboard.insert_text("Hello")
+        self.assertTrue(self.render_paused()["rendered"]["visible"])
+        cdp, button = self.paused_button()
+        remote = cdp.send("DOM.resolveNode", {"backendNodeId": button})["object"]["objectId"]
+        cdp.send(
+            "Runtime.callFunctionOn",
+            {
+                "objectId": remote,
+                "functionDeclaration": "function() { window.fixturePausedButton = this; this.click(); }",
+            },
+        )
+        self.assertFalse(
+            self.page.evaluate("""fixtureMessages.some(message =>
+          message.event === 'ui' && message.data.operation === 'resume')""")
+        )
+        # Changing metadata after display must withdraw the existing affordance,
+        # even without a host render or an input event.
+        self.page.locator("#source").evaluate("element => element.readOnly = true")
+        self.page.wait_for_function("!window.fixturePausedButton.isConnected")
+        self.assertFalse(self.render_paused()["rendered"]["visible"])
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
 
     def test_more_actions_are_disclosed_without_moving_source_focus(self):
         self.page.locator("#source").evaluate(

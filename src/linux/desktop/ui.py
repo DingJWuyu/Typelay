@@ -34,7 +34,8 @@ class Overlay:
             self.schedule()
 
     def current_record(self):
-        record = self.input.bound_observation
+        paused = bool(self.value and self.value.get("state") == "Paused")
+        record = self.input.current_pause_record() if paused else self.input.bound_observation
         if (
             not self.value
             or not record
@@ -148,6 +149,22 @@ class Overlay:
         ):
             return
         operation, value = event["operation"], event.get("value")
+        if self.value.get("state") == "Paused":
+            if operation == "resume":
+                if (
+                    type(event.get("revision")) is int
+                    and event["revision"] == self.revision
+                    and self.visible
+                    and self.current_record() is not None
+                ):
+                    revision = self.value["pauseRevision"]
+                    # Consume the displayed action before dispatching it. The
+                    # controller reobserves metadata and owns the settings write.
+                    self.hide()
+                    self.host.send("resume", revision)
+            elif operation == "visible":
+                self.visible = value is True
+            return
         if operation == "visible":
             self.visible = value is True
             if not self.visible:

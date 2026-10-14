@@ -45,6 +45,11 @@ internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMoni
         var reply = await link.Ask("capture", context);
         return reply.ValueKind == JsonValueKind.Null ? new(null) : DesktopLink.Decode<InputCapture>(reply);
     }
+    public async Task<PauseObservation> ObservePauseAsync(InputContext context)
+    {
+        var reply = await link.Ask("observePause", context);
+        return reply.ValueKind == JsonValueKind.Null ? new(null) : DesktopLink.Decode<PauseObservation>(reply);
+    }
     public async Task<bool> ReturnToSourceAsync(InputContext context)
     {
         var reply = await link.Ask("return", context);

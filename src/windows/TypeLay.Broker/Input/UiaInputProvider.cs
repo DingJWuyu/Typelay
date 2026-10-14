@@ -27,6 +27,78 @@ internal sealed class UiaInputProvider : IDisposable
     public string? Application => _application;
     public void ClearDirect() => _edits.Clear();
 
+    public (PauseAnchor?, FocusMember) ObservePause(BrokerRequest request)
+    {
+        // Pausing must not retain a previous body or bind an executable source.
+        // This path never reads Value/Text, selection, caret, or composition text.
+        Clear();
+        static (PauseAnchor?, FocusMember) Reject() => (null, FocusMember.Other);
+        nint root = GetForegroundWindow();
+        if (root == 0 || root == (nint)request.OverlayHwnd)
+            return Reject();
+        AutomationElement? element;
+        using (_metadataCache.Activate())
+            element = AutomationElement.FocusedElement;
+        if (element is null)
+            return Reject();
+        var info = element.Cached;
+        bool combo = info.ControlType == ControlType.ComboBox;
+        if (info.ControlType != ControlType.Edit && info.ControlType != ControlType.Document && !combo)
+            return Reject();
+        // Missing password/enabled/visibility metadata is not a safe field.
+        if (element.GetCachedPropertyValue(AutomationElement.IsPasswordProperty, true) is not false
+            || element.GetCachedPropertyValue(AutomationElement.IsEnabledProperty, true) is not true
+            || element.GetCachedPropertyValue(AutomationElement.IsOffscreenProperty, true) is not false)
+            return Reject();
+        using var process = Process.GetProcessById(info.ProcessId);
+        string app = process.ProcessName.ToLowerInvariant();
+        if ((request.Excluded ?? []).Contains(app, StringComparer.OrdinalIgnoreCase)
+            || app is "typelay.app" or "typelay.broker")
+            return Reject();
+        long start = process.StartTime.ToUniversalTime().Ticks;
+        string token = string.Join('.', element.GetRuntimeId());
+        if (_quarantine.Contains((info.ProcessId, start, token)))
+            return Reject();
+        bool inDocument = false, rootSeen = false;
+        var parent = element;
+        for (int i = 0; i < 28 && parent is not null; i++)
+        {
+            var metadata = parent.Cached;
+            inDocument |= metadata.ControlType == ControlType.Document;
+            rootSeen |= metadata.NativeWindowHandle != 0 && GetAncestor((nint)metadata.NativeWindowHandle, 2) == root;
+            if (inDocument && rootSeen)
+                break;
+            parent = TreeWalker.RawViewWalker.GetParent(parent, _metadataCache);
+        }
+        GetWindowThreadProcessId(root, out uint foregroundProcess);
+        if (!rootSeen && foregroundProcess != info.ProcessId)
+            return Reject();
+        ValuePattern? value = element.TryGetCurrentPattern(ValuePattern.Pattern, out object vp) ? (ValuePattern)vp : null;
+        bool textEditable = false;
+        if ((value is null || combo) && element.TryGetCurrentPattern(TextPattern.Pattern, out object tp))
+            textEditable = ((TextPattern)tp).DocumentRange.GetAttributeValue(TextPattern.IsReadOnlyAttribute) is false;
+        bool editable = value is not null ? !value.Current.IsReadOnly : textEditable;
+        if (!editable || (combo && (value is null || !textEditable)))
+            return Reject();
+        var ariaProperty = AutomationProperty.LookupById(30102);
+        string aria = ariaProperty is null ? "" : element.GetCachedPropertyValue(ariaProperty, true) as string ?? "";
+        var field = new FieldMetadata(app, info.Name ?? "", info.AutomationId ?? "", info.HelpText ?? "", aria,
+            false, true, false, false, inDocument, false, value is not null, false);
+        if (!FieldPolicy.Allows(field, request.Excluded ?? []))
+            return Reject();
+        var rect = info.BoundingRectangle;
+        var bounds = new RectPx(rect.X, rect.Y, rect.Width, rect.Height);
+        if (!bounds.IsValid || !GetWindowRect(root, out var windowRect)
+            || !bounds.Intersects(new(windowRect.Left, windowRect.Top, windowRect.Right - windowRect.Left,
+                windowRect.Bottom - windowRect.Top)) || !StillFocused(root, token))
+            return Reject();
+        var identity = SHA256.HashData(Encoding.UTF8.GetBytes($"{info.ProcessId}/{start}/{root}/{token}"));
+        TargetId target = new WindowsTarget(info.ProcessId, start, (long)root, info.NativeWindowHandle,
+            "uia-pause-anchor-v1", token, new Guid(identity.AsSpan(0, 16)));
+        _application = app;
+        return (new(target, bounds, FieldAccess.Supported, WindowsInterruptClock.NowMs, request.ForegroundEpoch), FocusMember.Source);
+    }
+
     public (InputSnapshot?, FocusMember) Capture(BrokerRequest request)
     {
         using var trace = CaptureTrace.Start();

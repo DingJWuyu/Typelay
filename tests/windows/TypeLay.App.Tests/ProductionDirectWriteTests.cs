@@ -21,7 +21,7 @@ public sealed class DesktopCollection : ICollectionFixture<WpfDesktopFixture>
 // Uses production Broker IPC and unmodified system Edit controls in a separate
 // process. It does not use fixture-adapter IME flags, injected keys or a fake writer.
 [Collection("Desktop")]
-public sealed class ProductionDirectWriteTests
+public sealed class ProductionDirectWriteTests(ITestOutputHelper output)
 {
     [Theory]
     [InlineData(false)]
@@ -181,6 +181,13 @@ public sealed class ProductionDirectWriteTests
             await Call(new(BrokerProtocol.Version, 0, "quit", ""));
             await broker.WaitForExitAsync(deadline.Token);
             Assert.Equal(0, broker.ExitCode);
+        }
+        catch (N.NativeMessageException ex)
+        {
+            // Fixed stage metadata only; preserve the original failure and budget.
+            output.WriteLine("Native message failed: operation={0}, messageId={1}, win32Error={2}, fixtureExited={3}, brokerExited={4}",
+                ex.Operation, ex.MessageId, ex.Win32Error, fixture.HasExited, broker.HasExited);
+            throw;
         }
         finally
         {

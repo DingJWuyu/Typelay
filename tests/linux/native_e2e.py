@@ -172,6 +172,35 @@ def inside(arguments):
         ), "Unknown IME exposed source text"
         checks.append("visible GTK metadata excludes body; Unknown IME capture returns no snapshot")
 
+        paused = client.call(
+            "overlay-render",
+            {
+                "target": target,
+                "authority": description["authority"],
+                "revision": 1,
+                "expiresAtMs": now_ms() + 800,
+                "view": {
+                    "state": "Paused",
+                    "pauseRevision": 1,
+                    "canAccept": False,
+                    "presentation": {
+                        "kind": "Paused",
+                        "visible": True,
+                        "status": "已暂停",
+                        "tabHint": "点击恢复",
+                        "editorOwnsText": False,
+                        "showEscape": False,
+                    },
+                },
+            },
+        )
+        assert paused == {"visible": False, "editing": False}, paused
+        assert not any(
+            event.get("event") == "ui" and event["data"].get("operation") == "resume"
+            for event in client.events
+        ), "Unknown IME exposed a resume action"
+        checks.append("metadata-only paused view keeps the real Unknown-IME refusal")
+
         # This intentionally dishonest request uses fixture-owned text, never a
         # successful native capture. Even a caller claiming Clear cannot grant IME authority.
         caret = len(original.encode("utf-16-le")) // 2

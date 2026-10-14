@@ -118,6 +118,10 @@ class Input:
         self.issued = OrderedDict()
         self.bound = None
         self.bound_observation = None
+        self.pause_observation = None
+        self.pause_generation = 0
+        self.enabled = None
+        self.settings_generation = 0
         self.overlay_focused = False
         self.ui_event = lambda *_: None
         self.user_epoch = self.source_epoch = self.foreground_epoch = 0
@@ -191,6 +195,7 @@ class Input:
         )
 
     def lost(self, peer):
+        self.invalidate_pause()
         peer.support_observation = None
         self.clear_browser_capture()
         if self.published_plan and self.published_plan[0] is peer:
@@ -226,11 +231,12 @@ class Input:
         return "Other"
 
     def state(self):
+        paused = self.current_pause_record()
         value = {
             "ready": self.fresh(),
             "nativeReady": self.focused_peer() is not None,
-            "target": self.bound,
-            "focus": self.focus(),
+            "target": paused["target"] if paused else self.bound,
+            "focus": "Source" if paused else self.focus(),
             "userEpoch": self.user_epoch,
             "sourceUserEpoch": self.source_epoch,
             "foregroundEpoch": self.foreground_epoch,
@@ -242,6 +248,7 @@ class Input:
             self.host.send("state", value)
 
     def changed(self):
+        self.invalidate_pause()
         self.clear_browser_capture()
         window = self.niri.focused or {}
         identity = (self.niri.ready, window.get("id"))
@@ -503,8 +510,138 @@ class Input:
             "foregroundEpoch": self.foreground_epoch,
         }
 
+    def invalidate_pause(self):
+        self.pause_generation += 1
+        self.pause_observation = None
+
+    def current_pause_record(self):
+        record = self.pause_observation
+        if (
+            self.enabled is not False
+            or not record
+            or record["generation"] != self.pause_generation
+            or record["windowEpoch"] != self.window_epoch
+            or record["foregroundEpoch"] != self.foreground_epoch
+            or record["userEpoch"] != self.user_epoch
+            or not 0 <= now_ms() - record["anchor"]["observedAtMs"] <= 150
+            or record["peer"] not in self.peers
+            or self.focused_peer() is not record["peer"]
+            or self.overlay_focused
+        ):
+            return None
+        return record
+
+    async def observe_pause(self, context):
+        # This separate route never captures a body, selection, IME text, or
+        # write capability. A prior translation observation cannot authorize it.
+        peer, window = self.focused_peer(), self.niri.focused
+        if (
+            self.enabled is not False
+            or context.get("boundTarget") is not None
+            or context.get("captureDirect", False) is not False
+            or peer not in self.peers
+            or not window
+            or self.overlay_focused
+        ):
+            self.invalidate_pause()
+            self.state()
+            return None
+        generation = self.pause_generation
+        epochs = self.window_epoch, self.foreground_epoch, self.user_epoch
+        try:
+            description = await peer.link.ask("describe", {})
+            if not isinstance(description, dict) or description.get("focused") is not True:
+                raise ValueError("pause-focus")
+            metadata, authority = description.get("metadata"), description.get("authority")
+            if not isinstance(metadata, dict) or not isinstance(authority, dict):
+                raise ValueError("pause-metadata")
+            # Missing metadata is unknown, never an empty harmless label or a
+            # guessed editable field. The shared policy owns exclusion rules.
+            if (
+                any(
+                    type(metadata.get(key)) is not str
+                    for key in ("process", "label", "automationId", "help", "aria")
+                )
+                or any(
+                    type(metadata.get(key)) is not bool
+                    for key in (
+                        "password",
+                        "enabled",
+                        "readOnly",
+                        "offscreen",
+                        "inDocument",
+                        "multiline",
+                        "hasValue",
+                        "hasTextEdit",
+                    )
+                )
+                or not (metadata["hasValue"] or metadata["hasTextEdit"])
+            ):
+                raise ValueError("pause-metadata")
+            target, stamp = description.get("target"), authority.get("observedAtMs")
+            if (
+                not isinstance(target, str)
+                or not target
+                or authority.get("target") != target
+                or type(stamp) is not int
+                or not 0 <= now_ms() - stamp <= 150
+                or type(authority.get("focusRevision")) is not int
+                or type(authority.get("inputRevision")) is not int
+                or not isinstance(authority.get("metadataKey"), str)
+            ):
+                raise ValueError("pause-authority")
+            geometry = anchor_geometry(description.get("geometry"), peer.anchor_space)
+            if (
+                geometry is None
+                or await self.host.ask("allowPauseField", {**metadata, "process": peer.application})
+                is not True
+            ):
+                raise ValueError("pause-policy")
+            if (
+                self.enabled is not False
+                or generation != self.pause_generation
+                or epochs != (self.window_epoch, self.foreground_epoch, self.user_epoch)
+                or peer not in self.peers
+                or self.focused_peer() is not peer
+                or self.overlay_focused
+                or not 0 <= now_ms() - stamp <= 150
+            ):
+                raise ValueError("pause-changed")
+            anchor = {
+                "target": target_id(peer, target),
+                "bounds": geometry["bounds"],
+                "access": "Supported",
+                "observedAtMs": stamp,
+                "focusEpoch": self.foreground_epoch,
+            }
+            self.pause_observation = {
+                "peer": peer,
+                "authority": authority,
+                "target": anchor["target"],
+                "anchor": anchor,
+                "generation": generation,
+                "windowEpoch": self.window_epoch,
+                "foregroundEpoch": self.foreground_epoch,
+                "userEpoch": self.user_epoch,
+            }
+            self.state()
+            return {
+                "anchor": anchor,
+                "focus": "Source",
+                "application": peer.application,
+                "foregroundEpoch": self.foreground_epoch,
+            }
+        except (OSError, EOFError, TimeoutError, ValueError, KeyError, TypeError):
+            if generation == self.pause_generation:
+                self.invalidate_pause()
+            self.state()
+            return None
+
     async def capture(self, context):
         self.capture_started_at = now_ms()
+        settings_generation = self.settings_generation
+        if self.enabled is False:
+            return self.captured("paused")
         window_epoch = self.window_epoch
         focus = "Overlay" if self.overlay_focused else "Source"
         if (
@@ -576,6 +713,8 @@ class Input:
             or identity != self.browser_capture_identity(peer)
         ):
             return self.captured("window-changing")
+        if self.enabled is False or settings_generation != self.settings_generation:
+            return self.captured("settings-changed")
         capture_data = {
             "target": description["target"],
             "authority": description["authority"],
@@ -603,6 +742,8 @@ class Input:
                     stamp = trace.get(key)
                     if type(stamp) is int and 0 <= stamp < 2**53:
                         round_timing[key] = stamp
+        if self.enabled is False or settings_generation != self.settings_generation:
+            return self.captured("settings-changed")
         if not native:
             return self.captured("native-read-declined")
         if not self.fresh():
@@ -1065,6 +1206,7 @@ class Input:
         elif name == "ui":
             self.ui_event(peer, value)
         elif name == "input":
+            self.invalidate_pause()
             self.clear_browser_capture()
             if self.published_plan and self.published_plan[0] is peer:
                 self.invalidate_publication()
@@ -1080,12 +1222,16 @@ class Input:
                     self.content_epoch += 1
                 if value["focusChanged"]:
                     self.window_epoch += 1
-                if value["focused"]:
+                if value["focused"] and self.enabled is not False:
                     self.bound = target_id(peer, value["target"])
                 self.state()
         elif name == "destroy":
+            paused = self.pause_observation
+            self.invalidate_pause()
             self.clear_browser_capture()
-            if self.bound == target_id(peer, value["target"]):
+            if self.bound == target_id(peer, value["target"]) or (
+                paused and paused["target"] == target_id(peer, value["target"])
+            ):
                 self.bound = self.bound_observation = None
                 self.window_epoch += 1
                 self.revoke()
@@ -1180,6 +1326,8 @@ class Input:
         return False
 
     async def request(self, operation, value):
+        if operation == "observePause":
+            return await self.observe_pause(value)
         if operation == "capture":
             return await self.capture(value)
         if operation == "direct":
@@ -1189,7 +1337,19 @@ class Input:
         return None
 
     def notification(self, operation, value):
-        if operation == "shortcuts":
+        if operation == "settings":
+            self.settings_generation += 1
+            self.enabled = value.get("enabled")
+            self.invalidate_pause()
+            if self.enabled is not True:
+                self.bound = self.bound_observation = None
+                self.observations.clear()
+                self.revoke(shortcuts=True)
+            self.state()
+        elif operation == "hide":
+            self.invalidate_pause()
+            self.state()
+        elif operation == "shortcuts":
             self.configure(value)
         elif operation in ("publish", "publishShortcut"):
             self.publish(value, operation == "publishShortcut")
@@ -1197,6 +1357,7 @@ class Input:
             self.revoke()
 
     def close(self):
+        self.invalidate_pause()
         self.closing = True
         self.glib.source_remove(self.expiry_timer)
         self.glib.source_remove(self.listener_watch)

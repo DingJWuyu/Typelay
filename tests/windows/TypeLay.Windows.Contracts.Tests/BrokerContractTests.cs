@@ -7,6 +7,23 @@ namespace TypeLay.Windows.Contracts.Tests;
 
 public sealed class BrokerContractTests
 {
+    [Fact]
+    public async Task PausedAnchorRoundTripsWithoutATextSnapshotOrWriteReceipt()
+    {
+        TargetId target = new WindowsTarget(1, 2, 3, 4, "uia-pause-anchor-v1", "field", Guid.NewGuid());
+        var anchor = new PauseAnchor(target, new(10, 20, 300, 40), FieldAccess.Supported, 1000, 7);
+        using var stream = new MemoryStream();
+        await Wire.WriteAsync(stream, new BrokerResponse(BrokerProtocol.Version, 1, "pause-anchor",
+            Focus: FocusMember.Source, ForegroundEpoch: 7, PauseAnchor: anchor), TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        var received = await Wire.ReadAsync<BrokerResponse>(stream, TestContext.Current.CancellationToken);
+        Assert.Equal(anchor, received.PauseAnchor);
+        Assert.Equal(FocusMember.Source, received.Focus);
+        Assert.Equal(7, received.ForegroundEpoch);
+        Assert.Null(received.Snapshot);
+        Assert.Null(received.Receipt);
+    }
+
     private static void Check(bool value, [CallerArgumentExpression(nameof(value))] string? expression = null) => Assert.True(value, expression);
     [Fact(DisplayName = "wire-keeps-source-input-version-separate-from-editor-keystrokes")]
     public async Task WireKeepsSourceInputVersionSeparateFromEditorKeystrokes()

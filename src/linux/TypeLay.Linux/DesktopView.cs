@@ -31,6 +31,10 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
     {
         get; set;
     }
+    public Action<long>? ResumeRequested
+    {
+        get; set;
+    }
     public bool EditingComposition
     {
         get; set;
@@ -65,6 +69,23 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
         if (key == _last)
             return;
         _last = key;
+        link.Send("render", value);
+    }
+    public void RenderPaused(PauseAnchor anchor, long revision)
+    {
+        var value = new
+        {
+            presentation = Presentation.From(SessionState.Paused, false, hasPauseAnchor: true),
+            canAccept = false,
+            state = SessionState.Paused,
+            source = new { anchor.Target, anchor.Bounds },
+            pauseRevision = revision
+        };
+        string key = JsonSerializer.Serialize(value, DesktopLink.Json);
+        if (key == _last)
+            return;
+        _last = key;
+        EditingComposition = false;
         link.Send("render", value);
     }
     public void HideQuietly()

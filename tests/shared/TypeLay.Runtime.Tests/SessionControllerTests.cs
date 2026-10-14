@@ -6,6 +6,433 @@ namespace TypeLay.Runtime.Tests;
 public sealed class SessionControllerTests
 {
     [Fact]
+    public void ResumeRecoveryDoesNotEraseANewerUnconfirmedNativeWriteStatus()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        var issued = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Settings.Update(s.Settings.Value with
+        {
+            Enabled = false
+        });
+        s.Tick();
+        s.BlockSettingsWrites();
+        s.View.ResumeRequested!(s.View.PauseRevision);
+        Assert.Contains("仍处于暂停", s.Controller.OperationStatus);
+        s.AllowSettingsWrites();
+        s.Input.Notices.Enqueue(new("accepted", issued, CompletedReceipt:
+            new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome)));
+        s.Tick();
+        string writeStatus = s.Controller.ServiceStatus;
+        Assert.Contains("写回结果未确认", writeStatus);
+        s.View.ResumeRequested!(s.View.PauseRevision);
+        Assert.True(s.Settings.Value.Enabled);
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.Equal(writeStatus, s.Controller.ServiceStatus);
+    }
+
+    [Fact]
+    public void RetryingResumeAfterStorageRecoversRetiresOnlyTheOldSaveFailure()
+    {
+        using var s = new SessionScenario();
+        s.Settings.Update(s.Settings.Value with
+        {
+            Enabled = false
+        });
+        s.Tick();
+        s.BlockSettingsWrites();
+        s.View.ResumeRequested!(s.View.PauseRevision);
+        Assert.Contains("仍处于暂停", s.Controller.OperationStatus);
+        Assert.Contains("仍处于暂停", s.Controller.ServiceStatus);
+        s.AllowSettingsWrites();
+        s.Tick();
+        s.View.ResumeRequested!(s.View.PauseRevision);
+        Assert.True(s.Settings.Value.Enabled);
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.DoesNotContain("仍处于暂停", s.Controller.ServiceStatus);
+        Assert.Equal(WorkMode.Automatic, s.Settings.Value.Mode);
+    }
+
+    [Fact]
+    public void OldPausedObservationCannotReviveAnEntryRejectedByNewerSensitiveMetadata()
+    {
+        using var s = new SessionScenario();
+        s.Settings.Update(s.Settings.Value with
+        {
+            Enabled = false
+        });
+        s.Tick();
+        var pending = new TaskCompletionSource<PauseObservation>();
+        s.Service.PendingPauseObservation = pending;
+        s.Tick();
+        var obsolete = s.FreshPause;
+        s.Service.PendingPauseObservation = null;
+        s.Source = s.Source with
+        {
+            Access = FieldAccess.Password
+        };
+        s.View.ResumeRequested!(s.View.PauseRevision);
+        Assert.False(s.View.Visible);
+        Assert.False(s.Settings.Value.Enabled);
+        s.Service.PendingPauseObservation = pending;
+        s.CompletePauseObservation(obsolete);
+        Assert.False(s.View.Visible);
+        Assert.False(s.Settings.Value.Enabled);
+        Assert.Empty(s.Input.PublishedLeases);
+        Assert.Empty(s.Input.PublishedShortcuts);
+        Assert.Equal(0, s.Service.Captures);
+    }
+
+    [Fact]
+    public void ResumeSaveFailureKeepsPausedSettingsAndExplainsTheFailure()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Settings.Update(s.Settings.Value with
+        {
+            Enabled = false,
+            Target = "zh"
+        });
+        s.Tick();
+        var expected = s.Settings.Value;
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.BlockSettingsWrites();
+        s.View.ResumeRequested!(s.View.PauseRevision);
+        Assert.Equal(expected, s.Settings.Value);
+        Assert.Equal("resume-failed", Assert.Single(feedback).Code);
+        Assert.Contains("仍处于暂停", s.Controller.OperationStatus);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Equal(0, s.Service.Captures);
+    }
+
+    [Fact]
+    public void ObsoleteTranslationControlsCannotDismissOrChangeThePausedEntry()
+    {
+        using var s = new SessionScenario();
+        s.Tick();
+        s.Settings.Update(s.Settings.Value with
+        {
+            Enabled = false
+        });
+        s.Tick();
+        long revision = s.View.PauseRevision;
+        s.View.EscapeRequested!();
+        s.View.RegenerateRequested!();
+        s.View.ExcludeRequested!();
+        Assert.True(s.View.Visible);
+        Assert.Empty(s.Settings.Value.Excluded);
+        Assert.Equal(revision, s.View.PauseRevision);
+        Assert.Equal(SessionState.Paused, s.View.State);
+    }
+
+    [Fact]
+    public void PausedMetadataNeverReceivesTextBindingOrDirectCaptureAuthority()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand, experimental: true);
+        s.Settings.Update(s.Settings.Value with
+        {
+            Enabled = false,
+            ExcludedApplications = ["blocked.app"]
+        });
+        s.Tick();
+        s.View.ResumeRequested!(s.View.PauseRevision);
+        Assert.Equal(2, s.Service.PauseRequests.Count);
+        Assert.All(s.Service.PauseRequests, request =>
+        {
+            Assert.Null(request.BoundTarget);
+            Assert.False(request.CaptureDirect);
+            Assert.Equal(["blocked.app"], request.Excluded);
+        });
+        Assert.Equal(0, s.Service.Captures);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Input.PublishedLeases);
+        Assert.Empty(s.Input.PublishedShortcuts);
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+    }
+
+    [Fact]
+    public void ResumeRevalidatesMetadataAndRefusesAFieldThatBecameSensitive()
+    {
+        using var s = new SessionScenario();
+        s.Settings.Update(s.Settings.Value with
+        {
+            Enabled = false
+        });
+        s.Tick();
+        Assert.True(s.View.Visible);
+        s.Source = s.Source with
+        {
+            Access = FieldAccess.Password
+        };
+        s.View.ResumeRequested!(s.View.PauseRevision);
+        Assert.False(s.Settings.Value.Enabled);
+        Assert.False(s.View.Visible);
+        Assert.Equal(0, s.Service.Captures);
+    }
+
+    [Theory]
+    [InlineData(FieldAccess.Unknown)]
+    [InlineData(FieldAccess.Password)]
+    [InlineData(FieldAccess.Sensitive)]
+    [InlineData(FieldAccess.ReadOnly)]
+    [InlineData(FieldAccess.Disabled)]
+    [InlineData(FieldAccess.Unsupported)]
+    [InlineData(FieldAccess.Offscreen)]
+    public void PausedUnsafeOrUnknownFieldsHaveNoEntry(FieldAccess access)
+    {
+        using var s = new SessionScenario();
+        s.Source = s.Source with
+        {
+            Access = access
+        };
+        s.Settings.Update(s.Settings.Value with
+        {
+            Enabled = false
+        });
+        s.Tick();
+        Assert.False(s.View.Visible);
+        Assert.Equal(0, s.Service.Captures);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Null(s.Input.Permit);
+        Assert.Null(s.Input.Shortcut);
+    }
+
+    [Theory]
+    [InlineData("application")]
+    [InlineData("excluded")]
+    [InlineData("geometry")]
+    [InlineData("target")]
+    [InlineData("focus")]
+    [InlineData("epoch")]
+    [InlineData("future")]
+    [InlineData("expired")]
+    public void PausedIncompleteOrStaleMetadataHasNoEntry(string invalid)
+    {
+        using var s = new SessionScenario();
+        var result = s.FreshPause;
+        s.Service.PauseResult = invalid switch
+        {
+            "application" => result with { Application = null },
+            "excluded" => result with { Application = "BLOCKED.APP" },
+            "geometry" => result with { Anchor = result.Anchor! with { Bounds = new(0, 0, 0, 0) } },
+            "target" => result with { Anchor = result.Anchor! with { Target = default } },
+            "focus" => result with { Focus = FocusMember.Other },
+            "epoch" => result with { Anchor = result.Anchor! with { FocusEpoch = 99 } },
+            "future" => result with { Anchor = result.Anchor! with { ObservedAtMs = s.Loop.NowMs + 1000 } },
+            "expired" => result with { Anchor = result.Anchor! with { ObservedAtMs = s.Loop.NowMs - 1000 } },
+            _ => throw new ArgumentException("Unknown test condition.")
+        };
+        s.Settings.Update(s.Settings.Value with
+        {
+            Enabled = false,
+            ExcludedApplications = ["blocked.app"]
+        });
+        s.Tick();
+        Assert.False(s.View.Visible);
+        Assert.Equal(0, s.Service.Captures);
+    }
+
+    [Fact]
+    public void SwitchingPausedFieldsRetiresOldResumeActionsEvenAfterReturning()
+    {
+        using var s = new SessionScenario();
+        var first = s.Source;
+        s.Settings.Update(s.Settings.Value with
+        {
+            Enabled = false
+        });
+        s.Tick();
+        long firstRevision = s.View.PauseRevision;
+        s.FocusAnotherField();
+        s.Tick();
+        Assert.Equal(s.Source.Target, s.View.Anchor!.Target);
+        Assert.NotEqual(firstRevision, s.View.PauseRevision);
+        s.View.ResumeRequested!(firstRevision);
+        Assert.False(s.Settings.Value.Enabled);
+        Assert.True(s.View.Visible);
+        s.Source = first;
+        s.Input.FocusedTarget = first.Target;
+        s.Input.ForegroundEpoch++;
+        s.Input.WindowEpoch++;
+        s.Tick();
+        s.View.ResumeRequested!(firstRevision);
+        Assert.False(s.Settings.Value.Enabled);
+        s.View.ResumeRequested!(s.View.PauseRevision);
+        Assert.True(s.Settings.Value.Enabled);
+    }
+
+    [Theory]
+    [InlineData("settings")]
+    [InlineData("pause-again")]
+    [InlineData("focus")]
+    [InlineData("stop")]
+    [InlineData("dispose")]
+    public void LateResumeCannotOverrideNewerConfigurationFocusOrView(string change)
+    {
+        using var s = new SessionScenario();
+        s.Settings.Update(s.Settings.Value with
+        {
+            Enabled = false
+        });
+        s.Tick();
+        var observed = s.FreshPause;
+        s.Service.PendingPauseObservation = new();
+        s.View.ResumeRequested!(s.View.PauseRevision);
+        switch (change)
+        {
+            case "settings":
+                s.Settings.Update(s.Settings.Value with
+                {
+                    Target = "zh"
+                });
+                break;
+            case "pause-again":
+                s.Settings.Update(s.Settings.Value with
+                {
+                    Enabled = true
+                });
+                s.Settings.Update(s.Settings.Value with
+                {
+                    Enabled = false
+                });
+                break;
+            case "focus":
+                s.FocusAnotherField();
+                break;
+            case "stop":
+                s.Controller.StopSession();
+                break;
+            case "dispose":
+                s.Controller.Dispose();
+                break;
+        }
+        var expected = s.Settings.Value;
+        s.CompletePauseObservation(observed);
+        Assert.Equal(expected, s.Settings.Value);
+        Assert.False(s.Settings.Value.Enabled);
+        Assert.Equal(0, s.Service.Captures);
+        Assert.Empty(s.Model.Jobs);
+    }
+
+    [Fact]
+    public void ExpiredPausedEntryDisappearsWhileFreshMetadataIsBlockedAndCannotResume()
+    {
+        using var s = new SessionScenario();
+        s.Settings.Update(s.Settings.Value with
+        {
+            Enabled = false
+        });
+        s.Tick();
+        long revision = s.View.PauseRevision;
+        s.Service.PendingPauseObservation = new();
+        s.Tick(Limits.ObservationMaxAgeMs + 1);
+        Assert.False(s.View.Visible);
+        s.View.ResumeRequested!(revision);
+        Assert.False(s.Settings.Value.Enabled);
+        s.CompletePauseObservation(s.FreshPause);
+        Assert.True(s.View.Visible);
+        Assert.NotEqual(revision, s.View.PauseRevision);
+    }
+
+    [Fact]
+    public void DelayedSourceAndTranslationResultsCannotReviveContentAfterPause()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        Assert.NotNull(s.Model.Pending);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        var obsolete = new InputCapture(s.Fresh, FocusMember.Source, "org.typelay.ControlledApp",
+            s.Input.UserEpoch, s.Input.ForegroundEpoch);
+        s.Settings.Update(s.Settings.Value with
+        {
+            Enabled = false
+        });
+        s.Tick();
+        s.CompleteTranslation("obsolete translation");
+        s.CompleteCapture(obsolete);
+        Assert.Equal(SessionState.Paused, s.View.State);
+        Assert.True(s.View.Visible);
+        Assert.Equal("", s.View.Preview);
+        Assert.Equal("", s.View.Draft);
+        Assert.Null(s.Input.Permit);
+        Assert.Null(s.Input.Shortcut);
+    }
+
+    [Theory]
+    [InlineData(WorkMode.Automatic)]
+    [InlineData(WorkMode.OnDemand)]
+    public void ResumeEntryChangesOnlyEnabledInLatestSettingsAndDoesNotWakeOnDemand(WorkMode mode)
+    {
+        using var s = new SessionScenario(mode);
+        s.Settings.Update(s.Settings.Value with
+        {
+            Enabled = false
+        });
+        s.Tick();
+        s.Settings.Update(s.Settings.Value with
+        {
+            Target = "zh",
+            Theme = "dark",
+            WakeShortcut = "Ctrl+F8"
+        });
+        s.Tick();
+        var expected = s.Settings.Value with
+        {
+            Enabled = true
+        };
+        Assert.NotNull(s.View.ResumeRequested);
+        s.View.ResumeRequested(s.View.PauseRevision);
+        Assert.Equal(expected, s.Settings.Value);
+        Assert.Empty(s.Model.Jobs);
+        Assert.False(s.View.Visible);
+        s.Tick();
+        Assert.Equal(mode == WorkMode.Automatic, s.View.Visible);
+        if (mode == WorkMode.OnDemand)
+        {
+            s.Tick(Limits.DebounceMs);
+            Assert.Empty(s.Model.Jobs);
+            s.Command("wake");
+            s.Tick();
+            Assert.True(s.View.Visible);
+        }
+    }
+
+    [Fact]
+    public void PauseClearsTranslationAndShowsOnlyAResumeEntryWithoutReadingText()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!());
+        s.View.DraftChanged!("private draft");
+        int captures = s.Service.Captures;
+        int jobs = s.Model.Jobs.Count;
+        int leases = s.Input.PublishedLeases.Count;
+        int shortcuts = s.Input.PublishedShortcuts.Count;
+        s.Settings.Update(s.Settings.Value with
+        {
+            Enabled = false
+        });
+        s.Tick();
+        Assert.Equal(SessionState.Paused, s.View.State);
+        Assert.Equal("", s.View.Preview);
+        Assert.Equal("", s.View.Draft);
+        Assert.True(s.View.Visible);
+        Assert.False(s.View.CanAccept);
+        Assert.Null(s.Input.Permit);
+        Assert.Null(s.Input.Shortcut);
+        Assert.False(s.Input.ShortcutsEnabled);
+        Assert.Equal(captures, s.Service.Captures);
+        Assert.Equal(jobs, s.Model.Jobs.Count);
+        Assert.Equal(leases, s.Input.PublishedLeases.Count);
+        Assert.Equal(shortcuts, s.Input.PublishedShortcuts.Count);
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+    }
+
+    [Fact]
     public void NewLegacyWakePublishesARevisionThatRetiresOlderFailure()
     {
         using var s = new SessionScenario(WorkMode.OnDemand);

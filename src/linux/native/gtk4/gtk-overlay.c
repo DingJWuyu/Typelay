@@ -7,12 +7,12 @@
 static struct {
     Target *target;
     GtkWidget *popover, *top, *card, *header, *language, *status, *scroll, *text;
-    GtkWidget *footer, *hint, *expand, *menu, *source, *destination;
+    GtkWidget *footer, *hint, *expand, *menu, *source, *destination, *resume;
     GtkCssProvider *css;
     GdkDisplay *display;
-    JsonObject *view;
+    JsonObject *view, *authority;
     gulong focus_handler, active_handler;
-    gboolean setting_text, composing, focused, expanded, pending_edit;
+    gboolean setting_text, composing, focused, expanded, pending_edit, pending_resume;
     guint held_key;
     gint edit_offset;
     gint64 revision, expires;
@@ -56,6 +56,25 @@ gboolean tl_overlay_can_return(Target *target) {
     GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(overlay.top));
     return focus && (focus == overlay.text || gtk_widget_is_ancestor(focus, overlay.text));
 }
+static gboolean paused(void) {
+    return g_strcmp0(tl_string(overlay.view, "state"), "Paused") == 0;
+}
+static gboolean pause_current(Target *target, JsonObject *authority) {
+    if (!target || !authority) return FALSE;
+    /* IME inspection may dispatch invalidation. Hold the metadata record and
+       recheck the source generation afterwards, without a text capture. */
+    json_object_ref(authority);
+    gboolean valid = tl_ime_clear(target) && tl_metadata_matches(target, authority)
+        && tl_focused() == target
+        && (gint64)target->content_revision == tl_integer(authority, "contentRevision", -1)
+        && (gint64)target->input_revision == tl_integer(authority, "inputRevision", -1)
+        && (gint64)target->focus_revision == tl_integer(authority, "focusRevision", -1);
+    JsonObject *geometry = valid ? tl_geometry(target) : NULL;
+    valid = valid && geometry != NULL;
+    if (geometry) json_object_unref(geometry);
+    json_object_unref(authority);
+    return valid;
+}
 static void emit(const char *operation, JsonNode *value) {
     if (!overlay.target) { if (value) json_node_free(value); return; }
     JsonObject *event = json_object_new();
@@ -87,7 +106,7 @@ void tl_overlay_sync(void) {
 static void focus_changed(GObject *object, GParamSpec *property, gpointer data) {
     (void)object; (void)property; (void)data;
     tl_overlay_sync();
-    if (active() && tl_focused() && tl_focused() != overlay.target) tl_overlay_hide();
+    if (active() && tl_focused() != overlay.target && (paused() || tl_focused())) tl_overlay_hide();
 }
 static void active_changed(GObject *object, GParamSpec *property, gpointer data) {
     (void)object; (void)property; (void)data;
@@ -95,7 +114,8 @@ static void active_changed(GObject *object, GParamSpec *property, gpointer data)
 }
 static gboolean expired(gpointer data) {
     (void)data;
-    if (!overlay.popover || tl_now() > overlay.expires) {
+    if (!overlay.popover || tl_now() > overlay.expires
+        || (paused() && !pause_current(overlay.target, overlay.authority))) {
         overlay.expiry_timer = 0;
         tl_overlay_hide();
         return G_SOURCE_REMOVE;
@@ -111,7 +131,7 @@ void tl_overlay_hide(void) {
     gulong focus_handler = overlay.focus_handler, active_handler = overlay.active_handler;
     GtkCssProvider *css = overlay.css;
     GdkDisplay *display = overlay.display;
-    JsonObject *view = overlay.view;
+    JsonObject *view = overlay.view, *authority = overlay.authority;
     if (overlay.expiry_timer) g_source_remove(overlay.expiry_timer);
     memset(&overlay, 0, sizeof overlay);
     if (top) {
@@ -128,6 +148,7 @@ void tl_overlay_hide(void) {
     if (css) g_object_unref(css);
     if (display) g_object_unref(display);
     if (view) json_object_unref(view);
+    if (authority) json_object_unref(authority);
 }
 void tl_overlay_forget(Target *target) {
     if (overlay.target == target) tl_overlay_hide();
@@ -170,7 +191,7 @@ static void begin_edit(GtkGestureClick *gesture, gint presses, gdouble x, gdoubl
     if (gtk_text_view_get_editable(GTK_TEXT_VIEW(widget))) return;
     /* The preview click requests Runtime authorization before GTK may focus or edit. */
     gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
-    if (!boolean(overlay.view, "editable") || overlay.pending_edit) return;
+    if (paused() || !boolean(overlay.view, "editable") || overlay.pending_edit) return;
     gint buffer_x, buffer_y;
     GtkTextIter position;
     gtk_text_view_window_to_buffer_coords(GTK_TEXT_VIEW(widget), GTK_TEXT_WINDOW_WIDGET,
@@ -197,8 +218,21 @@ static gboolean key_event(GtkEventControllerLegacy *controller, GdkEvent *event,
     return tl_overlay_event(event);
 }
 static void button_clicked(GtkButton *button, gpointer data) {
-    (void)button;
     const char *operation = data;
+    if (strcmp(operation, "resume") == 0) {
+        Target *target = overlay.target;
+        gint64 revision = overlay.revision;
+        if (GTK_WIDGET(button) != overlay.resume || !paused() || overlay.pending_resume) return;
+        if (!active() || tl_now() > overlay.expires || !pause_current(target, overlay.authority)) {
+            tl_overlay_hide(); return;
+        }
+        if (overlay.target != target || overlay.revision != revision || !paused() || tl_now() > overlay.expires) return;
+        overlay.pending_resume = TRUE;
+        gtk_widget_set_sensitive(overlay.resume, FALSE);
+        emit("resume", NULL);
+        return;
+    }
+    if (paused()) return;
     if (strcmp(operation, "menu") == 0) {
         gtk_widget_set_visible(overlay.menu, !gtk_widget_get_visible(overlay.menu));
     } else if (strcmp(operation, "expand") == 0) {
@@ -279,6 +313,8 @@ static void create(Target *target) {
     gtk_widget_set_hexpand(overlay.status, TRUE);
     gtk_widget_set_halign(overlay.status, GTK_ALIGN_END);
     gtk_box_append(GTK_BOX(overlay.header), overlay.status);
+    overlay.resume = button(overlay.header, "恢复", "resume");
+    gtk_widget_set_name(overlay.resume, "typelay-resume");
     overlay.scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(overlay.scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     overlay.text = gtk_text_view_new();
@@ -354,26 +390,32 @@ static gboolean render(Target *target, JsonObject *data) {
     JsonObject *value = tl_object(data, "view"), *presentation = tl_object(value, "presentation");
     JsonObject *authority = tl_object(data, "authority");
     gint64 until = tl_integer(data, "expiresAtMs", 0), now = tl_now();
-    gboolean retained_editor = overlay.target == target && boolean(presentation, "editorOwnsText")
+    if (overlay.target == target && tl_integer(data, "revision", 0) < overlay.revision) return TRUE;
+    gboolean is_paused = g_strcmp0(tl_string(value, "state"), "Paused") == 0;
+    gboolean retained_editor = !is_paused && overlay.target == target && boolean(presentation, "editorOwnsText")
         && target && !target->dead
         && (gint64)target->content_revision == tl_integer(authority, "contentRevision", -1)
         && (gint64)target->input_revision == tl_integer(authority, "inputRevision", -1);
     if (!target || !boolean(presentation, "visible") || !tl_metadata_matches(target, authority)
-        || until < now || until - now > 1000 || (!retained_editor && !tl_ime_clear(target))) return FALSE;
+        || until < now || until - now > 1000
+        || (is_paused ? !pause_current(target, authority) : !retained_editor && !tl_ime_clear(target))) return FALSE;
     GtkWidget *top = GTK_WIDGET(gtk_widget_get_root(target->widget));
     if (!GTK_IS_WINDOW(top) || !gtk_window_is_active(GTK_WINDOW(top))) return FALSE;
-    if (tl_focused() != target && !(overlay.target == target && overlay.focused)) return FALSE;
+    if (tl_focused() != target && !(!is_paused && overlay.target == target && overlay.focused)) return FALSE;
     JsonObject *geometry = tl_geometry(target);
     if (!geometry) return FALSE;
     if (overlay.target != target || overlay.top != top) { tl_overlay_hide(); create(target); }
     overlay.expires = until;
+    if (overlay.revision != tl_integer(data, "revision", 0)) overlay.pending_resume = FALSE;
     overlay.revision = tl_integer(data, "revision", 0);
+    if (overlay.authority) json_object_unref(overlay.authority);
+    overlay.authority = tl_copy(authority);
     if (overlay.view) json_object_unref(overlay.view);
     overlay.view = tl_copy(value);
-    gboolean editing = g_strcmp0(tl_string(value, "state"), "EditingTranslation") == 0;
-    if (!(boolean(presentation, "editorOwnsText") && gtk_text_view_get_editable(GTK_TEXT_VIEW(overlay.text)))) {
+    gboolean editing = !is_paused && g_strcmp0(tl_string(value, "state"), "EditingTranslation") == 0;
+    if (is_paused || !(boolean(presentation, "editorOwnsText") && gtk_text_view_get_editable(GTK_TEXT_VIEW(overlay.text)))) {
         overlay.setting_text = TRUE;
-        gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text)), text_or_empty(value, "text"), -1);
+        gtk_text_buffer_set_text(gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text)), is_paused ? "" : text_or_empty(value, "text"), -1);
         overlay.setting_text = FALSE;
     }
     gtk_text_view_set_editable(GTK_TEXT_VIEW(overlay.text), editing);
@@ -384,13 +426,13 @@ static gboolean render(Target *target, JsonObject *data) {
     gtk_button_set_label(GTK_BUTTON(overlay.language), languages); g_free(languages);
     select_language(overlay.source, source, TRUE);
     select_language(overlay.destination, destination, FALSE);
-    gtk_label_set_text(GTK_LABEL(overlay.status), text_or_empty(value, "status"));
+    gtk_label_set_text(GTK_LABEL(overlay.status), is_paused ? "已暂停" : text_or_empty(value, "status"));
     tl_overlay_acceptance();
     gtk_widget_remove_css_class(overlay.status, "ready"); gtk_widget_remove_css_class(overlay.status, "pending");
     if (g_strcmp0(tl_string(presentation, "dot"), "Green") == 0) gtk_widget_add_css_class(overlay.status, "ready");
     if (g_strcmp0(tl_string(presentation, "dot"), "Yellow") == 0) gtk_widget_add_css_class(overlay.status, "pending");
     theme(text_or_empty(data, "theme"));
-    gboolean capsule = g_strcmp0(tl_string(value, "state"), "IdleCapsule") == 0;
+    gboolean capsule = is_paused || g_strcmp0(tl_string(value, "state"), "IdleCapsule") == 0;
     gint width = capsule ? 160 : CLAMP(gtk_widget_get_width(target->widget), 390, 520);
     width = MIN(width, MAX(160, gtk_widget_get_width(top) - 48));
     gtk_widget_set_size_request(overlay.card, width, -1);
@@ -403,7 +445,12 @@ static gboolean render(Target *target, JsonObject *data) {
     gtk_widget_set_size_request(overlay.scroll, -1, height);
     gtk_widget_set_visible(overlay.scroll, !capsule);
     gtk_widget_set_visible(overlay.footer, !capsule);
-    gtk_widget_set_visible(overlay.status, !capsule);
+    gtk_widget_set_visible(overlay.status, is_paused || !capsule);
+    gtk_widget_set_visible(overlay.language, !is_paused);
+    gtk_widget_set_visible(overlay.resume, is_paused);
+    gtk_widget_set_sensitive(overlay.resume, !overlay.pending_resume);
+    gtk_widget_set_opacity(overlay.popover, is_paused ? 0.78 : 1.0);
+    if (is_paused) gtk_widget_set_visible(overlay.menu, FALSE);
     graphene_point_t zero = GRAPHENE_POINT_INIT(0, 0), origin;
     if (!gtk_widget_compute_point(target->widget, top, &zero, &origin)) {
         json_object_unref(geometry);
@@ -431,9 +478,16 @@ JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject
     } else if (strcmp(operation, "overlay-renew") == 0) {
         gint64 until = tl_integer(data, "expiresAtMs", 0), now = tl_now();
         if (overlay.target == target && active() && until >= now && until - now <= 1000
-            && (tl_focused() == target || overlay.focused) && tl_metadata_matches(target, tl_object(data, "authority"))) {
+            && (tl_focused() == target || (!paused() && overlay.focused))
+            && tl_metadata_matches(target, tl_object(data, "authority"))
+            && (!paused() || pause_current(target, tl_object(data, "authority")))) {
             JsonObject *geometry = tl_geometry(target);
-            if (geometry) { overlay.expires = until; json_object_unref(geometry); }
+            if (geometry) {
+                overlay.expires = until;
+                if (overlay.authority) json_object_unref(overlay.authority);
+                overlay.authority = tl_copy(tl_object(data, "authority"));
+                json_object_unref(geometry);
+            }
             else tl_overlay_hide();
         } else tl_overlay_hide();
     } else if (strcmp(operation, "overlay-hide") == 0) tl_overlay_hide();
@@ -448,7 +502,7 @@ JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject
         }
         overlay.pending_edit = FALSE;
         tl_overlay_sync();
-    } else if (strcmp(operation, "overlay-resume") == 0 && overlay.target == target && active()) {
+    } else if (strcmp(operation, "overlay-resume") == 0 && overlay.target == target && active() && !paused()) {
         gtk_label_set_text(GTK_LABEL(overlay.status), "无法返回原输入框，请点击译文继续编辑");
         if (tl_focused() == target || overlay.focused) {
             gtk_text_view_set_editable(GTK_TEXT_VIEW(overlay.text), TRUE);
