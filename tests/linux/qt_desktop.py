@@ -592,13 +592,26 @@ def run_qt(
                 def theme_screenshot(name, theme, *, paused=False):
                     background = "#20242c" if theme == "dark" else "#ffffff"
                     control_name = "typelay-resume" if paused else "typelay-menu-trigger"
-                    count = state()["themeSampleCount"]
+                    before = state()
+                    count = before["themeSampleCount"]
                     command("sample-theme")
                     actual = wait_for(
                         lambda: value
                         if (value := state())["themeSampleCount"] == count + 1
                         and value["themeSamples"]["overlay"] == background
                         and value["themeSamples"]["editor"] == ("" if paused else background)
+                        and (
+                            not paused
+                            or (
+                                value["overlayVisible"]
+                                and value["overlayControls"][control_name]["visible"]
+                                and value["overlayControls"][control_name]["enabled"]
+                                and value["first"]["focused"]
+                                and value["first"]["accessibleName"] == "Message one"
+                                and value["first"]["text"] == before["first"]["text"]
+                                and value["first"]["changes"] == before["first"]["changes"]
+                            )
+                        )
                         else None,
                         f"actual rendered Qt surfaces did not match the {theme} palette",
                     )
@@ -626,10 +639,21 @@ def run_qt(
                         point_at(actual["overlayControls"][control_name]["geometry"])
                         actual = wait_for(
                             lambda: value
-                            if (value := state())["overlayControls"][control_name]["underMouse"]
+                            if (value := state())["overlayVisible"]
+                            and value["overlayControls"][control_name]["visible"]
+                            and value["overlayControls"][control_name]["enabled"]
+                            and value["overlayControls"][control_name]["underMouse"]
+                            and value["first"]["focused"]
                             else None,
                             "the actual paused resume button did not receive pointer hover",
                         )
+                        assert actual["first"]["accessibleName"] == "Message one"
+                        assert actual["first"]["text"] == before["first"]["text"]
+                        assert actual["first"]["changes"] == before["first"]["changes"]
+                        assert not actual["overlayControls"]["typelay-menu-trigger"]["visible"]
+                        assert not actual["overlayMenuVisible"]
+                        assert not actual["editorVisible"] and not actual["editorFocused"]
+                        assert actual["editorReadOnly"] and actual["editorText"] == ""
 
                     def contrast(foreground, background):
                         def luminance(color):
@@ -1239,18 +1263,42 @@ def run_qt(
                 set_mode(1)
                 wake_source = "Please send this message today."
                 dormant_source(wake_source)
+                before = state()["first"]
                 set_mode(enabled=False)
-                wait_for(
-                    lambda: status().get("viewState") == "Paused"
-                    and status().get("overlayVisible")
-                    and state().get("overlayControls", {}).get("typelay-resume", {}).get("visible"),
+
+                def paused_source(text, changes):
+                    # A host render reply can precede the fixture's next snapshot.
+                    # Wait for the actual source and resume entry together, then
+                    # inspect every paused control in that same native snapshot.
+                    actual = state()
+                    if (
+                        not actual
+                        or actual["first"]["text"] != text
+                        or actual["first"]["changes"] != changes
+                        or actual["first"]["accessibleName"] != "Message one"
+                        or not actual["first"]["focused"]
+                        or not actual["overlayVisible"]
+                        or not actual["overlayControls"]["typelay-resume"]["visible"]
+                        or not actual["overlayControls"]["typelay-resume"]["enabled"]
+                    ):
+                        return None
+                    host = status()
+                    if host.get("viewState") != "Paused" or not host.get("overlayVisible"):
+                        return None
+                    assert not host["acceptanceReady"]
+                    assert not actual["overlayControls"]["typelay-menu-trigger"]["visible"]
+                    assert not actual["overlayMenuVisible"]
+                    assert not actual["editorVisible"] and not actual["editorFocused"]
+                    assert actual["editorReadOnly"] and actual["editorText"] == ""
+                    return actual
+
+                paused_theme_before = wait_for(
+                    lambda: paused_source(wake_source, before["changes"]),
                     "paused Qt source did not show the actual weakened resume entry",
                 )
                 paused_settings = json.loads(Paths(arguments.package).settings.read_text())
                 paused_capture_counts = dict(status()["input"]["captureCounts"])
-                before = state()["first"]
                 pause_trace = trace_checkpoint()
-                paused_theme_before = state()
                 for appearance in ("light", "dark"):
                     application_theme(appearance)
                     actual = themed_overlay(appearance, paused=True)
@@ -1264,26 +1312,25 @@ def run_qt(
                 application_theme("system")
                 typed("!")
                 wait_for(
-                    lambda: state()["first"]["text"] == wake_source + "!"
-                    and state()["first"]["changes"] == before["changes"] + 1
-                    and status().get("overlayVisible")
-                    and status().get("viewState") == "Paused",
+                    lambda: paused_source(wake_source + "!", before["changes"] + 1),
                     "ordinary input during pause was lost, replayed or translated",
                 )
-                assert not status().get("acceptanceReady")
-                assert not state()["overlayControls"]["typelay-menu-trigger"]["visible"]
                 key("ctrl+shift+F9")
                 command("metadata", text="Password")
-                wait_for(
-                    lambda: state()["first"]["accessibleName"] == "Password"
-                    and not status().get("overlayVisible"),
+                sensitive = wait_for(
+                    lambda: actual
+                    if (actual := state())["first"]["accessibleName"] == "Password"
+                    and not actual["overlayVisible"]
+                    and not status().get("overlayVisible")
+                    else None,
                     "paused entry survived a sensitive metadata change",
                 )
-                assert state()["first"]["text"] == wake_source + "!"
+                assert sensitive["first"]["text"] == wake_source + "!"
+                assert sensitive["first"]["changes"] == before["changes"] + 1
+                assert sensitive["first"]["focused"]
                 command("metadata", text="Message one")
                 wait_for(
-                    lambda: status().get("viewState") == "Paused"
-                    and status().get("overlayVisible"),
+                    lambda: paused_source(wake_source + "!", before["changes"] + 1),
                     "ordinary Qt metadata did not restore the paused entry",
                 )
                 assert status()["input"]["captureCounts"] == paused_capture_counts
@@ -1296,19 +1343,24 @@ def run_qt(
                     for line in data[: data.rfind(b"\n") + 1].splitlines()
                 ), "paused source scheduled model work"
                 click_overlay("typelay-resume")
-                wait_for(
-                    lambda: json.loads(Paths(arguments.package).settings.read_text())["Enabled"]
+                resumed = wait_for(
+                    lambda: actual
+                    if not (actual := state())["overlayVisible"]
+                    and json.loads(Paths(arguments.package).settings.read_text())["Enabled"]
                     and not status().get("overlayVisible")
                     and status()["input"]["captureCounts"].get("supported", 0)
-                    > paused_capture_counts.get("supported", 0),
+                    > paused_capture_counts.get("supported", 0)
+                    else None,
                     "resume did not return OnDemand to its dormant state",
                 )
                 assert json.loads(Paths(arguments.package).settings.read_text()) == {
                     **paused_settings,
                     "Enabled": True,
                 }, "resume changed preferences beyond Enabled"
-                assert state()["first"]["text"] == wake_source + "!"
-                assert state()["first"]["focused"]
+                assert resumed["first"]["text"] == wake_source + "!"
+                assert resumed["first"]["changes"] == before["changes"] + 1
+                assert resumed["first"]["accessibleName"] == "Message one"
+                assert resumed["first"]["focused"]
                 evidence.append(
                     "Qt6 pause: metadata-only entry, one ordinary character, sensitive-field hiding, "
                     "no capture/model/write, both system colors without an editor, two screenshots; "

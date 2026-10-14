@@ -3206,7 +3206,9 @@ def run(arguments):
                     if row["primaryAction"]["id"] != identity:
                         details = settings_control(support["labels"]["details"], remaining())
                         if not details.get_state_set().contains(Atspi.StateType.EXPANDED):
-                            activate_setting(support["labels"]["details"], remaining())
+                            activate_scrolled_setting(
+                                support["labels"]["details"], timeout=remaining()
+                            )
                     activate_scrolled_setting(action["label"], timeout=remaining())
                     if identity == "Connect" and not cancel:
                         confirm = settings_control(support["labels"]["confirm"], remaining())
