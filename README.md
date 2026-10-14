@@ -9,7 +9,7 @@ TypeLay 是 Windows/Linux 的本地输入翻译工具。自动模式跟随当前
 
 Windows 原有实验性 Tab 写回默认关闭，通用 UIA 读/校验/写入不能组成原子事务。直接替换与 Linux 合作路径各自依赖经过校验的目标能力；构建或自动化通过不等于物理输入法、Tab、所有应用或完整产品验收通过。
 
-[Windows 待办](docs/platforms/windows/open-issues.md)保留当前问题和复现证据；先完成 Linux 主线与 trunk 整理，通知用户检查，收到回复后再开始 Windows 修复。
+Windows/Linux 同步推进共同产品功能与体验，各平台问题和验收分别记录；一端通过不代表另一端通过。[Windows 待办](docs/platforms/windows/open-issues.md)保留当前问题和复现证据。
 
 ## 产品验收入口
 

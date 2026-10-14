@@ -158,7 +158,12 @@ def install(root, command, desktop):
 
 def uninstall(root, command, desktop, config, data, cache, purge):
     held = []
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    runtime = Path(os.environ.get("XDG_RUNTIME_DIR", ""))
+    if not runtime.is_absolute() or not runtime.is_dir():
+        raise SystemExit(
+            "未完成：无法检查 TypeLay 会话锁，XDG_RUNTIME_DIR 必须指向现有的绝对路径目录。"
+            "请从运行 TypeLay 的桌面会话终端关闭所有 TypeLay 会话后重试。"
+        )
     try:
         managed = data / "components/desktop-text"
         if managed.exists() or managed.is_symlink():
@@ -178,19 +183,18 @@ def uninstall(root, command, desktop, config, data, cache, purge):
                 # A damaged installation still needs to be removable. Session
                 # locks remain authoritative even when the launcher is missing.
                 pass
-        if runtime and Path(runtime).is_absolute():
-            for path in (Path(runtime) / "typelay").glob("*/desktop.lock"):
-                fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
-                held.append(fd)
-                deadline = time.monotonic() + 5
-                while True:
-                    try:
-                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                        break
-                    except BlockingIOError:
-                        if time.monotonic() >= deadline:
-                            raise
-                        time.sleep(0.05)
+        for path in (runtime / "typelay").glob("*/desktop.lock"):
+            fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+            held.append(fd)
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
         model_lock = data / "components/install.lock"
         if purge and model_lock.exists():
             fd = os.open(model_lock, os.O_RDWR | os.O_NOFOLLOW)

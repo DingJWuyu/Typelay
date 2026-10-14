@@ -363,6 +363,11 @@ int main(void) {
     gtk_box_append(GTK_BOX(box), gtk_label_new("Ordinary entries and excluded password field"));
     gtk_box_append(GTK_BOX(box), first);
     gtk_box_append(GTK_BOX(box), second);
+    /* Native automationId is the buildable ID, not the CSS/widget name. */
+    GtkBuilder *identities = gtk_builder_new();
+    gtk_builder_expose_object(identities, "fixture-second", G_OBJECT(second));
+    g_object_unref(identities);
+    g_assert_cmpstr(gtk_buildable_get_buildable_id(GTK_BUILDABLE(second)), ==, "fixture-second");
     gtk_box_append(GTK_BOX(box), password);
     GtkWidget *password_entry = gtk_password_entry_new();
     gtk_widget_set_name(password_entry, "fixture-password-entry");

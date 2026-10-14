@@ -51,11 +51,11 @@ class DistributionTests(unittest.TestCase):
             self.home / name / "typelay" for name in ("config", "data", "cache")
         ]
 
-    def install_command(self, *arguments):
+    def install_command(self, *arguments, env=None):
         return subprocess.run(
             [sys.executable, "-I", "-B", str(self.package / "install.py"), *arguments],
             cwd=self.work,
-            env=self.env,
+            env=self.env if env is None else env,
             capture_output=True,
             text=True,
             timeout=20,
@@ -466,6 +466,76 @@ class DistributionTests(unittest.TestCase):
         self.assert_success(self.install_command("uninstall"))
         self.assertFalse(self.root.exists())
         self.assertFalse(self.command.is_symlink())
+
+    def test_invalid_runtime_cannot_bypass_an_active_session(self):
+        self.assert_success(self.install_command("install"))
+        for directory in self.state_directories:
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "keep.txt").write_text("synthetic retained data")
+        parent, child = socket.socketpair()
+        parent.settimeout(5)
+        process = None
+        try:
+            # Use the installed client's path resolution and a real, independently
+            # owned process lease. No desktop, user daemon or model is started.
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    "-c",
+                    "import fcntl, os, sys; sys.path.insert(0, sys.argv[1]); "
+                    "from paths import Paths; paths = Paths(); "
+                    "fd = os.open(paths.session / 'desktop.lock', "
+                    "os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600); "
+                    "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB); "
+                    "os.write(1, b'R'); os.read(0, 1); os.close(fd)",
+                    str(self.root / "current/desktop"),
+                ],
+                env=self.env,
+                stdin=child,
+                stdout=child,
+                stderr=subprocess.DEVNULL,
+            )
+            child.close()
+            self.assertEqual(parent.recv(1), b"R", "session lease was not acquired")
+            for runtime in (None, "", "relative-runtime", str(self.home / "missing-runtime")):
+                for purge in (False, True):
+                    with self.subTest(runtime=runtime, purge=purge):
+                        env = dict(self.env)
+                        env.pop("XDG_RUNTIME_DIR")
+                        if runtime is not None:
+                            env["XDG_RUNTIME_DIR"] = runtime
+                        arguments = ("uninstall", "--purge") if purge else ("uninstall",)
+                        result = self.install_command(*arguments, env=env)
+                        self.assertNotEqual(
+                            result.returncode, 0, "uninstall bypassed the live session lock"
+                        )
+                        self.assertIn("XDG_RUNTIME_DIR", result.stderr)
+                        self.assertIn("桌面会话终端", result.stderr)
+                        self.assertTrue(self.root.is_dir())
+                        self.assertTrue(self.command.is_symlink())
+                        self.assertTrue(self.desktop.is_file())
+                        self.assertIsNone(process.poll(), "uninstall stopped the lock owner")
+                        for directory in self.state_directories:
+                            self.assertEqual(
+                                (directory / "keep.txt").read_text(), "synthetic retained data"
+                            )
+        finally:
+            parent.close()
+            child.close()
+            if process is not None:
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+        self.assert_success(self.install_command("uninstall"))
+        self.assertFalse(self.root.exists())
+        for directory in self.state_directories:
+            self.assertEqual((directory / "keep.txt").read_text(), "synthetic retained data")
+        self.assert_success(self.install_command("uninstall", "--purge"))
+        self.assertFalse(any(directory.exists() for directory in self.state_directories))
 
     def test_purge_refuses_an_active_component_install(self):
         self.assert_success(self.install_command("install"))

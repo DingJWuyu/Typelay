@@ -15,11 +15,9 @@
 
 GTK 非纯文本/非标准控件、Qt QTextEdit/富文本/自绘控件、Electron/VS Code 自动浮层、更广富文本和输入法事务能力仍是开发缺口，不能标成“只需真机验证”。终端/命令区按产品策略默认排除。GTK 父窗口定位契约见 [ADR-0004](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/linux/adr/0004-native-anchors.md)。
 
-安装恢复候选 [7803e87 的隔离验证](https://github.com/DingJWuyu/Typelay/actions/runs/38458694526)已通过 Linux 全套构建、搬迁包、共享安装失败指引与旧版本保留、首次模型教程、Firefox、GTK3/GTK4、Qt6 和 VS Code 实际流程；该轮 Windows 仍有 Chrome 前置与 F9 唤醒失败。Linux 此次通过不消除已有时效风险：[61f51ca](https://github.com/DingJWuyu/Typelay/actions/runs/38450976266) 曾出现 GTK4 单次 Tab 过期 9ms 拒绝和 Qt 单次 F10 待捕获请求超期，稳定浏览器候选也仍有续期空窗。原期限、实际输入法检查和单次按键约束保持，详见各适配器页。
+共同安装恢复、模型准备、受管组件准备/练习/退出/移除已有实际搬迁包与桌面链路证据。浏览器 DOM、Chromium/Firefox 本地主机和 Qt 完整模型流程已有通过记录；短许可仍会因调度和观察时效安全拒绝。GTK 接受使用 100ms 许可，Qt 唤醒/直接任务的入口观察限制与它不同，不能用一次通过消除偶发不可用风险，详见各适配器页。
 
-[4a499d0 的隔离验证](https://github.com/DingJWuyu/Typelay/actions/runs/38563925869)已通过共同按需练习的真实 F9/F10、受管组件准备/练习/退出/移除，以及 Qt 完整桌面流程和浏览器 DOM 32 项。GTK3/GTK4 的默认接受、配置后功能键接受/退出及编辑后两次独立按下已有真实通过证据；同轮 GTK3 展开重入检查失败、GTK4 重入测试在几何前置处报错，后续 GTK4 编辑恢复与暂停点击尚未执行。该轮不是 Linux 全绿候选，也不能用一次未过期的接受消除先前短许可风险。上述桌面结果来自 CI 的嵌套 niri 与 XTest 合成输入事件路径，不代表用户机器、物理键盘或真实应用全面验收。
-
-[ce4ca0f 的后续验证](https://github.com/DingJWuyu/Typelay/actions/runs/38567869495)已实际完成 GTK3/GTK4 的暂停与原生恢复按钮链：暂停时普通输入保留且不捕获正文、不启动模型、不写回；恢复只改变启用状态，按需模式仍需下一次唤醒。两端随后后台 F10 检查的晚快照断言失败；同步正文变更回调显示写入时另一输入框已持有焦点，不能把该断言文案当作“未发生后台写”的事实。该轮仍为失败，后续独立编辑器恢复和重入检查未执行；原短许可风险保留。
+[当前隔离验证](https://github.com/DingJWuyu/Typelay/actions/runs/38576190815)实际完成 GTK3/GTK4 默认及配置后的接受/退出键、编辑后两次独立按下、暂停与原生恢复、组合态直接替换拒绝，以及后台原字段写回和人工修改后拒写。GTK4 独立编辑恢复也已通过。GTK3 最后展开重入点击未触发测试屏障，当前按钮位置与事件路由仍缺证，后续需要交互式环境核查；GTK4 最后 footer 测试把 CSS 名称当成 buildable 标识而失败，精确修正仍待验证。因此该轮仍不是 Linux 全绿候选，也不能外推为所有控件支持。上述结果来自 CI 的嵌套 niri 与 XTest 合成事件，不代表用户机器、物理键盘或真实应用全面验收。
 
 快捷键默认在已连接的输入适配器中处理，也可将 niri 全局按键绑定到下述 --wake/--direct 命令。全局触发不会为没有输入后端的应用伪造读取或写入能力。
 
@@ -44,7 +42,7 @@ GTK 非纯文本/非标准控件、Qt QTextEdit/富文本/自绘控件、Electro
 
 ## 获取发行包
 
-在目标提交的 TypeLay checks 中确认 **Linux job 成功**，下载 `typelay-linux-<commit>` artifact ZIP，解压其中的 `TypeLay-Linux-preview-x86_64.tar.gz` 及 `.sha256`。同次 Windows 检查有独立结论，不能仅凭工作流总状态判断 Linux 包。完整主包已经附带匹配桌面合作组件，无需另找第二个输入法压缩包。需要源码构建时，依赖与命令见[Linux 开发说明](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/linux/development.md#构建)。发行包自带 .NET 运行时；GTK、PyGObject、Ayatana 等桌面依赖仍由系统包管理器提供。
+在目标提交的 TypeLay checks 中确认 **Linux 完整检查与“Attach the matching desktop components to the main distribution”封装步骤均成功**，再下载 `typelay-linux-<commit>` artifact ZIP，解压其中的 `TypeLay-Linux-preview-x86_64.tar.gz` 及 `.sha256`。同次 Windows 检查有独立结论，不能仅凭工作流总状态判断 Linux 包。完整主包已经附带匹配桌面合作组件，无需另找第二个输入法压缩包。仅设置界面的部分检查会跳过合作组件封装，其 setup-only 包不能作为完整接入包。需要源码构建时，依赖与命令见[Linux 开发说明](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/linux/development.md#构建)。发行包自带 .NET 运行时；GTK、PyGObject、Ayatana 等桌面依赖仍由系统包管理器提供。
 
 ## 安装、启动与首次配置
 
@@ -161,19 +159,23 @@ spawn-at-startup "/home/你的用户名/.local/bin/typelay" "--background"
 
 ## 卸载
 
-退出所有 Wayland 会话中的 TypeLay，再从解压包执行：
+卸载前先结束桌面接入：
+
+1. 如使用了受管“连接应用…”，先正常关闭练习及其子窗口，再在设置的“应用支持”页确认“移除接入…”，结束受管私有输入法会话。
+2. 私有会话结束后，按[连接目标应用](#连接目标应用)的原启动方式恢复系统输入法。仅退出 TypeLay 客户端不会结束受管练习或私有输入法；高级手动合作会话按 [Fcitx 退出与恢复说明](fcitx.md#恢复原输入法)操作。
+3. 退出所有 Wayland 会话中的 TypeLay。从原桌面会话终端进入完整解压包执行；终端须保留该会话的有效 `XDG_RUNTIME_DIR`，不要手动猜测或改用其它运行时目录：
 
 ```fish
 python install.py uninstall
 ```
 
-默认保留设置、模型和缓存。显式删除这些数据：
+默认保留设置、模型、缓存和练习配置。显式删除这些 TypeLay 数据：
 
 ```fish
 python install.py uninstall --purge
 ```
 
-卸载只删除 TypeLay 程序及其菜单/自动启动入口，不删除通过 `launch` 启动的目标应用，也不修改用户的 fish/niri 配置。已安装启动器缺失时仍可从完整解压包卸载，但活动会话的锁检查不会跳过。手动加入 niri 的 `spawn-at-startup` 或应用启动命令需要同步移除。仍有会话占有锁时，卸载拒绝操作；组件安装占有锁时，`--purge` 拒绝删除组件数据，不使用进程名批量杀死其他程序。
+卸载只删除 TypeLay 程序及其菜单/自动启动入口，不删除通过 `launch` 启动的目标应用，也不修改用户的 fish/niri 配置。已安装启动器缺失时仍可从完整解压包卸载，但活动会话的锁检查不会跳过。`XDG_RUNTIME_DIR` 缺失、为相对路径或不指向现有目录时，卸载会拒绝操作并提示从原桌面会话终端重试。手动加入 niri 的 `spawn-at-startup` 或应用启动命令需要同步移除。仍有会话占有锁时，卸载拒绝操作；组件安装占有锁时，`--purge` 拒绝删除组件数据，不使用进程名批量杀死其他程序。
 
 ## 开发与验收
 
