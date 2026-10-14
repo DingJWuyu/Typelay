@@ -18,6 +18,7 @@ function Test-Shared {
         Invoke-Checked dotnet @('test', $project, '-c', $Configuration, '-p:RestoreLockedMode=true',
             '--logger', 'trx', '--results-directory', (Join-Path $artifacts 'shared-test-results'))
     }
+    Invoke-Checked python @('-m', 'unittest', 'discover', '-s', 'tests/shared', '-v')
     Invoke-Checked python @('-m', 'unittest', 'discover', '-s', 'tests/shared/worker', '-v')
 }
 Push-Location $root

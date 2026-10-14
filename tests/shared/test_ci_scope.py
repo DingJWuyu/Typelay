@@ -1,0 +1,277 @@
+"""Exercise the Actions selector against real, isolated Git histories."""
+
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+SELECTOR = Path(__file__).resolve().parents[2] / "eng/shared/ci_scope.py"
+FULL = {"windows": "true", "linux": "true", "qt": "false", "settings": "false"}
+LINUX = {**FULL, "windows": "false"}
+WINDOWS = {**FULL, "linux": "false"}
+QT = {**LINUX, "linux": "false", "qt": "true"}
+SETTINGS = {**LINUX, "settings": "true"}
+QT_BASELINE = "d607db1b8a3fc882cfd4a9c19a6e454d9b610189"
+SETTINGS_BASELINE = "79965d49ea1ed8494fa917cd2a3ffb669b3e093a"
+
+
+class ScopeTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.env = {
+            **os.environ,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_AUTHOR_NAME": "CI scope test",
+            "GIT_AUTHOR_EMAIL": "ci-scope@example.invalid",
+            "GIT_COMMITTER_NAME": "CI scope test",
+            "GIT_COMMITTER_EMAIL": "ci-scope@example.invalid",
+        }
+        self.git("init", "-q")
+        self.base = self.commit({"README.md": "base"})
+        self.git("update-ref", "refs/remotes/origin/trunk", self.base)
+
+    def git(self, *args, data=None):
+        return (
+            subprocess.check_output(
+                ["git", *args], cwd=self.repo, env=self.env, input=data, timeout=20
+            )
+            .decode()
+            .strip()
+        )
+
+    def reset(self, ref):
+        self.git("update-ref", "HEAD", ref)
+        self.git("read-tree", ref)
+
+    def commit(self, files, parents=None):
+        # Index-only files let Git's legal path names work on every test host.
+        for path, content in files.items():
+            if content is None:
+                self.git("update-index", "--force-remove", "--", path)
+            else:
+                blob = self.git("hash-object", "-w", "--stdin", data=content.encode())
+                self.git("update-index", "--add", "--cacheinfo", "100644", blob, path)
+        tree = self.git("write-tree")
+        if parents is None:
+            head = subprocess.run(
+                ["git", "rev-parse", "--verify", "HEAD"],
+                cwd=self.repo,
+                env=self.env,
+                capture_output=True,
+                timeout=20,
+            )
+            parents = [head.stdout.decode().strip()] if head.returncode == 0 else []
+        arguments = [argument for parent in parents for argument in ("-p", parent)]
+        commit = self.git("commit-tree", tree, *arguments, "-m", "scope fixture")
+        self.git("update-ref", "HEAD", commit)
+        return commit
+
+    def select(self, before, branch="work/linux-usability", **event):
+        output = self.root / "output"
+        output.write_text("")
+        subprocess.run(
+            [sys.executable, str(SELECTOR)],
+            cwd=self.repo,
+            env={
+                **self.env,
+                "GITHUB_OUTPUT": str(output),
+                "EVENT_NAME": "push",
+                "BRANCH": branch,
+                "BEFORE": before,
+                "AFTER": self.git("rev-parse", "HEAD"),
+                "CREATED": "false",
+                "FORCED": "false",
+                **event,
+            },
+            check=True,
+            capture_output=True,
+            timeout=20,
+        )
+        return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+    def test_current_platform_push_ignores_old_cross_platform_history(self):
+        for platform, branch, expected in (
+            ("linux", "work/linux-usability", LINUX),
+            ("windows", "work/windows-experience", WINDOWS),
+        ):
+            with self.subTest(platform=platform):
+                before = self.commit(
+                    {
+                        "src/shared/old.py": "old",
+                        "src/windows/old.cs": "old",
+                        "src/linux/old.py": "old",
+                    }
+                )
+                self.commit(
+                    {
+                        **{
+                            f"{directory}/{platform}/current.py": platform
+                            for directory in ("src", "tests", "eng", "packaging")
+                        },
+                        "docs/guide.md": "notes",
+                    }
+                )
+                self.assertEqual(expected, self.select(before, branch))
+
+    def test_shared_unknown_workflow_and_opposite_platform_require_both(self):
+        for branch in ("work/linux-usability", "work/windows-experience"):
+            for path in (
+                "src/shared/core.cs",
+                "eng/shared/tool.py",
+                "tests/shared/test.py",
+                "global.json",
+                "other/file",
+                ".github/workflows/check.yml",
+                ".github/CODEOWNERS",
+            ):
+                with self.subTest(branch=branch, path=path):
+                    self.reset(self.base)
+                    self.commit({path: "changed"})
+                    self.assertEqual(FULL, self.select(self.base, branch))
+        for path, branch in (
+            ("tests/windows/changed.cs", "work/linux-usability"),
+            ("tests/linux/changed.py", "work/windows-experience"),
+        ):
+            with self.subTest(path=path):
+                self.reset(self.base)
+                self.commit({path: "changed"})
+                self.assertEqual(FULL, self.select(self.base, branch))
+
+    def test_reverted_and_merged_changes_still_count(self):
+        for path in ("src/shared/transient.cs", ".github/workflows/check.yml"):
+            with self.subTest(path=path):
+                self.reset(self.base)
+                self.commit({path: "temporary"})
+                self.commit({path: None, "tests/linux/current.py": "linux"})
+                self.assertEqual(FULL, self.select(self.base))
+        self.reset(self.base)
+        side = self.commit({"src/windows/side.cs": "windows"})
+        self.reset(self.base)
+        before = self.commit({"tests/linux/before.py": "linux"})
+        self.commit({"tests/linux/merged.py": "linux"}, parents=[before, side])
+        self.assertEqual(FULL, self.select(before))
+
+    def test_renames_deletions_and_unusual_path_names(self):
+        before = self.commit({"tests/windows/old.cs": "same bytes"})
+        self.commit({"tests/windows/old.cs": None, "tests/linux/new.py": "same bytes"})
+        for branch in ("work/linux-usability", "work/windows-experience"):
+            self.assertEqual(FULL, self.select(before, branch))
+        self.reset(before)
+        self.commit({"tests/windows/old.cs": None, "tests/linux/current.py": "linux"})
+        self.assertEqual(FULL, self.select(before))
+        self.reset(self.base)
+        before = self.commit({"tests/linux/old.py": "same bytes"})
+        self.commit({"tests/linux/old.py": None, "tests/linux/空 格\t\nfile.py": "same bytes"})
+        self.assertEqual(LINUX, self.select(before))
+        before = self.git("rev-parse", "HEAD")
+        self.commit({"tests/linux/空 格\t\nfile.py": None})
+        self.assertEqual(LINUX, self.select(before))
+
+    def test_missing_or_invalid_push_evidence_requires_both(self):
+        side = self.commit({"src/windows/side.cs": "side"})
+        self.reset(self.base)
+        after = self.commit({"tests/linux/current.py": "linux"})
+        blob = self.git("hash-object", "-w", "--stdin", data=b"not a commit")
+        for field in ("BEFORE", "AFTER"):
+            for value in ("", "0" * 40, "not-a-sha", "f" * 40, blob):
+                with self.subTest(field=field, value=value):
+                    event = {field: value}
+                    before = event.pop("BEFORE", self.base)
+                    self.assertEqual(FULL, self.select(before, **event))
+        for event in (
+            {"CREATED": "true"},
+            {"FORCED": "true"},
+            {"CREATED": ""},
+            {"FORCED": ""},
+            {"AFTER": self.base},
+            {"AFTER": side},
+        ):
+            with self.subTest(event=event):
+                self.assertEqual(FULL, self.select(self.base, **event))
+        self.assertEqual(FULL, self.select(side, AFTER=after))
+        self.assertEqual(FULL, self.select(after))  # Empty push.
+        before = self.git("rev-parse", "HEAD")
+        self.commit({"docs/only.md": "docs", "README.md": "notes"})
+        self.assertEqual(FULL, self.select(before))
+        for branch in ("trunk", "windows-preview", "cachyos-preview", "other"):
+            self.assertEqual(FULL, self.select(self.base, branch))
+        for event in ("pull_request", "workflow_dispatch"):
+            self.assertEqual(FULL, self.select(self.base, EVENT_NAME=event))
+
+    def test_qt_partial_needs_whole_branch_scope_and_fixed_production_bytes(self):
+        # Test-only Git replacements model the pinned commits with real local trees.
+        # They do not establish compatibility with the historical release artifact.
+        self.git("update-ref", "refs/replace/" + QT_BASELINE, self.base)
+        qt_file = "src/linux/native/qt6/adapter.cpp"
+        self.commit({qt_file: "Qt"})
+        self.assertEqual(QT, self.select(self.base))
+        self.git("update-ref", "-d", "refs/replace/" + QT_BASELINE)
+        self.assertEqual(LINUX, self.select(self.base))  # Missing pinned object.
+        self.git("update-ref", "refs/replace/" + QT_BASELINE, self.base)
+        for old_path in (
+            "src/linux/client.py",
+            "tests/linux/client.py",
+            "src/shared/core.cs",
+            "src/windows/app.cs",
+        ):
+            with self.subTest(old_path=old_path):
+                self.reset(self.base)
+                self.commit({old_path: "old non-Qt change"})
+                before = self.commit({old_path: None})
+                self.commit({qt_file: "Qt"})
+                self.assertEqual(LINUX, self.select(before))
+        self.reset(self.base)
+        before = self.commit({"src/shared/core.cs": "new trunk production"})
+        self.git("update-ref", "refs/remotes/origin/trunk", before)
+        self.commit({qt_file: "Qt"})
+        self.assertEqual(LINUX, self.select(before))  # Qt-only history, changed baseline bytes.
+        self.git("update-ref", "-d", "refs/remotes/origin/trunk")
+        self.assertEqual(LINUX, self.select(before))  # No whole-branch evidence.
+
+    def test_settings_partial_preserves_reviewed_first_parent_and_later_push_limits(self):
+        self.git("update-ref", "refs/replace/" + SETTINGS_BASELINE, self.base)
+        first = self.commit(
+            {
+                "src/linux/desktop/ui.py": "settings",
+                ".github/workflows/check.yml": "reviewed first wiring",
+            },
+            parents=[SETTINGS_BASELINE],
+        )
+        branch = "work/linux-settings"
+        self.assertEqual(SETTINGS, self.select("0" * 40, branch, CREATED="true"))
+        self.commit({"tests/linux/desktop_e2e.py": "settings test", "docs/settings.md": "notes"})
+        self.assertEqual(SETTINGS, self.select(first, branch))
+        for path in (
+            "src/linux/desktop/other.py",
+            "src/shared/core.cs",
+            "global.json",
+            "eng/shared/ci_scope.py",
+            ".github/workflows/check.yml",
+        ):
+            with self.subTest(path=path):
+                self.reset(first)
+                self.commit({path: "unreviewed change"})
+                self.assertEqual(FULL, self.select(first, branch))
+        self.reset(first)
+        self.commit({".github/workflows/check.yml": "temporary wiring"})
+        self.commit({".github/workflows/check.yml": "reviewed first wiring"})
+        self.assertEqual(FULL, self.select(first, branch))
+        self.reset(self.base)
+        self.commit({"src/linux/desktop/ui.py": "settings"})
+        self.assertEqual(FULL, self.select("0" * 40, branch))  # Wrong first parent.
+        self.reset(first)
+        for before in ("", "not-a-sha", "f" * 40):
+            self.assertEqual(FULL, self.select(before, branch))
+        self.git("update-ref", "-d", "refs/replace/" + SETTINGS_BASELINE)
+        self.assertEqual(FULL, self.select("0" * 40, branch))
+
+
+if __name__ == "__main__":
+    unittest.main()

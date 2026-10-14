@@ -73,11 +73,25 @@ public sealed class OnDemandPracticePresentationTests
     }
 
     [Fact]
+    public void IdentifiedPracticeFieldReportsPendingPreviewWithoutCompletingSteps()
+    {
+        var run = new OnDemandPracticeProgress(Guid.NewGuid(),
+            new("controlled", "practice-field", Guid.NewGuid()), Guid.NewGuid(), 0, 1, false, false);
+        var view = OnDemandPracticePresentation.Create(new(), run);
+
+        Assert.Equal("已识别练习输入框，尚未生成预览。", view.ProgressNotice);
+        Assert.False(view.PreviewCompleted);
+        Assert.False(view.DirectReplacementCompleted);
+        Assert.False(view.Completed);
+        Assert.Equal("1. 确认框内是待翻译的原文，再按 Ctrl+Shift+F9 查看译文。原文保持不变，可继续输入。", view.PreviewStep);
+    }
+
+    [Fact]
     public void ProgressNamesOnlyTheTwoObservedOnDemandSteps()
     {
         var run = new OnDemandPracticeProgress(Guid.NewGuid(), null, Guid.NewGuid(), 0, 1, false, false);
         var waiting = OnDemandPracticePresentation.Create(new(), run);
-        Assert.Contains("尚未连接", waiting.ProgressNotice);
+        Assert.Equal("练习输入框尚未连接，请点击输入框；若仍未连接，请检查应用支持。", waiting.ProgressNotice);
         Assert.False(waiting.Completed);
         run = run with
         {
@@ -85,7 +99,7 @@ public sealed class OnDemandPracticePresentationTests
             PreviewCompleted = true
         };
         var preview = OnDemandPracticePresentation.Create(new(), run);
-        Assert.Contains("已生成预览", preview.ProgressNotice);
+        Assert.Equal("已生成预览。请回到练习输入框，完成第 2 步直接替换。", preview.ProgressNotice);
         Assert.DoesNotContain("已完成", preview.ProgressNotice);
         Assert.False(preview.Completed);
         var complete = OnDemandPracticePresentation.Create(new(), run with

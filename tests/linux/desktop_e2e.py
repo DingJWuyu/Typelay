@@ -2953,8 +2953,14 @@ def run(arguments):
             )
             settings_page("应用支持")
             assert text(excluded) == "typelay-navigation-test"
+            saved_exclusions = saved["ExcludedApplications"]
+            assert saved_exclusions is None or (
+                isinstance(saved_exclusions, list)
+                and all(isinstance(item, str) for item in saved_exclusions)
+            ), "saved application exclusions must be null or a list of executable names"
             assert Atspi.EditableText.set_text_contents(
-                excluded.get_editable_text_iface(), "\n".join(saved["ExcludedApplications"])
+                excluded.get_editable_text_iface(),
+                "\n".join([] if saved_exclusions is None else saved_exclusions),
             )
             settings_page("快捷键")
             assert Atspi.Selection.is_child_selected(accept_key.get_selection_iface(), 12)

@@ -18,7 +18,7 @@
 
 ## CI
 
-只保留 .github/workflows/check.yml。它接收 trunk、现有两个 preview 分支及明确的 work/linux-usability、work/windows-experience 临时分支 push，另保留主线 PR 和手动执行。trunk/PR 执行共享、Windows 和 Linux 完整检查；临时分支按实际完整差异选择平台，共享或工作流变更仍检查双端。保留 preview 触发器不授权修改那些分支。具体命令与平台以工作流为准，本地按变更风险选择现役场景命令，见[Linux 开发说明](../platforms/linux/development.md#按变更选择场景)。不自动修代码、提交、合并或归档开发环境；普通任务权限保持 contents: read。Qt 专属临时迭代额外以 actions: read 读取固定提交 d607db1 的已校验发行 artifact；只有全部被执行的非 Qt 源码未改变才复用，越界回完整检查。该结果只证明本次 Qt 场景，不是产品全验；artifact 失效或校验不符必须失败，不换用未知版本。
+只保留 .github/workflows/check.yml，选择入口为 eng/shared/ci_scope.py。trunk、两个 preview、PR 和手动执行保留共享、Windows 和 Linux 完整检查；work/linux-usability、work/windows-experience 仅在已有分支的非强推、before/after 均为有效现存提交、after 等于 HEAD 且 before 是其祖先时，按本次 push 所有提交触及的路径选择对应平台，包含后续撤销、合并及重命名前后的路径。旧分支历史不再扩大普通平台检查范围；共享、根配置、工作流、未知路径或证据不足仍检查双端，空推送和纯文档也暂保留双端。work/linux-settings 的独立 partial 限制和已核验首推父提交例外保持不变。新增共享 selector 同样受原固定 baseline 比较约束，旧 partial 资格不满足时回完整检查，不额外放宽排除范围。保留 preview 触发器不授权修改那些分支。不自动修代码、提交、合并或归档开发环境；普通任务权限保持 contents: read。Qt 专属临时迭代仍按相对 trunk 的整支历史确认 Qt-only，再核对全部被执行的非 Qt 生产源码与固定提交 d607db1 字节相同，缺对象或比较失败回完整 Linux；额外以 actions: read 读取该提交的已校验发行 artifact。该结果只证明本次 Qt 场景，不是产品全验；artifact 失效或校验不符必须失败，不换用未知版本。selector 的临时 Git 历史回归由 shared-check 执行，也可直接运行 python -m unittest discover -s tests/shared -v。平台场景命令见[Linux 开发说明](../platforms/linux/development.md#按变更选择场景)。
 
 CI 发布的 artifact 以提交 SHA 命名，包含对应平台的测试结果、当前运行的发行包和校验和。不要上传 artifacts 的整个目录。工作流日志是对应提交的执行记录，不写回源码树。
 

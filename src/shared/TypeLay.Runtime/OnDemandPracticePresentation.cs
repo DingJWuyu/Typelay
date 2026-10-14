@@ -33,7 +33,7 @@ public static class OnDemandPracticePresentation
             : progress.Target is null ? "练习输入框尚未连接，请点击输入框；若仍未连接，请检查应用支持。"
             : progress.Completed ? "按需练习已完成：已生成预览，并已验证直接替换。"
             : preview ? "已生成预览。请回到练习输入框，完成第 2 步直接替换。"
-            : "练习输入框已连接。请先完成第 1 步，生成预览。";
+            : "已识别练习输入框，尚未生成预览。";
         return new("按需翻译练习", "用一段原文，练习预览和直接替换。练习内容只在本机处理。",
             english ? "Hello I would like to try local translation" : "你好我想试试本地翻译",
             "练习输入框",
