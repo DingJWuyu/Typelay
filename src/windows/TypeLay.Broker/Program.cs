@@ -61,6 +61,23 @@ internal static class Program
                     response = new(BrokerProtocol.Version, request.Id, "unavailable");
                 }
                 Wire.WriteAsync(output, response).AsTask().GetAwaiter().GetResult();
+                // Log only after replying so diagnostic disk I/O cannot delay this write receipt.
+                // Opt-in outcomes only: no source, target, selection, exception text or identities.
+                if (request.Op is "write" or "direct-write" && response.Receipt is { } receipt
+                    && Environment.GetEnvironmentVariable("TYPELAY_TRACE") is { Length: > 0 } tracePath)
+                {
+                    try
+                    {
+                        File.AppendAllText(tracePath + ".broker.jsonl", System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            atMs = WindowsInterruptClock.NowMs,
+                            operation = request.Op,
+                            status = receipt.Status.ToString(),
+                            reason = receipt.Reason.ToString()
+                        }) + Environment.NewLine);
+                    }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+                }
                 if (request.Op == "quit")
                     return 0;
             }

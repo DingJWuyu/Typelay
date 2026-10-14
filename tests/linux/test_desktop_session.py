@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import select
 import shutil
 import signal
 import subprocess
@@ -150,13 +151,18 @@ class DesktopSessionTests(unittest.TestCase):
 
     def test_ui_parent_exit_leaves_application_and_lock_alive_until_application_exits(self):
         pid, _ = self.spawn(self.command(), parent_exits=True)
+        guardian_exit = os.pidfd_open(pid)
+        self.addCleanup(os.close, guardian_exit)
         application = self.started()
         self.assertIsNotNone(process_identity(pid))
         with self.assertRaises(BlockingIOError):
             removal_lock(self.data)
         self.assertEqual(process_identity(application["pid"]), application)
         (self.home / "finish").touch()
-        self.until(lambda: receipts(self.data) == [])
+        # The detached guardian is not our child. Receipt removal alone is not
+        # an exit barrier, so wait for its kernel exit event before taking the lock.
+        self.assertTrue(select.select([guardian_exit], [], [], 5)[0], "owned guardian did not exit")
+        self.assertEqual(receipts(self.data), [])
         fd = removal_lock(self.data)
         os.close(fd)
 

@@ -415,6 +415,7 @@ internal static class ContinuousTranslationCheck
         SessionController? controller = null;
         bool pausedUnchanged = false, cancelledUnchanged = false, modePersisted = false, previewUnchanged = false;
         bool replaced = false, closePreservedLaterSettings = false, saveFailureVisible = false;
+        string? feedbackCode = null;
         try
         {
             await UntilAsync(() => { Require(model.Ready, "model-unavailable"); return !model.Busy; }, cancellation);
@@ -488,8 +489,7 @@ internal static class ContinuousTranslationCheck
             result.Stage = "practice-native-observation";
             await UntilAsync(() => support.Read(settings.Value).Rows.Single(row => row.Id == "desktop-text")
                 .Capabilities.DirectReplace, cancellation);
-            string? feedback = null;
-            controller.OperationFeedback += value => feedback ??= value.Code;
+            controller.OperationFeedback += value => feedbackCode ??= value.Code;
             var editor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
             result.Stage = "practice-preview-shortcut";
             Require(new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x78 }.All(key => GetAsyncKeyState(key) >= 0),
@@ -497,7 +497,7 @@ internal static class ContinuousTranslationCheck
             SendDirectShortcut(out _, result.CleanupErrors, 0x78);
             await UntilAsync(() =>
             {
-                Require(feedback is null, "practice-preview-feedback");
+                Require(feedbackCode is null, "practice-preview-feedback");
                 Require(N.Focused() == (root, field), "practice-preview-focus");
                 return VisibleTranslation(overlay, editor) && editor.Text == expected.Text;
             }, cancellation);
@@ -509,7 +509,7 @@ internal static class ContinuousTranslationCheck
             SendDirectShortcut(out _, result.CleanupErrors);
             await UntilAsync(() =>
             {
-                Require(feedback is null, "practice-direct-feedback");
+                Require(feedbackCode is null, "practice-direct-feedback");
                 Require(N.Focused() == (root, field), "practice-direct-focus");
                 return controller.OperationStatus == "已直接替换原输入框文字。";
             }, cancellation);
@@ -578,7 +578,10 @@ internal static class ContinuousTranslationCheck
             CompleteCleanup(result);
             result.Facts = new
             {
+                feedbackCode,
+                pausedUnchanged,
                 cancelledUnchanged,
+                saveFailureVisible,
                 modePersisted,
                 previewUnchanged,
                 replaced,
