@@ -974,6 +974,9 @@ def run_qt(
                     and status().get("viewState") == "EditingTranslation",
                     "actual Qt candidate click did not enter the production editor",
                 )
+                assert state()["editorUndoRedoEnabled"], (
+                    "actual Qt editor disabled native undo/redo"
+                )
                 switch_im("keyboard-us")
                 # Synthetic Chinese is inserted through the owned fixture's
                 # real QPlainTextEdit API; this is not physical IME evidence.
@@ -1015,6 +1018,7 @@ def run_qt(
                         "editorAnchor",
                         "editorFocused",
                         "editorReadOnly",
+                        "editorUndoRedoEnabled",
                         "editorUndoSteps",
                         "editorUndoAvailable",
                         "editorRedoAvailable",

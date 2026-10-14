@@ -1263,7 +1263,7 @@ private:
         editor_->setReadOnly(true);
         editor_->setFocusPolicy(Qt::NoFocus);
         editor_->setTabChangesFocus(false);
-        editor_->setMaximumBlockCount(0);
+        // Keep the default unlimited maximumBlockCount. Setting even zero disables native undo.
         layout->addWidget(editor_);
         connect(editor_, &QPlainTextEdit::textChanged, this, [this] {
             if (settingText_ || !editor_ || editor_->isReadOnly()) return;

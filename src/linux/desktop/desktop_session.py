@@ -435,12 +435,18 @@ class DesktopSession:
     async def refresh(self):
         return await asyncio.to_thread(self._status)
 
-    def _spawn(self, kind, bundle, command, lock):
+    def _spawn(self, kind, bundle, command, lock, *, startup_id=None):
         name = uuid.uuid4().hex + ".json"
         environment = dict(os.environ)
         environment.pop("TYPELAY_DESKTOP", None)
+        # A fresh explicit request belongs to this application only, never a
+        # daemon or a later launch inheriting the desktop's startup environment.
+        environment.pop("DESKTOP_STARTUP_ID", None)
+        environment.pop("XDG_ACTIVATION_TOKEN", None)
         if kind == "daemon":
             environment = daemon_environment(self.paths.data, environment)
+        elif startup_id:
+            environment["DESKTOP_STARTUP_ID"] = startup_id
         process = subprocess.Popen(
             [
                 "/usr/bin/python3",
@@ -525,7 +531,7 @@ class DesktopSession:
     async def start_session(self):
         return await asyncio.to_thread(self._start)
 
-    def _launch(self, argv, toolkit):
+    def _launch(self, argv, toolkit, startup_id):
         lock = None
         start = None
         try:
@@ -555,7 +561,7 @@ class DesktopSession:
                 *([] if toolkit == "gtk3" else ["--" + toolkit]),
                 *application,
             ]
-            process, name = self._spawn("application", bundle, command, lock)
+            process, name = self._spawn("application", bundle, command, lock, startup_id=startup_id)
             guardian = process_identity(process.pid)
             if guardian is None:
                 return {"ok": False, "reason": "application-start-unconfirmed"}
@@ -589,8 +595,8 @@ class DesktopSession:
                 if fd is not None:
                     os.close(fd)
 
-    async def launch_application(self, argv, toolkit="gtk3"):
-        return await asyncio.to_thread(self._launch, argv, toolkit)
+    async def launch_application(self, argv, toolkit="gtk3", *, startup_id=None):
+        return await asyncio.to_thread(self._launch, argv, toolkit, startup_id)
 
     def owns_application(self, application, pid):
         """Receipt plus this launch's actual Popen identity; neither proves itself."""

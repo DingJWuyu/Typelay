@@ -771,7 +771,7 @@ class ApplicationSupport:
                 "detail": limitation + "\n" + str(error),
             }
 
-    async def execute(self, identity, action, directory=None):
+    async def execute(self, identity, action, directory=None, *, startup_id=None):
         if identity in BROWSERS and action == "OpenInstructions":
             self.open_browser(identity)
             return {"ok": True}
@@ -803,13 +803,15 @@ class ApplicationSupport:
                 result = await self.desktop_session.launch_application(
                     ["/usr/bin/python3", "-I", "-B", str(self.paths.home / "desktop/practice.py")],
                     toolkit="gtk3",
+                    startup_id=startup_id,
                 )
                 if result["ok"]:
                     self.practice_launch = result["application"]
                     result = {
                         "ok": True,
                         "reason": "practice-start-requested",
-                        "detail": "已请求打开普通输入框练习，请在窗口中输入后检查真实连接；尚未确认预览或替换能力。",
+                        "detail": "已请求打开 TypeLay 实操练习。若窗口未在前台，请切到该窗口并点击练习输入框；"
+                        "尚未确认预览或替换能力。",
                     }
             self.last_results[identity] = result
             await self.refresh()

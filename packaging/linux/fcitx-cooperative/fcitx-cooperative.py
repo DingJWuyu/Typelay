@@ -35,8 +35,12 @@ USER_PACKAGE_VERSIONS = {"fcitx5-chinese-addons": "5.1.14", "libime": "1.1.16"}
 
 
 def run(arguments, *, env=None):
+    # Verification and module-query subprocesses are not the requested window.
+    environment = dict(os.environ if env is None else env)
+    environment.pop("DESKTOP_STARTUP_ID", None)
+    environment.pop("XDG_ACTIVATION_TOKEN", None)
     return subprocess.check_output(
-        arguments, text=True, stderr=subprocess.STDOUT, timeout=15, env=env
+        arguments, text=True, stderr=subprocess.STDOUT, timeout=15, env=environment
     )
 
 
@@ -82,6 +86,8 @@ def environment(*, daemon=False, gtk4=False, qt6=False):
         [ROOT / "lib", *([ROOT / "core/lib"] if daemon else [])], env.get("LD_LIBRARY_PATH")
     )
     if daemon:
+        env.pop("DESKTOP_STARTUP_ID", None)
+        env.pop("XDG_ACTIVATION_TOKEN", None)
         env["TYPELAY_FCITX_PRIVATE_SESSION"] = "1"
         env["TYPELAY_FCITX_AUDITED_ADDON_DIRS"] = f"{ROOT / 'lib'}:{ROOT / 'core/lib/fcitx5'}"
         env["LIBIME_MODEL_DIRS"] = str(ROOT / "core/lib/libime")

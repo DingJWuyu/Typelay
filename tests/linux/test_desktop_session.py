@@ -1,6 +1,7 @@
 """Real detached cooperation process ownership; no GUI, D-Bus or Fcitx emulation."""
 
 import asyncio
+import importlib.util
 import json
 import os
 import select
@@ -14,6 +15,7 @@ import unittest
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
@@ -28,6 +30,36 @@ from desktop_session import (  # noqa: E402
 )
 
 GUARDIAN = ROOT / "src/linux/desktop/desktop_session.py"
+
+
+class CooperationLauncherEnvironmentTests(unittest.TestCase):
+    def test_only_application_exec_keeps_startup_notification(self):
+        specification = importlib.util.spec_from_file_location(
+            "cooperation_launcher", ROOT / "packaging/linux/fcitx-cooperative/fcitx-cooperative.py"
+        )
+        launcher = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(launcher)
+        variables = ("DESKTOP_STARTUP_ID", "XDG_ACTIVATION_TOKEN")
+        command = [
+            sys.executable,
+            "-I",
+            "-c",
+            "import json,os; print(json.dumps({key:os.environ.get(key) "
+            "for key in ['DESKTOP_STARTUP_ID','XDG_ACTIVATION_TOKEN']}))",
+        ]
+        with patch.dict(
+            os.environ, {name: "synthetic-startup-marker" for name in variables}, clear=True
+        ):
+            before = dict(os.environ)
+            application = launcher.environment()
+            for name in variables:
+                self.assertEqual(application[name], "synthetic-startup-marker")
+                self.assertFalse(name in launcher.environment(daemon=True), name)
+            for environment in (None, application):
+                observed = json.loads(launcher.run(command, env=environment))
+                self.assertEqual(observed, dict.fromkeys(variables))
+            self.assertEqual(dict(os.environ), before)
+            self.assertEqual(application["DESKTOP_STARTUP_ID"], "synthetic-startup-marker")
 
 
 class DesktopSessionTests(unittest.TestCase):

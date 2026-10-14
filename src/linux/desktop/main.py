@@ -313,10 +313,10 @@ async def desktop(paths, background, lock, tutorial=False):
 
             return {**view, "desktopGuidance": support.desktop_guidance()}
 
-        async def support_action(identity, action, directory=None):
+        async def support_action(identity, action, directory=None, *, startup_id=None):
             if identity == "desktop-text" and action in ("Connect", "Remove"):
                 await practice.end(practice.pid)
-            await support.execute(identity, action, directory)
+            await support.execute(identity, action, directory, startup_id=startup_id)
             return await support_view()
 
         components["settings"] = Settings(

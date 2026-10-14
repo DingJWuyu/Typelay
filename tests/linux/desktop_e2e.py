@@ -2198,6 +2198,109 @@ def run(arguments):
                 assert action is not None and Atspi.Action.do_action(action, 0), name
                 return node
 
+            def activate_scrolled_setting(name, *, evidence_name=None, timeout=15):
+                # Continued interactions may follow an earlier page scroll. The
+                # initial primary actions retain their unscrolled screen checks.
+                deadline = time.monotonic() + timeout
+                node = settings_control(name, timeout=deadline - time.monotonic())
+                assert node.get_process_id() == process.pid and node.get_name() == name
+                before_scroll = Atspi.Component.get_extents(
+                    node.get_component_iface(), Atspi.CoordType.SCREEN
+                )
+                assert Atspi.Component.grab_focus(node.get_component_iface())
+
+                def control_in_view():
+                    node.clear_cache()
+                    assert node.get_process_id() == process.pid and node.get_name() == name
+                    states = node.get_state_set()
+                    if not all(
+                        states.contains(state)
+                        for state in (Atspi.StateType.SHOWING, Atspi.StateType.FOCUSED)
+                    ):
+                        return None
+                    area = Atspi.Component.get_extents(
+                        node.get_component_iface(), Atspi.CoordType.SCREEN
+                    )
+                    if area.width <= 0 or area.height <= 0:
+                        return None
+                    clips = []
+                    ancestor = node.get_parent()
+                    for _ in range(16):
+                        assert ancestor is not None and ancestor.get_process_id() == process.pid
+                        ancestor.clear_cache()
+                        role = ancestor.get_role()
+                        if role in (Atspi.Role.SCROLL_PANE, Atspi.Role.VIEWPORT, Atspi.Role.FRAME):
+                            clip = Atspi.Component.get_extents(
+                                ancestor.get_component_iface(), Atspi.CoordType.SCREEN
+                            )
+                            if not (
+                                clip.x <= area.x
+                                and clip.y <= area.y
+                                and area.x + area.width <= clip.x + clip.width
+                                and area.y + area.height <= clip.y + clip.height
+                            ):
+                                return None
+                            if role == Atspi.Role.FRAME:
+                                assert clips, (
+                                    "scrolled settings control did not expose a scrolling viewport"
+                                )
+                                assert ancestor.get_name() == "TypeLay 设置"
+                                return {
+                                    "beforeScrollInFrame": [
+                                        before_scroll.x - clip.x,
+                                        before_scroll.y - clip.y,
+                                        before_scroll.width,
+                                        before_scroll.height,
+                                    ],
+                                    "focusedInFrame": [
+                                        area.x - clip.x,
+                                        area.y - clip.y,
+                                        area.width,
+                                        area.height,
+                                    ],
+                                    "scrollViewportsInFrame": [
+                                        [x - clip.x, y - clip.y, width, height]
+                                        for x, y, width, height in clips
+                                    ],
+                                }
+                            clips.append((clip.x, clip.y, clip.width, clip.height))
+                        ancestor = ancestor.get_parent()
+                    raise AssertionError(
+                        "scrolled settings control exceeds its bounded GTK ancestry"
+                    )
+
+                scroll_layout = wait_for(
+                    control_in_view,
+                    "scrolled settings control did not scroll fully into view after native focus: "
+                    + name,
+                    timeout=deadline - time.monotonic(),
+                )
+                if evidence_name:
+                    (arguments.output / (evidence_name + ".json")).write_text(
+                        json.dumps(scroll_layout, indent=2)
+                    )
+                    remaining = deadline - time.monotonic()
+                    assert remaining > 0, (
+                        "scrolled settings action exhausted its interaction budget"
+                    )
+                    subprocess.run(
+                        [
+                            "grim",
+                            str(arguments.output / (evidence_name + ".png")),
+                        ],
+                        check=True,
+                        timeout=min(3, remaining),
+                    )
+                assert time.monotonic() < deadline, (
+                    "scrolled settings action exhausted its interaction budget"
+                )
+                assert control_in_view(), (
+                    "scrolled settings control moved out of view before activation"
+                )
+                action = node.get_action_iface()
+                assert action is not None and Atspi.Action.do_action(action, 0), name
+                return node
+
             def settings_page(title):
                 row = select_settings_page(process.pid, title)
                 wait_for(
@@ -2363,7 +2466,10 @@ def run(arguments):
             for index, expected in enumerate(
                 ("chrome://extensions/", str(package.resolve() / "browser/chromium"))
             ):
-                activate_setting(instructions["label"])
+                activate_scrolled_setting(
+                    instructions["label"],
+                    evidence_name="application-support-instructions-scroll" if index == 0 else None,
+                )
                 copy_name = support["labels"]["copy"] + "：" + expected
                 copy_button = settings_control(copy_name)
                 assert copy_button.get_state_set().contains(Atspi.StateType.SHOWING)
@@ -2858,10 +2964,34 @@ def run(arguments):
                         details = settings_control(support["labels"]["details"], remaining())
                         if not details.get_state_set().contains(Atspi.StateType.EXPANDED):
                             activate_setting(support["labels"]["details"], remaining())
-                    activate_setting(action["label"], remaining())
-                    activate_setting(
-                        support["labels"]["cancel" if cancel else "confirm"], remaining()
-                    )
+                    activate_scrolled_setting(action["label"], timeout=remaining())
+                    if identity == "Connect" and not cancel:
+                        confirm = settings_control(support["labels"]["confirm"], remaining())
+                        cancel_button = settings_control(support["labels"]["cancel"], remaining())
+                        wait_for(
+                            lambda: focused(confirm) or focused(cancel_button),
+                            "connection dialog did not focus one of its two actions",
+                            timeout=remaining(),
+                        )
+                        if not focused(confirm):
+                            key("Tab")
+                        wait_for(
+                            lambda: focused(confirm)
+                            and any(
+                                window.get("pid") == process.pid
+                                and window.get("is_focused") is True
+                                for window in contents(request("Windows"), "Windows")
+                            ),
+                            "connection confirmation lacks actual settings keyboard focus",
+                            timeout=remaining(),
+                        )
+                        # AT-SPI only observes the real button. This one
+                        # down/up travels through niri and supplies a fresh serial.
+                        key("space")
+                    else:
+                        activate_setting(
+                            support["labels"]["cancel" if cancel else "confirm"], remaining()
+                        )
 
                 # Only this isolated HOME is touched. The private daemon must not
                 # read/write even these synthetic "existing user" profile files.
@@ -2877,13 +3007,24 @@ def run(arguments):
                     and not any(a["id"] == "Connect" for a in row["actions"]),
                     "fresh client must require the user's original input-method acknowledgement",
                 )
-                activate_setting("我已记下原输入法的启动方式，并知道如何恢复")
+                activate_scrolled_setting(
+                    "我已记下原输入法的启动方式，并知道如何恢复",
+                    evidence_name="application-support-recovery-acknowledgement-scroll",
+                )
                 wait_for(
                     lambda: (row := desktop_row())
                     and any(a["id"] == "Connect" for a in row["actions"]),
                     "prepared component did not offer the explicit practice connection",
                 )
                 managed_window = None
+
+                def practice_has_keyboard_focus():
+                    return any(
+                        window["id"] == managed_window["id"]
+                        and window.get("pid") == managed_window["pid"]
+                        and window.get("is_focused") is True
+                        for window in contents(request("Windows"), "Windows")
+                    )
 
                 def close_managed_window():
                     if managed_window is not None and any(
@@ -2945,8 +3086,13 @@ def run(arguments):
                         lambda: named(managed_window["pid"], "练习输入框"),
                         "managed practice field missing",
                     )
+                    # Cold preparation can outlast the compositor's token. This
+                    # verifies the documented manual fallback, not activation.
+                    request({"Action": {"FocusWindow": {"id": managed_window["id"]}}})
                     wait_for(
-                        lambda: focused(source) and status().get("sourceSupported"),
+                        lambda: practice_has_keyboard_focus()
+                        and focused(source)
+                        and status().get("sourceSupported"),
                         "managed practice did not connect through the production adapter",
                     )
                     typed(original)
@@ -3122,30 +3268,33 @@ def run(arguments):
                         lambda: named(managed_window["pid"], "练习输入框"),
                         "reopened practice field missing",
                     )
-                    wait_for(lambda: focused(source), "reopened practice did not focus its field")
+                    # The already-running private session does not need cold
+                    # startup. No test FocusWindow may rescue this activation.
+                    wait_for(
+                        lambda: practice_has_keyboard_focus() and focused(source),
+                        "explicitly reopened practice did not gain compositor keyboard focus",
+                    )
                     wait_for(
                         lambda: named(managed_window["pid"], "开始练习后，这里会显示进度。"),
                         "reopened practice inherited old completion",
-                    )
-                    # A field can retain toolkit focus while Settings remains
-                    # the compositor's active window. Explicitly focus this new
-                    # owned window before testing keyboard input; this does not
-                    # certify automatic activation when opening practice.
-                    request({"Action": {"FocusWindow": {"id": managed_window["id"]}}})
-                    wait_for(
-                        lambda: any(
-                            window["id"] == managed_window["id"]
-                            and window.get("pid") == managed_window["pid"]
-                            and window.get("is_focused") is True
-                            for window in contents(request("Windows"), "Windows")
-                        )
-                        and focused(source),
-                        "reopened owned practice did not receive actual keyboard focus",
                     )
                     typed(practice_text)
                     wait_for(lambda: text(source) == practice_text, "reopened practice lost input")
                     key("ctrl+a")
                     assert control(paths, "settings") is True
+                    selected_settings = wait_for(
+                        lambda: next(
+                            (
+                                window
+                                for window in contents(request("Windows"), "Windows")
+                                if window.get("pid") == process.pid
+                                and window.get("title") == "TypeLay 设置"
+                            ),
+                            None,
+                        ),
+                        "settings did not reopen after practice activation",
+                    )
+                    request({"Action": {"FocusWindow": {"id": selected_settings["id"]}}})
                     settings_page("语言")
                     language = settings_control("设置：源语言")
                     assert Atspi.Selection.select_child(language.get_selection_iface(), 1)
@@ -3159,9 +3308,16 @@ def run(arguments):
                     assert (
                         control(paths, "startOnDemandPractice", {"confirmedSwitch": True}) is False
                     ), "practice accepted equal source and target languages"
+                    assert any(
+                        window["id"] == selected_settings["id"]
+                        and window.get("pid") == process.pid
+                        and window.get("is_focused") is True
+                        for window in contents(request("Windows"), "Windows")
+                    ), "practice pulled focus back after switching to settings"
                     request({"Action": {"FocusWindow": {"id": managed_window["id"]}}})
                     wait_for(
-                        lambda: focused(source)
+                        lambda: practice_has_keyboard_focus()
+                        and focused(source)
                         and named(managed_window["pid"], changed_view["currentStateNotice"]),
                         "practice did not refresh the shared language notice",
                     )

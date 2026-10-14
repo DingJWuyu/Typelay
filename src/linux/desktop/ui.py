@@ -1,6 +1,7 @@
 """GTK settings and a source-bound native view for the shared session controller."""
 
 import asyncio
+from pathlib import Path
 
 import gi
 from application_support import BROWSER_MANAGEMENT_URIS
@@ -421,9 +422,16 @@ class ApplicationSupportPane:
             )
 
             def confirmed(widget, response):
+                startup_id = (
+                    self.practice_startup_id(widget)
+                    if response == Gtk.ResponseType.OK
+                    and row["id"] == "desktop-text"
+                    and action["id"] == "Connect"
+                    else None
+                )
                 widget.destroy()
                 if response == Gtk.ResponseType.OK:
-                    self.owner.tasks(self.execute(row, action))
+                    self.owner.tasks(self.execute(row, action, startup_id=startup_id))
                 else:
                     self.busy = False
                     self.render_selected()
@@ -432,6 +440,28 @@ class ApplicationSupportPane:
             dialog.show_all()
         else:
             self.owner.tasks(self.execute(row, action))
+
+    @staticmethod
+    def practice_startup_id(window):
+        """Request once during the user's input event, before its window disappears."""
+        timestamp = Gtk.get_current_event_time()
+        if timestamp == Gdk.CURRENT_TIME:
+            return None
+        try:
+            context = window.get_display().get_app_launch_context()
+            context.set_timestamp(timestamp)
+            command = ["/usr/bin/python3", "-I", "-B", str(Path(__file__).with_name("practice.py"))]
+            application = Gio.AppInfo.create_from_commandline(
+                " ".join(GLib.shell_quote(argument.replace("%", "%%")) for argument in command),
+                "TypeLay 实操练习",
+                Gio.AppInfoCreateFlags.NONE,
+            )
+            startup_id = context.get_startup_notify_id(application, [])
+            return startup_id if isinstance(startup_id, str) and startup_id else None
+        except (AttributeError, GLib.Error, TypeError, ValueError):
+            # Older GTK or an unavailable activation protocol must not prevent
+            # the existing explicit launch. The compositor decides activation.
+            return None
 
     def choose_component(self, row, action):
         labels = self.value["labels"]
@@ -547,9 +577,11 @@ class ApplicationSupportPane:
         dialog.connect("response", opened)
         dialog.show_all()
 
-    async def execute(self, row, action, directory=None):
+    async def execute(self, row, action, directory=None, *, startup_id=None):
         try:
-            value = await self.action_requested(row["id"], action["id"], directory)
+            value = await self.action_requested(
+                row["id"], action["id"], directory, startup_id=startup_id
+            )
             if value:
                 self.render(value)
         except (OSError, ValueError, EOFError, TimeoutError):

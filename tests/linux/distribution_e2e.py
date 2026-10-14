@@ -341,7 +341,7 @@ class DistributionTests(unittest.TestCase):
                 "launch",
                 sys.executable,
                 "-c",
-                "import json,os;print(json.dumps({key:os.environ.get(key) for key in ['GTK3_MODULES','QT_QPA_GENERIC_PLUGINS','QT_PLUGIN_PATH','QT_IM_MODULE']}))",
+                "import json,os;print(json.dumps({key:os.environ.get(key) for key in ['GTK3_MODULES','QT_QPA_GENERIC_PLUGINS','QT_PLUGIN_PATH','QT_IM_MODULE','DESKTOP_STARTUP_ID']}))",
             ],
             env={
                 **self.env,
@@ -349,6 +349,7 @@ class DistributionTests(unittest.TestCase):
                 "QT_QPA_GENERIC_PLUGINS": "existing-qt",
                 "QT_PLUGIN_PATH": "/existing/plugins",
                 "QT_IM_MODULE": "fcitx",
+                "DESKTOP_STARTUP_ID": "synthetic-distribution-startup",
             },
             capture_output=True,
             text=True,
@@ -360,6 +361,7 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(inherited["QT_QPA_GENERIC_PLUGINS"], "existing-qt")
         self.assertTrue(inherited["GTK3_MODULES"].endswith(":existing-gtk"))
         self.assertEqual(inherited["QT_PLUGIN_PATH"], "/existing/plugins")
+        self.assertEqual(inherited["DESKTOP_STARTUP_ID"], "synthetic-distribution-startup")
         self.assert_success(
             subprocess.run(
                 [str(self.command), "--quit"],

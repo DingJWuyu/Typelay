@@ -403,6 +403,7 @@ int main(int argc, char **argv) {
             {"editorAccessibleName", editor ? editor->accessibleName() : QString()},
             {"editorCursor", editor ? editor->textCursor().position() : -1},
             {"editorAnchor", editor ? editor->textCursor().anchor() : -1},
+            {"editorUndoRedoEnabled", editor && editor->isUndoRedoEnabled()},
             {"editorUndoSteps", editor ? editor->document()->availableUndoSteps() : 0},
             {"editorUndoAvailable", editor && editor->document()->isUndoAvailable()},
             {"editorRedoAvailable", editor && editor->document()->isRedoAvailable()},

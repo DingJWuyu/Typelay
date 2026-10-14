@@ -642,7 +642,7 @@ class ApplicationSupportTests(unittest.TestCase):
         self.assertEqual(reopened.browser_status("chromium")["extensionId"], "d" * 32)
         self.assertEqual(reopened.browser_status("chromium")["state"], "registered")
 
-    def desktop_payload(self, *, extra_entries=(), version="5.1.22"):
+    def desktop_payload(self, *, extra_entries=(), version="5.1.22", content_overrides=None):
         support = self.package / "support/desktop"
         support.mkdir(parents=True, exist_ok=True)
         marker = self.home / "must-not-run-component"
@@ -655,6 +655,7 @@ class ApplicationSupportTests(unittest.TestCase):
             "source/upstream/fcitx5/LICENSES/LGPL-2.1-or-later.txt": b"License text",
             "lib/libexample.so.1": b"Cooperative library",
         }
+        content.update(content_overrides or {})
         manifest = {
             "schemaVersion": 1,
             "bundleName": "TypeLay-Fcitx-cooperative",
@@ -998,6 +999,160 @@ class ApplicationSupportTests(unittest.TestCase):
             command.write_text("#!/usr/bin/python3\n" + body + "\n")
             command.chmod(0o700)
         return patch.dict(os.environ, {"PATH": str(commands)})
+
+    def test_connect_startup_notification_belongs_only_to_the_new_practice_process(self):
+        from desktop_session import receipts
+
+        # Real preparation, guardian, action and typelay launch boundaries; the
+        # private daemon/application are controlled executables, not a desktop test.
+        daemon_pid = self.home / "daemon.pid"
+        daemon_observation = self.home / "daemon.json"
+        application_observation = self.home / "application.json"
+        finish = self.home / "finish-practice"
+        environment_keys = "['DESKTOP_STARTUP_ID','XDG_ACTIVATION_TOKEN']"
+        launcher = (
+            "import json,os,sys\nfrom pathlib import Path\n"
+            "root=Path(__file__).parent\n"
+            "if sys.argv[1] == 'daemon':\n"
+            f" Path({str(daemon_observation)!r}).write_text(json.dumps("
+            f"{{key:os.environ.get(key) for key in {environment_keys}}}))\n"
+            f" Path({str(daemon_pid)!r}).write_text(str(os.getpid()))\n"
+            " os.execv(root/'core/bin/fcitx5', [str(root/'core/bin/fcitx5'), '60'])\n"
+            "os.execvpe(sys.argv[2], sys.argv[2:], os.environ)\n"
+        )
+        self.desktop_payload(
+            content_overrides={
+                "fcitx-cooperative.py": launcher.encode(),
+                "core/bin/fcitx5": Path("/usr/bin/sleep").read_bytes(),
+            }
+        )
+        self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Install"))["ok"])
+        bundle = self.support.desktop_component.status()["directory"]
+        (bundle / "core/bin/fcitx5").chmod(0o755)
+        shutil.copy2(ROOT / "packaging/linux/typelay", self.package / "typelay")
+        (self.package / "typelay").chmod(0o755)
+        desktop = self.package / "desktop"
+        desktop.mkdir()
+        for name in ("main.py", "setup.py", "paths.py", "wire.py"):
+            shutil.copy2(ROOT / "src/linux/desktop" / name, desktop / name)
+        (desktop / "practice.py").write_text(
+            "import json,os,sys,time\nfrom pathlib import Path\n"
+            f"Path({str(application_observation)!r}).write_text(json.dumps("
+            f"{{'environment':{{key:os.environ.get(key) for key in {environment_keys}}},"
+            "'arguments':sys.argv[1:]}))\n"
+            f"while not Path({str(finish)!r}).exists(): time.sleep(0.01)\n"
+        )
+        (self.package / "native").mkdir()
+        (self.package / "native/libtypelay-gtk3.so").touch()
+        with (
+            self.no_input_method_environment(),
+            patch.dict(
+                os.environ,
+                {"DESKTOP_STARTUP_ID": "old-startup", "XDG_ACTIVATION_TOKEN": "old-activation"},
+            ),
+        ):
+            for tool in ("readlink", "dirname"):
+                (self.home / "input-status-tools" / tool).symlink_to(Path("/usr/bin") / tool)
+            command = self.home / "input-status-tools/gdbus"
+            command.write_text(
+                "#!/usr/bin/python3\nimport sys\nfrom pathlib import Path\n"
+                f"marker=Path({str(daemon_pid)!r})\n"
+                "pid=marker.read_text() if marker.exists() else None\n"
+                "live=pid is not None and Path('/proc/'+pid+'/stat').exists()\n"
+                "active=live and sys.argv[-1] == 'org.fcitx.Fcitx5'\n"
+                "print(('(true,)' if active else '(false,)') "
+                "if sys.argv[-2].endswith('NameHasOwner') else '(uint32 '+pid+',)')\n"
+            )
+            original_environment = dict(os.environ)
+
+            def wait_for(predicate):
+                deadline = time.monotonic() + 5
+                while not predicate():
+                    self.assertLess(time.monotonic(), deadline, "owned launch did not settle")
+                    time.sleep(0.01)
+
+            try:
+                rejected = asyncio.run(
+                    self.support.execute("desktop-text", "Connect", startup_id="unapproved")
+                )
+                self.assertFalse(rejected["ok"])
+                self.assertFalse(daemon_pid.exists())
+                self.assertTrue(
+                    asyncio.run(self.support.execute("desktop-text", "RecordNoOriginalMethod"))[
+                        "ok"
+                    ]
+                )
+                for startup_id in ("synthetic-new-click", None):
+                    result = asyncio.run(
+                        self.support.execute("desktop-text", "Connect", startup_id=startup_id)
+                    )
+                    self.assertTrue(result["ok"], result)
+                    self.assertIn("若窗口未在前台", result["detail"])
+                    wait_for(application_observation.exists)
+                    observed = json.loads(application_observation.read_text())
+                    self.assertEqual(
+                        observed,
+                        {
+                            "environment": {
+                                "DESKTOP_STARTUP_ID": startup_id,
+                                "XDG_ACTIVATION_TOKEN": None,
+                            },
+                            "arguments": [],
+                        },
+                    )
+                    self.assertEqual(
+                        json.loads(daemon_observation.read_text()),
+                        {
+                            "DESKTOP_STARTUP_ID": None,
+                            "XDG_ACTIVATION_TOKEN": None,
+                        },
+                    )
+                    self.assertNotIn(
+                        "synthetic-new-click", json.dumps(receipts(self.support.paths.data))
+                    )
+                    self.assertNotIn("synthetic-new-click", json.dumps(result))
+                    self.assertTrue(dict(os.environ) == original_environment)
+                    finish.touch()
+                    wait_for(
+                        lambda: not any(
+                            item["kind"] == "application"
+                            for item in receipts(self.support.paths.data)
+                        )
+                    )
+                    finish.unlink()
+                    application_observation.unlink()
+                    if startup_id is not None:
+                        component = bundle / "lib/libexample.so.1"
+                        original = component.read_bytes()
+                        try:
+                            component.write_bytes(b"changed after preparation")
+                            failed = asyncio.run(
+                                self.support.execute(
+                                    "desktop-text", "Connect", startup_id="synthetic-failed-click"
+                                )
+                            )
+                            self.assertFalse(failed["ok"])
+                            self.assertFalse(application_observation.exists())
+                            self.assertNotIn("synthetic-failed-click", json.dumps(failed))
+                        finally:
+                            component.write_bytes(original)
+                        before_refresh = receipts(self.support.paths.data)
+                        asyncio.run(
+                            self.support.execute(
+                                "desktop-text", "Refresh", startup_id="synthetic-refresh"
+                            )
+                        )
+                        self.assertEqual(receipts(self.support.paths.data), before_refresh)
+            finally:
+                finish.touch()
+                wait_for(
+                    lambda: not any(
+                        item["kind"] == "application" for item in receipts(self.support.paths.data)
+                    )
+                )
+                asyncio.run(self.support.desktop_session.stop_session())
+                for process in self.support.desktop_session.guardians:
+                    process.wait(timeout=5)
 
     def test_prepared_component_has_explicit_practice_action_and_safe_reversible_remove(self):
         self.desktop_payload()
