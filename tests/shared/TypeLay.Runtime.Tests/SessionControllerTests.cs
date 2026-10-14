@@ -580,6 +580,388 @@ public sealed class SessionControllerTests
     }
 
     [Fact]
+    public void FirstWakeCaptureFailureExplainsOnceAfterCleanupAndRequiresAnotherWake()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand, experimental: true);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += message =>
+        {
+            Assert.False(s.View.Visible);
+            Assert.Null(s.Input.Permit);
+            Assert.Null(s.Input.Shortcut);
+            feedback.Add(message);
+        };
+        s.Service.PendingCapture = new();
+        s.Command("wake");
+        s.Tick();
+        long revision = s.Controller.CommandFeedbackRevision;
+        s.CompleteCapture(new(null));
+        var failure = Assert.Single(feedback);
+        Assert.Equal("暂时无法读取当前输入框，请保持焦点后再试一次。", failure.Message);
+        Assert.Equal("wake-capture-unavailable", failure.Code);
+        Assert.Equal(revision, failure.Revision);
+        Assert.Equal(s.Input.CommandGeneration, failure.CommandGeneration);
+        Assert.Equal(0, failure.CommandSequence);
+        Assert.Equal(failure.Message, s.Controller.OperationStatus);
+        s.Tick();
+        s.Tick(1000);
+        Assert.Single(feedback);
+        Assert.False(s.View.Visible);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+        s.Command("wake");
+        s.Tick();
+        Assert.True(s.View.Visible);
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.Single(feedback);
+    }
+
+    [Theory]
+    [InlineData("hello", SessionState.Translating)]
+    [InlineData("", SessionState.IdleCapsule)]
+    public void SuccessfulWakeObservationRetiresFailureFeedbackEvenForAnEmptyCapsule(string text, SessionState state)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Source = s.Source with
+        {
+            Text = text,
+            Selection = new(text.Length, text.Length)
+        };
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Command("wake");
+        s.Tick();
+        Assert.Equal(state, s.View.State);
+        Assert.True(s.View.Visible);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null));
+        Assert.Empty(feedback);
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.False(s.View.Visible);
+    }
+
+    [Theory]
+    [InlineData(WorkMode.Automatic)]
+    [InlineData(WorkMode.OnDemand)]
+    public void CaptureWithoutAnExplicitWakeDoesNotNotifyFailure(WorkMode mode)
+    {
+        using var s = new SessionScenario(mode);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null));
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null));
+        Assert.Empty(feedback);
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.False(s.View.Visible);
+        Assert.Empty(s.Model.Jobs);
+    }
+
+    [Theory]
+    [InlineData(false, "empty")]
+    [InlineData(false, "source")]
+    [InlineData(false, "exception")]
+    [InlineData(true, "empty")]
+    [InlineData(true, "source")]
+    [InlineData(true, "exception")]
+    public void OlderCaptureCannotReportOrRetireANewerWake(bool previouslyAwake, string completion)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Service.PendingCapture = new();
+        if (previouslyAwake)
+            s.Command("wake");
+        s.Tick();
+        long oldRevision = s.Controller.CommandFeedbackRevision;
+        s.Input.Notices.Enqueue(new("wake", AcceptedAtMs: s.Loop.NowMs,
+            ForegroundEpoch: s.Input.ForegroundEpoch, Source: s.Fresh,
+            CommandGeneration: s.Input.CommandGeneration, CommandSequence: 2));
+        if (completion == "exception")
+            s.FailCapture();
+        else
+            s.CompleteCapture(completion == "empty" ? new(null)
+                : new(s.Fresh, FocusMember.Source, "controlled", s.Input.UserEpoch, s.Input.ForegroundEpoch));
+        Assert.Empty(feedback);
+        Assert.Null(s.Controller.OperationStatus);
+        long newRevision = s.Controller.CommandFeedbackRevision;
+        Assert.True(newRevision > oldRevision);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null));
+        var failure = Assert.Single(feedback);
+        Assert.Equal(newRevision, failure.Revision);
+        Assert.Equal(2, failure.CommandSequence);
+        Assert.Equal("wake-capture-unavailable", failure.Code);
+        Assert.False(s.View.Visible);
+        Assert.Empty(s.Model.Jobs);
+    }
+
+    [Fact]
+    public void NewerDirectRejectionKeepsItsFeedbackWhenTheWakeCaptureReturnsEmpty()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Service.PendingCapture = new();
+        s.Command("wake");
+        s.Tick();
+        long wakeRevision = s.Controller.CommandFeedbackRevision;
+        s.Input.Notices.Enqueue(new("direct", AcceptedAtMs: s.Loop.NowMs,
+            CommandGeneration: s.Input.CommandGeneration, Rejection: Denial.ImeUnclear, CommandSequence: 1));
+        s.CompleteCapture(new(null));
+        var rejection = Assert.Single(feedback);
+        Assert.Equal("shortcut-imeunclear", rejection.Code);
+        Assert.True(rejection.Revision > wakeRevision);
+        Assert.Equal(rejection.Message, s.Controller.OperationStatus);
+        Assert.False(s.View.Visible);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Model.Jobs);
+    }
+
+    [Theory]
+    [InlineData("configure", false)]
+    [InlineData("configure", true)]
+    [InlineData("pause", false)]
+    [InlineData("pause", true)]
+    [InlineData("stop", false)]
+    [InlineData("stop", true)]
+    [InlineData("dispose", false)]
+    [InlineData("dispose", true)]
+    [InlineData("command-generation", false)]
+    public void RetiredWakeDoesNotReportLateCaptureFailure(string invalidation, bool exception)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Service.PendingCapture = new();
+        s.Command("wake");
+        s.Tick();
+        switch (invalidation)
+        {
+            case "configure":
+                s.Settings.Update(s.Settings.Value with
+                {
+                    Target = "zh"
+                });
+                break;
+            case "pause":
+                s.Settings.Update(s.Settings.Value with
+                {
+                    Enabled = false
+                });
+                break;
+            case "stop":
+                s.Controller.StopSession();
+                break;
+            case "dispose":
+                s.Controller.Dispose();
+                break;
+            default:
+                s.Input.ConfigureShortcuts(true, s.Settings.Value.WakeShortcut, s.Settings.Value.DirectShortcut,
+                    s.Input.SessionBindings, true);
+                break;
+        }
+        if (exception)
+            s.FailCapture();
+        else
+            s.CompleteCapture(new(null));
+        Assert.Empty(feedback);
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.False(s.View.Visible);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RepeatedWakePreservesAnExistingCandidateOrDraftWithoutStartingFailureFeedback(bool edited)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand, experimental: true);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Command("wake");
+        s.ReadyCandidate();
+        if (edited)
+        {
+            Assert.True(s.View.BeginEditing!(s.View.Token));
+            s.Input.InEditor = true;
+            s.View.DraftChanged!("keep manual draft");
+            s.View.ReturnRequested!(s.View.Token);
+            s.Tick();
+            Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+        }
+        string expected = edited ? "keep manual draft" : "translated";
+        s.Command("wake");
+        s.Tick();
+        Assert.Equal(expected, s.View.Preview);
+        Assert.NotNull(s.Input.Permit);
+        Assert.Single(s.Model.Jobs);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null));
+        Assert.Empty(feedback);
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.False(s.View.Visible);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+    }
+
+    [Theory]
+    [InlineData("stale")]
+    [InlineData("future")]
+    [InlineData("overlay")]
+    public void UnconfirmedFirstWakeObservationDoesNotRetireCaptureFailureFeedback(string observation)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Service.PendingCapture = new();
+        s.Command("wake");
+        s.Tick();
+        var snapshot = s.Fresh with
+        {
+            ObservedAtMs = observation == "stale" ? s.Loop.NowMs - Limits.ObservationMaxAgeMs - 1
+                : observation == "future" ? s.Loop.NowMs + 1 : s.Loop.NowMs
+        };
+        s.CompleteCapture(new(snapshot, observation == "overlay" ? FocusMember.Overlay : FocusMember.Source,
+            "controlled", s.Input.UserEpoch, s.Input.ForegroundEpoch));
+        Assert.Empty(feedback);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null));
+        Assert.Equal("wake-capture-unavailable", Assert.Single(feedback).Code);
+        Assert.False(s.View.Visible);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LeavingTheWakeTargetRetiresItsCaptureFailureFeedback(bool outsideFamily)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Service.PendingCapture = new();
+        s.Command("wake");
+        s.Tick();
+        if (!outsideFamily)
+        {
+            s.Source = s.Source with
+            {
+                Target = new("controlled", "other", Guid.NewGuid())
+            };
+            s.Input.FocusedTarget = s.Source.Target;
+        }
+        s.CompleteCapture(new(s.Fresh, outsideFamily ? FocusMember.Other : FocusMember.Source,
+            "controlled", s.Input.UserEpoch, s.Input.ForegroundEpoch));
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null));
+        Assert.Empty(feedback);
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.False(s.View.Visible);
+        Assert.Empty(s.Model.Jobs);
+    }
+
+    [Fact]
+    public void LeavingFocusBeforeTheFirstObservationCannotReportAnOldWakeFailure()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Service.PendingCapture = new();
+        s.Command("wake");
+        s.Tick();
+        s.FocusAnotherField();
+        s.CompleteCapture(new(null));
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null));
+        Assert.Empty(feedback);
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.False(s.View.Visible);
+        Assert.Empty(s.Model.Jobs);
+    }
+
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    public void LeavingAndReturningDuringTheFirstReadRetiresTheWakeFailure(bool windowChanged, bool observeWhileAway)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Service.PendingCapture = new();
+        s.Command("wake");
+        s.Tick();
+        s.Input.FocusedTarget = new("controlled", "other", Guid.NewGuid());
+        s.Input.ForegroundEpoch++;
+        if (windowChanged)
+            s.Input.WindowEpoch++;
+        if (observeWhileAway)
+            s.Tick();
+        s.Input.FocusedTarget = s.Source.Target;
+        s.Input.ForegroundEpoch++;
+        if (windowChanged)
+            s.Input.WindowEpoch++;
+        s.CompleteCapture(new(null));
+        Assert.Empty(feedback);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null));
+        Assert.Empty(feedback);
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.False(s.View.Visible);
+        Assert.Empty(s.Model.Jobs);
+    }
+
+    [Theory]
+    [InlineData(ImeState.Clear, "readable", SessionState.Unsupported)]
+    [InlineData(ImeState.Unknown, "readable", SessionState.Invalid)]
+    [InlineData(ImeState.Unknown, "", SessionState.IdleCapsule)]
+    [InlineData(ImeState.Composing, "readable", SessionState.Invalid)]
+    public void AReadSourceCompletesWakeEvenWithoutTranslationOrWriteEligibility(ImeState ime, string text, SessionState state)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand, experimental: true);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Service.PendingCapture = new();
+        s.Command("wake");
+        s.Tick();
+        var observed = s.Fresh with
+        {
+            Ime = ime,
+            Text = ime == ImeState.Clear ? text : "",
+            Selection = null,
+            PreviewText = ime == ImeState.Unknown ? text : null,
+            CommittedPrefix = ime == ImeState.Composing ? text : null
+        };
+        s.CompleteCapture(new(observed, FocusMember.Source,
+            "controlled", s.Input.UserEpoch, s.Input.ForegroundEpoch));
+        Assert.Equal(state, s.View.State);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Model.Jobs);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null));
+        Assert.Empty(feedback);
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.False(s.View.Visible);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
     public void NewLegacyWakePublishesARevisionThatRetiresOlderFailure()
     {
         using var s = new SessionScenario(WorkMode.OnDemand);

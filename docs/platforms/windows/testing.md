@@ -49,7 +49,7 @@ dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release 
 
 `test_native_foreground_guards.py` 另直接编译同一生产 `transaction.c`，仅在独立测试程序中提供系统 API 替身，在 `EM_SETSEL` 返回边界改变焦点、选区或原授权时钟。它要求三个负控均不进入正文替换，并保留不变正控；没有生产测试开关。此算法回归由现有 `pack` Python 测试发现运行，也可单独执行 `python -m unittest discover -s tests/windows -p test_native_foreground_guards.py -v`。缺编译器、编译失败或负控失败都使测试失败；Windows 使用既有 LLVM，Linux 使用本机 C 编译器。
 
-上述 Windows 桌面回归目前仅本地跨编译，Windows 实际运行待验。`EM_SETSEL` 内同步重入导致的期限/焦点变化尚无不修改 stock Edit 的确定性触发证据；系统 API 替身的算法故障注入不等于该 OS 行为已实测。真实同步重入证明仍是完整教程授权启用前的阻塞项。此片不验证完整自动教程、练习授权、物理按键所有权或第三方应用支持。
+[c78f7cf 的 Windows 实际回归](https://github.com/DingJWuyu/Typelay/actions/runs/38592369617)已通过上述 20 项前台正负控、原后台直接写回、16 项受控原生适配器，以及包含算法回归的 15 项打包检查；该算法程序已在 Windows 真正链接并执行。该轮完整作业仍因 Chrome 前置及清理失败保红，不能概括为产品全验通过。`EM_SETSEL` 内同步重入导致的期限/焦点变化尚无不修改 stock Edit 的确定性触发证据；系统 API 替身的算法故障注入不等于该 OS 行为已实测。真实同步重入证明仍是完整教程授权启用前的阻塞项。此片不验证完整自动教程、练习授权、物理按键所有权或第三方应用支持。
 
 ## 暂停入口回归
 

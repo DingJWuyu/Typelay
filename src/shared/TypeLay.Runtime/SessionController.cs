@@ -10,6 +10,10 @@ public sealed class SessionController : IDisposable
     private readonly IInputService _broker;
     private readonly Session _session;
     private readonly TranslationActivation _activation;
+    // Only identifies an explicit wake awaiting its first source observation; no text or permission.
+    private sealed record PendingWakeCapture(TargetId Target, long Generation, long FeedbackRevision,
+        Guid CommandGeneration, long CommandSequence);
+    private PendingWakeCapture? _pendingWakeCapture;
     private DirectTranslation? _pendingDirect;
     private bool _directRunning, _directWriteSubmitted;
     private long _lastCommandSequence, _commandSequence, _commandFeedbackRevision, _pendingDirectFeedbackRevision, _pendingDirectSequence;
@@ -105,6 +109,7 @@ public sealed class SessionController : IDisposable
     }
     private void Configure()
     {
+        _pendingWakeCapture = null;
         InvalidatePauseAnchor();
         _sessionShortcuts = null;
         _nextCapture = 0;
@@ -228,6 +233,8 @@ public sealed class SessionController : IDisposable
         }
         if (!_broker.Available && !_startingBroker && now >= _retryBrokerAt)
             _ = StartBroker();
+        if (_pendingWakeCapture is { } wake && _hook.GetFocus(wake.Target) == FocusMember.Other)
+            _pendingWakeCapture = null;
         if (_session.Current is { } current)
         {
             if (_hook.GetFocus(current.Target) == FocusMember.Other)
@@ -441,15 +448,24 @@ public sealed class SessionController : IDisposable
                 DrainInputNotices();
             if (_disposed || generation != _generation)
                 return;
+            if (_pendingWakeCapture is { } pending && _hook.GetFocus(pending.Target) == FocusMember.Other)
+                _pendingWakeCapture = null;
             if (windowEpoch != _hook.WindowEpoch)
             {
+                _pendingWakeCapture = null;
                 Trace("capture-window-changed");
                 return;
             }
             long now = _loop.NowMs;
             if (result.Snapshot is not { } snapshot || result.Focus == FocusMember.Other)
             {
+                var pendingWake = _pendingWakeCapture;
                 StopSession("capture-empty");
+                if (result.Snapshot is null && pendingWake is not null && pendingWake.Generation == generation
+                    && pendingWake.FeedbackRevision == _commandFeedbackRevision
+                    && pendingWake.CommandGeneration == _hook.CommandGeneration)
+                    SetServiceStatus("暂时无法读取当前输入框，请保持焦点后再试一次。", "wake-capture-unavailable",
+                        pendingWake.CommandGeneration, pendingWake.CommandSequence);
                 return;
             }
             if (_hook.GetFocus(snapshot.Target) == FocusMember.Other)
@@ -473,6 +489,7 @@ public sealed class SessionController : IDisposable
             bool active = _activation.Observe(snapshot.Target, result.Focus);
             if (!active)
             {
+                _pendingWakeCapture = null;
                 if (_session.Current is not null)
                 {
                     _generation++;
@@ -494,6 +511,11 @@ public sealed class SessionController : IDisposable
                 _permitUntil = 0;
             }
             _session.Observe(snapshot, result.Focus, now);
+            // Reading the source completes wake even when translation or writing remains unavailable.
+            if (_pendingWakeCapture is { } wake && wake.Generation == generation
+                && wake.CommandGeneration == _hook.CommandGeneration && wake.Target == snapshot.Target
+                && result.Focus == FocusMember.Source && _hook.GetFocus(snapshot.Target) == FocusMember.Source)
+                _pendingWakeCapture = null;
             AcceptancePermit? permit = null;
             // A keystroke arriving during a remote read must revoke acceptance, but
             // must not starve preview capture while the user continues typing.
@@ -581,9 +603,14 @@ public sealed class SessionController : IDisposable
             Changed?.Invoke();
             // Explicit wake can reopen an Esc-suppressed field; repeated wake must
             // not erase a live candidate or a user's translation draft.
+            bool awaitingCapture = _pendingWakeCapture?.Generation == _generation
+                || _session.Current?.Target != source.Target || _session.State == SessionState.NoSession;
             if (_session.State == SessionState.NoSession)
                 _session.LeaveFamily();
             _generation++;
+            _pendingWakeCapture = awaitingCapture
+                ? new(source.Target, _generation, _commandFeedbackRevision, notice.CommandGeneration, notice.CommandSequence)
+                : null;
             _nextCapture = 0;
             Record("awakened", true, true, true);
         }
@@ -882,6 +909,7 @@ public sealed class SessionController : IDisposable
         if (_session.Current is not null)
             Trace(reason);
         _activation.End();
+        _pendingWakeCapture = null;
         _sessionShortcuts = null;
         InvalidatePauseAnchor();
         ClearBrokerSnapshot();
@@ -964,6 +992,7 @@ public sealed class SessionController : IDisposable
     public void Dispose()
     {
         _disposed = true;
+        _pendingWakeCapture = null;
         InvalidatePauseAnchor();
         _overlay.HideQuietly();
         _loop.Stop();
