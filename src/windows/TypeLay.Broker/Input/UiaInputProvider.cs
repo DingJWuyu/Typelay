@@ -339,10 +339,17 @@ internal sealed class UiaInputProvider : IDisposable
                     return new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged);
                 var ariaProperty = AutomationProperty.LookupById(30102);
                 string aria = ariaProperty is null ? "" : element.GetCachedPropertyValue(ariaProperty, true) as string ?? "";
+                // The system multiline Edit exposes TextPattern without ValuePattern.
+                // Recheck the original element's explicit readonly attribute; missing or
+                // mixed evidence still rejects. Native qualification is repeated atomically
+                // at mutation, so a text pattern alone never authorizes a generic UIA write.
+                bool readOnly = element.TryGetCurrentPattern(ValuePattern.Pattern, out object pattern)
+                    ? ((ValuePattern)pattern).Current.IsReadOnly
+                    : !element.TryGetCurrentPattern(TextPattern.Pattern, out object textPattern)
+                        || ((TextPattern)textPattern).DocumentRange.GetAttributeValue(TextPattern.IsReadOnlyAttribute) is not false;
                 var metadata = new FieldMetadata(process.ProcessName.ToLowerInvariant(), info.Name ?? "",
                     info.AutomationId ?? "", info.HelpText ?? "", aria, info.IsPassword, info.IsEnabled,
-                    !element.TryGetCurrentPattern(ValuePattern.Pattern, out object pattern) || ((ValuePattern)pattern).Current.IsReadOnly,
-                    info.IsOffscreen, false, basis.Multiline, true, true);
+                    readOnly, info.IsOffscreen, false, basis.Multiline, true, true);
                 if (!FieldPolicy.Allows(metadata, request.Excluded ?? []))
                     return new(WriteStatus.RejectedBeforeMutation, Denial.Sensitive);
             }

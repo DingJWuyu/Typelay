@@ -393,14 +393,9 @@ class FirefoxNativeContract(unittest.TestCase):
             self.assertNotEqual(fresh_hello["data"]["lifetime"], old_lifetime)
             fresh_description = native.focused_description(fresh_connection)
             self.assertNotEqual(fresh_description["target"], current["target"])
-            fresh_snapshot = native.request(
-                fresh_connection,
-                "capture",
-                {
-                    "target": fresh_description["target"],
-                    "authority": fresh_description["authority"],
-                },
-            )
+            # A new native handshake does not make its first description a
+            # durable observation. Use the same bounded fresh-read path as above.
+            fresh_snapshot = self.capture(native, fresh_connection, fresh_description, web)
             self.assertIsNotNone(fresh_snapshot)
             self.assertEqual(fresh_snapshot["text"], "Fresh document")
             self.assertIsNone(

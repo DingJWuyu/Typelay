@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Windows.Automation;
 using TypeLay.Core;
 using TypeLay.Protocol;
 using TypeLay.Platform.Windows;
@@ -22,8 +23,10 @@ public sealed class DesktopCollection : ICollectionFixture<WpfDesktopFixture>
 [Collection("Desktop")]
 public sealed class ProductionDirectWriteTests
 {
-    [Fact]
-    public async Task DirectReplacementStaysBoundToTheOriginalFieldAfterFocusChanges()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DirectReplacementStaysBoundToTheOriginalFieldAfterFocusChanges(bool multiline)
     {
         string root = Repository();
         using var fixture = Start("dotnet", Path.Combine(root,
@@ -39,8 +42,8 @@ public sealed class ProductionDirectWriteTests
             string? line = await fixture.StandardOutput.ReadLineAsync(deadline.Token);
             var host = JsonSerializer.Deserialize<FixtureDescriptor>(line ?? "null")!;
             Assert.NotNull(host);
-            nint a = (nint)host.Fields.Single(value => value.Name == "a").Hwnd;
-            nint b = (nint)host.Fields.Single(value => value.Name == "b").Hwnd;
+            nint a = (nint)host.Fields.Single(value => value.Name == (multiline ? "b" : "a")).Hwnd;
+            nint b = (nint)host.Fields.Single(value => value.Name == (multiline ? "a" : "b")).Hwnd;
             async Task<BrokerResponse> Call(BrokerRequest request)
             {
                 await Wire.WriteAsync(broker.StandardInput.BaseStream, request with
@@ -71,6 +74,7 @@ public sealed class ProductionDirectWriteTests
                 Assert.True(reply.Snapshot.DirectWriteSupported,
                     "The production source must advertise a coordinated writer before direct translation is allowed.");
                 Assert.Equal(ImeState.Clear, reply.Snapshot.Ime);
+                Assert.Equal(multiline, reply.Snapshot.Multiline);
                 Assert.Equal(text, reply.Snapshot.Text);
                 Assert.Equal(selection, reply.Snapshot.Selection);
                 return reply.Snapshot;
@@ -90,6 +94,15 @@ public sealed class ProductionDirectWriteTests
             await Call(new(BrokerProtocol.Version, 0, "hello", ""));
             N.SendString(b, N.WM_SETTEXT, "B must remain unchanged");
             var source = await Capture("A🙂你好Z", new(3, 5));
+            // The system's multiline Edit exposes TextPattern without ValuePattern.
+            // Its absence must not be mistaken for readonly during bound writeback.
+            if (multiline)
+            {
+                var element = AutomationElement.FromHandle(a);
+                Assert.False(element.TryGetCurrentPattern(ValuePattern.Pattern, out _));
+                Assert.True(element.TryGetCurrentPattern(TextPattern.Pattern, out var textPattern));
+                Assert.False(Assert.IsType<bool>(((TextPattern)textPattern).DocumentRange.GetAttributeValue(TextPattern.IsReadOnlyAttribute)));
+            }
             var plan = Plan(source, "Hello");
             await Focus(b);
             Assert.Equal(WriteStatus.Verified, (await Write(plan)).Status);
@@ -113,6 +126,33 @@ public sealed class ProductionDirectWriteTests
             Assert.Equal(WriteStatus.Verified, (await Write(plan)).Status);
             Assert.Equal("Hello", N.ReadText(a, Limits.MaxTextUnits));
             Assert.Equal(0, (long)N.Send((nint)host.RootHwnd, N.FixtureSubmitCount));
+            // Capture permission is not permanent: a later readonly/password
+            // change must reject the old plan without touching either input.
+            source = await Capture("你好", new(2, 2));
+            plan = Plan(source, "Hello");
+            await Focus(b);
+            N.Send(a, 0x00cf, 1); // EM_SETREADONLY.
+            var readonlyReceipt = await Write(plan);
+            Assert.Equal(WriteStatus.RejectedBeforeMutation, readonlyReceipt.Status);
+            Assert.Equal(Denial.Sensitive, readonlyReceipt.Reason);
+            Assert.Equal("你好", N.ReadText(a, Limits.MaxTextUnits));
+            Assert.Equal(((nint)host.RootHwnd, b), N.Focused());
+            N.Send(a, 0x00cf, 0);
+            // Password characters are supported only by the single-line system Edit.
+            if (!multiline)
+            {
+                source = await Capture("你好", new(2, 2));
+                plan = Plan(source, "Hello");
+                await Focus(b);
+                N.Send(a, 0x00cc, '*'); // EM_SETPASSWORDCHAR, synthetic source only.
+                Assert.Equal((nuint)'*', N.Send(a, 0x00d2));
+                var passwordReceipt = await Write(plan);
+                Assert.Equal(WriteStatus.RejectedBeforeMutation, passwordReceipt.Status);
+                Assert.Equal(Denial.Sensitive, passwordReceipt.Reason);
+                Assert.Equal("你好", N.ReadText(a, Limits.MaxTextUnits));
+                Assert.Equal(((nint)host.RootHwnd, b), N.Focused());
+                N.Send(a, 0x00cc, 0);
+            }
             // Losing the cookie must invalidate old jobs, even at the same HWND.
             source = await Capture("你好", new(2, 2));
             plan = Plan(source, "Hello");

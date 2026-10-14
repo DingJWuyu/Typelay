@@ -2115,11 +2115,28 @@ def run(arguments):
                     key("ctrl+shift+F9")
                     wait_for(ready_to_accept, "practice F9 did not produce the real model preview")
                     assert text(source) == original, "practice preview changed the source"
+                    candidate = wait_for(
+                        lambda: named(managed_window["pid"], "TypeLay 译文候选"),
+                        "practice model preview was not accessible",
+                    )
+                    expected_translation = text(candidate)
+                    assert translated(expected_translation)
+                    direct_replaced = "已直接替换原输入框文字。"
+                    assert status().get("operationStatus") != direct_replaced
+                    before_direct = status().get("commandFeedbackRevision", 0)
                     checkpoint = trace_checkpoint()
                     key("ctrl+shift+F10")
+                    # Direct replacement has its own terminal feedback, not the
+                    # Tab acceptance write outcome recorded by verified_write.
                     wait_for(
-                        lambda: translated(text(source)) and verified_write(checkpoint),
+                        lambda: (value := status()).get("operationStatus") == direct_replaced
+                        and value.get("commandFeedbackRevision", 0) > before_direct
+                        and text(source) == expected_translation
+                        and focused(source),
                         "practice F10 did not replace through the production model/input path",
+                    )
+                    assert not new_write_outcomes(checkpoint), (
+                        "practice F10 used the Tab write path"
                     )
                     practice_text = text(source)
                     key("ctrl+a")
