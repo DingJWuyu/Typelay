@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -145,6 +147,112 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
                 Assert.Equal(1u, count);
             }
         });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ShortcutDiagnosticsPreserveNoLeaseRejectionAndIdentifyLeaseRemoval(bool tracing)
+    {
+        string path = Path.Combine(Path.GetTempPath(), "typelay-hook-trace-" + Guid.NewGuid().ToString("N") + ".jsonl");
+        string? previous = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
+        Environment.SetEnvironmentVariable("TYPELAY_TRACE", tracing ? path : null);
+        try
+        {
+            await desktop.RunAsync(async () =>
+            {
+                var input = new TextBox { Text = "private-hook-source-marker" };
+                var source = new Window { Content = input, Width = 420, Height = 160, Title = "TypeLay hook diagnostic test" };
+                source.Show();
+                source.Activate();
+                input.Focus();
+                nint hwnd = new WindowInteropHelper(source).Handle;
+                using var hook = new KeyboardHook(allowInjectedInput: true);
+                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+                deadline.CancelAfter(TimeSpan.FromSeconds(10));
+                bool pressed = false;
+                int presses = 0, releases = 0;
+                input.PreviewKeyDown += (_, args) => { if (args.Key == Key.F9) presses++; };
+                input.PreviewKeyUp += (_, args) => { if (args.Key == Key.F9) releases++; };
+                try
+                {
+                    await Until(() => hook.ShortcutsReady && Native.GetForegroundWindow() == hwnd && input.IsKeyboardFocused, deadline.Token);
+                    Assert.False(Native.GetAsyncKeyState(0x78) < 0, "The fixture must not borrow an already held F9.");
+                    // Controlled binding isolates Hook dispatch, not OS reservation or IME.
+                    hook.SetShortcuts([new("wake", 0x78, ShortcutModifiers.None)]);
+                    Guid generation = hook.CommandGeneration;
+                    var rejected = await Press();
+                    Assert.Equal(Denial.StaleObservation, rejected.Rejection);
+                    Assert.Null(rejected.Source);
+                    Assert.Equal(generation, rejected.CommandGeneration);
+                    Assert.Equal(1, rejected.CommandSequence);
+
+                    using var process = Process.GetCurrentProcess();
+                    var snapshot = new InputSnapshot(new WindowsTarget(process.Id, process.StartTime.ToUniversalTime().Ticks,
+                        (long)hwnd, (long)hwnd, "controlled-hook", "private-target-marker", Guid.NewGuid()),
+                        input.Text, new(input.Text.Length, input.Text.Length), new(10, 20, 300, 40), false,
+                        FieldAccess.Supported, ImeState.Clear, WindowsInterruptClock.NowMs, 1, 1);
+                    hook.PublishShortcut(new(snapshot, hook.ContentEpoch, hook.ForegroundEpoch));
+                    hook.Revoke();
+                    var revoked = await Press();
+                    Assert.Equal(Denial.StaleObservation, revoked.Rejection);
+                    Assert.Null(revoked.Source);
+                    Assert.Equal(2, revoked.CommandSequence);
+                    hook.PublishShortcut(new(snapshot, hook.ContentEpoch, hook.ForegroundEpoch));
+                    hook.SetShortcuts([new("wake", 0x78, ShortcutModifiers.None)]);
+                    Guid nextGeneration = hook.CommandGeneration;
+                    var reconfigured = await Press();
+                    Assert.NotEqual(generation, nextGeneration);
+                    Assert.Equal(nextGeneration, reconfigured.CommandGeneration);
+                    Assert.Equal(Denial.StaleObservation, reconfigured.Rejection);
+                    Assert.Null(reconfigured.Source);
+                    Assert.Equal(3, reconfigured.CommandSequence);
+                    Assert.Equal("private-hook-source-marker", input.Text);
+
+                    Assert.Equal(tracing, File.Exists(path));
+                    if (!tracing)
+                        return;
+                    string trace = File.ReadAllText(path);
+                    Assert.DoesNotContain("private-", trace);
+                    var entries = File.ReadAllLines(path).Select(line => JsonSerializer.Deserialize<JsonElement>(line)).ToArray();
+                    var first = Assert.Single(entries, item => item.GetProperty("operation").GetString() == "shortcut-key"
+                        && item.GetProperty("commandSequence").GetInt64() == 1);
+                    Assert.Equal("no-lease", first.GetProperty("reason").GetString());
+                    Assert.Equal(generation, first.GetProperty("commandGeneration").GetGuid());
+                    var revoke = Assert.Single(entries, item => item.GetProperty("operation").GetString() == "shortcut-revoke");
+                    Assert.Equal(generation, revoke.GetProperty("leaseCommandGeneration").GetGuid());
+                    Assert.Equal(snapshot.ObservedAtMs, revoke.GetProperty("leaseObservedAtMs").GetInt64());
+                    var configure = Assert.Single(entries, item => item.GetProperty("operation").GetString() == "shortcut-configure"
+                        && item.GetProperty("commandGeneration").GetGuid() == nextGeneration);
+                    Assert.Equal(generation, configure.GetProperty("leaseCommandGeneration").GetGuid());
+                }
+                finally
+                {
+                    if (pressed)
+                        Assert.Equal(1u, SendInput(1, [new KeyboardInput { Type = 1, Key = 0x78, Flags = 2 }], Marshal.SizeOf<KeyboardInput>()));
+                }
+
+                async Task<InputNotice> Press()
+                {
+                    int pressedBefore = presses, releasedBefore = releases;
+                    Assert.Equal(1u, SendInput(1, [new KeyboardInput { Type = 1, Key = 0x78 }], Marshal.SizeOf<KeyboardInput>()));
+                    pressed = true;
+                    Assert.Equal(1u, SendInput(1, [new KeyboardInput { Type = 1, Key = 0x78, Flags = 2 }], Marshal.SizeOf<KeyboardInput>()));
+                    pressed = false;
+                    InputNotice? notice = null;
+                    await Until(() => (notice is not null || hook.TryRead(out notice)) && releases > releasedBefore, deadline.Token);
+                    Assert.Equal("wake", notice!.Kind);
+                    Assert.Equal(pressedBefore + 1, presses);
+                    Assert.Equal(releasedBefore + 1, releases);
+                    return notice;
+                }
+            });
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TYPELAY_TRACE", previous);
+            File.Delete(path);
+        }
     }
 
     private static async Task Until(Func<bool> ready, CancellationToken cancellation)

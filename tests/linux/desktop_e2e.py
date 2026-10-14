@@ -2208,43 +2208,74 @@ def run(arguments):
                     node.get_component_iface(), Atspi.CoordType.SCREEN
                 )
                 assert Atspi.Component.grab_focus(node.get_component_iface())
+                last_scroll_check = {}
 
                 def control_in_view():
+                    nonlocal last_scroll_check
                     node.clear_cache()
-                    assert node.get_process_id() == process.pid and node.get_name() == name
+                    last_scroll_check = {
+                        "targetMatches": node.get_process_id() == process.pid
+                        and node.get_name() == name,
+                        "clipping": [],
+                    }
+                    assert last_scroll_check["targetMatches"]
                     states = node.get_state_set()
-                    if not all(
-                        states.contains(state)
-                        for state in (Atspi.StateType.SHOWING, Atspi.StateType.FOCUSED)
-                    ):
+                    last_scroll_check["showing"] = states.contains(Atspi.StateType.SHOWING)
+                    last_scroll_check["focused"] = states.contains(Atspi.StateType.FOCUSED)
+                    if not (last_scroll_check["showing"] and last_scroll_check["focused"]):
                         return None
                     area = Atspi.Component.get_extents(
                         node.get_component_iface(), Atspi.CoordType.SCREEN
                     )
+                    last_scroll_check["controlSize"] = [area.width, area.height]
                     if area.width <= 0 or area.height <= 0:
                         return None
                     clips = []
                     ancestor = node.get_parent()
                     for _ in range(16):
-                        assert ancestor is not None and ancestor.get_process_id() == process.pid
+                        last_scroll_check["ancestorMatches"] = (
+                            ancestor is not None and ancestor.get_process_id() == process.pid
+                        )
+                        assert last_scroll_check["ancestorMatches"]
                         ancestor.clear_cache()
                         role = ancestor.get_role()
                         if role in (Atspi.Role.SCROLL_PANE, Atspi.Role.VIEWPORT, Atspi.Role.FRAME):
                             clip = Atspi.Component.get_extents(
                                 ancestor.get_component_iface(), Atspi.CoordType.SCREEN
                             )
-                            if not (
+                            contains_control = (
                                 clip.x <= area.x
                                 and clip.y <= area.y
                                 and area.x + area.width <= clip.x + clip.width
                                 and area.y + area.height <= clip.y + clip.height
-                            ):
+                            )
+                            last_scroll_check["clipping"].append(
+                                {
+                                    "role": {
+                                        Atspi.Role.SCROLL_PANE: "scroll-pane",
+                                        Atspi.Role.VIEWPORT: "viewport",
+                                        Atspi.Role.FRAME: "frame",
+                                    }[role],
+                                    "relativeToControl": [
+                                        clip.x - area.x,
+                                        clip.y - area.y,
+                                        clip.width,
+                                        clip.height,
+                                    ],
+                                    "containsControl": contains_control,
+                                }
+                            )
+                            if not contains_control:
                                 return None
                             if role == Atspi.Role.FRAME:
-                                assert clips, (
+                                last_scroll_check["hasViewport"] = bool(clips)
+                                assert last_scroll_check["hasViewport"], (
                                     "scrolled settings control did not expose a scrolling viewport"
                                 )
-                                assert ancestor.get_name() == "TypeLay 设置"
+                                last_scroll_check["frameMatches"] = (
+                                    ancestor.get_name() == "TypeLay 设置"
+                                )
+                                assert last_scroll_check["frameMatches"]
                                 return {
                                     "beforeScrollInFrame": [
                                         before_scroll.x - clip.x,
@@ -2269,12 +2300,23 @@ def run(arguments):
                         "scrolled settings control exceeds its bounded GTK ancestry"
                     )
 
-                scroll_layout = wait_for(
-                    control_in_view,
-                    "scrolled settings control did not scroll fully into view after native focus: "
-                    + name,
-                    timeout=deadline - time.monotonic(),
-                )
+                try:
+                    scroll_layout = wait_for(
+                        control_in_view,
+                        "scrolled settings control did not scroll fully into view after native focus: "
+                        + name,
+                        timeout=deadline - time.monotonic(),
+                    )
+                except Exception:
+                    # Only cache the existing gate's fixed metadata. Writing it
+                    # happens after failure and must not replace the original error.
+                    try:
+                        (arguments.output / "settings-scroll-failure.json").write_text(
+                            json.dumps(last_scroll_check, indent=2)
+                        )
+                    except Exception:
+                        pass
+                    raise
                 if evidence_name:
                     (arguments.output / (evidence_name + ".json")).write_text(
                         json.dumps(scroll_layout, indent=2)

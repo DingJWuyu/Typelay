@@ -22,7 +22,7 @@ internal sealed class KeyboardHook : IInputMonitor
     private readonly Native.WinEventProc _focusCallback;
     // Decode at the publication boundary, never allocate or parse an identity inside a hook callback.
     private sealed record HookLease(InputLease Observation, nint RootHwnd);
-    private sealed record HotkeyLease(ShortcutLease Observation, nint RootHwnd);
+    private sealed record HotkeyLease(ShortcutLease Observation, nint RootHwnd, Guid DiagnosticGeneration);
     private HookLease? _lease;
     private HotkeyLease? _shortcutLease;
     private ShortcutConfiguration _shortcuts = new(Guid.NewGuid(), []);
@@ -117,22 +117,27 @@ internal sealed class KeyboardHook : IInputMonitor
     public void PublishShortcut(ShortcutLease lease)
     {
         bool decoded = WindowsTarget.TryDecode(lease.Source.Target, out var target);
-        Interlocked.Exchange(ref _shortcutLease, decoded ? new(lease, (nint)target.RootHwnd) : null);
-        QueueShortcutTrace("publish", decoded ? "published" : "target-decode", lease);
+        Guid generation = CommandGeneration;
+        Interlocked.Exchange(ref _shortcutLease, decoded ? new(lease, (nint)target.RootHwnd, generation) : null);
+        QueueShortcutTrace("publish", decoded ? "published" : "target-decode", lease,
+            commandGeneration: generation, leaseCommandGeneration: generation);
     }
     public void SetShortcuts(RegisteredShortcut[] shortcuts)
     {
-        Interlocked.Exchange(ref _shortcuts, new(Guid.NewGuid(), shortcuts));
-        Interlocked.Exchange(ref _shortcutLease, null);
-        QueueShortcutTrace("configure", "configured", wakeRegistered: shortcuts.Any(binding => binding.Action == "wake"),
-            directRegistered: shortcuts.Any(binding => binding.Action == "direct"));
+        var configuration = new ShortcutConfiguration(Guid.NewGuid(), shortcuts);
+        Interlocked.Exchange(ref _shortcuts, configuration);
+        var old = Interlocked.Exchange(ref _shortcutLease, null);
+        QueueShortcutTrace("configure", "configured", old?.Observation,
+            wakeRegistered: shortcuts.Any(binding => binding.Action == "wake"),
+            directRegistered: shortcuts.Any(binding => binding.Action == "direct"),
+            commandGeneration: configuration.Generation, leaseCommandGeneration: old?.DiagnosticGeneration);
     }
     public void Revoke()
     {
         _gate.Revoke();
         Interlocked.Exchange(ref _lease, null);
         if (Interlocked.Exchange(ref _shortcutLease, null) is { } old)
-            QueueShortcutTrace("revoke", "revoked", old.Observation);
+            QueueShortcutTrace("revoke", "revoked", old.Observation, leaseCommandGeneration: old.DiagnosticGeneration);
     }
     public bool TryRead(out InputNotice? notice)
     {
@@ -141,7 +146,8 @@ internal sealed class KeyboardHook : IInputMonitor
     }
     private void QueueShortcutTrace(string operation, string reason, ShortcutLease? lease = null, string? action = null,
         bool? wakeRegistered = null, bool? directRegistered = null, long? contentEpoch = null, long? foregroundEpoch = null,
-        long? evaluatedAtMs = null)
+        long? evaluatedAtMs = null, Guid? commandGeneration = null, long? commandSequence = null,
+        Guid? leaseCommandGeneration = null)
     {
         if (string.IsNullOrWhiteSpace(_tracePath))
             return;
@@ -160,6 +166,10 @@ internal sealed class KeyboardHook : IInputMonitor
             operation = "shortcut-" + operation,
             reason,
             action,
+            commandGeneration = commandGeneration ?? CommandGeneration,
+            commandSequence,
+            leaseCommandGeneration,
+            leaseObservedAtMs = lease?.Source.ObservedAtMs,
             ageMs = lease is null ? (long?)null : now - lease.Source.ObservedAtMs,
             leaseContentEpoch = lease?.ContentEpoch,
             contentEpoch = contentEpoch ?? ContentEpoch,
@@ -179,7 +189,8 @@ internal sealed class KeyboardHook : IInputMonitor
         // Observe only a configured shortcut's main key, never arbitrary typing.
         bool configuredKey = false;
         string? action = null;
-        foreach (var binding in Volatile.Read(ref _shortcuts).Bindings)
+        var configuration = Volatile.Read(ref _shortcuts);
+        foreach (var binding in configuration.Bindings)
             if (binding.Key == key)
             {
                 configuredKey = true;
@@ -191,7 +202,8 @@ internal sealed class KeyboardHook : IInputMonitor
             }
         if (configuredKey)
             QueueShortcutTrace("key", reason, lease, action, contentEpoch: contentEpoch,
-                foregroundEpoch: foregroundEpoch, evaluatedAtMs: evaluatedAtMs);
+                foregroundEpoch: foregroundEpoch, evaluatedAtMs: evaluatedAtMs,
+                commandGeneration: configuration.Generation);
     }
     private void FlushShortcutTrace()
     {
@@ -360,7 +372,9 @@ internal sealed class KeyboardHook : IInputMonitor
             _notices.Enqueue(new(command.Action, AcceptedAtMs: now,
                 CommandGeneration: configuration.Generation, Rejection: reason, CommandSequence: sequence));
             QueueShortcutTrace("key", traceReason, lease, command.Action,
-                contentEpoch: contentEpoch, foregroundEpoch: foregroundEpoch, evaluatedAtMs: now);
+                contentEpoch: contentEpoch, foregroundEpoch: foregroundEpoch, evaluatedAtMs: now,
+                commandGeneration: configuration.Generation, commandSequence: sequence,
+                leaseCommandGeneration: nativeLease?.DiagnosticGeneration);
         }
         if (!ShortcutsReady)
         {
@@ -407,7 +421,9 @@ internal sealed class KeyboardHook : IInputMonitor
         _notices.Enqueue(new(command.Action, AcceptedAtMs: now, ForegroundEpoch: foregroundEpoch, Source: lease.Source,
             CommandGeneration: configuration.Generation, CommandSequence: sequence));
         QueueShortcutTrace("key", "notice-enqueued", lease, command.Action,
-            contentEpoch: contentEpoch, foregroundEpoch: foregroundEpoch, evaluatedAtMs: now);
+            contentEpoch: contentEpoch, foregroundEpoch: foregroundEpoch, evaluatedAtMs: now,
+            commandGeneration: configuration.Generation, commandSequence: sequence,
+            leaseCommandGeneration: nativeLease?.DiagnosticGeneration);
     }
     private nint OnMouse(int code, nint wParam, nint lParam)
     {

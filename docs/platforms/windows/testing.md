@@ -131,6 +131,16 @@ dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows
 
 整个模式有 20 分钟取消期限，执行者仍须设置外部进程/步骤上限处理不可取消的系统调用。成功返回 0，前置参数错误返回 2，其余失败返回 1；失败不重试或延长安全观察期限。结果、`trace*.jsonl` 和安装 CPU 自检可进入对应 CI artifact，模型、下载缓存、原始输入及译文不上传。`TYPELAY_TRACE` 开启时，浮层最多记录 32 条耗时至少 50ms 的同步渲染阶段样本到 `.overlay.jsonl`，默认关闭。
 
+### 按需快捷键诊断
+
+`TYPELAY_TRACE` 的既有 `shortcut-key`、`shortcut-publish`、`shortcut-revoke`、`shortcut-configure` 只记录固定操作名、状态、时钟与代次。显式命令由 `commandGeneration` + 正数 `commandSequence` 关联 Hook 的拒绝/入队及 Runtime 的 `shortcut-rejected` / `wake-*`；没有另造 CommandId，Broker 的请求 `Id` 也不是这个命令序号。重复键、修饰键等尚未形成命令的诊断，其序号为空。
+
+`leaseCommandGeneration` 是 Hook 发布时采样的配置代次，`leaseObservedAtMs` 与 lease epochs 来自原观察。它们只用于辨认发布、实际撤销或 configure 清除的租约，不增加授权检查或延长时效。Runtime 的 `input-revoked` 记录原撤销调用的固定原因；`lastCommand*` 只是最近处理命令的上下文，不代表该命令导致撤销，`focus=null` 表示没有为日志额外查询焦点。连续相同 Runtime 状态仍去重，正常 capture 不增加新事件；Hook 仍只排入原有 64 条有界队列，溢出由 `shortcut-trace-overflow` 明示。
+
+`capture-window-changed` 对照 capture 起点与返回时的 window/content/foreground epochs、配置及会话代次，并报告 `hasSnapshot` / `resultFocus`。Broker 的 `observed-native` 或练习目标绑定先发生，并不能证明 Runtime 接纳了返回值或 Hook 已发布租约。Hook 队列稍后才写盘，文件顺序不是跨组件全局顺序；这些字段也没有建立一一对应的 Broker 请求因果。缺字段的旧 trace 保持可读，未知诊断字段不参与产品控制。
+
+`SessionDiagnosticsTests` 在确定性公开宿主端口覆盖命令关联、旧代次/过期拒绝、窗口改变不发布租约、正文与目标隐私、TRACE 开关、不可写日志及无新增焦点探测。`SessionShortcutHookTests.ShortcutDiagnosticsPreserveNoLeaseRejectionAndIdentifyLeaseRemoval` 在真实 Hook 上对照 TRACE 开/关、无租约、显式撤销与配置清除；此增量尚待 Windows 实际运行，跨编译不计为桌面通过。它不重新按键重试生产失败、不运行模型、不证明物理输入法或原 F9 故障已修复。
+
 生产 App 的 `--automation-test` 参数仅对该进程允许注入 Tab/Esc，界面明确标示，不写入设置。仅在退出已有客户端、设置好发行根 TYPELAY_HOME 后直接启动发行目录的 `app/TypeLay.App.exe --automation-test`；测试完成退出该进程，再用 TypeLay.exe 恢复普通模式。注入模式仍须遵守全部写回、焦点、IME 和期限检查，不能作为物理键盘验收。
 
 ## 真实产品验收

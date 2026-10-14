@@ -228,7 +228,7 @@ public sealed class SessionController : IDisposable
             _settings.Value.WakeShortcut, _settings.Value.DirectShortcut, CurrentSessionBindings, _settings.Value.Enabled);
         ClearBrokerSnapshot();
         _generation++;
-        _hook.Revoke();
+        RevokeInput("configure");
         _permitUntil = 0;
         _session.SetPaused(!_settings.Value.Enabled);
         _session.SetDirection(_settings.Value.Direction, _loop.NowMs);
@@ -304,7 +304,9 @@ public sealed class SessionController : IDisposable
         Trace("shortcut-rejected", detail: new
         {
             action = kind,
-            reason = reason.ToString()
+            reason = reason.ToString(),
+            commandGeneration = _lastCommandGeneration,
+            commandSequence = _commandSequence
         });
     }
     private void Tick()
@@ -334,14 +336,14 @@ public sealed class SessionController : IDisposable
         }
         if (!_hook.Ready || !_broker.Available)
         {
-            _hook.Revoke();
+            RevokeInput("input-unavailable");
             InvalidatePauseAnchor();
             _overlay.HideQuietly();
             return;
         }
         if (!_settings.Value.Enabled)
         {
-            _hook.Revoke();
+            RevokeInput("paused");
             _permitUntil = 0;
             if (_pauseAnchor is not null && !PauseAnchorIsCurrent(now))
             {
@@ -359,7 +361,7 @@ public sealed class SessionController : IDisposable
         // before that operation completes must not discard the saved editor draft.
         if (_returningToSource)
         {
-            _hook.Revoke();
+            RevokeInput("returning-to-source");
             _permitUntil = 0;
             return;
         }
@@ -368,14 +370,14 @@ public sealed class SessionController : IDisposable
         // Revalidate the source on return instead of polling an unfocused TextPattern.
         if (_session.State == SessionState.EditingTranslation && _session.Current is { } editingSource && _hook.GetFocus(editingSource.Target) == FocusMember.Overlay)
         {
-            _hook.Revoke();
+            RevokeInput("editing-translation");
             _permitUntil = 0;
             return;
         }
         // UI independently expires observations while a broker call is blocked.
         if (!_writing && _session.Current is { } old && now - old.ObservedAtMs > Limits.ObservationMaxAgeMs)
         {
-            _hook.Revoke();
+            RevokeInput("observation-expired");
             if (_permitUntil != 0)
             {
                 _permitUntil = 0;
@@ -545,7 +547,20 @@ public sealed class SessionController : IDisposable
             if (windowEpoch != _hook.WindowEpoch)
             {
                 _pendingWakeCapture = null;
-                Trace("capture-window-changed");
+                Trace("capture-window-changed", detail: new
+                {
+                    captureGeneration = generation,
+                    currentGeneration = _generation,
+                    captureCommandGeneration = request.SessionShortcuts?.Generation,
+                    commandGeneration = _hook.CommandGeneration,
+                    captureWindowEpoch = windowEpoch,
+                    captureContentEpoch = contentEpoch,
+                    contentEpoch = _hook.ContentEpoch,
+                    captureForegroundEpoch = request.ForegroundEpoch,
+                    resultForegroundEpoch = result.ForegroundEpoch,
+                    hasSnapshot = result.Snapshot is not null,
+                    resultFocus = result.Focus.ToString()
+                });
                 return;
             }
             long now = _loop.NowMs;
@@ -564,7 +579,7 @@ public sealed class SessionController : IDisposable
                 return;
             if (now < snapshot.ObservedAtMs || now - snapshot.ObservedAtMs > Limits.ObservationMaxAgeMs)
             {
-                _hook.Revoke();
+                RevokeInput("capture-expired");
                 _permitUntil = 0;
                 Render();
                 return;
@@ -599,7 +614,7 @@ public sealed class SessionController : IDisposable
                 // A pending capture can cross fields before Tick observes focus
                 // leaving. Retire old view tokens even if the user later returns.
                 _generation++;
-                _hook.Revoke();
+                RevokeInput("target-changed");
                 _permitUntil = 0;
             }
             _session.Observe(snapshot, result.Focus, now);
@@ -652,6 +667,8 @@ public sealed class SessionController : IDisposable
                 Trace("wake-" + reason, detail: new
                 {
                     ageMs = _loop.NowMs - notice.AcceptedAtMs,
+                    commandGeneration = notice.CommandGeneration,
+                    commandSequence = notice.CommandSequence,
                     generationMatches,
                     foregroundMatches,
                     focusMatches
@@ -871,7 +888,7 @@ public sealed class SessionController : IDisposable
             return false;
         _generation++;
         _editTransitionUntil = _loop.NowMs + 500;
-        _hook.Revoke();
+        RevokeInput("begin-edit");
         _permitUntil = 0;
         Render();
         return true;
@@ -881,7 +898,7 @@ public sealed class SessionController : IDisposable
         if (_returningToSource || _overlay.EditingComposition || !_session.RequestSourceReturn() || _session.Current is not { } source)
             return false;
         long generation = ++_generation;
-        _hook.Revoke();
+        RevokeInput("return-from-editor");
         _permitUntil = 0;
         Render();
         _returningToSource = true;
@@ -919,7 +936,7 @@ public sealed class SessionController : IDisposable
         if (!_writing && _session.BeginWrite(plan))
         {
             _generation++;
-            _hook.Revoke();
+            RevokeInput("native-write-completed");
             _permitUntil = 0;
             _session.FinishWrite(plan, receipt);
             _nextCapture = 0;
@@ -934,7 +951,7 @@ public sealed class SessionController : IDisposable
     }
     private async Task Accept(InputNotice notice)
     {
-        _hook.Revoke();
+        RevokeInput("accept");
         _permitUntil = 0;
         if (notice.Permit is not { } permit || notice.CommandGeneration != _hook.CommandGeneration
             || !SessionBindingsReady(permit.Plan.Expected.Target, false)
@@ -983,7 +1000,7 @@ public sealed class SessionController : IDisposable
         if (_disposed)
             return;
         _generation++;
-        _hook.Revoke();
+        RevokeInput("escape");
         _permitUntil = 0;
         _session.Escape();
         _overlay.HideQuietly();
@@ -1001,7 +1018,7 @@ public sealed class SessionController : IDisposable
         if (_disposed)
             return;
         _generation++;
-        _hook.Revoke();
+        RevokeInput("regenerate");
         _permitUntil = 0;
         _statusOverride = null;
         _session.Retranslate(_loop.NowMs);
@@ -1020,7 +1037,7 @@ public sealed class SessionController : IDisposable
         InvalidatePauseAnchor();
         ClearBrokerSnapshot();
         _generation++;
-        _hook.Revoke();
+        RevokeInput(reason);
         _permitUntil = 0;
         _session.LeaveFamily();
         _statusOverride = null;
@@ -1060,9 +1077,22 @@ public sealed class SessionController : IDisposable
                 SessionBindingsReady(source.Target, true)) : null;
         _overlay.Render(_session, _settings.Value, _permitUntil >= _loop.NowMs && _permitUntil != 0, status, context);
     }
+    private void RevokeInput(string reason)
+    {
+        _hook.Revoke();
+        if (!string.IsNullOrWhiteSpace(_tracePath))
+            Trace("input-revoked", detail: new
+            {
+                reason,
+                commandGeneration = _hook.CommandGeneration,
+                // Context only: a previous command need not have caused this revocation.
+                lastCommandGeneration = _lastCommandGeneration,
+                lastCommandSequence = _commandSequence
+            }, inspectFocus: false);
+    }
     // Opt-in local diagnostics contain counts and state only, never field text,
     // labels, window titles, exception messages, source or translated content.
-    private void Trace(string operation, Guid? planId = null, object? detail = null)
+    private void Trace(string operation, Guid? planId = null, object? detail = null, bool inspectFocus = true)
     {
         if (string.IsNullOrWhiteSpace(_tracePath))
             return;
@@ -1081,7 +1111,7 @@ public sealed class SessionController : IDisposable
             userEpoch = _hook.UserEpoch,
             sourceUserEpoch = _hook.SourceUserEpoch,
             inputReady = _hook.Ready,
-            focus = _session.Current is { } current ? _hook.GetFocus(current.Target).ToString() : "Other",
+            focus = !inspectFocus ? null : _session.Current is { } current ? _hook.GetFocus(current.Target).ToString() : "Other",
             windowEpoch = _hook.WindowEpoch,
             focusEpoch = _hook.ForegroundEpoch,
             writeSupported = _session.Current?.WriteSupported ?? false

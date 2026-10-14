@@ -181,8 +181,15 @@ internal sealed class SessionScenario : IDisposable
         {
             get; private set;
         }
-        public FocusMember GetFocus(TargetId target) => InEditor ? FocusMember.Overlay
-            : target == FocusedTarget ? FocusMember.Source : FocusMember.Other;
+        public int FocusChecks
+        {
+            get; private set;
+        }
+        public FocusMember GetFocus(TargetId target)
+        {
+            FocusChecks++;
+            return InEditor ? FocusMember.Overlay : target == FocusedTarget ? FocusMember.Source : FocusMember.Other;
+        }
         public SessionShortcutBindings SessionBindings { get; private set; } = SessionShortcutBindings.Default;
         public bool SessionEnabled
         {
