@@ -182,6 +182,24 @@ internal static class Program
         }
         if (message == N.FixtureSubmitCount)
             return (nint)_submits;
+        if (message == N.FixtureClearPassword)
+        {
+            // Only this fixture's own unmodified single-line Edit may leave the
+            // synthetic password state. Production Broker never calls this path.
+            nint field = (nint)wParam;
+            if (!StockFields.Contains(field) || lParam != 0 || N.GetAncestor(field, 2) != _root
+                || N.GetWindowThreadProcessId(field, out uint pid) == 0 || pid != Environment.ProcessId
+                || (N.GetStyle(field, -16) & 0x4) != 0)
+                return 0;
+            try
+            {
+                if (N.Send(field, 0x00d2) != '*')
+                    return 0;
+                N.Send(field, 0x00cc, 0);
+                return N.Send(field, 0x00d2) == 0 ? 1 : 0;
+            }
+            catch (N.NativeMessageException) { return 0; }
+        }
         if (message == N.FixtureFocus && (PreviousProcedures.ContainsKey((nint)wParam) || StockFields.Contains((nint)wParam)))
         {
             N.SetForegroundWindow(hwnd);

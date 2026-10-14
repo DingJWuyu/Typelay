@@ -60,6 +60,9 @@ class Overlay:
     async def send_view(self):
         async with self.lock:
             record = self.current_record()
+            paused_view = bool(self.value and self.value.get("state") == "Paused")
+            if paused_view:
+                self.trace_edit("pause-view-request", hasRecord=record is not None)
             if record is None:
                 self.conceal("observation-unavailable")
                 return False
@@ -79,6 +82,13 @@ class Overlay:
                     "expiresAtMs": now_ms() + 800,
                 },
             )
+            if paused_view:
+                self.trace_edit(
+                    "pause-view-reply",
+                    requestRevision=revision,
+                    current=self.peer is peer and self.revision == revision,
+                    visible=isinstance(reply, dict) and reply.get("visible") is True,
+                )
             if self.peer is peer and self.revision == revision:
                 self.visible = bool(reply and reply.get("visible"))
                 self.editing = bool(reply and reply.get("editing"))

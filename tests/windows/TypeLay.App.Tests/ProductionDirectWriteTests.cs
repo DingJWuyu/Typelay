@@ -150,9 +150,13 @@ public sealed class ProductionDirectWriteTests(ITestOutputHelper output)
                 Assert.Equal(WriteStatus.RejectedBeforeMutation, passwordReceipt.Status);
                 Assert.Equal(Denial.Sensitive, passwordReceipt.Reason);
                 Assert.Equal(((nint)host.RootHwnd, b), N.Focused());
-                // Verify rejection while protected, then leave this synthetic
-                // password state before inspecting its unchanged source text.
-                N.Send(a, 0x00cc, 0);
+                // Verify rejection while protected, then ask the owning fixture
+                // to leave its synthetic password state. Direct cross-process
+                // removal returned access denied in this regression; production
+                // has no such fixture command.
+                Assert.Equal((nuint)0, N.Send((nint)host.RootHwnd, N.FixtureClearPassword, (nuint)host.RootHwnd));
+                Assert.Equal((nuint)'*', N.Send(a, 0x00d2));
+                Assert.Equal((nuint)1, N.Send((nint)host.RootHwnd, N.FixtureClearPassword, (nuint)a));
                 Assert.Equal((nuint)0, N.Send(a, 0x00d2));
                 Assert.Equal("你好", N.ReadText(a, Limits.MaxTextUnits));
             }

@@ -136,7 +136,7 @@ public sealed class PausedInputTests(WpfDesktopFixture desktop)
             var presentation = Presentation.From(SessionState.Paused, false, hasPauseAnchor: true);
             var resume = Descendants(overlay).OfType<Button>().Single(button => button.IsVisible
                 && Descendants(button).OfType<TextBlock>().Any(text => text.Text.Contains(presentation.TabHint)));
-            ClickOwned(overlay, resume);
+            await ClickOwned(overlay, resume);
             await Until(() => settings.Value.Enabled && !overlay.IsVisible);
             Assert.Equal(WorkMode.OnDemand, settings.Value.Mode);
             var persisted = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json")).Value;
@@ -180,20 +180,31 @@ public sealed class PausedInputTests(WpfDesktopFixture desktop)
         Assert.Same(field, Keyboard.FocusedElement);
         Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
     }
-    private static async Task Until(Func<bool> ready)
+    private static async Task Until(Func<bool> ready, string failure = "The real paused field flow did not reach its visible state.")
     {
         var elapsed = Stopwatch.StartNew();
         while (!ready() && elapsed.Elapsed < TimeSpan.FromSeconds(5))
             await Task.Delay(20, TestContext.Current.CancellationToken);
-        Assert.True(ready(), "The real paused field flow did not reach its visible state.");
+        Assert.True(ready(), failure);
     }
-    private static void ClickOwned(OverlayWindow overlay, Button button)
+    private static async Task ClickOwned(OverlayWindow overlay, Button button)
     {
-        var point = button.PointToScreen(new(button.ActualWidth / 2, button.ActualHeight / 2));
-        var pixel = new NativePoint { X = (int)point.X, Y = (int)point.Y };
+        NativePoint pixel = default;
+        // IsVisible precedes the existing fade-in's first opaque frame. Layered
+        // windows pass transparent pixels through, so wait for the actual native
+        // hit target rather than delaying by an assumed animation duration.
+        await Until(() =>
+        {
+            if (!overlay.IsVisible || !button.IsVisible || button.ActualWidth <= 0 || button.ActualHeight <= 0)
+                return false;
+            var point = button.PointToScreen(new(button.ActualWidth / 2, button.ActualHeight / 2));
+            pixel = new NativePoint { X = (int)point.X, Y = (int)point.Y };
+            return WindowFromPoint(pixel) == overlay.Handle;
+        }, "The rendered resume button did not become the native hit target; no click was injected.");
         Assert.Equal(overlay.Handle, WindowFromPoint(pixel));
         Assert.Equal(0, Native.GetAsyncKeyState(1) & 0x8000);
         Assert.True(SetCursorPos(pixel.X, pixel.Y));
+        Assert.Equal(overlay.Handle, WindowFromPoint(pixel));
         // One injected click exercises WM_MOUSEACTIVATE and WPF's actual button
         // route. It is desktop automation, not physical-pointer validation.
         MouseInput[] input = [new() { Flags = 2 }, new() { Flags = 4 }];

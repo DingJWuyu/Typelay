@@ -78,7 +78,11 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
             presentation = Presentation.From(SessionState.Paused, false, hasPauseAnchor: true),
             canAccept = false,
             state = SessionState.Paused,
-            source = new { anchor.Target, anchor.Bounds },
+            source = new
+            {
+                anchor.Target,
+                anchor.Bounds
+            },
             pauseRevision = revision
         };
         string key = JsonSerializer.Serialize(value, DesktopLink.Json);

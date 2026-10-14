@@ -1218,12 +1218,44 @@ def run(arguments):
                         request({"Action": {"CloseWindow": {"id": settings_window["id"]}}})
                         request({"Action": {"FocusWindow": {"id": window["id"]}}})
                         click_entry("first")
-                        wait_for(
-                            lambda: view("Paused")
-                            and visible_control(fixture.pid, "恢复")
-                            and not status().get("acceptanceReady"),
-                            "paused GTK source did not show its actual weakened resume button",
-                        )
+                        pause_wait = {}
+
+                        def paused_visible():
+                            current = status()
+                            resume_visible = visible_control(fixture.pid, "恢复") is not None
+                            pause_wait.update(
+                                viewState=current.get("viewState"),
+                                overlayVisible=current.get("overlayVisible") is True,
+                                acceptanceReady=current.get("acceptanceReady") is True,
+                                resumeVisible=resume_visible,
+                            )
+                            return (
+                                pause_wait["viewState"] == "Paused"
+                                and pause_wait["overlayVisible"]
+                                and resume_visible
+                                and not pause_wait["acceptanceReady"]
+                            )
+
+                        try:
+                            wait_for(
+                                paused_visible,
+                                "paused GTK source did not show its actual weakened resume button",
+                            )
+                        except BaseException:
+                            try:
+                                (arguments.output / "paused-before-cleanup.json").write_text(
+                                    json.dumps(
+                                        {"wait": dict(pause_wait), "status": status()}, indent=2
+                                    )
+                                )
+                                subprocess.run(
+                                    ["grim", str(arguments.output / "paused-before-cleanup.png")],
+                                    check=False,
+                                    timeout=3,
+                                )
+                            except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+                                pass  # Preserve the actual wait failure before resource teardown.
+                            raise
                         before_pause_input = gtk_state()
                         assert before_pause_input["first"] == pause_source
                         assert before_pause_input["candidate"] is None

@@ -1083,11 +1083,11 @@ private:
             value->setFocusPolicy(Qt::NoFocus);
             connect(value, &QPushButton::clicked, this, [this, operation, value] {
                 if (qstrcmp(operation, "resume") == 0) {
-                    auto *target = overlayTarget_;
+                    auto *resumeTarget = overlayTarget_;
                     const auto revision = overlayRevision_;
                     if (value != resume_ || !paused() || pendingResume_) return;
-                    if (!overlayActive() || !pauseCurrent(target, overlayAuthority_)) { hideOverlay(); return; }
-                    if (overlayTarget_ != target || overlayRevision_ != revision || !paused() || !overlayActive()) return;
+                    if (!overlayActive() || !pauseCurrent(resumeTarget, overlayAuthority_)) { hideOverlay(); return; }
+                    if (overlayTarget_ != resumeTarget || overlayRevision_ != revision || !paused() || !overlayActive()) return;
                     pendingResume_ = true;
                     resume_->setEnabled(false);
                     ui("resume");

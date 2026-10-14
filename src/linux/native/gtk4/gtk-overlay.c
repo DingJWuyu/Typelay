@@ -386,6 +386,15 @@ static const char *language_name(const char *code) {
     if (g_strcmp0(code, "en") == 0) return "英语";
     return "自动";
 }
+static gboolean pause_render_result(gboolean is_paused, const char *stage, gint64 revision, gboolean result) {
+    static guint count;
+    if (is_paused && g_getenv("TYPELAY_TRACE") && count < 96) {
+        count++;
+        g_printerr("TypeLay GTK4 pause-render stage=%s revision=%" G_GINT64_FORMAT
+            " atMs=%" G_GINT64_FORMAT " result=%d\n", stage, revision, tl_now(), result);
+    }
+    return result;
+}
 static gboolean render(Target *target, JsonObject *data) {
     JsonObject *value = tl_object(data, "view"), *presentation = tl_object(value, "presentation");
     JsonObject *authority = tl_object(data, "authority");
@@ -396,14 +405,22 @@ static gboolean render(Target *target, JsonObject *data) {
         && target && !target->dead
         && (gint64)target->content_revision == tl_integer(authority, "contentRevision", -1)
         && (gint64)target->input_revision == tl_integer(authority, "inputRevision", -1);
-    if (!target || !boolean(presentation, "visible") || !tl_metadata_matches(target, authority)
-        || until < now || until - now > 1000
-        || (is_paused ? !pause_current(target, authority) : !retained_editor && !tl_ime_clear(target))) return FALSE;
+    gint64 request_revision = tl_integer(data, "revision", 0);
+    if (!target || !boolean(presentation, "visible"))
+        return pause_render_result(is_paused, "target-or-view", request_revision, FALSE);
+    if (!tl_metadata_matches(target, authority))
+        return pause_render_result(is_paused, "metadata", request_revision, FALSE);
+    if (until < now || until - now > 1000)
+        return pause_render_result(is_paused, "expiry", request_revision, FALSE);
+    if (is_paused ? !pause_current(target, authority) : !retained_editor && !tl_ime_clear(target))
+        return pause_render_result(is_paused, "source-observation", request_revision, FALSE);
     GtkWidget *top = GTK_WIDGET(gtk_widget_get_root(target->widget));
-    if (!GTK_IS_WINDOW(top) || !gtk_window_is_active(GTK_WINDOW(top))) return FALSE;
-    if (tl_focused() != target && !(!is_paused && overlay.target == target && overlay.focused)) return FALSE;
+    if (!GTK_IS_WINDOW(top) || !gtk_window_is_active(GTK_WINDOW(top)))
+        return pause_render_result(is_paused, "window", request_revision, FALSE);
+    if (tl_focused() != target && !(!is_paused && overlay.target == target && overlay.focused))
+        return pause_render_result(is_paused, "focus", request_revision, FALSE);
     JsonObject *geometry = tl_geometry(target);
-    if (!geometry) return FALSE;
+    if (!geometry) return pause_render_result(is_paused, "geometry", request_revision, FALSE);
     if (overlay.target != target || overlay.top != top) { tl_overlay_hide(); create(target); }
     overlay.expires = until;
     if (overlay.revision != tl_integer(data, "revision", 0)) overlay.pending_resume = FALSE;
@@ -454,7 +471,7 @@ static gboolean render(Target *target, JsonObject *data) {
     graphene_point_t zero = GRAPHENE_POINT_INIT(0, 0), origin;
     if (!gtk_widget_compute_point(target->widget, top, &zero, &origin)) {
         json_object_unref(geometry);
-        return FALSE;
+        return pause_render_result(is_paused, "coordinates", request_revision, FALSE);
     }
     JsonObject *bounds = tl_object(geometry, "bounds");
     GdkRectangle anchor = {
@@ -468,7 +485,7 @@ static gboolean render(Target *target, JsonObject *data) {
     gtk_popover_present(GTK_POPOVER(overlay.popover));
     if (!overlay.expiry_timer) overlay.expiry_timer = g_timeout_add(100, expired, NULL);
     tl_overlay_sync();
-    return TRUE;
+    return pause_render_result(is_paused, "shown", request_revision, TRUE);
 }
 JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject *data) {
     gboolean visible = FALSE;

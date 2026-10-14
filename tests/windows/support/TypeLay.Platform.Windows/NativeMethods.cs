@@ -12,7 +12,7 @@ public static class NativeMethods
     public const string ImeProperty = "TypeLay.Mvp.Fixture.Ime.v1";
     public const string LifetimeProperty = "TypeLay.Mvp.Fixture.Lifetime.v1";
     public const string ReadCountProperty = "TypeLay.Mvp.Fixture.TextReads.v1";
-    public const uint FixtureFocus = 0x8001, FixtureSubmitCount = 0x8002;
+    public const uint FixtureFocus = 0x8001, FixtureSubmitCount = 0x8002, FixtureClearPassword = 0x8003;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct Rect
