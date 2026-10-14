@@ -31,14 +31,19 @@ internal sealed class SessionScenario : IDisposable
         get; set;
     }
 
-    public SessionScenario(WorkMode mode = WorkMode.Automatic, bool experimental = false)
+    public SessionScenario(WorkMode mode = WorkMode.Automatic, bool experimental = false,
+        bool initiallyAvailable = false, bool inputReady = true, bool start = true)
     {
         SynchronizationContext.SetSynchronizationContext(_context);
         Source = new(new("controlled", "field-a", Guid.NewGuid()), "hello", new(5, 5),
             new(10, 20, 300, 40), true, FieldAccess.Supported, ImeState.Clear, Loop.NowMs, 1, 1,
             WriteSupported: true, DirectWriteSupported: true);
         Input.FocusedTarget = Source.Target;
-        Service = new(this);
+        Service = new(this)
+        {
+            Available = initiallyAvailable
+        };
+        Input.Ready = inputReady;
         Settings = new(Path.Combine(_directory, "settings.json"));
         Settings.Update(Settings.Value with
         {
@@ -46,9 +51,20 @@ internal sealed class SessionScenario : IDisposable
             ExperimentalWriteback = experimental
         });
         Controller = new(Settings, Model, View, Input, Service, Loop);
-        Controller.StartAsync().GetAwaiter().GetResult();
+        if (start)
+            Controller.StartAsync().GetAwaiter().GetResult();
     }
 
+    public void CompleteStart(bool success = true)
+    {
+        var pending = Service.PendingStart ?? throw new InvalidOperationException("No pending start.");
+        Service.PendingStart = null;
+        if (success)
+            pending.SetResult(true);
+        else
+            pending.SetException(new IOException("controlled start failure"));
+        _context.Drain();
+    }
     public void BlockSettingsWrites() => Directory.CreateDirectory(Path.Combine(_directory, "settings.json.tmp"));
     public void AllowSettingsWrites() => Directory.Delete(Path.Combine(_directory, "settings.json.tmp"));
     public void Tick(long elapsed = 40)
@@ -256,10 +272,20 @@ internal sealed class SessionScenario : IDisposable
         {
             get; set;
         }
-        public Task StartAsync()
+        public int Starts
         {
+            get; private set;
+        }
+        public TaskCompletionSource<bool>? PendingStart
+        {
+            get; set;
+        }
+        public async Task StartAsync()
+        {
+            Starts++;
+            if (PendingStart is { } pending)
+                await pending.Task;
             Available = true;
-            return Task.CompletedTask;
         }
         public Func<SessionShortcutAcknowledgement, SessionShortcutAcknowledgement?> TransformAcknowledgement { get; set; } = value => value;
         public Task<InputCapture> CaptureAsync(InputContext context)

@@ -2626,7 +2626,15 @@ def run(arguments):
                     area.x + area.width <= clip.x + clip.width
                     and area.y + area.height <= clip.y + clip.height
                 ), "primary action is clipped on the default application-support screen"
-            trial = settings_control(support["labels"]["tryIt"])
+            preparation = wait_for(
+                lambda: (value := status().get("setup", {}).get("preparation"))
+                and value["primaryAction"]["id"] == "NextStep"
+                and value,
+                "ready model did not expose its next preparation step",
+            )
+            next_step_label = preparation["primaryAction"]["label"]
+            assert next_step_label == "选择接入方式"
+            trial = settings_control(next_step_label)
             trial_area = Atspi.Component.get_extents(
                 trial.get_component_iface(), Atspi.CoordType.SCREEN
             )
@@ -2638,11 +2646,27 @@ def run(arguments):
                     and clip.y <= trial_area.y
                     and trial_area.x + trial_area.width <= clip.x + clip.width
                     and trial_area.y + trial_area.height <= clip.y + clip.height
-                ), "practice entry is clipped before the user scrolls or focuses it"
+                ), "connection choice is clipped before the user scrolls or focuses it"
+            repair = preparation["secondaryActions"]
+            assert len(repair) == 1 and repair[0]["id"] == "Repair"
+            repair_button = settings_control(repair[0]["label"])
+            repair_area = Atspi.Component.get_extents(
+                repair_button.get_component_iface(), Atspi.CoordType.SCREEN
+            )
+            assert repair_button.get_state_set().contains(Atspi.StateType.SHOWING)
+            assert repair_area.width > 0 and repair_area.height > 0
+            assert trial_area.x < repair_area.x, "repair precedes the ready next step"
+            for clip in [*viewport_bounds, frame]:
+                assert (
+                    clip.x <= repair_area.x
+                    and clip.y <= repair_area.y
+                    and repair_area.x + repair_area.width <= clip.x + clip.width
+                    and repair_area.y + repair_area.height <= clip.y + clip.height
+                ), "secondary repair is clipped on the default preparation screen"
             calibrate_settings_scroll(trial)
             evidence.append(
-                "Practice entry and selected application primary action fully visible "
-                "in the default GTK viewport"
+                "Connection choice and selected application primary action fully visible "
+                "in the default GTK viewport; ready repair follows the next step and is fully visible"
             )
             activate_setting(desktop_support["primaryAction"]["label"])
             bundled_component = (package / "support/desktop/component.json").is_file()
@@ -3080,7 +3104,7 @@ def run(arguments):
             assert saved["WakeShortcut"] in text(settings_control("当前工作模式说明"))
             settings_page("应用支持")
             assert Atspi.Component.grab_focus(trial.get_component_iface())
-            activate_setting(support["labels"]["tryIt"])
+            activate_setting(next_step_label)
             assert not status()["setup"]["tutorialVisible"]
             assert selector.get_name() == desktop_support["title"]
             assert control(paths, "tutorial") is True
@@ -3252,7 +3276,7 @@ def run(arguments):
                     and not any(a["id"] == "Connect" for a in row["actions"]),
                     "fresh client must require the user's original input-method acknowledgement",
                 )
-                calibrate_settings_scroll(settings_control(support["labels"]["tryIt"]))
+                calibrate_settings_scroll(settings_control(next_step_label))
                 activate_scrolled_setting(
                     "我已记下原输入法的启动方式，并知道如何恢复",
                     evidence_name="application-support-recovery-acknowledgement-scroll",
@@ -3613,7 +3637,7 @@ def run(arguments):
                         and not any(a["id"] == "Remove" for a in row["actions"]),
                         "an application still using the components was offered removal",
                     )
-                    calibrate_settings_scroll(settings_control(support["labels"]["tryIt"]))
+                    calibrate_settings_scroll(settings_control(next_step_label))
                     settings_page("常规")
                     mode = settings_control("设置：工作模式")
                     assert Atspi.Selection.select_child(mode.get_selection_iface(), 0)

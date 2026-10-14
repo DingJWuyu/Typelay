@@ -139,7 +139,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                 Assert.False(settings.Value.OnboardingComplete);
                 Assert.Contains(Descendants(window).OfType<TextBlock>(), text =>
                     text.Text == ApplicationSupportPresentation.Create([]).Title);
-                Assert.Contains(Descendants(window).OfType<Button>(), button => Equals(button.Content, "检查并准备"));
+                Assert.Contains(Descendants(window).OfType<Button>(), button => Equals(button.Content, ApplicationSupportPresentation.Preparation(new(false, false)).PrimaryAction.Label));
             }
             finally
             {

@@ -13,7 +13,7 @@ import sys
 import uuid
 
 from paths import Paths, connect_private, peer_credentials
-from setup import FAILURE_PREFIX, PRESENTATION_UNAVAILABLE, failure_code
+from setup import FAILURE_PREFIX, failure_code
 from wire import MAX_FRAME, encode, now_ms, receive_sync
 
 
@@ -206,21 +206,13 @@ async def desktop(paths, background, lock, tutorial=False):
         stopping.set,
     )
 
-    async def installation_result(state, failure=None, activated=False):
+    def installation_result(state, failure=None, activated=False):
         settings = components["settings"]
-        try:
-            presentation = await host.ask("setupFailure", failure, timeout=2)
-            if state == "paused":
-                message, label = presentation["pausedMessage"], presentation["resumeLabel"]
-            else:
-                view = presentation["failure"]
-                message = view["message"] + "\n" + view["nextStep"]
-                if activated:
-                    message += "\n组件已安装，但翻译服务尚未就绪。可退出并重新启动 TypeLay。"
-                label = view["retryLabel"]
-            settings.installation(state, message, label)
-        except (OSError, ValueError, KeyError, TypeError, EOFError, TimeoutError):
-            settings.installation(state, PRESENTATION_UNAVAILABLE)
+        settings.installation(
+            state,
+            "组件已安装，但翻译服务尚未就绪。可退出并重新启动 TypeLay。" if activated else "",
+            failure=failure,
+        )
 
     async def install():
         nonlocal installer
@@ -251,21 +243,22 @@ async def desktop(paths, background, lock, tutorial=False):
                 if message.startswith(FAILURE_PREFIX):
                     failure = failure_code(message, failure)
                 else:
-                    settings.message.set_text(message)
+                    settings.installation_progress(message)
             code = await installer.wait()
             if failure is None and (code == 75 or (pause_installation and code != 0)):
-                await installation_result("paused")
+                installation_result("paused")
             elif code != 0 or failure is not None:
-                await installation_result("failed", failure)
+                installation_result("failed", failure)
             else:
                 reload_started = True
+                settings.installation("starting")
                 ready = await host.ask("reloadModel", timeout=125)
                 if ready:
-                    settings.installation("ready", "本地翻译组件已就绪")
+                    settings.installation("ready")
                 else:
-                    await installation_result("failed", "runtime", activated=True)
+                    installation_result("failed", "runtime", activated=True)
         except (OSError, ValueError, EOFError, TimeoutError):
-            await installation_result(
+            installation_result(
                 "failed", "runtime" if reload_started else failure, activated=reload_started
             )
         finally:

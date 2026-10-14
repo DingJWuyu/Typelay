@@ -43,6 +43,10 @@ internal sealed class SettingsWindow : Window
     private CancellationTokenSource? _install;
     private ProgressBar? _progress;
     private TextBlock? _progressLabel, _practiceStatus;
+    private TextBlock? _preparationStatus, _preparationGuidance, _modelStatus;
+    private Button? _preparationPrimary;
+    private StackPanel? _preparationSecondary, _preparationDiagnostics;
+    private readonly List<Button> _connectionChecks = [];
     public Func<OnDemandPracticeProgress?>? PracticeProgress
     {
         get; set;
@@ -121,7 +125,23 @@ internal sealed class SettingsWindow : Window
             RequestClose();
         };
         settings.Changed += Refresh;
-        model.Changed += Refresh;
+        model.Changed += RefreshModel;
+        Refresh();
+    }
+    private void RefreshModel()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(RefreshModel));
+            return;
+        }
+        if (_renderedPage == _page && _page is "apps" or "translation")
+        {
+            RefreshPreparation();
+            if (_modelStatus is not null)
+                _modelStatus.Text = _model.Status;
+            return;
+        }
         Refresh();
     }
     public bool RequestClose()
@@ -241,6 +261,10 @@ internal sealed class SettingsWindow : Window
         _progress = null;
         _progressLabel = null;
         _practiceStatus = null;
+        _preparationStatus = _preparationGuidance = _modelStatus = null;
+        _preparationPrimary = null;
+        _preparationSecondary = _preparationDiagnostics = null;
+        _connectionChecks.Clear();
         if (_page != "shortcuts" && _settingsError is { } error)
             Note("设置未保存", error);
         switch (_page)
@@ -347,10 +371,11 @@ internal sealed class SettingsWindow : Window
     private void General()
     {
         Heading("常规", "TypeLay 的全局运行方式。");
-        if (!_model.Ready)
+        bool needsPreparation = PreparationView().PrimaryAction.Id != TranslationPreparationAction.NextStep;
+        if (needsPreparation)
             InstallCard();
         var practice = OnDemandPracticePresentation.Create(_settings.Value, PracticeProgress?.Invoke());
-        Row(practice.Title, practice.Summary, UiTheme.Button(practice.StartLabel, StartPractice));
+        Row(practice.Title, practice.Summary, UiTheme.Button(practice.StartLabel, StartPractice, primary: !needsPreparation));
         _practiceStatus = UiTheme.Text(practice.ProgressNotice, 12, true);
         _content.Children.Add(_practiceStatus);
         SaveScopeNote();
@@ -655,15 +680,7 @@ internal sealed class SettingsWindow : Window
             resume.Margin = new(0, 0, 0, 14);
             _content.Children.Add(resume);
         }
-        if (!_model.Ready)
-            InstallCard();
-        else
-            Note(view.Labels.PrepareTranslation, _model.Status);
-        var tryIt = UiTheme.Button(view.Labels.TryIt, StartPractice);
-        tryIt.IsEnabled = _model.Ready;
-        tryIt.HorizontalAlignment = HorizontalAlignment.Left;
-        tryIt.Margin = new(0, 0, 0, 14);
-        _content.Children.Add(tryIt);
+        InstallCard();
         foreach (var row in view.Rows.Where(row => !row.ShowInMore))
             _content.Children.Add(SupportRow(row, view));
         var others = new StackPanel();
@@ -713,6 +730,8 @@ internal sealed class SettingsWindow : Window
         {
             var next = UiTheme.Button(primary.Label, () => Run(primary));
             next.IsEnabled = primary.Id != ApplicationSupportAction.Refresh || _settings.Value.Enabled && _model.Ready;
+            if (primary.Id == ApplicationSupportAction.Refresh)
+                _connectionChecks.Add(next);
             next.Margin = new(12, 0, 0, 0);
             DockPanel.SetDock(next, Dock.Right);
             header.Children.Add(next);
@@ -738,6 +757,8 @@ internal sealed class SettingsWindow : Window
         {
             var button = UiTheme.Button(action.Label, () => Run(action));
             button.IsEnabled = action.Id != ApplicationSupportAction.Refresh || _settings.Value.Enabled && _model.Ready;
+            if (action.Id == ApplicationSupportAction.Refresh)
+                _connectionChecks.Add(button);
             button.HorizontalAlignment = HorizontalAlignment.Left;
             button.Margin = new(0, 8, 0, 0);
             detailsBody.Children.Add(button);
@@ -751,7 +772,7 @@ internal sealed class SettingsWindow : Window
     {
         Heading("翻译", "控制本地模型状态。当前模型采用自然、忠实的单一候选。");
         Row("默认风格", "其他风格尚未接入模型，不提供虚假切换。", new ComboBox { MinWidth = 155, ItemsSource = new[] { "自然" }, SelectedIndex = 0, IsEnabled = false });
-        Row("本地翻译模型", "CTranslate2 · Argos 中英模型 · CPU INT8", UiTheme.Text(_model.Status, 12, true));
+        Row("本地翻译模型", "CTranslate2 · Argos 中英模型 · CPU INT8", _modelStatus = UiTheme.Text(_model.Status, 12, true));
         InstallCard();
         Rule();
         Note("较长文本", "当前单段模型输入超过 384 个 token 时停止并提示缩短选区；不会在后台截断原文后给出可接受候选。换行、URL、mention 和编号采用显式结构保护。");
@@ -759,46 +780,129 @@ internal sealed class SettingsWindow : Window
     private void InstallCard()
     {
         var panel = new StackPanel();
-        panel.Children.Add(UiTheme.Text(_model.Installed ? "本地模型与运行组件" : "首次使用 · 准备本地翻译", 13, bold: true));
+        panel.Children.Add(UiTheme.Text(ApplicationSupportPresentation.Create([]).Labels.PrepareTranslation, 12, true));
+        _preparationStatus = UiTheme.Text("", 15, bold: true);
+        _preparationStatus.Name = "PreparationStatus";
+        _preparationStatus.Margin = new(0, 6, 0, 0);
+        panel.Children.Add(_preparationStatus);
+        _preparationGuidance = UiTheme.Text("", 12, true);
+        _preparationGuidance.Name = "PreparationGuidance";
+        _preparationGuidance.Margin = new(0, 6, 0, 12);
+        panel.Children.Add(_preparationGuidance);
+        _progressLabel = UiTheme.Text("", 12, true);
+        _progressLabel.Name = "PreparationProgress";
+        panel.Children.Add(_progressLabel);
+        _progress = new ProgressBar { Minimum = 0, Maximum = 100, Height = 5, Margin = new(0, 9, 0, 12) };
+        AutomationProperties.SetName(_progress, "本地组件准备进度");
+        panel.Children.Add(_progress);
+        var actions = new WrapPanel();
+        _preparationPrimary = UiTheme.Button("", () => RunPreparationAction(PreparationView().PrimaryAction), primary: true);
+        _preparationPrimary.Name = "PreparationPrimaryAction";
+        actions.Children.Add(_preparationPrimary);
+        _preparationSecondary = new StackPanel { Orientation = Orientation.Horizontal };
+        actions.Children.Add(_preparationSecondary);
+        panel.Children.Add(actions);
+
+        var detailsBody = new StackPanel();
         var intro = UiTheme.Text(ModelInstaller.HasReusableLocalModels
             ? "已找到本机中英双向 Argos 模型。准备时会校验并复用权重，运行组件仍需单独准备；输入文字不会上传。"
             : "准备私有运行组件与中英模型。仅在本机推理；无需自行安装 Python，也不上传输入文字。", 12, true);
-        intro.Margin = new(0, 6, 0, 12);
-        panel.Children.Add(intro);
-        _progressLabel = UiTheme.Text(_setupStatus.Length > 0 ? _setupStatus : _model.Status, 12, true);
-        panel.Children.Add(_progressLabel);
-        _progress = new ProgressBar { Minimum = 0, Maximum = 100, Height = 5, Margin = new(0, 9, 0, 12), IsIndeterminate = _install is not null };
-        panel.Children.Add(_progress);
-        var actions = new StackPanel { Orientation = Orientation.Horizontal };
-        string prepareLabel = _startingModel ? "正在启动翻译…" : _install is not null ? "暂停下载" : _setupPaused ? SetupFailurePresentation.ResumeLabel
-            : _setupFailure?.RetryLabel ?? (_model.Installed ? "重新安装 / 修复" : "检查并准备");
-        var button = UiTheme.Button(prepareLabel, () =>
-        {
-            if (_install is not null)
-                _install.Cancel();
-            else
-                _ = Install();
-        }, _install is null);
-        button.IsEnabled = !_startingModel;
-        button.Margin = new(0, 0, 8, 0);
-        actions.Children.Add(button);
+        intro.Margin = new(0, 8, 0, 8);
+        detailsBody.Children.Add(intro);
         var runtime = UiTheme.Button("微软运行库说明", () => OpenUri("https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist"));
-        actions.Children.Add(runtime);
-        panel.Children.Add(actions);
-        if (_setupFailure is { } failure)
-        {
-            var details = new Expander
-            {
-                Header = "安装诊断",
-                Margin = new(0, 10, 0, 0),
-                Content = UiTheme.Text($"错误类别：{failure.Code}\n安装阶段：{_setupFailureStage}"
-                    + (_setupRecoveryFailure is { } recovery ? $"\n恢复阻塞：{recovery.Code}" : ""), 12, true)
-            };
-            panel.Children.Add(details);
-        }
+        runtime.HorizontalAlignment = HorizontalAlignment.Left;
+        detailsBody.Children.Add(runtime);
+        panel.Children.Add(new Expander { Header = "组件与安装说明", Content = detailsBody, Margin = new(0, 12, 0, 0) });
+        _preparationDiagnostics = new StackPanel();
+        panel.Children.Add(_preparationDiagnostics);
         var border = UiTheme.Border(panel, 13, "Panel2", 14);
+        border.Name = "TranslationPreparationCard";
+        AutomationProperties.SetName(border, "准备翻译");
         border.Margin = new(0, 0, 0, 16);
         _content.Children.Add(border);
+        RefreshPreparation();
+    }
+    private TranslationPreparationView PreparationView()
+    {
+        var phase = _startingModel ? TranslationPreparationPhase.StartingModel
+            : _install is { IsCancellationRequested: true } ? TranslationPreparationPhase.Pausing
+            : _install is not null ? TranslationPreparationPhase.Preparing
+            : _setupPaused ? TranslationPreparationPhase.Paused
+            : _setupFailure is not null ? TranslationPreparationPhase.Failed
+            : TranslationPreparationPhase.Idle;
+        return ApplicationSupportPresentation.Preparation(new(_model.Ready, _model.Installed, phase,
+            _setupFailure is { } failure ? SetupFailurePresentation.CategoryFromCode(failure.Code) : null,
+            _setupRecoveryFailure is { } recovery ? SetupFailurePresentation.CategoryFromCode(recovery.Code) : null));
+    }
+    private void RunPreparationAction(TranslationPreparationActionView action)
+    {
+        var view = PreparationView();
+        var current = new[] { view.PrimaryAction }.Concat(view.SecondaryActions).SingleOrDefault(item => item.Id == action.Id);
+        if (current?.Enabled != true)
+            return;
+        if (action.Id == TranslationPreparationAction.NextStep)
+            StartPractice();
+        else if (action.Id == TranslationPreparationAction.Pause)
+        {
+            _install?.Cancel();
+            RefreshPreparation();
+        }
+        else if (action.Id is TranslationPreparationAction.Prepare or TranslationPreparationAction.Resume
+            or TranslationPreparationAction.Retry or TranslationPreparationAction.Repair)
+            _ = Install();
+    }
+    private void RefreshPreparation()
+    {
+        foreach (var check in _connectionChecks)
+            check.IsEnabled = _settings.Value.Enabled && _model.Ready;
+        if (_preparationStatus is null || _preparationGuidance is null || _preparationPrimary is null
+            || _preparationSecondary is null || _preparationDiagnostics is null || _progress is null || _progressLabel is null)
+            return;
+        var view = PreparationView();
+        _preparationStatus.Text = view.StatusText;
+        _preparationGuidance.Text = view.Guidance;
+        _preparationGuidance.Visibility = view.Guidance.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        _preparationPrimary.Content = view.PrimaryAction.Label;
+        AutomationProperties.SetName(_preparationPrimary, view.PrimaryAction.Label);
+        _preparationPrimary.IsEnabled = view.PrimaryAction.Enabled;
+        _progressLabel.Text = _setupStatus;
+        _progressLabel.Visibility = _install is { IsCancellationRequested: false } && !_startingModel ? Visibility.Visible : Visibility.Collapsed;
+        _progress.Visibility = _install is not null ? Visibility.Visible : Visibility.Collapsed;
+        _progress.IsIndeterminate = _install is not null;
+        if (!_preparationSecondary.Children.OfType<Button>().Select(button => button.Tag)
+            .SequenceEqual(view.SecondaryActions.Select(action => (object)action.Id)))
+        {
+            bool moveFocus = _preparationSecondary.IsKeyboardFocusWithin;
+            _preparationSecondary.Children.Clear();
+            foreach (var secondary in view.SecondaryActions)
+            {
+                var button = UiTheme.Button(secondary.Label, () => RunPreparationAction(secondary));
+                button.Name = "Preparation" + secondary.Id + "Action";
+                button.Tag = secondary.Id;
+                button.Margin = new(8, 0, 0, 0);
+                _preparationSecondary.Children.Add(button);
+            }
+            if (moveFocus && _preparationPrimary.IsEnabled)
+                _preparationPrimary.Focus();
+        }
+        foreach (var (button, action) in _preparationSecondary.Children.OfType<Button>().Zip(view.SecondaryActions))
+        {
+            button.Content = action.Label;
+            button.IsEnabled = action.Enabled;
+        }
+        if (_setupFailure is { } failure)
+        {
+            var details = _preparationDiagnostics.Children.OfType<Expander>().SingleOrDefault();
+            if (details is null)
+            {
+                details = new Expander { Header = "安装诊断", Margin = new(0, 10, 0, 0), Content = UiTheme.Text("", 12, true) };
+                _preparationDiagnostics.Children.Add(details);
+            }
+            ((TextBlock)details.Content).Text = $"错误类别：{failure.Code}\n安装阶段：{_setupFailureStage}"
+                + (_setupRecoveryFailure is { } recovery ? $"\n恢复阻塞：{recovery.Code}" : "");
+        }
+        else
+            _preparationDiagnostics.Children.Clear();
     }
     private async Task Install()
     {
@@ -814,7 +918,7 @@ internal sealed class SettingsWindow : Window
         _setupPaused = false;
         _setupStatus = "正在准备本地翻译组件…";
         bool acceptingProgress = true;
-        Refresh();
+        RefreshPreparation();
         try
         {
             var progress = new Progress<SetupProgress>(update =>
@@ -836,7 +940,7 @@ internal sealed class SettingsWindow : Window
             operation.Token.ThrowIfCancellationRequested();
             _startingModel = true;
             _setupStatus = "正在启动本地翻译…";
-            Refresh();
+            RefreshPreparation();
             await _model.StartAsync();
             if (_model.Ready)
             {
@@ -860,7 +964,7 @@ internal sealed class SettingsWindow : Window
         {
             SetupFailed(SetupFailureCategory.Unknown, "Preparation");
         }
-        finally { acceptingProgress = false; _startingModel = false; _install = null; Refresh(); }
+        finally { acceptingProgress = false; _startingModel = false; _install = null; RefreshPreparation(); }
     }
     private void SetupFailed(SetupFailureCategory category, string stage, SetupFailureCategory? recovery = null)
     {

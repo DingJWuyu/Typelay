@@ -446,7 +446,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                 Assert.True(window.IsVisible);
                 Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == view.Title);
                 var prepare = Descendants(window).OfType<Button>().Single(button =>
-                    Equals(button.Content, "检查并准备"));
+                    Equals(button.Content, ApplicationSupportPresentation.Preparation(new(false, false)).PrimaryAction.Label));
                 Assert.True(prepare.IsEnabled);
                 Assert.True(prepare.IsVisible);
                 var checks = Descendants(window).OfType<Button>().Where(button => Equals(button.Content, "检查连接")).ToArray();

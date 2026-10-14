@@ -9,6 +9,8 @@ internal static class Program
     private sealed record SettingsDraftRequest(ShortcutSettingsDraft Shortcuts, string[]? ExcludedApplications = null);
     private sealed record PlacementRequest(RectPx Input, RectPx Work, double Width, double Height, double Gap, double MinimumHeight);
     private sealed record ApplicationSupportRequest(ApplicationSupportFact[] Facts);
+    private sealed record TranslationPreparationRequest(TranslationPreparationPhase Phase,
+        string? FailureCode = null);
     private sealed record PracticeBindingRequest(Guid RunId, TargetId Target);
     public static int Main(string[] args)
     {
@@ -44,7 +46,10 @@ internal static class Program
         {
             model = model.Status,
             modelReady = model.Ready,
+            modelInstalled = model.Installed,
             controller.ServiceStatus,
+            controller.ConnectionState,
+            controller.ConnectionStatus,
             controller.ShortcutStatus,
             controller.OperationStatus,
             controller.CommandFeedbackRevision,
@@ -222,6 +227,14 @@ internal static class Program
                     return true;
                 case "setupFailure":
                     return SetupPresentation(value.ValueKind == JsonValueKind.String ? value.GetString() : null);
+                case "translationPreparation":
+                    var preparation = DesktopLink.Decode<TranslationPreparationRequest>(value);
+                    return ApplicationSupportPresentation.Preparation(new(model.Ready, model.Installed,
+                        preparation.Phase == TranslationPreparationPhase.Idle && !modelStart.IsCompleted
+                            ? TranslationPreparationPhase.StartingModel : preparation.Phase,
+                        preparation.FailureCode is null ? null
+                            : SetupFailurePresentation.CategoryFromCode(preparation.FailureCode)),
+                        TranslationPreparationNextStep.ChooseConnection);
                 case "applicationSupport":
                     // The desktop owns detection and explicit installation actions.
                     // Reading this view never starts either of them.

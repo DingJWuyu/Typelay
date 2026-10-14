@@ -5,6 +5,271 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class SessionControllerTests
 {
+    [Fact]
+    public void ListenerReadinessRefreshesOnceWithoutStartingOrAuthorizingInputWork()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand, initiallyAvailable: true, inputReady: false);
+        Assert.Equal(InputConnectionState.ListenerUnavailable, s.Controller.ConnectionState);
+        Assert.Equal("输入监听尚未就绪", s.Controller.ConnectionStatus);
+        Assert.False(s.Controller.InputAvailable);
+        int changes = 0;
+        s.Controller.Changed += () => changes++;
+        s.Input.Ready = true;
+        s.Tick();
+        Assert.Equal(InputConnectionState.Connected, s.Controller.ConnectionState);
+        Assert.Equal("输入服务已连接", s.Controller.ConnectionStatus);
+        Assert.True(s.Controller.InputAvailable);
+        Assert.Equal(1, changes);
+        s.Tick();
+        s.Tick();
+        Assert.Equal(1, changes);
+        s.Input.Ready = false;
+        s.Tick();
+        Assert.Equal(InputConnectionState.ListenerUnavailable, s.Controller.ConnectionState);
+        Assert.Equal(2, changes);
+        Assert.Equal(0, s.Service.Starts);
+        // The three ready ticks keep their ordinary observations; status adds none.
+        Assert.Equal(3, s.Service.Captures);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+        Assert.Equal(3, s.Input.PublishedLeases.Count);
+        Assert.Null(s.Input.Permit);
+    }
+
+    [Fact]
+    public void AsynchronousStartFailureKeepsTheExistingTwoSecondRetryAndReportsReadiness()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand, inputReady: false, start: false);
+        s.Service.PendingStart = new();
+        var started = s.Controller.StartAsync();
+        Assert.False(started.IsCompleted);
+        Assert.Equal(InputConnectionState.Connecting, s.Controller.ConnectionState);
+        Assert.Equal("正在连接输入服务", s.Controller.ConnectionStatus);
+        Assert.Equal(1, s.Service.Starts);
+        s.CompleteStart(success: false);
+        Assert.True(started.IsCompletedSuccessfully);
+        Assert.Equal(InputConnectionState.Reconnecting, s.Controller.ConnectionState);
+        Assert.Equal("输入服务连接中断，正在重试", s.Controller.ConnectionStatus);
+        s.Tick(1999);
+        Assert.Equal(1, s.Service.Starts);
+        s.Service.PendingStart = new();
+        s.Tick(1);
+        Assert.Equal(2, s.Service.Starts);
+        Assert.Equal(InputConnectionState.Connecting, s.Controller.ConnectionState);
+        s.Tick(40);
+        Assert.Equal(2, s.Service.Starts);
+        s.CompleteStart();
+        Assert.Equal(InputConnectionState.ListenerUnavailable, s.Controller.ConnectionState);
+        s.Input.Ready = true;
+        s.Tick();
+        Assert.Equal(InputConnectionState.Connected, s.Controller.ConnectionState);
+        Assert.Equal(1, s.Service.Captures);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+        Assert.Null(s.Input.Permit);
+    }
+
+    [Fact]
+    public void ConnectionChangesDoNotEraseARejectedCommandOrRepeatItsFeedback()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand, initiallyAvailable: true);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Input.Notices.Enqueue(new("wake", CommandGeneration: s.Input.CommandGeneration,
+            CommandSequence: 1, Rejection: Denial.ImeUnclear));
+        s.Tick();
+        string? status = s.Controller.OperationStatus;
+        Assert.Contains("输入法状态无法确认", status);
+        Assert.Single(feedback);
+        s.Input.Ready = false;
+        s.Tick();
+        Assert.Equal(InputConnectionState.ListenerUnavailable, s.Controller.ConnectionState);
+        s.Input.Ready = true;
+        s.Tick();
+        Assert.Equal(InputConnectionState.Connected, s.Controller.ConnectionState);
+        Assert.Equal(status, s.Controller.OperationStatus);
+        Assert.Equal(status, s.Controller.ServiceStatus);
+        Assert.Single(feedback);
+        Assert.Equal(2, s.Service.Captures);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+        Assert.Null(s.Input.Permit);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ConnectionRecoveryPreservesUnknownWriteResultsAndTargetIsolation(bool nativeReceipt)
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Input.Notices.Enqueue(new("accept", permit, s.Loop.NowMs, s.Input.UserEpoch, s.Input.ForegroundEpoch,
+            CompletedReceipt: nativeReceipt ? new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome) : null,
+            CommandGeneration: s.Input.CommandGeneration));
+        s.Tick();
+        string? status = s.Controller.OperationStatus;
+        Assert.Contains("写回结果未确认", status);
+        Assert.Equal(SessionState.OutcomeUnknown, s.View.State);
+        int captures = s.Service.Captures;
+        int translations = s.Model.Jobs.Count;
+        int writes = s.Service.Writes.Count;
+        s.Input.Ready = false;
+        s.Tick();
+        Assert.Equal(captures, s.Service.Captures);
+        s.Input.Ready = true;
+        s.Tick();
+        Assert.Equal(captures + 1, s.Service.Captures);
+        Assert.Equal(InputConnectionState.Connected, s.Controller.ConnectionState);
+        Assert.Equal(status, s.Controller.OperationStatus);
+        Assert.Equal(status, s.Controller.ServiceStatus);
+        Assert.Equal(SessionState.OutcomeUnknown, s.View.State);
+        Assert.Equal(translations, s.Model.Jobs.Count);
+        Assert.Equal(writes, s.Service.Writes.Count);
+        Assert.Empty(s.Service.DirectWrites);
+        Assert.Null(s.Input.Permit);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReadFailureRecoveryNeverBecomesAStickyOperationResult(bool disconnected)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.Service.Available = !disconnected;
+        s.FailCapture();
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.Equal(disconnected ? InputConnectionState.Reconnecting : InputConnectionState.Unavailable,
+            s.Controller.ConnectionState);
+        if (disconnected)
+        {
+            s.Tick(1999);
+            Assert.Equal(1, s.Service.Starts);
+            s.Tick(1);
+        }
+        else
+            s.Tick();
+        Assert.Equal(InputConnectionState.Connected, s.Controller.ConnectionState);
+        Assert.Equal("输入服务已连接", s.Controller.ServiceStatus);
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.Equal(disconnected ? 2 : 1, s.Service.Starts);
+        Assert.Equal(2, s.Service.Captures);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+        Assert.Null(s.Input.Permit);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void OnlyACurrentReadResponseClearsTheReadFailureWithoutGrantingAField(bool unfocused)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand, initiallyAvailable: true);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.FailCapture();
+        Assert.Equal(InputConnectionState.Unavailable, s.Controller.ConnectionState);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(s.Fresh with
+        {
+            ObservedAtMs = s.Loop.NowMs - Limits.ObservationMaxAgeMs - 1
+        },
+            FocusMember.Source, "controlled", s.Input.UserEpoch, s.Input.ForegroundEpoch));
+        Assert.Equal(InputConnectionState.Unavailable, s.Controller.ConnectionState);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.Settings.Update(s.Settings.Value with
+        {
+            Target = "zh"
+        });
+        s.CompleteCapture(new(null));
+        Assert.Equal(InputConnectionState.Unavailable, s.Controller.ConnectionState);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(unfocused ? new(s.Fresh, FocusMember.Other) : new(null));
+        Assert.Equal(InputConnectionState.Connected, s.Controller.ConnectionState);
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.View.Visible);
+    }
+
+    [Fact]
+    public void AStartFromAnOlderConfigurationCannotClearTheCurrentReadFailure()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.Service.Available = false;
+        s.FailCapture();
+        s.Service.PendingStart = new();
+        s.Tick(2000);
+        Assert.Equal(InputConnectionState.Connecting, s.Controller.ConnectionState);
+        s.Settings.Update(s.Settings.Value with
+        {
+            Target = "zh"
+        });
+        s.CompleteStart();
+        Assert.Equal(InputConnectionState.Unavailable, s.Controller.ConnectionState);
+        s.Tick();
+        Assert.Equal(InputConnectionState.Connected, s.Controller.ConnectionState);
+        Assert.Null(s.Controller.OperationStatus);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+        Assert.Null(s.Input.Permit);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ABackgroundReadFailureCannotReplaceAnUnknownWriteResult(bool nativeReceipt)
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Input.Notices.Enqueue(new("accept", permit, s.Loop.NowMs, s.Input.UserEpoch, s.Input.ForegroundEpoch,
+            CompletedReceipt: nativeReceipt ? new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome) : null,
+            CommandGeneration: s.Input.CommandGeneration));
+        s.Tick();
+        string? status = s.Controller.OperationStatus;
+        Assert.Contains("写回结果未确认", status);
+        int writes = s.Service.Writes.Count;
+        int translations = s.Model.Jobs.Count;
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.Service.Available = false;
+        s.FailCapture();
+        Assert.Equal(status, s.Controller.OperationStatus);
+        Assert.Equal(status, s.Controller.ServiceStatus);
+        Assert.Equal(InputConnectionState.Reconnecting, s.Controller.ConnectionState);
+        s.Tick(2000);
+        Assert.Equal(InputConnectionState.Connected, s.Controller.ConnectionState);
+        Assert.Equal(status, s.Controller.OperationStatus);
+        Assert.Equal(status, s.Controller.ServiceStatus);
+        Assert.Equal(SessionState.OutcomeUnknown, s.View.State);
+        Assert.Equal(writes, s.Service.Writes.Count);
+        Assert.Equal(translations, s.Model.Jobs.Count);
+        Assert.Null(s.Input.Permit);
+    }
+
+    [Fact]
+    public void AlreadyConnectedInputDoesNotRemainConnectingOrStartAgain()
+    {
+        using var s = new SessionScenario(initiallyAvailable: true);
+        Assert.Equal("输入服务已连接", s.Controller.ServiceStatus);
+        Assert.Equal(0, s.Service.Starts);
+        Assert.Equal(0, s.Service.Captures);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+        Assert.Null(s.Input.Permit);
+    }
+
     [Theory]
     [InlineData("missing")]
     [InlineData("generation")]
@@ -174,7 +439,7 @@ public sealed class SessionControllerTests
         Assert.Contains("写回结果未确认", writeStatus);
         s.View.ResumeRequested!(s.View.PauseRevision);
         Assert.True(s.Settings.Value.Enabled);
-        Assert.Null(s.Controller.OperationStatus);
+        Assert.Equal(writeStatus, s.Controller.OperationStatus);
         Assert.Equal(writeStatus, s.Controller.ServiceStatus);
     }
 

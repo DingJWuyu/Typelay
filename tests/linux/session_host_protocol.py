@@ -88,6 +88,56 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
     def latest(self, name):
         return next(value["data"] for value in reversed(self.events) if value.get("event") == name)
 
+    async def test_preparation_uses_real_installation_facts_and_current_phase(self):
+        missing = await self.ask("translationPreparation", {"phase": "Idle"})
+        self.assertIsInstance(missing, dict)
+        self.assertEqual(missing["primaryAction"]["id"], "Prepare")
+        self.assertEqual(missing["secondaryActions"][0]["id"], "NextStep")
+        self.assertEqual(missing["secondaryActions"][0]["label"], "选择接入方式")
+
+        component = self.home / "data/components/current"
+        (component / "runtime/venv/bin").mkdir(parents=True)
+        (component / "runtime/venv/bin/python").touch()
+        (component / "models").mkdir()
+        (component / "models/installed.json").write_text("{}")
+        installed = await self.ask("translationPreparation", {"phase": "Idle"})
+        self.assertNotEqual(installed["primaryAction"]["id"], "NextStep")
+        self.assertIn("已安装", installed["statusText"] + installed["guidance"])
+        for phase, action, enabled in (
+            ("Preparing", "Pause", True),
+            ("Pausing", "Pause", False),
+            ("Paused", "Resume", True),
+            ("StartingModel", "Prepare", False),
+            ("Failed", "Retry", True),
+        ):
+            with self.subTest(phase=phase):
+                view = await self.ask(
+                    "translationPreparation", {"phase": phase, "failureCode": "network"}
+                )
+                self.assertEqual(view["primaryAction"]["id"], action)
+                self.assertEqual(view["primaryAction"]["enabled"], enabled)
+                if phase == "Failed":
+                    self.assertIn("网络", view["statusText"] + view["guidance"])
+
+    async def test_connection_status_follows_listener_without_claiming_application_access(self):
+        self.assertTrue(await self.ask("start"))
+        self.assertEqual(self.latest("status")["connectionState"], "ListenerUnavailable")
+        await self.send({"event": "state", "data": {"ready": True}})
+        connected = (
+            await self.receive_until(
+                lambda value: value.get("event") == "status"
+                and value["data"].get("connectionState") == "Connected"
+            )
+        )["data"]
+        self.assertEqual(connected["connectionStatus"], "输入服务已连接")
+        self.assertFalse(connected["modelReady"])
+        self.assertIn("尚未连接原生输入适配器", connected["shortcutStatus"])
+        await self.send({"event": "state", "data": {"ready": False}})
+        await self.receive_until(
+            lambda value: value.get("event") == "status"
+            and value["data"].get("connectionState") == "ListenerUnavailable"
+        )
+
     async def test_settings_guidance_tracks_saved_mode_and_shortcuts_in_owner_order(self):
         self.assertTrue(await self.ask("start"))
         guidance = [value for value in self.events if value.get("event") == "settingsGuidance"]

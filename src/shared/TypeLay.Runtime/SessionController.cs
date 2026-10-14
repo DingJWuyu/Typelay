@@ -26,6 +26,7 @@ public sealed class SessionController : IDisposable
     private readonly ISessionLoop _loop;
     private long _generation, _nextCapture, _permitUntil, _editTransitionUntil, _retryBrokerAt;
     private bool _capturing, _writing, _translationRunning, _startingBroker, _returningToSource, _disposed;
+    private bool _inputReadFailed;
     private PauseAnchor? _pauseAnchor;
     private long _pauseViewRevision, _pauseWindowEpoch, _pauseForegroundEpoch;
     private bool _observingPause, _resumingPause;
@@ -47,7 +48,10 @@ public sealed class SessionController : IDisposable
     // Hosts discard queued feedback older than this revision, including when a
     // newer command succeeds and deliberately emits no failure notification.
     public long CommandFeedbackRevision => _commandFeedbackRevision;
-    public string ServiceStatus { get; private set; } = "正在连接输入服务";
+    public InputConnectionState ConnectionState { get; private set; } = InputConnectionState.Unavailable;
+    public string ConnectionStatus => ApplicationSupportPresentation.ConnectionStatus(ConnectionState);
+    // Kept for existing hosts; new views can present connection and operation separately.
+    public string ServiceStatus => OperationStatus ?? ConnectionStatus;
     public event Action? Changed;
     public event Action<CommandFeedback>? OperationFeedback;
     public OnDemandPracticeProgress? PracticeProgress
@@ -172,30 +176,49 @@ public sealed class SessionController : IDisposable
         _loop.Start();
         Changed?.Invoke();
     }
+    private void RefreshConnectionStatus()
+    {
+        var state = _startingBroker ? InputConnectionState.Connecting
+            : !_broker.Available ? _retryBrokerAt > 0 ? InputConnectionState.Reconnecting : InputConnectionState.Unavailable
+            : !_hook.Ready ? InputConnectionState.ListenerUnavailable
+            : _inputReadFailed ? InputConnectionState.Unavailable : InputConnectionState.Connected;
+        if (ConnectionState == state)
+            return;
+        ConnectionState = state;
+        Changed?.Invoke();
+    }
     private async Task StartBroker()
     {
-        if (_disposed || _startingBroker || _broker.Available)
+        if (_disposed || _startingBroker)
             return;
+        if (_broker.Available)
+        {
+            RefreshConnectionStatus();
+            return;
+        }
         _startingBroker = true;
-        ServiceStatus = "正在连接输入服务";
-        Changed?.Invoke();
+        long generation = _generation;
+        RefreshConnectionStatus();
         try
         {
             await _broker.StartAsync();
             if (_disposed)
                 return;
-            ServiceStatus = _hook.Ready ? "输入服务已连接（开发版）" : "输入监听未能初始化";
+            if (generation == _generation)
+                _inputReadFailed = false;
             _nextCapture = 0;
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             if (!_disposed)
-            {
-                ServiceStatus = "输入服务连接中断，正在重试";
                 _retryBrokerAt = _loop.NowMs + 2000;
-            }
         }
-        finally { _startingBroker = false; if (!_disposed) Changed?.Invoke(); }
+        finally
+        {
+            _startingBroker = false;
+            if (!_disposed)
+                RefreshConnectionStatus();
+        }
     }
     private void Configure()
     {
@@ -208,12 +231,7 @@ public sealed class SessionController : IDisposable
         _configurationRevision++;
         _commandFeedbackRevision++;
         if (_settings.Value.Enabled && OperationStatus == ResumeSaveFailureStatus)
-        {
             OperationStatus = null;
-            if (ServiceStatus == ResumeSaveFailureStatus)
-                ServiceStatus = !_broker.Available ? "输入服务连接中断，正在重试"
-                    : _hook.Ready ? "输入服务已连接（开发版）" : "输入监听未能初始化";
-        }
         _lastCommandSequence = 0;
         if (_pendingDirect is not null)
             SetServiceStatus(_directWriteSubmitted
@@ -313,6 +331,7 @@ public sealed class SessionController : IDisposable
     {
         if (_disposed)
             return;
+        RefreshConnectionStatus();
         DrainInputNotices();
         long now = _loop.NowMs;
         if (_pendingDirect is { } pending && !_directRunning)
@@ -564,6 +583,13 @@ public sealed class SessionController : IDisposable
                 return;
             }
             long now = _loop.NowMs;
+            bool observationFresh = result.Snapshot is { } observation && now >= observation.ObservedAtMs
+                && now - observation.ObservedAtMs <= Limits.ObservationMaxAgeMs;
+            if (result.Snapshot is null || observationFresh)
+            {
+                _inputReadFailed = false;
+                RefreshConnectionStatus();
+            }
             if (result.Snapshot is not { } snapshot || result.Focus == FocusMember.Other)
             {
                 var pendingWake = _pendingWakeCapture;
@@ -577,7 +603,7 @@ public sealed class SessionController : IDisposable
             }
             if (_hook.GetFocus(snapshot.Target) == FocusMember.Other)
                 return;
-            if (now < snapshot.ObservedAtMs || now - snapshot.ObservedAtMs > Limits.ObservationMaxAgeMs)
+            if (!observationFresh)
             {
                 RevokeInput("capture-expired");
                 _permitUntil = 0;
@@ -653,9 +679,9 @@ public sealed class SessionController : IDisposable
             if (_disposed || generation != _generation)
                 return;
             StopSession("capture-failed");
-            ServiceStatus = "输入服务连接中断，正在重试";
+            _inputReadFailed = true;
             _retryBrokerAt = _loop.NowMs + 2000;
-            Changed?.Invoke();
+            RefreshConnectionStatus();
         }
         finally { _capturing = false; }
     }
@@ -839,7 +865,6 @@ public sealed class SessionController : IDisposable
     private void SetServiceStatus(string status, string? feedbackCode = null,
         Guid? commandGeneration = null, long? commandSequence = null)
     {
-        ServiceStatus = status;
         OperationStatus = status;
         if (feedbackCode is not null)
             OperationFeedback?.Invoke(new(_commandFeedbackRevision, commandGeneration ?? _lastCommandGeneration,
@@ -945,7 +970,7 @@ public sealed class SessionController : IDisposable
         Trace("write-" + receipt.Status + "-" + receipt.Reason, plan.Id);
         if (receipt.Status != WriteStatus.Verified)
         {
-            ServiceStatus = receipt.Status == WriteStatus.OutcomeUnknown ? "写回结果未确认，原目标已隔离" : "写回前安全校验拒绝了本次操作";
+            OperationStatus = receipt.Status == WriteStatus.OutcomeUnknown ? "写回结果未确认，原目标已隔离" : "写回前安全校验拒绝了本次操作";
             Changed?.Invoke();
         }
     }
@@ -980,7 +1005,7 @@ public sealed class SessionController : IDisposable
         Trace("write-" + receipt.Status + "-" + receipt.Reason);
         if (receipt.Status != WriteStatus.Verified)
         {
-            ServiceStatus = receipt.Status == WriteStatus.OutcomeUnknown ? "写回结果未确认，当前目标已隔离" : "写回前安全校验拒绝了本次操作";
+            OperationStatus = receipt.Status == WriteStatus.OutcomeUnknown ? "写回结果未确认，当前目标已隔离" : "写回前安全校验拒绝了本次操作";
             Changed?.Invoke();
         }
         _writing = false;

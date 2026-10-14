@@ -2,6 +2,59 @@ namespace TypeLay.Runtime;
 
 public static class ApplicationSupportPresentation
 {
+    public static TranslationPreparationView Preparation(TranslationPreparationFact facts,
+        TranslationPreparationNextStep nextStep = TranslationPreparationNextStep.TryIt)
+    {
+        ArgumentNullException.ThrowIfNull(facts);
+        if (!Enum.IsDefined(facts.Phase) || !Enum.IsDefined(nextStep))
+            throw new ArgumentException("translation-preparation-facts", nameof(facts));
+        switch (facts.Phase)
+        {
+            case TranslationPreparationPhase.Preparing:
+                return new("正在准备本地翻译组件…", "可暂停并保留已验证的下载进度。",
+                    new(TranslationPreparationAction.Pause, "暂停下载"), []);
+            case TranslationPreparationPhase.Pausing:
+                return new("正在暂停，保留已验证的下载进度…", "暂停完成后可继续准备。",
+                    new(TranslationPreparationAction.Pause, "正在暂停…", false), []);
+            case TranslationPreparationPhase.Paused:
+                return new(SetupFailurePresentation.PausedMessage, "",
+                    new(TranslationPreparationAction.Resume, SetupFailurePresentation.ResumeLabel), []);
+            case TranslationPreparationPhase.StartingModel:
+                return new("正在启动本地翻译…", "启动完成后才能确认本地翻译是否就绪。",
+                    new(TranslationPreparationAction.Prepare, "正在启动翻译…", false), []);
+        }
+        if (facts.Phase == TranslationPreparationPhase.Failed || facts.FailureCategory is not null)
+        {
+            var failure = SetupFailurePresentation.Create(facts.FailureCategory ?? SetupFailureCategory.Unknown);
+            var recovery = facts.RecoveryFailureCategory is { } category ? SetupFailurePresentation.Create(category) : null;
+            string guidance = recovery is null ? failure.NextStep : recovery.Message + "\n" + recovery.NextStep;
+            if (facts.ModelReady)
+                guidance += "\n当前模型仍可用；本次准备尚未完成。";
+            return new(failure.Message, guidance, new(TranslationPreparationAction.Retry, failure.RetryLabel), []);
+        }
+        var next = new TranslationPreparationActionView(TranslationPreparationAction.NextStep,
+            nextStep == TranslationPreparationNextStep.ChooseConnection ? "选择接入方式" : "试一试",
+            facts.ModelReady || nextStep == TranslationPreparationNextStep.ChooseConnection);
+        if (facts.ModelReady)
+            return new("本地翻译组件已就绪", "模型就绪不代表应用已经连接；请继续检查实际输入框。",
+                next, [new(TranslationPreparationAction.Repair, "修复本地翻译组件…")]);
+        if (facts.ModelInstalled)
+            return new("本地翻译尚未就绪", "组件已安装，但本地翻译尚未确认可用。请查看模型状态或重新准备。",
+                new(TranslationPreparationAction.Retry, "重新准备"), [next]);
+        return new("本地翻译组件尚未准备", "准备本地运行组件与模型后，再连接需要使用的应用。",
+            new(TranslationPreparationAction.Prepare, "准备本地翻译…"), [next]);
+    }
+
+    public static string ConnectionStatus(InputConnectionState state) => state switch
+    {
+        InputConnectionState.Unavailable => "输入服务暂不可用",
+        InputConnectionState.Connecting => "正在连接输入服务",
+        InputConnectionState.Connected => "输入服务已连接",
+        InputConnectionState.ListenerUnavailable => "输入监听尚未就绪",
+        InputConnectionState.Reconnecting => "输入服务连接中断，正在重试",
+        _ => throw new ArgumentOutOfRangeException(nameof(state))
+    };
+
     private sealed record Entry(string Id, string Title, string Description, bool ManualOnly = false);
 
     // Product tasks, not toolkit/provider names. Both desktop hosts render this order.

@@ -14,7 +14,9 @@ public static class SetupFailurePresentation
     public static string PausedMessage => "准备已暂停。已下载的部分会保留，可继续准备。";
     public static string ResumeLabel => "继续准备";
 
-    public static SetupFailureView FromCode(string? code) => Create(code switch
+    public static SetupFailureView FromCode(string? code) => Create(CategoryFromCode(code));
+
+    public static SetupFailureCategory CategoryFromCode(string? code) => code switch
     {
         "network" => SetupFailureCategory.Network,
         "disk-space" => SetupFailureCategory.DiskSpace,
@@ -22,7 +24,7 @@ public static class SetupFailurePresentation
         "permission" => SetupFailureCategory.Permission,
         "runtime" => SetupFailureCategory.Runtime,
         _ => SetupFailureCategory.Unknown
-    });
+    };
 
     public static SetupFailureView Create(SetupFailureCategory category) => category switch
     {

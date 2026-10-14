@@ -92,3 +92,38 @@ public sealed record ApplicationSupportLabels(
 
 public sealed record ApplicationSupportView(
     string Title, string Summary, string CapabilityNote, ApplicationSupportRow[] Rows, ApplicationSupportLabels Labels);
+
+// These preparation facts are independent of application/field capabilities.
+public enum TranslationPreparationPhase
+{
+    Idle, Preparing, Pausing, Paused, StartingModel, Failed
+}
+
+public enum TranslationPreparationAction
+{
+    Prepare, Pause, Resume, Retry, NextStep, Repair
+}
+
+public enum TranslationPreparationNextStep
+{
+    TryIt, ChooseConnection
+}
+
+public sealed record TranslationPreparationFact(
+    bool ModelReady,
+    bool ModelInstalled,
+    TranslationPreparationPhase Phase = TranslationPreparationPhase.Idle,
+    SetupFailureCategory? FailureCategory = null,
+    SetupFailureCategory? RecoveryFailureCategory = null);
+
+public sealed record TranslationPreparationActionView(
+    TranslationPreparationAction Id, string Label, bool Enabled = true);
+
+public sealed record TranslationPreparationView(
+    string StatusText, string Guidance, TranslationPreparationActionView PrimaryAction,
+    TranslationPreparationActionView[] SecondaryActions);
+
+public enum InputConnectionState
+{
+    Unavailable, Connecting, Connected, ListenerUnavailable, Reconnecting
+}

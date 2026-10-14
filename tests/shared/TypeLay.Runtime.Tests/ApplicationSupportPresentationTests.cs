@@ -5,6 +5,102 @@ namespace TypeLay.Runtime.Tests;
 public sealed class ApplicationSupportPresentationTests
 {
     [Fact]
+    public void MissingTranslationOffersPreparationWithoutClaimingAnApplicationConnection()
+    {
+        var view = ApplicationSupportPresentation.Preparation(new(false, false));
+        Assert.Equal("本地翻译组件尚未准备", view.StatusText);
+        Assert.Equal(TranslationPreparationAction.Prepare, view.PrimaryAction.Id);
+        Assert.Equal("准备本地翻译…", view.PrimaryAction.Label);
+        Assert.True(view.PrimaryAction.Enabled);
+        Assert.Equal(TranslationPreparationAction.NextStep, Assert.Single(view.SecondaryActions).Id);
+    }
+
+    [Fact]
+    public void UnreadyTranslationKeepsPracticeDisabledWhileConnectionDetailsRemainDiscoverable()
+    {
+        var windows = ApplicationSupportPresentation.Preparation(new(false, false));
+        Assert.False(Assert.Single(windows.SecondaryActions).Enabled);
+        var linux = ApplicationSupportPresentation.Preparation(new(false, false), TranslationPreparationNextStep.ChooseConnection);
+        Assert.True(Assert.Single(linux.SecondaryActions).Enabled);
+    }
+
+    [Theory]
+    [InlineData(TranslationPreparationPhase.Preparing, TranslationPreparationAction.Pause, "暂停下载", true)]
+    [InlineData(TranslationPreparationPhase.Pausing, TranslationPreparationAction.Pause, "正在暂停…", false)]
+    [InlineData(TranslationPreparationPhase.Paused, TranslationPreparationAction.Resume, "继续准备", true)]
+    [InlineData(TranslationPreparationPhase.StartingModel, TranslationPreparationAction.Prepare, "正在启动翻译…", false)]
+    public void AnActivePreparationPhaseTakesPriorityOverAnOlderReadyModel(
+        TranslationPreparationPhase phase, TranslationPreparationAction action, string label, bool enabled)
+    {
+        foreach (bool ready in new[] { false, true })
+        {
+            var view = ApplicationSupportPresentation.Preparation(new(ready, true, phase));
+            Assert.Equal(action, view.PrimaryAction.Id);
+            Assert.Equal(label, view.PrimaryAction.Label);
+            Assert.Equal(enabled, view.PrimaryAction.Enabled);
+            Assert.Empty(view.SecondaryActions);
+            Assert.NotEqual("本地翻译组件已就绪", view.StatusText);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PreparationFailureKeepsTheClassifiedReasonAndRetryEvenWithAReadyModel(bool ready)
+    {
+        var view = ApplicationSupportPresentation.Preparation(new(ready, true,
+            TranslationPreparationPhase.Failed, SetupFailureCategory.Network));
+        Assert.Equal("下载连接失败，请检查网络。", view.StatusText);
+        Assert.Contains("检查网络或代理后重新准备", view.Guidance);
+        Assert.Equal(TranslationPreparationAction.Retry, view.PrimaryAction.Id);
+        Assert.Equal("重新准备", view.PrimaryAction.Label);
+        Assert.Empty(view.SecondaryActions);
+        Assert.Equal(ready, view.Guidance.Contains("当前模型仍可用"));
+    }
+
+    [Fact]
+    public void ABlockedRecoveryKeepsBothTheOriginalReasonAndItsActualNextStep()
+    {
+        var view = ApplicationSupportPresentation.Preparation(new(false, true,
+            TranslationPreparationPhase.Failed, SetupFailureCategory.Runtime, SetupFailureCategory.Permission));
+        Assert.Equal("翻译运行环境准备或自检失败。", view.StatusText);
+        Assert.Contains("组件文件访问受限", view.Guidance);
+        Assert.Contains("检查文件占用", view.Guidance);
+    }
+
+    [Fact]
+    public void InstalledButUnreadyTranslationDoesNotClaimThatComponentsAreMissing()
+    {
+        var view = ApplicationSupportPresentation.Preparation(new(false, true));
+        Assert.Equal("本地翻译尚未就绪", view.StatusText);
+        Assert.Equal(TranslationPreparationAction.Retry, view.PrimaryAction.Id);
+        Assert.Equal("重新准备", view.PrimaryAction.Label);
+    }
+
+    [Theory]
+    [InlineData(TranslationPreparationNextStep.TryIt, "试一试")]
+    [InlineData(TranslationPreparationNextStep.ChooseConnection, "选择接入方式")]
+    public void ReadyTranslationEmphasizesTheActualHostNextStepAndMakesRepairSecondary(
+        TranslationPreparationNextStep nextStep, string label)
+    {
+        var view = ApplicationSupportPresentation.Preparation(new(true, true), nextStep);
+        Assert.Equal("本地翻译组件已就绪", view.StatusText);
+        Assert.Equal(TranslationPreparationAction.NextStep, view.PrimaryAction.Id);
+        Assert.Equal(label, view.PrimaryAction.Label);
+        Assert.Equal(TranslationPreparationAction.Repair, Assert.Single(view.SecondaryActions).Id);
+        Assert.Contains("模型就绪不代表应用已经连接", view.Guidance);
+    }
+
+    [Fact]
+    public void UnknownPreparationValuesCannotBePresentedAsReady()
+    {
+        Assert.Throws<ArgumentException>(() => ApplicationSupportPresentation.Preparation(
+            new(true, true, (TranslationPreparationPhase)99)));
+        Assert.Throws<ArgumentException>(() => ApplicationSupportPresentation.Preparation(
+            new(true, true), (TranslationPreparationNextStep)99));
+    }
+
+    [Fact]
     public void BrowserInstructionsHaveASharedLabelWithoutGrantingConnection()
     {
         var view = ApplicationSupportPresentation.Create([

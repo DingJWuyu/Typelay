@@ -189,13 +189,18 @@ class ApplicationSupportPane:
         self.summary = self.note("")
         self.prepare = self.note("")
         self.model = self.note("")
-        prepare_actions = Gtk.Box(spacing=8)
-        prepare_actions.pack_start(owner.install_button, True, True, 0)
-        self.try_button = Gtk.Button()
-        self.try_button.connect("clicked", lambda *_: self.open_practice())
-        prepare_actions.pack_start(self.try_button, False, False, 0)
-        self.box.pack_start(prepare_actions, False, False, 0)
+        self.preparation_guidance = self.note("")
+        self.preparation_notice = self.note("")
+        self.preparation_notice.set_no_show_all(True)
+        self.prepare_actions = Gtk.Box(spacing=8)
+        self.prepare_actions.pack_start(owner.install_button, False, False, 0)
+        self.next_button = Gtk.Button()
+        self.next_button.set_no_show_all(True)
+        self.next_button.connect("clicked", lambda *_: self.choose_connection())
+        self.prepare_actions.pack_start(self.next_button, False, False, 0)
+        self.box.pack_start(self.prepare_actions, False, False, 0)
         self.connect = self.note("")
+        self.connection_status = ""
         self.selector = Gtk.ComboBoxText()
         self.selector.connect("changed", lambda *_: self.render_selected())
         choices = Gtk.Box(spacing=8)
@@ -273,23 +278,56 @@ class ApplicationSupportPane:
         self.owner.pages.child_set_property(self.widget, "title", value["title"])
         self.summary.set_text(value["summary"])
         self.prepare.set_text(labels["prepareTranslation"])
-        self.connect.set_text(labels["connectApplications"])
+        self.render_connection()
         self.owner.tutorial.connection_button.set_label(labels["connectApplications"])
         self.more.set_label(labels["moreApplications"])
         self.details.set_label(labels["details"])
-        self.try_button.set_label(labels["tryIt"])
         self.recovery.set_text(labels["recovery"] + "：" + labels["checkAgain"])
         self.rows = {row["id"]: row for row in value["rows"]}
         self.render_choices()
-        self.render_model()
+        self.render_preparation()
 
-    def render_model(self):
-        self.model.set_text(
-            "本地翻译组件已就绪" if self.owner.model_ready else "本地翻译组件尚未就绪"
+    def render_preparation(self):
+        view = self.owner.preparation_view
+        if not view:
+            return
+        self.model.set_text(view["statusText"])
+        self.preparation_guidance.set_text(view["guidance"])
+        primary = view["primaryAction"]
+        current = self.owner.preparation_view_revision == self.owner.preparation_revision
+        next_step = primary["id"] == "NextStep"
+        actions = [primary, *view["secondaryActions"]]
+        install_action = next((action for action in actions if action["id"] != "NextStep"), None)
+        next_action = next((action for action in actions if action["id"] == "NextStep"), None)
+        if install_action:
+            self.owner.install_button.set_label(install_action["label"])
+            self.owner.install_button.set_sensitive(install_action["enabled"] and current)
+        self.owner.install_button.set_visible(install_action is not None)
+        install_style = self.owner.install_button.get_style_context()
+        if next_step:
+            install_style.remove_class("suggested-action")
+        else:
+            install_style.add_class("suggested-action")
+        self.prepare_actions.reorder_child(self.next_button, 0 if next_step else 1)
+        self.next_button.set_visible(next_action is not None)
+        if next_action:
+            self.next_button.set_label(next_action["label"])
+            self.next_button.set_sensitive(
+                next_action["enabled"] and current and self.value is not None
+            )
+        next_style = self.next_button.get_style_context()
+        if next_step:
+            next_style.add_class("suggested-action")
+        else:
+            next_style.remove_class("suggested-action")
+
+    def render_connection(self):
+        label = self.value["labels"]["connectApplications"] if self.value else "连接应用"
+        self.connect.set_text(
+            label + (" · " + self.connection_status if self.connection_status else "")
         )
-        self.try_button.set_sensitive(self.value is not None)
 
-    def open_practice(self):
+    def choose_connection(self):
         # The existing desktop row owns package preparation and the explicit
         # private-input-method confirmation. Opening this entry starts neither.
         self.selector.set_active_id("desktop-text")
@@ -613,8 +651,17 @@ class Settings:
         self.pending_settings = {}
         self.settings_lock = asyncio.Lock()
         self.model_ready = False
+        self.model_status = ""
         self.first_show = True
         self.installation_state = "idle"
+        self.installation_failure = None
+        self.installation_message = ""
+        self.preparation_view = None
+        self.preparation_view_revision = -1
+        self.preparation_model_facts = None
+        self.preparation_revision = 0
+        self.preparation_pending = False
+        self.preparation_error = ""
         self.install_requested, self.pause_requested = install_requested, pause_requested
         self.window = Gtk.Window(title="TypeLay 设置")
         self.window.set_default_size(880, 720)
@@ -828,6 +875,7 @@ class Settings:
         buttons = Gtk.Box(spacing=8)
         footer.pack_start(buttons, False, False, 0)
         self.install_button = Gtk.Button(label="安装本地翻译组件…")
+        self.install_button.set_sensitive(False)
         self.install_button.connect("clicked", self.install_clicked)
         quit_button = Gtk.Button(label="退出 TypeLay")
         quit_button.connect("clicked", lambda *_: self.dismiss(quit_requested=quit_requested))
@@ -1058,21 +1106,25 @@ class Settings:
 
     def report(self, value):
         self.model_ready = value.get("modelReady", False)
+        self.model_status = value.get("model") or ""
+        self.render_preparation_notice()
         self.tutorial.generate.set_sensitive(
             self.model_ready
             and self.tutorial.state != "translating"
             and bool(self.tutorial.source.get_text().strip())
         )
-        self.application_support.render_model()
-        if self.installation_state in ("idle", "ready"):
-            self.install_button.set_label(
-                "修复本地翻译组件…" if self.model_ready else "安装本地翻译组件…"
-            )
+        model_facts = (self.model_ready, value.get("modelInstalled", False), self.model_status)
+        if model_facts != self.preparation_model_facts:
+            self.preparation_model_facts = model_facts
+            self.refresh_preparation()
+        self.application_support.connection_status = value.get("connectionStatus") or ""
+        self.application_support.render_connection()
         # The support page owns normal readiness and connection details. Keep
         # unclassified service/command feedback visible instead of guessing
         # severity from its text; the two fields can describe the same result.
-        pieces = [value.get("model") if not self.model_ready else None]
-        pieces.extend(value.get(key) for key in ("serviceStatus", "operationStatus"))
+        pieces = [value.get("operationStatus")]
+        if "connectionState" not in value:
+            pieces.append(value.get("serviceStatus"))
         shortcut_status = value.get("shortcutStatus") or ""
         self.application_support.shortcut_status.set_text(shortcut_status)
         self.application_support.shortcut_status.set_visible(bool(shortcut_status))
@@ -1090,23 +1142,76 @@ class Settings:
             self.pause_requested()
         elif self.installation_state == "paused":
             self.install_requested()
-        elif self.installation_state != "pausing":
+        elif self.installation_state not in ("pausing", "starting"):
             self.confirm_install(self.install_requested)
 
-    def installation(self, state, message, button_label=None):
+    def installation(self, state, message="", failure=None):
         self.installation_state = state
-        self.message.set_text(message)
-        self.install_button.set_label(
-            button_label
-            or {"running": "暂停下载", "pausing": "正在暂停…", "paused": "继续下载"}.get(
-                state, "安装 / 修复组件…"
-            )
-        )
-        self.install_button.set_sensitive(state != "pausing")
+        self.installation_failure = failure
+        self.installation_progress(message)
+        self.refresh_preparation()
+
+    def installation_progress(self, message):
+        self.installation_message = message
+        self.render_preparation_notice()
+
+    def render_preparation_notice(self):
+        notice = self.application_support.preparation_notice
+        message = self.preparation_error or self.installation_message
+        if not message and self.installation_state in ("idle", "ready") and not self.model_ready:
+            message = self.model_status
+        notice.set_text(message)
+        notice.set_visible(bool(message))
+
+    def refresh_preparation(self):
+        self.preparation_revision += 1
+        self.install_button.set_sensitive(False)
+        self.application_support.next_button.set_sensitive(False)
+        if not self.preparation_pending:
+            self.preparation_pending = True
+            self.tasks(self.load_preparation())
+
+    async def load_preparation(self):
+        try:
+            while True:
+                revision = self.preparation_revision
+                phase = {
+                    "running": "Preparing",
+                    "pausing": "Pausing",
+                    "paused": "Paused",
+                    "starting": "StartingModel",
+                    "failed": "Failed",
+                }.get(self.installation_state, "Idle")
+                try:
+                    view = await self.host.ask(
+                        "translationPreparation",
+                        {"phase": phase, "failureCode": self.installation_failure},
+                        timeout=2,
+                    )
+                except (OSError, ValueError, EOFError, TimeoutError):
+                    if revision != self.preparation_revision:
+                        continue
+                    raise
+                if revision != self.preparation_revision:
+                    continue
+                if not isinstance(view, dict):
+                    raise ValueError("preparation-unavailable")
+                self.preparation_view = view
+                self.preparation_view_revision = revision
+                self.preparation_error = ""
+                self.application_support.render_preparation()
+                self.render_preparation_notice()
+                break
+        except (OSError, ValueError, EOFError, TimeoutError):
+            self.preparation_error = "暂时无法读取准备状态，请重新打开设置。"
+            self.render_preparation_notice()
+        finally:
+            self.preparation_pending = False
 
     def diagnostics(self):
         return {
             "installation": self.installation_state,
+            "preparation": self.preparation_view,
             "onboardingComplete": bool(self.value and self.value["onboardingComplete"]),
             "tutorialVisible": self.tutorial.window.get_visible(),
             "tutorialState": self.tutorial.state,
@@ -1134,6 +1239,7 @@ class Settings:
         self.window.present()
         self.tasks(self.load_draft_messages())
         self.tasks(self.application_support.refresh())
+        self.refresh_preparation()
 
     def confirm_install(self, install):
         dialog = Gtk.MessageDialog(
