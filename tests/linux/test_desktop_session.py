@@ -439,7 +439,6 @@ class DesktopSessionTests(unittest.TestCase):
             "XDG_CONFIG_HOME": str(self.home / "config"),
             "XDG_DATA_HOME": str(self.data.parent),
             "XDG_CACHE_HOME": str(self.home / "cache"),
-            "XDG_RUNTIME_DIR": "",
         }
         return subprocess.run(
             [sys.executable, "-I", "-B", str(self.package / "install.py"), "uninstall", *arguments],
@@ -450,25 +449,43 @@ class DesktopSessionTests(unittest.TestCase):
         )
 
     def test_uninstall_refuses_owned_application_then_preserves_data_after_natural_exit(self):
+        from unittest.mock import patch
+
         # Match the installer's actual XDG data location for this integration.
         self.data = self.home / "xdg/typelay"
         self.managed = self.data / "components/desktop-text"
         self.managed.mkdir(parents=True, mode=0o700)
+        retained = self.data / "keep-data"
+        retained.write_text("synthetic retained data")
         installed = self.home / ".local/lib/typelay"
         installed.mkdir(parents=True)
         sentinel = installed / "keep-until-safe"
         sentinel.write_text("installed")
-        guardian, _ = self.spawn(self.command(close_fds=True))
-        self.started()
-        result = self.installer()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertTrue(sentinel.is_file())
-        (self.home / "finish").touch()
-        guardian.wait(timeout=5)
-        result = self.installer()
+        runtime = self.home / "runtime"
+        runtime.mkdir(mode=0o700)
+        # The guardian and both uninstall attempts share one valid, private runtime.
+        # This test must reach the managed lease, not the invalid-runtime refusal.
+        with patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(runtime)}):
+            guardian, _ = self.spawn(self.command(close_fds=True))
+            application = self.started()
+            with self.assertRaises(BlockingIOError):
+                os.close(removal_lock(self.data))
+            result = self.installer()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(
+                result.stderr,
+                "未完成：请确认目录权限和校验文件，关闭所有 TypeLay 会话后重试。\n",
+            )
+            self.assertTrue(sentinel.is_file())
+            self.assertEqual(process_identity(application["pid"]), application)
+            self.assertIsNone(guardian.poll())
+            (self.home / "finish").touch()
+            self.assertEqual(guardian.wait(timeout=5), 0, guardian.stderr.read().decode())
+            result = self.installer()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse(installed.exists())
         self.assertTrue(self.data.is_dir())
+        self.assertEqual(retained.read_text(), "synthetic retained data")
 
     def test_only_a_new_boot_allows_removal_of_an_orphan_receipt(self):
         guardian, name = self.spawn(self.command(close_fds=True))
