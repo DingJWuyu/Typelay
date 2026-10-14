@@ -3527,6 +3527,9 @@ def run(arguments):
                         lambda: named(managed_window["pid"], "开始练习后，这里会显示进度。"),
                         "reopened practice inherited old completion",
                     )
+                    # Nested XTest does not carry temporary Unicode key mappings
+                    # into niri. Check reopened input with the original ASCII sample.
+                    practice_text = original
                     typed(practice_text)
                     wait_for(lambda: text(source) == practice_text, "reopened practice lost input")
                     key("ctrl+a")
