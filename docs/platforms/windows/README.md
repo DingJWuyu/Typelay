@@ -38,26 +38,26 @@
 
 ### 当前可验证候选
 
-这是开发候选，不是已完成通用输入验收的正式发布。[已核对的 Actions 运行](https://github.com/DingJWuyu/Typelay/actions/runs/38576190815)对应源码 `339133ce484b501592cb12237787aef196c80752`；[下载 Windows artifact](https://github.com/DingJWuyu/Typelay/actions/runs/38576190815/artifacts/11900481736)，其名称为 `typelay-windows-339133ce484b501592cb12237787aef196c80752`。取出内层 `TypeLay-Windows-preview.zip`，再完整解压启动。包内附带说明不用于识别构建，请以本节的源码提交及校验和核对。
+这是开发候选，不是已完成通用输入验收的正式发布。[已核对的 Actions 运行](https://github.com/DingJWuyu/Typelay/actions/runs/38596552508)对应源码 `9d419b9416db34231009fa3cca31a3d2c1792524`；[下载 Windows artifact](https://github.com/DingJWuyu/Typelay/actions/runs/38596552508/artifacts/11911375765)，其名称为 `typelay-windows-9d419b9416db34231009fa3cca31a3d2c1792524`。取出内层 `TypeLay-Windows-preview.zip`，再完整解压启动。包内附带说明不用于识别构建，请以本节的源码提交及校验和核对。
 
-该运行的 Windows 检查仍因 Chrome 页面启动/输入焦点前置失败而为红色，不能标为全套通过。artifact 预计于 **2026-10-28 14:02 UTC** 到期，届时需核对新的候选，不能将其它包当作同一版本。
+该运行的 Windows 检查仍因 Chrome 输入焦点前置失败而为红色；随机 profile 清理还报告文件占用，不能标为全套通过。artifact 预计于 **2026-10-28 16:20 UTC** 到期，届时需核对新的候选，不能将其它包当作同一版本。
 
 <details>
 <summary>包校验与版本配对</summary>
 
-- 源码提交：`339133ce484b501592cb12237787aef196c80752`
-- 内层安装 ZIP：76,604,544 字节；SHA-256：`6c5b5e1f8a8f8dab0cbdf94e126100d3478661268e427b2b5f46c43915724c28`。已与包旁的 `.sha256` 文件核对。
-- 外层 Actions artifact：77,465,245 字节；SHA-256：`43cc3a7ad510e2dab29478e421f774f0e689a8e5cd2387f6fde121c9b76c55f3`。不要混用内外层校验值。
-- 已直接读取包内 App、Broker、Windows.Contracts、Practice 四个程序集的元数据，均为 `0.2.0-dev+339133ce484b501592cb12237787aef196c80752`；程序集/文件版本均为 `0.2.0.0`。仅看 `0.2.0.0` 不能区分开发包。
-- App/Broker/Practice 均为 win-x64 自包含发行；App/Broker 使用 .NET 与 WindowsDesktop `10.0.13`，Practice 使用 .NET `10.0.13`。包内 `BrokerProtocol.Version=3`。不要混放旧包文件。
+- 源码提交：`9d419b9416db34231009fa3cca31a3d2c1792524`
+- 内层安装 ZIP：76,607,073 字节；SHA-256：`080a863074da74cdbfc54fd1438e1cfdb5c1f69914e22c0aa511ce30913194fc`。已与包旁的 `.sha256` 文件核对。
+- 外层 Actions artifact：77,483,004 字节；SHA-256：`1f4701b73b477f2eafc7d0b65f79b9d81591e5a4e747c80e3c2619ce068b2a56`。不要混用内外层校验值。
+- 已直接读取包内 App、Broker、Windows.Contracts、Practice 四个程序集的元数据，均为 `0.2.0-dev+9d419b9416db34231009fa3cca31a3d2c1792524`；程序集/文件版本均为 `0.2.0.0`。仅看 `0.2.0.0` 不能区分开发包。
+- App/Broker/Practice 均为 win-x64 自包含发行；App/Broker 使用 .NET 与 WindowsDesktop `10.0.13`，Practice 使用 .NET `10.0.13`。包内 `BrokerProtocol.Version=3`，原生组件导出 `TypeLayNativeProtocolVersion=2`。不要混放旧包文件。
 
 在 ZIP 所在文件夹可用 `Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256` 核对内层安装包。
 
 </details>
 
-同一提交已通过 Core 214、Runtime 155、Protocol 9、Windows.Contracts 21 项，Windows 原生适配器 16 项，以及完整 ZIP 搬迁后发行包 14 项。App 桌面回归为 **62/63**：四键设置及保存失败保护、浅深主题/两种窗口尺寸、编辑器按键归属、暂停与恢复、密码拒绝和按需练习生命周期均通过；唯一失败是 Chrome 前置，尚未尝试正文采集。
+同一提交已通过 Core 214、Runtime 191、Protocol 9、Windows.Contracts 21 项，Windows 原生适配器 16 项，以及 15 项打包检查（完整 ZIP 搬迁后发行包 14 项和原生后置守卫算法回归 1 项）。App 桌面回归为 **82/83**：20 项严格前台事务正负控、四键设置及保存失败保护、浅深主题/两种窗口尺寸、编辑器按键归属、暂停与恢复、密码拒绝和按需练习生命周期均通过；唯一失败是 Chrome 前置，尚未尝试正文采集。算法替身通过不等于真实 OS 同步重入已验收，也不授予完整教程或通用自动写回权限。
 
-生产构建的真实本地模型检查分别通过无标点持续预览、一次原生 Edit 直接替换，以及正式按需练习中的预览后替换，源焦点、提交计数、结果和清理均验证。自动化注入不等于物理按键或输入法验收；Windows 生产与测试源码相同的较早运行曾在测试输入消息的 100ms 期限内超时，本轮未复现不能当作稳定性问题已修复。Chrome 新标签页、复杂输入控件及用户报告的其它应用仍须按[最小实机步骤](open-issues.md#新标签页实机复现)独立验证，原生 Edit 成功不能泛化为这些应用可写。
+生产构建的真实本地模型检查分别通过无标点持续预览、一次原生 Edit 直接替换，以及正式按需练习中的预览后替换，源焦点、提交计数、结果和清理均验证。自动化注入不等于物理按键或输入法验收；较早运行曾在测试输入消息的 100ms 期限内超时，本轮未复现不能当作稳定性问题已修复。Chrome 新标签页、复杂输入控件及用户报告的其它应用仍须按[最小实机步骤](open-issues.md#新标签页实机复现)独立验证，原生 Edit 成功不能泛化为这些应用可写。
 
 ## 工作模式与按需操作
 
