@@ -1416,24 +1416,6 @@ def run(arguments):
                                 "with the source across rebinding until a fresh physical down"
                             )
 
-                            from gtk_session_reentry import run_reentry_checks
-
-                            with ExitStack() as reentry_resources:
-                                run_reentry_checks(
-                                    fixture.args,
-                                    gtk_environment,
-                                    arguments.output,
-                                    prepare_key(reentry_resources, "F1"),
-                                    gtk4=gtk4,
-                                    nested=nested[0],
-                                )
-                            evidence.append(
-                                "GTK mutation callbacks: delete/insert/final selection "
-                                "generation changes preserve the issued Unknown receipt, "
-                                "stop subsequent actions and quarantine without retry; "
-                                "same-generation controls verify actual body and selection"
-                            )
-
                             # The remaining original OnDemand/pause/direct stages
                             # retain their defaults in the next ordinary restart.
                             settings.update({"AcceptShortcut": "Tab", "ExitShortcut": "Esc"})
@@ -2090,6 +2072,25 @@ def run(arguments):
                             assert not status()["setup"]["tutorialVisible"]
                             evidence.append(
                                 "Shipped GTK practice window: production CPU model and one Tab, actual candidate editing and two-stage Tab, explicit completion; accessibility readback without a tutorial controller"
+                            )
+
+                        if session_bindings:
+                            from gtk_session_reentry import run_reentry_checks
+
+                            with ExitStack() as reentry_resources:
+                                run_reentry_checks(
+                                    fixture.args,
+                                    gtk_environment,
+                                    arguments.output,
+                                    prepare_key(reentry_resources, "F1"),
+                                    gtk4=gtk4,
+                                    nested=nested[0],
+                                )
+                            evidence.append(
+                                "GTK mutation callbacks: delete/insert/final selection "
+                                "generation changes preserve the issued Unknown receipt, "
+                                "stop subsequent actions and quarantine without retry; "
+                                "same-generation controls verify actual body and selection"
                             )
                 finally:
                     for child in (practice, fixture, daemon):

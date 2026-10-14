@@ -28,6 +28,14 @@ def wait_for(predicate, description, timeout=5):
     raise AssertionError(description)
 
 
+def validated_geometry(source, backend):
+    space = {"gtk3": "gtk-toplevel", "gtk4": "gtk4-toplevel"}.get(backend)
+    assert space is not None, "GTK reentry requires a known GTK backend"
+    geometry = anchor_geometry(source.get("geometry"), space)
+    assert geometry is not None, "GTK reentry requires a valid parent-local source anchor"
+    return geometry
+
+
 def run_reentry_checks(command, environment, output, send_accept, *, gtk4, nested):
     # Both cases dispatch the same real configure command inside the callback.
     # Only the generation changes, so nested IME dispatch cannot fake a pass.
@@ -180,7 +188,9 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                     return
 
                 def publication(source, generation, replacement):
-                    expected = snapshot(source, client.hello, anchor_geometry(source["geometry"]))
+                    expected = snapshot(
+                        source, client.hello, validated_geometry(source, client.hello["backend"])
+                    )
                     expected["target"]["backend"] = "linux-" + client.hello["backend"]
                     write = plan(expected, replacement)
                     return write, {

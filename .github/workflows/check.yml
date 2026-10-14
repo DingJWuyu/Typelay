@@ -298,6 +298,7 @@ jobs:
           python tests/linux/setup_e2e.py -v
           python tests/linux/test_desktop_session.py -v
           python tests/linux/test_fcitx_session_source.py -v
+          python tests/linux/test_gtk_geometry.py -v
           python eng/linux/build.py --with-test-fixture
       - name: Verify resumable model downloads over isolated HTTP
         if: ${{ needs.scope.outputs.settings != 'true' && !cancelled() && steps.build.outcome == 'success' }}
