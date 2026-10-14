@@ -21,6 +21,68 @@ from paths import Paths
 from wire import now_ms
 
 
+def settings_viewport_from_pane(initial, current):
+    """Recover only the setup page's calibrated GTK3 viewport sentinel.
+
+    GTK 3.24.52's accessibility on_screen check treats a viewport as its own
+    ancestor. A deep scroll can therefore report G_MININT for its origin even
+    though only its bin window moved. This is not a general bounds fallback:
+    the original direct pair, frame, dimensions and fixed page layout must
+    still match the real first-screen observation.
+
+    https://github.com/GNOME/gtk/blob/3.24.52/gtk/a11y/gtkwidgetaccessible.c#L778-L809
+    https://github.com/GNOME/gtk/blob/3.24.52/gtk/gtkviewport.c#L1038-L1060
+    """
+    if initial is None or current is None:
+        return None
+    path = initial["ancestry"]
+    if (
+        len(path) < 3
+        or path[0][2] != "viewport"
+        or path[1][2] != "scroll-pane"
+        or path[-1][2] != "frame"
+        or any(role in ("viewport", "scroll-pane", "frame") for _, _, role in path[2:-1])
+        or current["ancestry"] != path
+        or current["pid"] != initial["pid"]
+        or any(node is None or pid != initial["pid"] for node, pid, _ in path)
+        or not initial["alive"]
+        or not current["alive"]
+        or initial["showing"] != (True, True)
+        or current["showing"] != (True, True)
+    ):
+        return None
+    for bounds in (
+        initial["viewport"],
+        initial["pane"],
+        initial["frame"],
+        current["pane"],
+        current["frame"],
+    ):
+        if (
+            len(bounds) != 4
+            or any(type(value) is not int or not -(2**31) < value < 2**31 for value in bounds)
+            or bounds[2] <= 0
+            or bounds[3] <= 0
+        ):
+            return None
+    pane, frame = current["pane"], current["frame"]
+    old_pane, old_frame = initial["pane"], initial["frame"]
+    if (
+        initial["viewport"] != old_pane
+        or current["viewport"] != (-(2**31), -(2**31), *old_pane[2:])
+        or pane[2:] != old_pane[2:]
+        or frame[2:] != old_frame[2:]
+        or (pane[0] - frame[0], pane[1] - frame[1])
+        != (old_pane[0] - old_frame[0], old_pane[1] - old_frame[1])
+        or not (
+            frame[0] <= pane[0] <= frame[0] + frame[2] - pane[2]
+            and frame[1] <= pane[1] <= frame[1] + frame[3] - pane[3]
+        )
+    ):
+        return None
+    return pane
+
+
 def wait_for(predicate, description, timeout=15):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -2184,12 +2246,103 @@ def run(arguments):
                 text,
             )
 
+            settings_scroll_calibration = None
+            clip_roles = {
+                Atspi.Role.VIEWPORT: "viewport",
+                Atspi.Role.SCROLL_PANE: "scroll-pane",
+                Atspi.Role.FRAME: "frame",
+            }
+
+            def settings_scroll_snapshot(viewport):
+                # Only the fixed application-support page's direct native pair
+                # is eligible. Keep the actual proxies, not names as identity.
+                path, states = [], []
+                ancestor = viewport
+                for _ in range(16):
+                    if ancestor is None:
+                        return None
+                    ancestor.clear_cache()
+                    pid, role = ancestor.get_process_id(), ancestor.get_role()
+                    if pid != process.pid:
+                        return None
+                    path.append((ancestor, pid, clip_roles.get(role, role)))
+                    states.append(ancestor.get_state_set())
+                    if role == Atspi.Role.FRAME:
+                        break
+                    ancestor = ancestor.get_parent()
+                else:
+                    return None
+                if (
+                    len(path) < 3
+                    or path[0][2] != "viewport"
+                    or path[1][2] != "scroll-pane"
+                    or path[1][0].get_name() != "设置页：应用支持"
+                    or path[-1][0].get_name() != "TypeLay 设置"
+                ):
+                    return None
+                snapshot = {
+                    "pid": process.pid,
+                    "ancestry": tuple(path),
+                    "showing": tuple(
+                        states[index].contains(Atspi.StateType.SHOWING) for index in (1, -1)
+                    ),
+                    "alive": not any(state.contains(Atspi.StateType.DEFUNCT) for state in states),
+                }
+                for key, index in (("viewport", 0), ("pane", 1), ("frame", -1)):
+                    rect = Atspi.Component.get_extents(
+                        path[index][0].get_component_iface(), Atspi.CoordType.SCREEN
+                    )
+                    snapshot[key] = (rect.x, rect.y, rect.width, rect.height)
+                return snapshot
+
             def settings_control(name, timeout=15):
                 return wait_for(
                     lambda: named(process.pid, name),
                     f"settings control missing: {name}",
                     timeout=timeout,
                 )
+
+            def calibrate_settings_scroll(trial):
+                # Called only at an already-opened instance's first unscrolled
+                # support page, never as a rescue after a failed focus/scroll.
+                nonlocal settings_scroll_calibration
+                settings_scroll_calibration = None
+                trial.clear_cache()
+                assert trial.get_process_id() == process.pid
+                assert trial.get_state_set().contains(Atspi.StateType.SHOWING)
+                area = Atspi.Component.get_extents(
+                    trial.get_component_iface(), Atspi.CoordType.SCREEN
+                )
+                assert area.x != -(2**31) and area.y != -(2**31)
+                assert area.width > 0 and area.height > 0
+                ancestor = trial.get_parent()
+                for _ in range(16):
+                    assert ancestor is not None and ancestor.get_process_id() == process.pid
+                    ancestor.clear_cache()
+                    if ancestor.get_role() in clip_roles:
+                        assert ancestor.get_role() == Atspi.Role.VIEWPORT
+                        break
+                    ancestor = ancestor.get_parent()
+                else:
+                    raise AssertionError("initial settings viewport exceeds its bounded ancestry")
+                measured = settings_scroll_snapshot(ancestor)
+                assert measured is not None and measured["alive"]
+                assert measured["showing"] == (True, True)
+                assert measured["viewport"] == measured["pane"], (
+                    "initial settings viewport is not coextensive with its direct scroll pane"
+                )
+                assert not any(
+                    role in ("viewport", "scroll-pane", "frame")
+                    for _, _, role in measured["ancestry"][2:-1]
+                )
+                for name in ("viewport", "pane", "frame"):
+                    x, y, width, height = measured[name]
+                    assert x != -(2**31) and y != -(2**31) and width > 0 and height > 0
+                    assert (
+                        x <= area.x <= x + width - area.width
+                        and y <= area.y <= y + height - area.height
+                    ), "practice entry is clipped before initial settings calibration"
+                settings_scroll_calibration = measured
 
             def activate_setting(name, timeout=15):
                 node = settings_control(name, timeout)
@@ -2228,7 +2381,12 @@ def run(arguments):
                         node.get_component_iface(), Atspi.CoordType.SCREEN
                     )
                     last_scroll_check["controlSize"] = [area.width, area.height]
-                    if area.width <= 0 or area.height <= 0:
+                    if (
+                        area.width <= 0
+                        or area.height <= 0
+                        or area.x == -(2**31)
+                        or area.y == -(2**31)
+                    ):
                         return None
                     clips = []
                     ancestor = node.get_parent()
@@ -2249,22 +2407,38 @@ def run(arguments):
                                 and area.x + area.width <= clip.x + clip.width
                                 and area.y + area.height <= clip.y + clip.height
                             )
-                            last_scroll_check["clipping"].append(
-                                {
-                                    "role": {
-                                        Atspi.Role.SCROLL_PANE: "scroll-pane",
-                                        Atspi.Role.VIEWPORT: "viewport",
-                                        Atspi.Role.FRAME: "frame",
-                                    }[role],
-                                    "relativeToControl": [
-                                        clip.x - area.x,
-                                        clip.y - area.y,
-                                        clip.width,
-                                        clip.height,
-                                    ],
-                                    "containsControl": contains_control,
-                                }
-                            )
+                            observation = {
+                                "role": clip_roles[role],
+                                "relativeToControl": [
+                                    clip.x - area.x,
+                                    clip.y - area.y,
+                                    clip.width,
+                                    clip.height,
+                                ],
+                                "containsControl": contains_control,
+                            }
+                            last_scroll_check["clipping"].append(observation)
+                            clip_bounds = (clip.x, clip.y, clip.width, clip.height)
+                            if role == Atspi.Role.VIEWPORT and clip_bounds[:2] == (-(2**31),) * 2:
+                                restored = settings_viewport_from_pane(
+                                    settings_scroll_calibration, settings_scroll_snapshot(ancestor)
+                                )
+                                if restored is not None:
+                                    x, y, width, height = restored
+                                    contains_control = (
+                                        x <= area.x <= x + width - area.width
+                                        and y <= area.y <= y + height - area.height
+                                    )
+                                    # Keep the raw failing observation as well as
+                                    # the narrowly calibrated result.
+                                    observation["calibratedRelativeToControl"] = [
+                                        x - area.x,
+                                        y - area.y,
+                                        width,
+                                        height,
+                                    ]
+                                    observation["calibratedContainsControl"] = contains_control
+                                    clip_bounds = restored
                             if not contains_control:
                                 return None
                             if role == Atspi.Role.FRAME:
@@ -2294,7 +2468,7 @@ def run(arguments):
                                         for x, y, width, height in clips
                                     ],
                                 }
-                            clips.append((clip.x, clip.y, clip.width, clip.height))
+                            clips.append(clip_bounds)
                         ancestor = ancestor.get_parent()
                     raise AssertionError(
                         "scrolled settings control exceeds its bounded GTK ancestry"
@@ -2448,6 +2622,7 @@ def run(arguments):
                     and trial_area.x + trial_area.width <= clip.x + clip.width
                     and trial_area.y + trial_area.height <= clip.y + clip.height
                 ), "practice entry is clipped before the user scrolls or focuses it"
+            calibrate_settings_scroll(trial)
             evidence.append(
                 "Practice entry and selected application primary action fully visible "
                 "in the default GTK viewport"
@@ -2555,6 +2730,9 @@ def run(arguments):
                     "closing clipboard practice did not dismiss the window",
                 )
                 assert not status()["setup"]["onboardingComplete"]
+            # The observed fixed layout belongs only to the browser-instructions
+            # interactions above, never later page edits or a reopened window.
+            settings_scroll_calibration = None
             assert Atspi.Selection.select_child(selector.get_selection_iface(), 0)
             evidence.append(
                 "Real GTK browser instructions: both copy buttons paste the exact management "
@@ -3049,6 +3227,7 @@ def run(arguments):
                     and not any(a["id"] == "Connect" for a in row["actions"]),
                     "fresh client must require the user's original input-method acknowledgement",
                 )
+                calibrate_settings_scroll(settings_control(support["labels"]["tryIt"]))
                 activate_scrolled_setting(
                     "我已记下原输入法的启动方式，并知道如何恢复",
                     evidence_name="application-support-recovery-acknowledgement-scroll",
@@ -3323,6 +3502,7 @@ def run(arguments):
                     typed(practice_text)
                     wait_for(lambda: text(source) == practice_text, "reopened practice lost input")
                     key("ctrl+a")
+                    settings_scroll_calibration = None
                     assert control(paths, "settings") is True
                     selected_settings = wait_for(
                         lambda: next(
@@ -3384,6 +3564,7 @@ def run(arguments):
                         "real F10 retranslates/replaces; presentation refresh preserves source/selection"
                     )
                     settings = json.loads(paths.settings.read_text())
+                    settings_scroll_calibration = None
                     stop()
                     assert any(
                         window["id"] == managed_window["id"]
@@ -3399,6 +3580,7 @@ def run(arguments):
                         and not any(a["id"] == "Remove" for a in row["actions"]),
                         "an application still using the components was offered removal",
                     )
+                    calibrate_settings_scroll(settings_control(support["labels"]["tryIt"]))
                     settings_page("常规")
                     mode = settings_control("设置：工作模式")
                     assert Atspi.Selection.select_child(mode.get_selection_iface(), 0)
@@ -3427,6 +3609,7 @@ def run(arguments):
                     "explicit removal did not finish the private session and remove components",
                     timeout=30,
                 )
+                settings_scroll_calibration = None
                 assert user_profile.read_bytes() == before_profile
                 assert json.loads(paths.settings.read_text())["Mode"] == 0, (
                     "closing practice overwrote the user's later mode change"
