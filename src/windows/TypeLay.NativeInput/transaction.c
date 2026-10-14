@@ -20,10 +20,13 @@ API HANDLE GetProcessHeap(void);
 API void *HeapAlloc(HANDLE, uint32_t, size_t);
 API int HeapFree(HANDLE, uint32_t, void *);
 API uint64_t GetTickCount64(void);
+API void QueryInterruptTimePrecise(uint64_t *);
 API uint32_t GetCurrentThreadId(void);
 API uint32_t GetCurrentProcessId(void);
 API uint32_t GetWindowThreadProcessId(HANDLE, uint32_t *);
 API HANDLE GetAncestor(HANDLE, uint32_t);
+API HANDLE GetForegroundWindow(void);
+API HANDLE GetFocus(void);
 API int IsWindowUnicode(HANDLE);
 API int IsWindowEnabled(HANDLE);
 API intptr_t GetWindowLongPtrW(HANDLE, int);
@@ -44,21 +47,42 @@ API int ImmReleaseContext(HANDLE, HANDLE);
 
 #define MAX_UNITS 8192
 #define CAPACITY (MAX_UNITS + 1)
-#define VERSION 1
+#define VERSION 2
 // Aligned fixed header, followed by three bounded UTF-16 buffers.
 typedef struct {
     uint32_t version, status, reason, op, pid, thread;
     uint64_t hwnd, root, cookie, deadline;
     int32_t length, start, end, replacement_length;
     int32_t selection_start, selection_end, multiline, ime;
+    int32_t expected_selection_start, expected_selection_end;
+    int64_t authorization_deadline_ms;
     WCHAR expected[CAPACITY], replacement[CAPACITY], observed[CAPACITY];
 } Transaction;
-_Static_assert(offsetof(Transaction, expected) == 88, "Protocol header layout");
-_Static_assert(sizeof(Transaction) == 49248, "Protocol mapping length");
+_Static_assert(offsetof(Transaction, expected) == 104, "Protocol header layout");
+_Static_assert(offsetof(Transaction, authorization_deadline_ms) == 96, "Authorization clock offset");
+_Static_assert(sizeof(Transaction) == 49264, "Protocol mapping length");
 
 typedef struct { LPARAM lparam; WPARAM wparam; uint32_t message; HANDLE hwnd; } CallMessage;
-static const WCHAR property[] = L"TypeLay.NativeInput.Lifetime.v1";
-static const WCHAR message_name[] = L"TypeLay.NativeInput.Transaction.v1";
+static const WCHAR property[] = L"TypeLay.NativeInput.Lifetime.v2";
+static const WCHAR message_name[] = L"TypeLay.NativeInput.Transaction.v2";
+
+__declspec(dllexport) uint32_t TypeLayNativeProtocolVersion(void) { return VERSION; }
+
+static int foreground_source(const Transaction *tx) {
+    // This hook executes on the source's GUI thread, so GetFocus identifies the
+    // exact field, rather than merely another field inside the same root window.
+    return GetForegroundWindow() == (HANDLE)(uintptr_t)tx->root
+        && GetFocus() == (HANDLE)(uintptr_t)tx->hwnd;
+}
+static int authorization_current(const Transaction *tx) {
+    // Exactly the App/Broker interrupt-clock domain, including suspend time and
+    // integer millisecond flooring. Never turn the private 500ms budget into a
+    // renewed acceptance deadline. The API-set import is required on Windows 10+.
+    uint64_t now;
+    if (tx->authorization_deadline_ms <= 0) return 0;
+    QueryInterruptTimePrecise(&now);
+    return now / 10000 <= (uint64_t)tx->authorization_deadline_ms;
+}
 
 static void copy(void *destination, const void *source, size_t count) {
     unsigned char *out = destination;
@@ -135,6 +159,9 @@ static void execute(Transaction *tx) {
     }
     WNDPROC proc = qualify(tx);
     if (!proc) return;
+    const int foreground = tx->op == 5;
+    if (foreground && !authorization_current(tx)) { tx->reason = 14; return; }
+    if (foreground && !foreground_source(tx)) { tx->reason = 10; return; }
     uint64_t cookie = (uint64_t)(uintptr_t)GetPropW(hwnd, property);
     if (tx->op == 1 && !cookie) {
         if (!SetPropW(hwnd, property, (HANDLE)(uintptr_t)tx->cookie)) return;
@@ -149,19 +176,30 @@ static void execute(Transaction *tx) {
         tx->length = observed;
         tx->status = 1; tx->reason = 0; return;
     }
-    if (tx->op != 2 || !valid(tx->expected, tx->length)
+    if ((tx->op != 2 && !foreground) || !valid(tx->expected, tx->length)
         || !valid(tx->replacement, tx->replacement_length) || !tx->replacement_length
         || !boundary(tx->expected, tx->length, tx->start)
         || !boundary(tx->expected, tx->length, tx->end) || tx->end < tx->start
         || tx->length - (tx->end - tx->start) + tx->replacement_length > MAX_UNITS) return;
     if (observed != tx->length || !equal(tx->observed, tx->expected, observed)) { tx->reason = 3; return; }
+    if (foreground) {
+        if (!boundary(tx->expected, tx->length, tx->expected_selection_start)
+            || !boundary(tx->expected, tx->length, tx->expected_selection_end)
+            || tx->expected_selection_end < tx->expected_selection_start) { tx->reason = 5; return; }
+        // Expected.Selection is the current selection after returning from the
+        // editor. The replacement Scope can still be a different original range.
+        if (tx->selection_start != tx->expected_selection_start
+            || tx->selection_end != tx->expected_selection_end) { tx->reason = 4; return; }
+    }
     if (!tx->multiline) for (int i = 0; i < tx->replacement_length; i++)
         if (tx->replacement[i] == '\r' || tx->replacement[i] == '\n') { tx->reason = 17; return; }
     LRESULT limit = CallWindowProcW(proc, hwnd, 0xd5, 0, 0); // EM_GETLIMITTEXT.
     if (limit < tx->length - (tx->end - tx->start) + tx->replacement_length) { tx->reason = 16; return; }
     // Validation and replacement execute in this one stock-control GUI-thread
-    // invocation, not in a remote read/SetValue race. No focus APIs are called.
+    // invocation, not in a remote read/SetValue race. No focus-changing APIs are called.
     if (GetTickCount64() > tx->deadline) { tx->reason = 14; return; }
+    if (foreground && !foreground_source(tx)) { tx->reason = 10; return; }
+    if (foreground && !authorization_current(tx)) { tx->reason = 14; return; }
     CallWindowProcW(proc, hwnd, 0xb1, (WPARAM)tx->start, (LPARAM)tx->end);
     // Selection changes may cause synchronous accessibility callbacks. Refuse if
     // any callback changed the source, lifetime, class or composition state.
@@ -170,10 +208,14 @@ static void execute(Transaction *tx) {
         || !equal(tx->observed, tx->expected, tx->length)
         || tx->selection_start != tx->start || tx->selection_end != tx->end
         || GetTickCount64() > tx->deadline) { tx->reason = 3; return; }
+    if (foreground && !foreground_source(tx)) { tx->reason = 10; return; }
+    if (foreground && !authorization_current(tx)) { tx->reason = 14; return; }
     tx->status = 3; tx->reason = 20; // Unknown once mutation starts; never retry.
     CallWindowProcW(proc, hwnd, 0xc2, 1, (LPARAM)tx->replacement); // EM_REPLACESEL, undo enabled.
     if (!qualify(tx) || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie) return;
+    if (foreground && (!foreground_source(tx) || ime(hwnd) != 1)) return;
     int after = read_text(tx, proc) - 1;
+    if (foreground && (!foreground_source(tx) || ime(hwnd) != 1)) return;
     int caret = tx->start + tx->replacement_length;
     int total = tx->length - (tx->end - tx->start) + tx->replacement_length;
     if (after != total || tx->selection_start != caret || tx->selection_end != caret

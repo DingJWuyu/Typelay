@@ -44,6 +44,17 @@ internal static class Program
             0x00CF0000, 180, 100, 900, 720, 0, 0, instance, 0);
         if (_root == 0)
             return 1;
+        // The stock Edit remains untouched. These fixture-owned events only
+        // hold its GUI thread before a queued production transaction dispatch.
+        using var barrierEntered = stockControls ? new EventWaitHandle(false, EventResetMode.ManualReset,
+            N.FixtureGuiBarrierName(Environment.ProcessId, "entered")) : null;
+        using var barrierRelease = stockControls ? new EventWaitHandle(false, EventResetMode.ManualReset,
+            N.FixtureGuiBarrierName(Environment.ProcessId, "release")) : null;
+        using var barrierDrained = stockControls ? new EventWaitHandle(false, EventResetMode.ManualReset,
+            N.FixtureGuiBarrierName(Environment.ProcessId, "drained")) : null;
+        _barrierEntered = barrierEntered;
+        _barrierRelease = barrierRelease;
+        _barrierDrained = barrierDrained;
         var fields = new List<FixtureField>();
         Add("A / single line", "a", "你好，我想测试 TypeLay。", 0, FieldAccess.Supported, 50);
         Add("B / multiline and selection", "b", "Hello 🙂 明天下午见, thanks.\r\nSecond line.", 4 | 0x1000 | 0x40,
@@ -130,6 +141,8 @@ internal static class Program
     private const string ReplayText = "今天我们连续输入中文测试每个字都没有标点希望翻译在打字期间不断刷新并且不会抢走输入框的焦点";
     private static int _submits;
     private static HookHarness? _hookHarness;
+    private static EventWaitHandle? _barrierEntered, _barrierRelease, _barrierDrained;
+    private static int _barrierStatus;
     private static readonly Dictionary<nint, nint> PreviousProcedures = new();
     private static readonly HashSet<nint> StockFields = new();
     // Keep delegates alive as long as the HWNDs exist.
@@ -182,6 +195,21 @@ internal static class Program
         }
         if (message == N.FixtureSubmitCount)
             return (nint)_submits;
+        if (message == N.FixtureBlockGui && _barrierEntered is not null && _barrierRelease is not null)
+        {
+            _barrierEntered.Set();
+            // Non-alertable kernel wait: no sent messages may reenter the GUI
+            // thread here. The bounded escape prevents a failed test hanging it.
+            _barrierStatus = WaitForSingleObject(_barrierRelease.SafeWaitHandle.DangerousGetHandle(), 2_000) == 0 ? 1 : 2;
+            return 0;
+        }
+        if (message == N.FixtureGuiDrained && _barrierDrained is not null)
+        {
+            _barrierDrained.Set();
+            return 0;
+        }
+        if (message == N.FixtureBarrierStatus)
+            return _barrierStatus;
         if (message == N.FixtureClearPassword)
         {
             // Only this fixture's own unmodified single-line Edit may leave the
@@ -327,4 +355,5 @@ internal static class Program
     [DllImport("user32.dll")] private static extern nuint SetTimer(nint hwnd, nuint id, uint interval, nint callback);
     [DllImport("user32.dll")][return: MarshalAs(UnmanagedType.Bool)] private static extern bool KillTimer(nint hwnd, nuint id);
     [DllImport("user32.dll")] private static extern nint GetFocus();
+    [DllImport("kernel32.dll")] private static extern uint WaitForSingleObject(nint handle, uint milliseconds);
 }

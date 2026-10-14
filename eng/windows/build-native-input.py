@@ -35,6 +35,8 @@ def main() -> None:
             "RegisterWindowMessageW",
             "GetWindowThreadProcessId",
             "GetAncestor",
+            "GetForegroundWindow",
+            "GetFocus",
             "IsWindowUnicode",
             "IsWindowEnabled",
             "GetWindowLongPtrW",
@@ -47,6 +49,7 @@ def main() -> None:
             "CallWindowProcW",
         ],
         "imm32": ["ImmGetContext", "ImmGetCompositionStringW", "ImmReleaseContext"],
+        "api-ms-win-core-realtime-l1-1-1": ["QueryInterruptTimePrecise"],
     }
     with tempfile.TemporaryDirectory(prefix="typelay-native-input-") as folder:
         work = Path(folder)

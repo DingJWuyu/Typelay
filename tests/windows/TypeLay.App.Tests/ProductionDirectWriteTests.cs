@@ -163,7 +163,7 @@ public sealed class ProductionDirectWriteTests(ITestOutputHelper output)
             // Losing the cookie must invalidate old jobs, even at the same HWND.
             source = await Capture("你好", new(2, 2));
             plan = Plan(source, "Hello");
-            N.RemoveProp(a, "TypeLay.NativeInput.Lifetime.v1");
+            N.RemoveProp(a, "TypeLay.NativeInput.Lifetime.v2");
             await Call(new(BrokerProtocol.Version, 0, "capture", "", CaptureDirect: true));
             await Focus(b);
             Assert.Equal(WriteStatus.RejectedBeforeMutation, (await Write(plan)).Status);

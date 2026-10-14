@@ -14,8 +14,9 @@ namespace TypeLay.Broker;
 // is performed by the stock Edit's GUI thread, not by this cross-process caller.
 internal sealed class NativeEditTransactions : IDisposable
 {
-    public const string Provider = "win32-edit-transaction-v1";
-    private const int HeaderSize = 88, BufferBytes = (Limits.MaxTextUnits + 1) * 2, MappingSize = 49248;
+    public const string Provider = "win32-edit-transaction-v2";
+    private const uint ProtocolVersion = 2;
+    private const int HeaderSize = 104, BufferBytes = (Limits.MaxTextUnits + 1) * 2, MappingSize = 49264;
     private readonly Dictionary<long, Binding> _bindings = new();
     private readonly Dictionary<uint, nint> _hooks = new();
     private nint _library, _procedure;
@@ -48,7 +49,20 @@ internal sealed class NativeEditTransactions : IDisposable
             WriteSupported: true, DirectWriteSupported: true);
     }
 
-    public WriteReceipt Write(WritePlan plan)
+    public WriteReceipt Write(WritePlan plan) => Write(plan, 2, 0);
+
+    // This is the original acceptance deadline, not a fresh native dispatch budget.
+    // The target's GUI thread checks it again after any selection-change callbacks.
+    public WriteReceipt WriteForeground(WritePlan plan, long expiresAtMs)
+    {
+        if (plan.Expected.Selection is not { } selection || !selection.IsValid(plan.Expected.Text))
+            return new(WriteStatus.RejectedBeforeMutation, Denial.InvalidSelection);
+        if (expiresAtMs <= 0)
+            return new(WriteStatus.RejectedBeforeMutation, Denial.StaleObservation);
+        return Write(plan, 5, expiresAtMs);
+    }
+
+    private WriteReceipt Write(WritePlan plan, uint operation, long expiresAtMs)
     {
         if (!_bindings.TryGetValue(plan.Expected.Target.AsWindows().ControlHwnd, out var binding)
             || binding.Target != plan.Expected.Target)
@@ -56,7 +70,7 @@ internal sealed class NativeEditTransactions : IDisposable
         using var process = Process.GetProcessById(binding.Target.ProcessId);
         if (process.StartTime.ToUniversalTime().Ticks != binding.Target.ProcessStartUtcTicks)
             return new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged);
-        var result = Invoke(binding, 2, plan);
+        var result = Invoke(binding, operation, plan, expiresAtMs);
         if (result.Status == 2)
             return new(WriteStatus.RejectedBeforeMutation, result.Reason);
         if (result.Status != 1 || result.Text != plan.ResultText || result.Selection != new TextRange(plan.Caret, plan.Caret))
@@ -107,9 +121,24 @@ internal sealed class NativeEditTransactions : IDisposable
             string path = Path.Combine(AppContext.BaseDirectory, "TypeLay.NativeInput.dll");
             if (!File.Exists(path))
                 return null;
-            _library = NativeLibrary.Load(path);
-            _procedure = NativeLibrary.GetExport(_library, "TypeLayCallWndProc");
-            _message = RegisterWindowMessageW("TypeLay.NativeInput.Transaction.v1");
+            nint library = NativeLibrary.Load(path);
+            try
+            {
+                // v1 cannot check the original deadline or expected selection.
+                // A stale/mismatched DLL must not advertise native capability.
+                if (!NativeLibrary.TryGetExport(library, "TypeLayNativeProtocolVersion", out nint version)
+                    || Marshal.GetDelegateForFunctionPointer<ReadProtocolVersion>(version)() != ProtocolVersion)
+                    return null;
+                _procedure = NativeLibrary.GetExport(library, "TypeLayCallWndProc");
+                _message = RegisterWindowMessageW("TypeLay.NativeInput.Transaction.v2");
+                _library = library;
+                library = 0;
+            }
+            finally
+            {
+                if (library != 0)
+                    NativeLibrary.Free(library);
+            }
         }
         if (_message == 0)
             return null;
@@ -120,7 +149,7 @@ internal sealed class NativeEditTransactions : IDisposable
                 return null;
             _hooks.Add(thread, hook);
         }
-        ulong cookie = unchecked((ulong)(long)GetPropW((nint)identity.ControlHwnd, "TypeLay.NativeInput.Lifetime.v1"));
+        ulong cookie = unchecked((ulong)(long)GetPropW((nint)identity.ControlHwnd, "TypeLay.NativeInput.Lifetime.v2"));
         if (cookie == 0)
             cookie = BitConverter.ToUInt64(RandomNumberGenerator.GetBytes(8)) | 1;
         // Every new binding gets a distinct identity, including after broker
@@ -135,14 +164,14 @@ internal sealed class NativeEditTransactions : IDisposable
         return binding;
     }
 
-    private Result Invoke(Binding binding, uint operation, WritePlan? plan = null)
+    private Result Invoke(Binding binding, uint operation, WritePlan? plan = null, long expiresAtMs = 0)
     {
         byte[] nonce = RandomNumberGenerator.GetBytes(16);
         ulong first = BitConverter.ToUInt64(nonce, 0), second = BitConverter.ToUInt64(nonce, 8);
         string name = $"Local\\TypeLay.Input.{first:x16}{second:x16}";
         using var mapping = MemoryMappedFile.CreateNew(name, MappingSize, MemoryMappedFileAccess.ReadWrite);
         using var view = mapping.CreateViewAccessor(0, MappingSize, MemoryMappedFileAccess.ReadWrite);
-        view.Write(0, 1u);
+        view.Write(0, ProtocolVersion);
         view.Write(12, operation);
         view.Write(16, (uint)binding.Target.ProcessId);
         view.Write(20, binding.Thread);
@@ -152,6 +181,12 @@ internal sealed class NativeEditTransactions : IDisposable
         // Private native-handler budget: both ends explicitly use GetTickCount64.
         // This field never carries an App/Broker authorization timestamp.
         view.Write(48, GetTickCount64() + 500UL);
+        if (operation == 5)
+        {
+            view.Write(88, plan!.Expected.Selection!.Value.Start);
+            view.Write(92, plan.Expected.Selection.Value.End);
+            view.Write(96, expiresAtMs);
+        }
         if (plan is not null)
         {
             view.Write(56, plan.Expected.Text.Length);
@@ -232,4 +267,6 @@ internal sealed class NativeEditTransactions : IDisposable
     private static extern nint SendMessageTimeoutW(nint hwnd, uint message, nuint wp, nint lp,
         uint flags, uint timeout, out nuint result);
     [DllImport("kernel32.dll")] private static extern ulong GetTickCount64();
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate uint ReadProtocolVersion();
 }

@@ -17,7 +17,7 @@ GTK 非纯文本/非标准控件、Qt QTextEdit/富文本/自绘控件、Electro
 
 共同安装恢复、模型准备、受管组件准备/练习/退出/移除已有实际搬迁包与桌面链路证据。浏览器 DOM、Chromium/Firefox 本地主机和 Qt 完整模型流程已有通过记录；短许可仍会因调度和观察时效安全拒绝。GTK 接受使用 100ms 许可，Qt 唤醒/直接任务的入口观察限制与它不同，不能用一次通过消除偶发不可用风险，详见各适配器页。
 
-[当前隔离验证](https://github.com/DingJWuyu/Typelay/actions/runs/38576190815)实际完成 GTK3/GTK4 默认及配置后的接受/退出键、编辑后两次独立按下、暂停与原生恢复、组合态直接替换拒绝，以及后台原字段写回和人工修改后拒写。GTK4 独立编辑恢复也已通过。GTK3 最后展开重入点击未触发测试屏障，当前按钮位置与事件路由仍缺证，后续需要交互式环境核查；GTK4 最后 footer 测试把 CSS 名称当成 buildable 标识而失败，精确修正仍待验证。因此该轮仍不是 Linux 全绿候选，也不能外推为所有控件支持。上述结果来自 CI 的嵌套 niri 与 XTest 合成事件，不代表用户机器、物理键盘或真实应用全面验收。
+[此前 339133ce 的隔离验证](https://github.com/DingJWuyu/Typelay/actions/runs/38576190815)实际完成 GTK3/GTK4 默认及配置后的接受/退出键、编辑后两次独立按下、暂停与原生恢复、组合态直接替换拒绝，以及后台原字段写回和人工修改后拒写。GTK4 独立编辑恢复也已通过。GTK3 最后展开重入点击未触发测试屏障，当前按钮位置与事件路由仍缺证，后续需要交互式环境核查；GTK4 最后 footer 测试把 CSS 名称当成 buildable 标识而失败，精确修正仍待验证。因此该轮仍不是 Linux 全绿候选，也不能外推为所有控件支持。上述结果来自 CI 的嵌套 niri 与 XTest 合成事件，不代表用户机器、物理键盘或真实应用全面验收。 本段结果仅属于 `339133ce`，不代表下方 `83178aec` 候选的对应桌面步骤通过。
 
 快捷键默认在已连接的输入适配器中处理，也可将 niri 全局按键绑定到下述 --wake/--direct 命令。全局触发不会为没有输入后端的应用伪造读取或写入能力。
 
@@ -43,6 +43,20 @@ GTK 非纯文本/非标准控件、Qt QTextEdit/富文本/自绘控件、Electro
 ## 获取发行包
 
 在目标提交的 TypeLay checks 中确认 **Linux 完整检查与“Attach the matching desktop components to the main distribution”封装步骤均成功**，再下载 `typelay-linux-<commit>` artifact ZIP，解压其中的 `TypeLay-Linux-preview-x86_64.tar.gz` 及 `.sha256`。同次 Windows 检查有独立结论，不能仅凭工作流总状态判断 Linux 包。完整主包已经附带匹配桌面合作组件，无需另找第二个输入法压缩包。仅设置界面的部分检查会跳过合作组件封装，其 setup-only 包不能作为完整接入包。需要源码构建时，依赖与命令见[Linux 开发说明](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/linux/development.md#构建)。发行包自带 .NET 运行时；GTK、PyGObject、Ayatana 等桌面依赖仍由系统包管理器提供。
+
+### 当前安全修复候选
+
+[83178aec 的完整发行产物](https://github.com/DingJWuyu/Typelay/actions/runs/38581095325/artifacts/11903377417)包含运行时目录无效时拒绝卸载的修复，包内安装器已与该提交源码逐字节核对。正式构建的 16 项发行回归及 15 项受管进程生命周期检查通过，包含运行中拒绝卸载、自然退出后卸载、默认数据保留和显式清理。这只是可核验的开发候选：该轮 GTK3 展开重入仍未触发测试屏障；首次练习的 F9 在 IME 核验期间因输入版本不匹配拒绝，GTK4 暂停后 F9 已被接收但后续捕获未建立候选。桌面步骤仍失败，不能据包验证通过推荐为日常稳定版。
+
+<details>
+<summary>下载校验与配对版本</summary>
+
+- 源码：`83178aec4c2e546fdea327efe4c41be25774fd85`；包内 `build-info.json` 记录同一提交且 `sourceDirty=false`。
+- 内层 `TypeLay-Linux-preview-x86_64.tar.gz`：271,171,308 字节；SHA-256：`cf3930974167260f3fe73d88e51dcf18898fa2482df0de080eea7ce86f9626eb`，与包旁 `.sha256` 相符。
+- 外层 Actions ZIP：273,246,220 字节；SHA-256：`5320d65d428ffaa5c46dc7243b6498e9654fc8a8ae8614af8d48d6b66a445693`。不要混用内外校验值。
+- 主包已带匹配的桌面合作组件。artifact 预计在 2026-10-28 14:41 UTC 到期，过期后须核对新的候选及其独立验证结果。
+
+</details>
 
 ## 安装、启动与首次配置
 

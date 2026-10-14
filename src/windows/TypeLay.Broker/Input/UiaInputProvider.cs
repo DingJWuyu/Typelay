@@ -347,7 +347,7 @@ internal sealed class UiaInputProvider : IDisposable
             {
                 // A dispatch or result-cleanup exception cannot prove that no text was replaced.
                 mutation = true;
-                var nativeReceipt = _edits.Write(plan);
+                var nativeReceipt = _edits.WriteForeground(plan, request.ExpiresAtMs);
                 return nativeReceipt.Status == WriteStatus.OutcomeUnknown ? Unknown(plan) : nativeReceipt;
             }
             // Text-only editors can preview but SetValue must never flatten their

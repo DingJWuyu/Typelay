@@ -37,6 +37,20 @@ dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release 
 
 当前增量的配置合同支持默认 Tab/Esc 和无修饰 F1-F24；四键设置共用保存与关闭草稿流程。`SettingsRenderingTests` 验证重复键、写盘失败、后台刷新、切页和关闭保留，并确认保存只合并最新设置中的四个键，不恢复旧工作模式或启用状态。任意修饰键组合及完整冲突覆盖尚未完成，不能据此关闭冻结规格 §18 的全部缺口。以上测试使用合成内容、受控会话或显式软件注入，Windows 实际结果须以对应运行记录为准。
 
+## 系统 Edit 前台事务回归
+
+`ProductionForegroundWriteTests` 通过真实 Broker 管道与独立 stock Edit 验证前台写入；另直接使用生产 DLL 的私有事务 wire，区分 Broker 提前拒绝和目标 GUI 线程最后拒绝。当前选区已折叠但替换范围仍为原选区的单行/多行正例，应保留范围外文字、源焦点和零提交，并验证系统撤销。
+
+负控包括同根另一字段、另一根窗口、仅选区变化、过期原许可、控件资格或寿命变化，以及原许可有效时排队、到目标线程才过期的请求。后者通过 fixture 自有事件屏障同步，仍须在原生私有 500ms 预算有效时拒绝；不得延长期限、增加盲重试或用 Broker 拒绝代替原生覆盖。缺 DLL 和旧 wire 不能获得当前原生写能力；旧 wire 不是整版旧 DLL 的运行证明。`ProductionDirectWriteTests` 保留后台 F10 在焦点位于另一字段时的既有行为。
+
+```powershell
+dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release --no-build --filter 'FullyQualifiedName~ProductionForegroundWriteTests|FullyQualifiedName~ProductionDirectWriteTests'
+```
+
+`test_native_foreground_guards.py` 另直接编译同一生产 `transaction.c`，仅在独立测试程序中提供系统 API 替身，在 `EM_SETSEL` 返回边界改变焦点、选区或原授权时钟。它要求三个负控均不进入正文替换，并保留不变正控；没有生产测试开关。此算法回归由现有 `pack` Python 测试发现运行，也可单独执行 `python -m unittest discover -s tests/windows -p test_native_foreground_guards.py -v`。缺编译器、编译失败或负控失败都使测试失败；Windows 使用既有 LLVM，Linux 使用本机 C 编译器。
+
+上述 Windows 桌面回归目前仅本地跨编译，Windows 实际运行待验。`EM_SETSEL` 内同步重入导致的期限/焦点变化尚无不修改 stock Edit 的确定性触发证据；系统 API 替身的算法故障注入不等于该 OS 行为已实测。真实同步重入证明仍是完整教程授权启用前的阻塞项。此片不验证完整自动教程、练习授权、物理按键所有权或第三方应用支持。
+
 ## 暂停入口回归
 
 `PausedInputTests` 通过生产 Broker 的 `observe-pause` 观察自有 WPF 字段。真实 UIA Value getter 计数在暂停期间必须为零，普通 capture 的正向对照必须实际读取它；密码、只读、敏感、排除、无可用 pattern 以及缺 ValuePattern 的 ComboBox 都须受控拒绝。观察只返回元数据，不能将无 Snapshot 的异常响应误当通过。
