@@ -15,12 +15,38 @@ static EntryEvidence first_evidence, second_evidence;
 static JsonObject *first_insert_context, *first_delete_context;
 #include "gtk_reentry.inc"
 
-static guint function_down[24], function_up[24];
+static guint function_down[24], function_up[24], tab_down, tab_up;
+static JsonObject *focus_transitions[16];
+static guint focus_sequence;
+static void observe_focus(GObject *object, GParamSpec *spec, gpointer data) {
+    (void)spec; (void)data;
+    GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(object));
+    const char *scope = "other";
+    for (GtkWidget *at = focus; at; at = gtk_widget_get_parent(at)) {
+        if (at == report_first) { scope = "first"; break; }
+        if (at == report_second) { scope = "second"; break; }
+        if (g_strcmp0(gtk_widget_get_name(at), "typelay-overlay") == 0) { scope = "overlay"; break; }
+    }
+    guint index = focus_sequence++ % G_N_ELEMENTS(focus_transitions);
+    if (focus_transitions[index]) json_object_unref(focus_transitions[index]);
+    JsonObject *value = focus_transitions[index] = json_object_new();
+    json_object_set_int_member(value, "sequence", focus_sequence);
+    json_object_set_int_member(value, "atMonoMs", g_get_monotonic_time() / 1000);
+    json_object_set_string_member(value, "type", focus ? G_OBJECT_TYPE_NAME(focus) : "none");
+    json_object_set_string_member(value, "name", focus ? gtk_widget_get_name(focus) : "");
+    json_object_set_string_member(value, "scope", scope);
+    json_object_set_boolean_member(value, "canFocus", focus && gtk_widget_get_can_focus(focus));
+    json_object_set_boolean_member(value, "focusable", focus && gtk_widget_get_focusable(focus));
+}
 static gboolean observe_key(GtkEventControllerLegacy *controller, GdkEvent *event, gpointer data) {
     (void)controller; (void)data;
     GdkEventType type = gdk_event_get_event_type(event);
     if (type != GDK_KEY_PRESS && type != GDK_KEY_RELEASE) return FALSE;
     guint keyval = gdk_key_event_get_keyval(event);
+    if (keyval == GDK_KEY_Tab || keyval == GDK_KEY_ISO_Left_Tab) {
+        if (type == GDK_KEY_PRESS) tab_down++;
+        else tab_up++;
+    }
     if (keyval >= GDK_KEY_F1 && keyval <= GDK_KEY_F24) {
         guint index = keyval - GDK_KEY_F1;
         if (type == GDK_KEY_PRESS) function_down[index]++;
@@ -266,6 +292,21 @@ static gboolean report_state(gpointer unused) {
         }
     }
     json_builder_end_array(builder);
+    json_builder_set_member_name(builder, "tabKeys");
+    json_builder_begin_object(builder);
+    json_builder_set_member_name(builder, "down"); json_builder_add_int_value(builder, tab_down);
+    json_builder_set_member_name(builder, "up"); json_builder_add_int_value(builder, tab_up);
+    json_builder_end_object(builder);
+    json_builder_set_member_name(builder, "focusSequence"); json_builder_add_int_value(builder, focus_sequence);
+    json_builder_set_member_name(builder, "focusTransitions");
+    json_builder_begin_array(builder);
+    guint first = focus_sequence > G_N_ELEMENTS(focus_transitions) ? focus_sequence - G_N_ELEMENTS(focus_transitions) : 0;
+    for (guint index = first; index < focus_sequence; index++) {
+        JsonNode *transition = json_node_new(JSON_NODE_OBJECT);
+        json_node_set_object(transition, focus_transitions[index % G_N_ELEMENTS(focus_transitions)]);
+        json_builder_add_value(builder, transition);
+    }
+    json_builder_end_array(builder);
     json_builder_set_member_name(builder, "functionKeys");
     json_builder_begin_array(builder);
     for (guint index = 0; index < G_N_ELEMENTS(function_down); index++) {
@@ -380,6 +421,7 @@ int main(void) {
         report_window = window;
         report_first = first;
         report_second = second;
+        g_signal_connect(window, "notify::focus-widget", G_CALLBACK(observe_focus), NULL);
         GtkWidget *key_clients[] = {entry_client(first), entry_client(second), view};
         for (guint index = 0; index < G_N_ELEMENTS(key_clients); index++) {
             GtkEventController *keys = gtk_event_controller_legacy_new();
@@ -394,6 +436,8 @@ int main(void) {
     g_main_loop_run(loop);
     g_main_loop_unref(loop);
     g_free(last_report);
+    for (guint index = 0; index < G_N_ELEMENTS(focus_transitions); index++)
+        if (focus_transitions[index]) json_object_unref(focus_transitions[index]);
     if (first_insert_context) json_object_unref(first_insert_context);
     if (first_delete_context) json_object_unref(first_delete_context);
     return 0;

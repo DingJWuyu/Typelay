@@ -837,6 +837,18 @@ static gboolean acceptance_event(const KeyEvent *event) {
     g_free(plan_id);
     return consumed;
 }
+/* Bounded diagnostics for the finite session-key candidates only. This
+   observes dispatch decisions; it never changes ownership or sends a key. */
+static void trace_session_key(guint keyval, const char *phase, gboolean consumed) {
+    static guint count;
+    const char *kind = keyval == GDK_KEY_Tab || keyval == GDK_KEY_ISO_Left_Tab ? "tab"
+        : keyval == GDK_KEY_Escape ? "esc"
+        : keyval >= GDK_KEY_F1 && keyval <= GDK_KEY_F24 ? "function" : NULL;
+    if (!kind || !g_getenv("TYPELAY_TRACE") || count >= 256) return;
+    count++;
+    g_printerr("TypeLay GTK%d session-key kind=%s phase=%s consumed=%d atMonoMs=%" G_GINT64_FORMAT "\n",
+        GTK_MAJOR_VERSION, kind, phase, consumed, g_get_monotonic_time() / 1000);
+}
 gboolean tl_dispatch_key(GdkEvent *event) {
     if (!event) return FALSE;
     GdkEventType type = gdk_event_get_event_type(event);
@@ -856,6 +868,7 @@ gboolean tl_dispatch_key(GdkEvent *event) {
         if (held_keys[index].keycode == keycode) {
             gboolean consumed = held_keys[index].consumed;
             if (!down) { held_keys[index].keycode = 0; (void)shortcut_event(&key); }
+            trace_session_key(keyval, down ? "repeat" : "release", consumed);
             return consumed;
         }
         if (!held_keys[index].keycode && empty < 0) empty = (gint)index;
@@ -874,6 +887,7 @@ gboolean tl_dispatch_key(GdkEvent *event) {
     gboolean consumed = tl_overlay_key(keyval, state) || shortcut_event(&key) || acceptance_event(&key);
     if (held_keys[empty].keycode == keycode && held_keys[empty].sequence == sequence)
         held_keys[empty].consumed = consumed;
+    trace_session_key(keyval, "press", consumed);
     return consumed;
 }
 static gboolean dispatch(GtkEventControllerLegacy *controller, GdkEvent *event, gpointer data) {

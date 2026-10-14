@@ -353,6 +353,8 @@ static void create(Target *target) {
     overlay.resume = button(overlay.header, "恢复", "resume");
     gtk_widget_set_name(overlay.resume, "typelay-resume");
     overlay.scroll = gtk_scrolled_window_new();
+    /* GtkScrolledWindow can itself take Tab focus when its text child cannot. */
+    gtk_widget_set_can_focus(overlay.scroll, FALSE);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(overlay.scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     overlay.text = gtk_text_view_new();
     gtk_widget_set_name(overlay.text, "typelay-candidate");
@@ -484,6 +486,13 @@ static gboolean render(Target *target, JsonObject *data) {
     gtk_text_view_set_editable(GTK_TEXT_VIEW(overlay.text), editing);
     gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(overlay.text), editing);
     gtk_widget_set_focusable(overlay.text, editing);
+    JsonObject *focus_view = json_object_ref(overlay.view);
+    gtk_widget_set_can_focus(overlay.scroll, editing);
+    gboolean focus_retained = overlay.view == focus_view && overlay.target == target && !target->dead
+        && tl_configuration_current(generation) && g_strcmp0(overlay.generation, generation) == 0
+        && overlay.popover && overlay.text;
+    json_object_unref(focus_view);
+    if (!focus_retained) { json_object_unref(geometry); return FALSE; }
     const char *source = text_or_empty(value, "sourceLanguage"), *destination = text_or_empty(value, "targetLanguage");
     char *languages = g_strdup_printf("%s → %s", language_name(source), language_name(destination));
     gtk_button_set_label(GTK_BUTTON(overlay.language), languages); g_free(languages);
@@ -539,6 +548,38 @@ static gboolean render(Target *target, JsonObject *data) {
     tl_overlay_sync();
     return pause_render_result(is_paused, "shown", request_revision, TRUE);
 }
+static gboolean resume_current(Target *target, JsonObject *data, JsonObject *view) {
+    return view && overlay.view == view && overlay.target == target && active() && !paused()
+        && overlay.text && overlay.scroll && overlay.status
+        && tl_configuration_current(tl_string(data, "generation"))
+        && g_strcmp0(overlay.generation, tl_string(data, "generation")) == 0
+        && overlay.revision == tl_integer(data, "revision", -1)
+        && tl_view_context_matches(target, view)
+        && boolean(tl_object(view, "viewContext"), "canEdit");
+}
+static void resume_editor(Target *target, JsonObject *data) {
+    if (!resume_current(target, data, overlay.view)) return;
+    JsonObject *view = json_object_ref(overlay.view);
+    GtkWidget *editor = g_object_ref(overlay.text), *scroll = g_object_ref(overlay.scroll);
+    GtkWidget *status = g_object_ref(overlay.status);
+    gtk_label_set_text(GTK_LABEL(status), "无法返回原输入框，请点击译文继续编辑");
+    if (!resume_current(target, data, view) || !(tl_focused() == target || overlay.focused)) goto done;
+    /* ReturningToSource disabled keyboard focus for this subtree. Restore it
+       only under the existing editor authorization, before grabbing focus. */
+    gtk_widget_set_can_focus(scroll, TRUE);
+    if (!resume_current(target, data, view)) goto done;
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(editor), TRUE);
+    if (!resume_current(target, data, view)) goto done;
+    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(editor), TRUE);
+    if (!resume_current(target, data, view)) goto done;
+    gtk_widget_set_focusable(editor, TRUE);
+    if (!resume_current(target, data, view) || !(tl_focused() == target || overlay.focused)) goto done;
+    gtk_widget_grab_focus(editor);
+    if (resume_current(target, data, view)) tl_overlay_sync();
+done:
+    g_object_unref(status); g_object_unref(scroll); g_object_unref(editor);
+    json_object_unref(view);
+}
 JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject *data) {
     gboolean visible = FALSE;
     if (strcmp(operation, "overlay-hide") != 0 && !tl_configuration_current(tl_string(data, "generation")))
@@ -591,21 +632,7 @@ JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject
         }
         overlay.pending_edit = FALSE;
         tl_overlay_sync();
-    } else if (strcmp(operation, "overlay-resume") == 0 && overlay.target == target && active() && !paused()
-        && tl_configuration_current(tl_string(data, "generation"))
-        && g_strcmp0(overlay.generation, tl_string(data, "generation")) == 0
-        && overlay.revision == tl_integer(data, "revision", -1)
-        && tl_view_context_matches(target, overlay.view)
-        && boolean(tl_object(overlay.view, "viewContext"), "canEdit")) {
-        gtk_label_set_text(GTK_LABEL(overlay.status), "无法返回原输入框，请点击译文继续编辑");
-        if (tl_focused() == target || overlay.focused) {
-            gtk_text_view_set_editable(GTK_TEXT_VIEW(overlay.text), TRUE);
-            gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(overlay.text), TRUE);
-            gtk_widget_set_focusable(overlay.text, TRUE);
-            gtk_widget_grab_focus(overlay.text);
-            tl_overlay_sync();
-        }
-    }
+    } else if (strcmp(operation, "overlay-resume") == 0) resume_editor(target, data);
 finished:;
     JsonObject *reply = json_object_new();
     json_object_set_boolean_member(reply, "visible", visible || (overlay.popover && gtk_widget_get_visible(overlay.popover)));

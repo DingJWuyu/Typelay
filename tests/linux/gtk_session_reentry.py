@@ -33,7 +33,7 @@ def run_reentry_checks(command, environment, output, send_accept, *, gtk4, neste
     # Only the generation changes, so nested IME dispatch cannot fake a pass.
     stages = ["delete", "insert", "selection", "footer", "expand"]
     if gtk4:
-        stages.extend(["controller-source", "controller-editor"])
+        stages.extend(["controller-source", "controller-editor", "resume-editor"])
     for stage in stages:
         mutation = stage in ("delete", "insert", "selection")
         for change_generation in (False, True) if mutation else (False,):
@@ -168,6 +168,13 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                     check_controller(client, source, generation, runtime, state, initial, stage)
                     print(f"{name}: detached actual consumer no longer acknowledged", flush=True)
                     return
+                if stage == "resume-editor":
+                    check_resume_editor(client, source, generation, state, initial, nested)
+                    print(
+                        f"{name}: authorized recovery restored actual editor focus without writing",
+                        flush=True,
+                    )
+                    return
 
                 def publication(source, generation, replacement):
                     expected = snapshot(source, client.hello, anchor_geometry(source["geometry"]))
@@ -291,7 +298,9 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                     fixture.wait(timeout=3)
 
 
-def render_preview(client, source, generation, revision, label, *, editor_owner=False):
+def render_preview(
+    client, source, generation, revision, label, *, view_state="ValidTranslation", can_edit=False
+):
     return client.call(
         "overlay-render",
         {
@@ -302,14 +311,15 @@ def render_preview(client, source, generation, revision, label, *, editor_owner=
             "expiresAtMs": now_ms() + 800,
             "theme": "system",
             "view": {
-                "state": "ReturningToSource" if editor_owner else "ValidTranslation",
+                "state": view_state,
+                "editable": can_edit,
                 "text": "Read-only fixture preview.",
                 "status": "fixture preview",
                 "sourceLanguage": "en",
                 "targetLanguage": "zh",
                 "presentation": {
                     "visible": True,
-                    "editorOwnsText": editor_owner,
+                    "editorOwnsText": view_state in ("EditingTranslation", "ReturningToSource"),
                     "tabHint": "fixture read-only preview",
                     "dot": "Yellow",
                 },
@@ -329,7 +339,7 @@ def render_preview(client, source, generation, revision, label, *, editor_owner=
                         "revision": revision,
                     },
                     "bindings": {"accept": "F1", "exit": "F24"},
-                    "canEdit": False,
+                    "canEdit": can_edit,
                 },
             },
         },
@@ -390,9 +400,9 @@ def check_expand(client, source, generation, runtime, state, initial, nested):
     wait_for((runtime / "reached.json").exists, "expand notify was not reached", timeout=1)
     # Retained editor ownership legitimately skips a new IME RPC while the
     # source observation is unchanged. Same generation, newer transport view.
-    assert render_preview(client, source, generation, 2, "fixture exit", editor_owner=True)[
-        "visible"
-    ]
+    assert render_preview(
+        client, source, generation, 2, "fixture exit", view_state="ReturningToSource"
+    )["visible"]
     (runtime / "release").touch()
     wait_for((runtime / "expand-returned").exists, "expand notify did not return")
     assert not (runtime / "timeout").exists()
@@ -403,6 +413,92 @@ def check_expand(client, source, generation, runtime, state, initial, nested):
     ), "old click was relabelled with the replacement view's transport revision"
     assert state()["first"] == initial["first"]
     assert state()["second"] == initial["second"]
+
+
+def check_resume_editor(client, source, generation, state, initial, nested):
+    assert render_preview(client, source, generation, 1, "fixture exit")["visible"]
+    described = client.describe()
+    assert described["target"] == source["target"] and described["sessionBindings"]["editorReady"]
+    source = client.call(
+        "capture", {"target": described["target"], "authority": described["authority"]}
+    )
+    assert source["sessionBindings"] == described["sessionBindings"]
+    assert render_preview(client, source, generation, 2, "fixture exit", can_edit=True)["visible"]
+    actual = wait_for(lambda: (value := state()).get("candidate") and value, "real preview missing")
+    candidate, scale = actual["candidate"], actual["scale"]
+    subprocess.run(
+        [
+            "xdotool",
+            "mousemove",
+            "--window",
+            nested,
+            str(int((candidate["x"] + candidate["width"] / 2) * scale)),
+            str(int((candidate["y"] + candidate["height"] / 2) * scale)),
+            "click",
+            "1",
+        ],
+        check=True,
+        timeout=3,
+    )
+
+    def edit_requested():
+        client.describe(source["target"])
+        return any(
+            event.get("event") == "ui"
+            and event["data"].get("operation") == "beginEdit"
+            and event["data"].get("generation") == generation
+            and event["data"].get("revision") == 2
+            for event in client.events
+        )
+
+    wait_for(edit_requested, "actual preview click did not request editor authorization")
+    assert render_preview(
+        client,
+        source,
+        generation,
+        3,
+        "fixture exit",
+        view_state="EditingTranslation",
+        can_edit=True,
+    )["editing"]
+    command = {"target": source["target"], "generation": generation, "revision": 3}
+    assert client.call("overlay-edit", {**command, "allowed": True})["editing"]
+    wait_for(
+        lambda: state().get("focus") == "typelay-candidate" and state().get("focusedImeClear"),
+        "authorized editor did not acquire actual focus",
+    )
+    assert render_preview(
+        client, source, generation, 4, "fixture exit", view_state="ReturningToSource", can_edit=True
+    )["visible"]
+    assert client.call(
+        "return",
+        {"target": source["target"], "authority": source["authority"], "generation": generation},
+    ) == {"returned": True}
+    wait_for(
+        lambda: state().get("focus") == "fixture-first" and state().get("imeClear"),
+        "native return did not actually focus the source",
+    )
+    # The host can cancel after focus succeeds but its final confirmation fails.
+    # Exercise its resume-before-render order through the real native protocol;
+    # do not fake provider facts or let a later render repair the focus first.
+    assert not client.call("overlay-resume", command)["editing"], (
+        "old view revision resumed editing"
+    )
+    assert not client.call(
+        "overlay-resume", {**command, "revision": 4, "generation": str(uuid.uuid4())}
+    )["editing"], "foreign generation resumed editing"
+    assert client.call("overlay-resume", {**command, "revision": 4})["editing"]
+    final = wait_for(
+        lambda: (value := state()).get("focus") == "typelay-candidate" and value,
+        "recovery did not restore actual editor focus before the next render",
+    )
+    assert final["candidate"]["text"] == "Read-only fixture preview."
+    assert final["first"] == initial["first"] and final["second"] == initial["second"]
+    for field in ("firstEntry", "secondEntry"):
+        for counter in ("insertions", "deletions"):
+            assert final[field][counter] == initial[field][counter]
+    client.describe(source["target"])
+    assert not any(event.get("event") == "accepted" for event in client.events)
 
 
 def check_controller(client, source, generation, runtime, state, initial, stage):

@@ -353,12 +353,27 @@ def run_qt(
 
                 def enter_source(text):
                     type_source(text)
-                    wait_for(
-                        ready_to_accept, "typed Qt source did not receive a real model candidate"
+
+                    def displayed_candidate():
+                        # The host can publish readiness before Qt renders and
+                        # the fixture's next snapshot observes the candidate.
+                        value = state()
+                        return (
+                            value
+                            if value.get("first", {}).get("text") == text
+                            and value["first"]["focused"]
+                            and value.get("overlayVisible")
+                            and value.get("editorVisible")
+                            and value.get("editorReadOnly")
+                            and re.search(r"[\u3400-\u9fff]", value.get("editorText", ""))
+                            and ready_to_accept()
+                            else None
+                        )
+
+                    value = wait_for(
+                        displayed_candidate,
+                        "typed Qt source did not display its ready real model candidate",
                     )
-                    value = state()
-                    assert value["overlayVisible"] and value["editorReadOnly"]
-                    assert re.search(r"[\u3400-\u9fff]", value["editorText"])
                     return value["editorText"]
 
                 def dormant_source(text):

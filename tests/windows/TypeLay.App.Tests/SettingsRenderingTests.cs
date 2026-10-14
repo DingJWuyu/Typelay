@@ -94,8 +94,33 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                             window.ShowPage("shortcuts");
                             Stage($"shortcuts-layout:{theme}:{width}");
                             window.UpdateLayout();
-                            foreach (var input in Descendants(window).OfType<TextBox>())
+                            // Noneditable ComboBoxes also contain a collapsed
+                            // template TextBox. Verify the four user controls and
+                            // their actual row labels, not those hidden parts.
+                            var labels = SettingsDraftPresentation.SessionShortcuts(SessionShortcutBindings.Default);
+                            (Control Input, string Label)[] shortcutControls =
+                            [
+                                (ShortcutEditor(window), "唤醒翻译 UI"),
+                                (ShortcutEditor(window, direct: true), "直接翻译并替换"),
+                                (SessionShortcutSelector(window, accept: true), labels.AcceptLabel),
+                                (SessionShortcutSelector(window, accept: false), labels.ExitLabel)
+                            ];
+                            Assert.Equal(4, shortcutControls.Select(item => item.Input).Distinct().Count());
+                            foreach (var (input, label) in shortcutControls)
+                            {
+                                Assert.True(input.IsVisible, label);
                                 Assert.InRange(input.ActualWidth, 150, window.ActualWidth);
+                                Assert.InRange(input.ActualHeight, 30, 50);
+                                var row = VisualTreeHelper.GetParent(input);
+                                Assert.NotNull(row);
+                                Assert.Single(Descendants(row).OfType<TextBlock>(),
+                                    text => text.IsVisible && text.Text == label);
+                                if (input is ComboBox selector)
+                                {
+                                    Assert.False(selector.IsEditable);
+                                    Assert.InRange(selector.ActualHeight, 34, 38);
+                                }
+                            }
                             Render(window, $"settings-shortcuts-{theme}-{width}.png");
                             Stage($"application-support-show:{theme}:{width}");
                             window.ShowPage("apps");

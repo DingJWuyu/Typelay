@@ -748,6 +748,35 @@ def run(arguments):
                             except (FileNotFoundError, json.JSONDecodeError):
                                 return {}
 
+                        def key_trace_checkpoint():
+                            sys.stderr.flush()
+                            return (arguments.output / "inside.log").stat().st_size
+
+                        def key_trace_since(offset, kind, phase):
+                            with (arguments.output / "inside.log").open("rb") as stream:
+                                stream.seek(offset)
+                                lines = stream.read().decode("utf-8", errors="replace")
+                            matches = re.findall(
+                                rf"TypeLay GTK{4 if gtk4 else 3} session-key kind={kind} "
+                                rf"phase={phase} consumed=([01]) atMonoMs=(\d+)",
+                                lines,
+                            )
+                            if not matches:
+                                return None
+                            consumed, observed = matches[-1]
+                            return {"consumed": consumed == "1", "atMonoMs": int(observed)}
+
+                        def observed_key(offset, kind, phase, consumed):
+                            receipt = wait_for(
+                                lambda: key_trace_since(offset, kind, phase),
+                                f"native {kind} {phase} dispatch was not observed",
+                            )
+                            assert receipt["consumed"] is consumed, receipt
+                            wait_for(
+                                lambda: gtk_state().get("observedAtMs", 0) >= receipt["atMonoMs"],
+                                "fixture did not observe state after the native key decision",
+                            )
+
                         def click_entry(name):
                             value = gtk_state()
                             entry = value[name + "Entry"]
@@ -930,51 +959,52 @@ def run(arguments):
                             )
                             assert gtk_state()["first"] == editing_source
                             before_return = trace_checkpoint()
-                            if hold_return:
-                                subprocess.run(
-                                    ["xdotool", "keydown", accept_key], check=True, timeout=2
-                                )
-                            else:
-                                key(accept_key)
-                            wait_for(
-                                lambda: gtk_state().get("focus") == "fixture-first"
-                                and gtk_state().get("imeClear")
-                                and ready_to_accept("EditedTranslationPending"),
-                                f"first editor {accept_key} did not return with the draft awaiting acceptance",
+                            baseline = (
+                                gtk_state()["functionKeys"][0].copy() if hold_return else None
                             )
-                            assert gtk_state()["first"] == editing_source
-                            assert not new_write_outcomes(before_return), (
-                                f"first editor {accept_key} performed a write"
-                            )
-                            if hold_return:
-                                # The repeat arrives after a fresh source permit. It still
-                                # belongs to the editor-return press and cannot write.
-                                baseline = gtk_state()["functionKeys"][0].copy()
-                                ordering = gtk_state()["functionKeys"][7]["up"]
-                                subprocess.run(
-                                    ["xdotool", "keydown", accept_key], check=True, timeout=2
-                                )
-                                key("F8")
+                            try:
+                                if hold_return:
+                                    subprocess.run(
+                                        ["xdotool", "keydown", accept_key], check=True, timeout=2
+                                    )
+                                else:
+                                    key(accept_key)
                                 wait_for(
-                                    lambda: gtk_state()["functionKeys"][7]["up"] > ordering,
-                                    "application did not receive the independent ordering key",
+                                    lambda: gtk_state().get("focus") == "fixture-first"
+                                    and gtk_state().get("imeClear")
+                                    and ready_to_accept("EditedTranslationPending"),
+                                    f"first editor {accept_key} did not return with the draft awaiting acceptance",
                                 )
                                 assert gtk_state()["first"] == editing_source
-                                assert not new_write_outcomes(before_return)
-                                subprocess.run(
-                                    ["xdotool", "keyup", accept_key], check=True, timeout=2
+                                assert not new_write_outcomes(before_return), (
+                                    f"first editor {accept_key} performed a write"
                                 )
-                                key("F8")
-                                wait_for(
-                                    lambda: gtk_state()["functionKeys"][7]["up"] > ordering + 1,
-                                    "application did not receive the release ordering key",
-                                )
+                                if hold_return:
+                                    # Observe the real held-key decision passively. A new
+                                    # application key would correctly invalidate this draft.
+                                    repeated = key_trace_checkpoint()
+                                    subprocess.run(
+                                        ["xdotool", "keydown", accept_key], check=True, timeout=2
+                                    )
+                                    observed_key(repeated, "function", "repeat", True)
+                                    assert gtk_state()["first"] == editing_source
+                                    assert not new_write_outcomes(before_return)
+                            finally:
+                                if hold_return:
+                                    released = key_trace_checkpoint()
+                                    subprocess.run(
+                                        ["xdotool", "keyup", accept_key], check=True, timeout=2
+                                    )
+                            if hold_return:
+                                observed_key(released, "function", "release", True)
                                 assert gtk_state()["functionKeys"][0] == baseline, (
                                     "editor return leaked its held repeat or release to the source"
                                 )
+                                assert gtk_state()["first"] == editing_source
+                                assert not new_write_outcomes(before_return)
                                 wait_for(
                                     lambda: ready_to_accept("EditedTranslationPending"),
-                                    "source was not recaptured after the ordering key",
+                                    "held key release did not retain the recaptured manual candidate",
                                 )
                             before_write = trace_checkpoint()
                             key(accept_key)
@@ -1217,13 +1247,46 @@ def run(arguments):
                             # The old default must remain the application's Tab,
                             # even while a valid F1 acceptance permit exists.
                             before_navigation = trace_checkpoint()
-                            key("Tab")
-                            wait_for(
-                                lambda: gtk_state().get("focus") == "fixture-second",
-                                "rebinding accept to F1 stole the application's Tab",
-                            )
-                            assert gtk_state()["first"] == original
-                            assert not new_write_outcomes(before_navigation)
+                            before_tab = gtk_state()
+                            tab_trace = key_trace_checkpoint()
+                            try:
+                                key("Tab")
+                                wait_for(
+                                    lambda: gtk_state().get("focus") == "fixture-second",
+                                    "unbound Tab did not navigate to the application's second field",
+                                )
+                                observed_key(tab_trace, "tab", "press", False)
+                                observed_key(tab_trace, "tab", "release", False)
+                                if gtk4:
+                                    after_tab = gtk_state()
+                                    assert after_tab["tabKeys"] == {
+                                        "down": before_tab["tabKeys"]["down"] + 1,
+                                        "up": before_tab["tabKeys"]["up"] + 1,
+                                    }
+                                    transitions = [
+                                        item
+                                        for item in after_tab["focusTransitions"]
+                                        if item["sequence"] > before_tab["focusSequence"]
+                                    ]
+                                    assert len(transitions) == (
+                                        after_tab["focusSequence"] - before_tab["focusSequence"]
+                                    ), "fixture focus history overflowed during one Tab press"
+                                    assert not any(
+                                        item["scope"] == "overlay" for item in transitions
+                                    ), (
+                                        "read-only GTK preview entered the application's Tab focus chain"
+                                    )
+                                assert gtk_state()["first"] == original
+                                assert not new_write_outcomes(before_navigation)
+                            finally:
+                                try:
+                                    (arguments.output / "session-tab-navigation.json").write_text(
+                                        json.dumps(
+                                            {"before": before_tab, "after": gtk_state()}, indent=2
+                                        )
+                                    )
+                                except Exception:
+                                    pass  # Preserve the original failure if the fixture exited.
                             key("shift+Tab")
                             wait_for(
                                 lambda: gtk_state().get("focus") == "fixture-first"
@@ -1253,20 +1316,20 @@ def run(arguments):
                             # overlay destruction and the newly applied generation.
                             enter_source("Please keep this source until a new key press.")
                             before_exit = gtk_state()["functionKeys"][23].copy()
-                            subprocess.run(["xdotool", "keydown", "F24"], check=True, timeout=2)
-                            wait_for(
-                                lambda: not status().get("overlayVisible")
-                                and gtk_state().get("candidate") is None,
-                                "configured F24 did not exit the actual GTK session",
-                            )
-                            subprocess.run(["xdotool", "keydown", "F24"], check=True, timeout=2)
-                            subprocess.run(["xdotool", "keyup", "F24"], check=True, timeout=2)
-                            before_order = gtk_state()["functionKeys"][7]["up"]
-                            key("F8")
-                            wait_for(
-                                lambda: gtk_state()["functionKeys"][7]["up"] > before_order,
-                                "source did not process the ordering key after hiding",
-                            )
+                            try:
+                                subprocess.run(["xdotool", "keydown", "F24"], check=True, timeout=2)
+                                wait_for(
+                                    lambda: not status().get("overlayVisible")
+                                    and gtk_state().get("candidate") is None,
+                                    "configured F24 did not exit the actual GTK session",
+                                )
+                                repeated = key_trace_checkpoint()
+                                subprocess.run(["xdotool", "keydown", "F24"], check=True, timeout=2)
+                                observed_key(repeated, "function", "repeat", True)
+                            finally:
+                                released = key_trace_checkpoint()
+                                subprocess.run(["xdotool", "keyup", "F24"], check=True, timeout=2)
+                            observed_key(released, "function", "release", True)
                             assert gtk_state()["functionKeys"][23] == before_exit, (
                                 "hidden GTK overlay lost the consumed exit-key pair"
                             )

@@ -32,6 +32,12 @@ TRANSPORT = """(() => {
     onDisconnect: {addListener: () => {}}
   })}};
   window.fixtureMessages = output;
+  window.fixtureF24Events = [];
+  // Observe browser-dispatched input before the adapter can consume it.
+  for (const type of ['keydown', 'keyup']) window.addEventListener(type, event => {
+    if (event.code === 'F24') fixtureF24Events.push({type: event.type, key: event.key,
+      code: event.code, repeat: event.repeat, trusted: event.isTrusted});
+  }, true);
   window.fixtureHostClock = () => ({wallTimeMs: Date.now(), boottimeMs: Math.floor(performance.now()) + 1000000});
   window.fixtureBindings = {generation: 'browser-default', sessionEnabled: true,
     enabled: false, accept: 'Tab', exit: 'Esc'};
@@ -118,6 +124,7 @@ class BrowserContract(unittest.TestCase):
             clock_setup + TRANSPORT + "\n" + bridge + "\n" + CONTENT.read_text()
         )
         self.page = self.context.new_page()
+        self.cdp = self.context.new_cdp_session(self.page)
         self.page.route(
             "http://127.0.0.1/fixture",
             lambda route: route.fulfill(body=FIXTURE, content_type="text/html"),
@@ -201,6 +208,34 @@ class BrowserContract(unittest.TestCase):
     def accepted(self):
         return self.page.evaluate(
             "window.fixtureMessages.filter(message => message.event === 'accepted')"
+        )
+
+    def session_key(self, key, action, *, repeat=False):
+        if key != "F24":
+            getattr(self.page.keyboard, action)(key)
+            return
+        # Playwright's key table stops at F12. Use Chromium's public input
+        # protocol for F24, not a page-created KeyboardEvent. No native keycode
+        # is guessed: key/code and the platform-independent VKEY_F24 suffice.
+        self.cdp.send(
+            "Input.dispatchKeyEvent",
+            {
+                "type": "rawKeyDown" if action == "down" else "keyUp",
+                "key": "F24",
+                "code": "F24",
+                "windowsVirtualKeyCode": 0x87,
+                "modifiers": 0,
+                "autoRepeat": repeat,
+            },
+        )
+
+    def assert_f24_events(self, events):
+        self.assertEqual(
+            self.page.evaluate("window.fixtureF24Events"),
+            [
+                {"type": event, "key": "F24", "code": "F24", "repeat": repeat, "trusted": True}
+                for event, repeat in events
+            ],
         )
 
     def test_document_applies_session_bindings_independently_of_on_demand_mode(self):
@@ -856,7 +891,9 @@ class BrowserContract(unittest.TestCase):
             {"target": description["target"], "authority": description["authority"]},
         )
         self.paused_button()
-        self.page.keyboard.press("F24")
+        self.session_key("F24", "down")
+        self.session_key("F24", "up")
+        self.assert_f24_events([("keydown", False), ("keyup", False)])
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 
@@ -1304,7 +1341,7 @@ class BrowserContract(unittest.TestCase):
         draft = self.page.evaluate("""window.fixtureMessages.findLast(message =>
           message.event === 'ui' && message.data.operation === 'draft').data.value""")
         self.assertEqual(draft, "Human draft!")
-        self.page.keyboard.down(accept)
+        self.session_key(accept, "down")
         self.assertTrue(
             self.page.evaluate("""window.fixtureMessages.some(message =>
           message.event === 'ui' && message.data.operation === 'return')""")
@@ -1325,15 +1362,26 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(returned["selection"], snapshot["selection"])
         self.assertEqual(returned["authority"]["inputRevision"], revision)
         self.publish(returned, self.plan(returned, draft))
-        self.page.keyboard.down(accept)
+        self.session_key(accept, "down", repeat=True)
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
-        self.page.keyboard.up(accept)
+        self.session_key(accept, "up")
         returned = self.capture()
         self.publish(returned, self.plan(returned, draft))
-        self.page.keyboard.press(accept)
+        self.session_key(accept, "down")
+        self.session_key(accept, "up")
         self.assertEqual(self.page.locator("#source").input_value(), "Human draft!")
         self.assertEqual(len(self.accepted()), 1)
+        if accept == "F24":
+            self.assert_f24_events(
+                [
+                    ("keydown", False),
+                    ("keydown", True),
+                    ("keyup", False),
+                    ("keydown", False),
+                    ("keyup", False),
+                ]
+            )
 
     def test_untrusted_tab_and_password_are_not_adapted(self):
         snapshot = self.type_source()
