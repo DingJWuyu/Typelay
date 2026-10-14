@@ -474,15 +474,24 @@ public sealed class SessionController : IDisposable
             var result = await _broker.WriteDirectAsync(plan, _settings.Value.Excluded);
             if (_disposed)
                 return;
-            SetCommandStatus(result.Status == WriteStatus.Verified ? "已直接替换原输入框文字。"
-                : result.Reason == Denial.Unsupported ? "当前输入后端尚不支持可靠的直接写回，原文未作替换。"
-                : "直接写回未获确认，请检查原输入框；不会自动重试。", feedbackRevision,
-                result.Status == WriteStatus.Verified ? null : "write-unconfirmed");
+            // Only an explicit pre-mutation rejection proves that TypeLay did not
+            // replace text. Reasons, including Unsupported, cannot override an
+            // unknown status. Future or malformed status values stay conservative.
+            var (message, code) = result.Status switch
+            {
+                WriteStatus.Verified => ("已直接替换原输入框文字。", (string?)null),
+                WriteStatus.RejectedBeforeMutation => (DirectWriteRejection(result.Reason), "write-rejected"),
+                _ => ("直接写回未获确认，请检查原输入框；不会自动重试。", "write-unconfirmed")
+            };
+            SetCommandStatus(message, feedbackRevision, code);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
             if (!_disposed)
-                SetCommandStatus("直接翻译或写回服务中断；不会自动重试替换。", feedbackRevision, "service-unavailable");
+                SetCommandStatus(_directWriteSubmitted
+                    ? "直接写回未获确认，请检查原输入框；不会自动重试。"
+                    : "直接翻译服务中断，TypeLay 未替换文字。", feedbackRevision,
+                    _directWriteSubmitted ? "write-unconfirmed" : "service-unavailable");
         }
         finally
         {
@@ -492,6 +501,15 @@ public sealed class SessionController : IDisposable
             _directWriteSubmitted = false;
         }
     }
+    private static string DirectWriteRejection(Denial reason) => reason switch
+    {
+        Denial.Unsupported => "当前输入框不支持可靠的直接替换，TypeLay 未替换文字。",
+        Denial.Sensitive or Denial.ReadOnly => "当前字段不允许直接替换，TypeLay 未替换文字。",
+        Denial.ImeUnclear => "输入法状态尚未确认，TypeLay 未替换文字。请完成或取消当前输入后再操作。",
+        Denial.SourceChanged or Denial.SelectionChanged or Denial.TargetChanged or Denial.EpochChanged
+            => "输入内容、选区或字段已变化，TypeLay 未替换文字。请确认目标输入框后再操作。",
+        _ => "直接替换未通过安全检查，TypeLay 未替换文字。请检查原输入框。"
+    };
     private void SetCommandStatus(string status, long feedbackRevision, string? feedbackCode = null)
     {
         if (feedbackRevision == _commandFeedbackRevision)

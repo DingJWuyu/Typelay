@@ -1,7 +1,9 @@
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Threading;
 using TypeLay.App;
 using TypeLay.Core;
 using TypeLay.Runtime;
@@ -12,6 +14,96 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
 {
+    [Theory]
+    [InlineData("current")]
+    [InlineData("restart")]
+    [InlineData("dispose")]
+    public Task PracticeExitFeedbackBelongsToTheCurrentWindowOnTheUiThread(string transition) => desktop.RunAsync(async () =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-practice-exit-" + Guid.NewGuid().ToString("N"));
+        string path = Path.Combine(directory, "settings.json");
+        PracticeHost? host = null;
+        Process? active = null;
+        int starts = 0;
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(path);
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.OnDemand
+            });
+            var dispatcher = Dispatcher.CurrentDispatcher;
+            var notifications = new List<bool>();
+            host = new PracticeHost(info =>
+            {
+                active = null; // The previous child has already been disposed before a restart.
+                var child = new ChildProcess(info); // Launch the production practice from the build output, not a fake process.
+                active = child.Process;
+                starts++;
+                return child;
+            });
+            host.Failed += () => notifications.Add(dispatcher.CheckAccess());
+            host.Open(path);
+            Assert.NotNull(active);
+            Assert.False(active.HasExited);
+            host.Open(path);
+            Assert.Equal(1, starts); // Repeated starts keep the one owned live host.
+
+            // Hold this UI turn until the real exit handlers have run. Their UI
+            // callbacks must wait; a newer request can arrive before delivery.
+            using (var exited = new ManualResetEventSlim())
+            {
+                EventHandler observed = (_, _) => exited.Set();
+                active.Exited += observed; // Registered after the production exit handler.
+                try
+                {
+                    active.Kill();
+                    Assert.True(exited.Wait(TimeSpan.FromSeconds(5)), "The owned practice did not report exit.");
+                    Assert.True(active.WaitForExit(5000));
+                    Assert.NotEqual(0, active.ExitCode);
+                }
+                finally { active.Exited -= observed; }
+            }
+            Assert.Empty(notifications);
+            if (transition == "restart")
+            {
+                host.Open(path);
+                Assert.Equal(2, starts);
+                Assert.False(active.HasExited);
+                host.Open(path);
+                Assert.Equal(2, starts);
+            }
+            else if (transition == "dispose")
+            {
+                host.Dispose();
+                active = null;
+            }
+            await dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+            if (transition == "current")
+                Assert.True(Assert.Single(notifications));
+            else
+                Assert.Empty(notifications);
+        }
+        finally
+        {
+            try
+            {
+                if (active is not null)
+                {
+                    if (!active.HasExited)
+                        active.Kill();
+                    Assert.True(active.WaitForExit(5000), "The owned practice did not stop during cleanup.");
+                }
+            }
+            finally
+            {
+                host?.Dispose();
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, true);
+            }
+        }
+    });
+
     [Fact]
     public async Task PracticeWithoutAReadyModelReturnsToPreparationWithoutChangingMode()
     {

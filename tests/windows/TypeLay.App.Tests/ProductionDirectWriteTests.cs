@@ -149,9 +149,12 @@ public sealed class ProductionDirectWriteTests
                 var passwordReceipt = await Write(plan);
                 Assert.Equal(WriteStatus.RejectedBeforeMutation, passwordReceipt.Status);
                 Assert.Equal(Denial.Sensitive, passwordReceipt.Reason);
-                Assert.Equal("你好", N.ReadText(a, Limits.MaxTextUnits));
                 Assert.Equal(((nint)host.RootHwnd, b), N.Focused());
+                // Verify rejection while protected, then leave this synthetic
+                // password state before inspecting its unchanged source text.
                 N.Send(a, 0x00cc, 0);
+                Assert.Equal((nuint)0, N.Send(a, 0x00d2));
+                Assert.Equal("你好", N.ReadText(a, Limits.MaxTextUnits));
             }
             // Losing the cookie must invalidate old jobs, even at the same HWND.
             source = await Capture("你好", new(2, 2));

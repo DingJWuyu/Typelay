@@ -46,11 +46,11 @@ class Practice:
         content.set_margin_end(10)
         scroll.add(content)
 
-        def note(text):
+        def note(text, container=content):
             label = Gtk.Label(label=text, xalign=0)
             label.set_line_wrap(True)
             label.set_max_width_chars(70)
-            content.pack_start(label, False, False, 0)
+            container.pack_start(label, False, False, 0)
             return label
 
         self.heading = note("")
@@ -68,20 +68,28 @@ class Practice:
         self.start.set_sensitive(False)
         self.start.connect("clicked", self.start_clicked)
         content.pack_start(self.start, False, False, 0)
+        self.status = note("等待连接当前 Wayland 会话的 TypeLay；请聚焦上面的练习框。")
         self.capability_note = note("")
         settings = Gtk.Button(label="打开 TypeLay 设置")
         settings.connect("clicked", lambda *_: self.request_settings())
         content.pack_start(settings, False, False, 0)
-        self.status = note("等待连接当前 Wayland 会话的 TypeLay；请聚焦上面的练习框。")
+        technical = Gtk.Expander(label="连接与输入法说明")
+        technical.set_expanded(False)
+        details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+        details.set_margin_top(8)
+        technical.add(details)
+        content.pack_start(technical, False, False, 0)
         note(
             "实际 Fcitx 合作组件必须已由你明确启用。普通未合作的 GTK 环境尚无安全读取/替换"
-            "能力，只有安装模型还不够。本窗口不会启动、停止或切换输入法，也不会修改个人输入法配置。"
+            "能力，只有安装模型还不够。本窗口不会启动、停止或切换输入法，也不会修改个人输入法配置。",
+            details,
         )
         note(
             "若未出现胶囊，请在设置的“应用支持”中检查桌面组件和练习连接；"
             "高级手动启动也可按发行包说明通过合作包的 launch 入口打开本练习。"
             "组合输入尚未完成时，Tab 应交给输入法；未知状态不会被当成可接受。"
-            "完成这里的练习仍不代表其他应用或物理输入法已经通过验收。"
+            "完成这里的练习仍不代表其他应用或物理输入法已经通过验收。",
+            details,
         )
         automatic = Gtk.Expander(label="已有自动模式与 Tab 练习")
         instructions = Gtk.Label(

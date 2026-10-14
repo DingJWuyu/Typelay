@@ -273,6 +273,8 @@ internal sealed class UiaInputProvider : IDisposable
                 return new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged);
             if (target.Provider == NativeEditTransactions.Provider)
             {
+                // A dispatch or result-cleanup exception cannot prove that no text was replaced.
+                mutation = true;
                 var nativeReceipt = _edits.Write(plan);
                 return nativeReceipt.Status == WriteStatus.OutcomeUnknown ? Unknown(plan) : nativeReceipt;
             }

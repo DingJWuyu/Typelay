@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using TypeLay.Runtime;
 using System.Runtime.InteropServices;
+using System.Windows.Threading;
 
 namespace TypeLay.App;
 
@@ -8,6 +9,7 @@ namespace TypeLay.App;
 internal sealed class PracticeHost : IDisposable
 {
     private IChildProcess? _child;
+    private readonly Dispatcher _dispatcher = Dispatcher.CurrentDispatcher;
     private readonly Func<ProcessStartInfo, IChildProcess> _start;
     public PracticeHost(Func<ProcessStartInfo, IChildProcess>? start = null) => _start = start ?? (info => new ChildProcess(info));
     private bool _disposed;
@@ -37,14 +39,21 @@ internal sealed class PracticeHost : IDisposable
         _child = child;
         child.Process.Exited += (_, _) =>
         {
-            if (_disposed || !ReferenceEquals(_child, child))
+            if (_dispatcher.HasShutdownStarted || _dispatcher.HasShutdownFinished)
                 return;
-            try
+            _dispatcher.BeginInvoke(new Action(() =>
             {
-                if (child.Process.ExitCode != 0)
-                    Failed?.Invoke();
-            }
-            catch (InvalidOperationException) { }
+                // A new practice or shutdown can overtake an exit notification.
+                // Check ownership at delivery, on the same thread as Open/Dispose.
+                if (_disposed || !ReferenceEquals(_child, child))
+                    return;
+                try
+                {
+                    if (child.Process.ExitCode != 0)
+                        Failed?.Invoke();
+                }
+                catch (InvalidOperationException) { }
+            }));
         };
         child.Process.EnableRaisingEvents = true;
     }

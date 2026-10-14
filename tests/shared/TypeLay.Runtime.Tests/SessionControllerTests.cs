@@ -83,6 +83,93 @@ public sealed class SessionControllerTests
         Assert.Single(s.Service.DirectWrites);
     }
 
+    [Theory]
+    [InlineData(Denial.Sensitive, "不允许")]
+    [InlineData(Denial.Unsupported, "不支持")]
+    [InlineData(Denial.ImeUnclear, "输入法")]
+    [InlineData(Denial.SourceChanged, "已变化")]
+    public void RejectedDirectWritesClearlyReportNoReplacementAndDoNotRetry(Denial reason, string explanation)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Service.DirectReceipt = new(WriteStatus.RejectedBeforeMutation, reason);
+        s.Command("direct");
+        s.Tick();
+        s.CompleteTranslation("translated");
+        var rejected = Assert.Single(feedback);
+        Assert.Equal("write-rejected", rejected.Code);
+        Assert.Contains("TypeLay 未替换文字", rejected.Message);
+        Assert.Contains(explanation, rejected.Message);
+        Assert.Equal(rejected.Message, s.Controller.OperationStatus);
+        s.Tick(1000);
+        Assert.Single(s.Service.DirectWrites);
+        Assert.Single(feedback);
+    }
+
+    [Theory]
+    [InlineData(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome)]
+    [InlineData(WriteStatus.OutcomeUnknown, Denial.Unsupported)]
+    [InlineData((WriteStatus)999, Denial.Unsupported)]
+    public void UnknownDirectWriteStatusTakesPrecedenceOverItsReason(WriteStatus status, Denial reason)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Service.DirectReceipt = new(status, reason);
+        s.Command("direct");
+        s.Tick();
+        s.CompleteTranslation("translated");
+        var unknown = Assert.Single(feedback);
+        Assert.Equal("write-unconfirmed", unknown.Code);
+        Assert.Contains("检查原输入框", unknown.Message);
+        Assert.DoesNotContain("未替换", unknown.Message);
+        Assert.DoesNotContain("未作替换", unknown.Message);
+        s.Tick(1000);
+        Assert.Single(s.Service.DirectWrites);
+        Assert.Single(feedback);
+    }
+
+    [Fact]
+    public void InterruptedDirectTranslationReportsNoReplacementBeforeAnyWriteWasSubmitted()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Command("direct");
+        s.Tick();
+        Assert.NotNull(s.Model.Pending);
+        s.Model.Pending.SetException(new IOException("controlled-model-disconnection"));
+        s.Tick();
+        var failure = Assert.Single(feedback);
+        Assert.Equal("service-unavailable", failure.Code);
+        Assert.Contains("TypeLay 未替换文字", failure.Message);
+        Assert.Equal(failure.Message, s.Controller.OperationStatus);
+        Assert.Empty(s.Service.DirectWrites);
+    }
+
+    [Fact]
+    public void InterruptedSubmittedDirectWriteReportsAnUnknownOutcomeWithoutRetry()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Service.PendingDirectWrite = new();
+        s.Command("direct");
+        s.Tick();
+        s.CompleteTranslation("translated");
+        Assert.Single(s.Service.DirectWrites);
+        s.Service.PendingDirectWrite.SetException(new IOException("controlled-disconnection"));
+        s.Tick();
+        var unknown = Assert.Single(feedback);
+        Assert.Equal("write-unconfirmed", unknown.Code);
+        Assert.Contains("检查原输入框", unknown.Message);
+        Assert.DoesNotContain("未替换", unknown.Message);
+        s.Tick(1000);
+        Assert.Single(s.Service.DirectWrites);
+        Assert.Single(feedback);
+    }
+
     [Fact]
     public void SuccessfulDirectWorkDoesNotBroadcastProgressOrSuccessNotifications()
     {

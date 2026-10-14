@@ -81,12 +81,12 @@ internal static class Program
             var quick = new QuickPanel(settings, model, session, () => window.ShowPage(), Quit);
             icon = MakeTrayIcon();
             tray = new Forms.NotifyIcon { Icon = icon, Visible = true, Text = "TypeLay · 正在启动" };
-            practiceHost.Failed += () => app.Dispatcher.BeginInvoke(new Action(() =>
+            practiceHost.Failed += () =>
             {
                 if (!disposed)
                     tray.ShowBalloonTip(5000, OnDemandPracticePresentation.Create(settings.Value).Title,
                         OnDemandPracticePresentation.Create(settings.Value).LaunchFailedMessage, Forms.ToolTipIcon.Info);
-            }));
+            };
             session.OperationFeedback += feedback =>
             {
                 if (!disposed)
