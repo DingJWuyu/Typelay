@@ -214,14 +214,20 @@ internal sealed class BrowserWindows
         finally { Native.CloseHandle(snapshot); }
     }
 
-    public async Task StopAsync()
+    public async Task StopAsync(ChildProcess owner)
     {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
         try
         {
             // Also retain and stop an identified descendant that started before
-            // ChildProcess assigned its job. Never kill by executable name.
-            Discover();
-            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+            // ChildProcess assigned its job. Discover before closing that job:
+            // asynchronous termination can otherwise hide not-yet-held children.
+            // A discovery failure must still close the owned job.
+            try
+            {
+                Discover();
+            }
+            finally { owner.Dispose(); }
             foreach (var process in _processes.Values)
             {
                 try

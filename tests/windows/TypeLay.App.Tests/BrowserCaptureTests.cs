@@ -163,14 +163,15 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
         }
         finally
         {
-            // The owned job closes before profile cleanup, including when the
-            // browser's initial process exits before its descendants. Never mask
-            // the original acquisition failure with a secondary cleanup failure.
+            // Retain the final owned process identities before closing the job,
+            // then confirm their exit before deleting the disposable profile.
+            // Never mask acquisition failure with a secondary cleanup failure.
             try
             {
-                ownedBrowser?.Dispose();
-                if (windows is not null)
-                    await windows.StopAsync();
+                if (windows is not null && ownedBrowser is not null)
+                    await windows.StopAsync(ownedBrowser);
+                else
+                    ownedBrowser?.Dispose();
                 if (Directory.Exists(directory))
                     Directory.Delete(directory, true);
             }

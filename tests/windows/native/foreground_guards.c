@@ -39,6 +39,51 @@ static HANDLE handle(uintptr_t value) { return (HANDLE)value; }
 static void require(int condition) { if (!condition) field.invalid_call = 1; }
 static void require_source(HANDLE hwnd) { require(hwnd == handle(SourceWindow)); }
 
+// The included production hook entry point is not exercised by this executor
+// test. COFF still resolves its references before discarding unused sections;
+// give those APIs fail-if-called substitutes rather than linking real IPC.
+LRESULT CallNextHookEx(HANDLE hook, int code, WPARAM wp, LPARAM lp) {
+    (void)hook; (void)code; (void)wp; (void)lp;
+    field.invalid_call = 1;
+    return 0;
+}
+uint32_t RegisterWindowMessageW(const WCHAR *name) {
+    (void)name;
+    field.invalid_call = 1;
+    return 0;
+}
+HANDLE OpenFileMappingW(uint32_t access, int inherit, const WCHAR *name) {
+    (void)access; (void)inherit; (void)name;
+    field.invalid_call = 1;
+    return 0;
+}
+void *MapViewOfFile(HANDLE mapping, uint32_t access, uint32_t high, uint32_t low, size_t bytes) {
+    (void)mapping; (void)access; (void)high; (void)low; (void)bytes;
+    field.invalid_call = 1;
+    return 0;
+}
+int UnmapViewOfFile(const void *view) {
+    (void)view;
+    field.invalid_call = 1;
+    return 0;
+}
+int CloseHandle(HANDLE value) {
+    (void)value;
+    field.invalid_call = 1;
+    return 0;
+}
+HANDLE GetProcessHeap(void) { field.invalid_call = 1; return 0; }
+void *HeapAlloc(HANDLE heap, uint32_t flags, size_t bytes) {
+    (void)heap; (void)flags; (void)bytes;
+    field.invalid_call = 1;
+    return 0;
+}
+int HeapFree(HANDLE heap, uint32_t flags, void *value) {
+    (void)heap; (void)flags; (void)value;
+    field.invalid_call = 1;
+    return 0;
+}
+
 static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
     require_source(hwnd);
     switch (message) {
