@@ -124,7 +124,9 @@ class Niri:
                 snapshot = version, windows, outputs, workspaces, overview, observed
             except (OSError, EOFError, ValueError, KeyError, TypeError):
                 snapshot = None
-            self.glib.idle_add(self._deliver, snapshot)
+            # Native IO must not starve an already completed foreground snapshot.
+            # Keep the original pre-request timestamp; delivery cannot renew it.
+            self.glib.idle_add(self._deliver, snapshot, priority=self.glib.PRIORITY_DEFAULT)
             # Full geometry must follow scrolling/animation, not only focus events.
             self.stopping.wait(max(0.04, 0.075 - (time.monotonic() - start)) if snapshot else 1.0)
 

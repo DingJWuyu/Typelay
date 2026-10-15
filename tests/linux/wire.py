@@ -6,6 +6,8 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,8 +16,84 @@ from gi.repository import GLib
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
+from niri import Niri  # noqa: E402
 from paths import Paths  # noqa: E402
 from wire import MAX_FRAME, Channel, Decoder, encode, now_ms, receive_sync  # noqa: E402
+
+
+class CompositorDispatchTests(unittest.TestCase):
+    def test_completed_snapshot_is_applied_while_default_io_remains_ready(self):
+        # Exercise the production worker and GLib delivery, without a compositor
+        # or any GTK objects. A ready pipe represents sustained native input.
+        completed = threading.Event()
+        replies, applied, io_dispatches, timer_dispatches = [], [], [], []
+        original_stamp = now_ms() - 200
+
+        def reply(_commands):
+            replies.append(time.monotonic())
+            completed.set()
+            return [
+                {"Windows": [{"id": 1, "pid": 123, "is_focused": True}]},
+                {"Outputs": {}},
+                {"Workspaces": []},
+                {"OverviewState": {"is_open": False}},
+            ]
+
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, b"input")
+        watch = GLib.io_add_watch(
+            read_fd,
+            GLib.PRIORITY_DEFAULT,
+            GLib.IO_IN,
+            lambda *_: (io_dispatches.append(time.monotonic()), True)[1],
+        )
+        timer = GLib.timeout_add(10, lambda: (timer_dispatches.append(time.monotonic()), True)[1])
+        context = GLib.MainContext.default()
+        with (
+            patch("niri.request", return_value={"Version": "test"}),
+            patch("niri.request_many", side_effect=reply),
+            # Advance the clock after the first request. Applying its snapshot
+            # must not turn that old observation into a fresh one.
+            patch(
+                "niri.now_ms",
+                side_effect=lambda: now_ms() if completed.is_set() else original_stamp,
+            ),
+        ):
+            observer = Niri(GLib, lambda: applied.append((time.monotonic(), observer.observed_at)))
+            try:
+                self.assertTrue(completed.wait(2), "compositor request did not complete")
+                deadline = time.monotonic() + 0.2
+                while time.monotonic() < deadline:
+                    context.iteration(False)
+                delivered_while_busy = observer.ready
+                observation_age = now_ms() - observer.observed_at
+                GLib.source_remove(watch)
+                watch = 0
+                # Also record the old implementation's delivery after IO stops.
+                deadline = time.monotonic() + 2
+                while not applied and time.monotonic() < deadline:
+                    context.iteration(False)
+                self.assertTrue(applied, "completed compositor snapshot was never applied")
+                applied_at, observed_at = applied[0]
+                delay = (applied_at - replies[0]) * 1000
+                print(f"compositor reply-to-apply: {delay:.1f} ms", file=sys.stderr)
+                self.assertTrue(
+                    delivered_while_busy,
+                    f"snapshot starved behind ready IO for {delay:.1f} ms",
+                )
+                self.assertEqual(observed_at, original_stamp, "delivery refreshed observation")
+                self.assertLessEqual(observation_age, 150)
+                self.assertTrue(any(stamp > applied_at for stamp in io_dispatches))
+                self.assertTrue(any(stamp > applied_at for stamp in timer_dispatches))
+            finally:
+                observer.close()
+                if watch:
+                    GLib.source_remove(watch)
+                GLib.source_remove(timer)
+                os.close(read_fd)
+                os.close(write_fd)
+                while context.pending():
+                    context.iteration(False)
 
 
 class PipeTransportTests(unittest.TestCase):

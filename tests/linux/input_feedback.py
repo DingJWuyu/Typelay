@@ -28,12 +28,13 @@ from wire import Decoder  # noqa: E402
 
 class EventLoop:
     IO_IN, IO_OUT, IO_HUP, IO_ERR, IO_NVAL = 1, 2, 4, 8, 16
+    PRIORITY_DEFAULT = 0
 
     def __init__(self):
         self.next_id = 0
         self.watches = {}
 
-    def register(self, *_):
+    def register(self, *_, **_options):
         self.next_id += 1
         return self.next_id
 
