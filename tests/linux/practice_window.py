@@ -151,6 +151,8 @@ def run(presentation):
                         lambda: lesson.confirmation is not None and lesson.confirmation.is_active()
                     )
                     lesson.confirmation.response(Gtk.ResponseType.CANCEL)
+                    until(lesson.window.is_active)
+                    assert lesson.confirmation is None
                     assert lesson.pending_start is None
                     unchanged()
                     lesson.start.clicked()

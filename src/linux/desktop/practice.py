@@ -185,11 +185,12 @@ class Practice:
             self.confirmation = None
             timestamp = Gtk.get_current_event_time()
             widget.destroy()
-            if response == Gtk.ResponseType.OK and not self.closed:
-                # Return to this top-level within the user's confirmation event.
+            if not self.closed:
+                # Return to this top-level when the user dismisses the dialog.
                 # A later Host reply must not activate a window they have left.
                 self.window.present_with_time(timestamp)
-                self.begin(True)
+                if response == Gtk.ResponseType.OK:
+                    self.begin(True)
 
         dialog.connect("response", respond)
         dialog.show_all()
