@@ -1234,22 +1234,39 @@ def run(arguments):
                                     "same editor/buffer/selection/focus, visible controls, reduced motion and immediate exit"
                                 )
                             finally:
-                                (arguments.output / "gtk-overlay-motion.json").write_text(
-                                    json.dumps(
-                                        {"text": draft, "cases": records},
-                                        ensure_ascii=False,
-                                        indent=2,
+                                failed = sys.exc_info()[0] is not None
+                                try:
+                                    if (
+                                        failed
+                                        and records
+                                        and "action" in records[-1]
+                                        and "frames" not in records[-1]
+                                    ):
+                                        records[-1]["frames"] = gtk_state()["motionFrames"]
+                                    (arguments.output / "gtk-overlay-motion.json").write_text(
+                                        json.dumps(
+                                            {"text": draft, "cases": records},
+                                            ensure_ascii=False,
+                                            indent=2,
+                                        )
                                     )
-                                )
-                                motion_path.unlink(missing_ok=True)
-                                restored = wait_for(
-                                    lambda: value
-                                    if (value := gtk_state()).get("motionMode") == ""
-                                    else None,
-                                    "fixture animation preference was not restored",
-                                )
-                                assert restored["motionAnimations"] is original
-                                assert restored["motionReduced"] == original_reduced
+                                except (OSError, ValueError, KeyError) as error:
+                                    if not failed:
+                                        raise
+                                    print(
+                                        f"GTK motion evidence could not be saved: {error}",
+                                        file=sys.stderr,
+                                    )
+                                finally:
+                                    motion_path.unlink(missing_ok=True)
+                                    restored = wait_for(
+                                        lambda: value
+                                        if (value := gtk_state()).get("motionMode") == ""
+                                        else None,
+                                        "fixture animation preference was not restored",
+                                    )
+                                    assert restored["motionAnimations"] is original
+                                    assert restored["motionReduced"] == original_reduced
 
                         def edit_and_accept(accept_key, hold_return=False, motion=False):
                             editing_source = "Please review this note."
@@ -3393,9 +3410,32 @@ def run(arguments):
             )
             settings_page("应用支持")
             advanced_exclusions = settings_control("高级编辑排除应用")
+            assert advanced_exclusions.get_process_id() == process.pid
             assert not advanced_exclusions.get_state_set().contains(Atspi.StateType.EXPANDED)
-            activate_scrolled_setting("高级编辑排除应用")
-            excluded = settings_control("设置：排除的应用")
+            deadline = time.monotonic() + 15
+            assert Atspi.Component.grab_focus(advanced_exclusions.get_component_iface())
+            wait_for(
+                lambda: advanced_exclusions.get_state_set().contains(Atspi.StateType.SHOWING)
+                and advanced_exclusions.get_state_set().contains(Atspi.StateType.FOCUSED)
+                and any(
+                    window.get("id") == settings_window["id"]
+                    and window.get("pid") == process.pid
+                    and window.get("is_focused") is True
+                    for window in contents(request("Windows"), "Windows")
+                ),
+                "advanced exclusions did not gain actual settings keyboard focus",
+                timeout=deadline - time.monotonic(),
+            )
+            # Exercise the focused native expander's keyboard binding; no hidden
+            # action or later-layout reuse of the earlier viewport calibration.
+            key("space")
+            excluded = settings_control("设置：排除的应用", timeout=deadline - time.monotonic())
+            wait_for(
+                lambda: advanced_exclusions.get_state_set().contains(Atspi.StateType.EXPANDED)
+                and excluded.get_state_set().contains(Atspi.StateType.SHOWING),
+                "Space did not reveal the advanced exclusion editor",
+                timeout=deadline - time.monotonic(),
+            )
             assert Atspi.Component.grab_focus(excluded.get_component_iface())
             assert Atspi.EditableText.set_text_contents(
                 excluded.get_editable_text_iface(), "typelay-navigation-test"

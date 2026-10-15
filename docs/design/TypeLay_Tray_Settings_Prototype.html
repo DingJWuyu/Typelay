@@ -1288,7 +1288,7 @@ dialog p {
               范围与设计依据
             </summary>
             <div class="details-body">
-              视觉层级来自用户提供的设置参考，及 Apple、Linear 的轻量设置。仅保留现有中英方向、四键和主题设置。风格、术语表与已安装应用选择未实现，不作可用控件展示。此页不是桌面验收。
+              视觉层级来自用户提供的设置参考，及 Apple、Linear 的轻量设置。仅保留现有中英方向、四键和主题设置。风格与术语表尚未实现，不作可用控件展示。Linux 场景包含应用选择与排除列表演示，不会运行本机应用；原型不代替真实桌面验收。
             </div>
           </details>
         </div>
@@ -2024,6 +2024,7 @@ dialog p {
     lastSave: null,
     preparationTimer: 0
   };
+  const applicationNames = {editor: '文本编辑器示例', files: '文件管理器示例', script: '脚本启动器示例'};
   const fields = ['wakeShortcut', 'directShortcut', 'acceptShortcut', 'exitShortcut', 'excludedApplications'];
   let saved = {
       wakeShortcut: 'Ctrl+Shift+F9',
@@ -2072,6 +2073,10 @@ dialog p {
       return false;
     }
     Object.assign(state, changes);
+    if (Object.hasOwn(changes, 'excludedApplications')) {
+      saved.excludedApplications = changes.excludedApplications;
+      $('excludedApplications').value = changes.excludedApplications;
+    }
     state.saveError = false;
     state.saveOutcome = 'confirmed';
     state.lastSave = null;
@@ -2090,6 +2095,15 @@ dialog p {
     all('[data-page]').forEach(b => b.setAttribute('aria-current', b.dataset.page === page ? 'page' : 'false'));
     all('.page').forEach(p => p.hidden = p.id !== 'page-' + page);
     $('pageScroll').scrollTop = 0;
+    renderDraft();
+  }
+  function changeExclusions(value) {
+    if (state.platform === 'windows') {
+      saveNow({excludedApplications: value});
+      return;
+    }
+    $('excludedApplications').value = value;
+    draftMessage = '';
     renderDraft();
   }
   function renderExclusions() {
@@ -2112,9 +2126,7 @@ dialog p {
       remove.setAttribute('aria-label', '移除排除项：' + value);
       remove.onclick = () => {
         values.splice(index, 1);
-        $('excludedApplications').value = values.join('\n');
-        draftMessage = '';
-        renderDraft();
+        changeExclusions(values.join('\n'));
       };
       row.append(name, remove);
       $('exclusionList').append(row);
@@ -2123,7 +2135,7 @@ dialog p {
   function renderDraft() {
     renderExclusions();
     const hasDraft = dirty();
-    $('draftBar').hidden = !(state.page === 'shortcuts' || state.page === 'support' || hasDraft);
+    $('draftBar').hidden = !(state.page === 'shortcuts' || (state.page === 'support' && state.platform === 'linux') || hasDraft);
     $('saveDraft').disabled = !hasDraft;
     $('draftMessage').textContent = draftMessage || (hasDraft ? '这些修改尚未保存；离开此页后仍会保留。' : state.page === 'shortcuts' ? '快捷键需要保存后生效。' : '应用排除列表需要保存后生效。');
     $('draftMessage').classList.toggle('error', !!draftMessage && draftMessage.startsWith('未保存'));
@@ -2229,7 +2241,7 @@ dialog p {
     $('registeredApplicationRow').hidden = !linux || state.integration !== 'ready';
     $('applicationOutcome').hidden = !linux || !state.application;
     $('selectedApplication').textContent = state.application
-      ? $('applicationList').querySelector('[value="' + state.application + '"]').textContent
+      ? applicationNames[state.application]
       : '尚未选择应用';
     $('openApplication').disabled = !state.application || state.application === 'script' || state.setup !== 'ready' || state.connection === 'conflict';
     $('applicationOutcome').textContent = state.application === 'script'
@@ -2237,6 +2249,7 @@ dialog p {
       : state.applicationLaunched
         ? connected ? '已检测到所选应用连接。当前输入框能力仍单独检查。' : '已请求启动，等待连接。若应用已在运行，请保存工作并正常退出后再打开。'
         : '尚未启动。';
+    $('exclusionsDetails').hidden = state.platform !== 'linux';
     renderDraft();
   }
   function closeSettings() {
@@ -2370,9 +2383,17 @@ dialog p {
   let applicationPurpose = 'launch';
   function chooseApplication(purpose) {
     applicationPurpose = purpose;
-    $('applicationTitle').textContent = purpose === 'exclude' ? '添加排除应用' : '选择应用';
+    $('applicationTitle').textContent = purpose === 'exclude'
+      ? state.platform === 'windows' ? '选择 .exe 文件（演示）' : '添加排除应用'
+      : '选择应用';
     $('applicationSearch').value = '';
-    [...$('applicationList').options].forEach(option => option.hidden = false);
+    [...$('applicationList').options].forEach(option => {
+      option.hidden = false;
+      const windowsFile = purpose === 'exclude' && state.platform === 'windows';
+      option.textContent = windowsFile
+        ? ({editor: 'text-editor.exe', files: 'file-manager.exe', script: '脚本示例（不可选择）'})[option.value]
+        : applicationNames[option.value];
+    });
     $('applicationDialog').showModal();
     $('applicationSearch').focus();
   }
@@ -2394,10 +2415,8 @@ dialog p {
       const name = (selected.value === 'editor' ? 'text-editor' : 'file-manager') + (state.platform === 'windows' ? '.exe' : '');
       const values = $('excludedApplications').value.split('\n').map(value => value.trim()).filter(Boolean);
       if (!values.some(value => value.toLowerCase() === name)) {
-        $('excludedApplications').value = [...values, name].join('\n');
+        changeExclusions([...values, name].join('\n'));
       }
-      draftMessage = '';
-      renderDraft();
       return;
     }
     state.application = selected.value;
@@ -2419,6 +2438,7 @@ dialog p {
   };
   $('demoPlatform').onchange = e => {
     state.platform = e.target.value;
+    $('excludedApplications').value = saved.excludedApplications;
     render();
   };
   $('browserGuide').onclick = () => confirmAction('连接浏览器输入框', '在浏览器扩展管理页启用 TypeLay 接入组件，并由你确认所需权限。随后重新打开页面，在输入框中检查连接。此演示不会安装扩展。', '知道了', () => {}, '关闭');
