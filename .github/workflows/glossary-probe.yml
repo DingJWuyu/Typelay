@@ -1,0 +1,56 @@
+name: Isolated glossary feasibility probe
+on:
+  push:
+    branches: [work/glossary-probe]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: archlinux:base
+    steps:
+      - name: Install existing component installer prerequisites
+        run: pacman -Syu --noconfirm git python uv curl unzip icu openssl zlib
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify and unpack the existing official candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/probe-runtime artifacts/glossary-probe
+          curl --fail --location \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' \
+            https://api.github.com/repos/DingJWuyu/Typelay/actions/artifacts/11970206852/zip \
+            -o artifacts/probe-runtime/evidence.zip
+          echo 'ab1d7ca3d4d35d9e3f97f53dc47d62795baa993a85cfaa411d9d2f1524280e41  artifacts/probe-runtime/evidence.zip' | sha256sum -c -
+          unzip -p artifacts/probe-runtime/evidence.zip TypeLay-Linux-preview-x86_64.tar.gz > artifacts/probe-runtime/client.tar.gz
+          echo '597b08b59fd3dd6d557cbc43ddde603206924486c09135c5ab691686937307cd  artifacts/probe-runtime/client.tar.gz' | sha256sum -c -
+          tar -xzf artifacts/probe-runtime/client.tar.gz -C artifacts/probe-runtime
+      - name: Install the same checked local translation components
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="$PWD/artifacts/probe-runtime/TypeLay-Linux-preview"
+          python "$package/desktop/setup.py" "$package" "$PWD/artifacts/probe-data" "$PWD/artifacts/probe-cache"
+      - name: Compare twelve synthetic sentences with the real model
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifacts/probe-data/components/current/runtime/venv/bin/python \
+            experiments/glossary_probe.py \
+            --worker "$PWD/artifacts/probe-runtime/TypeLay-Linux-preview/worker" \
+            --models "$PWD/artifacts/probe-data/components/current/models" \
+            --output "$PWD/artifacts/glossary-probe/results.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: glossary-probe-${{ github.sha }}
+          path: artifacts/glossary-probe/results.json
+          if-no-files-found: warn
+          retention-days: 7
