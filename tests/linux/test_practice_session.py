@@ -82,11 +82,14 @@ class InputPort:
         self.authorization = None
         self.retired = None
         self.continuing = False
+        self.foreground_fresh = True
+        self.binding_reads = 0
 
     async def practice_target(self, pid, target=None):
         return dict(self.target) if self.available else None
 
     async def practice_binding(self, pid, target=None):
+        self.binding_reads += 1
         return (
             {
                 "target": dict(self.target),
@@ -97,8 +100,11 @@ class InputPort:
             else None
         )
 
-    def practice_waiting(self, run, *, acknowledged=True):
+    def practice_waiting(self, run, *, acknowledged=True, require_fresh=True):
         return self.continuing and self.retired == run
+
+    def fresh(self):
+        return self.foreground_fresh
 
     def prepare_practice(self, binding, owns_process):
         return True
@@ -247,6 +253,11 @@ class PracticeSessionTests(unittest.IsolatedAsyncioTestCase):
         self.host.progress = {**self.host.progress, "awaitingFreshSource": True}
         self.assertIsNotNone(await self.practice.progress(100, lesson="automatic"))
         self.assertIsNone(self.input.authorization)
+        self.input.foreground_fresh = False
+        reads = self.input.binding_reads
+        self.assertIsNotNone(await self.practice.progress(100, lesson="automatic"))
+        self.assertEqual(self.input.binding_reads, reads)
+        self.input.foreground_fresh = True
         self.input.available = True
         self.input.generation = str(uuid.uuid4())
         await self.practice.progress(100, lesson="automatic")

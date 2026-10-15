@@ -65,8 +65,10 @@ public sealed class AutomaticPracticeProgressTests
         Assert.Empty(s.Service.Writes);
     }
 
-    [Fact]
-    public void ContextAdvanceKeepsOnlyIntentAndRequiresANewGenerationAndFreshOwnedCapture()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ContextAdvanceKeepsOnlyIntentAndRequiresANewGenerationAndFreshOwnedCapture(bool ageGap)
     {
         using var s = new SessionScenario();
         var binding = Bind(s) with
@@ -113,6 +115,26 @@ public sealed class AutomaticPracticeProgressTests
         s.CompleteCapture(new(s.Fresh, FocusMember.Source, SessionShortcuts:
             new(s.Source.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true),
             OwnedSource: new(next, s.Loop.NowMs, false)));
+        if (ageGap)
+        {
+            s.Input.Ready = false;
+            s.Input.ForegroundExpired = true;
+            s.Input.FocusedTarget = default;
+            s.Tick();
+            Assert.True(s.Controller.AutomaticPracticeProgress!.AwaitingFreshSource);
+            Assert.True(s.Controller.AutomaticPracticeProgress.AcceptanceCompleted);
+            Assert.Null(s.Input.Permit);
+            Assert.Equal(next.CommandGeneration, s.Input.CommandGeneration);
+            s.Input.Ready = true;
+            s.Input.ForegroundExpired = false;
+            s.Input.FocusedTarget = binding.Target;
+            Assert.False(s.Controller.BindAutomaticPractice(next));
+            s.Service.PendingCapture = new();
+            s.Tick();
+            s.CompleteCapture(new(s.Fresh, FocusMember.Source, SessionShortcuts:
+                new(s.Source.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true),
+                OwnedSource: new(next, s.Loop.NowMs, false)));
+        }
         Assert.True(s.Controller.BindAutomaticPractice(next));
         Assert.False(s.Controller.AutomaticPracticeProgress!.AwaitingFreshSource);
         Assert.True(s.Controller.AutomaticPracticeProgress.AcceptanceCompleted);
@@ -166,8 +188,12 @@ public sealed class AutomaticPracticeProgressTests
         Assert.Null(s.Input.Permit);
     }
 
-    [Fact]
-    public void ClosingAnAwaitingRunRejectsItsLateFreshCaptureAndBinding()
+    [Theory]
+    [InlineData("close")]
+    [InlineData("window-roundtrip")]
+    [InlineData("unknown")]
+    [InlineData("unavailable")]
+    public void AnAgeGapDoesNotHideInvalidationOrAnUnknownLateCapture(string change)
     {
         using var s = new SessionScenario();
         Guid run = Guid.NewGuid();
@@ -184,8 +210,25 @@ public sealed class AutomaticPracticeProgressTests
         };
         s.Service.PendingCapture = new();
         s.Tick();
-        Assert.True(s.Controller.EndAutomaticPractice(run));
-        s.CompleteCapture(new(s.Fresh, FocusMember.Source, OwnedSource: new(next, s.Loop.NowMs, false)));
+        s.Input.Ready = false;
+        s.Input.ForegroundExpired = true;
+        s.Input.FocusedTarget = default;
+        s.Tick();
+        Assert.True(s.Controller.AutomaticPracticeProgress!.AwaitingFreshSource);
+        if (change == "close")
+            Assert.True(s.Controller.EndAutomaticPractice(run));
+        else if (change == "window-roundtrip")
+            s.Input.WindowEpoch += 2;
+        else if (change == "unavailable")
+        {
+            s.Input.ForegroundExpired = false;
+            s.Tick();
+        }
+        s.Input.Ready = true;
+        s.Input.ForegroundExpired = false;
+        s.Input.FocusedTarget = binding.Target;
+        s.CompleteCapture(change == "unknown" ? new(null) :
+            new(s.Fresh, FocusMember.Source, OwnedSource: new(next, s.Loop.NowMs, false)));
         Assert.Null(s.Controller.AutomaticPracticeProgress);
         Assert.False(s.Controller.BindAutomaticPractice(next));
         Assert.Null(s.Input.Permit);

@@ -586,6 +586,14 @@ public sealed partial class SessionController : IDisposable
             // Accepting it advances generation before an obsolete read can clear it.
             if (!_disposed)
                 DrainInputNotices();
+            // A native refusal remains unknown even if foreground age expired
+            // while this awaiting read was in flight. Never relabel it as age.
+            if (!_disposed && _awaitingPractice is { } awaiting && request.PracticeRead == awaiting with
+            {
+                CommandGeneration = _hook.CommandGeneration
+            }
+                && result.Snapshot is null && result.OwnedSource is null && !result.ForegroundExpired)
+                StopSession("practice-continuity-lost");
             CheckAutomaticPracticeIdentity();
             if (_disposed || generation != _generation)
                 return;

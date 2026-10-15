@@ -81,9 +81,24 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             nint window = 0;
             bool clicked = false;
             var startup = Stopwatch.StartNew();
+            string? previousStartupState = null;
+            int startupChanges = 0;
+            void RecordStartupState(int visibleWindows, int pageWindows, bool final = false)
+            {
+                string state = $"totalOwnedWindows={windows.TotalWindowCount}; visibleOwnedWindows={visibleWindows}; "
+                    + $"ownedPages={pageWindows}; {windows.DescribeProcesses()}";
+                if (!final && (state == previousStartupState || startupChanges >= 12))
+                    return;
+                previousStartupState = state;
+                if (!final)
+                    startupChanges++;
+                output.WriteLine($"Browser startup {(final ? "final" : "change")} elapsedMs={startup.ElapsedMilliseconds}: {state}");
+            }
             do
             {
-                var pages = windows.Read().Where(candidate => candidate.Page).ToArray();
+                var observed = windows.Read();
+                var pages = observed.Where(candidate => candidate.Page).ToArray();
+                RecordStartupState(observed.Length, pages.Length);
                 Assert.True(pages.Length <= 1, "The isolated page must belong to exactly one owned browser window.");
                 if (pages.Length == 1)
                 {
@@ -102,6 +117,7 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
                 await Task.Delay(40, deadline.Token);
             } while (startup.Elapsed < TimeSpan.FromSeconds(6));
             var ready = windows.Read();
+            RecordStartupState(ready.Length, ready.Count(candidate => candidate.Page), final: true);
             output.WriteLine($"Browser startup atMs={WindowsInterruptClock.NowMs}: ownedProcesses={windows.ProcessCount}; "
                 + $"visibleOwnedWindows={ready.Length}; ownedPages={ready.Count(candidate => candidate.Page)}; "
                 + $"foregroundOwned={window != 0 && Native.GetForegroundWindow() == window}; "

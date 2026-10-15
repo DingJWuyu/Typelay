@@ -85,7 +85,9 @@ dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release 
 
 `tests/windows/support/TypeLay.Platform.Windows` 提供只访问已登记 fixture 控件的 Win32 适配器，服务适配器契约和键盘 Hook 回归，不在生产依赖链。其受控 IME 状态不等于外部应用的真实输入法状态。
 
-原生辅助调用失败时只报告固定操作名、消息 ID 和 Win32 错误数值，不记录句柄、参数或正文，仍使用原 100ms 上限。`SendMessageTimeoutW` 返回零可能是[失败或超时](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagetimeoutw#return-value)，不能仅凭异常猜超时；当前 .NET 的 [`SetLastError=true`](https://learn.microsoft.com/en-us/dotnet/api/system.runtime.interopservices.dllimportattribute.setlasterror?view=net-10.0#remarks)会在调用前清零并缓存错误，数值零只表示没有更具体的原因。
+原生辅助调用失败时只报告固定操作名、消息 ID 和 Win32 错误数值，不记录句柄、参数或正文，默认仍使用原 100ms 上限。`SendMessageTimeoutW` 返回零可能是[失败或超时](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagetimeoutw#return-value)，不能仅凭异常猜超时；当前 .NET 的 [`SetLastError=true`](https://learn.microsoft.com/en-us/dotnet/api/system.runtime.interopservices.dllimportattribute.setlasterror?view=net-10.0#remarks)会在调用前清零并缓存错误，数值零只表示没有更具体的原因。
+
+仅下方真实持续输入场景生成合成源文字的单次 `EM_REPLACESEL` 允许 1 秒有限等待，避免把输入生成器的短等待误作产品响应时限；不重试，超时仍失败且不能确认消息是否已执行，必须确认自有源进程退出后才进入下一场景。产品观察、接受许可与写回期限不变，首译和更新耗时继续完整计时，正文、焦点和零提交断言不变；通过不代表保证 100ms 输入节奏。
 
 `tests/windows/fixtures/TypeLay.NativeFixture` 不带 Hook 参数时是供生产 Broker 探测的真实 Win32 测试窗口；Hook 模式使用生产 KeyboardHook/Core 和固定候选隔离按键问题，不调用模型。
 

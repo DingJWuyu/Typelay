@@ -130,9 +130,9 @@ public static class NativeMethods
             throw new NativeMessageException(nameof(Send), message, Marshal.GetLastPInvokeError());
         return result;
     }
-    public static void SendString(nint hwnd, uint message, string text, nuint wParam = 0)
+    public static void SendString(nint hwnd, uint message, string text, nuint wParam = 0, uint timeoutMs = 100)
     {
-        if (SendText(hwnd, message, wParam, text, 0x22, 100, out _) == 0)
+        if (SendText(hwnd, message, wParam, text, 0x22, timeoutMs, out _) == 0)
             throw new NativeMessageException(nameof(SendString), message, Marshal.GetLastPInvokeError());
     }
     public static string ReadText(nint hwnd, int limit)

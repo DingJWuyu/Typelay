@@ -165,6 +165,10 @@ internal sealed class SessionScenario : IDisposable
     internal sealed class InputMonitor : IInputMonitor
     {
         public bool Ready { get; set; } = true;
+        public bool ForegroundExpired
+        {
+            get; set;
+        }
         public bool ShortcutsReady { get; set; } = true;
         public bool CanInterceptAcceptance { get; set; } = true;
         public string ShortcutStatus => "controlled";

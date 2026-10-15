@@ -33,7 +33,8 @@ public sealed record InputContext(long UserEpoch, long ForegroundEpoch, long Sou
     TargetId? BoundTarget, string[] Excluded, bool CaptureDirect, SessionShortcutConfiguration? SessionShortcuts = null, OwnedPracticeBinding? PracticeRead = null);
 public sealed record InputCapture(InputSnapshot? Snapshot, FocusMember Focus = FocusMember.Other,
     string? Application = null, long UserEpoch = 0, long ForegroundEpoch = 0,
-    SessionShortcutAcknowledgement? SessionShortcuts = null, OwnedSourceEvidence? OwnedSource = null);
+    SessionShortcutAcknowledgement? SessionShortcuts = null, OwnedSourceEvidence? OwnedSource = null,
+    bool ForegroundExpired = false);
 
 // Body-free evidence for an existing owned lesson only. ContextAdvanced implies
 // this read was refused and its original executor acknowledged revocation.
@@ -106,6 +107,8 @@ public interface IInputMonitor : IDisposable
     }
     // An adapter-owned connection identity. Unconsumed hosts grant no owned-practice authority.
     Guid ConnectionId => Guid.Empty;
+    // Only an age-expired foreground observation, never unavailable native identity.
+    bool ForegroundExpired => false;
     FocusMember GetFocus(TargetId target);
     void ConfigureShortcuts(bool enabled, string wake, string direct, SessionShortcutBindings sessionBindings, bool sessionEnabled);
     bool TryRead(out InputNotice? notice);

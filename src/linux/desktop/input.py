@@ -228,6 +228,9 @@ class Input:
     def fresh(self):
         return self.niri.ready and 0 <= now_ms() - self.niri.observed_at <= 150
 
+    def foreground_expired(self):
+        return self.niri.ready and now_ms() - self.niri.observed_at > 150
+
     def focused_peer(self):
         if not self.fresh() or not self.niri.focused:
             return None
@@ -301,6 +304,9 @@ class Input:
 
     async def practice_binding(self, pid, target=None):
         """Return a host-owned connection and acknowledged, exact source binding."""
+        if self.practice_continuity is not None and not self.fresh():
+            self.check_practice()
+            return None
         native = await self.practice_target(pid, target)
         if native is None:
             return None
@@ -471,13 +477,13 @@ class Input:
             self.practice_retirement = None
         return confirmed
 
-    def practice_waiting(self, run, *, acknowledged=True):
+    def practice_waiting(self, run, *, acknowledged=True, require_fresh=True):
         value = self.practice_continuity
         return bool(
             value
             and value["runId"] == run
             and (
-                not acknowledged
+                (not acknowledged and self.fresh())
                 or (self.practice_retirement is None and self.practice_retirement_ack == run)
             )
             and value["peer"] in self.peers
@@ -485,9 +491,21 @@ class Input:
             and value["ownsProcess"](value["peer"].pid)
             and value["settingsGeneration"] == self.settings_generation
             and value["windowEpoch"] == self.window_epoch
-            and self.fresh()
             and self.bound == value["target"]
-            and self.focused_peer() is value["peer"]
+            and (
+                (self.fresh() and self.focused_peer() is value["peer"])
+                or (
+                    not require_fresh
+                    and self.foreground_expired()
+                    and self.niri.focused
+                    and [
+                        peer
+                        for peer in self.peers
+                        if peer.lifetime and peer.matches_process(self.niri.focused.get("pid"))
+                    ]
+                    == [value["peer"]]
+                )
+            )
             and not self.overlay_focused
             and self.enabled is True
         )
@@ -584,12 +602,24 @@ class Input:
 
     def check_practice(self):
         waiting = self.practice_continuity
-        if (
-            waiting is not None
-            and self.practice_retirement is None
-            and not self.practice_waiting(waiting["runId"])
-        ):
-            self.retire_practice(waiting["runId"])
+        if waiting is not None and self.practice_retirement is None:
+            if not self.practice_waiting(waiting["runId"], require_fresh=False):
+                self.retire_practice(waiting["runId"])
+            elif self.foreground_expired():
+                if not waiting.get("foregroundExpired"):
+                    # Replace the waiting token to fence reads begun before this
+                    # gap. Keep only the immutable baseline and verified steps.
+                    waiting["foregroundExpired"] = True
+                    self.practice_continuity = dict(waiting)
+                    for key, record in list(self.observations.items()):
+                        if (
+                            record["peer"] is waiting["peer"]
+                            and record["target"] == waiting["target"]
+                        ):
+                            self.observations.pop(key)
+                    self.bound_observation = None
+            else:
+                waiting["foregroundExpired"] = False
         authorization = self.practice_authorization or self.practice_pending
         if authorization is None:
             return
@@ -638,13 +668,16 @@ class Input:
         paused = self.current_pause_record()
         value = {
             "ready": self.fresh(),
+            "foregroundExpired": self.foreground_expired(),
             "connectionId": self.bound_observation["peer"].connection_id
             if self.bound_observation
             and self.bound_observation["peer"] in self.peers
             and self.bound_observation["target"] == self.bound
             else self.practice_continuity["connectionId"]
             if self.practice_continuity
-            and self.practice_waiting(self.practice_continuity["runId"], acknowledged=False)
+            and self.practice_waiting(
+                self.practice_continuity["runId"], acknowledged=False, require_fresh=False
+            )
             else "00000000-0000-0000-0000-000000000000",
             "nativeReady": self.focused_peer() is not None,
             "sessionShortcuts": self.current_session_acknowledgement(self.bound_observation)
@@ -1097,7 +1130,35 @@ class Input:
             self.state()
             return None
 
+    def expired_practice_capture(self, practice, native=None):
+        self.check_practice()
+        waiting = self.practice_continuity
+        if (
+            practice is not None
+            and waiting is not None
+            and practice["runId"] == waiting["runId"]
+            and self.practice_waiting(waiting["runId"], require_fresh=False)
+            and (
+                native is None
+                or (
+                    native.get("focused") is True
+                    and native.get("target") == waiting["target"]["value"]
+                    and native.get("authority", {}).get("focusRevision")
+                    == waiting["nativeFocusRevision"]
+                    and native.get("authority", {}).get("contextStamp", {}).get("context")
+                    == waiting["contextGeneration"]
+                )
+            )
+            and (
+                self.foreground_expired()
+                or (practice is not waiting and practice.get("foregroundExpired"))
+            )
+        ):
+            return {"snapshot": None, "foregroundExpired": True}
+        return None
+
     async def capture(self, context):
+        self.check_practice()
         self.capture_started_at = now_ms()
         settings_generation = self.settings_generation
         command_generation = self.shortcut_config.get("generation")
@@ -1134,7 +1195,8 @@ class Input:
         else:
             peer, window, target = self.focused_peer(), self.niri.focused, None
         if not self.fresh():
-            return self.captured("compositor-stale")
+            self.captured("compositor-stale")
+            return self.expired_practice_capture(practice)
         if window is None:
             return self.captured("no-window")
         if peer not in self.peers:
@@ -1240,7 +1302,8 @@ class Input:
                     return resumed
             return self.captured("native-read-declined", native_failure=native_failure)
         if not self.fresh():
-            return self.captured("compositor-stale")
+            self.captured("compositor-stale")
+            return self.expired_practice_capture(practice, native)
         if window_epoch != self.window_epoch:
             return self.captured("window-changing")
         if peer not in self.peers:
@@ -1257,6 +1320,11 @@ class Input:
             ):
                 self.retire_practice(authorization["runId"])
                 return self.captured("practice-identity-lost")
+        if practice is not None and practice.get("foregroundExpired"):
+            expired = self.expired_practice_capture(practice, native)
+            if expired is not None:
+                self.captured("compositor-stale")
+                return expired
         geometry = anchor_geometry(native["geometry"], peer.anchor_space)
         if geometry is None:
             return self.captured("no-visible-anchor")
@@ -1265,7 +1333,8 @@ class Input:
         if waiting is not None:
             authority = native.get("authority", {})
             if (
-                not self.practice_waiting(waiting["runId"])
+                practice is not waiting
+                or not self.practice_waiting(waiting["runId"])
                 or waiting["peer"] is not peer
                 or target_id(peer, native["target"]) != waiting["target"]
                 or authority.get("focusRevision") != waiting["nativeFocusRevision"]

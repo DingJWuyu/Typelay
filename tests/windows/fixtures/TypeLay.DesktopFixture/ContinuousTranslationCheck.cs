@@ -165,7 +165,9 @@ internal static class ContinuousTranslationCheck
                     Require(N.Focused() == (root, field), "replay-focus-changed");
                     Require(N.ReadText(field, Limits.MaxTextUnits) == text, "source-mutated-during-input");
                     N.Send(field, N.EM_SETSEL, (nuint)text.Length, (nint)text.Length);
-                    N.SendString(field, N.EM_REPLACESEL, addition, 1);
+                    // Generate fixture input with one bounded attempt. This is not
+                    // a product write deadline; timeout still fails with unknown mutation.
+                    N.SendString(field, N.EM_REPLACESEL, addition, 1, timeoutMs: 1_000);
                     text += addition;
                     Volatile.Write(ref sourceUnits, text.Length);
                     if (firstPreview.Task.IsCompleted && ++afterPreview == 10)

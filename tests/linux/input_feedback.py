@@ -267,7 +267,9 @@ class InputFeedbackTests(unittest.TestCase):
         ):
             asyncio.run(exercise())
 
-    def owned_context_advance(self, invalidation=None, *, resume=False, retire_during_bind=False):
+    def owned_context_advance(
+        self, invalidation=None, *, resume=False, retire_during_bind=False, age_gap=False
+    ):
         self.peer = self.connect_peer("gtk3")
         original = self.description
 
@@ -398,36 +400,59 @@ class InputFeedbackTests(unittest.TestCase):
             if resume:
                 # A complete new capture with the new target-bound ACK is the
                 # only route back to a newly constructed private authorization.
-                operation = asyncio.create_task(
-                    self.input.request("capture", {"practiceRead": second})
-                )
-                current = description()
-                current["sessionBindings"] = {
-                    "generation": self.generation,
-                    "accept": "Tab",
-                    "exit": "Esc",
-                    "sourceReady": True,
-                    "editorReady": True,
-                }
-                describe = await asyncio.wait_for(request("describe"), 1)
-                self.peer.link.receive({"id": describe["id"], "data": current})
-                capture = await asyncio.wait_for(request("capture"), 1)
-                self.peer.link.receive(
-                    {
-                        "id": capture["id"],
-                        "data": {
-                            **current,
-                            "text": "new source",
-                            "selection": {"start": 10, "end": 10},
-                            "ime": "Clear",
-                            "observedAtMs": 1000,
-                            "writeSupported": True,
-                        },
+                async def complete_read(cross_age_gap=False):
+                    nonlocal operation
+                    operation = asyncio.create_task(
+                        self.input.request("capture", {"practiceRead": second})
+                    )
+                    current = description()
+                    current["sessionBindings"] = {
+                        "generation": self.generation,
+                        "accept": "Tab",
+                        "exit": "Esc",
+                        "sourceReady": True,
+                        "editorReady": True,
                     }
-                )
-                complete = await asyncio.wait_for(operation, 1)
-                self.assertFalse(complete["ownedSource"]["contextAdvanced"])
-                self.assertEqual(complete["ownedSource"]["binding"], second)
+                    describe = await asyncio.wait_for(request("describe"), 1)
+                    self.peer.link.receive({"id": describe["id"], "data": current})
+                    capture = await asyncio.wait_for(request("capture"), 1)
+                    if cross_age_gap:
+                        self.clock.return_value += 151
+                        self.input.state()
+                        self.input.niri._deliver(
+                            (
+                                "test",
+                                [{"id": self.peer.pid, "pid": self.peer.pid, "is_focused": True}],
+                                {},
+                                {},
+                                False,
+                                self.clock.return_value,
+                            )
+                        )
+                        self.input.state()
+                    self.peer.link.receive(
+                        {
+                            "id": capture["id"],
+                            "data": {
+                                **current,
+                                "text": "new source",
+                                "selection": {"start": 10, "end": 10},
+                                "ime": "Clear",
+                                "observedAtMs": self.clock.return_value,
+                                "writeSupported": True,
+                            },
+                        }
+                    )
+                    complete = await asyncio.wait_for(operation, 1)
+                    if cross_age_gap:
+                        self.assertTrue(complete["foregroundExpired"])
+                        self.assertIsNone(self.input.bound_observation)
+                        return
+                    self.assertFalse(complete["ownedSource"]["contextAdvanced"])
+                    self.assertEqual(complete["ownedSource"]["binding"], second)
+                    return complete
+
+                await complete_read()
                 if retire_during_bind:
                     self.assertTrue(self.input.prepare_practice(second, lambda _: True))
                     # Runtime ends its still-awaiting G1 before it handles Bind G2:
@@ -440,6 +465,38 @@ class InputFeedbackTests(unittest.TestCase):
                     self.assertIsNone(self.input.practice_authorization)
                     self.assertNotEqual(self.input.practice_retirement_ack, second["runId"])
                     return
+                if age_gap:
+                    self.clock.return_value = 1151
+                    self.input.state()
+                    self.assertIsNotNone(self.input.practice_continuity)
+                    self.assertFalse(self.input.last_state["ready"])
+                    self.assertEqual(self.input.last_state["focus"], "Other")
+                    self.assertTrue(self.input.last_state["foregroundExpired"])
+                    self.assertIsNone(self.input.bound_observation)
+                    self.assertFalse(self.input.prepare_practice(second, lambda _: True))
+                    refused = await self.input.request("capture", {"practiceRead": second})
+                    self.assertTrue(refused["foregroundExpired"])
+                    self.assertEqual(self.native_frames(self.peer), [])
+                    self.input.niri._deliver(
+                        (
+                            "test",
+                            [{"id": self.peer.pid, "pid": self.peer.pid, "is_focused": True}],
+                            {},
+                            {},
+                            False,
+                            1151,
+                        )
+                    )
+                    self.input.state()
+                    self.assertTrue(self.input.last_state["ready"])
+                    self.assertFalse(self.input.prepare_practice(second, lambda _: True))
+                    # Recovery does not re-use the completed pre-gap native read.
+                    self.assertIsNone(self.input.bound_observation)
+                    self.assertIsNone(self.input.practice_authorization)
+                    self.assertEqual(self.generation, second["commandGeneration"])
+                    await complete_read(cross_age_gap=True)
+                    self.assertFalse(self.input.prepare_practice(second, lambda _: True))
+                    await complete_read()
                 self.assertTrue(self.authorize_practice(second, lambda _: True))
                 self.input.notification("publish", publication)
                 self.assertEqual(
@@ -464,6 +521,9 @@ class InputFeedbackTests(unittest.TestCase):
 
     def test_new_complete_owned_capture_rebinds_without_reviving_old_publication(self):
         self.owned_context_advance(resume=True)
+
+    def test_age_expiry_keeps_only_acknowledged_intent_and_discards_cached_capture(self):
+        self.owned_context_advance(resume=True, age_gap=True)
 
     def test_prepared_next_binding_does_not_hide_the_old_exact_retirement_ack(self):
         self.owned_context_advance(resume=True, retire_during_bind=True)

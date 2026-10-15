@@ -18,6 +18,7 @@ internal sealed class BrowserWindows
     private readonly Dictionary<int, Process> _processes = new();
     private readonly DateTime _startedAt;
     private readonly string _title;
+    public int TotalWindowCount { get; private set; }
 
     public BrowserWindows(Process root, string title)
     {
@@ -31,11 +32,15 @@ internal sealed class BrowserWindows
     public (nint Handle, bool Page, bool Focused, string Title)[] Read()
     {
         Discover();
+        TotalWindowCount = 0;
         var windows = new List<(nint, bool, bool, string)>();
         EnumWindows((window, _) =>
         {
             Native.GetWindowThreadProcessId(window, out uint processId);
-            if (!_processes.TryGetValue((int)processId, out var owner) || owner.HasExited || !IsWindowVisible(window))
+            if (!_processes.TryGetValue((int)processId, out var owner) || owner.HasExited)
+                return true;
+            TotalWindowCount++;
+            if (!IsWindowVisible(window))
                 return true;
             var title = new StringBuilder(512);
             GetWindowTextW(window, title, title.Capacity);
@@ -47,6 +52,41 @@ internal sealed class BrowserWindows
     }
 
     public int ProcessCount => _processes.Count;
+
+    public string DescribeProcesses()
+    {
+        int alive = 0, exited = 0, unknown = 0, index = 0;
+        var states = new List<string>();
+        // Ordinals refer only to retained fixture identities, never current PIDs
+        // or command lines. Limit detail while still counting every held process.
+        foreach (var process in _processes.Values)
+        {
+            string state;
+            try
+            {
+                if (process.HasExited)
+                {
+                    state = $"exit:0x{process.ExitCode:x8}";
+                    exited++;
+                }
+                else
+                {
+                    state = "alive";
+                    alive++;
+                }
+            }
+            catch (Exception error) when (error is InvalidOperationException or Win32Exception)
+            {
+                state = "unknown";
+                unknown++;
+            }
+            if (index < 16)
+                states.Add($"{index}:{state}");
+            index++;
+        }
+        return $"aliveProcesses={alive}; exitedProcesses={exited}; unknownProcesses={unknown}; "
+            + $"processStates=[{string.Join(',', states)}]; omittedProcessStates={Math.Max(0, index - states.Count)}";
+    }
 
     public async Task SaveDiagnosticsAsync(string folder, Action<string> log)
     {

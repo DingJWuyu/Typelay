@@ -7,7 +7,7 @@ namespace TypeLay.Linux;
 internal sealed record DesktopState(bool Ready = false, long UserEpoch = 0, long SourceUserEpoch = 0,
     long ForegroundEpoch = 0, long WindowEpoch = 0, long ContentEpoch = 0,
     TargetId? Target = null, FocusMember Focus = FocusMember.Other, bool NativeReady = false,
-    SessionShortcutAcknowledgement? SessionShortcuts = null, Guid ConnectionId = default);
+    SessionShortcutAcknowledgement? SessionShortcuts = null, Guid ConnectionId = default, bool ForegroundExpired = false);
 
 internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMonitor
 {
@@ -15,6 +15,7 @@ internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMoni
     private readonly Queue<InputNotice> _notices = new();
     public bool Available => link.Alive;
     public bool Ready => link.Alive && _state.Ready;
+    public bool ForegroundExpired => link.Alive && !_state.Ready && _state.ForegroundExpired;
     public bool ShortcutsReady => Ready && _state.NativeReady;
     public bool CanInterceptAcceptance => ShortcutsReady
         && _state.SessionShortcuts is { SourceReady: true } acknowledgement

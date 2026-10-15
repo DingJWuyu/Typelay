@@ -7,6 +7,8 @@ public sealed partial class SessionController
     private OwnedPracticeBinding? _ownedPractice;
     private OwnedPracticeBinding? _awaitingPractice;
     private OwnedSourceEvidence? _freshPracticeEvidence;
+    private long _awaitingPracticeWindowEpoch;
+    private bool _awaitingForegroundExpired;
     private readonly Func<OwnedPracticeBinding, Task<bool>>? _retireOwnedPractice;
     private Task<bool>? _automaticRetirement;
     private bool _automaticRetirementUnconfirmed;
@@ -59,7 +61,7 @@ public sealed partial class SessionController
         if (_ownedPractice is not null)
             return _ownedPractice == binding;
         if (_awaitingPractice is { } previous &&
-            (binding != previous with
+            (_awaitingPracticeWindowEpoch != _hook.WindowEpoch || binding != previous with
             {
                 CommandGeneration = _hook.CommandGeneration
             }
@@ -234,6 +236,8 @@ public sealed partial class SessionController
         // The adapter has already closed publication and received its fixed-peer
         // revoke ACK. Keep only intent and verified lesson facts, never this grant.
         _awaitingPractice = binding;
+        _awaitingPracticeWindowEpoch = _hook.WindowEpoch;
+        _awaitingForegroundExpired = false;
         _ownedPractice = null;
         _freshPracticeEvidence = null;
         _retiredAutomaticTarget = binding.Target;
@@ -262,6 +266,12 @@ public sealed partial class SessionController
         {
             CommandGeneration = _hook.CommandGeneration
         };
+        if (capture.ForegroundExpired && capture.Snapshot is null && capture.OwnedSource is null
+            && capture.Focus == FocusMember.Other)
+        {
+            ExpireAwaitingPracticeObservation();
+            return true;
+        }
         if (capture.Snapshot is null && capture.Focus == FocusMember.Source
             && capture.OwnedSource is { ContextAdvanced: true } advanced && advanced.Binding == expected
             && now >= advanced.ObservedAtMs && now - advanced.ObservedAtMs <= Limits.ObservationMaxAgeMs)
@@ -305,11 +315,36 @@ public sealed partial class SessionController
     {
         if (_ownedPractice is not null && !AutomaticPracticeIsCurrent(_ownedPractice))
             StopSession("practice-identity-lost");
-        if (_awaitingPractice is { } waiting && (AutomaticPracticeProgress is not { AwaitingFreshSource: true } progress
+        if (_awaitingPractice is not { } waiting)
+            return;
+        if (AutomaticPracticeProgress is not { AwaitingFreshSource: true } progress
             || progress.RunId != waiting.RunId || progress.CommandGeneration != _hook.CommandGeneration
-            || !_settings.Value.Enabled || _settings.Value.Mode != WorkMode.Automatic || !_hook.Ready || !_broker.Available
-            || _hook.ConnectionId != waiting.ConnectionId || _hook.GetFocus(waiting.Target) != FocusMember.Source))
+            || !_settings.Value.Enabled || _settings.Value.Mode != WorkMode.Automatic || !_broker.Available
+            || _hook.ConnectionId != waiting.ConnectionId || _hook.WindowEpoch != _awaitingPracticeWindowEpoch)
+        {
             StopSession("practice-continuity-lost");
+            return;
+        }
+        if (!_hook.Ready && _hook.ForegroundExpired && _hook.GetFocus(waiting.Target) == FocusMember.Other)
+            ExpireAwaitingPracticeObservation();
+        else if (!_hook.Ready || _hook.GetFocus(waiting.Target) != FocusMember.Source)
+            StopSession("practice-continuity-lost");
+        else
+            _awaitingForegroundExpired = false;
+    }
+
+    private void ExpireAwaitingPracticeObservation()
+    {
+        _freshPracticeEvidence = null;
+        if (_awaitingForegroundExpired)
+            return;
+        // This intent has already acknowledged retirement. No new command
+        // generation, executor ACK, job or permit is created by an age gap.
+        _awaitingForegroundExpired = true;
+        _generation++;
+        RevokeInput("practice-foreground-expired");
+        _overlay.HideQuietly();
+        _nextCapture = 0;
     }
 
     private void UpdateAutomaticPractice(AutomaticPracticeProgress progress)
