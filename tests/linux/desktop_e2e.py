@@ -3196,7 +3196,7 @@ def run(arguments):
                     blocker.rmdir()
                 activate_setting("保存修改")
                 wait_for(
-                    lambda: json.loads(paths.settings.read_text())["ExcludedApplications"]
+                    lambda: json.loads(paths.settings.read_text()).get("ExcludedApplications")
                     == [*(before_exclusions or []), "gtk-fixture"]
                     and not status()["setup"]["settingsDraft"],
                     "exclusion list did not save after persistence recovered",
@@ -3285,7 +3285,7 @@ def run(arguments):
                     assert status()["setup"]["settingsDraft"]
                     activate_setting("保存修改")
                     wait_for(
-                        lambda: json.loads(paths.settings.read_text())["ExcludedApplications"]
+                        lambda: json.loads(paths.settings.read_text()).get("ExcludedApplications")
                         == (before_exclusions or [])
                         and not status()["setup"]["settingsDraft"],
                         "removing an exclusion did not require and complete explicit save",
