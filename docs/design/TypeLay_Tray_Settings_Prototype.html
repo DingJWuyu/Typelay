@@ -923,6 +923,11 @@ dialog {
   padding:27px;
   max-width:min(420px,calc(100vw - 40px))
 }
+#applicationDialog input,#applicationDialog select {
+  display:block;
+  width:100%;
+  margin-top:12px
+}
 dialog::backdrop {
   background:#14182055
 }
@@ -1238,6 +1243,13 @@ dialog p {
               <option value="paused">
                 准备已暂停
               </option>
+            </select>
+          </label>
+          <label>
+            平台
+            <select id="demoPlatform">
+              <option value="windows">Windows</option>
+              <option value="linux">Linux</option>
             </select>
           </label>
           <label>
@@ -1703,6 +1715,12 @@ dialog p {
                   重新检查
                 </button>
               </div>
+              <div class="connection-row" id="registeredApplicationRow" hidden>
+                <button class="button" id="selectApplication">选择应用…</button>
+                <div class="setting-copy" id="selectedApplication">尚未选择应用</div>
+                <button class="button primary" id="openApplication" disabled>通过 TypeLay 打开</button>
+              </div>
+              <p class="setting-description" id="applicationOutcome" role="status" hidden></p>
               <p class="setting-description" id="connectionOutcome" role="status" hidden>
               </p>
               <details class="details">
@@ -1940,6 +1958,19 @@ dialog p {
       退出 TypeLay
     </button>
   </section>
+  <dialog id="applicationDialog" aria-labelledby="applicationTitle">
+    <h2 id="applicationTitle">选择应用</h2>
+    <input id="applicationSearch" type="search" placeholder="搜索应用" aria-label="搜索应用">
+    <select id="applicationList" size="3" aria-label="已安装应用示例">
+      <option value="editor">文本编辑器示例</option>
+      <option value="files">文件管理器示例</option>
+      <option value="script">脚本启动器示例</option>
+    </select>
+    <div class="dialog-actions">
+      <button class="button" id="cancelApplication">取消</button>
+      <button class="button primary" id="confirmApplication">选择</button>
+    </div>
+  </dialog>
   <dialog id="confirmDialog" aria-labelledby="dialogTitle">
     <h2 id="dialogTitle">
     </h2>
@@ -1976,6 +2007,9 @@ dialog p {
     setup: 'ready',
     service: 'running',
     connection: 'connected',
+    platform: 'windows',
+    application: '',
+    applicationLaunched: false,
     saveError: false,
     saveOutcome: 'confirmed',
     failNext: false,
@@ -2153,6 +2187,18 @@ dialog p {
     $('connectionDescription').textContent = connected ? '已检测到连接，当前字段支持译文预览。' : state.connection === 'conflict' ? '另一个输入法正在运行，需要先确认切换。' : '尚未检测到应用连接。请重新打开需要使用的应用。';
     $('connectionAction').textContent = state.connection === 'conflict' ? '处理输入法冲突…' : '重新检查';
     $('previewCapability').textContent = connected ? '可用' : '未确认';
+    const linux = state.platform === 'linux';
+    $('registeredApplicationRow').hidden = !linux;
+    $('applicationOutcome').hidden = !linux || !state.application;
+    $('selectedApplication').textContent = state.application
+      ? $('applicationList').querySelector('[value="' + state.application + '"]').textContent
+      : '尚未选择应用';
+    $('openApplication').disabled = !state.application || state.application === 'script' || state.setup !== 'ready' || state.connection === 'conflict';
+    $('applicationOutcome').textContent = state.application === 'script'
+      ? '暂不能自动接入此启动方式。'
+      : state.applicationLaunched
+        ? connected ? '已检测到所选应用连接。当前输入框能力仍单独检查。' : '已请求启动，等待连接。若应用已在运行，请保存工作并正常退出后再打开。'
+        : '尚未启动。';
     renderDraft();
   }
   function closeSettings() {
@@ -2275,6 +2321,35 @@ dialog p {
       render();
     }
   };
+  $('selectApplication').onclick = () => {
+    $('applicationSearch').value = '';
+    [...$('applicationList').options].forEach(option => option.hidden = false);
+    $('applicationDialog').showModal();
+    $('applicationSearch').focus();
+  };
+  $('applicationSearch').oninput = e => {
+    [...$('applicationList').options].forEach(option => option.hidden = !option.textContent.includes(e.target.value));
+  };
+  $('cancelApplication').onclick = () => $('applicationDialog').close();
+  $('confirmApplication').onclick = () => {
+    const selected = $('applicationList').selectedOptions[0];
+    if (!selected || selected.hidden) return;
+    state.application = selected.value;
+    state.applicationLaunched = false;
+    state.connection = state.connection === 'conflict' ? 'conflict' : 'disconnected';
+    $('applicationDialog').close();
+    render();
+  };
+  $('openApplication').onclick = () => confirmAction('通过 TypeLay 打开应用？', '请先保存工作。已有窗口可能需要正常退出后重新打开。请确认原输入法已退出，并已记录恢复方式；TypeLay 不会代你结束输入法进程。', '已确认，打开应用', () => {
+    state.applicationLaunched = true;
+    state.connection = 'disconnected';
+    render();
+    toast('原型只演示启动请求，不会运行本机应用');
+  });
+  $('demoPlatform').onchange = e => {
+    state.platform = e.target.value;
+    render();
+  };
   $('browserGuide').onclick = () => confirmAction('连接浏览器输入框', '在浏览器扩展管理页启用 TypeLay 接入组件，并由你确认所需权限。随后重新打开页面，在输入框中检查连接。此演示不会安装扩展。', '知道了', () => {}, '关闭');
   all('[data-practice]').forEach(b => b.onclick = () => {
     const go = () => {
@@ -2317,7 +2392,7 @@ dialog p {
     if ($('demoControls').open) closeTray();
   });
   document.addEventListener('keydown', e => {
-    if (e.key === 'Escape' && !$('confirmDialog').open) {
+    if (e.key === 'Escape' && !$('confirmDialog').open && !$('applicationDialog').open) {
       if (!$('quickPanel').hidden) {
         closeTray();
         $('trayButton').focus();
@@ -2329,6 +2404,8 @@ dialog p {
   });
   document.documentElement.dataset.theme = query.get('theme') === 'dark' ? 'dark' : 'light';
   $('demoTheme').value = document.documentElement.dataset.theme;
+  state.platform = query.get('platform') === 'linux' ? 'linux' : 'windows';
+  $('demoPlatform').value = state.platform;
   if (query.get('setup') in setupCopy) state.setup = query.get('setup');
   if (['connected', 'disconnected', 'conflict'].includes(query.get('connection'))) state.connection = query.get('connection');
   if (query.get('page') && ['general', 'language', 'shortcuts', 'support'].includes(query.get('page'))) setPage(query.get('page'));

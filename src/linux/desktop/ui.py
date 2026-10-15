@@ -7,7 +7,7 @@ import gi
 from application_support import BROWSER_MANAGEMENT_URIS
 
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gdk, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 
 class Tutorial:
@@ -228,6 +228,21 @@ class ApplicationSupportPane:
         self.more.connect("toggled", lambda *_: self.render_choices())
         choices.pack_start(self.more, False, False, 0)
         self.box.pack_start(choices, False, False, 0)
+        self.installed = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        self.installed.set_no_show_all(True)
+        self.box.pack_start(self.installed, False, False, 0)
+        application_line = Gtk.Box(spacing=8)
+        self.choose_application = Gtk.Button(label="选择应用…")
+        self.choose_application.connect("clicked", lambda *_: self.pick_application())
+        application_line.pack_start(self.choose_application, False, False, 0)
+        self.application_name = Gtk.Label(xalign=0)
+        self.application_name.set_ellipsize(Pango.EllipsizeMode.END)
+        application_line.pack_start(self.application_name, True, True, 0)
+        self.open_application = Gtk.Button(label="通过 TypeLay 打开")
+        self.open_application.connect("clicked", lambda *_: self.activate_application())
+        application_line.pack_start(self.open_application, False, False, 0)
+        self.installed.pack_start(application_line, False, False, 0)
+        self.application_result = self.note("", self.installed)
         self.state = self.note("")
         self.state.get_style_context().add_class("settings-section-title")
         self.reason = self.note("")
@@ -393,6 +408,18 @@ class ApplicationSupportPane:
         self.capability_note.set_text(self.value["capabilityNote"])
         self.guidance.set_text(row["guidance"])
         self.technical.set_text(row.get("details") or "")
+        application = self.value.get("installedApplication")
+        if row["id"] == "desktop-text" and application:
+            self.application_name.set_text(application["name"])
+            self.application_name.set_tooltip_text(application["name"])
+            self.application_result.set_text(application["result"])
+            self.choose_application.set_sensitive(not self.busy)
+            self.open_application.set_sensitive(application["canOpen"] and not self.busy)
+            self.installed.show()
+            for child in self.installed.get_children():
+                child.show_all()
+        else:
+            self.installed.hide()
         guidance = self.value.get("desktopGuidance")
         if row["id"] == "desktop-text" and guidance:
             self.desktop_safety.show()
@@ -430,6 +457,105 @@ class ApplicationSupportPane:
             self.secondary.show_all()
         self.selector.set_sensitive(not self.busy)
 
+    def pick_application(self):
+        if self.busy:
+            return
+        self.busy = True
+        self.action_revision += 1
+        self.render_selected()
+        dialog = Gtk.Dialog(
+            title="选择应用",
+            transient_for=self.owner.window,
+            modal=True,
+            destroy_with_parent=True,
+        )
+        dialog.set_default_size(440, 380)
+        dialog.add_buttons("取消", Gtk.ResponseType.CANCEL, "选择", Gtk.ResponseType.OK)
+        dialog.set_response_sensitive(Gtk.ResponseType.OK, False)
+        box = dialog.get_content_area()
+        box.set_border_width(12)
+        search = Gtk.SearchEntry(placeholder_text="搜索已安装的本机应用")
+        search.get_accessible().set_name("搜索已安装的本机应用")
+        box.pack_start(search, False, False, 6)
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        box.pack_start(scroll, True, True, 0)
+        choices = Gtk.ListBox()
+        choices.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        scroll.add(choices)
+        choices.set_filter_func(
+            lambda row: search.get_text().casefold() in row.application_name.casefold()
+        )
+        search.connect("search-changed", lambda *_: choices.invalidate_filter())
+        choices.connect(
+            "row-selected",
+            lambda _, row: dialog.set_response_sensitive(Gtk.ResponseType.OK, row is not None),
+        )
+        feedback = self.note("正在读取应用…", box)
+        alive = True
+
+        def selected(widget, response):
+            row = choices.get_selected_row() if response == Gtk.ResponseType.OK else None
+            identity = row.desktop_id if row else None
+            widget.destroy()
+            if identity:
+                self.busy = True
+                self.render_selected()
+                self.owner.tasks(
+                    self.execute(
+                        {"id": "desktop-text"}, {"id": "SelectApplication", "desktopId": identity}
+                    )
+                )
+
+        def destroyed(_widget):
+            nonlocal alive
+            alive = False
+            self.busy = False
+            self.render_selected()
+
+        async def load():
+            try:
+                entries = await self.action_requested("desktop-text", "ListApplications")
+                if not alive:
+                    return
+                for entry in entries:
+                    row = Gtk.ListBoxRow()
+                    row.desktop_id, row.application_name = entry["id"], entry["name"]
+                    label = Gtk.Label(label=entry["name"], xalign=0)
+                    label.set_ellipsize(Pango.EllipsizeMode.END)
+                    label.set_max_width_chars(40)
+                    label.set_tooltip_text(entry["name"])
+                    label.set_margin_top(8)
+                    label.set_margin_bottom(8)
+                    row.add(label)
+                    choices.add(row)
+                feedback.set_text("" if entries else "未找到可选择的本机应用。")
+                choices.show_all()
+            except (OSError, ValueError, EOFError, TimeoutError):
+                if alive:
+                    feedback.set_text("暂时无法读取应用，请关闭后重试。")
+
+        dialog.connect("response", selected)
+        dialog.connect("destroy", destroyed)
+        dialog.show_all()
+        self.owner.tasks(load())
+
+    def activate_application(self):
+        application = self.value.get("installedApplication") if self.value else None
+        if not application or not application["canOpen"]:
+            return
+        self.activate(
+            self.rows["desktop-text"],
+            {
+                "id": "OpenApplication",
+                "desktopId": application["id"],
+                "label": "通过 TypeLay 打开 " + application["name"],
+                "requiresConfirmation": True,
+                "confirmationText": "将通过 TypeLay 的独立输入法会话打开所选应用。"
+                "请保存工作并完成输入法候选；原输入法须由你手动退出和恢复。",
+            },
+        )
+
     def record_original_method(self, no_original=False):
         if self.busy or not self.value:
             return
@@ -449,6 +575,8 @@ class ApplicationSupportPane:
         )
 
     def add_action(self, box, row, action):
+        if row["id"] == "desktop-text" and action["id"] == "Connect":
+            action = {**action, "label": "开始练习…"}
         button = Gtk.Button(label=action["label"])
         button.set_sensitive(not self.busy)
         button.connect("clicked", lambda *_: self.activate(self.rows[row["id"]], action))
@@ -478,7 +606,7 @@ class ApplicationSupportPane:
             if (
                 action["id"] == "Install"
                 or row["id"] == "desktop-text"
-                and action["id"] in ("Connect", "Remove")
+                and action["id"] in ("Connect", "OpenApplication", "Remove")
             ) and row.get("details"):
                 consequence += "\n\n" + row["details"].split("\n\n", 1)[0]
             dialog.format_secondary_text(consequence)
@@ -488,10 +616,10 @@ class ApplicationSupportPane:
 
             def confirmed(widget, response):
                 startup_id = (
-                    self.practice_startup_id(widget)
+                    self.practice_startup_id(widget, action.get("desktopId"))
                     if response == Gtk.ResponseType.OK
                     and row["id"] == "desktop-text"
-                    and action["id"] == "Connect"
+                    and action["id"] in ("Connect", "OpenApplication")
                     else None
                 )
                 widget.destroy()
@@ -507,7 +635,7 @@ class ApplicationSupportPane:
             self.owner.tasks(self.execute(row, action))
 
     @staticmethod
-    def practice_startup_id(window):
+    def practice_startup_id(window, desktop_id=None):
         """Request once during the user's input event, before its window disappears."""
         timestamp = Gtk.get_current_event_time()
         if timestamp == Gdk.CURRENT_TIME:
@@ -521,6 +649,10 @@ class ApplicationSupportPane:
                 "TypeLay 实操练习",
                 Gio.AppInfoCreateFlags.NONE,
             )
+            if desktop_id:
+                application = Gio.DesktopAppInfo.new(desktop_id)
+                if application is None:
+                    return None
             startup_id = context.get_startup_notify_id(application, [])
             return startup_id if isinstance(startup_id, str) and startup_id else None
         except (AttributeError, GLib.Error, TypeError, ValueError):
@@ -645,7 +777,11 @@ class ApplicationSupportPane:
     async def execute(self, row, action, directory=None, *, startup_id=None):
         try:
             value = await self.action_requested(
-                row["id"], action["id"], directory, startup_id=startup_id
+                row["id"],
+                action["id"],
+                directory,
+                startup_id=startup_id,
+                **({"desktop_id": action["desktopId"]} if "desktopId" in action else {}),
             )
             if value:
                 self.render(value)

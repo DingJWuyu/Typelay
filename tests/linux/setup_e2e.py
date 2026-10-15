@@ -316,6 +316,19 @@ class ApplicationSupportTests(unittest.TestCase):
             shutil.copy2(ROOT / "packaging/linux" / name, self.package / name)
         self.support = ApplicationSupport(Paths(self.package))
 
+    def test_registered_application_contracts_in_an_isolated_gio_registry(self):
+        # GIO caches XDG registry roots per process. Keep this suite's many HOME
+        # fixtures separate from the real registered-entry/ELF contract process.
+        subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).with_name("test_registered_applications.py")),
+                "-v",
+            ],
+            check=True,
+            timeout=30,
+        )
+
     def test_browser_registration_is_reversible_and_not_a_live_connection(self):
         self.assertEqual(self.support.browser_status("chromium")["state"], "not-registered")
         result = asyncio.run(self.support.browser_action("chromium", "connect", "a" * 32))
@@ -1082,11 +1095,41 @@ class ApplicationSupportTests(unittest.TestCase):
                         "ok"
                     ]
                 )
+                selection = {
+                    "id": "org.typelay.Fixture.desktop",
+                    "name": "Fixture",
+                    "toolkit": "gtk3",
+                }
                 for startup_id in ("synthetic-new-click", None):
+                    self.support.selected_application = selection
+                    self.support.application_result = "已选择，尚未打开或连接。"
                     result = asyncio.run(
                         self.support.execute("desktop-text", "Connect", startup_id=startup_id)
                     )
                     self.assertTrue(result["ok"], result)
+                    self.assertIsNone(
+                        self.support.installed_application_view(self.support.facts())["id"]
+                    )
+                    practice_peer = SimpleNamespace(
+                        pid=self.support.practice_launch["receipt"]["child"]["pid"],
+                        lifetime="live",
+                        backend="gtk3",
+                        application="practice",
+                        link=SimpleNamespace(channel=SimpleNamespace(alive=True)),
+                        support_observation={
+                            "atMs": now_ms(),
+                            "preview": True,
+                            "tabAccept": False,
+                            "directReplace": True,
+                        },
+                    )
+                    practice_fact = next(
+                        row
+                        for row in self.support.facts([practice_peer])
+                        if row["id"] == "desktop-text"
+                    )
+                    self.assertEqual(practice_fact["state"], "Connected")
+                    self.assertTrue(practice_fact["capabilities"]["directReplace"])
                     self.assertIn("若窗口未在前台", result["detail"])
                     wait_for(application_observation.exists)
                     observed = json.loads(application_observation.read_text())
@@ -1126,12 +1169,17 @@ class ApplicationSupportTests(unittest.TestCase):
                         original = component.read_bytes()
                         try:
                             component.write_bytes(b"changed after preparation")
+                            self.support.selected_application = selection
                             failed = asyncio.run(
                                 self.support.execute(
                                     "desktop-text", "Connect", startup_id="synthetic-failed-click"
                                 )
                             )
                             self.assertFalse(failed["ok"])
+                            self.assertEqual(
+                                self.support.installed_application_view(self.support.facts())["id"],
+                                selection["id"],
+                            )
                             self.assertFalse(application_observation.exists())
                             self.assertNotIn("synthetic-failed-click", json.dumps(failed))
                         finally:

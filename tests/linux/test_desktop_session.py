@@ -107,6 +107,48 @@ class DesktopSessionTests(unittest.TestCase):
         owner = DesktopSession(self.paths)
         pid = receipt["child"]["pid"]
         self.assertTrue(owner.owns_application(launched, pid))
+        from application_support import ApplicationSupport
+        from wire import now_ms
+
+        support = ApplicationSupport(
+            SimpleNamespace(
+                home=self.paths.home, data=self.paths.data, launcher=self.package / "typelay"
+            )
+        )
+        # The launch result is the same real guardian/receipt identity that the
+        # session returns. Peer metadata below tests diagnostics, not GTK input.
+        support.selected_application = {
+            "id": "fixture.desktop",
+            "name": "Fixture",
+            "toolkit": "gtk3",
+        }
+        support.application_launch = launched
+        peer = SimpleNamespace(
+            pid=os.getpid(),
+            lifetime="live",
+            backend="gtk3",
+            application="fixture",
+            link=SimpleNamespace(channel=SimpleNamespace(alive=True)),
+            support_observation={
+                "atMs": now_ms(),
+                "preview": True,
+                "tabAccept": True,
+                "directReplace": True,
+            },
+        )
+
+        def fact():
+            return next(row for row in support.facts([peer]) if row["id"] == "desktop-text")
+
+        self.assertNotEqual(fact()["state"], "Connected", "unrelated peer claimed selected app")
+        self.assertNotIn("已检测到", support.installed_application_view(support.facts())["result"])
+        peer.pid = pid
+        self.assertEqual(fact()["state"], "Connected")
+        self.assertTrue(fact()["capabilities"]["preview"])
+        peer.support_observation["atMs"] = now_ms() - 30001
+        self.assertEqual(fact()["capabilities"], {})
+        peer.link.channel.alive = False
+        self.assertNotEqual(fact()["state"], "Connected")
         self.assertFalse(owner.owns_application(None, pid), "reopen adopted a durable receipt")
         self.assertFalse(owner.owns_application(launched, os.getpid()))
         changed = {

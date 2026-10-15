@@ -16,6 +16,7 @@ from pathlib import Path
 from desktop_component import DesktopComponent
 from desktop_session import DesktopSession
 from fcitx_session_source import detect_fcitx_source
+from registered_applications import list_applications, resolve_application
 from wire import now_ms
 
 BROWSERS = ("firefox", "chromium", "google-chrome")
@@ -40,6 +41,10 @@ class ApplicationSupport:
         self.desktop_session_state = {"state": "unchecked"}
         self.refresh_revision = 0
         self.practice_launch = None
+        self.selected_application = None
+        self.application_launch = None
+        self.application_result = ""
+        self.application_failed = False
         self.original_method_recorded = False
         self.no_original_method = False
         self.original_input_seen = False
@@ -228,6 +233,11 @@ class ApplicationSupport:
             )
             if identity is None:
                 continue
+            if identity == "desktop-text" and self.selected_application is not None:
+                if not self.desktop_session.owns_application(
+                    self.application_launch, getattr(peer, "pid", None)
+                ):
+                    continue
             connected.add(identity)
             observation = getattr(peer, "support_observation", None)
             if (
@@ -376,6 +386,74 @@ class ApplicationSupport:
             ).isoformat(timespec="milliseconds")
         return facts
 
+    def installed_application_view(self, facts):
+        selected = self.selected_application
+        fact = next(row for row in facts if row["id"] == "desktop-text")
+        detail = self.application_result
+        if selected and not self.application_failed and fact["state"] == "Connected":
+            detail = "已检测到本次打开的应用连接；当前字段能力见详情。"
+        elif selected and not self.application_failed and self.application_launch:
+            detail = (
+                "尚未检测到本次应用连接。若应用已运行，请保存工作并正常退出，再通过 TypeLay 打开。"
+            )
+        return {
+            "id": selected["id"] if selected else None,
+            "name": selected["name"] if selected else "尚未选择应用",
+            "canOpen": bool(
+                selected and selected.get("toolkit") and "Connect" in fact["supportedActions"]
+            ),
+            "result": detail,
+        }
+
+    async def select_application(self, identity):
+        # Select from the current registry rather than trusting a UI label/path.
+        entries = await asyncio.to_thread(list_applications)
+        selected = next((entry for entry in entries if entry["id"] == identity), None)
+        if selected is None:
+            self.application_result = "应用已移除或不再可用，请重新选择。"
+            self.application_failed = True
+            return {"ok": False, "reason": "application-unavailable"}
+        self.selected_application = selected
+        self.application_launch = None
+        self.application_failed = False
+        try:
+            application = await asyncio.to_thread(resolve_application, identity)
+            selected["toolkit"] = application["toolkit"]
+            self.application_result = "已选择，尚未打开或连接。"
+            return {"ok": True}
+        except ValueError as error:
+            self.application_failed = True
+            self.application_result = str(error)
+            return {"ok": False, "reason": "application-launch-unsupported"}
+
+    async def open_application(self, identity, startup_id):
+        if not self.original_method_recorded:
+            return {"ok": False, "reason": "original-method-not-recorded"}
+        if not self.selected_application or self.selected_application["id"] != identity:
+            return {"ok": False, "reason": "application-selection-changed"}
+        try:
+            application = await asyncio.to_thread(resolve_application, identity)
+        except ValueError as error:
+            self.application_failed = True
+            self.application_result = str(error)
+            return {"ok": False, "reason": "application-launch-unsupported"}
+        result = await self.desktop_session.start_session()
+        if result["ok"]:
+            self.practice_session_started = True
+            self.practice_component_removed = False
+            result = await self.desktop_session.launch_application(
+                application["argv"], toolkit=application["toolkit"], startup_id=startup_id
+            )
+        self.application_failed = not result["ok"]
+        self.application_launch = result.get("application") if result["ok"] else None
+        self.application_result = (
+            "已请求打开应用，尚未确认连接。"
+            if result["ok"]
+            else result.get("detail") or "应用未能打开，请重新检查输入法与组件状态。"
+        )
+        await self.refresh()
+        return result
+
     async def refresh(self):
         """Session checks may use D-Bus and /proc; never block the GTK/input loop."""
         self.refresh_revision += 1
@@ -477,7 +555,7 @@ class ApplicationSupport:
                 + recorded
                 + "\n"
                 + exit_step
-                + "4. 确认无冲突后，使用本页“连接”的确认窗口启动练习。\n"
+                + "4. 确认无冲突后，使用本页“开始练习…”的确认窗口启动练习。\n"
                 "5. " + restore
             ),
             "originalMethodRecorded": self.original_method_recorded,
@@ -500,11 +578,11 @@ class ApplicationSupport:
             if prepared["state"] == "prepared":
                 state, reason = "AwaitingApproval", "UserApprovalRequired"
                 details = (
-                    "此入口仅用于 TypeLay 练习。连接将启动本包的独立练习输入法会话，并打开普通输入框练习。"
+                    "通过 TypeLay 打开应用或开始练习将使用本包的独立输入法会话。"
                     "请先完成当前候选并保存工作；已有 Fcitx/IBus 时必须由你自行退出，TypeLay 不会替你停止或切换。"
-                    "练习使用独立配置和词库，不复制或修改个人输入法配置。关闭 TypeLay 不会关闭练习窗口或其进程。"
+                    "会话使用独立配置和词库，不复制或修改个人输入法配置。关闭 TypeLay 不会关闭已打开的应用或练习窗口。"
                     "移除会结束本次私有输入法；不会自动恢复原输入法，之后需要你自行启动。\n\n"
-                    "移除前请正常关闭练习及其子窗口。移除会结束仅由 TypeLay 启动的练习输入法并删除受管组件；"
+                    "移除前请正常关闭应用、练习及其子窗口。移除会结束仅由 TypeLay 启动的私有输入法并删除受管组件；"
                     "模型、TypeLay 设置和练习配置保留。\n\n"
                     "源码、许可证在组件文件夹，原始压缩包仍在主包中。准备完成或会话运行都不代表普通字段已经连接。"
                 )
@@ -771,7 +849,11 @@ class ApplicationSupport:
                 "detail": limitation + "\n" + str(error),
             }
 
-    async def execute(self, identity, action, directory=None, *, startup_id=None):
+    async def execute(self, identity, action, directory=None, *, startup_id=None, desktop_id=None):
+        if identity == "desktop-text" and action == "SelectApplication":
+            return await self.select_application(desktop_id)
+        if identity == "desktop-text" and action == "OpenApplication":
+            return await self.open_application(desktop_id, startup_id)
         if identity in BROWSERS and action == "OpenInstructions":
             self.open_browser(identity)
             return {"ok": True}
@@ -807,6 +889,11 @@ class ApplicationSupport:
                 )
                 if result["ok"]:
                     self.practice_launch = result["application"]
+                    # A successful explicit practice launch becomes this page's
+                    # current target. Cancellation/failure preserves the choice.
+                    self.selected_application = self.application_launch = None
+                    self.application_result = ""
+                    self.application_failed = False
                     result = {
                         "ok": True,
                         "reason": "practice-start-requested",

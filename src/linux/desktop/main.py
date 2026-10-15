@@ -292,25 +292,36 @@ async def desktop(paths, background, lock, tutorial=False):
 
         async def support_view():
             await support.refresh()
+            facts = support.facts(
+                components["input"].peers,
+                enabled=bool(
+                    components["settings"].value and components["settings"].value["enabled"]
+                ),
+            )
             view = await host.ask(
                 "applicationSupport",
-                {
-                    "facts": support.facts(
-                        components["input"].peers,
-                        enabled=bool(
-                            components["settings"].value and components["settings"].value["enabled"]
-                        ),
-                    )
-                },
+                {"facts": facts},
                 timeout=2,
             )
 
-            return {**view, "desktopGuidance": support.desktop_guidance()}
+            return {
+                **view,
+                "desktopGuidance": support.desktop_guidance(),
+                "installedApplication": support.installed_application_view(facts),
+            }
 
-        async def support_action(identity, action, directory=None, *, startup_id=None):
+        async def support_action(
+            identity, action, directory=None, *, startup_id=None, desktop_id=None
+        ):
+            if identity == "desktop-text" and action == "ListApplications":
+                from registered_applications import list_applications
+
+                return await asyncio.to_thread(list_applications)
             if identity == "desktop-text" and action in ("Connect", "Remove"):
                 await practice.end(practice.pid)
-            await support.execute(identity, action, directory, startup_id=startup_id)
+            await support.execute(
+                identity, action, directory, startup_id=startup_id, desktop_id=desktop_id
+            )
             return await support_view()
 
         components["settings"] = Settings(

@@ -1291,7 +1291,7 @@ def run(arguments):
                             )
                             switch_im("keyboard-us")
                             draft = (
-                                ("Manually edited candidate.\n" * 24)
+                                ("Manually edited candidate. " * 48)
                                 if motion
                                 else "Manually edited candidate."
                             )
@@ -3648,7 +3648,10 @@ def run(arguments):
                             activate_scrolled_setting(
                                 support["labels"]["details"], timeout=remaining()
                             )
-                    activate_scrolled_setting(action["label"], timeout=remaining())
+                    activate_scrolled_setting(
+                        "开始练习…" if identity == "Connect" else action["label"],
+                        timeout=remaining(),
+                    )
                     if identity == "Connect" and not cancel:
                         confirm = settings_control(support["labels"]["confirm"], remaining())
                         cancel_button = settings_control(support["labels"]["cancel"], remaining())
@@ -4074,6 +4077,112 @@ def run(arguments):
                     lambda: (row := desktop_row())
                     and any(a["id"] == "Remove" for a in row["actions"]),
                     "normally closed practice did not release its component lease",
+                )
+                # One owned, ordinary GTK ELF registered in this isolated HOME.
+                # Exercise the real selector and guardian, never a desktop-file
+                # path/argv command or an app-name-based capability exception.
+                application_id = "org.typelay.RegisteredFixture.desktop"
+                registration = Path(os.environ["XDG_DATA_HOME"]) / "applications" / application_id
+                registration.parent.mkdir(parents=True, exist_ok=True)
+                executable = str((arguments.native / "gtk-fixture").resolve())
+                assert not any(character in executable for character in ('"', "\\", "$", "`", "%"))
+                registration.write_text(
+                    "[Desktop Entry]\nType=Application\nName=TypeLay Registered Fixture\n"
+                    f'Exec="{executable}" %U\n'
+                )
+                resources.callback(registration.unlink, missing_ok=True)
+                activate_scrolled_setting("我已记下原输入法的启动方式，并知道如何恢复")
+
+                def application_view():
+                    return status()["setup"]["applicationSupport"]["installedApplication"]
+
+                before_selection = receipts(paths.data)
+                activate_scrolled_setting("选择应用…")
+                settings_control("搜索已安装的本机应用")
+                activate_setting("取消")
+                assert application_view()["id"] is None
+                assert receipts(paths.data) == before_selection, "cancelled chooser launched an app"
+                activate_scrolled_setting("选择应用…")
+                search = settings_control("搜索已安装的本机应用")
+                assert Atspi.EditableText.set_text_contents(
+                    search.get_editable_text_iface(), "TypeLay Registered Fixture"
+                )
+                chosen = settings_control("TypeLay Registered Fixture")
+                for _ in range(4):
+                    if chosen.get_role() == Atspi.Role.LIST_ITEM:
+                        break
+                    chosen = chosen.get_parent()
+                assert chosen.get_role() == Atspi.Role.LIST_ITEM
+                listing = chosen.get_parent().get_selection_iface()
+                assert listing is not None
+                assert Atspi.Selection.select_child(listing, chosen.get_index_in_parent())
+                subprocess.run(
+                    ["grim", str(arguments.output / "installed-application-choice.png")],
+                    check=True,
+                    timeout=3,
+                )
+                activate_setting("选择")
+                wait_for(
+                    lambda: application_view()["id"] == application_id
+                    and application_view()["canOpen"],
+                    "selected application did not become available",
+                )
+                assert desktop_row()["state"] != "Connected", "selection alone claimed connection"
+                activate_scrolled_setting("通过 TypeLay 打开")
+                activate_setting(support["labels"]["cancel"])
+                assert receipts(paths.data) == before_selection, (
+                    "cancelled launch created a process"
+                )
+                activate_scrolled_setting("通过 TypeLay 打开")
+                activate_setting(support["labels"]["confirm"])
+                managed_window = wait_for(
+                    lambda: next(
+                        (
+                            window
+                            for window in contents(request("Windows"), "Windows")
+                            if window.get("title") == "TypeLay GTK contract fixture"
+                        ),
+                        None,
+                    ),
+                    "registered fixture did not open through TypeLay",
+                    timeout=60,
+                )
+                try:
+                    request({"Action": {"FocusWindow": {"id": managed_window["id"]}}})
+                    wait_for(
+                        lambda: desktop_row()["state"] == "Connected"
+                        and "本次打开" in application_view()["result"],
+                        "owned registered fixture did not connect",
+                    )
+                    assert any(
+                        item["kind"] == "application"
+                        and item.get("child", {}).get("pid") == managed_window["pid"]
+                        for item in receipts(paths.data)
+                    )
+                    assert control(paths, "settings") is True
+                    wait_for(
+                        lambda: any(
+                            window.get("pid") == process.pid
+                            and window.get("title") == "TypeLay 设置"
+                            and window.get("is_focused")
+                            for window in contents(request("Windows"), "Windows")
+                        ),
+                        "settings did not become visible for connected-application evidence",
+                    )
+                    subprocess.run(
+                        ["grim", str(arguments.output / "installed-application-connected.png")],
+                        check=True,
+                        timeout=3,
+                    )
+                finally:
+                    close_managed_window()
+                wait_for(
+                    lambda: desktop_row()["state"] != "Connected"
+                    and any(a["id"] == "Remove" for a in desktop_row()["actions"]),
+                    "closed registered fixture retained a live connection or component lease",
+                )
+                evidence.append(
+                    "Registered local GTK fixture: searchable selection, chooser/launch cancellation create no processes, real guardian-owned connection, normal close clears connection; screenshots retained"
                 )
                 desktop_action("Remove")
                 wait_for(
