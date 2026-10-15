@@ -243,6 +243,18 @@ internal static class Program
                     var placement = DesktopLink.Decode<PlacementRequest>(value);
                     return OverlayPlacement.Place(placement.Input, placement.Work, placement.Width,
                         placement.Height, placement.Gap, placement.MinimumHeight);
+                case "traySettings":
+                    if (!TryApplyTraySettings(value, settings.Value, out var traySettings))
+                        return false;
+                    try
+                    {
+                        settings.Update(traySettings);
+                        return true;
+                    }
+                    catch (SettingsPersistenceException)
+                    {
+                        return false;
+                    }
                 case "settings":
                     var next = DesktopLink.Decode<UserSettings>(value);
                     if (next.Schema != 1 || next.Theme is not ("system" or "light" or "dark")
@@ -272,6 +284,52 @@ internal static class Program
             return 1;
         }
     }
+    private static bool TryApplyTraySettings(JsonElement patch, UserSettings current, out UserSettings updated)
+    {
+        updated = current;
+        if (patch.ValueKind != JsonValueKind.Object)
+            return false;
+        HashSet<string> fields = [];
+        foreach (var property in patch.EnumerateObject())
+        {
+            if (!fields.Add(property.Name))
+                return false;
+            switch (property.Name)
+            {
+                case "enabled" when property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False:
+                    updated = updated with
+                    {
+                        Enabled = property.Value.GetBoolean()
+                    };
+                    break;
+                case "mode" when property.Value.ValueKind == JsonValueKind.String
+                    && property.Value.GetString() is "Automatic" or "OnDemand":
+                    updated = updated with
+                    {
+                        Mode = property.Value.GetString() == "Automatic" ? WorkMode.Automatic : WorkMode.OnDemand
+                    };
+                    break;
+                case "source" when property.Value.ValueKind == JsonValueKind.String
+                    && property.Value.GetString() is "auto" or "zh" or "en":
+                    updated = updated with
+                    {
+                        Source = property.Value.GetString()!
+                    };
+                    break;
+                case "target" when property.Value.ValueKind == JsonValueKind.String
+                    && property.Value.GetString() is "zh" or "en":
+                    updated = updated with
+                    {
+                        Target = property.Value.GetString()!
+                    };
+                    break;
+                default:
+                    return false;
+            }
+        }
+        return fields.Count > 0;
+    }
+
     private static object SetupPresentation(string? code) => new
     {
         Failure = SetupFailurePresentation.FromCode(code),

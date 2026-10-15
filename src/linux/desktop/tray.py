@@ -9,7 +9,8 @@ from gi.repository import Gio, GLib, Gtk  # noqa: E402
 class Tray:
     def __init__(self, paths, host, tasks, show_settings, quit_requested, availability_changed):
         self.host, self.tasks = host, tasks
-        self.value = None
+        self.value = self.guidance = None
+        self.save_problem = None
         self.updating = self.pending = self.closed = False
         self.connected = False
         self.indicator = None
@@ -23,6 +24,7 @@ class Tray:
         self.status = self.item("TypeLay · 正在启动", sensitive=False)
         self.model = self.item("本地模型尚未就绪", sensitive=False)
         self.operation = self.item("", sensitive=False)
+        self.save_notice = self.item("", sensitive=False)
         self.menu.append(Gtk.SeparatorMenuItem())
         self.enabled = Gtk.CheckMenuItem(label="启用 TypeLay")
         self.enabled.connect("toggled", self.toggle_enabled)
@@ -38,6 +40,7 @@ class Tray:
         self.item("退出 TypeLay", lambda *_: quit_requested())
         self.menu.show_all()
         self.operation.hide()
+        self.save_notice.hide()
         self.refresh()
         try:
             gi.require_version("AyatanaAppIndicator3", "0.1")
@@ -87,14 +90,28 @@ class Tray:
             self.availability_changed(True, self.connected)
 
     def configure(self, value):
-        self.value = value
-        self.refresh()
+        if not self.closed:
+            self.value = value
+            self.refresh()
+
+    def render_guidance(self, value):
+        if not self.closed:
+            self.guidance = value
+            self.refresh()
 
     def refresh(self):
         # Rendering acknowledged state must not create settings requests.
         self.updating = True
         try:
-            ready = self.value is not None and not self.pending and not self.closed
+            ready = (
+                self.value is not None
+                and self.guidance is not None
+                and not self.pending
+                and not self.closed
+            )
+            message = (self.guidance or {}).get(self.save_problem, "")
+            self.save_notice.set_label(message)
+            self.save_notice.set_visible(bool(message))
             self.enabled.set_sensitive(ready)
             for parent in self.parents:
                 parent.set_sensitive(ready)
@@ -121,6 +138,8 @@ class Tray:
             self.updating = False
 
     def report(self, value):
+        if self.closed:
+            return
         self.model.set_label("本地模型已就绪" if value.get("modelReady") else "本地模型尚未就绪")
         revision = value.get("commandFeedbackRevision")
         if type(revision) is int:
@@ -222,7 +241,13 @@ class Tray:
             self.change({"source": self.value["target"], "target": self.value["source"]})
 
     def change(self, values):
-        if self.updating or self.pending or self.closed or self.value is None:
+        if (
+            self.updating
+            or self.pending
+            or self.closed
+            or self.value is None
+            or self.guidance is None
+        ):
             return
         if all(self.value[key] == value for key, value in values.items()):
             return
@@ -231,12 +256,27 @@ class Tray:
         self.tasks(self.save(values))
 
     async def save(self, values):
+        before_save = self.value
         try:
-            # Merge only when dispatching, never persist a second settings store.
-            if await self.host.ask("settings", {**self.value, **values}) is not True:
-                self.model.set_label("设置未保存，请打开设置检查。")
-        except (OSError, EOFError, TimeoutError):
-            self.model.set_label("设置未确认，请打开设置检查。")
+            try:
+                # Only the host owner can merge this intent with current settings.
+                result = await self.host.ask("traySettings", values)
+            except (OSError, EOFError, TimeoutError):
+                result = None
+            if self.closed:
+                return
+            if result is True:
+                self.save_problem = None
+                # A newer settings broadcast can arrive before this continuation.
+                # Only fill in an acknowledged no-op when no broadcast replaced it.
+                if self.value is before_save:
+                    self.value = {**before_save, **values}
+            elif result is False:
+                self.save_problem = "saveUnconfirmedMessage"
+            else:
+                # Missing acknowledgements can follow a committed write. Do not
+                # claim failure, restore an old snapshot, or automatically retry.
+                self.save_problem = "unknownSaveMessage"
         finally:
             self.pending = False
             if not self.closed:

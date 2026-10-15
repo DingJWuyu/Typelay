@@ -13,6 +13,9 @@ public sealed record SettingsDraftMessages(string SaveLabel, string UnsavedNotic
 
 public static class SettingsDraftPresentation
 {
+    public const string SaveUnconfirmedMessage = "设置保存未能确认。请检查设置目录权限或磁盘空间，再重新选择需要的设置。";
+    public const string UnknownSaveMessage = "上次设置操作结果未确认，请打开设置检查。";
+
     public static SettingsDraftMessages Create() => new(
         "保存修改", "这些修改尚未保存；离开此页后仍会保留。", "放弃未保存的修改？",
         "关闭会放弃尚未保存的修改，已保存的设置不变。", "继续编辑", "放弃修改",

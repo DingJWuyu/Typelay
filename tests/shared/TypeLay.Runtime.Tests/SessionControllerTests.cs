@@ -844,8 +844,10 @@ public sealed class SessionControllerTests
         Assert.Empty(s.Service.DirectWrites);
     }
 
-    [Fact]
-    public void FirstWakeCaptureFailureExplainsOnceAfterCleanupAndRequiresAnotherWake()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FirstWakeCaptureFailureExplainsOnceAfterCleanupAndRequiresAnotherWake(bool exception)
     {
         using var s = new SessionScenario(WorkMode.OnDemand, experimental: true);
         var feedback = new List<CommandFeedback>();
@@ -860,7 +862,10 @@ public sealed class SessionControllerTests
         s.Command("wake");
         s.Tick();
         long revision = s.Controller.CommandFeedbackRevision;
-        s.CompleteCapture(new(null));
+        if (exception)
+            s.FailCapture();
+        else
+            s.CompleteCapture(new(null));
         var failure = Assert.Single(feedback);
         Assert.Equal("暂时无法读取当前输入框，请保持焦点后再试一次。", failure.Message);
         Assert.Equal("wake-capture-unavailable", failure.Code);
@@ -967,8 +972,10 @@ public sealed class SessionControllerTests
         Assert.Empty(s.Model.Jobs);
     }
 
-    [Fact]
-    public void NewerDirectRejectionKeepsItsFeedbackWhenTheWakeCaptureReturnsEmpty()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NewerDirectRejectionKeepsItsFeedbackWhenTheWakeCaptureFails(bool exception)
     {
         using var s = new SessionScenario(WorkMode.OnDemand);
         var feedback = new List<CommandFeedback>();
@@ -979,7 +986,10 @@ public sealed class SessionControllerTests
         long wakeRevision = s.Controller.CommandFeedbackRevision;
         s.Input.Notices.Enqueue(new("direct", AcceptedAtMs: s.Loop.NowMs,
             CommandGeneration: s.Input.CommandGeneration, Rejection: Denial.ImeUnclear, CommandSequence: 1));
-        s.CompleteCapture(new(null));
+        if (exception)
+            s.FailCapture();
+        else
+            s.CompleteCapture(new(null));
         var rejection = Assert.Single(feedback);
         Assert.Equal("shortcut-imeunclear", rejection.Code);
         Assert.True(rejection.Revision > wakeRevision);
@@ -999,6 +1009,7 @@ public sealed class SessionControllerTests
     [InlineData("dispose", false)]
     [InlineData("dispose", true)]
     [InlineData("command-generation", false)]
+    [InlineData("command-generation", true)]
     public void RetiredWakeDoesNotReportLateCaptureFailure(string invalidation, bool exception)
     {
         using var s = new SessionScenario(WorkMode.OnDemand);
@@ -1138,8 +1149,10 @@ public sealed class SessionControllerTests
         Assert.Empty(s.Model.Jobs);
     }
 
-    [Fact]
-    public void LeavingFocusBeforeTheFirstObservationCannotReportAnOldWakeFailure()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LeavingFocusBeforeTheFirstObservationCannotReportAnOldWakeFailure(bool exception)
     {
         using var s = new SessionScenario(WorkMode.OnDemand);
         var feedback = new List<CommandFeedback>();
@@ -1147,8 +1160,11 @@ public sealed class SessionControllerTests
         s.Service.PendingCapture = new();
         s.Command("wake");
         s.Tick();
-        s.FocusAnotherField();
-        s.CompleteCapture(new(null));
+        s.Input.FocusedTarget = new("controlled", "other", Guid.NewGuid());
+        if (exception)
+            s.FailCapture();
+        else
+            s.CompleteCapture(new(null));
         s.Service.PendingCapture = new();
         s.Tick();
         s.CompleteCapture(new(null));
@@ -1159,10 +1175,11 @@ public sealed class SessionControllerTests
     }
 
     [Theory]
-    [InlineData(true, false)]
-    [InlineData(true, true)]
-    [InlineData(false, true)]
-    public void LeavingAndReturningDuringTheFirstReadRetiresTheWakeFailure(bool windowChanged, bool observeWhileAway)
+    [InlineData(true, false, false)]
+    [InlineData(true, true, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, false, true)]
+    public void LeavingAndReturningDuringTheFirstReadRetiresTheWakeFailure(bool windowChanged, bool observeWhileAway, bool exception)
     {
         using var s = new SessionScenario(WorkMode.OnDemand);
         var feedback = new List<CommandFeedback>();
@@ -1180,7 +1197,10 @@ public sealed class SessionControllerTests
         s.Input.ForegroundEpoch++;
         if (windowChanged)
             s.Input.WindowEpoch++;
-        s.CompleteCapture(new(null));
+        if (exception)
+            s.FailCapture();
+        else
+            s.CompleteCapture(new(null));
         Assert.Empty(feedback);
         s.Service.PendingCapture = new();
         s.Tick();

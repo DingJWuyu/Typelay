@@ -12,6 +12,15 @@ public sealed record UserSettings(int Schema = 1, bool Enabled = true, string So
     public string[] Excluded => ExcludedApplications ?? [];
     public LanguageDirection Direction => new(Source, Target);
 }
+
+// Only the settings file write failed. Host callbacks keep their original
+// exceptions so callers cannot mistake an already-persisted update for failure.
+public sealed class SettingsPersistenceException : IOException
+{
+    public SettingsPersistenceException(Exception innerException)
+        : base("settings-persistence-failed", innerException) { }
+}
+
 public sealed class SettingsStore
 {
     private readonly string _path;
@@ -73,15 +82,28 @@ public sealed class SettingsStore
         if (settings.Startup != Value.Startup)
             _setStartup(settings.Startup);
         string temporary = _path + ".tmp";
-        using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None,
-                   4096, FileOptions.WriteThrough))
+        try
         {
-            JsonSerializer.Serialize(stream, settings, new JsonSerializerOptions { WriteIndented = true });
-            stream.Flush(true);
+            using (var stream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None,
+                       4096, FileOptions.WriteThrough))
+            {
+                JsonSerializer.Serialize(stream, settings, new JsonSerializerOptions { WriteIndented = true });
+                stream.Flush(true);
+            }
+            File.Move(temporary, _path, true);
         }
-        File.Move(temporary, _path, true);
-        bool changed = (settings with { ExcludedApplications = null })
-            != (_committedValue with { ExcludedApplications = null })
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            throw new SettingsPersistenceException(ex);
+        }
+        bool changed = (settings with
+        {
+            ExcludedApplications = null
+        })
+            != (_committedValue with
+            {
+                ExcludedApplications = null
+            })
             || !settings.Excluded.SequenceEqual(_committedValue.Excluded);
         _committedValue = Snapshot(settings);
         Value = settings;

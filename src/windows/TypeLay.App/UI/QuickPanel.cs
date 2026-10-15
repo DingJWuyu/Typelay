@@ -14,6 +14,7 @@ internal sealed class QuickPanel : Window
     private readonly SessionController _session;
     private readonly Action _showSettings, _quit;
     private readonly StackPanel _body = new();
+    private bool _saveFailed;
     public QuickPanel(SettingsStore settings, ModelClient model, SessionController session, Action showSettings, Action quit)
     {
         _settings = settings;
@@ -67,17 +68,23 @@ internal sealed class QuickPanel : Window
         Native.SetWindowPos(handle, (nint)(-1), x, y, width, height, 0x0040);
         Activate();
     }
-    private void Save(UserSettings value)
+    public bool SetEnabled(bool enabled) => Save(_settings.Value with { Enabled = enabled });
+    private bool Save(UserSettings value)
     {
         try
         {
             _settings.Update(value);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        catch (SettingsPersistenceException)
         {
-            Hide();
-            _showSettings();
+            _saveFailed = true;
+            Refresh();
+            return false;
         }
+        // A confirmed write of the same settings does not publish Changed.
+        _saveFailed = false;
+        Refresh();
+        return true;
     }
     private void Refresh()
     {
@@ -112,7 +119,7 @@ internal sealed class QuickPanel : Window
         title.Children.Add(sub);
         Grid.SetColumn(title, 1);
         header.Children.Add(title);
-        var toggle = UiTheme.Toggle("启用 TypeLay", () => _settings.Value.Enabled, enabled => Save(_settings.Value with { Enabled = enabled }));
+        var toggle = UiTheme.Toggle("启用 TypeLay", () => _settings.Value.Enabled, enabled => SetEnabled(enabled));
         Grid.SetColumn(toggle, 2);
         header.Children.Add(toggle);
         var headBorder = UiTheme.Border(header, 0);
@@ -129,7 +136,8 @@ internal sealed class QuickPanel : Window
             Width = new(38)
         });
         row.ColumnDefinitions.Add(new());
-        var source = SettingsWindow.LanguageCombo(true, _settings.Value, Save);
+        var source = SettingsWindow.LanguageCombo(true, _settings.Value,
+            value => Save(_settings.Value with { Source = value.Source }));
         source.MinWidth = 0;
         row.Children.Add(source);
         var swap = UiTheme.Button("⇄", () => Save(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
@@ -138,12 +146,19 @@ internal sealed class QuickPanel : Window
         swap.Padding = new(0);
         Grid.SetColumn(swap, 1);
         row.Children.Add(swap);
-        var target = SettingsWindow.LanguageCombo(false, _settings.Value, Save);
+        var target = SettingsWindow.LanguageCombo(false, _settings.Value,
+            value => Save(_settings.Value with { Target = value.Target }));
         target.MinWidth = 0;
         Grid.SetColumn(target, 2);
         row.Children.Add(target);
         languages.Children.Add(row);
         _body.Children.Add(languages);
+        if (_saveFailed)
+        {
+            var error = UiTheme.Text(SettingsDraftPresentation.SaveUnconfirmedMessage, 11.5);
+            error.Margin = new(14, 0, 14, 12);
+            _body.Children.Add(error);
+        }
         var status = new Grid { Margin = new(14, 11, 14, 11), ToolTip = _session.ServiceStatus };
         status.ColumnDefinitions.Add(new()
         {

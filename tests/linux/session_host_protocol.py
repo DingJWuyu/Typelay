@@ -88,6 +88,59 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
     def latest(self, name):
         return next(value["data"] for value in reversed(self.events) if value.get("event") == name)
 
+    async def test_tray_persistence_failure_keeps_current_settings_and_allows_explicit_retry(self):
+        self.assertTrue(await self.ask("settings", {"enabled": True, "theme": "dark"}))
+        settings_file = self.home / "config/settings.json"
+        before = settings_file.read_bytes()
+        blocker = settings_file.with_suffix(".json.tmp")
+        blocker.mkdir()
+        self.events.clear()
+        self.assertIs(await self.ask("traySettings", {"enabled": False}), False)
+        self.assertEqual(settings_file.read_bytes(), before)
+        self.assertEqual(self.events, [], "failed persistence reconfigured the session")
+        blocker.rmdir()
+        self.assertIs(await self.ask("traySettings", {"enabled": False}), True)
+        self.assertFalse(self.latest("settings")["enabled"])
+        self.assertFalse(json.loads(settings_file.read_text())["Enabled"])
+
+    async def test_tray_intent_preserves_other_settings_changed_after_menu_was_rendered(self):
+        self.assertTrue(await self.ask("settings", {"enabled": True, "theme": "light"}))
+        rendered = self.latest("settings")
+        # The menu was rendered before another settings surface committed these fields.
+        newer = {
+            **rendered,
+            "theme": "dark",
+            "excludedApplications": ["private-editor"],
+            "source": "zh",
+            "acceptShortcut": "F7",
+        }
+        self.assertTrue(await self.ask("settings", newer))
+        self.assertTrue(await self.ask("traySettings", {"enabled": False}))
+        saved = self.latest("settings")
+        self.assertEqual(saved, {**newer, "enabled": False})
+        self.assertEqual(
+            json.loads((self.home / "config/settings.json").read_text())["Theme"], "dark"
+        )
+
+    async def test_tray_rejects_unknown_fields_wrong_types_and_invalid_values_without_writing(self):
+        self.assertTrue(await self.ask("settings", {"enabled": True}))
+        settings_file = self.home / "config/settings.json"
+        before = settings_file.stat().st_mtime_ns
+        self.events.clear()
+        for patch in ({"theme": "dark"}, {"enabled": 0}, {"mode": 1}, {"target": "auto"}, {}):
+            with self.subTest(patch=patch):
+                self.assertIs(await self.ask("traySettings", patch), False)
+        self.sequence += 1
+        duplicate = (
+            '{"id":%d,"op":"traySettings","data":{"enabled":false,"enabled":true}}' % self.sequence
+        ).encode()
+        self.process.stdin.write(struct.pack("<I", len(duplicate)) + duplicate)
+        await self.process.stdin.drain()
+        reply = await self.receive_until(lambda value: value.get("reply") == self.sequence)
+        self.assertIs(reply["data"], False)
+        self.assertEqual(settings_file.stat().st_mtime_ns, before)
+        self.assertEqual(self.events, [])
+
     async def test_preparation_uses_real_installation_facts_and_current_phase(self):
         missing = await self.ask("translationPreparation", {"phase": "Idle"})
         self.assertIsInstance(missing, dict)
@@ -145,6 +198,8 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("自动模式", guidance[0]["data"]["modeDescription"])
         self.assertIn("即时保存", guidance[0]["data"]["saveScopeDescription"])
         self.assertIn("排除", guidance[0]["data"]["saveScopeDescription"])
+        self.assertIn("设置目录权限", guidance[0]["data"]["saveUnconfirmedMessage"])
+        self.assertIn("打开设置检查", guidance[0]["data"]["unknownSaveMessage"])
 
         saved = self.latest("settings")
         self.events.clear()

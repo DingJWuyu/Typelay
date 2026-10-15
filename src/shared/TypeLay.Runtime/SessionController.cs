@@ -678,10 +678,17 @@ public sealed class SessionController : IDisposable
                 DrainInputNotices();
             if (_disposed || generation != _generation)
                 return;
+            var pendingWake = _pendingWakeCapture;
             StopSession("capture-failed");
             _inputReadFailed = true;
             _retryBrokerAt = _loop.NowMs + 2000;
             RefreshConnectionStatus();
+            if (pendingWake is not null && pendingWake.Generation == generation
+                && pendingWake.FeedbackRevision == _commandFeedbackRevision
+                && pendingWake.CommandGeneration == _hook.CommandGeneration
+                && windowEpoch == _hook.WindowEpoch && _hook.GetFocus(pendingWake.Target) != FocusMember.Other)
+                SetServiceStatus("暂时无法读取当前输入框，请保持焦点后再试一次。", "wake-capture-unavailable",
+                    pendingWake.CommandGeneration, pendingWake.CommandSequence);
         }
         finally { _capturing = false; }
     }

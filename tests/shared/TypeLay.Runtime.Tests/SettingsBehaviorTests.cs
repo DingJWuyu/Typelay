@@ -184,7 +184,8 @@ public sealed class SettingsBehaviorTests : IDisposable
         var draft = new ShortcutSettingsDraft("Ctrl+K", "Alt+F8", "F12", "F7");
         Assert.True(draft.TryApply(store.Value, out var updated, out _));
         Directory.CreateDirectory(SettingsPath + ".tmp");
-        Assert.Throws<UnauthorizedAccessException>(() => store.Update(updated!));
+        var failure = Assert.Throws<SettingsPersistenceException>(() => store.Update(updated!));
+        Assert.IsType<UnauthorizedAccessException>(failure.InnerException);
         Assert.Equal(before, File.ReadAllText(SettingsPath));
         Assert.Equal("Tab", store.Value.AcceptShortcut);
         Assert.Equal("F12", draft.Accept);
@@ -258,13 +259,19 @@ public sealed class SettingsBehaviorTests : IDisposable
     public void CanonicalEquivalentSavePersistsWithoutReportingAConfigurationChange()
     {
         var store = new SettingsStore(SettingsPath);
-        store.Update(store.Value with { ExcludedApplications = ["private-app"] });
+        store.Update(store.Value with
+        {
+            ExcludedApplications = ["private-app"]
+        });
         int changes = 0;
         store.Changed += () => changes++;
         store.Update(store.Value with
         {
-            WakeShortcut = "shift+ctrl+f9", DirectShortcut = "shift+ctrl+f10",
-            AcceptShortcut = "tab", ExitShortcut = "esc", ExcludedApplications = ["private-app"]
+            WakeShortcut = "shift+ctrl+f9",
+            DirectShortcut = "shift+ctrl+f10",
+            AcceptShortcut = "tab",
+            ExitShortcut = "esc",
+            ExcludedApplications = ["private-app"]
         });
         var reloaded = new SettingsStore(SettingsPath).Value;
         Assert.Equal("Ctrl+Shift+F9", reloaded.WakeShortcut);
@@ -301,9 +308,15 @@ public sealed class SettingsBehaviorTests : IDisposable
         var store = new SettingsStore(SettingsPath);
         int changes = 0;
         store.Changed += () => changes++;
-        store.Update(store.Value with { ExcludedApplications = [] });
+        store.Update(store.Value with
+        {
+            ExcludedApplications = []
+        });
         Assert.Empty(new SettingsStore(SettingsPath).Value.Excluded);
-        store.Update(store.Value with { ExcludedApplications = null });
+        store.Update(store.Value with
+        {
+            ExcludedApplications = null
+        });
         Assert.Empty(new SettingsStore(SettingsPath).Value.Excluded);
         Assert.Equal(0, changes);
     }
@@ -315,7 +328,10 @@ public sealed class SettingsBehaviorTests : IDisposable
     public void ExclusionContentChangesAreNotSilentlyTreatedAsTheSameSettings(string change)
     {
         var store = new SettingsStore(SettingsPath);
-        store.Update(store.Value with { ExcludedApplications = ["first-app", "second-app"] });
+        store.Update(store.Value with
+        {
+            ExcludedApplications = ["first-app", "second-app"]
+        });
         int changes = 0;
         store.Changed += () => changes++;
         string[] exclusions = change switch
@@ -324,7 +340,10 @@ public sealed class SettingsBehaviorTests : IDisposable
             "order" => ["second-app", "first-app"],
             _ => ["first-app", "second-app", "first-app"]
         };
-        store.Update(store.Value with { ExcludedApplications = exclusions });
+        store.Update(store.Value with
+        {
+            ExcludedApplications = exclusions
+        });
         Assert.Equal(1, changes);
         Assert.Equal(exclusions, new SettingsStore(SettingsPath).Value.Excluded);
     }
@@ -335,7 +354,10 @@ public sealed class SettingsBehaviorTests : IDisposable
     public void MutatingAnExposedArrayStillReportsTheNextSavedChange(bool mutateValue)
     {
         var store = new SettingsStore(SettingsPath);
-        var input = store.Value with { ExcludedApplications = new[] { "first-app" } };
+        var input = store.Value with
+        {
+            ExcludedApplications = new[] { "first-app" }
+        };
         store.Update(input);
         int changes = 0;
         store.Changed += () => changes++;
@@ -376,7 +398,8 @@ public sealed class SettingsBehaviorTests : IDisposable
         int changes = 0;
         store.Changed += () => changes++;
         Directory.CreateDirectory(SettingsPath + ".tmp");
-        Assert.Throws<UnauthorizedAccessException>(() => store.Update(store.Value));
+        var failure = Assert.Throws<SettingsPersistenceException>(() => store.Update(store.Value));
+        Assert.IsType<UnauthorizedAccessException>(failure.InnerException);
         Assert.Same(before, store.Value);
         Assert.Equal(0, changes);
         Assert.Equal(previouslySaved, File.Exists(SettingsPath));
@@ -392,13 +415,17 @@ public sealed class SettingsBehaviorTests : IDisposable
     public void FailedSaveDoesNotConsumeAnExternallyMutatedArrayChangeBeforeRetry()
     {
         var store = new SettingsStore(SettingsPath);
-        store.Update(store.Value with { ExcludedApplications = ["first-app"] });
+        store.Update(store.Value with
+        {
+            ExcludedApplications = ["first-app"]
+        });
         string saved = File.ReadAllText(SettingsPath);
         int changes = 0;
         store.Changed += () => changes++;
         store.Value.Excluded[0] = "second-app";
         Directory.CreateDirectory(SettingsPath + ".tmp");
-        Assert.Throws<UnauthorizedAccessException>(() => store.Update(store.Value));
+        var failure = Assert.Throws<SettingsPersistenceException>(() => store.Update(store.Value));
+        Assert.IsType<UnauthorizedAccessException>(failure.InnerException);
         Assert.Equal(0, changes);
         Assert.Equal(saved, File.ReadAllText(SettingsPath));
         Directory.Delete(SettingsPath + ".tmp");
@@ -414,12 +441,16 @@ public sealed class SettingsBehaviorTests : IDisposable
     {
         var store = new SettingsStore(SettingsPath);
         var before = store.Value;
-        var submitted = changed ? before with { Target = "zh" } : before;
+        var submitted = changed ? before with
+        {
+            Target = "zh"
+        } : before;
         int changes = 0;
         store.Changed += () => changes++;
         // Serialization can succeed while replacing the destination still fails.
         Directory.CreateDirectory(SettingsPath);
-        Assert.Throws<IOException>(() => store.Update(submitted));
+        var failure = Assert.Throws<SettingsPersistenceException>(() => store.Update(submitted));
+        Assert.True(failure.InnerException is IOException or UnauthorizedAccessException);
         Assert.Same(before, store.Value);
         Assert.Equal(0, changes);
         Assert.True(Directory.Exists(SettingsPath));
@@ -427,6 +458,55 @@ public sealed class SettingsBehaviorTests : IDisposable
         store.Update(submitted);
         Assert.Equal(changed ? 1 : 0, changes);
         Assert.Equal(changed ? "zh" : "en", new SettingsStore(SettingsPath).Value.Target);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SubscriberFailureRemainsDistinctFromPersistenceFailureAfterTheSettingsWereSaved(bool unauthorized)
+    {
+        var store = new SettingsStore(SettingsPath);
+        store.Update(store.Value);
+        Exception expected = unauthorized ? new UnauthorizedAccessException("subscriber-access-failed")
+            : new IOException("subscriber-io-failed");
+        int notifications = 0;
+        store.Changed += () =>
+        {
+            notifications++;
+            throw expected;
+        };
+
+        Assert.Same(expected, Record.Exception(() => store.Update(store.Value with { Target = "zh" })));
+        Assert.Equal("zh", store.Value.Target);
+        Assert.Equal("zh", new SettingsStore(SettingsPath).Value.Target);
+        Assert.Equal(1, notifications);
+
+        // The save committed even though the subscriber failed. Resaving the
+        // same value must not repeat the failed configuration notification.
+        store.Update(store.Value);
+        Assert.Equal(1, notifications);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void StartupFailureRemainsDistinctFromSettingsFileFailureAndDoesNotPublishTheDraft(bool unauthorized)
+    {
+        Exception expected = unauthorized ? new UnauthorizedAccessException("startup-access-failed")
+            : new IOException("startup-io-failed");
+        var store = new SettingsStore(SettingsPath, _ => throw expected);
+        store.Update(store.Value);
+        var before = store.Value;
+        string saved = File.ReadAllText(SettingsPath);
+        int notifications = 0;
+        store.Changed += () => notifications++;
+
+        Assert.Same(expected, Record.Exception(() => store.Update(store.Value with { Startup = true })));
+        Assert.Same(before, store.Value);
+        Assert.Equal(saved, File.ReadAllText(SettingsPath));
+        Assert.False(new SettingsStore(SettingsPath).Value.Startup);
+        Assert.False(File.Exists(SettingsPath + ".tmp"));
+        Assert.Equal(0, notifications);
     }
 
     public void Dispose()

@@ -39,6 +39,8 @@ dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release 
 
 当前增量的配置合同支持默认 Tab/Esc 和无修饰 F1-F24；四键设置共用保存与关闭草稿流程。`SettingsRenderingTests` 验证重复键、写盘失败、后台刷新、切页和关闭保留，并确认保存只合并最新设置中的四个键，不恢复旧工作模式或启用状态。任意修饰键组合及完整冲突覆盖尚未完成，不能据此关闭冻结规格 §18 的全部缺口。以上测试使用合成内容、受控会话或显式软件注入，Windows 实际结果须以对应运行记录为准。
 
+`QuickPanelRenderingTests` 从快速面板的启用、源语言、目标语言及交换控件，以及生产托盘菜单的点击接线进入真实设置保存。临时文件锁阻止写入时，检查已确认设置和磁盘不变、面板保留错误；模型刷新与隐藏重开不能抹去错误。解除文件锁后重新操作原控件应成功并清除错误，不变值的成功保存也须清除错误而不发布配置变化。明暗主题的窄面板截图保存在 `artifacts/test-results/rendering`。这些用例需要实际 Windows WPF 执行，交叉编译不算通过。
+
 ## 系统 Edit 前台事务回归
 
 `ProductionForegroundWriteTests` 通过真实 Broker 管道与独立 stock Edit 验证前台写入；另直接使用生产 DLL 的私有事务 wire，区分 Broker 提前拒绝和目标 GUI 线程最后拒绝。当前选区已折叠但替换范围仍为原选区的单行/多行正例，应保留范围外文字、源焦点和零提交，并验证系统撤销。

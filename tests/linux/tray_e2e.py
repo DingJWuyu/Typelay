@@ -131,6 +131,8 @@ def main():
                     enabled_notifications.append(value["enabled"])
                     state.update(value)
                     tray.configure(value)
+                elif operation == "settingsGuidance":
+                    tray.render_guidance(value)
                 elif operation == "status":
                     tray.report(value)
 
@@ -146,7 +148,31 @@ def main():
                 settled_jobs.append(len(pending))
 
             class ObservedLink(Link):
+                settings_after_tray_reply = None
+                held_tray_id = None
+                held_tray_reply = None
+                following_save = None
+
+                def receive(self, frame):
+                    if self.held_tray_id is not None and frame.get("reply") == self.held_tray_id:
+                        assert frame["data"] is True, "the queued tray save did not really succeed"
+                        self.held_tray_reply = frame
+                        self.held_tray_id = None
+                        self.following_save = tasks(
+                            self.ask("settings", self.settings_after_tray_reply)
+                        )
+                        self.settings_after_tray_reply = None
+                        return
+                    if self.held_tray_reply is not None and frame.get("event") == "settings":
+                        # Model one GLib dispatch draining A's real receipt before
+                        # B's newer settings, before the awaiting save can resume.
+                        super().receive(self.held_tray_reply)
+                        self.held_tray_reply = None
+                    super().receive(frame)
+
                 async def ask(self, operation, data=None, **options):
+                    if operation == "traySettings" and self.settings_after_tray_reply is not None:
+                        self.held_tray_id = self.sequence + 1
                     started = asyncio.get_running_loop().time()
                     record = {"operation": operation, "acknowledged": False}
                     request_results.append(record)
@@ -226,11 +252,30 @@ def main():
                 "hasTextEdit": True,
             }
             assert await host.ask("allowField", metadata) is True
+            settings_file = directory / "config/settings.json"
+            saved_before_failure = settings_file.read_bytes()
+            blocker = settings_file.with_suffix(".json.tmp")
+            blocker.mkdir()
+            items["启用 TypeLay"].activate()
+            await settled()
+            assert state["enabled"] is True and tray.enabled.get_active()
+            assert settings_file.read_bytes() == saved_before_failure
+            assert tray.save_notice.get_visible()
+            failure_message = tray.save_notice.get_label()
+            assert failure_message == tray.guidance["saveUnconfirmedMessage"]
+            tray.report({"modelReady": True})
+            assert tray.model.get_label() == "本地模型已就绪"
+            assert (
+                tray.save_notice.get_visible() and tray.save_notice.get_label() == failure_message
+            )
+            assert not tray.pending and tray.enabled.get_sensitive()
+            assert items["设置…"].get_sensitive() and items["退出 TypeLay"].get_sensitive()
+            blocker.rmdir()
             items["启用 TypeLay"].activate()
             await settled()
             assert state["enabled"] is False, {
                 "trayStatus": tray.status.get_label(),
-                "trayMessage": tray.model.get_label(),
+                "trayMessage": tray.save_notice.get_label(),
                 "pending": tray.pending,
                 "checked": tray.enabled.get_active(),
                 "hostAlive": host.channel.alive,
@@ -243,6 +288,7 @@ def main():
                 ),
             }
             assert await host.ask("allowField", metadata) is False
+            assert not tray.save_notice.get_visible(), "an explicit successful retry kept the error"
             assert tray.indicator.get_status() == tray.backend.IndicatorStatus.ACTIVE
             assert tray.indicator.get_icon() == "typelay-paused", "pause removed the restore entry"
             items["启用 TypeLay"].activate()
@@ -262,6 +308,19 @@ def main():
             await settled()
             assert (state["source"], state["target"]) == ("en", "zh")
             assert state["theme"] == "dark"
+            # Another settings surface restores enabled after A pauses. Deliver
+            # A's actual acknowledgement and then B's actual broadcast together.
+            host.settings_after_tray_reply = dict(state)
+            items["启用 TypeLay"].activate()
+            await settled()
+            assert await asyncio.wait_for(host.following_save, 3) is True
+            jobs.discard(host.following_save)
+            assert host.held_tray_reply is None and host.settings_after_tray_reply is None
+            assert state["enabled"] is True
+            assert json.loads(settings_file.read_text())["Enabled"] is True
+            assert tray.value == state and tray.enabled.get_active(), (
+                "an older save continuation overwrote the newer settings broadcast"
+            )
             # Exercise the actual session-bus delivery, without claiming panel pixels.
             feedback = {
                 "revision": tray.command_revision + 1,
@@ -331,7 +390,7 @@ def main():
                 raise AssertionError(panel_failure)
             print(
                 "PASS: native tray registration, pause/resume, settings persistence, modes, "
-                "language swap, secondary settings action and exit action"
+                "language swap, persistence failure/report/retry, secondary settings action and exit action"
             )
         finally:
             for job in jobs:

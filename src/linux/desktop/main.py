@@ -166,6 +166,7 @@ async def desktop(paths, background, lock, tutorial=False):
                 settings.show()
         elif operation == "settingsGuidance":
             settings.render_guidance(value)
+            components["tray"].render_guidance(value)
         elif operation == "render":
             overlay.render(value)
         elif operation == "hide":

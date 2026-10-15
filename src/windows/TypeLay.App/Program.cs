@@ -110,8 +110,8 @@ internal static class Program
                 tray.ShowBalloonTip(5000, result.Title, result.ReasonText, Forms.ToolTipIcon.Info);
             };
             var menu = new Forms.ContextMenuStrip();
-            var toggle = new Forms.ToolStripMenuItem("暂停 TypeLay");
-            toggle.Click += (_, _) => app.Dispatcher.Invoke(() => settings.Update(settings.Value with { Enabled = !settings.Value.Enabled }));
+            var toggle = CreateToggleMenuItem(settings, quick, () => tray.ShowBalloonTip(5000, "TypeLay",
+                SettingsDraftPresentation.SaveUnconfirmedMessage, Forms.ToolTipIcon.Info));
             menu.Items.Add(toggle);
             menu.Items.Add("设置…", null, (_, _) => app.Dispatcher.Invoke(() => window.ShowPage()));
             menu.Items.Add(OnDemandPracticePresentation.Create(settings.Value).Title, null, (_, _) => app.Dispatcher.Invoke(window.StartPractice));
@@ -146,6 +146,16 @@ internal static class Program
             return app.Run();
         }
         finally { Dispose(); mutex.ReleaseMutex(); }
+    }
+    internal static Forms.ToolStripMenuItem CreateToggleMenuItem(SettingsStore settings, QuickPanel quick, Action showSaveError)
+    {
+        var toggle = new Forms.ToolStripMenuItem(settings.Value.Enabled ? "暂停 TypeLay" : "启用 TypeLay");
+        toggle.Click += (_, _) => quick.Dispatcher.Invoke(() =>
+        {
+            if (!quick.SetEnabled(!settings.Value.Enabled))
+                showSaveError();
+        });
+        return toggle;
     }
     private static Drawing.Icon MakeTrayIcon()
     {

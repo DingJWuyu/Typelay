@@ -4,6 +4,15 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class SettingsDraftPresentationTests
 {
+    [Fact]
+    public void SettingsRecoveryMessagesDistinguishFailedPersistenceFromAnUnknownReceipt()
+    {
+        Assert.Equal("设置保存未能确认。请检查设置目录权限或磁盘空间，再重新选择需要的设置。",
+            SettingsDraftPresentation.SaveUnconfirmedMessage);
+        Assert.Equal("上次设置操作结果未确认，请打开设置检查。",
+            SettingsDraftPresentation.UnknownSaveMessage);
+    }
+
     [Theory]
     [InlineData("Tab", "Esc")]
     [InlineData("F24", "F1")]

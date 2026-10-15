@@ -12,7 +12,10 @@ public sealed class UnchangedSettingsSessionTests
     public void SavingUnchangedSettingsPreservesTheManualDraftAndActiveWake(string submission)
     {
         using var s = new SessionScenario(WorkMode.OnDemand, experimental: true);
-        s.Settings.Update(s.Settings.Value with { ExcludedApplications = ["private-app"] });
+        s.Settings.Update(s.Settings.Value with
+        {
+            ExcludedApplications = ["private-app"]
+        });
         s.Tick();
         s.Command("wake", 1);
         s.ReadyCandidate();
@@ -51,7 +54,10 @@ public sealed class UnchangedSettingsSessionTests
     public void SavingUnchangedSettingsKeepsPracticeAndItsPendingDirectReplacement(string submission)
     {
         using var s = new SessionScenario(WorkMode.OnDemand, experimental: true);
-        s.Settings.Update(s.Settings.Value with { ExcludedApplications = ["private-app"] });
+        s.Settings.Update(s.Settings.Value with
+        {
+            ExcludedApplications = ["private-app"]
+        });
         Guid run = BindPractice(s);
         s.Command("wake", 1);
         s.ReadyCandidate();
@@ -69,7 +75,11 @@ public sealed class UnchangedSettingsSessionTests
         var plan = Assert.Single(s.Service.DirectWrites);
         s.Settings.Update(Unchanged(s.Settings.Value, submission));
         s.Service.PendingDirectWrite.SetResult(new(WriteStatus.Verified, Denial.None,
-            plan.Expected with { Text = plan.ResultText, Selection = new(plan.Caret, plan.Caret) }));
+            plan.Expected with
+            {
+                Text = plan.ResultText,
+                Selection = new(plan.Caret, plan.Caret)
+            }));
         s.Tick();
         Assert.True(s.Controller.PracticeProgress!.Completed);
         Assert.Equal(run, s.Controller.PracticeProgress.RunId);
@@ -89,7 +99,8 @@ public sealed class UnchangedSettingsSessionTests
         s.Tick();
         var token = s.View.Token;
         s.BlockSettingsWrites();
-        Assert.Throws<UnauthorizedAccessException>(() => s.Settings.Update(s.Settings.Value));
+        var failure = Assert.Throws<SettingsPersistenceException>(() => s.Settings.Update(s.Settings.Value));
+        Assert.IsType<UnauthorizedAccessException>(failure.InnerException);
         s.Tick();
         Assert.Equal(token, s.View.Token);
         s.AllowSettingsWrites();
@@ -170,8 +181,10 @@ public sealed class UnchangedSettingsSessionTests
         "rebuilt-exclusions" => settings with { ExcludedApplications = settings.Excluded.ToArray() },
         "normalized-shortcuts" => settings with
         {
-            WakeShortcut = "shift+ctrl+f9", DirectShortcut = "shift+ctrl+f10",
-            AcceptShortcut = "tab", ExitShortcut = "esc"
+            WakeShortcut = "shift+ctrl+f9",
+            DirectShortcut = "shift+ctrl+f10",
+            AcceptShortcut = "tab",
+            ExitShortcut = "esc"
         },
         _ => throw new ArgumentException("Unknown submission.")
     };

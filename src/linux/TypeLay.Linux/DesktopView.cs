@@ -46,7 +46,15 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
     public void Configure(UserSettings settings)
     {
         link.Send("settings", settings);
-        link.Send("settingsGuidance", SettingsGuidancePresentation.Create(settings, exclusionsNeedSave: true));
+        var guidance = SettingsGuidancePresentation.Create(settings, exclusionsNeedSave: true);
+        link.Send("settingsGuidance", new
+        {
+            guidance.ModeDescription,
+            guidance.AcceptanceDescription,
+            guidance.SaveScopeDescription,
+            SettingsDraftPresentation.SaveUnconfirmedMessage,
+            SettingsDraftPresentation.UnknownSaveMessage
+        });
     }
     public void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null, SessionViewContext? context = null)
     {
