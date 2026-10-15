@@ -7,7 +7,7 @@
 static struct {
     Target *target;
     GtkWidget *popover, *top, *card, *header, *language, *status, *scroll, *text;
-    GtkWidget *footer, *hint, *expand, *menu, *source, *destination, *resume, *exit;
+    GtkWidget *footer, *hint, *actions, *expand, *menu, *source, *destination, *resume, *exit;
     GtkCssProvider *css;
     JsonObject *view, *authority;
     gulong focus_handler, active_handler;
@@ -288,17 +288,23 @@ static void theme(const char *choice) {
     if (strcmp(choice, "system") != 0) dark = strcmp(choice, "dark") == 0;
     else if (name) { char *lower = g_ascii_strdown(name, -1); dark |= strstr(lower, "dark") != NULL; g_free(lower); }
     g_free(name);
-    const char *bg = dark ? "#252a32" : "#ffffff", *fg = dark ? "#eef1f6" : "#252a31";
-    const char *border = dark ? "#48515e" : "#cdd3de", *muted = dark ? "#aeb7c4" : "#737b89";
+    const char *bg = dark ? "#292a2e" : "#ffffff", *fg = dark ? "#f4f4f6" : "#222327";
+    const char *border = dark ? "#42434b" : "#d0d1d7", *muted = dark ? "#b6b7c0" : "#666771";
+    const char *line = dark ? "#42434b" : "#e5e5e9", *hover = dark ? "#393a41" : "#ededf0";
+    const char *accent = dark ? "#86b0ff" : "#2365d8";
     char *css = g_strdup_printf(
         "#typelay-overlay { background: %s; color: %s; border: 1px solid %s; border-radius: 14px; padding: 0; }"
-        "#typelay-header, #typelay-footer { padding: 2px 10px; color: %s; font-size: 11px; }"
-        "#typelay-header { border-bottom: 1px solid %s; } #typelay-footer { border-top: 1px solid %s; }"
-        "#typelay-overlay button { padding: 2px 3px; min-height: 22px; min-width: 0; }"
-        "#typelay-candidate, #typelay-candidate text { background: %s; color: %s; font-size: 14px; }"
-        "#typelay-header .ready { color: %s; } #typelay-header .pending { color: %s; }",
-        bg, fg, border, muted, border, border, bg, fg,
-        dark ? "#67d49b" : "#19764a", dark ? "#edbd6d" : "#a86400");
+        "#typelay-overlay #typelay-header { padding: 8px 12px 2px; color: %s; font-size: 12px; }"
+        "#typelay-overlay #typelay-footer { margin: 0 14px 4px; padding: 6px 0 4px; border-top: 1px solid %s; color: %s; font-size: 11px; }"
+        "#typelay-overlay button { padding: 2px 3px; min-height: 22px; min-width: 0; border: 1px solid transparent; border-radius: 6px; background: transparent; color: %s; box-shadow: none; text-shadow: none; font-weight: normal; }"
+        "#typelay-overlay button:hover { background: %s; color: %s; }"
+        "#typelay-overlay #typelay-actions button { font-size: 11px; }"
+        "#typelay-overlay #typelay-candidate, #typelay-overlay #typelay-candidate text { background: %s; color: %s; font-size: 15px; }"
+        "#typelay-overlay #typelay-candidate { border: 1px solid transparent; border-radius: 7px; outline: none; box-shadow: none; }"
+        "#typelay-overlay #typelay-candidate:focus { border-color: %s; }"
+        "#typelay-overlay #typelay-header .pending { color: %s; }",
+        bg, fg, border, muted, line, muted, muted, hover, fg, bg, fg, accent,
+        dark ? "#f2bb8d" : "#99511f");
     gtk_css_provider_load_from_data(overlay.css, css, -1, NULL);
     g_free(css);
 }
@@ -319,21 +325,30 @@ static void create(Target *target) {
     gtk_box_pack_start(GTK_BOX(overlay.card), overlay.header, FALSE, FALSE, 0);
     overlay.language = button(overlay.header, "", "menu");
     overlay.status = gtk_label_new("");
-    gtk_label_set_ellipsize(GTK_LABEL(overlay.status), PANGO_ELLIPSIZE_END);
+    gtk_label_set_line_wrap(GTK_LABEL(overlay.status), TRUE);
+    gtk_label_set_line_wrap_mode(GTK_LABEL(overlay.status), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_max_width_chars(GTK_LABEL(overlay.status), 24);
     gtk_label_set_xalign(GTK_LABEL(overlay.status), 1);
     gtk_box_pack_start(GTK_BOX(overlay.header), overlay.status, TRUE, TRUE, 0);
+    overlay.actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+    gtk_widget_set_name(overlay.actions, "typelay-actions");
+    gtk_box_pack_start(GTK_BOX(overlay.header), overlay.actions, FALSE, FALSE, 0);
+    button(overlay.actions, "重译", "regenerate");
+    overlay.expand = button(overlay.actions, "展开", "expand");
     overlay.resume = button(overlay.header, "恢复", "resume");
     gtk_widget_set_name(overlay.resume, "typelay-resume");
     gtk_buildable_set_name(GTK_BUILDABLE(overlay.resume), "typelay-resume");
     overlay.scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_widget_set_margin_start(overlay.scroll, 8);
+    gtk_widget_set_margin_end(overlay.scroll, 8);
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(overlay.scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     overlay.text = gtk_text_view_new();
     gtk_widget_set_name(overlay.text, "typelay-candidate");
     atk_object_set_name(gtk_widget_get_accessible(overlay.text), "TypeLay 译文候选");
     gtk_buildable_set_name(GTK_BUILDABLE(overlay.text), "typelay-candidate");
     gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(overlay.text), GTK_WRAP_WORD_CHAR);
-    gtk_text_view_set_left_margin(GTK_TEXT_VIEW(overlay.text), 14);
-    gtk_text_view_set_right_margin(GTK_TEXT_VIEW(overlay.text), 14);
+    gtk_text_view_set_left_margin(GTK_TEXT_VIEW(overlay.text), 6);
+    gtk_text_view_set_right_margin(GTK_TEXT_VIEW(overlay.text), 6);
     gtk_text_view_set_top_margin(GTK_TEXT_VIEW(overlay.text), 12);
     gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(overlay.text), 12);
     gtk_text_view_set_pixels_below_lines(GTK_TEXT_VIEW(overlay.text), 5);
@@ -352,10 +367,10 @@ static void create(Target *target) {
     gtk_widget_set_name(overlay.footer, "typelay-footer");
     overlay.hint = gtk_label_new("");
     gtk_label_set_xalign(GTK_LABEL(overlay.hint), 0);
+    gtk_label_set_line_wrap(GTK_LABEL(overlay.hint), TRUE);
+    gtk_label_set_line_wrap_mode(GTK_LABEL(overlay.hint), PANGO_WRAP_WORD_CHAR);
     gtk_box_pack_start(GTK_BOX(overlay.footer), overlay.hint, TRUE, TRUE, 0);
     overlay.exit = button(overlay.footer, "", "escape");
-    button(overlay.footer, "重译", "regenerate");
-    overlay.expand = button(overlay.footer, "展开", "expand");
     gtk_box_pack_start(GTK_BOX(overlay.card), overlay.footer, FALSE, FALSE, 0);
     overlay.menu = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
     gtk_container_set_border_width(GTK_CONTAINER(overlay.menu), 12);
@@ -447,6 +462,11 @@ static gboolean render(Target *target, JsonObject *data) {
     gtk_style_context_remove_class(context, "ready"); gtk_style_context_remove_class(context, "pending");
     if (g_strcmp0(tl_string(presentation, "dot"), "Green") == 0) gtk_style_context_add_class(context, "ready");
     if (g_strcmp0(tl_string(presentation, "dot"), "Yellow") == 0) gtk_style_context_add_class(context, "pending");
+    const char *state = tl_string(value, "state");
+    gboolean editable_preview = boolean(value, "editable") && tl_view_context_matches(target, value)
+        && boolean(tl_object(value, "viewContext"), "canEdit")
+        && (g_strcmp0(state, "ValidTranslation") == 0 || g_strcmp0(state, "EditedTranslationPending") == 0);
+    gtk_widget_set_tooltip_text(overlay.text, editable_preview ? "点击译文编辑" : NULL);
     theme(text_or_empty(data, "theme"));
     gboolean capsule = is_paused || g_strcmp0(tl_string(value, "state"), "IdleCapsule") == 0;
     gint width = capsule ? 160 : CLAMP(gtk_widget_get_allocated_width(target->widget), 390, 520);
@@ -461,6 +481,7 @@ static gboolean render(Target *target, JsonObject *data) {
     gtk_widget_set_size_request(overlay.scroll, -1, height);
     gtk_widget_set_visible(overlay.scroll, !capsule);
     gtk_widget_set_visible(overlay.footer, !capsule);
+    gtk_widget_set_visible(overlay.actions, !capsule);
     gtk_widget_set_visible(overlay.status, is_paused || !capsule);
     gtk_widget_set_visible(overlay.language, !is_paused);
     gtk_widget_set_visible(overlay.resume, is_paused);

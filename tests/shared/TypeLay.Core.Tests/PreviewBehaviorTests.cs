@@ -81,7 +81,7 @@ public sealed class PreviewBehaviorTests
         Check(!s.Complete(old, "Hello"));
         Check(s.Preview == "Hello" && s.Candidate == "" && !s.BeginEdit() && s.Prepare(a, Context(a), 1400).Plan is null);
         Assert.False(s.CanBeginEdit);
-        Assert.Equal("正在翻译", Presentation.From(s.State, false, hasPreview: true, canEdit: s.CanBeginEdit).Status);
+        Assert.Equal("正在翻译", Presentation.From(s.State, false, hasPreview: true).Status);
         var latest = s.TakeTranslationJob(1700)!;
         Check(s.Complete(latest, "Hello friend"));
         a = a with

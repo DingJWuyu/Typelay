@@ -430,8 +430,7 @@ internal sealed class SessionScenario : IDisposable
         {
             Context = context;
             Status = statusOverride ?? Presentation.From(session.State, canAccept, session.Preview.Length > 0,
-                shortcuts: context?.Bindings,
-                canEdit: context?.CanEdit == true && session.CanBeginEdit && session.Candidate.Length > 0).Status;
+                shortcuts: context?.Bindings).Status;
             State = session.State;
             Preview = session.Preview;
             Draft = session.Draft;

@@ -143,11 +143,12 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                                 Assert.IsType<SolidColorBrush>(expander.Foreground).Color));
                             Assert.False(Descendants(window).OfType<Button>().Single(button =>
                                 Equals(button.Content, ApplicationSupportPresentation.Create([]).Labels.TryIt)).IsEnabled);
+                            // Capture the actual failing surface before a contrast assertion can stop this matrix.
+                            Render(window, $"settings-applications-{theme}-{width}.png");
                             AssertReadableSettingsText(window);
                             AssertReadableSelectedNavigation(window, "▦  应用支持");
                             AssertWithinSettingsViewport(window, Descendants(window).OfType<Button>().Single(button =>
                                 Equals(button.Content, ApplicationSupportPresentation.Create([]).Labels.TryIt)));
-                            Render(window, $"settings-applications-{theme}-{width}.png");
                             Stage($"general-show:{theme}:{width}");
                             window.ShowPage();
                             Stage($"general-layout:{theme}:{width}");
@@ -298,6 +299,47 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
             }
         });
     }
+
+    [Theory]
+    [InlineData("light")]
+    [InlineData("dark")]
+    public Task GeneralSettingsFirstScreenIsReadableAtMinimumSize(string theme) => desktop.RunAsync(() =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-daily-ui-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
+            using var model = new ModelClient(new(Path.Combine(directory, "missing-python"),
+                Path.Combine(directory, "missing-worker"), Path.Combine(directory, "missing-models")),
+                info => new ChildProcess(info)); // An unprepared first run, with no model process or download.
+            var window = new SettingsWindow(settings, model, () => { });
+            UiTheme.Apply(theme);
+            window.ShowPage();
+            window.UpdateLayout();
+            Render(window, $"settings-daily-{theme}-790.png");
+            Assert.Equal(790, window.ActualWidth);
+            Assert.Equal(560, window.ActualHeight);
+            AssertWithinSettingsViewport(window, SettingToggle(window, "启用 TypeLay"));
+            AssertWithinSettingsViewport(window, Descendants(window).OfType<ComboBox>().Single(control =>
+                AutomationProperties.GetName(control) == "工作模式"));
+            var choices = Descendants(window).OfType<RadioButton>().ToArray();
+            Assert.Equal(3, choices.Length);
+            foreach (var choice in choices)
+            {
+                AssertWithinSettingsViewport(window, choice);
+                var label = Assert.Single(Descendants(choice).OfType<TextBlock>(), text =>
+                    text.Text == AutomationProperties.GetName(choice));
+                AssertWithinSettingsViewport(window, label);
+            }
+            AssertReadableSettingsText(window);
+            AssertReadableSelectedNavigation(window, "⌂  常规");
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    });
 
     [Fact]
     public async Task ThemePreviewsExposeSelectionSaveAndRestoreAfterFailure()
@@ -883,18 +925,23 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
             var foreground = Assert.IsType<SolidColorBrush>(text.Foreground).Color;
             DependencyObject? parent = text;
             Color? background = null;
+            string? paintedBy = null;
             while (parent is not null)
             {
                 Brush? brush = parent switch
                 {
                     Border border => border.Background,
                     Panel panel => panel.Background,
+                    // Aero2 Expander's header template paints a transparent Grid;
+                    // its ToggleButton default #DDDDDD is not a painted surface.
+                    ToggleButton { TemplatedParent: Expander } => null,
                     Control control => control.Background,
                     _ => null
                 };
                 if (brush is SolidColorBrush solid && solid.Color.A == 255)
                 {
                     background = solid.Color;
+                    paintedBy = parent.GetType().Name;
                     break;
                 }
                 parent = VisualTreeHelper.GetParent(parent);
@@ -902,7 +949,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
             Assert.NotNull(background);
             double first = Luminance(foreground), second = Luminance(background.Value);
             double contrast = (Math.Max(first, second) + 0.05) / (Math.Min(first, second) + 0.05);
-            Assert.True(contrast >= 4.5, $"Text contrast {contrast:F2} is below 4.5: {text.Text}");
+            Assert.True(contrast >= 4.5, $"Text contrast {contrast:F2} is below 4.5: {text.Text}; foreground={foreground}; background={background}; paintedBy={paintedBy}");
         }
     }
 

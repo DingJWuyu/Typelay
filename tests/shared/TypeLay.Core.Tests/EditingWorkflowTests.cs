@@ -10,21 +10,13 @@ public sealed class EditingWorkflowTests
     [InlineData(SessionState.ValidTranslation, true)]
     [InlineData(SessionState.EditedTranslationPending, false)]
     [InlineData(SessionState.EditedTranslationPending, true)]
-    public void ReadyTranslationExplainsEditingIndependentlyOfAcceptance(SessionState state, bool permit)
+    public void ReadyTranslationKeepsStatusSeparateFromAcceptance(SessionState state, bool permit)
     {
-        var display = Presentation.From(state, permit, canEdit: true);
-        Assert.Equal("译文就绪 · 点击译文编辑", display.Status);
+        var display = Presentation.From(state, permit);
+        Assert.Equal("译文就绪", display.Status);
         Assert.Equal(StatusDot.Green, display.Dot);
         Assert.Equal(permit ? "Tab 接受译文" : "Tab 交还应用", display.TabHint);
         Assert.False(display.EditorOwnsText);
-    }
-
-    [Theory]
-    [InlineData(SessionState.ValidTranslation)]
-    [InlineData(SessionState.EditedTranslationPending)]
-    public void ReadyPreviewWithoutEditingContextKeepsItsStatus(SessionState state)
-    {
-        Assert.Equal("译文就绪", Presentation.From(state, true).Status);
     }
 
     [Theory]
@@ -34,9 +26,9 @@ public sealed class EditingWorkflowTests
     [InlineData(SessionState.Invalid, "输入中")]
     [InlineData(SessionState.TranslationFailed, "暂时无法翻译")]
     [InlineData(SessionState.NoSession, "")]
-    public void EditingContextCannotReplaceTheActualSessionStatus(SessionState state, string expected)
+    public void TransientStatesKeepTheirActualStatus(SessionState state, string expected)
     {
-        Assert.Equal(expected, Presentation.From(state, false, hasPreview: true, canEdit: true).Status);
+        Assert.Equal(expected, Presentation.From(state, false, hasPreview: true).Status);
     }
 
     [Fact]

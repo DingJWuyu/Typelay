@@ -8,20 +8,20 @@ public sealed class SessionControllerTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void RenderedCandidateExplainsEditingIndependentlyOfAcceptance(bool experimental)
+    public void RenderedCandidateKeepsEditingSeparateFromAcceptance(bool experimental)
     {
         using var s = new SessionScenario(experimental: experimental);
         s.ReadyCandidate();
         Assert.True(s.View.Context!.CanEdit);
         Assert.Equal(experimental, s.View.CanAccept);
-        Assert.Equal("译文就绪 · 点击译文编辑", s.View.Status);
+        Assert.Equal("译文就绪", s.View.Status);
         if (experimental)
         {
             s.Service.PendingCapture = new();
             s.Tick(Limits.PermitMaxAgeMs + 1);
             Assert.False(s.View.CanAccept);
             Assert.True(s.View.Context.CanEdit);
-            Assert.Equal("译文就绪 · 点击译文编辑", s.View.Status);
+            Assert.Equal("译文就绪", s.View.Status);
         }
     }
 
@@ -1752,7 +1752,7 @@ public sealed class SessionControllerTests
         s.Tick();
         Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
         Assert.Equal("manual draft", s.View.Preview);
-        Assert.Equal("译文就绪 · 点击译文编辑", s.View.Status);
+        Assert.Equal("译文就绪", s.View.Status);
         var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
         s.Input.Notices.Enqueue(new("accept", permit, s.Loop.NowMs, s.Input.UserEpoch, s.Input.ForegroundEpoch, CommandGeneration: s.Input.CommandGeneration));
         s.Tick();

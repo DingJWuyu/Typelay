@@ -945,6 +945,10 @@ def run(arguments):
                             "cooperative GTK source did not receive a real model candidate",
                         )
                         assert gtk_state()["first"] == original
+                        wait_for(
+                            lambda: (gtk_state().get("candidate") or {}).get("text"),
+                            "GTK preview did not expose its actual candidate before visual evidence",
+                        )
                         subprocess.run(
                             ["grim", str(arguments.output / "gtk-cooperative.png")],
                             check=True,
@@ -1050,6 +1054,12 @@ def run(arguments):
                                 "real GTK editor did not retain the typed draft",
                             )
                             assert gtk_state()["first"] == editing_source
+                            if not hold_return:
+                                subprocess.run(
+                                    ["grim", str(arguments.output / "gtk-overlay-editing.png")],
+                                    check=True,
+                                    timeout=3,
+                                )
                             before_return = trace_checkpoint()
                             baseline = (
                                 gtk_state()["functionKeys"][0].copy() if hold_return else None
@@ -1640,6 +1650,11 @@ def run(arguments):
                         before_pause_input = gtk_state()
                         assert before_pause_input["first"] == pause_source
                         assert before_pause_input["candidate"] is None
+                        subprocess.run(
+                            ["grim", str(arguments.output / "gtk-overlay-paused.png")],
+                            check=True,
+                            timeout=3,
+                        )
                         paused_captures = dict(status()["input"]["captureCounts"])
                         pause_trace = trace_checkpoint()
                         key("End")
@@ -2256,7 +2271,6 @@ def run(arguments):
             from support.gtk_accessibility import (
                 Atspi,
                 GLib,
-                bounds,
                 named,
                 select_settings_page,
                 settings_navigation,
@@ -2844,19 +2858,53 @@ def run(arguments):
                 for value, label in (("system", "跟随系统"), ("light", "浅色"), ("dark", "深色"))
             }
             original_theme = json.loads(paths.settings.read_text()).get("Theme", "system")
-            general_area = Atspi.Component.get_extents(
-                settings_control("设置页：常规").get_component_iface(), Atspi.CoordType.SCREEN
+            # niri reports the visual window geometry; GTK's FRAME also includes
+            # CSD shadows. Keep the exact compositor size check separate from
+            # containment in this page's real scroll pane, in GTK coordinates.
+            current_window = next(
+                item
+                for item in contents(request("Windows"), "Windows")
+                if item["id"] == settings_window["id"]
+                and item.get("pid") == process.pid
+                and item.get("title") == "TypeLay 设置"
             )
+            assert current_window["is_floating"]
+            assert current_window["layout"]["window_size"] == [790, 560]
+            general_page = settings_control("设置页：常规")
+            assert general_page.get_process_id() == process.pid
+            assert general_page.get_role() == Atspi.Role.SCROLL_PANE
+            assert general_page.get_state_set().contains(Atspi.StateType.SHOWING)
+            general_area = Atspi.Component.get_extents(
+                general_page.get_component_iface(), Atspi.CoordType.SCREEN
+            )
+            assert general_area.x != -(2**31) and general_area.y != -(2**31)
+            assert general_area.width > 0 and general_area.height > 0
+            theme_layout = {
+                "niriWindow": current_window,
+                "generalScrollPane": [
+                    general_area.x,
+                    general_area.y,
+                    general_area.width,
+                    general_area.height,
+                ],
+                "themeRadios": {},
+            }
             for value, option in themes.items():
+                assert option.get_process_id() == process.pid
                 assert option.get_role() == Atspi.Role.RADIO_BUTTON
                 assert option.get_state_set().contains(Atspi.StateType.FOCUSABLE)
+                assert option.get_state_set().contains(Atspi.StateType.SHOWING)
                 assert option.get_state_set().contains(Atspi.StateType.CHECKED) == (
                     value == original_theme
                 )
                 area = Atspi.Component.get_extents(
                     option.get_component_iface(), Atspi.CoordType.SCREEN
                 )
-                bounds(option, process.pid, (790, 560))
+                theme_layout["themeRadios"][value] = [area.x, area.y, area.width, area.height]
+                (arguments.output / "settings-general-layout.json").write_text(
+                    json.dumps(theme_layout, indent=2, ensure_ascii=False)
+                )
+                assert area.width > 0 and area.height > 0
                 assert general_area.x <= area.x <= general_area.x + general_area.width - area.width
                 assert (
                     general_area.y <= area.y <= general_area.y + general_area.height - area.height
@@ -2970,8 +3018,8 @@ def run(arguments):
             )
             assert "离开此页后仍会保留" in text(settings_control("设置草稿"))
             settings_page("常规")
-            assert saved["WakeShortcut"] in text(settings_control("当前工作模式说明"))
-            assert "Ctrl+Shift+F8" not in text(settings_control("当前工作模式说明"))
+            assert saved["WakeShortcut"] in settings_control("当前工作模式说明").get_description()
+            assert "Ctrl+Shift+F8" not in settings_control("当前工作模式说明").get_description()
             activate_setting("设置：启用 TypeLay")
             wait_for(
                 lambda: json.loads(paths.settings.read_text())["Enabled"],
@@ -3002,7 +3050,7 @@ def run(arguments):
             )
             settings_page("常规")
             wait_for(
-                lambda: "Ctrl+Shift+F8" in text(settings_control("当前工作模式说明")),
+                lambda: "Ctrl+Shift+F8" in settings_control("当前工作模式说明").get_description(),
                 "saved wake shortcut was not shown in the mode guidance",
             )
             settings_page("快捷键")
@@ -3210,7 +3258,7 @@ def run(arguments):
             assert Atspi.Selection.is_child_selected(accept_key.get_selection_iface(), 0)
             assert "Tab" in text(settings_control("当前接受与退出说明"))
             settings_page("常规")
-            assert saved["WakeShortcut"] in text(settings_control("当前工作模式说明"))
+            assert saved["WakeShortcut"] in settings_control("当前工作模式说明").get_description()
             settings_page("应用支持")
             assert Atspi.Component.grab_focus(trial.get_component_iface())
             activate_setting(next_step_label)

@@ -1062,7 +1062,117 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 
+    def test_overlay_keeps_translation_primary_and_actions_visible(self):
+        output = ROOT / "artifacts/linux/browser-overlay"
+        output.mkdir(parents=True, exist_ok=True)
+        self.page.keyboard.insert_text("Hello")
+        for theme in ("light", "dark"):
+            for width in (320, 520):
+                with self.subTest(theme=theme, width=width):
+                    self.command("overlay-hide")
+                    self.page.locator("#source").evaluate(
+                        """(element, width) => {
+                          element.style.cssText = `margin-top:300px;width:${width}px;box-sizing:border-box`;
+                          element.focus();
+                        }""",
+                        width,
+                    )
+                    self.page.mouse.move(1, 1)
+                    snapshot = self.capture()
+                    self.assertIsNotNone(snapshot, self.capture_diagnostics)
+                    view = {
+                        "presentation": {
+                            "visible": True,
+                            "editorOwnsText": False,
+                            "tabHint": "Tab 接受译文",
+                        },
+                        "text": "Could we pick this up tomorrow afternoon?",
+                        "editable": True,
+                        "state": "ValidTranslation",
+                        "sourceLanguage": "auto",
+                        "targetLanguage": "en",
+                        "status": "译文就绪",
+                    }
+                    data = {
+                        "target": snapshot["target"],
+                        "authority": snapshot["authority"],
+                        "view": view,
+                        "revision": 1,
+                        "theme": theme,
+                    }
+                    self.assertTrue(self.command("overlay-render", data)["visible"])
+                    nodes = [
+                        node
+                        for node in self.cdp.send("Accessibility.getFullAXTree")["nodes"]
+                        if not node.get("ignored")
+                    ]
+                    names = [node.get("name", {}).get("value") for node in nodes]
+                    for name in ("Auto → EN", "译文就绪", "Tab 交还应用"):
+                        self.assertIn(name, names)
+                    self.assertNotIn("点击译文以编辑", names)
+
+                    def control_box(name, role):
+                        node = next(
+                            node
+                            for node in nodes
+                            if node.get("name", {}).get("value") == name
+                            and node.get("role", {}).get("value") == role
+                        )
+                        border = self.cdp.send(
+                            "DOM.getBoxModel", {"backendNodeId": node["backendDOMNodeId"]}
+                        )["model"]["border"]
+                        return node, border
+
+                    editor, editor_box = control_box("TypeLay 译文", "textbox")
+                    self.assertEqual(editor.get("description", {}).get("value"), "点击译文以编辑")
+                    _, more_box = control_box("更多", "button")
+                    _, exit_box = control_box("Esc 退出当前翻译", "button")
+                    self.assertLessEqual(more_box[5], editor_box[1])
+                    self.assertLessEqual(editor_box[5], exit_box[1])
+                    host = self.page.locator("html > div")
+                    self.assertTrue(host.evaluate("element => element.shadowRoot === null"))
+                    bounds = host.bounding_box()
+                    self.assertEqual(bounds["width"], width)
+                    for box in (editor_box, more_box, exit_box):
+                        self.assertGreater(box[4], box[0])
+                        self.assertGreater(box[5], box[1])
+                        self.assertGreaterEqual(box[0], bounds["x"])
+                        self.assertLessEqual(box[4], bounds["x"] + bounds["width"])
+                    # Capture the actual opaque surfaces before any hover. AX and
+                    # pointer geometry work through the real closed shadow root.
+                    self.page.screenshot(path=output / f"{theme}-{width}-preview.png", clip=bounds)
+                    edit_requests = self.page.evaluate("""fixtureMessages.filter(message =>
+                      message.event === 'ui' && message.data.operation === 'beginEdit').length""")
+                    self.page.mouse.click(
+                        (editor_box[0] + editor_box[4]) / 2,
+                        (editor_box[1] + editor_box[5]) / 2,
+                    )
+                    self.assertEqual(
+                        self.page.evaluate("""fixtureMessages.filter(message =>
+                      message.event === 'ui' && message.data.operation === 'beginEdit').length"""),
+                        edit_requests + 1,
+                    )
+                    self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+                    view["presentation"]["editorOwnsText"] = True
+                    view["state"] = "EditingTranslation"
+                    data["revision"] = 2
+                    self.assertTrue(self.command("overlay-render", data)["visible"])
+                    self.command("overlay-edit", {"target": snapshot["target"], "allowed": True})
+                    self.page.keyboard.press("Control+A")
+                    self.page.keyboard.insert_text("Human draft")
+                    self.assertEqual(
+                        self.page.evaluate("""fixtureMessages.findLast(message =>
+                      message.event === 'ui' && message.data.operation === 'draft').data.value"""),
+                        "Human draft",
+                    )
+                    self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                    self.assertEqual(self.accepted(), [])
+                    self.page.screenshot(
+                        path=output / f"{theme}-{width}-editing.png", clip=host.bounding_box()
+                    )
+
     def test_more_actions_are_disclosed_without_moving_source_focus(self):
+        self.page.set_viewport_size({"width": 640, "height": 500})
         self.page.locator("#source").evaluate(
             "element => {element.style.marginTop = '220px'; element.style.width = '480px';}"
         )
@@ -1079,7 +1189,7 @@ class BrowserContract(unittest.TestCase):
                             "editorOwnsText": False,
                             "tabHint": "Tab 接受译文",
                         },
-                        "text": "Initial candidate",
+                        "text": "Initial candidate. " * 80,
                         "editable": True,
                         "state": "ValidTranslation",
                         "sourceLanguage": "en",
@@ -1131,6 +1241,7 @@ class BrowserContract(unittest.TestCase):
         names = menu_names(False)
         self.assertNotIn("复制", names)
         self.assertNotIn("复制译文", names)
+        compact = self.page.locator("html > div").bounding_box()
         click_button("更多")
         names = menu_names(True)
         for name in ["复制译文", "重新翻译", "不要在这个应用中显示", "设置"]:
@@ -1138,10 +1249,21 @@ class BrowserContract(unittest.TestCase):
         self.assertIn("Tab 交还应用", names)
         self.assertNotIn("Tab 接受译文", names)
         self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
-        click_button("更多")
+        click_button("展开")
+        expanded = self.page.locator("html > div").bounding_box()
+        self.assertEqual(expanded["width"], 520)
+        self.assertGreater(expanded["width"], compact["width"])
+        self.assertGreater(expanded["height"], compact["height"])
+        self.assertGreaterEqual(expanded["y"], 0)
+        self.assertLessEqual(expanded["y"] + expanded["height"], self.page.evaluate("innerHeight"))
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+        self.assertIn("缩小", menu_names(False))
+        click_button("缩小")
+        self.assertEqual(self.page.locator("html > div").bounding_box(), compact)
         names = menu_names(False)
         self.assertNotIn("复制译文", names)
         self.assertNotIn("重新翻译", names)
+        self.assertIn("展开", names)
         description = self.command("describe", {"target": snapshot["target"]})
         self.assertTrue(description["focused"])
         for revision in ["inputRevision", "focusRevision", "contentRevision"]:

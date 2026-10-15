@@ -5,6 +5,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Automation;
+using System.Windows.Markup;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
@@ -31,13 +33,13 @@ internal sealed class OverlayWindow : Window, ISessionView
     private readonly Button _resumeButton;
     private readonly TextBlock _pausedStatus, _resumeHint;
     private long? _pausedRevision, _pressedPauseRevision;
-    private bool _rendering, _editing, _composing, _expanded, _hasCandidate, _hasPreview, _editorAccent;
+    private bool _rendering, _editing, _composing, _expanded, _hasPreview, _canEditPreview;
     private readonly bool _automationTest;
     private readonly Func<bool> _clientAreaAnimation;
     private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
     private int _renderTraceSamples;
     private string? _dotBrushKey, _editorForegroundKey;
-    private (string Text, double Width, double Scale, FontFamily Font, CultureInfo Culture)? _measurementKey;
+    private (string Text, double Width, double Scale, FontFamily Font, double FontSize, double LineHeight, CultureInfo Culture)? _measurementKey;
     private double _measuredTextHeight;
     private double _panelWidth = 390;
     private nint _hwnd;
@@ -122,14 +124,16 @@ internal sealed class OverlayWindow : Window, ISessionView
         {
             Height = new(34)
         });
-        var header = new Grid { Margin = new(12, 0, 10, 0) };
+        var header = new Grid { Margin = new(14, 0, 14, 0) };
         header.ColumnDefinitions.Add(new()
         {
             Width = GridLength.Auto
         });
         header.ColumnDefinitions.Add(new());
-        _language = UiTheme.Text("Auto → EN  ⌄", 10.5, bold: true);
+        _language = UiTheme.Text("Auto → EN  ⌄", 11, muted: true);
         var languageButton = new Button { Content = _language, BorderThickness = new(0), Background = Brushes.Transparent, Padding = new(0) };
+        languageButton.ToolTip = "翻译语言";
+        AutomationProperties.SetName(languageButton, "翻译语言");
         languageButton.Click += (_, _) => LanguageRequested?.Invoke();
         header.Children.Add(languageButton);
         var tag = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
@@ -140,26 +144,43 @@ internal sealed class OverlayWindow : Window, ISessionView
         Grid.SetColumn(tag, 1);
         header.Children.Add(tag);
         _headerBorder = UiTheme.Border(header, 0);
-        _headerBorder.BorderThickness = new(0, 0, 0, 1);
+        _headerBorder.BorderThickness = new(0);
         _surface.Children.Add(_headerBorder);
         _editor = new TextBox
         {
             IsReadOnly = true,
             Focusable = false,
-            BorderThickness = new(0),
-            Padding = new(14, 10, 14, 12),
+            BorderThickness = new(1),
+            BorderBrush = Brushes.Transparent,
+            Margin = new(10, 0, 10, 0),
+            Padding = new(3, 9, 3, 11),
+            FocusVisualStyle = null,
             TextWrapping = TextWrapping.Wrap,
             AcceptsReturn = true,
             AcceptsTab = false,
             MinHeight = 54,
             MaxHeight = 160,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            FontSize = 14,
-            Cursor = Cursors.IBeam,
+            FontSize = 15,
+            Cursor = Cursors.Arrow,
             SpellCheck = { IsEnabled = false }
         };
-        _editor.SetValue(TextBlock.LineHeightProperty, 21.7);
+        // Keep the native TextBox and its content host. A single border supplies
+        // hover/focus feedback without the system template's additional chrome.
+        _editor.Template = (ControlTemplate)XamlReader.Parse("""
+            <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="TextBox">
+              <Border CornerRadius="7" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+                <ScrollViewer x:Name="PART_ContentHost" Focusable="False"/>
+              </Border>
+            </ControlTemplate>
+            """);
+        _editor.SetValue(TextBlock.LineHeightProperty, 23.7);
         _editor.SetResourceReference(Control.BackgroundProperty, "Panel");
+        _editor.SetResourceReference(TextBox.CaretBrushProperty, "Accent");
+        AutomationProperties.SetName(_editor, "译文预览");
+        _editor.MouseEnter += (_, _) => UpdateEditorAffordance();
+        _editor.MouseLeave += (_, _) => UpdateEditorAffordance();
+        _editor.IsKeyboardFocusWithinChanged += (_, _) => UpdateEditorAffordance();
         _editor.PreviewMouseDown += (_, e) =>
         {
             if (!StartEdit())
@@ -223,7 +244,7 @@ internal sealed class OverlayWindow : Window, ISessionView
         _editor.ContextMenu = null;
         Grid.SetRow(_editor, 1);
         _surface.Children.Add(_editor);
-        var footer = new DockPanel { Margin = new(13, 0, 10, 0), LastChildFill = false };
+        var footer = new DockPanel { LastChildFill = false };
         var tab = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
         _acceptKeycap = Keycap(_shortcutMessages.AcceptKey);
         tab.Children.Add(_acceptKeycap);
@@ -249,12 +270,17 @@ internal sealed class OverlayWindow : Window, ISessionView
             if (!_composing && token is not null)
                 EscapeRequested?.Invoke(token);
         };
-        footer.Children.Add(esc);
+        var actions = new StackPanel { Orientation = Orientation.Horizontal };
+        DockPanel.SetDock(actions, Dock.Right);
+        actions.Children.Add(esc);
         var more = new Button { Content = "⋯", FontSize = 15, BorderThickness = new(0), Background = Brushes.Transparent, Padding = new(7, 0, 2, 0) };
-        DockPanel.SetDock(more, Dock.Right);
-        footer.Children.Add(more);
+        actions.Children.Add(more);
+        footer.Children.Add(actions);
+        more.ToolTip = "更多翻译操作";
+        AutomationProperties.SetName(more, "更多翻译操作");
         more.Click += (_, _) => OpenMenu(more);
-        _footerBorder = UiTheme.Border(footer, 0, "Panel2");
+        _footerBorder = UiTheme.Border(footer, 0);
+        _footerBorder.Margin = new(14, 6, 14, 0);
         _footerBorder.BorderThickness = new(0, 1, 0, 0);
         Grid.SetRow(_footerBorder, 2);
         _surface.Children.Add(_footerBorder);
@@ -342,10 +368,23 @@ internal sealed class OverlayWindow : Window, ISessionView
         _editor.IsReadOnly = false;
         _editor.IsUndoEnabled = true;
         _editor.Focusable = true;
-        _editor.SetResourceReference(Control.BackgroundProperty, "AccentSoft");
-        _editorAccent = true;
+        UpdateEditorAffordance();
         SetNoActivate(false);
         return true;
+    }
+    private void UpdateEditorAffordance()
+    {
+        bool editable = _editing || _canEditPreview;
+        bool hover = _canEditPreview && !_editing && _editor.IsMouseOver;
+        _editor.Cursor = editable ? Cursors.IBeam : Cursors.Arrow;
+        _editor.ToolTip = _canEditPreview && !_editing ? "点击译文编辑" : null;
+        AutomationProperties.SetName(_editor, editable ? "编辑译文" : "译文预览");
+        if (_editing && _editor.IsKeyboardFocusWithin)
+            _editor.SetResourceReference(Control.BorderBrushProperty, "Accent");
+        else if (_editing || hover)
+            _editor.SetResourceReference(Control.BorderBrushProperty, "Line");
+        else
+            _editor.BorderBrush = Brushes.Transparent;
     }
     private void SetNoActivate(bool value)
     {
@@ -370,8 +409,7 @@ internal sealed class OverlayWindow : Window, ISessionView
     {
         _viewContext = context is not null && session.Current?.Target == context.Token.Target ? context : null;
         ConfigureSessionShortcuts(_viewContext?.Bindings ?? SessionShortcutBindings.Default);
-        var display = Presentation.From(session.State, permit, session.Preview.Length > 0, shortcuts: _viewContext?.Bindings,
-            canEdit: _viewContext?.CanEdit == true && session.CanBeginEdit && session.Candidate.Length > 0);
+        var display = Presentation.From(session.State, permit, session.Preview.Length > 0, shortcuts: _viewContext?.Bindings);
         if (!display.Visible || session.Current is not { } source)
         {
             HideQuietly();
@@ -389,9 +427,8 @@ internal sealed class OverlayWindow : Window, ISessionView
                 Status = "译文预览",
                 Dot = StatusDot.Neutral
             };
-        _hasCandidate = session.Candidate.Length > 0;
         _hasPreview = session.Preview.Length > 0;
-        _editor.Cursor = _hasCandidate || _editing ? Cursors.IBeam : Cursors.Arrow;
+        _canEditPreview = _viewContext?.CanEdit == true && session.CanBeginEdit && session.Candidate.Length > 0;
         _rendering = true;
         try
         {
@@ -402,7 +439,6 @@ internal sealed class OverlayWindow : Window, ISessionView
             _editor.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
             _footerBorder.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
             _surface.RowDefinitions[2].Height = new(idle ? 0 : 34);
-            _headerBorder.BorderThickness = new(0, 0, 0, idle ? 0 : 1);
             _status.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
             _dot.Visibility = display.Dot == StatusDot.None ? Visibility.Collapsed : Visibility.Visible;
             if (idle)
@@ -434,11 +470,6 @@ internal sealed class OverlayWindow : Window, ISessionView
                 _editor.IsUndoEnabled = false;
                 _editor.Focusable = false;
                 SetNoActivate(true);
-                if (_editorAccent)
-                {
-                    _editor.SetResourceReference(Control.BackgroundProperty, "Panel");
-                    _editorAccent = false;
-                }
                 long textStarted = trace ? Stopwatch.GetTimestamp() : 0;
                 string value = idle ? "" : session.Preview.Length > 0 ? session.Preview : statusOverride is not null ? statusOverride + "…" : "正在翻译…";
                 if (_editor.Text != value)
@@ -452,6 +483,7 @@ internal sealed class OverlayWindow : Window, ISessionView
                 _editor.SetResourceReference(Control.ForegroundProperty, foregroundKey);
                 _editorForegroundKey = foregroundKey;
             }
+            UpdateEditorAffordance();
             if (trace)
                 uiMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds - textMs;
             positionTiming = Position(source.Target, source.Bounds, idle, trace);
@@ -488,18 +520,22 @@ internal sealed class OverlayWindow : Window, ISessionView
         double scale = Math.Max(1, Native.GetDpiForWindow((nint)target.AsWindows().RootHwnd) / 96.0);
         _panelWidth = idle ? 140 : Math.Clamp(bounds.Width / scale, 320, 520);
         _editor.MaxHeight = _expanded ? 360 : 160;
-        var measurementKey = (_editor.Text, _panelWidth, scale, FontFamily, CultureInfo.CurrentUICulture);
+        double lineHeight = TextBlock.GetLineHeight(_editor);
+        var measurementKey = (_editor.Text, _panelWidth, scale, _editor.FontFamily, _editor.FontSize, lineHeight, CultureInfo.CurrentUICulture);
         if (!idle && _measurementKey != measurementKey)
         {
             long measureStarted = trace ? Stopwatch.GetTimestamp() : 0;
             var measure = new FormattedText(_editor.Text, CultureInfo.CurrentUICulture, FlowDirection.LeftToRight,
-                new Typeface(FontFamily, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal), 14, Brushes.Black, scale)
+                new Typeface(_editor.FontFamily, FontStyles.Normal, FontWeights.Normal, FontStretches.Normal), _editor.FontSize, Brushes.Black, scale)
             {
-                MaxTextWidth = _panelWidth - 30,
+                // TextBox reserves two more pixels for its caret. Keep its
+                // inset, padding and border in the same measurement as the text.
+                MaxTextWidth = _panelWidth - _editor.Margin.Left - _editor.Margin.Right
+                    - _editor.Padding.Left - _editor.Padding.Right - _editor.BorderThickness.Left - _editor.BorderThickness.Right - 2,
                 // Match TextBox.Wrap: the default trims an unbroken word into
                 // one line and underestimates the editor's actual height.
                 Trimming = TextTrimming.None,
-                LineHeight = 21.7
+                LineHeight = lineHeight
             };
             _measuredTextHeight = measure.Height;
             _measurementKey = measurementKey;
@@ -508,7 +544,8 @@ internal sealed class OverlayWindow : Window, ISessionView
         }
         // Cache natural text height, not the clipped height: expansion and edits
         // must still resize the persistent editor on the next render.
-        double bodyHeight = idle ? 54 : Math.Clamp(_measuredTextHeight + 24, 54, _editor.MaxHeight);
+        double bodyHeight = idle ? 54 : Math.Clamp(_measuredTextHeight + _editor.Padding.Top + _editor.Padding.Bottom
+            + _editor.BorderThickness.Top + _editor.BorderThickness.Bottom + 2, 54, _editor.MaxHeight);
         _editor.Height = bodyHeight;
         double height = idle ? 60 : 34 + bodyHeight + 34 + 26, width = _panelWidth + 26;
         var rect = new Native.Rect
@@ -620,8 +657,8 @@ internal sealed class OverlayWindow : Window, ISessionView
         _editing = false;
         _composing = false;
         _expanded = false;
-        _hasCandidate = false;
         _hasPreview = false;
+        _canEditPreview = false;
         _rendering = true;
         try
         {
@@ -629,11 +666,7 @@ internal sealed class OverlayWindow : Window, ISessionView
             _editor.IsUndoEnabled = false;
             _editor.IsReadOnly = true;
             _editor.Focusable = false;
-            if (_editorAccent)
-            {
-                _editor.SetResourceReference(Control.BackgroundProperty, "Panel");
-                _editorAccent = false;
-            }
+            UpdateEditorAffordance();
             _status.Text = "";
         }
         finally { _rendering = false; }

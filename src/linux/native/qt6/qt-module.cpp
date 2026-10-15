@@ -1124,7 +1124,7 @@ private:
         ui("visible", false);
         auto *card = card_.data();
         card_ = nullptr; editor_ = nullptr; hint_ = nullptr; status_ = nullptr;
-        language_ = nullptr; exit_ = nullptr; footer_ = nullptr; menu_ = nullptr; swap_ = nullptr; resume_ = nullptr;
+        language_ = nullptr; exit_ = nullptr; footer_ = nullptr; menu_ = nullptr; tools_ = nullptr; swap_ = nullptr; resume_ = nullptr;
         sourceLanguages_ = nullptr; targetLanguages_ = nullptr; overlayTarget_ = nullptr;
         overlayView_ = {}; overlayAuthority_ = {}; overlayGeneration_ = QJsonValue(); overlaySourceProvider_ = nullptr; overlayFocused_ = false; composing_ = false;
         overlayTheme_ = QStringLiteral("system");
@@ -1147,19 +1147,25 @@ private:
         const auto muted = dark ? QStringLiteral("#aeb7c4") : QStringLiteral("#6c7482");
         const auto hover = dark ? QStringLiteral("#303741") : QStringLiteral("#f1f3f6");
         const auto accent = dark ? QStringLiteral("#83a7ff") : QStringLiteral("#3267e3");
-        // Only our child surface is styled. Keep native fonts, layout metrics,
-        // hit areas and the host application's palette/theme unchanged.
-        const auto style = QStringLiteral(
+        const auto editorBorder = editor_ && !editor_->isReadOnly() ? accent : QStringLiteral("transparent");
+        // Only our child surface is styled; the host application's palette and
+        // the source field's input, focus and geometry remain unchanged.
+        auto style = QStringLiteral(
             "QFrame#typelay-overlay { background:%1; color:%2; border:1px solid %3; border-radius:12px; }"
             "QFrame#typelay-overlay QLabel, QFrame#typelay-overlay QRadioButton { color:%2; background:transparent; }"
-            "QFrame#typelay-overlay QLabel#typelay-status, QFrame#typelay-overlay QLabel#typelay-hint { color:%4; }"
-            "QFrame#typelay-overlay QPushButton { color:%4; background-color:%1; }"
+            "QFrame#typelay-overlay QLabel#typelay-status, QFrame#typelay-overlay QLabel#typelay-hint { color:%4; font-size:12px; }"
+            "QFrame#typelay-overlay QPushButton { color:%4; background-color:%1; border:0; border-radius:6px;"
+            " padding:4px 6px; min-height:20px; font-size:12px; }"
             "QFrame#typelay-overlay QPushButton:hover { color:%2; background-color:%5; }"
             "QFrame#typelay-overlay QPushButton:pressed { color:%2; background-color:%5; }"
-            "QFrame#typelay-overlay QPlainTextEdit#typelay-editor { background:%1; color:%2; border:1px solid transparent;"
-            " selection-background-color:%6; selection-color:%1; }"
-            "QFrame#typelay-overlay QPlainTextEdit#typelay-editor:focus { border-color:%6; }")
-            .arg(background, foreground, border, muted, hover, accent);
+            "QFrame#typelay-overlay QWidget#typelay-footer, QFrame#typelay-overlay QWidget#typelay-menu { border-top:1px solid %3; }"
+            "QFrame#typelay-overlay QPlainTextEdit#typelay-editor { background:%1; color:%2; border:1px solid %7;"
+            " border-radius:6px; padding:4px; font-size:15px; selection-background-color:%6; selection-color:%1; }")
+            .arg(background, foreground, border, muted, hover, accent, editorBorder);
+        if (editor_ && editor_->isReadOnly() && overlayView_.value("editable").toBool()
+            && overlayView_.value("viewContext").toObject().value("canEdit").toBool())
+            style += QStringLiteral("QFrame#typelay-overlay QPlainTextEdit#typelay-editor:hover { border-color:%1; }").arg(border);
+        style += QStringLiteral("QFrame#typelay-overlay QPlainTextEdit#typelay-editor:focus { border-color:%1; }").arg(accent);
         if (card_->styleSheet() != style) card_->setStyleSheet(style);
     }
     void refreshSystemTheme() {
@@ -1209,7 +1215,8 @@ private:
         overlayTarget_ = target;
         overlaySourceProvider_ = sessionProvider(target->field) ? target->provider : QPointer<QObject>();
         auto *layout = new QVBoxLayout(frame);
-        layout->setContentsMargins(12, 8, 12, 8);
+        layout->setContentsMargins(12, 10, 12, 8);
+        layout->setSpacing(8);
         auto button = [&](QWidget *parent, QBoxLayout *box, const QString &label, const char *operation) {
             auto *value = new QPushButton(label, parent);
             value->setFocusPolicy(Qt::NoFocus);
@@ -1230,7 +1237,10 @@ private:
                 if (qstrcmp(operation, "menu") == 0) {
                     menu_->setVisible(!menu_->isVisible());
                 } else if (qstrcmp(operation, "expand") == 0) {
-                    expanded_ = !expanded_; ui("expand", expanded_);
+                    menu_->hide();
+                    expanded_ = !expanded_;
+                    value->setText(expanded_ ? QStringLiteral("缩小") : QStringLiteral("展开"));
+                    ui("expand", expanded_);
                 } else {
                     menu_->hide();
                     if (qstrcmp(operation, "copy") == 0) {
@@ -1246,9 +1256,19 @@ private:
         language_ = button(frame, header, QString(), "menu");
         language_->setObjectName(QStringLiteral("typelay-menu-trigger"));
         language_->setAccessibleName(QStringLiteral("语言与更多操作"));
+        language_->setToolTip(QStringLiteral("语言与更多操作"));
         status_ = new QLabel(frame);
         status_->setObjectName(QStringLiteral("typelay-status"));
+        status_->setWordWrap(true);
+        status_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
         header->addStretch(); header->addWidget(status_);
+        tools_ = new QWidget(frame);
+        auto *toolsLayout = new QHBoxLayout(tools_);
+        toolsLayout->setContentsMargins(0, 0, 0, 0);
+        toolsLayout->setSpacing(2);
+        button(tools_, toolsLayout, QStringLiteral("重译"), "regenerate");
+        button(tools_, toolsLayout, expanded_ ? QStringLiteral("缩小") : QStringLiteral("展开"), "expand");
+        header->addWidget(tools_);
         resume_ = button(frame, header, QStringLiteral("恢复"), "resume");
         resume_->setObjectName(QStringLiteral("typelay-resume"));
         resume_->hide();
@@ -1272,19 +1292,19 @@ private:
             else if (hint_) hint_->setText(QStringLiteral("译文超过 8192 字符限制，请缩短后再返回"));
         });
         footer_ = new QWidget(frame);
+        footer_->setObjectName(QStringLiteral("typelay-footer"));
         auto *footerLayout = new QHBoxLayout(footer_);
-        footerLayout->setContentsMargins(0, 0, 0, 0);
+        footerLayout->setContentsMargins(0, 6, 0, 0);
         hint_ = new QLabel(footer_);
         hint_->setObjectName(QStringLiteral("typelay-hint"));
+        hint_->setWordWrap(true);
         footerLayout->addWidget(hint_); footerLayout->addStretch();
-        button(footer_, footerLayout, QStringLiteral("重译"), "regenerate");
-        button(footer_, footerLayout, QStringLiteral("展开"), "expand");
         exit_ = button(footer_, footerLayout, QString(), "escape");
         layout->addWidget(footer_);
         menu_ = new QWidget(frame);
         menu_->setObjectName(QStringLiteral("typelay-menu"));
         auto *menuLayout = new QVBoxLayout(menu_);
-        menuLayout->setContentsMargins(0, 4, 0, 0);
+        menuLayout->setContentsMargins(0, 8, 0, 0);
         // Keep choices inside the source window without a popup/focus grab.
         // Direction changes still belong to the host's existing settings path.
         const QStringList codes{QStringLiteral("auto"), QStringLiteral("zh"), QStringLiteral("en")};
@@ -1367,6 +1387,12 @@ private:
                 }
                 editor_->setReadOnly(!editing);
                 editor_->setFocusPolicy(editing ? Qt::StrongFocus : Qt::NoFocus);
+                const bool editable = !isPaused && view.value("editable").toBool()
+                    && view.value("viewContext").toObject().value("canEdit").toBool();
+                const auto editHint = editing ? QStringLiteral("编辑译文")
+                    : editable ? QStringLiteral("点击译文以编辑") : QString();
+                editor_->setToolTip(editHint);
+                editor_->setAccessibleDescription(editHint);
                 const auto source = view.value("sourceLanguage").toString();
                 const auto destination = view.value("targetLanguage").toString();
                 const auto languageName = [](const QString &code) {
@@ -1380,7 +1406,8 @@ private:
                 status_->setText(isPaused ? QStringLiteral("已暂停") : view.value("status").toString());
                 refreshHint();
                 const bool capsule = isPaused || view.value("state").toString() == "IdleCapsule";
-                editor_->setVisible(!capsule); footer_->setVisible(!capsule); status_->setVisible(isPaused || !capsule);
+                editor_->setVisible(!capsule); footer_->setVisible(!capsule); tools_->setVisible(!capsule);
+                status_->setVisible(isPaused || !capsule);
                 language_->setVisible(!isPaused); resume_->setVisible(isPaused); resume_->setEnabled(!pendingResume_);
                 if (isPaused) menu_->hide();
                 arrangeOverlay();
@@ -1698,7 +1725,7 @@ private:
     QPointer<QLabel> hint_, status_;
     QPointer<QPushButton> language_, swap_, resume_, exit_;
     QPointer<QButtonGroup> sourceLanguages_, targetLanguages_;
-    QPointer<QWidget> footer_, menu_;
+    QPointer<QWidget> footer_, menu_, tools_;
     Target *overlayTarget_ = nullptr;
     qint64 overlayUntil_ = 0, overlayRevision_ = 0;
     QJsonValue overlayGeneration_;

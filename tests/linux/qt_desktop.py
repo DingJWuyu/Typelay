@@ -463,17 +463,19 @@ def run_qt(
                             "production settings did not persist the enable switch",
                         )
                     if theme is not None:
-                        combo = wait_for(
-                            lambda: named(host_pid, "设置：翻译浮层主题"),
-                            "real overlay-theme combo was not accessible",
+                        label = {"system": "跟随系统", "light": "浅色", "dark": "深色"}[theme]
+                        option = wait_for(
+                            lambda: named(host_pid, "设置：翻译浮层主题：" + label),
+                            "real overlay-theme radio was not accessible",
                         )
-                        theme_index = ("system", "light", "dark").index(theme)
-                        assert Atspi.Selection.select_child(
-                            combo.get_selection_iface(), theme_index
-                        )
+                        assert option.get_role() == Atspi.Role.RADIO_BUTTON
+                        assert option.get_state_set().contains(Atspi.StateType.FOCUSABLE)
+                        assert Atspi.Component.grab_focus(option.get_component_iface())
+                        key("space")
                         wait_for(
-                            lambda: json.loads(paths.settings.read_text()).get("Theme") == theme,
-                            "production settings did not persist the selected overlay theme",
+                            lambda: json.loads(paths.settings.read_text()).get("Theme") == theme
+                            and option.get_state_set().contains(Atspi.StateType.CHECKED),
+                            "production settings did not select and persist the overlay theme",
                         )
                     if session_keys is not None:
                         select_settings_page(host_pid, "快捷键")
@@ -839,6 +841,25 @@ def run_qt(
                 original = "Please send me the latest report."
                 candidate = enter_source(original)
                 initial_application = state()
+                # Inspect the real child widgets, not the stylesheet: the
+                # always-visible language/more control stays above the retained
+                # QPlainTextEdit, within the existing compact geometry policy.
+                overlay_bounds = initial_application["overlayGeometry"]
+                editor_bounds = initial_application["editorGeometry"]
+                more_control = initial_application["overlayControls"]["typelay-menu-trigger"]
+                more_bounds = more_control["geometry"]
+                assert more_control["visible"] and more_control["enabled"]
+                assert not initial_application["overlayMenuVisible"]
+                assert 390 <= overlay_bounds["width"] <= 520
+                assert editor_bounds["height"] == 100
+                assert more_bounds["y"] + more_bounds["height"] <= editor_bounds["y"]
+                for bounds in (editor_bounds, more_bounds):
+                    assert bounds["width"] > 0 and bounds["height"] > 0
+                    assert overlay_bounds["x"] <= bounds["x"]
+                    assert (
+                        bounds["x"] + bounds["width"]
+                        <= overlay_bounds["x"] + overlay_bounds["width"]
+                    )
                 # The sparse desktop fixture omits Theme. SettingsStore applies
                 # UserSettings' default on load without rewriting the file.
                 original_theme = json.loads(Paths(arguments.package).settings.read_text()).get(

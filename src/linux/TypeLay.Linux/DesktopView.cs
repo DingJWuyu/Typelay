@@ -59,8 +59,7 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
     public void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null, SessionViewContext? context = null)
     {
         var presentation = Presentation.From(session.State, canAccept, session.Preview.Length > 0,
-            shortcuts: context?.Bindings,
-            canEdit: context?.CanEdit == true && session.CanBeginEdit && session.Candidate.Length > 0);
+            shortcuts: context?.Bindings);
         if (!presentation.Visible || session.Current is not { } source)
         {
             HideQuietly();

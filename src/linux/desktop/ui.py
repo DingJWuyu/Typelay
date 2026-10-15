@@ -713,6 +713,17 @@ class Settings:
             .typelay-settings switch:focus, .typelay-settings .theme-option:focus {
                 outline: 2px solid #2365d8; outline-offset: -2px;
             }
+            .typelay-settings switch {
+                min-width: 44px; min-height: 24px; padding: 10px 14px;
+                border: 0; border-radius: 24px; background-clip: content-box;
+                background-image: none; background-color: #b5b6bc; box-shadow: none;
+            }
+            .typelay-settings switch:checked { background-color: #2563db; }
+            .typelay-settings switch slider {
+                min-width: 16px; min-height: 16px; margin: 3px 2px;
+                border: 0; border-radius: 50%; background-image: none;
+                background-color: #ffffff; box-shadow: none;
+            }
             .typelay-settings .settings-page, .typelay-settings .settings-page viewport {
                 background-color: #ffffff; color: #222327;
             }
@@ -729,8 +740,14 @@ class Settings:
             }
             .typelay-settings .theme-option:checked { border-color: #2365d8; }
             .typelay-settings .theme-preview { border: 1px solid #e6e6e9; border-radius: 5px; }
-            .typelay-settings .theme-light { background-color: #f4f4f6; color: #42434b; padding: 8px; }
-            .typelay-settings .theme-dark { background-color: #292a2f; color: #e7e7ee; padding: 8px; }
+            .typelay-settings .theme-light { background-color: #f4f4f6; }
+            .typelay-settings .theme-dark { background-color: #292a2f; }
+            .typelay-settings .theme-mini { border: 1px solid #8d8e92; border-radius: 5px; }
+            .typelay-settings .theme-mini-light { background-color: #ffffff; }
+            .typelay-settings .theme-mini-dark { background-color: #35363d; }
+            .typelay-settings .theme-preview .theme-line { background-color: #858894; min-height: 3px; border: 0; }
+            .typelay-settings .theme-preview-light .theme-line { background-color: #656872; }
+            .typelay-settings .theme-preview-dark .theme-line { background-color: #b8bac4; }
             .typelay-settings.settings-dark { background-color: #25262a; color: #f3f3f5; }
             .typelay-settings.settings-dark .settings-sidebar { background-color: #202125; border-color: #3b3c43; }
             .typelay-settings.settings-dark .settings-navigation row { color: #b5b5bf; }
@@ -778,6 +795,8 @@ class Settings:
         self.status.set_margin_top(12)
         outer.pack_start(self.status, False, False, 0)
         self.tray_notice = Gtk.Label(xalign=0)
+        self.tray_notice.get_accessible().set_name("托盘状态")
+        self.tray_notice.get_style_context().add_class("dim-label")
         self.tray_notice.set_line_wrap(True)
         self.tray_notice.set_max_width_chars(48)
         self.tray_notice.set_no_show_all(True)
@@ -857,13 +876,38 @@ class Settings:
                     option.get_accessible().set_name("设置：翻译浮层主题：" + title)
                     option.get_accessible().set_description("即时保存，仅改变翻译浮层")
                     card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-                    preview_box = Gtk.Box(homogeneous=True)
+                    preview_box = Gtk.Overlay()
+                    preview_box.set_size_request(-1, 72)
                     preview_box.get_style_context().add_class("theme-preview")
+                    preview_box.get_style_context().add_class("theme-preview-" + identity)
+                    background = Gtk.Box(homogeneous=True)
+                    miniature = Gtk.Overlay()
+                    miniature.set_margin_start(10)
+                    miniature.set_margin_end(10)
+                    miniature.set_margin_top(12)
+                    miniature.set_margin_bottom(12)
+                    miniature.get_style_context().add_class("theme-mini")
+                    surface = Gtk.Box(homogeneous=True)
                     for shade in ("light", "dark") if identity == "system" else (identity,):
-                        sample = Gtk.Label(label="Aa\n译文", xalign=0)
-                        sample.set_size_request(-1, 62)
+                        sample = Gtk.Box()
                         sample.get_style_context().add_class("theme-" + shade)
-                        preview_box.pack_start(sample, True, True, 0)
+                        background.pack_start(sample, True, True, 0)
+                        face = Gtk.Box()
+                        face.get_style_context().add_class("theme-mini-" + shade)
+                        surface.pack_start(face, True, True, 0)
+                    preview_box.add(background)
+                    miniature.add(surface)
+                    lines = Gtk.Grid(column_homogeneous=True, row_spacing=4)
+                    lines.set_margin_start(8)
+                    lines.set_margin_end(8)
+                    lines.set_valign(Gtk.Align.CENTER)
+                    lines.attach(Gtk.Box(), 9, 0, 1, 1)
+                    for line_row, span in enumerate((3, 8, 5)):
+                        line = Gtk.Separator()
+                        line.get_style_context().add_class("theme-line")
+                        lines.attach(line, 0, line_row, span, 1)
+                    miniature.add_overlay(lines)
+                    preview_box.add_overlay(miniature)
                     card.pack_start(preview_box, False, False, 0)
                     card.pack_start(Gtk.Label(label=title, xalign=0), False, False, 0)
                     option.add(card)
@@ -1105,7 +1149,17 @@ class Settings:
         self.render_footer()
 
     def render_guidance(self, value):
-        self.mode_description.set_text(value["modeDescription"])
+        saved = self.value
+        if saved and saved["mode"] == "OnDemand":
+            summary = f"按 {saved['wakeShortcut']} 唤醒当前输入框翻译。"
+        else:
+            summary = "聚焦受支持的输入框后自动翻译，由你决定是否接受。"
+        if saved and not saved["enabled"]:
+            summary = "已暂停；启用后，" + summary
+        self.mode_description.set_text(summary)
+        self.mode_description.set_tooltip_text(value["modeDescription"])
+        self.mode_description.get_accessible().set_description(value["modeDescription"])
+        self.controls["mode"].set_tooltip_text(value["modeDescription"])
         self.acceptance_description.set_text(value["acceptanceDescription"])
 
     def configure(self, value):
@@ -1378,12 +1432,16 @@ class Settings:
 
     def report_tray(self, available, connected):
         if connected:
-            message = ""
+            message, detail = "", ""
         elif available:
-            message = "未连接托盘面板；可从应用菜单打开设置。Waybar 需启用 tray 模块。"
+            message = "托盘未连接，可从应用菜单打开设置。"
+            detail = "未连接托盘面板；可从应用菜单打开设置。Waybar 需启用 tray 模块。"
         else:
-            message = "托盘组件未安装：请安装 libayatana-appindicator。设置和翻译仍可使用。"
+            message = "托盘未安装，设置和翻译仍可使用。"
+            detail = "托盘组件未安装：请安装 libayatana-appindicator。设置和翻译仍可使用。"
         self.tray_notice.set_text(message)
+        self.tray_notice.set_tooltip_text(detail)
+        self.tray_notice.get_accessible().set_description(detail)
         self.tray_notice.set_visible(bool(message))
 
     def show(self):
