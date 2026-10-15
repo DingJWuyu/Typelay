@@ -50,16 +50,20 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
               inputClicked = event.isTrusted && event.target === document.getElementById("query");
             });
             function reportFocus() {
+              const input = document.getElementById("query");
+              const bounds = input.getBoundingClientRect();
+              const inputReady = bounds.width > 0 && bounds.height > 0 &&
+                document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2) === input;
               const pageFocused = document.hasFocus();
-              const inputFocused = document.activeElement === document.getElementById("query");
+              const inputFocused = document.activeElement === input;
               const title = "{{title}} " + (pageFocused && inputFocused ? "focused" : "unfocused") +
-                " page=" + pageFocused + " input=" + inputFocused + " click=" + inputClicked;
+                " ready=" + inputReady + " page=" + pageFocused + " input=" + inputFocused + " click=" + inputClicked;
               if (document.title !== title) document.title = title;
               requestAnimationFrame(reportFocus);
             }
             // Sample live state without changing focus or enabling UIA, rather
             // than retaining whichever focus event happened to run last.
-            reportFocus();
+            requestAnimationFrame(reportFocus);
             </script>
             """, TestContext.Current.CancellationToken);
             var start = new ProcessStartInfo(chrome!) { UseShellExecute = false, RedirectStandardError = true };
@@ -105,13 +109,13 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
                     window = pages[0].Handle;
                     if (Native.GetForegroundWindow() != window)
                         Native.SetForegroundWindow(window);
-                    if (Native.GetForegroundWindow() == window && !clicked)
+                    if (pages[0].InputReady && Native.GetForegroundWindow() == window && !clicked)
                     {
                         var geometry = windows.ClickPageInput(window);
                         clicked = true;
                         output.WriteLine($"Clicked owned page input: dpi={geometry.Dpi}; viewportWidth={geometry.Width}; viewportHeight={geometry.Height}");
                     }
-                    if (Native.GetForegroundWindow() == window && pages[0].Focused)
+                    if (clicked && Native.GetForegroundWindow() == window && pages[0].Focused)
                         break;
                 }
                 await Task.Delay(40, deadline.Token);
@@ -124,7 +128,7 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
                 + $"domFocusConfirmed={ready.Any(candidate => candidate.Handle == window && candidate.Focused)}; "
                 + $"inputClicked={clicked}; "
                 + $"launcherExited={browser.HasExited}");
-            bool fixtureReady = window != 0 && Native.GetForegroundWindow() == window
+            bool fixtureReady = clicked && window != 0 && Native.GetForegroundWindow() == window
                 && ready.Any(candidate => candidate.Handle == window && candidate.Focused);
             Assert.True(fixtureReady,
                 "Browser fixture startup failed: the owned local page and DOM input focus were not established; no input capture was attempted.");

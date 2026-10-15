@@ -3591,6 +3591,12 @@ def run(arguments):
                 )
                 trial = settings_control(next_step_label)
                 calibrate_settings_scroll(trial)
+                # Restart does not retain the user's per-client recovery confirmation.
+                activate_scrolled_setting("我已记下原输入法的启动方式，并知道如何恢复")
+                wait_for(
+                    lambda: any(a["id"] == "Connect" for a in desktop_row()["actions"]),
+                    "restored client still requires input-method recovery confirmation",
+                )
 
                 # One owned, ordinary GTK ELF registered in this isolated HOME.
                 # Exercise the real selector and guardian, never a desktop-file

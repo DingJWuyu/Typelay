@@ -32,11 +32,11 @@ internal sealed class BrowserWindows
         _processes.Add(owned.Id, owned);
     }
 
-    public (nint Handle, bool Page, bool Focused, string Title)[] Read()
+    public (nint Handle, bool Page, bool InputReady, bool Focused, string Title)[] Read()
     {
         Discover();
         TotalWindowCount = 0;
-        var windows = new List<(nint, bool, bool, string)>();
+        var windows = new List<(nint, bool, bool, bool, string)>();
         EnumWindows((window, _) =>
         {
             Native.GetWindowThreadProcessId(window, out uint processId);
@@ -48,6 +48,7 @@ internal sealed class BrowserWindows
             var title = new StringBuilder(512);
             GetWindowTextW(window, title, title.Capacity);
             windows.Add((window, title.ToString().Contains(_title, StringComparison.Ordinal),
+                title.ToString().Contains(" ready=true ", StringComparison.Ordinal),
                 title.ToString().Contains(_title + " focused", StringComparison.Ordinal), title.ToString()));
             return true;
         }, 0);
@@ -157,7 +158,7 @@ internal sealed class BrowserWindows
 
     public (uint Dpi, int Width, int Height) ClickPageInput(nint window)
     {
-        Assert.Contains(Read(), candidate => candidate.Handle == window && candidate.Page);
+        Assert.Contains(Read(), candidate => candidate.Handle == window && candidate.Page && candidate.InputReady);
         Assert.Equal(window, Native.GetForegroundWindow());
         // The fixture centers its input in the renderer viewport. Read its HWND
         // bounds in physical pixels, not CSS pixels or a guessed toolbar offset.
