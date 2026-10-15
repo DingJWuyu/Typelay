@@ -1,11 +1,17 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Automation.Peers;
 using System.Windows.Automation.Provider;
 using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using TypeLay.App;
+using TypeLay.Core;
 using TypeLay.Runtime;
 using Xunit;
 
@@ -14,8 +20,101 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class QuickPanelRenderingTests(WpfDesktopFixture desktop)
 {
+    [Fact]
+    public Task ModeChoicesRenderWithoutSavingAndExposeThePersistedSelection() => desktop.RunAsync(async () =>
+    {
+        using var fixture = new PanelFixture();
+        fixture.Settings.Update(fixture.Settings.Value with
+        {
+            Mode = WorkMode.OnDemand
+        });
+        string persisted = File.ReadAllText(fixture.Path);
+        int changes = 0;
+        fixture.Settings.Changed += () => changes++;
+        using var blocked = new FileStream(fixture.Path + ".tmp", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        await fixture.FailModelStartAsync();
+        fixture.Panel.OpenAtTray();
+        foreach (string theme in new[] { "light", "dark" })
+        {
+            UiTheme.Apply(theme);
+            fixture.Panel.UpdateLayout();
+            Assert.Equal(346, fixture.Panel.ActualWidth);
+            Assert.False(ModeSelection(fixture.Panel, "自动").IsSelected);
+            Assert.True(ModeSelection(fixture.Panel, "按需").IsSelected);
+            foreach (var choice in Descendants(fixture.Panel).OfType<RadioButton>())
+            {
+                Assert.True(choice.IsVisible);
+                Assert.InRange(choice.ActualHeight, 34, 42);
+                var label = Assert.Single(Descendants(choice).OfType<TextBlock>());
+                Assert.Equal(choice.Content, label.Text);
+                Assert.True(label.ActualWidth >= label.DesiredSize.Width);
+                Assert.True(label.ActualHeight >= label.DesiredSize.Height);
+            }
+            AssertNoSaveError(fixture.Panel);
+            Render(fixture.Panel, $"quick-panel-{theme}.png");
+        }
+        Assert.Equal(0, changes);
+        Assert.Equal(persisted, File.ReadAllText(fixture.Path));
+    });
+
+    [Fact]
+    public Task ModeSelectionKeepsKeyboardFocusThroughSaveFailureAndRetry() => desktop.RunAsync(async () =>
+    {
+        using var fixture = new PanelFixture();
+        fixture.Panel.OpenAtTray();
+        fixture.Panel.UpdateLayout();
+        int changes = 0;
+        fixture.Settings.Changed += () => changes++;
+        Assert.True(ModeSelection(fixture.Panel, "自动").IsSelected);
+        ModeSelection(fixture.Panel, "按需").Select();
+        Assert.Equal(WorkMode.OnDemand, new SettingsStore(fixture.Path).Value.Mode);
+        Assert.True(ModeSelection(fixture.Panel, "按需").IsSelected);
+        Assert.Equal(1, changes);
+        ModeSelection(fixture.Panel, "按需").Select();
+        Assert.Equal(1, changes);
+
+        // Initial focus is setup only. Every subsequent key must use the focus
+        // retained by the actual panel after its save/refresh path.
+        Assert.True(ModeChoice(fixture.Panel, "自动").Focus());
+        await SendModeKey(fixture.Panel, "自动", 0x20);
+        Assert.Equal(WorkMode.Automatic, new SettingsStore(fixture.Path).Value.Mode);
+        Assert.True(ModeChoice(fixture.Panel, "自动").IsKeyboardFocused);
+        Assert.Equal(2, changes);
+        await SendModeKey(fixture.Panel, "自动", 0x27);
+        Assert.Equal(WorkMode.OnDemand, new SettingsStore(fixture.Path).Value.Mode);
+        Assert.True(ModeChoice(fixture.Panel, "按需").IsKeyboardFocused);
+        Assert.Equal(3, changes);
+        using (var blocked = new FileStream(fixture.Path + ".tmp", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            await SendModeKey(fixture.Panel, "按需", 0x25);
+            Assert.Equal(WorkMode.OnDemand, new SettingsStore(fixture.Path).Value.Mode);
+            Assert.True(ModeSelection(fixture.Panel, "按需").IsSelected);
+            Assert.False(ModeSelection(fixture.Panel, "自动").IsSelected);
+            Assert.True(ModeChoice(fixture.Panel, "自动").IsKeyboardFocused);
+            Assert.Equal(3, changes);
+            AssertSaveError(fixture.Panel);
+        }
+        await SendModeKey(fixture.Panel, "自动", 0x20);
+        Assert.Equal(WorkMode.Automatic, new SettingsStore(fixture.Path).Value.Mode);
+        Assert.True(ModeSelection(fixture.Panel, "自动").IsSelected);
+        Assert.True(ModeChoice(fixture.Panel, "自动").IsKeyboardFocused);
+        Assert.Equal(4, changes);
+        AssertNoSaveError(fixture.Panel);
+        using (var blocked = new FileStream(fixture.Path + ".tmp", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            await SendModeKey(fixture.Panel, "自动", 0x20);
+            ModeSelection(fixture.Panel, "自动").Select();
+            AssertNoSaveError(fixture.Panel);
+            Assert.Equal(4, changes);
+        }
+        Assert.True(fixture.Panel.IsVisible);
+        Assert.Equal(0, fixture.SettingsOpened);
+        Assert.Equal(0, fixture.QuitRequested);
+    });
+
     [Theory]
     [InlineData("enabled")]
+    [InlineData("mode")]
     [InlineData("source")]
     [InlineData("target")]
     [InlineData("swap")]
@@ -47,6 +146,7 @@ public sealed class QuickPanelRenderingTests(WpfDesktopFixture desktop)
         AssertNoSaveError(fixture.Panel);
         var saved = new SettingsStore(fixture.Path).Value;
         Assert.Equal(setting != "enabled", saved.Enabled);
+        Assert.Equal(setting == "mode" ? WorkMode.OnDemand : WorkMode.Automatic, saved.Mode);
         Assert.Equal(setting is "source" or "swap" ? "en" : "zh", saved.Source);
         Assert.Equal(setting is "target" or "swap" ? "zh" : "en", saved.Target);
     });
@@ -124,6 +224,10 @@ public sealed class QuickPanelRenderingTests(WpfDesktopFixture desktop)
             var peer = Assert.IsType<CheckBoxAutomationPeer>(UIElementAutomationPeer.CreatePeerForElement(toggle));
             Assert.IsAssignableFrom<IToggleProvider>(peer.GetPattern(PatternInterface.Toggle)).Toggle();
         }
+        else if (setting == "mode")
+        {
+            ModeSelection(panel, "按需").Select();
+        }
         else if (setting == "swap")
         {
             Descendants(panel).OfType<Button>().Single(button => Equals(button.Content, "⇄"))
@@ -136,10 +240,60 @@ public sealed class QuickPanelRenderingTests(WpfDesktopFixture desktop)
         }
     }
 
+    private static RadioButton ModeChoice(QuickPanel panel, string name) => Descendants(panel).OfType<RadioButton>()
+        .Single(control => AutomationProperties.GetName(control) == name);
+
+    private static ISelectionItemProvider ModeSelection(QuickPanel panel, string name)
+    {
+        panel.UpdateLayout();
+        var peer = Assert.IsType<RadioButtonAutomationPeer>(UIElementAutomationPeer.CreatePeerForElement(ModeChoice(panel, name)));
+        Assert.Equal(name, peer.GetName());
+        Assert.Equal(AutomationControlType.RadioButton, peer.GetAutomationControlType());
+        Assert.True(peer.IsKeyboardFocusable());
+        return Assert.IsAssignableFrom<ISelectionItemProvider>(peer.GetPattern(PatternInterface.SelectionItem));
+    }
+
+    private static async Task SendModeKey(QuickPanel panel, string focused, ushort key)
+    {
+        Assert.Equal(new WindowInteropHelper(panel).Handle, Native.GetForegroundWindow());
+        Assert.True(ModeChoice(panel, focused).IsKeyboardFocused);
+        Assert.Equal(ModifierKeys.None, Keyboard.Modifiers);
+        var received = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        void KeyReleased(object sender, KeyEventArgs args)
+        {
+            if (KeyInterop.VirtualKeyFromKey(args.Key) == key)
+                received.TrySetResult();
+        }
+        panel.AddHandler(Keyboard.KeyUpEvent, new KeyEventHandler(KeyReleased), handledEventsToo: true);
+        try
+        {
+            KeyboardInput[] input = [new() { Type = 1, Key = key }, new() { Type = 1, Key = key, Flags = 2 }];
+            uint sent = SendInput(2, input, Marshal.SizeOf<KeyboardInput>());
+            if (sent == 1)
+                SendInput(1, [input[1]], Marshal.SizeOf<KeyboardInput>());
+            Assert.Equal(2u, sent);
+            await received.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await panel.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+        }
+        finally { panel.RemoveHandler(Keyboard.KeyUpEvent, new KeyEventHandler(KeyReleased)); }
+    }
+
+    [StructLayout(LayoutKind.Explicit, Size = 40)]
+    private struct KeyboardInput
+    {
+        [FieldOffset(0)] public uint Type;
+        [FieldOffset(8)] public ushort Key;
+        [FieldOffset(12)] public uint Flags;
+    }
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint count, KeyboardInput[] input, int size);
+
     private static void AssertAcknowledgedControls(QuickPanel panel, bool enabled, string source, string target)
     {
         panel.UpdateLayout();
         Assert.Equal(enabled, Descendants(panel).OfType<CheckBox>().Single().IsChecked);
+        Assert.True(Descendants(panel).OfType<RadioButton>().Single(control => Equals(control.Content, "自动")).IsChecked);
+        Assert.False(Descendants(panel).OfType<RadioButton>().Single(control => Equals(control.Content, "按需")).IsChecked);
         var languages = Descendants(panel).OfType<ComboBox>().ToArray();
         Assert.Equal(source, languages[0].SelectedItem?.ToString());
         Assert.Equal(target, languages[1].SelectedItem?.ToString());

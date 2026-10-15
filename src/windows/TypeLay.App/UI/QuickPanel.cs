@@ -1,7 +1,11 @@
 using TypeLay.Runtime;
+using TypeLay.Core;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Effects;
@@ -14,6 +18,7 @@ internal sealed class QuickPanel : Window
     private readonly SessionController _session;
     private readonly Action _showSettings, _quit;
     private readonly StackPanel _body = new();
+    private readonly List<RadioButton> _modeChoices = [];
     private bool _saveFailed;
     public QuickPanel(SettingsStore settings, ModelClient model, SessionController session, Action showSettings, Action quit)
     {
@@ -32,6 +37,7 @@ internal sealed class QuickPanel : Window
         Topmost = true;
         ShowInTaskbar = false;
         FontFamily = new("Segoe UI");
+        Resources.MergedDictionaries.Add(UiTheme.QuickPanelResources());
         var outer = UiTheme.Border(_body, 18);
         outer.Margin = new(12);
         outer.Effect = new DropShadowEffect { BlurRadius = 24, ShadowDepth = 5, Opacity = .18 };
@@ -93,7 +99,10 @@ internal sealed class QuickPanel : Window
             Dispatcher.BeginInvoke(new Action(Refresh));
             return;
         }
+        string? focusedMode = Keyboard.FocusedElement is RadioButton focused && _modeChoices.Contains(focused)
+            ? AutomationProperties.GetName(focused) : null;
         _body.Children.Clear();
+        _modeChoices.Clear();
         var header = new Grid { Height = 60, Margin = new(15, 0, 15, 0) };
         header.ColumnDefinitions.Add(new()
         {
@@ -114,7 +123,7 @@ internal sealed class QuickPanel : Window
         header.Children.Add(logo);
         var title = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         title.Children.Add(UiTheme.Text("TypeLay", 14, bold: true));
-        var sub = UiTheme.Text(_settings.Value.Enabled ? "已启用" : "已暂停", 10, true);
+        var sub = UiTheme.Text(_settings.Value.Enabled ? "已启用" : "已暂停", 12, true);
         sub.Margin = new(0, 2, 0, 0);
         title.Children.Add(sub);
         Grid.SetColumn(title, 1);
@@ -125,8 +134,44 @@ internal sealed class QuickPanel : Window
         var headBorder = UiTheme.Border(header, 0);
         headBorder.BorderThickness = new(0, 0, 0, 1);
         _body.Children.Add(headBorder);
+        var modes = new StackPanel { Margin = new(14, 13, 14, 0) };
+        var modeLabel = UiTheme.Text("工作模式", 12, true);
+        modeLabel.Margin = new(0, 0, 0, 7);
+        modes.Children.Add(modeLabel);
+        var choices = new UniformGrid { Columns = 2 };
+        choices.PreviewKeyDown += (_, e) =>
+        {
+            if (Keyboard.Modifiers != ModifierKeys.None || Keyboard.FocusedElement is not RadioButton focusedChoice)
+                return;
+            int step = e.Key is Key.Right or Key.Down ? 1 : e.Key is Key.Left or Key.Up ? -1 : 0;
+            int index = _modeChoices.IndexOf(focusedChoice);
+            if (step == 0 || index < 0)
+                return;
+            e.Handled = true;
+            var next = _modeChoices[(index + step + _modeChoices.Count) % _modeChoices.Count];
+            // Native Space, automation and arrows all select through Checked.
+            if (next.Focus())
+                next.IsChecked = true;
+        };
+        foreach (var (mode, text) in new[] { (WorkMode.Automatic, "自动"), (WorkMode.OnDemand, "按需") })
+        {
+            var choice = new RadioButton
+            {
+                Content = text,
+                GroupName = "QuickPanelWorkMode",
+                IsChecked = _settings.Value.Mode == mode,
+                IsTabStop = _settings.Value.Mode == mode
+            };
+            choice.SetResourceReference(StyleProperty, "QuickPanelModeChoice");
+            AutomationProperties.SetName(choice, text);
+            choice.Checked += (_, _) => Save(_settings.Value with { Mode = mode });
+            _modeChoices.Add(choice);
+            choices.Children.Add(choice);
+        }
+        modes.Children.Add(UiTheme.Border(choices, 8, "Panel2", 3));
+        _body.Children.Add(modes);
         var languages = new StackPanel { Margin = new(14, 13, 14, 13) };
-        var label = UiTheme.Text("翻译方向", 10, true, true);
+        var label = UiTheme.Text("翻译方向", 12, true);
         label.Margin = new(0, 0, 0, 7);
         languages.Children.Add(label);
         var row = new Grid();
@@ -201,5 +246,7 @@ internal sealed class QuickPanel : Window
         quit.BorderThickness = new(0);
         actions.Children.Add(quit);
         _body.Children.Add(actions);
+        if (focusedMode is not null)
+            _modeChoices.Single(choice => AutomationProperties.GetName(choice) == focusedMode).Focus();
     }
 }

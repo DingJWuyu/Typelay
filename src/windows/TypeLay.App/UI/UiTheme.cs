@@ -101,6 +101,30 @@ internal static class UiTheme
       <Style TargetType="TextBox"><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="Background" Value="{DynamicResource Panel}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/><Setter Property="FontSize" Value="13"/></Style>
     </ResourceDictionary>
     """;
+    public static ResourceDictionary QuickPanelResources() => (ResourceDictionary)XamlReader.Parse("""
+    <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+      <Style x:Key="QuickPanelModeChoice" TargetType="RadioButton">
+        <Setter Property="Foreground" Value="{DynamicResource Muted}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="MinHeight" Value="34"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RadioButton">
+          <Border x:Name="segment" Background="Transparent" BorderBrush="Transparent" BorderThickness="2" CornerRadius="6" Padding="8,5">
+            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsChecked" Value="True">
+              <Setter TargetName="segment" Property="Background" Value="{DynamicResource Panel}"/>
+              <Setter Property="Foreground" Value="{DynamicResource Text}"/>
+              <Setter Property="FontWeight" Value="SemiBold"/>
+            </Trigger>
+            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="segment" Property="BorderBrush" Value="{DynamicResource Text}"/></Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
+      </Style>
+    </ResourceDictionary>
+    """);
     // Local aliases keep the settings surface neutral without recoloring the
     // overlay or quick panel. Dynamic colors still follow system theme changes.
     public static ResourceDictionary SettingsResources() => (ResourceDictionary)XamlReader.Parse("""
