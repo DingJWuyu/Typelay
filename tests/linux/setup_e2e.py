@@ -607,6 +607,7 @@ class ApplicationSupportTests(unittest.TestCase):
         newer = peer(stamp, False, False)
         rows = self.support.facts([newer, older])
         result = next(fact for fact in rows if fact["id"] == "desktop-text")
+        self.assertFalse(self.support.installed_application_view(rows)["canSelect"])
         self.assertEqual(result["reason"], "PreviewOnly")
         self.assertEqual(
             result["capabilities"], {"preview": True, "tabAccept": False, "directReplace": False}
@@ -729,6 +730,7 @@ class ApplicationSupportTests(unittest.TestCase):
         managed = self.home / "data/typelay/components/desktop-text"
         fact = next(row for row in self.support.facts() if row["id"] == "desktop-text")
         self.assertEqual(fact["state"], "NeedsInstall")
+        self.assertFalse(self.support.installed_application_view([fact])["canSelect"])
         self.assertIn("Install", fact["supportedActions"])
         self.assertNotIn("CheckComponent", fact["supportedActions"])
         self.assertFalse(managed.exists(), "discovery prepared the component")
@@ -750,6 +752,7 @@ class ApplicationSupportTests(unittest.TestCase):
         self.assertEqual(reopened.component_folder("desktop-text"), prepared)
         fact = next(row for row in reopened.facts() if row["id"] == "desktop-text")
         self.assertEqual(fact["state"], "AwaitingApproval")
+        self.assertTrue(reopened.installed_application_view([fact])["canSelect"])
         self.assertFalse(fact["capabilities"])
         self.assertNotIn("Connect", fact["supportedActions"])
         self.assertNotIn("Remove", fact["supportedActions"])
@@ -903,6 +906,10 @@ class ApplicationSupportTests(unittest.TestCase):
         self.assertEqual(fact["state"], "Error")
         self.assertEqual(fact["reason"], "ComponentMissing")
         self.assertFalse(fact["capabilities"])
+        self.support.application_result = "应用未能打开，请重新检查输入法与组件状态。"
+        view = self.support.installed_application_view([fact])
+        self.assertFalse(view["canSelect"])
+        self.assertEqual(view["result"], "应用未能打开，请重新检查输入法与组件状态。")
 
     def test_failed_component_update_preserves_previous_release(self):
         self.desktop_payload()

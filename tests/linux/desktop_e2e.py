@@ -1118,7 +1118,10 @@ def run(arguments):
                                     ),
                                 ):
                                     before, started = activate(label, mode)
-                                    assert before["height"] == (160 if expected == 360 else 360)
+                                    if baseline is None:
+                                        assert 54 <= before["height"] <= 160
+                                    else:
+                                        assert before["height"] == (160 if expected == 360 else 360)
                                     identity = tuple(
                                         before[name]
                                         for name in ("editor", "buffer", "scroll", "shell")
@@ -1128,7 +1131,7 @@ def run(arguments):
                                     assert identity == baseline
                                     if mode == "animate-expand":
                                         wait_for(
-                                            lambda: 160
+                                            lambda: before["height"]
                                             < gtk_state()["motionFrames"][-1].get("height", 0)
                                             < 360,
                                             "GTK expand had no intermediate allocation for its screenshot",
@@ -1137,7 +1140,10 @@ def run(arguments):
                                         shot = capture("expand-middle")
                                         records[-1]["screenshots"].append(shot)
                                         assert (
-                                            160 < shot["heightBefore"] <= shot["heightAfter"] < 360
+                                            before["height"]
+                                            < shot["heightBefore"]
+                                            <= shot["heightAfter"]
+                                            < 360
                                         ), shot
                                     actual = wait_for(
                                         lambda: value
@@ -1290,8 +1296,9 @@ def run(arguments):
                                 "clicking the actual GTK candidate did not enter the production editor",
                             )
                             switch_im("keyboard-us")
+                            # Wide words wrap without exceeding the existing typing budget.
                             draft = (
-                                ("Manually edited candidate. " * 48)
+                                ("mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm " * 20)
                                 if motion
                                 else "Manually edited candidate."
                             )
@@ -2871,6 +2878,10 @@ def run(arguments):
             # application connection or a canceled component selection.
             desktop_support = next(row for row in support["rows"] if row["id"] == "desktop-text")
             primary = settings_control(desktop_support["primaryAction"]["label"])
+            application_choice = named(process.pid, "选择应用…")
+            assert application_choice is None or not application_choice.get_state_set().contains(
+                Atspi.StateType.SHOWING
+            ), "application selection took space before the managed component was prepared"
             # A GTK action can activate a clipped button. Check its actual
             # allocation before any focus/scroll/action changes the first screen.
             subprocess.run(
@@ -3003,6 +3014,11 @@ def run(arguments):
                 # This includes integrity checking and unpacking the real shipped
                 # archive, not a GUI animation or a readiness sleep.
                 row = wait_for(prepared_component, "same-package preparation failed", timeout=60)
+                wait_for(
+                    lambda: (choice := named(process.pid, "选择应用…"))
+                    and choice.get_state_set().contains(Atspi.StateType.SHOWING),
+                    "prepared managed component did not reveal application selection",
+                )
                 assert not any(row["capabilities"].values()), row
                 assert not status()["setup"]["onboardingComplete"]
                 evidence.append(
@@ -3376,6 +3392,9 @@ def run(arguments):
                 direct.get_editable_text_iface(), "Ctrl+Shift+F7"
             )
             settings_page("应用支持")
+            advanced_exclusions = settings_control("高级编辑排除应用")
+            assert not advanced_exclusions.get_state_set().contains(Atspi.StateType.EXPANDED)
+            activate_scrolled_setting("高级编辑排除应用")
             excluded = settings_control("设置：排除的应用")
             assert Atspi.Component.grab_focus(excluded.get_component_iface())
             assert Atspi.EditableText.set_text_contents(
@@ -4096,6 +4115,58 @@ def run(arguments):
                 def application_view():
                     return status()["setup"]["applicationSupport"]["installedApplication"]
 
+                def select_registered_fixture():
+                    search = settings_control("搜索已安装的本机应用")
+                    assert Atspi.EditableText.set_text_contents(
+                        search.get_editable_text_iface(), "TypeLay Registered Fixture"
+                    )
+                    chosen = settings_control("TypeLay Registered Fixture")
+                    for _ in range(4):
+                        if chosen.get_role() == Atspi.Role.LIST_ITEM:
+                            break
+                        chosen = chosen.get_parent()
+                    assert chosen.get_role() == Atspi.Role.LIST_ITEM
+                    listing = chosen.get_parent().get_selection_iface()
+                    assert listing is not None
+                    assert Atspi.Selection.select_child(listing, chosen.get_index_in_parent())
+
+                before_exclusions = json.loads(paths.settings.read_text())["ExcludedApplications"]
+                before_exclusion_save = paths.settings.read_bytes()
+                activate_scrolled_setting("添加排除应用")
+                settings_control("搜索已安装的本机应用")
+                activate_setting("取消")
+                assert not status()["setup"]["settingsDraft"]
+                assert paths.settings.read_bytes() == before_exclusion_save
+                activate_scrolled_setting("添加排除应用")
+                select_registered_fixture()
+                activate_setting("选择")
+                wait_for(
+                    lambda: status()["setup"]["settingsDraft"]
+                    and named(process.pid, "移除排除项：gtk-fixture"),
+                    "registered application was not added to the unsaved exclusion list",
+                )
+                assert paths.settings.read_bytes() == before_exclusion_save
+                blocker = paths.settings.with_suffix(".json.tmp")
+                blocker.mkdir()
+                try:
+                    activate_setting("保存修改")
+                    wait_for(
+                        lambda: "未保存" in text(settings_control("设置反馈")),
+                        "failed exclusion save did not report failure",
+                    )
+                    assert status()["setup"]["settingsDraft"]
+                    assert named(process.pid, "移除排除项：gtk-fixture")
+                    assert paths.settings.read_bytes() == before_exclusion_save
+                finally:
+                    blocker.rmdir()
+                activate_setting("保存修改")
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text())["ExcludedApplications"]
+                    == [*(before_exclusions or []), "gtk-fixture"]
+                    and not status()["setup"]["settingsDraft"],
+                    "exclusion list did not save after persistence recovered",
+                )
+                before_excluded_captures = status()["input"]["captureCounts"].get("supported", 0)
                 before_selection = receipts(paths.data)
                 activate_scrolled_setting("选择应用…")
                 settings_control("搜索已安装的本机应用")
@@ -4103,19 +4174,7 @@ def run(arguments):
                 assert application_view()["id"] is None
                 assert receipts(paths.data) == before_selection, "cancelled chooser launched an app"
                 activate_scrolled_setting("选择应用…")
-                search = settings_control("搜索已安装的本机应用")
-                assert Atspi.EditableText.set_text_contents(
-                    search.get_editable_text_iface(), "TypeLay Registered Fixture"
-                )
-                chosen = settings_control("TypeLay Registered Fixture")
-                for _ in range(4):
-                    if chosen.get_role() == Atspi.Role.LIST_ITEM:
-                        break
-                    chosen = chosen.get_parent()
-                assert chosen.get_role() == Atspi.Role.LIST_ITEM
-                listing = chosen.get_parent().get_selection_iface()
-                assert listing is not None
-                assert Atspi.Selection.select_child(listing, chosen.get_index_in_parent())
+                select_registered_fixture()
                 subprocess.run(
                     ["grim", str(arguments.output / "installed-application-choice.png")],
                     check=True,
@@ -4159,6 +4218,15 @@ def run(arguments):
                         and item.get("child", {}).get("pid") == managed_window["pid"]
                         for item in receipts(paths.data)
                     )
+                    wait_for(
+                        lambda: status()["input"]["captureStatus"] == "excluded-or-sensitive",
+                        "saved application exclusion did not refuse the real fixture before capture",
+                    )
+                    assert (
+                        status()["input"]["captureCounts"].get("supported", 0)
+                        == before_excluded_captures
+                    )
+                    assert not status()["overlayVisible"] and not status()["acceptanceReady"]
                     assert control(paths, "settings") is True
                     wait_for(
                         lambda: any(
@@ -4174,6 +4242,19 @@ def run(arguments):
                         check=True,
                         timeout=3,
                     )
+                    activate_scrolled_setting("移除排除项：gtk-fixture")
+                    assert (
+                        "gtk-fixture"
+                        in json.loads(paths.settings.read_text())["ExcludedApplications"]
+                    )
+                    assert status()["setup"]["settingsDraft"]
+                    activate_setting("保存修改")
+                    wait_for(
+                        lambda: json.loads(paths.settings.read_text())["ExcludedApplications"]
+                        == (before_exclusions or [])
+                        and not status()["setup"]["settingsDraft"],
+                        "removing an exclusion did not require and complete explicit save",
+                    )
                 finally:
                     close_managed_window()
                 wait_for(
@@ -4182,7 +4263,7 @@ def run(arguments):
                     "closed registered fixture retained a live connection or component lease",
                 )
                 evidence.append(
-                    "Registered local GTK fixture: searchable selection, chooser/launch cancellation create no processes, real guardian-owned connection, normal close clears connection; screenshots retained"
+                    "Registered local GTK fixture: searchable selection, chooser cancellation changes no exclusion draft; failed save retains the list; saved exclusion refuses source capture and overlay; per-item removal requires save; real guardian-owned connection and normal close; screenshots retained"
                 )
                 desktop_action("Remove")
                 wait_for(

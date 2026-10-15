@@ -313,10 +313,18 @@ async def desktop(paths, background, lock, tutorial=False):
         async def support_action(
             identity, action, directory=None, *, startup_id=None, desktop_id=None
         ):
-            if identity == "desktop-text" and action == "ListApplications":
-                from registered_applications import list_applications
+            if identity == "desktop-text" and action in (
+                "ListApplications",
+                "ListExclusionApplications",
+                "ResolveApplicationExclusion",
+            ):
+                from registered_applications import list_applications, resolve_exclusion
 
-                return await asyncio.to_thread(list_applications)
+                if action == "ResolveApplicationExclusion":
+                    return await asyncio.to_thread(resolve_exclusion, desktop_id)
+                return await asyncio.to_thread(
+                    list_applications, for_exclusion=action == "ListExclusionApplications"
+                )
             if identity == "desktop-text" and action in ("Connect", "Remove"):
                 await practice.end(practice.pid)
             await support.execute(

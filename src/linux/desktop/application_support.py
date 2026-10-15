@@ -39,6 +39,7 @@ class ApplicationSupport:
         self.desktop_component = DesktopComponent(paths)
         self.desktop_session = DesktopSession(paths)
         self.desktop_session_state = {"state": "unchecked"}
+        self.desktop_component_prepared = False
         self.refresh_revision = 0
         self.practice_launch = None
         self.selected_application = None
@@ -399,6 +400,7 @@ class ApplicationSupport:
         return {
             "id": selected["id"] if selected else None,
             "name": selected["name"] if selected else "尚未选择应用",
+            "canSelect": self.desktop_component_prepared,
             "canOpen": bool(
                 selected and selected.get("toolkit") and "Connect" in fact["supportedActions"]
             ),
@@ -569,6 +571,8 @@ class ApplicationSupport:
 
     def desktop_fact(self, connected=False):
         prepared = self.desktop_component.status()
+        # Reuse this display observation; explicit launches still revalidate.
+        self.desktop_component_prepared = prepared["state"] == "prepared"
         session = self.desktop_session_state
         state, reason = "NeedsInstall", "ComponentMissing"
         details = self.instructions("desktop-text")

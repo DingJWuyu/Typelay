@@ -11,7 +11,11 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 
-from registered_applications import list_applications, resolve_application  # noqa: E402
+from registered_applications import (  # noqa: E402
+    list_applications,
+    resolve_application,
+    resolve_exclusion,
+)
 
 
 class RegisteredApplicationTests(unittest.TestCase):
@@ -61,6 +65,23 @@ class RegisteredApplicationTests(unittest.TestCase):
         )
         return path.name
 
+    def test_exclusion_uses_real_executable_name_without_a_toolkit_requirement(self):
+        binary = self.home / "Editor.Bin"
+        subprocess.run(
+            ["gcc", "-x", "c", "-", "-o", binary],
+            input="int main(void) { return 0; }",
+            text=True,
+            check=True,
+        )
+        alias = self.home / "editor-launcher"
+        alias.symlink_to(binary)
+        identity = self.entry(f'"{alias}" %U', "Terminal=true\nPath=/tmp\n")
+        self.assertIn(
+            {"id": identity, "name": "Registered Fixture"},
+            list_applications(for_exclusion=True),
+        )
+        self.assertEqual(resolve_exclusion(identity), "editor.bin")
+
     def test_registered_quoted_arguments_and_zero_file_placeholder(self):
         identity = self.entry(f'"{self.binary}" "固定 two words" --literal=%%f %U --keep')
         application = resolve_application(identity)
@@ -107,11 +128,17 @@ class RegisteredApplicationTests(unittest.TestCase):
         script = self.home / "script"
         script.write_text("#!/bin/sh\nexit 0\n")
         script.chmod(0o700)
-        for command in (str(script), "/bin/sh -c true", "/usr/bin/env GTK_IM_MODULE=x /bin/true"):
+        for command in (
+            str(script),
+            "/bin/sh -c true",
+            "/usr/bin/env GTK_IM_MODULE=x /bin/true",
+            "/usr/bin/timeout 300 /bin/true",
+        ):
             with self.subTest(command=command):
                 identity = self.entry(command)
-                with self.assertRaises(ValueError):
-                    resolve_application(identity)
+                for resolve in (resolve_application, resolve_exclusion):
+                    with self.assertRaises(ValueError):
+                        resolve(identity)
 
     def test_paths_and_unregistered_ids_are_not_launch_authority(self):
         identity = self.entry(f'"{self.binary}"')

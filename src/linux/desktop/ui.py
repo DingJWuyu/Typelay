@@ -231,17 +231,17 @@ class ApplicationSupportPane:
         self.installed = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self.installed.set_no_show_all(True)
         self.box.pack_start(self.installed, False, False, 0)
-        application_line = Gtk.Box(spacing=8)
+        self.application_line = Gtk.Box(spacing=8)
         self.choose_application = Gtk.Button(label="选择应用…")
         self.choose_application.connect("clicked", lambda *_: self.pick_application())
-        application_line.pack_start(self.choose_application, False, False, 0)
+        self.application_line.pack_start(self.choose_application, False, False, 0)
         self.application_name = Gtk.Label(xalign=0)
         self.application_name.set_ellipsize(Pango.EllipsizeMode.END)
-        application_line.pack_start(self.application_name, True, True, 0)
+        self.application_line.pack_start(self.application_name, True, True, 0)
         self.open_application = Gtk.Button(label="通过 TypeLay 打开")
         self.open_application.connect("clicked", lambda *_: self.activate_application())
-        application_line.pack_start(self.open_application, False, False, 0)
-        self.installed.pack_start(application_line, False, False, 0)
+        self.application_line.pack_start(self.open_application, False, False, 0)
+        self.installed.pack_start(self.application_line, False, False, 0)
         self.application_result = self.note("", self.installed)
         self.state = self.note("")
         self.state.get_style_context().add_class("settings-section-title")
@@ -415,9 +415,11 @@ class ApplicationSupportPane:
             self.application_result.set_text(application["result"])
             self.choose_application.set_sensitive(not self.busy)
             self.open_application.set_sensitive(application["canOpen"] and not self.busy)
-            self.installed.show()
             for child in self.installed.get_children():
                 child.show_all()
+            self.application_line.set_visible(application["canSelect"])
+            self.application_result.set_visible(bool(application["result"]))
+            self.installed.set_visible(application["canSelect"] or bool(application["result"]))
         else:
             self.installed.hide()
         guidance = self.value.get("desktopGuidance")
@@ -457,14 +459,14 @@ class ApplicationSupportPane:
             self.secondary.show_all()
         self.selector.set_sensitive(not self.busy)
 
-    def pick_application(self):
+    def pick_application(self, *, for_exclusion=False):
         if self.busy:
             return
         self.busy = True
         self.action_revision += 1
         self.render_selected()
         dialog = Gtk.Dialog(
-            title="选择应用",
+            title="添加排除应用" if for_exclusion else "选择应用",
             transient_for=self.owner.window,
             modal=True,
             destroy_with_parent=True,
@@ -502,7 +504,9 @@ class ApplicationSupportPane:
                 self.busy = True
                 self.render_selected()
                 self.owner.tasks(
-                    self.execute(
+                    self.owner.add_excluded_application(identity)
+                    if for_exclusion
+                    else self.execute(
                         {"id": "desktop-text"}, {"id": "SelectApplication", "desktopId": identity}
                     )
                 )
@@ -515,7 +519,10 @@ class ApplicationSupportPane:
 
         async def load():
             try:
-                entries = await self.action_requested("desktop-text", "ListApplications")
+                entries = await self.action_requested(
+                    "desktop-text",
+                    "ListExclusionApplications" if for_exclusion else "ListApplications",
+                )
                 if not alive:
                     return
                 for entry in entries:
@@ -1118,28 +1125,48 @@ class Settings:
                 grid.attach(self.acceptance_description, 0, row, 2, 1)
                 row += 1
             next_rows[page] = row
-        exclusions_grid = Gtk.Grid(column_spacing=24, row_spacing=14)
-        label = Gtk.Label(label="排除的应用\n每行一个可执行文件名", xalign=0)
-        exclusions_grid.attach(label, 0, 0, 1, 1)
+        exclusions_grid = Gtk.Grid(column_spacing=24, row_spacing=10)
+        exclusions_grid.attach(Gtk.Label(label="排除的应用", xalign=0), 0, 0, 1, 1)
+        self.add_exclusion = Gtk.Button(label="添加应用…")
+        self.add_exclusion.get_accessible().set_name("添加排除应用")
+        self.add_exclusion.set_halign(Gtk.Align.END)
+        self.add_exclusion.set_sensitive(False)
+        self.add_exclusion.connect(
+            "clicked", lambda *_: self.application_support.pick_application(for_exclusion=True)
+        )
+        exclusions_grid.attach(self.add_exclusion, 1, 0, 1, 1)
+        self.exclusion_rows = Gtk.ListBox()
+        self.exclusion_rows.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.exclusion_rows.get_accessible().set_name("应用排除列表")
+        excluded_list = Gtk.ScrolledWindow()
+        excluded_list.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        excluded_list.set_shadow_type(Gtk.ShadowType.IN)
+        excluded_list.set_min_content_height(48)
+        excluded_list.set_max_content_height(180)
+        excluded_list.set_propagate_natural_height(True)
+        excluded_list.set_hexpand(True)
+        excluded_list.add(self.exclusion_rows)
+        exclusions_grid.attach(excluded_list, 0, 1, 2, 1)
         self.excluded = Gtk.TextView()
         self.excluded.get_accessible().set_name("设置：排除的应用")
         self.excluded.get_accessible().set_description("每行一个可执行文件名，保存后生效")
         self.excluded.set_sensitive(False)
         self.excluded.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
-        self.excluded.get_buffer().connect(
-            "changed", lambda *_: self.draft_changed("excludedApplications")
-        )
+        self.excluded.get_buffer().connect("changed", self.exclusions_changed)
         exclusions = Gtk.ScrolledWindow()
         exclusions.set_hexpand(True)
         exclusions.set_size_request(-1, 84)
         exclusions.add(self.excluded)
-        exclusions_grid.attach(exclusions, 1, 0, 1, 1)
+        advanced_exclusions = Gtk.Expander(label="高级编辑")
+        advanced_exclusions.get_accessible().set_name("高级编辑排除应用")
+        advanced_exclusions.add(exclusions)
+        exclusions_grid.attach(advanced_exclusions, 0, 2, 2, 1)
         note = Gtk.Label(
             label="密码、敏感字段及无法确认输入法状态的控件不会读取或替换。",
             xalign=0,
         )
         note.set_line_wrap(True)
-        exclusions_grid.attach(note, 0, 1, 2, 1)
+        exclusions_grid.attach(note, 0, 3, 2, 1)
         self.shortcut_scope = Gtk.Label(xalign=0)
         self.shortcut_scope.set_line_wrap(True)
         self.shortcut_scope.set_max_width_chars(48)
@@ -1266,6 +1293,8 @@ class Settings:
                 if isinstance(widget, Gtk.Entry):
                     widget.set_sensitive(True)
             self.excluded.set_sensitive(True)
+            self.add_exclusion.set_sensitive(True)
+            self.render_exclusions()
             self.render_draft()
         except (OSError, ValueError, EOFError, TimeoutError):
             self.draft_notice.set_text("无法加载设置操作，请重新打开设置后重试。")
@@ -1334,6 +1363,62 @@ class Settings:
             for line in buffer.get_text(*buffer.get_bounds(), True).splitlines()
             if line.strip()
         ]
+
+    def exclusions_changed(self, *_):
+        self.render_exclusions()
+        self.draft_changed("excludedApplications")
+
+    def render_exclusions(self):
+        for row in self.exclusion_rows.get_children():
+            row.destroy()
+        values = self.draft_value("excludedApplications")
+        for index, value in enumerate(values):
+            row = Gtk.Box(spacing=12)
+            row.set_border_width(8)
+            label = Gtk.Label(label=value, xalign=0)
+            label.set_ellipsize(Pango.EllipsizeMode.END)
+            label.set_max_width_chars(40)
+            label.set_tooltip_text(value)
+            row.pack_start(label, True, True, 0)
+            remove = Gtk.Button(label="移除")
+            remove.get_accessible().set_name("移除排除项：" + value)
+            remove.set_sensitive(self.draft_messages is not None)
+            remove.connect("clicked", lambda _, position=index: self.remove_exclusion(position))
+            row.pack_end(remove, False, False, 0)
+            self.exclusion_rows.add(row)
+        if not values:
+            label = Gtk.Label(label="未排除任何应用", xalign=0)
+            label.set_margin_start(12)
+            label.set_margin_top(12)
+            label.set_margin_bottom(12)
+            label.get_style_context().add_class("dim-label")
+            self.exclusion_rows.add(label)
+        self.exclusion_rows.show_all()
+
+    def remove_exclusion(self, index):
+        values = self.draft_value("excludedApplications")
+        del values[index]
+        self.excluded.get_buffer().set_text("\n".join(values))
+
+    async def add_excluded_application(self, identity):
+        self.add_exclusion.set_sensitive(False)
+        try:
+            name = await self.application_support.action_requested(
+                "desktop-text", "ResolveApplicationExclusion", desktop_id=identity
+            )
+            values = self.draft_value("excludedApplications")
+            if name.lower() not in (value.lower() for value in values):
+                self.excluded.get_buffer().set_text("\n".join([*values, name]))
+        except (OSError, ValueError, EOFError, TimeoutError) as error:
+            self.message.set_text(
+                str(error)
+                if isinstance(error, ValueError)
+                else "无法读取应用，请重试或在高级编辑中填写可执行文件名。"
+            )
+        finally:
+            self.add_exclusion.set_sensitive(self.draft_messages is not None)
+            self.application_support.busy = False
+            self.application_support.render_selected()
 
     def draft_changed(self, key):
         if self.configuring or self.value is None:

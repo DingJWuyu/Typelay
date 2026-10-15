@@ -507,7 +507,12 @@ static gboolean render(Target *target, JsonObject *data) {
     gint width = capsule ? 160 : CLAMP(gtk_widget_get_allocated_width(target->widget), 390, 520);
     width = MIN(width, MAX(160, gtk_widget_get_allocated_width(top) - 48));
     gtk_widget_set_size_request(overlay.card, width, -1);
-    PangoLayout *layout = gtk_widget_create_pango_layout(overlay.text, text_or_empty(value, "text"));
+    char *draft = editing && boolean(presentation, "editorOwnsText")
+        && overlay.target == target && overlay.popover == old_popover && overlay.text == old_editor
+        && tl_configuration_current(generation) && tl_view_context_matches(target, overlay.view)
+        ? candidate() : NULL;
+    PangoLayout *layout = gtk_widget_create_pango_layout(overlay.text, draft ? draft : text_or_empty(value, "text"));
+    g_free(draft);
     pango_layout_set_width(layout, MAX(1, width - 30) * PANGO_SCALE);
     pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
     gint height;

@@ -1253,6 +1253,13 @@ dialog p {
             </select>
           </label>
           <label>
+            接入组件
+            <select id="demoIntegration">
+              <option value="ready">已准备</option>
+              <option value="missing">尚未安装</option>
+            </select>
+          </label>
+          <label>
             应用连接
             <select id="demoConnection">
               <option value="connected">
@@ -1790,15 +1797,15 @@ dialog p {
               </div>
             </div>
             <div class="group">
-              <details class="details" id="exclusionsDetails" style="margin-top:0">
-                <summary>
-                  排除的应用
-                </summary>
+              <div class="setting-row">
+                <div class="setting-name">排除的应用</div>
+                <button class="button" id="addExclusion">添加应用…</button>
+              </div>
+              <div id="exclusionList" aria-label="应用排除列表"></div>
+              <details class="details" id="exclusionsDetails" style="margin-top:12px">
+                <summary>高级编辑</summary>
                 <div class="details-body">
-                  <label for="excludedApplications">
-                    每行一个可执行文件名。保存后，这些应用中不再显示 TypeLay。
-                  </label>
-                  <textarea id="excludedApplications" rows="3" spellcheck="false" placeholder="例如：terminal.exe"></textarea>
+                  <textarea id="excludedApplications" rows="3" spellcheck="false" aria-label="每行一个可执行文件名" placeholder="每行一个可执行文件名"></textarea>
                 </div>
               </details>
               <details class="details">
@@ -2008,6 +2015,7 @@ dialog p {
     service: 'running',
     connection: 'connected',
     platform: 'windows',
+    integration: 'ready',
     application: '',
     applicationLaunched: false,
     saveError: false,
@@ -2084,9 +2092,38 @@ dialog p {
     $('pageScroll').scrollTop = 0;
     renderDraft();
   }
+  function renderExclusions() {
+    const values = $('excludedApplications').value.split('\n').map(value => value.trim()).filter(Boolean);
+    $('exclusionList').replaceChildren();
+    if (!values.length) {
+      const empty = document.createElement('p');
+      empty.className = 'setting-description';
+      empty.textContent = '未排除任何应用';
+      $('exclusionList').append(empty);
+    }
+    values.forEach((value, index) => {
+      const row = document.createElement('div');
+      row.className = 'setting-row';
+      const name = document.createElement('span');
+      name.textContent = value;
+      const remove = document.createElement('button');
+      remove.className = 'button';
+      remove.textContent = '移除';
+      remove.setAttribute('aria-label', '移除排除项：' + value);
+      remove.onclick = () => {
+        values.splice(index, 1);
+        $('excludedApplications').value = values.join('\n');
+        draftMessage = '';
+        renderDraft();
+      };
+      row.append(name, remove);
+      $('exclusionList').append(row);
+    });
+  }
   function renderDraft() {
+    renderExclusions();
     const hasDraft = dirty();
-    $('draftBar').hidden = !(state.page === 'shortcuts' || state.page === 'support' && $('exclusionsDetails').open || hasDraft);
+    $('draftBar').hidden = !(state.page === 'shortcuts' || state.page === 'support' || hasDraft);
     $('saveDraft').disabled = !hasDraft;
     $('draftMessage').textContent = draftMessage || (hasDraft ? '这些修改尚未保存；离开此页后仍会保留。' : state.page === 'shortcuts' ? '快捷键需要保存后生效。' : '应用排除列表需要保存后生效。');
     $('draftMessage').classList.toggle('error', !!draftMessage && draftMessage.startsWith('未保存'));
@@ -2185,10 +2222,11 @@ dialog p {
     $('trayService').textContent = '输入服务' + service;
     $('trayConnection').textContent = connected ? '应用已连接' : '应用未连接';
     $('connectionDescription').textContent = connected ? '已检测到连接，当前字段支持译文预览。' : state.connection === 'conflict' ? '另一个输入法正在运行，需要先确认切换。' : '尚未检测到应用连接。请重新打开需要使用的应用。';
-    $('connectionAction').textContent = state.connection === 'conflict' ? '处理输入法冲突…' : '重新检查';
+    $('connectionAction').textContent = state.platform === 'linux' && state.integration === 'missing'
+      ? '安装接入组件…' : state.connection === 'conflict' ? '处理输入法冲突…' : '重新检查';
     $('previewCapability').textContent = connected ? '可用' : '未确认';
     const linux = state.platform === 'linux';
-    $('registeredApplicationRow').hidden = !linux;
+    $('registeredApplicationRow').hidden = !linux || state.integration !== 'ready';
     $('applicationOutcome').hidden = !linux || !state.application;
     $('selectedApplication').textContent = state.application
       ? $('applicationList').querySelector('[value="' + state.application + '"]').textContent
@@ -2309,6 +2347,14 @@ dialog p {
   $('supportSetupAction').onclick = prepare;
   $('repairComponents').onclick = () => confirmAction('修复本地翻译组件？', '将检查并重新准备组件，保留现有设置与模型。', '开始修复', prepare);
   $('connectionAction').onclick = () => {
+    if (state.platform === 'linux' && state.integration === 'missing') {
+      confirmAction('安装接入组件？', '从当前完整发行包准备组件，不会切换系统输入法。', '安装接入组件', () => {
+        state.integration = 'ready';
+        render();
+        toast('原型仅演示组件准备完成');
+      });
+      return;
+    }
     if (state.connection === 'conflict') {
       confirmAction('先退出当前输入法服务', '请先保存正在输入的内容，记录原输入法的启动方式，再手动退出它。TypeLay 不会代你结束输入法进程。确认后继续已有的私有输入服务流程；如需恢复，退出 TypeLay 私有服务，再按记录的方式启动原输入法。', '我已退出并记录恢复方式', () => {
         $('connectionOutcome').hidden = false;
@@ -2321,12 +2367,17 @@ dialog p {
       render();
     }
   };
-  $('selectApplication').onclick = () => {
+  let applicationPurpose = 'launch';
+  function chooseApplication(purpose) {
+    applicationPurpose = purpose;
+    $('applicationTitle').textContent = purpose === 'exclude' ? '添加排除应用' : '选择应用';
     $('applicationSearch').value = '';
     [...$('applicationList').options].forEach(option => option.hidden = false);
     $('applicationDialog').showModal();
     $('applicationSearch').focus();
-  };
+  }
+  $('selectApplication').onclick = () => chooseApplication('launch');
+  $('addExclusion').onclick = () => chooseApplication('exclude');
   $('applicationSearch').oninput = e => {
     [...$('applicationList').options].forEach(option => option.hidden = !option.textContent.includes(e.target.value));
   };
@@ -2334,6 +2385,21 @@ dialog p {
   $('confirmApplication').onclick = () => {
     const selected = $('applicationList').selectedOptions[0];
     if (!selected || selected.hidden) return;
+    if (applicationPurpose === 'exclude') {
+      $('applicationDialog').close();
+      if (selected.value === 'script') {
+        toast('无法确认应用进程，请在高级编辑中填写可执行文件名。');
+        return;
+      }
+      const name = (selected.value === 'editor' ? 'text-editor' : 'file-manager') + (state.platform === 'windows' ? '.exe' : '');
+      const values = $('excludedApplications').value.split('\n').map(value => value.trim()).filter(Boolean);
+      if (!values.some(value => value.toLowerCase() === name)) {
+        $('excludedApplications').value = [...values, name].join('\n');
+      }
+      draftMessage = '';
+      renderDraft();
+      return;
+    }
     state.application = selected.value;
     state.applicationLaunched = false;
     state.connection = state.connection === 'conflict' ? 'conflict' : 'disconnected';
@@ -2346,6 +2412,11 @@ dialog p {
     render();
     toast('原型只演示启动请求，不会运行本机应用');
   });
+  $('demoIntegration').onchange = e => {
+    state.integration = e.target.value;
+    if (state.integration !== 'ready') state.connection = 'disconnected';
+    render();
+  };
   $('demoPlatform').onchange = e => {
     state.platform = e.target.value;
     render();
@@ -2406,6 +2477,8 @@ dialog p {
   $('demoTheme').value = document.documentElement.dataset.theme;
   state.platform = query.get('platform') === 'linux' ? 'linux' : 'windows';
   $('demoPlatform').value = state.platform;
+  state.integration = query.get('integration') === 'missing' ? 'missing' : 'ready';
+  $('demoIntegration').value = state.integration;
   if (query.get('setup') in setupCopy) state.setup = query.get('setup');
   if (['connected', 'disconnected', 'conflict'].includes(query.get('connection'))) state.connection = query.get('connection');
   if (query.get('page') && ['general', 'language', 'shortcuts', 'support'].includes(query.get('page'))) setPage(query.get('page'));
