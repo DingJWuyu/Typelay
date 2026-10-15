@@ -5,6 +5,26 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class SessionControllerTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RenderedCandidateExplainsEditingIndependentlyOfAcceptance(bool experimental)
+    {
+        using var s = new SessionScenario(experimental: experimental);
+        s.ReadyCandidate();
+        Assert.True(s.View.Context!.CanEdit);
+        Assert.Equal(experimental, s.View.CanAccept);
+        Assert.Equal("译文就绪 · 点击译文编辑", s.View.Status);
+        if (experimental)
+        {
+            s.Service.PendingCapture = new();
+            s.Tick(Limits.PermitMaxAgeMs + 1);
+            Assert.False(s.View.CanAccept);
+            Assert.True(s.View.Context.CanEdit);
+            Assert.Equal("译文就绪 · 点击译文编辑", s.View.Status);
+        }
+    }
+
     [Fact]
     public void ListenerReadinessRefreshesOnceWithoutStartingOrAuthorizingInputWork()
     {
@@ -294,6 +314,7 @@ public sealed class SessionControllerTests
         Assert.Equal(s.Input.CommandGeneration, s.View.Token.CommandGeneration);
         Assert.Equal(s.Source.Target, s.View.Token.Target);
         Assert.False(s.View.Context.CanEdit);
+        Assert.Equal("译文就绪", s.View.Status);
         Assert.False(s.View.BeginEditing!(s.View.Token));
         Assert.All(s.Input.PublishedLeases, lease => Assert.False(lease.EscapeAllowed));
         Assert.Empty(s.Service.Writes);
@@ -307,6 +328,7 @@ public sealed class SessionControllerTests
         s.ReadyCandidate();
         Assert.NotNull(s.Input.Permit);
         Assert.False(s.View.Context!.CanEdit);
+        Assert.Equal("译文就绪", s.View.Status);
         Assert.False(s.View.BeginEditing!(s.View.Token));
         Assert.Empty(s.Service.Writes);
     }
@@ -1576,6 +1598,8 @@ public sealed class SessionControllerTests
         s.ReadyCandidate();
         Assert.Equal("untrusted text", s.Model.Jobs.Single().SourceText);
         Assert.Equal("translated", s.View.Preview);
+        Assert.True(s.View.Context!.CanEdit);
+        Assert.Equal("输入中", s.View.Status);
         Assert.False(s.View.BeginEditing!(s.View.Token));
         Assert.Null(s.Input.Permit);
         Assert.Empty(s.Service.Writes);
@@ -1720,6 +1744,7 @@ public sealed class SessionControllerTests
         s.Input.InEditor = true;
         s.View.DraftChanged!("manual draft");
         s.Tick();
+        Assert.Equal("编辑中", s.View.Status);
         Assert.Null(s.Input.Permit);
         s.View.ReturnRequested!(s.View.Token);
         Assert.Equal(1, s.Service.Returns);
@@ -1727,6 +1752,7 @@ public sealed class SessionControllerTests
         s.Tick();
         Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
         Assert.Equal("manual draft", s.View.Preview);
+        Assert.Equal("译文就绪 · 点击译文编辑", s.View.Status);
         var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
         s.Input.Notices.Enqueue(new("accept", permit, s.Loop.NowMs, s.Input.UserEpoch, s.Input.ForegroundEpoch, CommandGeneration: s.Input.CommandGeneration));
         s.Tick();
@@ -1769,6 +1795,7 @@ public sealed class SessionControllerTests
         Assert.Equal(captures, s.Service.Captures);
         Assert.Null(s.Input.Permit);
         Assert.Equal("retained draft", s.View.Draft);
+        Assert.Equal("译文就绪", s.View.Status);
         pending.SetResult(returned);
         s.Tick();
         s.Tick();

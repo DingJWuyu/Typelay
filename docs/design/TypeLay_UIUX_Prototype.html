@@ -262,9 +262,9 @@
     el.miniDot.className='miniDot'; el.candidate.className='candidate';
     let label='', foot='', html='';
     if(s.state===State.TRANSLATING){ label='正在翻译'; foot='交还应用'; html='<div class="candidatePlaceholder"><span class="spinner"></span>正在翻译…</div>'; el.miniDot.classList.add('warn'); }
-    else if(s.state===State.VALID){ label='译文就绪'; foot='接受译文'; html=escapeHtml(s.translation); el.miniDot.classList.add('good'); }
+    else if(s.state===State.VALID){ label='译文就绪 · 点击译文编辑'; foot='接受译文'; html=escapeHtml(s.translation); el.miniDot.classList.add('good'); }
     else if(s.state===State.EDITING){ label='编辑中'; foot='返回输入框'; html=escapeHtml(s.manual); el.miniDot.classList.add('good'); }
-    else if(s.state===State.PENDING){ label='译文就绪'; foot='接受译文'; html=escapeHtml(s.manual); el.miniDot.classList.add('good'); }
+    else if(s.state===State.PENDING){ label='译文就绪 · 点击译文编辑'; foot='接受译文'; html=escapeHtml(s.manual); el.miniDot.classList.add('good'); }
     else if(s.state===State.STALE){ label='正在翻译'; foot='交还应用'; html=escapeHtml(s.translation); el.miniDot.classList.add('warn'); el.candidate.classList.add('stale'); }
     else if(s.state===State.FAILED){ label='暂时无法翻译'; foot='交还应用'; html=escapeHtml(s.translation); el.miniDot.classList.add('bad'); el.candidate.classList.add('failed'); }
     else if(s.state===State.IME){ label=''; foot='交还应用'; html=''; }

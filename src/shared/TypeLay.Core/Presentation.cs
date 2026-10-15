@@ -14,7 +14,7 @@ public sealed record OverlayPresentation(bool Visible, string Status, StatusDot 
 public static class Presentation
 {
     public static OverlayPresentation From(SessionState state, bool hasSafePermit, bool hasPreview = false,
-        bool hasPauseAnchor = false, SessionShortcutBindings? shortcuts = null)
+        bool hasPauseAnchor = false, SessionShortcutBindings? shortcuts = null, bool canEdit = false)
     {
         string accept = (shortcuts ?? SessionShortcutBindings.Default).Accept;
         return state switch
@@ -24,7 +24,7 @@ public static class Presentation
             SessionState.IdleCapsule => new(true, "", StatusDot.None, $"{accept} 交还应用", true, false),
             SessionState.Translating => new(true, "正在翻译", StatusDot.Yellow, $"{accept} 交还应用", true, false),
             SessionState.ValidTranslation or SessionState.EditedTranslationPending =>
-                new(true, "译文就绪", StatusDot.Green,
+                new(true, canEdit ? "译文就绪 · 点击译文编辑" : "译文就绪", StatusDot.Green,
                     hasSafePermit ? $"{accept} 接受译文" : $"{accept} 交还应用", true, false),
             SessionState.EditingTranslation => new(true, "编辑中", StatusDot.Green, $"{accept} 返回原输入框", true, true),
             SessionState.ReturningToSource => new(true, "译文就绪", StatusDot.Green, $"{accept} 交还应用", true, true),

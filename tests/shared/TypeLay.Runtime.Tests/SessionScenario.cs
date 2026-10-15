@@ -408,6 +408,7 @@ internal sealed class SessionScenario : IDisposable
             get; private set;
         }
         public string Preview { get; private set; } = "";
+        public string Status { get; private set; } = "";
         public string Draft { get; private set; } = "";
         public SessionState State
         {
@@ -428,6 +429,9 @@ internal sealed class SessionScenario : IDisposable
         public void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null, SessionViewContext? context = null)
         {
             Context = context;
+            Status = statusOverride ?? Presentation.From(session.State, canAccept, session.Preview.Length > 0,
+                shortcuts: context?.Bindings,
+                canEdit: context?.CanEdit == true && session.CanBeginEdit && session.Candidate.Length > 0).Status;
             State = session.State;
             Preview = session.Preview;
             Draft = session.Draft;

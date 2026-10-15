@@ -4,6 +4,7 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Runtime.InteropServices;
+using System.Globalization;
 using TypeLay.App;
 using TypeLay.Core;
 using TypeLay.Runtime;
@@ -16,6 +17,84 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
 {
+    [Theory]
+    [InlineData(320)]
+    [InlineData(520)]
+    public async Task ReadyHeaderMakesEditingDiscoverableWithoutClippingOrChangingOtherStatuses(double width)
+    {
+        await desktop.RunAsync(() =>
+        {
+            var (window, input, source) = OpenSource();
+            input.Width = width;
+            window.UpdateLayout();
+            source = source with
+            {
+                Bounds = InputBounds(input)
+            };
+            var settings = new UserSettings(Theme: "light");
+            var session = Ready(source, "An editable preview");
+            var context = EditableView(source);
+            var overlay = new OverlayWindow(clientAreaAnimation: () => false)
+            {
+                BeginEditing = _ => session.BeginEdit(),
+                DraftChanged = session.ChangeDraft
+            };
+            void Render(string expected, bool permit = false, string? statusOverride = null,
+                SessionViewContext? viewContext = null)
+            {
+                overlay.Render(session, settings, permit, statusOverride, viewContext ?? context);
+                overlay.UpdateLayout();
+                var status = Descendants(overlay).OfType<TextBlock>().Single(label => label.IsVisible && label.Text == expected);
+                AssertTextFullyVisible(status, overlay);
+                var language = Descendants(overlay).OfType<TextBlock>().Single(label => label.IsVisible && label.Text.Contains("→"));
+                AssertTextFullyVisible(language, overlay);
+                var languageBounds = language.TransformToAncestor(overlay).TransformBounds(new Rect(language.RenderSize));
+                var statusBounds = status.TransformToAncestor(overlay).TransformBounds(new Rect(status.RenderSize));
+                Assert.True(languageBounds.Right <= statusBounds.Left, "The language and status must not overlap.");
+            }
+            Render("译文就绪 · 点击译文编辑");
+            Assert.Contains("交还应用", VisibleLabels(overlay));
+            Render("译文就绪 · 点击译文编辑", permit: true);
+            Assert.Contains("接受译文", VisibleLabels(overlay));
+            Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+            Assert.True(input.IsKeyboardFocused);
+            Render("译文就绪", viewContext: context with
+            {
+                CanEdit = false
+            });
+            Render("已有状态提示", statusOverride: "已有状态提示");
+            Render("译文就绪 · 点击译文编辑");
+            var editor = Descendants(overlay).OfType<TextBox>().Single();
+            editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+            {
+                RoutedEvent = Mouse.PreviewMouseDownEvent
+            });
+            editor.Text = "A manual candidate";
+            Render("编辑中");
+            Assert.False(editor.IsReadOnly);
+            Assert.True(session.RequestSourceReturn());
+            Render("译文就绪");
+            Assert.True(window.Activate());
+            Assert.True(input.Focus());
+            Assert.True(session.ConfirmSourceReturn(source with
+            {
+                ObservedAtMs = 1400
+            }, 1400));
+            Render("译文就绪 · 点击译文编辑");
+            session.Observe(source with
+            {
+                Ime = ImeState.Unknown,
+                PreviewText = source.Text
+            }, FocusMember.Source, 1400);
+            Render("译文预览");
+            Assert.True(editor.IsReadOnly);
+            Assert.Equal("Source text", input.Text);
+            session.LeaveFamily();
+            overlay.Render(session, settings, false, context: context);
+            Assert.False(overlay.IsVisible);
+        });
+    }
+
     [Fact]
     public async Task DisabledClientAnimationShowsImmediatelyAndStopsAnExistingFade()
     {
@@ -945,6 +1024,26 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         Assert.InRange(Math.Abs(overlay.Height * scale - bounds.Height), 0, 1);
         Assert.InRange(Math.Abs(overlay.ActualWidth * scale - bounds.Width), 0, 1);
         Assert.InRange(Math.Abs(overlay.ActualHeight * scale - bounds.Height), 0, 1);
+    }
+
+    private static void AssertTextFullyVisible(TextBlock label, OverlayWindow overlay)
+    {
+        var text = new FormattedText(label.Text, CultureInfo.CurrentUICulture, label.FlowDirection,
+            new Typeface(label.FontFamily, label.FontStyle, label.FontWeight, label.FontStretch),
+            label.FontSize, label.Foreground, VisualTreeHelper.GetDpi(label).PixelsPerDip);
+        Assert.True(text.WidthIncludingTrailingWhitespace <= label.ActualWidth + .5,
+            $"The complete header text must fit: {label.Text}");
+        Assert.True(text.Height <= label.ActualHeight + .5);
+        for (DependencyObject? parent = VisualTreeHelper.GetParent(label); parent is not null && parent != overlay;
+            parent = VisualTreeHelper.GetParent(parent))
+        {
+            if (parent is not FrameworkElement element)
+                continue;
+            var bounds = label.TransformToAncestor(element).TransformBounds(new Rect(label.RenderSize));
+            Assert.True(bounds.Left >= -.5 && bounds.Top >= -.5
+                && bounds.Right <= element.ActualWidth + .5 && bounds.Bottom <= element.ActualHeight + .5,
+                $"The header text must remain inside {element.GetType().Name}: {label.Text}");
+        }
     }
 
     private static Color ResourceColor(OverlayWindow overlay, string name) =>

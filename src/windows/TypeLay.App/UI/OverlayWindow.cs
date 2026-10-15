@@ -370,7 +370,8 @@ internal sealed class OverlayWindow : Window, ISessionView
     {
         _viewContext = context is not null && session.Current?.Target == context.Token.Target ? context : null;
         ConfigureSessionShortcuts(_viewContext?.Bindings ?? SessionShortcutBindings.Default);
-        var display = Presentation.From(session.State, permit, session.Preview.Length > 0, shortcuts: _viewContext?.Bindings);
+        var display = Presentation.From(session.State, permit, session.Preview.Length > 0, shortcuts: _viewContext?.Bindings,
+            canEdit: _viewContext?.CanEdit == true && session.CanBeginEdit && session.Candidate.Length > 0);
         if (!display.Visible || session.Current is not { } source)
         {
             HideQuietly();

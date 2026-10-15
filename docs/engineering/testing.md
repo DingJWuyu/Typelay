@@ -6,7 +6,7 @@
 
 ./dev.ps1 shared-check 在普通 .NET 与 Python 环境执行共享 Core、Runtime、worker 帧协议及 Python worker 回归，不运行 WPF、UIA、Hook 或真实模型推理。Windows.Contracts 的可移植契约也由 shared-check 执行，保留非 Windows 覆盖；它仍归 tests/windows/TypeLay.Windows.Contracts.Tests，不能作为共享产品协议。
 
-`tests/shared/TypeLay.Runtime.Tests` 用确定性串行宿主和受控输入/模型端口执行生产控制器，覆盖激活、异步结果隔离、草稿、直接替换和能力拒绝；设置测试使用真实临时文件。它们不证明桌面、真实模型或原子写入。`shared-check` 在非 Windows 环境构建并运行共享层，完整 Windows check/pack 保留。
+`tests/shared/TypeLay.Runtime.Tests` 用确定性串行宿主和受控输入/模型端口执行生产控制器，覆盖激活、异步结果隔离、草稿、直接替换和能力拒绝；设置测试使用真实临时文件。它们不证明桌面、真实模型或原子写入。浮层编辑入口提示复用共享展示与 Session 原有编辑判定：完整候选、可用源框及当前编辑确认同时满足才提示，短期接受许可到期不应使提示闪烁；翻译中、部分预览、IME 锁定和回源中保留原状态。Windows 的 OverlayRendering 回归另检查窄宽浮层中的完整文本可见性及已有状态覆盖优先，仍需在 Windows 桌面实际执行。`shared-check` 在非 Windows 环境构建并运行共享层，完整 Windows check/pack 保留。
 
 设置保存回归区分真实持久化与配置变化通知：规范化后的有效值完全相同时仍写入文件并报告写入失败，但不重配会话；覆盖人工草稿、按需激活、练习进度及待派发直接替换。排除列表按原顺序和大小写比较，外部修改数组后再次保存仍应识别变化。任何实际设置变化与真实焦点离开仍执行原失效规则；这不是跨窗口保留人工稿的承诺。
 

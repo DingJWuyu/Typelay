@@ -37,6 +37,8 @@ public sealed class Session
     public string Preview => _preview;
     public string Draft => _draft;
     public long Revision => _revision;
+    public bool CanBeginEdit => State is SessionState.ValidTranslation or SessionState.EditedTranslationPending
+        && _current is { IsUsable: true };
 
     public void Observe(InputSnapshot next, FocusMember focus, long nowMs)
     {
@@ -302,8 +304,7 @@ public sealed class Session
 
     public bool BeginEdit()
     {
-        if (State is not (SessionState.ValidTranslation or SessionState.EditedTranslationPending)
-            || _current is not { IsUsable: true })
+        if (!CanBeginEdit)
             return false;
         _editBasis = _current;
         _editConfiguration = _configurationRevision;
