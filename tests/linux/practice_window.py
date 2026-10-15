@@ -168,6 +168,7 @@ def run(presentation):
                     old = str(uuid.uuid4())
                     reply(pending("practiceStatus"), state(old, completed=True))
                     until(lambda: lesson.complete.get_sensitive())
+                    assert lesson.complete.get_accessible().get_name() == "完成并关闭"
                     assert not lesson.status.get_text()
                     assert (
                         lesson.progress.get_text()
@@ -188,9 +189,11 @@ def run(presentation):
                     )
                     until(lambda: lesson.complete.get_sensitive())
                     assert "重试保存" in lesson.complete.get_label()
+                    assert lesson.complete.get_accessible().get_name() == "重试保存"
                     reply(pending("practiceStatus"), state(old))
                     until(lambda: not lesson.complete.get_sensitive())
                     assert "重试保存" not in lesson.complete.get_label()
+                    assert lesson.complete.get_accessible().get_name() == "完成并关闭"
                     reply(pending("practiceStatus"), state(old, completed=True))
                     until(lambda: lesson.complete.get_sensitive())
                     lesson.source.set_text(source)

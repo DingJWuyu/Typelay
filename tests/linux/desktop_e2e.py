@@ -225,9 +225,10 @@ def run(arguments):
         )
         return bool(outcomes)
 
-    def start():
+    def start(*, write_settings=True):
         nonlocal process
-        paths.settings.write_text(json.dumps(settings))
+        if write_settings:
+            paths.settings.write_text(json.dumps(settings))
         process = subprocess.Popen(
             [str(package / "typelay"), "--background"],
             env=environment,
@@ -3464,10 +3465,35 @@ def run(arguments):
                         check=True,
                         timeout=3,
                     )
+                    before_finish_settings = paths.settings.read_bytes()
+                    assert practice_has_keyboard_focus() and focused(source)
+                    key("alt+d")
+                    wait_for(
+                        lambda: not any(
+                            window["id"] == managed_window["id"]
+                            for window in contents(request("Windows"), "Windows")
+                        )
+                        and json.loads(paths.settings.read_text())["OnboardingComplete"] is True,
+                        "completed automatic lesson did not save and naturally close",
+                    )
+                    wait_for(
+                        lambda: not any(
+                            item["kind"] == "application"
+                            and (item.get("child") or {}).get("pid") == managed_window["pid"]
+                            for item in receipts(paths.data)
+                        ),
+                        "completed automatic lesson retained its owned process receipt",
+                    )
+                    completed_settings = paths.settings.read_bytes()
+                    assert json.loads(completed_settings) == {
+                        **json.loads(before_finish_settings),
+                        "OnboardingComplete": True,
+                    }, "Finish changed settings other than the onboarding preference"
                     evidence.append(
                         "Owned GTK3 complete lesson: explicit Automatic confirmation, real CPU preview, "
                         "Verified Tab, new source, actual edited draft, return without write, fresh capture "
-                        "and second Verified Tab; global ExperimentalWriteback remains false"
+                        "and second Verified Tab; real Finish saves and naturally closes; "
+                        "global ExperimentalWriteback remains false"
                     )
                 except BaseException:
                     try:
@@ -3501,12 +3527,70 @@ def run(arguments):
                 stopped = cleanup_managed_session()
                 assert stopped and stopped["ok"], "complete lesson retained its owned session"
                 managed_window = None
-                assert json.loads(paths.settings.read_text())["OnboardingComplete"] is False
+                stop()
+                start(write_settings=False)
+                assert paths.settings.read_bytes() == completed_settings
+                assert status()["setup"]["onboardingComplete"] is True
+                assert not status()["setup"]["tutorialVisible"]
+                unopened_settings = named(process.pid, "TypeLay 设置")
+                assert unopened_settings is None or not unopened_settings.get_state_set().contains(
+                    Atspi.StateType.SHOWING
+                ), "completed automatic lesson reopened first-run settings after restart"
+                evidence.append("Automatic lesson Finish preference survives a real client restart")
+
+                # Restore only this isolated fixture's pre-Finish settings. Later
+                # first-run regressions keep their original, incomplete preference.
+                stop()
+                paths.settings.write_bytes(before_finish_settings)
+                start(write_settings=False)
+                assert paths.settings.read_bytes() == before_finish_settings
+                assert status()["setup"]["onboardingComplete"] is False
                 assert json.loads(paths.settings.read_text())["ExperimentalWriteback"] is False
                 assert user_profile.read_bytes() == before_profile
                 assert control(paths, "settings") is True
+                settings_window = wait_for(
+                    lambda: next(
+                        (
+                            item
+                            for item in contents(request("Windows"), "Windows")
+                            if item.get("pid") == process.pid
+                            and item.get("title") == "TypeLay 设置"
+                        ),
+                        None,
+                    ),
+                    "restored fixture settings window did not map",
+                )
+                if not settings_window["is_floating"]:
+                    request({"Action": {"ToggleWindowFloating": {"id": settings_window["id"]}}})
+                for action, pixels in (("SetWindowWidth", 790), ("SetWindowHeight", 560)):
+                    request(
+                        {
+                            "Action": {
+                                action: {
+                                    "id": settings_window["id"],
+                                    "change": {"SetFixed": pixels},
+                                }
+                            }
+                        }
+                    )
+                wait_for(
+                    lambda: any(
+                        item["id"] == settings_window["id"]
+                        and item["is_floating"]
+                        and item["layout"]["window_size"] == [790, 560]
+                        for item in contents(request("Windows"), "Windows")
+                    ),
+                    "restored fixture settings did not retain the small-window test size",
+                )
                 request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
                 settings_page("应用支持")
+                # Every proxy and scroll observation below belongs to this new
+                # process/window, never the closed pre-Finish settings instance.
+                selection, rows = wait_for(
+                    lambda: settings_navigation(process.pid), "restored settings sidebar missing"
+                )
+                trial = settings_control(next_step_label)
+                calibrate_settings_scroll(trial)
 
                 # One owned, ordinary GTK ELF registered in this isolated HOME.
                 # Exercise the real selector and guardian, never a desktop-file

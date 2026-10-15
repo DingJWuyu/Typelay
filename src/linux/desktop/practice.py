@@ -116,6 +116,7 @@ class Practice:
         self.reset_button.connect("clicked", self.reset)
         actions.pack_start(self.reset_button, False, False, 0)
         self.complete = Gtk.Button.new_with_mnemonic("完成并关闭(_D)")
+        self.complete.get_accessible().set_name("完成并关闭")
         self.complete.set_sensitive(False)
         self.complete.set_focus_on_click(False)
         self.complete.connect("clicked", lambda *_: self.finish("completed"))
@@ -135,6 +136,7 @@ class Practice:
         self.lesson = lesson
         self.completion_failed = False
         self.complete.set_label("完成并关闭(_D)")
+        self.complete.get_accessible().set_name("完成并关闭")
         self.request_generation += 1
         self.practice_run = self.presentation = self.restart_from = None
         self.awaiting_binding = self.restarting = False
@@ -205,6 +207,7 @@ class Practice:
             return
         self.completion_failed = False
         self.complete.set_label("完成并关闭(_D)")
+        self.complete.get_accessible().set_name("完成并关闭")
         self.request_generation += 1
         self.restart_from = self.practice_run or self.restart_from
         self.restarting = self.restarting or self.practice_run is not None
@@ -346,10 +349,12 @@ class Practice:
                 if result.get("finishPending"):
                     self.complete.set_sensitive(True)
                     self.complete.set_label("重试保存(_D)")
+                    self.complete.get_accessible().set_name("重试保存")
                     self.status.set_text("完成尚未保存。可重试保存，或重新开始练习。")
                     return False
                 self.completion_failed = False
                 self.complete.set_label("完成并关闭(_D)")
+                self.complete.get_accessible().set_name("完成并关闭")
             view = result.get("presentation")
             if not isinstance(view, dict):
                 self.complete.set_sensitive(False)

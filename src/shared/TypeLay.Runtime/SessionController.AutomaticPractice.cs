@@ -357,8 +357,13 @@ public sealed partial class SessionController
     private async Task<bool> ConfirmForegroundSuspension(OwnedPracticeBinding binding, long configurationRevision)
     {
         bool confirmed = false;
-        try { confirmed = await _broker.SuspendOwnedSourceAsync(binding); }
-        catch (Exception ex) when (ex is not OutOfMemoryException) { }
+        try
+        {
+            confirmed = await _broker.SuspendOwnedSourceAsync(binding);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+        }
         // Close/settings/new-run may already own this retirement. A late answer
         // must neither rotate their generation nor restore the previous intent.
         if (!ReferenceEquals(_awaitingPractice, binding) || AutomaticPracticeProgress?.RunId != binding.RunId)
