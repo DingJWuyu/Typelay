@@ -193,6 +193,18 @@ async function normalContrast(page, selectors) {
     await narrow.page.setViewportSize({ width: 320, height: 790 });
     await withinViewport(narrow.page, '#overlay');
   });
+  await check('Escape during a shell transition immediately removes content and interaction', async () => {
+    await load(narrow.page, overlayURL);
+    await narrow.page.locator('#candidate').click();
+    assert.equal((await state(narrow.page)).phase, 'editing');
+    assert((await state(narrow.page)).animations > 0);
+    await narrow.page.keyboard.press('Escape');
+    assert.equal((await state(narrow.page)).phase, 'hidden');
+    assert.equal((await state(narrow.page)).candidate, '');
+    assert.equal((await state(narrow.page)).canAccept, false);
+    assert.equal(await narrow.page.locator('#overlay').isVisible(), false);
+    assert.equal(await narrow.page.locator('.motion-snapshot, .exit-ghost').count(), 0);
+  });
   await narrow.context.close();
   const movie = await pageFor({ width: 940, height: 760 }, { recordVideo: { dir: path.join(out, 'raw-video'), size: { width: 940, height: 760 } } });
   const m = movie.page;
@@ -230,7 +242,12 @@ async function normalContrast(page, selectors) {
     assert.equal((await state(m)).sendCount, 0);
     await wait(1200);
     await m.locator('#sourceInput').fill('你好，我想确认一下明天下午的会议时间。');
-    await wait(1100);
+    // This scenario exercises stable user exit, not Escape during an unfinished transition.
+    await m.waitForFunction(() => {
+      const stillAnimating = ['overlay', 'overlayInner'].some(id =>
+        document.getElementById(id).getAnimations().some(animation => animation.playState === 'running'));
+      return prototypeState().phase === 'preview' && !stillAnimating;
+    }, undefined, { timeout: 2500 });
     assert.equal((await state(m)).phase, 'preview');
     await m.keyboard.press('Escape');
     const exit = await m.evaluate(() => ({
