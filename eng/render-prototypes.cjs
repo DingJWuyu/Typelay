@@ -97,6 +97,8 @@ async function normalContrast(page, selectors) {
   const p = settings.page;
   await check('settings daily light / no unnecessary save footer', async () => {
     await load(p, settingsURL);
+    assert.equal(await p.locator('#excludedApplications').inputValue(), '');
+    assert.equal((await state(p)).draft, false);
     assert.equal(await p.locator('#draftBar').isVisible(), false);
     const productWindow = await p.locator('#settingsWindow').boundingBox();
     assert.equal(Math.round(productWindow.width), 790);
@@ -140,6 +142,23 @@ async function normalContrast(page, selectors) {
     assert.equal(await p.locator('#draftBar').isVisible(), false);
     await p.locator('#closeSettings').click();
     assert.equal((await state(p)).running, true);
+  });
+  await check('unknown save result never claims unchanged settings or retries automatically', async () => {
+    await load(p, settingsURL);
+    await p.locator('#demoControls summary').first().click();
+    await p.locator('#demoUnknownSave').click();
+    await p.locator('#demoControls summary').first().click();
+    await p.locator('#settingsEnable').click();
+    assert.equal((await state(p)).saveOutcome, 'unknown');
+    assert.equal((await state(p)).lastSave, null);
+    await p.locator('#trayButton').click();
+    assert.match(await p.locator('#traySaveTitle').textContent(), /未确认/);
+    assert.doesNotMatch(await p.locator('#traySaveDescription').textContent(), /保持原值/);
+    assert.equal(await p.locator('#retryTray').textContent(), '检查设置');
+    await p.locator('#retryTray').click();
+    assert.equal((await state(p)).saveOutcome, 'unknown');
+    await p.locator('#settingsEnable').click();
+    assert.equal((await state(p)).saveError, false);
   });
   await settings.context.close();
   const tray = await pageFor({ width: 520, height: 790 });
@@ -214,9 +233,19 @@ async function normalContrast(page, selectors) {
     await wait(1100);
     assert.equal((await state(m)).phase, 'preview');
     await m.keyboard.press('Escape');
+    const exit = await m.evaluate(() => ({
+      state: prototypeState(), editable: document.querySelector('#candidate').contentEditable,
+      ghosts: [...document.querySelectorAll('.exit-ghost')].map(node => ({ inert: node.inert, pointerEvents: getComputedStyle(node).pointerEvents }))
+    }));
+    assert.equal(exit.state.canAccept, false);
+    assert.equal(exit.state.candidate, '');
+    assert.equal(exit.editable, 'false');
+    assert.equal(exit.ghosts.length, 1);
+    assert.equal(exit.ghosts[0].inert, true);
+    assert.equal(exit.ghosts[0].pointerEvents, 'none');
+    await m.waitForFunction(() => !document.querySelector('.exit-ghost'), undefined, { timeout: 600 });
     assert.equal(await m.locator('#overlay').isVisible(), false);
-    assert.equal((await state(m)).candidate, '');
-    await wait(1200);
+    await wait(1000);
   });
   const video = m.video();
   await movie.context.close();
@@ -252,6 +281,60 @@ async function normalContrast(page, selectors) {
     await s.locator('#pauseAction').click();
     await s.locator('#pauseAction').click();
     assert.equal((await state(s)).phase, 'hidden');
+    assert.equal((await state(s)).candidate, '');
+  });
+  await check('automatic refocus starts fresh but Escape does not reopen itself', async () => {
+    await load(s, overlayURL);
+    await s.locator('#sendMessage').focus();
+    assert.equal((await state(s)).phase, 'hidden');
+    await s.locator('#sourceInput').focus();
+    assert.equal((await state(s)).candidate, '');
+    assert.equal((await state(s)).canAccept, false);
+    await s.waitForFunction(() => prototypeState().phase === 'preview');
+    await s.keyboard.press('Escape');
+    await wait(750);
+    assert.equal((await state(s)).phase, 'hidden');
+    assert.equal((await state(s)).focused, 'sourceInput');
+    await s.locator('#sendMessage').focus();
+    await s.locator('#sourceInput').focus();
+    await s.waitForFunction(() => prototypeState().phase === 'preview');
+  });
+  await check('real textarea selection revokes the old candidate and only replaces the new range', async () => {
+    await load(s, overlayURL);
+    const original = 'Hello Alex, 明天下午见, thanks.';
+    await s.locator('#sourceInput').fill(original);
+    await s.waitForFunction(() => prototypeState().phase === 'preview');
+    await s.locator('#sourceInput').evaluate(e => {
+      const start = e.value.indexOf('明天下午见');
+      e.setSelectionRange(start, start + '明天下午见'.length);
+    });
+    assert.equal((await state(s)).canAccept, false);
+    assert.equal((await state(s)).canEdit, false);
+    await s.waitForFunction(() => prototypeState().candidate === 'see you tomorrow afternoon');
+    await s.keyboard.press('Tab');
+    assert.equal((await state(s)).source, 'Hello Alex, see you tomorrow afternoon, thanks.');
+    assert.equal((await state(s)).sendCount, 0);
+  });
+  await check('empty edited draft never pretends to be loading or becomes acceptable', async () => {
+    await load(s, overlayURL + '?scenario=editing');
+    const original = (await state(s)).source;
+    await s.locator('#candidate').fill('');
+    await s.keyboard.press('Tab');
+    await s.waitForFunction(() => prototypeState().phase === 'pending');
+    assert.equal((await state(s)).canAccept, false);
+    assert.equal((await state(s)).source, original);
+    assert.equal(await s.locator('#candidate').textContent(), '译文为空');
+    await s.locator('#regenerateAction').click();
+    await s.waitForFunction(() => prototypeState().phase === 'preview');
+  });
+  await check('paused entry immediately hides on focus loss without resuming', async () => {
+    await load(s, overlayURL + '?scenario=paused');
+    await s.locator('#sendMessage').focus();
+    assert.equal(await s.locator('#overlay').isVisible(), false);
+    assert.equal((await state(s)).enabled, false);
+    assert.equal(await s.locator('.motion-snapshot, .exit-ghost').count(), 0);
+    await s.locator('#sourceInput').focus();
+    assert.equal((await state(s)).phase, 'paused');
     assert.equal((await state(s)).candidate, '');
   });
   await check('unknown write result asks to check the original and never retries', async () => {

@@ -1257,7 +1257,8 @@ dialog p {
           <button class="button" id="demoSaveError">
             下一次保存失败
           </button>
-          <button class="button" id="demoTrayError">
+          <button class="button" id="demoUnknownSave">下一次保存结果未知</button>
+              <button class="button" id="demoTrayError">
             查看托盘保存失败
           </button>
           <button class="button" id="demoRestart">
@@ -1339,10 +1340,10 @@ dialog p {
               <use href="#i-info"/>
             </svg>
             <div class="notice-content">
-              <strong>
+              <strong id="settingsSaveTitle">
                 设置没有保存
               </strong>
-              <p>
+              <p id="settingsSaveDescription">
                 请检查设置目录权限或磁盘空间，再重新选择需要的设置。
               </p>
               <button class="button" id="retrySettings">
@@ -1355,9 +1356,6 @@ dialog p {
               <h1>
                 常规
               </h1>
-              <p>
-                在你需要的时候，帮你表达。
-              </p>
             </div>
             <div id="generalSetup" class="notice" hidden>
               <svg>
@@ -1379,9 +1377,7 @@ dialog p {
                   <div class="setting-name">
                     启用 TypeLay
                   </div>
-                  <p class="setting-description" id="enabledDescription">
-                    在当前输入框旁显示译文。
-                  </p>
+                  <p class="setting-description" id="enabledDescription" hidden></p>
                 </div>
                 <button class="switch" id="settingsEnable" role="switch" aria-checked="true" aria-label="启用 TypeLay">
                 </button>
@@ -1402,16 +1398,13 @@ dialog p {
                 </div>
               </div>
               <p class="mode-note" id="modeDescription">
-                聚焦输入框后自动翻译。译文由你决定是否接受。
+                聚焦输入框后自动翻译，由你决定是否接受。
               </p>
             </div>
             <div class="group">
               <h2>
                 翻译浮层
               </h2>
-              <p class="setting-description">
-                选择浮层的外观。
-              </p>
               <div class="theme-options" aria-label="翻译浮层主题">
                 <button class="theme-option" data-overlay-theme="system" aria-pressed="true">
                   <span class="theme-preview system-preview">
@@ -1787,8 +1780,7 @@ dialog p {
                   <label for="excludedApplications">
                     每行一个可执行文件名。保存后，这些应用中不再显示 TypeLay。
                   </label>
-                  <textarea id="excludedApplications" rows="3" spellcheck="false" placeholder="例如：terminal.exe">
-                  </textarea>
+                  <textarea id="excludedApplications" rows="3" spellcheck="false" placeholder="例如：terminal.exe"></textarea>
                 </div>
               </details>
               <details class="details">
@@ -1860,10 +1852,10 @@ dialog p {
         <use href="#i-info"/>
       </svg>
       <div class="notice-content">
-        <strong>
+        <strong id="traySaveTitle">
           设置没有保存
         </strong>
-        <p>
+        <p id="traySaveDescription">
           当前设置保持原值。检查权限或空间后重试。
         </p>
         <button class="button" id="retryTray">
@@ -1985,6 +1977,7 @@ dialog p {
     service: 'running',
     connection: 'connected',
     saveError: false,
+    saveOutcome: 'confirmed',
     failNext: false,
     lastSave: null,
     preparationTimer: 0
@@ -2028,13 +2021,17 @@ dialog p {
   function saveNow(changes) {
     state.lastSave = changes;
     if (state.failNext) {
+      const outcome = state.failNext === 'unknown' ? 'unknown' : 'failed';
       state.failNext = false;
       state.saveError = true;
+      state.saveOutcome = outcome;
+      if (outcome === 'unknown') state.lastSave = null;
       render();
       return false;
     }
     Object.assign(state, changes);
     state.saveError = false;
+    state.saveOutcome = 'confirmed';
     state.lastSave = null;
     render();
     return true;
@@ -2079,15 +2076,18 @@ dialog p {
       return;
     }
     if (state.failNext) {
+      const outcome = state.failNext === 'unknown' ? 'unknown' : 'failed';
       state.failNext = false;
       state.saveError = true;
-      state.lastSave = 'draft';
-      draftMessage = '未保存：请检查权限或磁盘空间。草稿仍保留。';
+      state.saveOutcome = outcome;
+      state.lastSave = outcome === 'unknown' ? null : 'draft';
+      draftMessage = outcome === 'unknown' ? '保存结果未确认。草稿仍保留，请检查设置。' : '未保存：请检查权限或磁盘空间。草稿仍保留。';
       render();
       return;
     }
     fields.forEach(id => saved[id] = $(id).value);
     state.saveError = false;
+    state.saveOutcome = 'confirmed';
     state.lastSave = null;
     draftMessage = '设置已保存';
     render();
@@ -2117,9 +2117,10 @@ dialog p {
     $('startupSwitch').setAttribute('aria-checked', String(state.startup));
     $('writebackSwitch').setAttribute('aria-checked', String(state.writeback));
     $('trayEnabled').textContent = state.enabled ? '已启用' : '已暂停';
-    $('enabledDescription').textContent = state.enabled ? '在当前输入框旁显示译文。' : '当前翻译已清除。恢复后重新开始，不保留旧草稿。';
+    $('enabledDescription').hidden = state.enabled;
+    $('enabledDescription').textContent = state.enabled ? '' : '当前翻译已清除。恢复后重新开始，不保留旧草稿。';
     all('[data-mode]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === state.mode)));
-    $('modeDescription').textContent = state.mode === 'Automatic' ? '聚焦输入框后自动翻译。译文由你决定是否接受。' : '按 ' + saved.wakeShortcut + ' 唤醒翻译；' + saved.directShortcut + ' 直接翻译并替换。';
+    $('modeDescription').textContent = state.mode === 'Automatic' ? '聚焦输入框后自动翻译，由你决定是否接受。' : '按 ' + saved.wakeShortcut + ' 唤醒翻译；' + saved.directShortcut + ' 直接翻译并替换。';
     all('[data-overlay-theme]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.overlayTheme === state.overlayTheme)));
     all('.sync-source').forEach(e => e.value = state.source);
     all('.sync-target').forEach(e => e.value = state.target);
@@ -2131,6 +2132,15 @@ dialog p {
     $('languageHelp').textContent = state.source === 'Auto' ? '自动检测只用于源语言。已经是目标语言的文本不会重新改写。' : '交换只改变翻译方向，不修改当前输入框的文本。';
     $('settingsSaveError').hidden = !state.saveError;
     $('traySaveError').hidden = !state.saveError;
+    const unknownSave = state.saveOutcome === 'unknown';
+    for (const prefix of ['settings', 'tray']) {
+      $(prefix + 'SaveTitle').textContent = unknownSave ? '设置结果未确认' : '设置没有保存';
+      $(prefix + 'SaveDescription').textContent = unknownSave
+        ? '显示上次确认的设置。请检查保存结果，不会自动重试。'
+        : prefix === 'tray' ? '当前设置保持原值。检查权限或空间后重试。' : '请检查设置目录权限或磁盘空间，再重新选择需要的设置。';
+    }
+    $('retrySettings').hidden = unknownSave;
+    $('retryTray').textContent = unknownSave ? '检查设置' : '重试保存';
     renderSetup();
     const service = state.service === 'running' ? '运行中' : '等待重新打开应用';
     const connected = state.connection === 'connected';
@@ -2235,7 +2245,7 @@ dialog p {
   $('openSettings').onclick = openSettings;
   $('trayButton').onclick = () => $('quickPanel').hidden ? openTray() : closeTray();
   $('retrySettings').onclick = retry;
-  $('retryTray').onclick = retry;
+  $('retryTray').onclick = () => state.saveOutcome === 'unknown' ? openSettings() : retry();
   $('quitApp').onclick = () => {
     const quit = () => {
       state.running = false;
@@ -2288,6 +2298,10 @@ dialog p {
   $('demoSaveError').onclick = () => {
     state.failNext = true;
     toast('下一次保存将模拟失败');
+  };
+  $('demoUnknownSave').onclick = () => {
+    state.failNext = 'unknown';
+    toast('下一次保存将模拟结果未知');
   };
   $('demoTrayError').onclick = () => {
     state.failNext = true;

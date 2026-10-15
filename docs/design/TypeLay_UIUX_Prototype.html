@@ -523,12 +523,26 @@ select {
   max-height:260px;
   padding:10px 12px;
   border:1px solid color-mix(in srgb,var(--accent) 40%,var(--line));
-  background:var(--soft);
+  background:var(--panel);
   caret-color:var(--accent);
   cursor:text
 }
-.candidate[contenteditable=true]:focus {
-  box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 10%,transparent)
+.candidate[contenteditable=true]:focus,
+.candidate[contenteditable=true]:focus-visible {
+  outline:none;
+  border-color:var(--accent);
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 9%,transparent)
+}
+.motion-snapshot {
+  position:absolute;
+  right:0;
+  bottom:0;
+  pointer-events:none;
+  user-select:none
+}
+.exit-ghost {
+  pointer-events:none;
+  user-select:none
 }
 .candidate.stale {
   color:var(--muted)
@@ -1126,6 +1140,7 @@ dialog p {
   const acceptKey = query.get('accept') && /^(Tab|F(?:[1-9]|1\d|2[0-4]))$/.test(query.get('accept')) ? query.get('accept') : 'Tab';
   const exitKey = query.get('exit') && /^(Esc|F(?:[1-9]|1\d|2[0-4]))$/.test(query.get('exit')) && query.get('exit') !== acceptKey ? query.get('exit') : 'Esc';
   const normalizeKey = key => key === 'Escape' ? 'Esc' : key;
+  let suppressSourceFocus = false;
   function notice(text) {
     $('sourceNotice').textContent = text;
     $('sourceNotice').hidden = !text;
@@ -1137,10 +1152,24 @@ dialog p {
     return state.enabled && state.session && state.targetSafe && !state.quarantined && state.ime === 'clear' && state.snapshot === source.value;
   }
   function canEdit() {
-    return eligible() && state.editAcknowledged && ['preview', 'pending'].includes(state.phase) && !!state.candidate.trim();
+    return eligible() && selectionMatches() && state.editAcknowledged && ['preview', 'pending'].includes(state.phase) && !!state.candidate.trim();
   }
   function canAccept() {
-    return eligible() && state.safePermit && !state.returnKeyHeld && ['preview', 'pending'].includes(state.phase) && !!state.candidate.trim() && document.activeElement === source;
+    return eligible() && selectionMatches() && state.safePermit && !state.returnKeyHeld && ['preview', 'pending'].includes(state.phase) && !!state.candidate.trim() && document.activeElement === source;
+  }
+  function currentSelection() {
+    const start = source.selectionStart, end = source.selectionEnd;
+    return end > start ? { start, end, text: source.value.slice(start, end), source: source.value } : null;
+  }
+  function selectionMatches() {
+    return state.selection
+      ? source.selectionStart === state.selection.start && source.selectionEnd === state.selection.end
+      : source.selectionStart === source.selectionEnd;
+  }
+  function focusSourceWithoutRestart() {
+    suppressSourceFocus = true;
+    try { source.focus({ preventScroll: true }); }
+    finally { suppressSourceFocus = false; }
   }
   function cancelPending() {
     clearTimeout(state.timer);
@@ -1154,12 +1183,32 @@ dialog p {
     state.editAcknowledged = false;
     state.returnKeyHeld = false;
   }
-  function hideImmediately() {
-    overlay.getAnimations().forEach(a => a.cancel());
-    inner.getAnimations().forEach(a => a.cancel());
-    overlay.hidden = true;
+  function clearVisualMotion() {
+    overlay.getAnimations().forEach(animation => animation.cancel());
+    inner.getAnimations().forEach(animation => animation.cancel());
+    document.querySelectorAll('.motion-snapshot, .exit-ghost').forEach(node => {
+      node.getAnimations().forEach(animation => animation.cancel());
+      node.remove();
+    });
   }
-  function syncGeometry(animate = true) {
+  function visualCopy(element, className) {
+    const copy = element.cloneNode(true);
+    copy.removeAttribute('id');
+    copy.querySelectorAll('[id]').forEach(node => node.removeAttribute('id'));
+    copy.classList.add(className);
+    copy.inert = true;
+    copy.setAttribute('aria-hidden', 'true');
+    return copy;
+  }
+  function hideImmediately() {
+    clearVisualMotion();
+    overlay.hidden = true;
+    candidate.contentEditable = 'false';
+    candidate.dataset.editable = 'false';
+    candidate.tabIndex = -1;
+    candidate.textContent = '';
+  }
+  function syncGeometry(animate = true, previousContent = null) {
     if (overlay.hidden) return;
     const old = overlay.getBoundingClientRect();
     const available = Math.max(140, Math.min(window.innerWidth - 32, $('composerWrap').getBoundingClientRect().right - 12));
@@ -1168,21 +1217,26 @@ dialog p {
     const width = Math.min(requested, available);
     inner.style.width = width + 'px';
     const height = Math.ceil(inner.getBoundingClientRect().height) + 2;
-    overlay.getAnimations().forEach(a => a.cancel());
+    const sameTarget = parseFloat(overlay.style.width) === width && parseFloat(overlay.style.height) === height;
+    if (sameTarget && overlay.getAnimations().some(animation => animation.playState === 'running')) return;
+    clearVisualMotion();
     overlay.style.width = width + 'px';
     overlay.style.height = height + 'px';
-    if (animate && !reduce.matches && old.width && Math.abs(old.width - width) + Math.abs(old.height - height) > 2) {
-      overlay.animate([{
-        width: old.width + 'px',
-        height: old.height + 'px'
-      }, {
-        width: width + 'px',
-        height: height + 'px'
-      }], {
-        duration: 280,
-        easing: 'cubic-bezier(.22,1,.36,1)'
-      });
+    const resized = old.width && Math.abs(old.width - width) + Math.abs(old.height - height) > 2;
+    if (!animate || reduce.matches || !resized) return;
+    // Fade the old text before resizing. Old hints cannot imply a permission that was revoked.
+    if (previousContent) {
+      previousContent.querySelectorAll('.overlay-foot, .head-right').forEach(node => node.style.visibility = 'hidden');
+      overlay.appendChild(previousContent);
+      previousContent.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 80, fill: 'forwards' })
+        .finished.then(() => previousContent.remove()).catch(() => {});
     }
+    overlay.animate([
+      { width: old.width + 'px', height: old.height + 'px' },
+      { width: width + 'px', height: height + 'px' }
+    ], { delay: 80, duration: 280, easing: 'cubic-bezier(.22,1,.36,1)', fill: 'backwards' });
+    // The live editor already owns input. Only its paint waits until the shell fits it.
+    inner.animate([{ opacity: 0 }, { opacity: 1 }], { delay: 360, duration: 120, fill: 'backwards' });
   }
   function render({
     animate = true,
@@ -1195,6 +1249,7 @@ dialog p {
       return;
     }
     const wasHidden = overlay.hidden;
+    const previousContent = !wasHidden && animate && !reduce.matches ? visualCopy(inner, 'motion-snapshot') : null;
     overlay.hidden = false;
     overlay.dataset.phase = state.phase;
     const compact = ['idle', 'paused'].includes(state.phase);
@@ -1223,19 +1278,19 @@ dialog p {
     candidate.setAttribute('aria-label', editing ? '编辑译文' : canEdit() ? '编辑译文' : '译文预览');
     candidate.setAttribute('aria-multiline', String(editing));
     candidate.tabIndex = editing || canEdit() ? 0 : -1;
-    if (!editing || focusEditor) candidate.textContent = state.candidate || '正在准备译文…';
+    if (!editing || focusEditor) candidate.textContent = state.candidate || (state.phase === 'translating' ? '正在准备译文…' : ['pending', 'returning'].includes(state.phase) ? '译文为空' : '');
     candidate.classList.toggle('stale', ['updating', 'partial', 'failed', 'locked', 'returning'].includes(state.phase));
-    $('editAffordance').hidden = !canEdit();
+    $('editAffordance').toggleAttribute('hidden', !canEdit());
     $('regenerateAction').disabled = !['preview', 'pending', 'editing', 'failed'].includes(state.phase) || !eligible();
     $('expandAction').disabled = !state.candidate;
     $('expandAction').setAttribute('aria-label', state.expanded ? '收起译文' : '展开译文');
     $('expandAction').title = state.expanded ? '收起译文' : '展开译文';
     $('acceptKey').textContent = acceptKey;
     $('exitKey').textContent = exitKey;
-    const canAcceptAfterFocus = eligible() && state.safePermit && !state.returnKeyHeld && ['preview', 'pending'].includes(state.phase) && !!state.candidate.trim();
+    const canAcceptAfterFocus = eligible() && selectionMatches() && state.safePermit && !state.returnKeyHeld && ['preview', 'pending'].includes(state.phase) && !!state.candidate.trim();
     $('acceptMeaning').textContent = editing ? '返回原输入框' : canAcceptAfterFocus ? '接受译文' : '交还应用';
     $('acceptHint').classList.toggle('accept', editing || canAcceptAfterFocus);
-    syncGeometry(animate && !wasHidden);
+    syncGeometry(animate && !wasHidden, previousContent);
     if (wasHidden && animate && !reduce.matches) inner.animate([{
       opacity: 0
     }, {
@@ -1335,14 +1390,14 @@ dialog p {
     const revision = ++state.revision;
     state.timer = setTimeout(() => {
       if (state.revision !== revision || state.phase !== 'returning') return;
-      if (!eligible() || !state.editAcknowledged || document.activeElement !== source) {
+      if (!eligible() || !selectionMatches() || !state.editAcknowledged || document.activeElement !== source) {
         endSession();
         return;
       }
       state.phase = 'pending';
       state.safePermit = !!state.candidate.trim();
       render();
-      announce('已返回原输入框。再按一次 ' + acceptKey + ' 接受。');
+      announce(state.candidate.trim() ? '已返回原输入框。再按一次 ' + acceptKey + ' 接受。' : '译文为空。请重新翻译或退出当前翻译。');
     }, 350);
   }
   function tryAccept() {
@@ -1384,15 +1439,27 @@ dialog p {
     announce('译文已替换到原输入框，未发送');
     return true;
   }
-  function endSession() {
+  function endSession({ userExit = false } = {}) {
+    const stable = !overlay.getAnimations().some(animation => animation.playState === 'running') && !inner.getAnimations().some(animation => animation.playState === 'running');
+    const fade = userExit && stable && state.targetSafe && state.ime === 'clear' && !state.quarantined && !reduce.matches && !overlay.hidden;
+    const ghost = fade ? visualCopy(overlay, 'exit-ghost') : null;
+    const bounds = fade ? overlay.getBoundingClientRect() : null;
     cancelPending();
     clearCandidate();
     state.session = false;
     state.phase = 'hidden';
     state.expanded = false;
-    render({
-      animate: false
-    });
+    render({ animate: false });
+    if (ghost) {
+      ghost.hidden = false;
+      ghost.style.width = bounds.width + 'px';
+      ghost.style.height = bounds.height + 'px';
+      ghost.querySelectorAll('.motion-snapshot').forEach(node => node.remove());
+      overlay.after(ghost);
+      // This callback only deletes a noninteractive visual copy; it cannot restore a session.
+      ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 160 })
+        .finished.then(() => ghost.remove()).catch(() => ghost.remove());
+    }
   }
   function pause() {
     cancelPending();
@@ -1604,6 +1671,16 @@ dialog p {
       returnToSource(false);
       return;
     }
+    if (!suppressSourceFocus && state.targetSafe && !state.quarantined) {
+      if (!state.enabled) {
+        state.phase = 'paused';
+        render({ animate: false });
+      } else if (state.mode === 'Automatic' && !state.session && state.phase === 'hidden') {
+        state.session = true;
+        state.selection = currentSelection();
+        beginTranslation({ preserve: false });
+      }
+    }
     updateReadout();
   });
   source.addEventListener('pointerdown', () => {
@@ -1633,6 +1710,15 @@ dialog p {
       preserve: true,
       manualPrefix
     });
+  });
+  source.addEventListener('select', () => {
+    if (document.activeElement !== source || !state.session || !state.enabled || !state.targetSafe || state.quarantined || state.ime !== 'clear' || ['editing', 'returning'].includes(state.phase)) return;
+    const next = currentSelection(), previous = state.selection;
+    if ((!next && !previous) || (next && previous && next.start === previous.start && next.end === previous.end && next.source === previous.source)) return;
+    state.selection = next;
+    state.manual = '';
+    // Selection changes revoke the old candidate synchronously, before the new translation starts.
+    beginTranslation({ preserve: false, delay: 420 });
   });
   source.addEventListener('compositionstart', () => {
     cancelPending();
@@ -1705,10 +1791,8 @@ dialog p {
     if ($('regenerateDialog').open) return;
     if (normalizeKey(event.key) === exitKey && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey && state.session) {
       event.preventDefault();
-      endSession();
-      source.focus({
-        preventScroll: true
-      });
+      endSession({ userExit: true });
+      focusSourceWithoutRestart();
       announce('已退出当前翻译');
     }
     if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.key === 'F9') {
@@ -1725,10 +1809,8 @@ dialog p {
     }
   });
   $('exitAction').onclick = () => {
-    endSession();
-    source.focus({
-      preventScroll: true
-    });
+    endSession({ userExit: true });
+    focusSourceWithoutRestart();
   };
   $('capsuleExit').onclick = $('exitAction').onclick;
   $('pauseAction').onclick = () => state.enabled ? pause() : resume();
@@ -1782,17 +1864,16 @@ dialog p {
   };
   window.addEventListener('resize', () => syncGeometry(false));
   reduce.addEventListener('change', () => {
-    overlay.getAnimations().forEach(a => a.cancel());
-    inner.getAnimations().forEach(a => a.cancel());
+    clearVisualMotion();
     updateReadout();
   });
   // Browser focus is a demonstration boundary, not proof of a desktop permission. Controls stay outside the product shell.
   document.addEventListener('focusin', event => {
     if (event.target === source || overlay.contains(event.target) || $('demoControls').contains(event.target) || $('regenerateDialog').contains(event.target)) return;
-    if (state.session) endSession();
+    if (state.session || state.phase === 'paused' || document.querySelector('.exit-ghost')) endSession();
   });
   window.addEventListener('blur', () => {
-    if (state.session) endSession();
+    if (state.session || state.phase === 'paused' || document.querySelector('.exit-ghost')) endSession();
   });
   document.documentElement.dataset.theme = query.get('theme') === 'dark' ? 'dark' : 'light';
   $('demoTheme').value = document.documentElement.dataset.theme;
