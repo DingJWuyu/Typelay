@@ -2,6 +2,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Media.Imaging;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -370,101 +371,112 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             double fontSize = editor.FontSize;
             double lineHeight = editor.GetRectFromCharacterIndex(2).Height;
             Assert.InRange(editor.ActualHeight, 159, 161);
-            ToggleExpansion(overlay, expand: true);
-            overlay.Render(session, settings, true, context: context);
-            Assert.Equal(compact, Bounds(overlay));
             var expansion = new List<(int Left, int Top, int Width, int Height)> { compact };
             var images = new List<BitmapSource> { CaptureScreenshot(overlay) };
             var expansionSamples = new List<object>();
-            var motionClock = System.Diagnostics.Stopwatch.StartNew();
-            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
-            {
-                overlay.UpdateLayout();
-                var bounds = Bounds(overlay);
-                expansion.Add(bounds);
-                expansionSamples.Add(new
-                {
-                    elapsedMs = motionClock.Elapsed.TotalMilliseconds,
-                    bounds.Left,
-                    bounds.Top,
-                    bounds.Width,
-                    bounds.Height,
-                    bodyHeight = editor.ActualHeight,
-                    fontSize = editor.FontSize,
-                    sourceFocused = input.IsKeyboardFocused
-                });
-                Assert.Equal(compact.Left, bounds.Left);
-                Assert.Equal(compact.Width, bounds.Width);
-                Assert.Equal(above ? compact.Top + compact.Height : compact.Top,
-                    above ? bounds.Top + bounds.Height : bounds.Top);
-                Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
-                Assert.True(input.IsKeyboardFocused);
-                Assert.Same(editor, Descendants(overlay).OfType<TextBox>().Single());
-                Assert.Equal(preview, editor.Text);
-                Assert.Equal(fontSize, editor.FontSize);
-                Assert.Equal(lineHeight, editor.GetRectFromCharacterIndex(2).Height);
-                Assert.True(editor.RenderTransform.Value.IsIdentity);
-                Assert.True(editor.LayoutTransform.Value.IsIdentity);
-                AssertNativeSize(overlay);
-                foreach (var label in Descendants(overlay).OfType<TextBlock>().Where(label => label.IsVisible))
-                    AssertTextFullyVisible(label, overlay);
-                // Capture a bounded sequence from real intermediate geometry,
-                // rather than a recreated animation or final-state montage.
-                if (above && images.Count < 4 && bounds.Height > compact.Height + images.Count * 30)
-                    images.Add(CaptureScreenshot(overlay));
-            });
-            var expanded = Bounds(overlay);
-            Assert.True(expanded.Height > compact.Height + 100);
-            AssertContinuousHeight(expansion, increasing: true);
-            AssertEditorTextFullyVisible(editor);
-            if (above)
-            {
-                images.Add(CaptureScreenshot(overlay));
-                for (int index = 0; index < images.Count; index++)
-                    SaveScreenshot(images[index], $"overlay-height-expand-{index:00}.png");
-            }
-
-            ToggleExpansion(overlay, expand: false);
-            overlay.Render(session, settings, false, context: context);
-            Assert.Equal(expanded, Bounds(overlay));
-            Assert.Contains("交还应用", VisibleLabels(overlay));
-            var collapse = new List<(int Left, int Top, int Width, int Height)> { expanded };
             var collapseSamples = new List<object>();
-            motionClock.Restart();
-            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
+            var motionClock = new System.Diagnostics.Stopwatch();
+            string phase = "opening";
+            try
             {
-                overlay.UpdateLayout();
-                var bounds = Bounds(overlay);
-                collapse.Add(bounds);
-                collapseSamples.Add(new
+                await ToggleExpansion(overlay, expand: true);
+                overlay.Render(session, settings, true, context: context);
+                Assert.Equal(compact, Bounds(overlay));
+                phase = "expanding";
+                motionClock.Restart();
+                await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
                 {
-                    elapsedMs = motionClock.Elapsed.TotalMilliseconds,
-                    bounds.Left,
-                    bounds.Top,
-                    bounds.Width,
-                    bounds.Height,
-                    bodyHeight = editor.ActualHeight,
-                    fontSize = editor.FontSize,
-                    sourceFocused = input.IsKeyboardFocused
+                    overlay.UpdateLayout();
+                    var bounds = Bounds(overlay);
+                    expansion.Add(bounds);
+                    expansionSamples.Add(new
+                    {
+                        elapsedMs = motionClock.Elapsed.TotalMilliseconds,
+                        bounds.Left,
+                        bounds.Top,
+                        bounds.Width,
+                        bounds.Height,
+                        bodyHeight = editor.ActualHeight,
+                        fontSize = editor.FontSize,
+                        sourceFocused = input.IsKeyboardFocused
+                    });
+                    // Save the real frame before its assertions, including a
+                    // failure frame, without enlarging the five-image budget.
+                    if (above && images.Count < 4 && (images.Count == 1 || bounds.Height > compact.Height + images.Count * 30))
+                        images.Add(CaptureScreenshot(overlay));
+                    Assert.Equal(compact.Left, bounds.Left);
+                    Assert.Equal(compact.Width, bounds.Width);
+                    Assert.Equal(above ? compact.Top + compact.Height : compact.Top,
+                        above ? bounds.Top + bounds.Height : bounds.Top);
+                    Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+                    Assert.True(input.IsKeyboardFocused);
+                    Assert.Same(editor, Descendants(overlay).OfType<TextBox>().Single());
+                    Assert.Equal(preview, editor.Text);
+                    Assert.Equal(fontSize, editor.FontSize);
+                    Assert.Equal(lineHeight, editor.GetRectFromCharacterIndex(2).Height);
+                    Assert.True(editor.RenderTransform.Value.IsIdentity);
+                    Assert.True(editor.LayoutTransform.Value.IsIdentity);
+                    AssertNativeSize(overlay);
+                    foreach (var label in Descendants(overlay).OfType<TextBlock>().Where(label => label.IsVisible))
+                        AssertTextFullyVisible(label, overlay);
                 });
-                Assert.Equal(compact.Left, bounds.Left);
-                Assert.Equal(compact.Width, bounds.Width);
-                Assert.Equal(above ? compact.Top + compact.Height : compact.Top,
-                    above ? bounds.Top + bounds.Height : bounds.Top);
-                Assert.InRange(editor.ActualHeight, 159, 315);
-                Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
-                Assert.True(input.IsKeyboardFocused);
-            });
-            Assert.Equal(compact, Bounds(overlay));
-            AssertContinuousHeight(collapse, increasing: false);
-            Assert.InRange(editor.ActualHeight, 159, 161);
-            Assert.Equal("Source text", input.Text);
-            File.WriteAllText(Path.Combine(RenderingDirectory(), $"overlay-height-{(above ? "above" : "below")}.json"),
-                System.Text.Json.JsonSerializer.Serialize(new
+                var expanded = Bounds(overlay);
+                Assert.True(expanded.Height > compact.Height + 100);
+                AssertContinuousHeight(expansion, increasing: true);
+                AssertEditorTextFullyVisible(editor);
+                if (above)
+                    images.Add(CaptureScreenshot(overlay));
+
+                phase = "collapsing";
+                await ToggleExpansion(overlay, expand: false);
+                overlay.Render(session, settings, false, context: context);
+                Assert.Equal(expanded, Bounds(overlay));
+                Assert.Contains("交还应用", VisibleLabels(overlay));
+                var collapse = new List<(int Left, int Top, int Width, int Height)> { expanded };
+                motionClock.Restart();
+                await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
                 {
-                    expansion = expansionSamples,
-                    collapse = collapseSamples
-                }));
+                    overlay.UpdateLayout();
+                    var bounds = Bounds(overlay);
+                    collapse.Add(bounds);
+                    collapseSamples.Add(new
+                    {
+                        elapsedMs = motionClock.Elapsed.TotalMilliseconds,
+                        bounds.Left,
+                        bounds.Top,
+                        bounds.Width,
+                        bounds.Height,
+                        bodyHeight = editor.ActualHeight,
+                        fontSize = editor.FontSize,
+                        sourceFocused = input.IsKeyboardFocused
+                    });
+                    Assert.Equal(compact.Left, bounds.Left);
+                    Assert.Equal(compact.Width, bounds.Width);
+                    Assert.Equal(above ? compact.Top + compact.Height : compact.Top,
+                        above ? bounds.Top + bounds.Height : bounds.Top);
+                    Assert.InRange(editor.ActualHeight, 159, 315);
+                    Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+                    Assert.True(input.IsKeyboardFocused);
+                });
+                Assert.Equal(compact, Bounds(overlay));
+                AssertContinuousHeight(collapse, increasing: false);
+                Assert.InRange(editor.ActualHeight, 159, 161);
+                Assert.Equal("Source text", input.Text);
+                phase = "complete";
+            }
+            finally
+            {
+                File.WriteAllText(Path.Combine(RenderingDirectory(), $"overlay-height-{(above ? "above" : "below")}.json"),
+                    System.Text.Json.JsonSerializer.Serialize(new
+                    {
+                        phase,
+                        expansion = expansionSamples,
+                        collapse = collapseSamples
+                    }));
+                if (above)
+                    for (int index = 0; index < images.Count; index++)
+                        SaveScreenshot(images[index], $"overlay-height-expand-{index:00}.png");
+            }
         });
     }
 
@@ -549,7 +561,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             overlay.UpdateLayout();
             var editor = Descendants(overlay).OfType<TextBox>().Single();
             int compactHeight = Bounds(overlay).Height;
-            ToggleExpansion(overlay, expand: true);
+            await ToggleExpansion(overlay, expand: true);
             overlay.Render(session, settings, true, context: context);
             await ObserveRenderingFor(TimeSpan.FromMilliseconds(60));
             Assert.True(Bounds(overlay).Height > compactHeight);
@@ -625,7 +637,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 Assert.True(editor.IsKeyboardFocused);
                 Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
             }
-            ToggleExpansion(overlay, expand: true);
+            await ToggleExpansion(overlay, expand: true);
             overlay.Render(session, settings, false, context: context);
             var expansion = new List<(int Left, int Top, int Width, int Height)> { compact };
             await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
@@ -636,7 +648,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             });
             AssertContinuousHeight(expansion, increasing: true);
             var expanded = Bounds(overlay);
-            ToggleExpansion(overlay, expand: false);
+            await ToggleExpansion(overlay, expand: false);
             overlay.Render(session, settings, false, context: context);
             await ObserveRenderingFor(TimeSpan.FromMilliseconds(60), AssertDraft);
             Assert.True(Bounds(overlay).Height < expanded.Height);
@@ -651,7 +663,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 Assert.Equal(compact, Bounds(overlay));
                 AssertDraft();
             });
-            ToggleExpansion(overlay, expand: true);
+            await ToggleExpansion(overlay, expand: true);
             overlay.Render(session, settings, false, context: context);
             Assert.Equal(expanded, Bounds(overlay));
             AssertDraft();
@@ -1576,20 +1588,52 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         return directory;
     }
 
-    private static void ToggleExpansion(OverlayWindow overlay, bool expand)
+    private static async Task ToggleExpansion(OverlayWindow overlay, bool expand)
     {
-        Descendants(overlay).OfType<Button>().Single(button => Equals(button.Content, "⋯"))
-            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        // Use the controls' public automation actions. Raising Click directly
+        // skips MenuItem's PreviewClick/menu-mode exit and focus restoration.
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(3));
+        var more = Descendants(overlay).OfType<Button>().Single(button => Equals(button.Content, "⋯"));
+        var opened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        RoutedEventHandler onMoreClick = (_, _) => opened.TrySetResult();
+        more.Click += onMoreClick;
+        try
+        {
+            var invoke = Assert.IsAssignableFrom<IInvokeProvider>(new ButtonAutomationPeer(more).GetPattern(PatternInterface.Invoke));
+            invoke.Invoke();
+            await opened.Task.WaitAsync(deadline.Token);
+        }
+        finally { more.Click -= onMoreClick; }
         var menu = PresentationSource.CurrentSources.OfType<HwndSource>()
             .Select(value => value.RootVisual).OfType<DependencyObject>()
             .SelectMany(root => Descendants(root).Prepend(root))
             .OfType<ContextMenu>().Single(control => control.IsOpen);
+        MenuItem? item = null;
+        var clicked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        RoutedEventHandler onClick = (_, _) => clicked.TrySetResult();
+        RoutedEventHandler onClosed = (_, _) => closed.TrySetResult();
         try
         {
-            menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, expand ? "展开编辑面板" : "收起编辑面板"))
-                .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+            item = menu.Items.OfType<MenuItem>().Single(value => Equals(value.Header, expand ? "展开编辑面板" : "收起编辑面板"));
+            item.Click += onClick;
+            menu.Closed += onClosed;
+            var invoke = Assert.IsAssignableFrom<IInvokeProvider>(new MenuItemAutomationPeer(item).GetPattern(PatternInterface.Invoke));
+            invoke.Invoke();
+            await Task.WhenAll(clicked.Task, closed.Task).WaitAsync(deadline.Token);
+            Assert.False(menu.IsOpen);
         }
-        finally { menu.IsOpen = false; }
+        finally
+        {
+            if (item is not null)
+                item.Click -= onClick;
+            menu.Closed -= onClosed;
+            // Only failed interactions need cleanup; successful invocation
+            // closes the popup through WPF, without any manual focus repair.
+            if (menu.IsOpen)
+                menu.IsOpen = false;
+        }
     }
 
     private static void AssertContinuousHeight(List<(int Left, int Top, int Width, int Height)> frames, bool increasing)

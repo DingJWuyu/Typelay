@@ -20,7 +20,9 @@ Chrome 新标签页中央的 Google / Ask Google 搜索框与 google.com 普通�
 
 展开/收起和更多操作的形变使用当前封闭 Shadow Root 的同一壳体与 textarea，约 280ms。正文、提示和编辑状态在新视图到达时立即更新；不保留旧正文副本。原生布局逐帧保留 header/footer 可见，文字不缩放；同侧锚和右侧锚无法保持、动画 API 不可用或浏览器报告 `prefers-reduced-motion: reduce` 时直接最终落位。新视图、源/视口几何改变或隐藏取消旧动画，续租不重播，动画不更新接受资格或显示期限。隐藏同步清空原编辑器，没有退出残影或延迟恢复。
 
-DOM 回归复用同一 fixture 与固定动态视口，有限 RAF 几何和 Chromium screencast 帧进入 `artifacts/linux/browser-native/overlay/motion`；覆盖中间帧/锚与源焦点、新视图即时替换、快速反转和续期、Esc/安全隐藏后不复活、中文草稿选区与原生撤销及两阶段返回、浏览器减少动态效果。帧截图需亲看，对应提交的动态测试未执行时不能将这些源码断言当成视觉通过。
+DOM 回归复用同一 fixture 与固定动态视口，有限 RAF 几何和 Chromium screencast 帧进入 `artifacts/linux/browser-native/overlay/motion`。[722691b 的实际 CI](https://github.com/DingJWuyu/Typelay/actions/runs/38694649702)已通过中间帧/锚与源焦点、新视图即时替换、快速展开/收起和续期、Esc/安全隐藏后不复活、中文草稿选区与原生撤销及两阶段返回、浏览器减少动态效果检查。同轮浏览器原生消息与生产桌面步骤也通过，但不以它们代替 DOM 动效的逐帧证据。
+
+已核验展开序列的 22 个 RAF 样本与 9 张实绘帧：壳体从 480×254 连续变化至 520×454，原 textarea 高度从 160 变化至 360；右侧和底侧锚偏差不超过 1/64 像素，源焦点始终保留，header/footer 留在壳体内，文字只重排、不缩放。静态与中间态图像均已查看，未发现旧正文副本或控件裁切。保存的序列只有展开，不能证明快速反转在原 280ms 截止前实际改变方向；该项目前只有交互及最终状态断言通过。其它行为通过也不等于 Firefox、物理输入法或任意网页已经取得同样的逐帧视觉证据。
 
 ## 接受时效与诊断
 
@@ -101,6 +103,6 @@ xvfb-run -a python tests/linux/firefox_native_e2e.py --package artifacts/linux/p
 
 该检查在临时 HOME 安装发行包，显式加载测试扩展，再通过生产连接操作读取唯一的实际扩展记录并注册，使用真实后台脚本、native messaging、host wrapper 与 socket，验证首次握手、重连、跨标签页路由及控件销毁身份；完成后关闭整个测试浏览器并删除临时目录。socket 对端只提供测试用元数据批准，不是假翻译器，也不代表 niri 前台身份或模型链路验收。
 
-DOM 检查包括默认键与 F1/F12/F24 的配置回显、缺失/旧代拒绝、预先按住未绑定键后切配置、旧 keyup 归属和编辑返回后第二次独立按下；4a499d0 的 DOM 32 项均通过，包括 CDP 投递的可信 F24 down/repeat/up/down/up 序列；同轮 Chromium/Firefox 本地主机链也通过。既有检查覆盖未知 IME、可信输入后的接受、旧原文、DOM 重建、组合撤销、UTF-16 选区、网页重入改写、密码字段和合成 Tab 拒绝。单独的 DOM 检查不验证 Firefox、native messaging 安装路由、niri 前台身份、物理中文 IME、真实键盘、撤销栈或视觉一致性。Chromium 进程无法启动时检查失败，不跳过成成功。上述未覆盖项仍需对应真实环境验证。
+DOM 检查包括默认键与 F1/F12/F24 的配置回显、缺失/旧代拒绝、预先按住未绑定键后切配置、旧 keyup 归属和编辑返回后第二次独立按下；4a499d0 的 DOM 32 项均通过，包括 CDP 投递的可信 F24 down/repeat/up/down/up 序列；同轮 Chromium/Firefox 本地主机链也通过。既有检查覆盖未知 IME、可信输入后的接受、旧原文、DOM 重建、组合撤销、UTF-16 选区、网页重入改写、密码字段和合成 Tab 拒绝。单独的 DOM 检查不验证 Firefox、native messaging 安装路由、niri 前台身份、物理中文 IME、真实键盘、任意网页源框撤销栈或跨环境视觉一致性。Chromium 进程无法启动时检查失败，不跳过成成功。上述未覆盖项仍需对应真实环境验证。
 
 底层依据：[Chromium 启动地址校验](https://github.com/chromium/chromium/blob/154.0.8037.97/chrome/browser/ui/startup/url_util.cc)、[native messaging](https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Native_messaging)、[Chrome native messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)、[标准字段 setRangeText](https://developer.mozilla.org/en-US/docs/Web/API/HTMLInputElement/setRangeText)、[compositionstart](https://developer.mozilla.org/en-US/docs/Web/API/Element/compositionstart_event)。

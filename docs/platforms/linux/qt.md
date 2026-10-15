@@ -20,7 +20,9 @@ Qt 6.11.2 与固定 Fcitx Qt 5.1.15 的隔离 Wayland/niri 链路已有实际模
 
 展开/收起只在当前原生 `QPlainTextEdit` 上改变高度，约 280ms，宽度不变；右侧与上方底侧（或下方顶侧）锚保持不变。父窗口边缘需要换侧或裁限时直接落位。现有展开通知与显示续期保持；宿主仅对该次展开排队的下一份视图附一次性 `visualExpansionFrom` 标记，后续排队覆盖、发送前消费。客户端只在完整目标、代次、源/编辑器实例、父窗口、几何、全文视图与主题都未变时沿原结束时刻继续几何，标记不提供接受或编辑资格。其它新视图直接取消旧动效；续租不会重播。所有隐藏先取消动画并清正文，没有退出残影或完成后恢复/聚焦。
 
-减少动态效果通过当前 Qt 样式的公开 `QStyle::SH_Widget_Animation_Duration` 读取，零值直接最终布局。Qt 6.11 的公开 `QAccessibilityHints` 仅提供对比度偏好，没有通用减少动态效果属性；此实现不能保证每个 Linux 桌面/样式都转发系统偏好。依据：[QStyle](https://doc.qt.io/qt-6.11/qstyle.html)、[QAccessibilityHints](https://doc.qt.io/qt-6.11/qaccessibilityhints.html)。桌面 fixture 的有限控件实绘帧与几何进入现有输出目录 `qt-motion-*`，包含真实样式零值、展开/反转、续期、新编辑视图、隐藏取消、中文选区与后续原生撤销/两阶段返回；新增场景需由对应提交实际运行，不以源码或旧截图标为通过。
+减少动态效果通过当前 Qt 样式的公开 `QStyle::SH_Widget_Animation_Duration` 读取，零值直接最终布局。Qt 6.11 的公开 `QAccessibilityHints` 仅提供对比度偏好，没有通用减少动态效果属性；此实现不能保证每个 Linux 桌面/样式都转发系统偏好。依据：[QStyle](https://doc.qt.io/qt-6.11/qstyle.html)、[QAccessibilityHints](https://doc.qt.io/qt-6.11/qaccessibilityhints.html)。桌面 fixture 的有限控件实绘帧与几何进入现有输出目录 `qt-motion-*`，用于检查真实样式零值、展开/反转、续期、新编辑视图、隐藏取消、中文选区与后续原生撤销/两阶段返回。
+
+当前动效尚未通过完整真实桌面验收。[722691b 的实际 CI](https://github.com/DingJWuyu/Typelay/actions/runs/38694649702)在首次展开时收到空原生捕获结果，宿主撤下原浮层；原控件记录从 50ms 起已不可见且原引用失效，测试因缺少原编辑器高度而失败。后续截图显示的是新浮层，不能作为原控件连续形变的证据；快速反转、减少动态效果、显式安全隐藏、动效中的中文草稿/撤销与两阶段返回均未到达。该次捕获整段耗时 507ms，开始时间早于点击及首帧截图约 469ms；现日志不能细分 describe、策略批准和 capture，也未测量同步截图/PNG 写盘负载，不能归因为截图、既有超时或动画。保持原安全撤下与原期限，不跨已隐藏的控件续播；既有静态 UI 与旧桌面通过记录不补足这些缺证。
 
 ## 输入法与写回边界
 
