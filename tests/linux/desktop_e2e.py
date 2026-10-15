@@ -3289,9 +3289,11 @@ def run(arguments):
                     practice_action(automatic_view["cancelLabel"])
                     assert json.loads(paths.settings.read_text())["Mode"] == 1
                     practice_action(automatic_view["startLabel"])
+                    confirmation_deadline = time.monotonic() + 15
                     cancel = wait_for(
                         lambda: named(managed_window["pid"], automatic_view["cancelLabel"]),
                         "automatic lesson confirmation missing",
+                        timeout=confirmation_deadline - time.monotonic(),
                     )
                     actions = cancel.get_parent()
                     confirm = next(
@@ -3300,11 +3302,39 @@ def run(arguments):
                         if actions.get_child_at_index(index).get_name()
                         == automatic_view["startLabel"]
                     )
-                    assert Atspi.Action.do_action(confirm.get_action_iface(), 0)
+                    wait_for(
+                        lambda: (focused(confirm) or focused(cancel))
+                        and any(
+                            window.get("pid") == managed_window["pid"]
+                            and window["id"] != managed_window["id"]
+                            and window.get("is_focused") is True
+                            for window in contents(request("Windows"), "Windows")
+                        ),
+                        "automatic confirmation did not focus either action",
+                        timeout=confirmation_deadline - time.monotonic(),
+                    )
+                    if not focused(confirm):
+                        key("Tab")
+                    wait_for(
+                        lambda: focused(confirm)
+                        and confirm.get_state_set().contains(Atspi.StateType.SHOWING)
+                        and any(
+                            window.get("pid") == managed_window["pid"]
+                            and window["id"] != managed_window["id"]
+                            and window.get("is_focused") is True
+                            for window in contents(request("Windows"), "Windows")
+                        ),
+                        "automatic confirmation lacks actual dialog keyboard focus",
+                        timeout=confirmation_deadline - time.monotonic(),
+                    )
+                    # As with Connect above, activate only this observed button
+                    # through niri's real seat input, not an AT-SPI clicked signal.
+                    key("space")
                     wait_for(
                         lambda: json.loads(paths.settings.read_text())["Mode"] == 0
                         and focused(source),
                         "confirmed automatic lesson did not switch mode and return to source",
+                        timeout=confirmation_deadline - time.monotonic(),
                     )
                     assert json.loads(paths.settings.read_text())["ExperimentalWriteback"] is False
                     key("ctrl+a")

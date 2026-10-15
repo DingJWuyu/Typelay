@@ -19,11 +19,14 @@ public sealed class PracticeProgressPipeTests
             "win32-edit-transaction-v2", "1.2.3", Guid.NewGuid());
         var progress = new OnDemandPracticeProgress(Guid.NewGuid(), target.Id, Guid.NewGuid(), 17, 28, true, true);
         using var stream = new MemoryStream();
-        await PracticeProgressPipe.WriteAsync(stream, progress, TestContext.Current.CancellationToken);
-        await PracticeProgressPipe.WriteAsync(stream, null, TestContext.Current.CancellationToken);
+        var connection = Guid.NewGuid();
+        var update = new PracticeMessage("progress", connection, progress.RunId, 1, progress);
+        var retire = new PracticeMessage("retire", connection, progress.RunId, 2);
+        await PracticeProgressPipe.WriteAsync(stream, update, TestContext.Current.CancellationToken);
+        await PracticeProgressPipe.WriteAsync(stream, retire, TestContext.Current.CancellationToken);
         stream.Position = 0;
-        Assert.Equal(progress, await PracticeProgressPipe.ReadAsync(stream, TestContext.Current.CancellationToken));
-        Assert.Null(await PracticeProgressPipe.ReadAsync(stream, TestContext.Current.CancellationToken));
+        Assert.Equal(update, await PracticeProgressPipe.ReadAsync(stream, TestContext.Current.CancellationToken));
+        Assert.Equal(retire, await PracticeProgressPipe.ReadAsync(stream, TestContext.Current.CancellationToken));
         Assert.Equal(stream.Length, stream.Position);
     }
 
@@ -63,15 +66,15 @@ public sealed class PracticeProgressPipeTests
         await Assert.ThrowsAsync<EndOfStreamException>(() => PracticeProgressPipe.ReadAsync(stream, TestContext.Current.CancellationToken));
     }
 
-    [Fact]
-    public async Task OnlyTheExplicitRestartByteIsAccepted()
+    [Theory]
+    [InlineData("restart", 0)]
+    [InlineData("unknown", 1)]
+    [InlineData("retired", -1)]
+    public async Task MissingSequenceOrUnknownControlCannotBecomeAnAcknowledgement(string kind, long sequence)
     {
         using var stream = new MemoryStream();
-        await PracticeProgressPipe.WriteRestartAsync(stream, TestContext.Current.CancellationToken);
-        Assert.Equal(new byte[] { 1 }, stream.ToArray());
-        stream.Position = 0;
-        await PracticeProgressPipe.ReadRestartAsync(stream, TestContext.Current.CancellationToken);
-        using var unknown = new MemoryStream(new byte[] { 2 });
-        await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.ReadRestartAsync(unknown, TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(stream,
+            new(kind, Guid.NewGuid(), Guid.NewGuid(), sequence), TestContext.Current.CancellationToken));
+        Assert.Equal(0, stream.Length);
     }
 }

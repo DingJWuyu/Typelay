@@ -5,22 +5,24 @@ using TypeLay.Runtime;
 
 namespace TypeLay.Windows;
 
-// Private inherited stdio, carrying only progress metadata and an explicit restart.
-// It is not an input capability, a settings writer, or a source-text transport.
+// Private inherited stdio. Control and acknowledgements are reliable, bound to
+// this one child connection, run and nonzero sequence. No source text travels here.
+internal sealed record PracticeMessage(string Kind, Guid Connection, Guid Run, long Sequence,
+    OnDemandPracticeProgress? Progress = null);
+
 internal static class PracticeProgressPipe
 {
     private const int MaximumBytes = 4096;
-    private const byte Restart = 1;
     private static readonly JsonSerializerOptions Json = new()
     {
         MaxDepth = 8,
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
-    private sealed record Message(OnDemandPracticeProgress? Progress);
 
-    public static async Task WriteAsync(Stream stream, OnDemandPracticeProgress? progress, CancellationToken cancellation)
+    public static async Task WriteAsync(Stream stream, PracticeMessage message, CancellationToken cancellation)
     {
-        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(new Message(progress), Json);
+        Validate(message);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(message, Json);
         if (payload.Length > MaximumBytes)
             throw new InvalidDataException("practice-progress-size");
         byte[] prefix = new byte[4];
@@ -30,7 +32,7 @@ internal static class PracticeProgressPipe
         await stream.FlushAsync(cancellation).ConfigureAwait(false);
     }
 
-    public static async Task<OnDemandPracticeProgress?> ReadAsync(Stream stream, CancellationToken cancellation)
+    public static async Task<PracticeMessage> ReadAsync(Stream stream, CancellationToken cancellation)
     {
         byte[] prefix = new byte[4];
         await stream.ReadExactlyAsync(prefix, cancellation).ConfigureAwait(false);
@@ -39,21 +41,17 @@ internal static class PracticeProgressPipe
             throw new InvalidDataException("practice-progress-size");
         byte[] payload = new byte[length];
         await stream.ReadExactlyAsync(payload, cancellation).ConfigureAwait(false);
-        return (JsonSerializer.Deserialize<Message>(payload, Json)
-            ?? throw new InvalidDataException("practice-progress-message")).Progress;
+        var message = JsonSerializer.Deserialize<PracticeMessage>(payload, Json)
+            ?? throw new InvalidDataException("practice-progress-message");
+        Validate(message);
+        return message;
     }
 
-    public static async Task ReadRestartAsync(Stream stream, CancellationToken cancellation)
+    private static void Validate(PracticeMessage message)
     {
-        byte[] command = new byte[1];
-        await stream.ReadExactlyAsync(command, cancellation).ConfigureAwait(false);
-        if (command[0] != Restart)
-            throw new InvalidDataException("practice-progress-command");
-    }
-
-    public static async Task WriteRestartAsync(Stream stream, CancellationToken cancellation)
-    {
-        await stream.WriteAsync(new byte[] { Restart }, cancellation).ConfigureAwait(false);
-        await stream.FlushAsync(cancellation).ConfigureAwait(false);
+        if (message.Connection == Guid.Empty || message.Run == Guid.Empty || message.Sequence <= 0
+            || message.Kind is not ("begin" or "retire" or "started" or "retired" or "restart" or "closed" or "progress")
+            || (message.Kind == "progress" ? message.Progress?.RunId != message.Run : message.Progress is not null))
+            throw new InvalidDataException("practice-progress-message");
     }
 }

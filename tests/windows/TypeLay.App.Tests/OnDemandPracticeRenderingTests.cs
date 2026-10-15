@@ -178,6 +178,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             unrelated.Open(path);
             nint otherRoot = await Window(other!);
             host.Open(path);
+            await Until(() => controller.PracticeProgress is not null);
             Guid firstRun = controller.PracticeProgress!.RunId;
             nint root = await Window(child!);
             nint field = GetDlgItem(root, 101);
@@ -194,15 +195,17 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             Assert.Equal((long)field, target.ControlHwnd);
             Assert.Equal("win32-edit-transaction-v2", target.Provider);
             Assert.NotEqual(Guid.Empty, target.Lifetime);
+            nint firstCookie = N.GetProp(field, "TypeLay.NativeInput.Lifetime.v2");
+            Assert.NotEqual(nint.Zero, firstCookie);
 
+            await Focus(otherRoot);
             settings.Update(settings.Value with
             {
                 Theme = "dark"
             });
             Assert.Null(controller.PracticeProgress);
-            await Until(() => N.ReadText(GetDlgItem(root, 103), 4096)
-                == OnDemandPracticePresentation.Create(settings.Value).ProgressNotice);
-            await Focus(otherRoot);
+            // A click may cross the already-sent retirement. It must wait for
+            // that ACK rather than disconnect or begin on the old lifetime.
             N.Send(GetDlgItem(root, 102), 0x00f5); // Click the real restart button without changing source focus.
             await Until(() => controller.PracticeProgress is { Target: null } progress && progress.RunId != firstRun);
             Guid secondRun = controller.PracticeProgress!.RunId;
@@ -215,6 +218,8 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             await Focus(root);
             await Until(() => controller.PracticeProgress?.Target is not null);
             Assert.Equal(secondRun, controller.PracticeProgress!.RunId);
+            Assert.NotEqual(firstCookie, N.GetProp(field, "TypeLay.NativeInput.Lifetime.v2"));
+            Assert.NotEqual(nint.Zero, N.GetProp(field, "TypeLay.NativeInput.Lifetime.v2"));
             Assert.False(controller.PracticeProgress.PreviewCompleted);
             Assert.False(controller.PracticeProgress.DirectReplacementCompleted);
 
@@ -222,6 +227,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             await child.Process.WaitForExitAsync(deadline.Token);
             await Until(() => controller.PracticeProgress is null);
             host.Open(path);
+            await Until(() => controller.PracticeProgress is not null);
             Assert.NotEqual(secondRun, controller.PracticeProgress!.RunId);
             Assert.False(controller.PracticeProgress.Completed);
             Assert.Equal(WorkMode.OnDemand, settings.Value.Mode);

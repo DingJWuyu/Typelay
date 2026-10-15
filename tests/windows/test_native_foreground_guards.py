@@ -71,7 +71,13 @@ class NativeForegroundGuardTests(unittest.TestCase):
                     [compiler, *flags, str(source), "-Wl,--gc-sections", "-o", str(executable)]
                 )
             result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=5)
-            cases = {1: "unchanged positive control", 2: "focus", 3: "selection", 4: "deadline"}
+            cases = {
+                1: "unchanged positive control",
+                2: "focus",
+                3: "selection",
+                4: "deadline",
+                5: "owned lifetime retirement",
+            }
             self.assertEqual(
                 result.returncode,
                 0,

@@ -6,6 +6,10 @@ import subprocess
 
 QT_BASELINE = "d607db1b8a3fc882cfd4a9c19a6e454d9b610189"
 SETTINGS_BASELINE = "79965d49ea1ed8494fa917cd2a3ffb669b3e093a"
+PRACTICE_PATHS = {
+    "src/linux/desktop/practice.py",
+    "tests/linux/practice_window.py",
+}
 LINUX_PATHS = ("src/linux/", "tests/linux/", "eng/linux/", "packaging/linux/")
 WINDOWS_PATHS = ("src/windows/", "tests/windows/", "eng/windows/", "packaging/windows/")
 QT_PATHS = re.compile(
@@ -112,13 +116,13 @@ def settings_only_push(previous):
 
 
 def select():
-    windows, linux, qt, settings = True, True, False, False
+    windows, linux, qt, settings, practice = True, True, False, False, False
     branch = os.environ.get("BRANCH", "")
     before = os.environ.get("BEFORE", "")
     after = os.environ.get("AFTER", "")
     try:
         if os.environ.get("EVENT_NAME") != "push":
-            return windows, linux, qt, settings
+            return windows, linux, qt, settings, practice
         if branch in ("work/linux-usability", "work/windows-experience"):
             valid_push = (
                 os.environ.get("CREATED") == "false"
@@ -136,7 +140,8 @@ def select():
                     and all(path.startswith(LINUX_PATHS) for path in paths)
                 ):
                     windows = False
-                    qt = qt_only_branch()
+                    practice = paths <= PRACTICE_PATHS
+                    qt = not practice and qt_only_branch()
                     linux = not qt
                 elif (
                     paths
@@ -148,13 +153,13 @@ def select():
             windows, linux, qt, settings = False, True, False, True
     except (OSError, subprocess.CalledProcessError):
         # Missing Git objects or failed comparisons never authorize skipping jobs.
-        return True, True, False, False
-    return windows, linux, qt, settings
+        return True, True, False, False, False
+    return windows, linux, qt, settings, practice
 
 
 def main():
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
-        for name, value in zip(("windows", "linux", "qt", "settings"), select()):
+        for name, value in zip(("windows", "linux", "qt", "settings", "practice"), select()):
             stream.write(f"{name}={str(value).lower()}\n")
 
 

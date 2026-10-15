@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Channels;
 using System.Windows.Threading;
 using TypeLay.Core;
@@ -18,12 +19,15 @@ internal sealed class PracticeHost : IDisposable
     private readonly Func<ProcessStartInfo, IChildProcess> _start;
     private SessionController? _session;
     private CancellationTokenSource? _communication;
-    private Channel<ProgressUpdate>? _updates;
+    private Channel<PracticeMessage>? _updates;
+    private Guid _connection;
+    private long _sequence;
+    private PracticeMessage? _pending;
+    private bool _nativeActive, _restartAfterRetire;
     private Guid _runId;
     private TargetId? _target;
     private long _runStartedAt;
     private bool _disposed;
-    private sealed record ProgressUpdate(OnDemandPracticeProgress? Progress);
     public PracticeHost(Func<ProcessStartInfo, IChildProcess>? start = null) => _start = start ?? (info => new ChildProcess(info));
     public event Action? Failed;
 
@@ -60,7 +64,11 @@ internal sealed class PracticeHost : IDisposable
         start.ArgumentList.Add("--settings");
         start.ArgumentList.Add(Path.GetFullPath(settingsPath));
         if (_session is not null)
+        {
+            _connection = Guid.NewGuid();
             start.ArgumentList.Add("--progress");
+            start.ArgumentList.Add(_connection.ToString("N"));
+        }
         var child = _start(start);
         _child = child;
         child.Process.Exited += (_, _) =>
@@ -85,15 +93,15 @@ internal sealed class PracticeHost : IDisposable
         if (_session is null)
             return;
         _communication = new CancellationTokenSource();
-        _updates = Channel.CreateBounded<ProgressUpdate>(new BoundedChannelOptions(1)
+        _updates = Channel.CreateBounded<PracticeMessage>(new BoundedChannelOptions(16)
         {
             SingleReader = true,
             SingleWriter = true,
-            FullMode = BoundedChannelFullMode.DropOldest
+            FullMode = BoundedChannelFullMode.Wait
         });
         _ = SendProgressAsync(child, _updates.Reader, _communication.Token);
         _ = ReadCommandsAsync(child, _communication.Token);
-        Restart(child);
+        BeginRun(child);
     }
 
     // Called on the WPF loop by the production capture adapter, before Runtime
@@ -102,7 +110,7 @@ internal sealed class PracticeHost : IDisposable
     {
         _dispatcher.VerifyAccess();
         long now = WindowsInterruptClock.NowMs;
-        if (_disposed || _runId == Guid.Empty || _session is null || target is not { } id
+        if (_disposed || !_nativeActive || _pending is not null || _runId == Guid.Empty || _session is null || target is not { } id
             || focus != FocusMember.Source || startedAt < _runStartedAt || observedAt < startedAt
             || observedAt > now || now - observedAt > Limits.ObservationMaxAgeMs || !Owns(id))
             return;
@@ -143,18 +151,58 @@ internal sealed class PracticeHost : IDisposable
         }
     }
 
-    private void Restart(IChildProcess child)
+    private void BeginRun(IChildProcess child)
     {
         _dispatcher.VerifyAccess();
-        if (_disposed || !ReferenceEquals(_child, child) || child.Process.HasExited || _session is null)
+        if (_disposed || !ReferenceEquals(_child, child) || child.Process.HasExited || _session is null
+            || _nativeActive || _pending is not null)
             return;
-        _session.EndOnDemandPractice(_runId);
-        _session.StopSession(); // Restart needs a new explicit preview, never a cached candidate.
+        _session.StopSession();
         _runId = Guid.NewGuid();
         _target = null;
-        _runStartedAt = WindowsInterruptClock.NowMs;
-        if (!_session.BeginOnDemandPractice(_runId))
-            _updates?.Writer.TryWrite(new(null));
+        SendControl(child, "begin");
+    }
+
+    private void RetireRun(bool restart)
+    {
+        _dispatcher.VerifyAccess();
+        if (_child is null || _runId == Guid.Empty)
+            return;
+        _restartAfterRetire |= restart;
+        bool active = _nativeActive;
+        _nativeActive = false; // Stop new binding before invalidating shared state.
+        _target = null;
+        _session?.EndOnDemandPractice(_runId);
+        _session?.StopSession();
+        if (_pending is not null)
+            return;
+        if (active)
+            SendControl(_child, "retire");
+        else if (_restartAfterRetire)
+        {
+            _restartAfterRetire = false;
+            BeginRun(_child); // The previous matched ACK already proved retirement.
+        }
+    }
+
+    private void SendControl(IChildProcess child, string kind)
+    {
+        var message = new PracticeMessage(kind, _connection, _runId, checked(++_sequence));
+        _pending = message;
+        var cancellation = _communication!.Token;
+        Enqueue(message);
+        _ = CheckAcknowledgementAsync(child, message, cancellation);
+    }
+
+    private async Task CheckAcknowledgementAsync(IChildProcess child, PracticeMessage message, CancellationToken cancellation)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(message.Kind == "begin" ? 5 : 2), cancellation);
+            if (ReferenceEquals(_pending, message))
+                CommunicationFailed(child, cancellation);
+        }
+        catch (OperationCanceledException) { }
     }
 
     private void ProgressChanged(OnDemandPracticeProgress? progress)
@@ -163,15 +211,25 @@ internal sealed class PracticeHost : IDisposable
         if (_disposed || _child is null || _child.Process.HasExited
             || (progress is not null && progress.RunId != _runId))
             return;
-        if (progress?.Target is { } target && !Owns(target))
+        if (progress is null || (progress.Target is { } target && !Owns(target)))
         {
-            _session?.EndOnDemandPractice(_runId);
+            if (_nativeActive)
+                RetireRun(false);
             return;
         }
-        _updates?.Writer.TryWrite(new(progress));
+        if (_nativeActive && _pending is null)
+            Enqueue(new("progress", _connection, _runId, _sequence, progress));
     }
 
-    private async Task SendProgressAsync(IChildProcess child, ChannelReader<ProgressUpdate> updates, CancellationToken cancellation)
+    private void Enqueue(PracticeMessage message)
+    {
+        // Unlike coalesced display updates, control and ACKs may never be lost.
+        // Exhaustion closes this connection rather than dropping a retirement.
+        if (_updates?.Writer.TryWrite(message) != true && _child is not null && _communication is not null)
+            CommunicationFailed(_child, _communication.Token);
+    }
+
+    private async Task SendProgressAsync(IChildProcess child, ChannelReader<PracticeMessage> updates, CancellationToken cancellation)
     {
         try
         {
@@ -179,7 +237,7 @@ internal sealed class PracticeHost : IDisposable
             {
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
                 deadline.CancelAfter(TimeSpan.FromSeconds(2));
-                await PracticeProgressPipe.WriteAsync(child.Process.StandardInput.BaseStream, update.Progress, deadline.Token);
+                await PracticeProgressPipe.WriteAsync(child.Process.StandardInput.BaseStream, update, deadline.Token);
             }
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException)
@@ -194,14 +252,50 @@ internal sealed class PracticeHost : IDisposable
         {
             while (!cancellation.IsCancellationRequested)
             {
-                await PracticeProgressPipe.ReadRestartAsync(child.Process.StandardOutput.BaseStream, cancellation);
-                // A close/reopen may overtake the pipe read on this dispatcher.
+                var message = await PracticeProgressPipe.ReadAsync(child.Process.StandardOutput.BaseStream, cancellation);
                 if (_disposed || !ReferenceEquals(_child, child) || cancellation.IsCancellationRequested)
                     return;
-                Restart(child);
+                if (message.Connection != _connection || message.Run != _runId)
+                    throw new InvalidDataException("practice-ack-identity");
+                // A local restart click can cross our already-sent retirement.
+                // It requests the next run; it is not an ACK for the new sequence.
+                if (message.Kind == "restart" && _pending is { Kind: "retire" } retiring
+                    && message.Sequence == retiring.Sequence - 1)
+                {
+                    _restartAfterRetire = true;
+                    continue;
+                }
+                if (message.Sequence != _sequence)
+                    throw new InvalidDataException("practice-ack-sequence");
+                if (message.Kind == "closed")
+                {
+                    _session?.StopSession();
+                    Retire();
+                    return;
+                }
+                if (message.Kind == "restart" && _pending is null)
+                {
+                    RetireRun(true);
+                    continue;
+                }
+                if (_pending is not { } pending || message.Kind != (pending.Kind == "begin" ? "started" : "retired"))
+                    throw new InvalidDataException("practice-ack-order");
+                _pending = null;
+                if (pending.Kind == "begin")
+                {
+                    _nativeActive = true;
+                    _runStartedAt = WindowsInterruptClock.NowMs;
+                    if (!_session!.BeginOnDemandPractice(_runId))
+                        RetireRun(false);
+                }
+                else if (_restartAfterRetire)
+                {
+                    _restartAfterRetire = false;
+                    BeginRun(child);
+                }
             }
         }
-        catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException)
+        catch (Exception error) when (error is IOException or JsonException or InvalidOperationException or OperationCanceledException)
         {
             CommunicationFailed(child, cancellation);
         }
@@ -212,8 +306,10 @@ internal sealed class PracticeHost : IDisposable
         _dispatcher.VerifyAccess();
         if (_disposed || cancellation.IsCancellationRequested || !ReferenceEquals(_child, child))
             return;
+        _session?.StopSession();
         Retire();
-        // Closing the inherited input tells the still-open lesson to clear progress.
+        // EOF queues native retirement on the child's outer loop. This is not
+        // an acknowledgement; the closed connection can never start another run.
         try
         {
             child.Process.StandardInput.Close();
@@ -225,8 +321,13 @@ internal sealed class PracticeHost : IDisposable
 
     private void Retire()
     {
+        _nativeActive = false;
+        _pending = null;
+        _restartAfterRetire = false;
         _session?.EndOnDemandPractice(_runId);
         _runId = Guid.Empty;
+        _sequence = 0;
+        _connection = Guid.Empty;
         _target = null;
         _communication?.Cancel();
         _communication?.Dispose();

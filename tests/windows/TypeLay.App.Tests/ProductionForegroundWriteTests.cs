@@ -290,6 +290,77 @@ public sealed class ProductionForegroundWriteTests
         finally { release.Set(); }
     }
 
+    [Fact]
+    public async Task OwnedRetirementRejectsOldCaptureReleaseAndWritesEvenAfterANewRun()
+    {
+        await using var desktop = await Desktop.Start(owned: true);
+        await desktop.Prepare(desktop.A, "A🙂你好Z", new(3, 5));
+        var plan = Plan(await desktop.Capture(), new(3, 5));
+        ulong oldCookie = unchecked((ulong)(long)N.GetProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2"));
+
+        await desktop.OwnedControl("retire"); // A real GUI-thread ACK, not a successful pipe write.
+        Assert.Equal(nint.Zero, N.GetProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2"));
+        foreach (uint operation in new uint[] { 1, 3, 4, 2, 5 })
+        {
+            using var stale = new NativeTransaction(plan, WindowsInterruptClock.NowMs + Limits.WriteExecutionMaxAgeMs,
+                operation: operation, lifetimeCookie: oldCookie);
+            stale.Send(desktop.A);
+            stale.AssertResult(2, Denial.TargetChanged);
+        }
+        await desktop.OwnedControl("begin");
+        nint currentCookie = N.GetProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2");
+        Assert.NotEqual(unchecked((nint)oldCookie), currentCookie);
+        foreach (uint operation in new uint[] { 3, 1, 5 })
+        {
+            using var stale = new NativeTransaction(plan, WindowsInterruptClock.NowMs + Limits.WriteExecutionMaxAgeMs,
+                operation: operation, lifetimeCookie: oldCookie);
+            stale.Send(desktop.A);
+            stale.AssertResult(2, Denial.TargetChanged);
+            Assert.Equal(currentCookie, N.GetProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2"));
+        }
+        Assert.Equal("A🙂你好Z", N.ReadText(desktop.A, Limits.MaxTextUnits));
+        Assert.Equal(new TextRange(3, 5), N.ReadSelection(desktop.A));
+        // The Broker must retire its old binding before obtaining a fresh one.
+        await desktop.Call(new(BrokerProtocol.Version, 0, "capture", "", CaptureDirect: true));
+        var current = await desktop.Capture();
+        using var positive = new NativeTransaction(Plan(current, new(3, 5)),
+            WindowsInterruptClock.NowMs + Limits.WriteExecutionMaxAgeMs);
+        positive.Send(desktop.A);
+        positive.AssertResult(1, Denial.None);
+        Assert.Equal("A🙂HelloZ", N.ReadText(desktop.A, Limits.MaxTextUnits));
+        Assert.Equal((desktop.Root, desktop.A), N.Focused());
+        N.Send(desktop.A, 0x00c7);
+        Assert.Equal("A🙂你好Z", N.ReadText(desktop.A, Limits.MaxTextUnits));
+        desktop.AssertZeroSubmits();
+    }
+
+    [Fact]
+    public async Task QueuedOldWriteSettlesBeforeTheOuterLoopRetirementAcknowledgement()
+    {
+        await using var desktop = await Desktop.Start(owned: true);
+        await desktop.Prepare(desktop.A, "A🙂你好Z", new(3, 5));
+        var plan = Plan(await desktop.Capture(), new(3, 5));
+        using var entered = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(desktop.FixtureProcessId, "entered"));
+        using var release = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(desktop.FixtureProcessId, "release"));
+        Assert.True(N.PostMessage(desktop.Root, N.FixtureBlockGui, 0, 0));
+        try
+        {
+            Assert.True(await Task.Run(() => entered.WaitOne(TimeSpan.FromSeconds(2)), desktop.Token));
+            using var old = new NativeTransaction(plan, WindowsInterruptClock.NowMs + Limits.WriteExecutionMaxAgeMs);
+            old.Queue(desktop.A);
+            Assert.Equal(0u, old.Status);
+            Task retired = desktop.OwnedControl("retire");
+            Assert.False(retired.IsCompleted);
+            release.Set();
+            await retired;
+            old.AssertResult(1, Denial.None); // Sent transactions finish before GetMessage returns to the outer loop.
+            Assert.Equal("A🙂HelloZ", N.ReadText(desktop.A, Limits.MaxTextUnits));
+            Assert.Equal(nint.Zero, N.GetProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2"));
+            desktop.AssertZeroSubmits();
+        }
+        finally { release.Set(); }
+    }
+
     [Theory]
     [InlineData("TypeLay.NativeInput.Transaction.v1", 1u, 88, 49248)]
     [InlineData("TypeLay.NativeInput.Transaction.v2", 1u, 88, 49248)]
@@ -345,14 +416,14 @@ public sealed class ProductionForegroundWriteTests
         }
 
         public NativeTransaction(WritePlan plan, long expiresAt, string messageName = "TypeLay.NativeInput.Transaction.v2",
-            uint version = 2, int header = 104, int size = 49264)
+            uint version = 2, int header = 104, int size = 49264, uint operation = 5, ulong? lifetimeCookie = null)
         {
             _header = header;
             var target = plan.Expected.Target.AsWindows();
             uint thread = N.GetWindowThreadProcessId((nint)target.ControlHwnd, out uint pid);
             Assert.Equal((uint)target.ProcessId, pid);
             Assert.NotEqual(0u, thread);
-            ulong cookie = unchecked((ulong)(long)N.GetProp((nint)target.ControlHwnd, "TypeLay.NativeInput.Lifetime.v2"));
+            ulong cookie = lifetimeCookie ?? unchecked((ulong)(long)N.GetProp((nint)target.ControlHwnd, "TypeLay.NativeInput.Lifetime.v2"));
             Assert.NotEqual(0UL, cookie);
             byte[] nonce = RandomNumberGenerator.GetBytes(16);
             _first = BitConverter.ToUInt64(nonce, 0);
@@ -364,7 +435,7 @@ public sealed class ProductionForegroundWriteTests
             Assert.NotEqual(0u, _message);
             PrivateDeadline = GetTickCount64() + 500;
             _view.Write(0, version);
-            _view.Write(12, version == 1 ? 2u : 5u);
+            _view.Write(12, version == 1 ? 2u : operation);
             _view.Write(16, pid);
             _view.Write(20, thread);
             _view.Write(24, target.ControlHwnd);
@@ -425,7 +496,7 @@ public sealed class ProductionForegroundWriteTests
             _pipeToken = broker.StartInfo.Environment["TYPELAY_PIPE_TOKEN"]!;
             _isolatedDirectory = isolatedDirectory;
         }
-        public static async Task<Desktop> Start(bool withoutNativeDll = false)
+        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false)
         {
             var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(30));
@@ -434,7 +505,7 @@ public sealed class ProductionForegroundWriteTests
             string? isolatedDirectory = null;
             try
             {
-                fixture = await StockFixture.Start(deadline.Token);
+                fixture = await StockFixture.Start(deadline.Token, owned);
                 string directory = Path.Combine(Repository(), "src/windows/TypeLay.Broker/bin/Release/net10.0-windows");
                 if (withoutNativeDll)
                 {
@@ -471,6 +542,7 @@ public sealed class ProductionForegroundWriteTests
                 throw;
             }
         }
+        public Task OwnedControl(string kind) => _fixture.OwnedControl(kind, Token);
         public nint Field(string name) => _fixture.Field(name);
         public Task Focus(nint field) => _fixture.Focus(field, Token);
         public async Task Prepare(nint field, string text, TextRange selection)
@@ -553,23 +625,45 @@ public sealed class ProductionForegroundWriteTests
         public nint A => Field("a");
         public int ProcessId => process.Id;
         public nint Field(string name) => (nint)host.Fields.Single(value => value.Name == name).Hwnd;
-        public static async Task<StockFixture> Start(CancellationToken token)
+        private Guid _connection, _run;
+        private long _sequence = 1;
+        public static async Task<StockFixture> Start(CancellationToken token, bool owned = false)
         {
-            var process = StartProcess(Path.Combine(Repository(),
-                "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll"), "--stock-controls");
+            Guid connection = Guid.NewGuid(), run = Guid.NewGuid();
+            string assembly = Path.Combine(Repository(),
+                "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll");
+            var process = owned ? StartProcess(assembly, "--owned-controls", Path.Combine(Repository(),
+                "src/windows/TypeLay.Broker/bin/Release/net10.0-windows/TypeLay.NativeInput.dll"),
+                connection.ToString("N"), run.ToString("N")) : StartProcess(assembly, "--stock-controls");
             try
             {
                 string? line = await process.StandardOutput.ReadLineAsync(token);
                 var host = JsonSerializer.Deserialize<FixtureDescriptor>(line ?? "null");
                 Assert.NotNull(host);
                 Assert.Equal(process.Id, host.ProcessId);
-                return new(process, host);
+                return new(process, host)
+                {
+                    _connection = connection,
+                    _run = run
+                };
             }
             catch
             {
                 await Stop(process);
                 throw;
             }
+        }
+        public async Task OwnedControl(string kind, CancellationToken token)
+        {
+            if (kind == "begin")
+                _run = Guid.NewGuid();
+            var command = new PracticeMessage(kind, _connection, _run, ++_sequence);
+            await PracticeProgressPipe.WriteAsync(process.StandardInput.BaseStream, command, token);
+            var ack = await PracticeProgressPipe.ReadAsync(process.StandardOutput.BaseStream, token);
+            Assert.Equal(command with
+            {
+                Kind = kind == "begin" ? "started" : "retired"
+            }, ack);
         }
         public async Task Focus(nint field, CancellationToken token)
         {

@@ -29,7 +29,7 @@ static Transaction request;
 static struct {
     enum Scenario scenario;
     HANDLE foreground, focus;
-    uint64_t coarse_ms, precise_100ns;
+    uint64_t coarse_ms, precise_100ns, cookie;
     int start, end, length;
     int set_calls, replace_calls, injected_changes, boundary_checked, invalid_call;
     WCHAR text[CAPACITY];
@@ -206,17 +206,20 @@ int GetClassNameW(HANDLE hwnd, WCHAR *name, int capacity) {
 HANDLE GetPropW(HANDLE hwnd, const WCHAR *name) {
     require_source(hwnd);
     require(name == property);
-    return handle(LifetimeCookie);
+    return handle((uintptr_t)field.cookie);
 }
 int SetPropW(HANDLE hwnd, const WCHAR *name, HANDLE value) {
-    (void)hwnd; (void)name; (void)value;
-    field.invalid_call = 1;
-    return 0;
+    require_source(hwnd);
+    require(name == property);
+    field.cookie = (uint64_t)(uintptr_t)value;
+    return 1;
 }
 HANDLE RemovePropW(HANDLE hwnd, const WCHAR *name) {
-    (void)hwnd; (void)name;
-    field.invalid_call = 1;
-    return 0;
+    require_source(hwnd);
+    require(name == property);
+    HANDLE previous = handle((uintptr_t)field.cookie);
+    field.cookie = 0;
+    return previous;
 }
 LRESULT CallWindowProcW(WNDPROC proc, HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
     require(proc == stock_edit);
@@ -237,6 +240,7 @@ static void run_transaction(enum Scenario scenario) {
     wipe(&field, sizeof(field));
     wipe(&request, sizeof(request));
     field.scenario = scenario;
+    field.cookie = LifetimeCookie;
     field.foreground = handle(RootWindow);
     field.focus = handle(SourceWindow);
     field.coarse_ms = 100;
@@ -296,11 +300,37 @@ static int expired_original_authorization_rejects_with_fresh_transaction_budget(
     return rejected_without_text_write(14) && field.precise_100ns == 10010000
         && field.focus == handle(SourceWindow) && field.start == 4 && field.end == 7;
 }
+static int owned_lifetime_cannot_be_restored_by_capture_or_release(void) {
+    run_transaction(Unchanged);
+    HANDLE hwnd = handle(SourceWindow);
+    if (!TypeLayOwnedEditControl(hwnd, 1, 100) || !TypeLayOwnedEditControl(hwnd, 2, 0)) return 0;
+    request.cookie = 101; request.op = 4;
+    execute(&request);
+    if (request.status != 1 || field.cookie != 101) return 0;
+    if (!TypeLayOwnedEditControl(hwnd, 3, 0) || field.cookie != 0) return 0;
+    const uint32_t stale_ops[] = {1, 3, 4, 2, 5};
+    for (int i = 0; i < 5; i++) {
+        request.op = stale_ops[i];
+        execute(&request);
+        if (request.status != 2 || request.reason != 2 || field.cookie != 0) return 0;
+    }
+    if (!TypeLayOwnedEditControl(hwnd, 2, 0) || field.cookie != 102) return 0;
+    request.op = 3; execute(&request);
+    if (request.status != 2 || field.cookie != 102) return 0;
+    request.op = 1; execute(&request);
+    if (request.status != 2 || field.cookie != 102) return 0;
+    request.cookie = 102; execute(&request);
+    if (request.status != 1) return 0;
+    request.op = 3; execute(&request);
+    return request.status == 1 && field.cookie == 102 && !field.invalid_call
+        && field.replace_calls == 1 && equal(field.text, written_text, 15);
+}
 static int run_checks(void) {
     if (!unchanged_writes_scope_and_verifies()) return 1;
     if (!changed_focus_rejects_without_text_write()) return 2;
     if (!changed_selection_rejects_without_text_write()) return 3;
     if (!expired_original_authorization_rejects_with_fresh_transaction_budget()) return 4;
+    if (!owned_lifetime_cannot_be_restored_by_capture_or_release()) return 5;
     return 0;
 }
 

@@ -12,6 +12,8 @@
     <Compile Include="../../../../src/windows/TypeLay.App/Windows/Native.cs" Link="Product/Native.cs" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="../../../../src/windows/shared/OwnedPracticeField.cs" Link="Windows/OwnedPracticeField.cs" />
+    <Compile Include="../../../../src/windows/shared/PracticeProgressPipe.cs" Link="Windows/PracticeProgressPipe.cs" />
     <Compile Include="../../../../src/windows/shared/WindowsInterruptClock.cs" Link="Windows/WindowsInterruptClock.cs" />
   </ItemGroup>
 </Project>

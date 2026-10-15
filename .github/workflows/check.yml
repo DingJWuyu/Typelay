@@ -18,6 +18,7 @@ jobs:
       linux: ${{ steps.select.outputs.linux }}
       qt: ${{ steps.select.outputs.qt }}
       settings: ${{ steps.select.outputs.settings }}
+      practice: ${{ steps.select.outputs.practice }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -148,7 +149,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
   linux:
-    name: ${{ needs.scope.outputs.settings == 'true' && 'Linux settings iteration (partial acceptance)' || 'linux' }}
+    name: ${{ needs.scope.outputs.practice == 'true' && 'Linux practice iteration (partial acceptance)' || needs.scope.outputs.settings == 'true' && 'Linux settings iteration (partial acceptance)' || 'linux' }}
     needs: scope
     if: needs.scope.outputs.linux == 'true'
     runs-on: ubuntu-latest
@@ -228,7 +229,7 @@ jobs:
           python tests/linux/test_gtk_geometry.py -v
           python eng/linux/build.py --with-test-fixture
       - name: Verify resumable model downloads over isolated HTTP
-        if: ${{ needs.scope.outputs.settings != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.settings != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
           python tests/linux/setup_e2e.py --http -v
           python tests/linux/setup_e2e.py --supervisor artifacts/linux/package/native/typelay-supervise -v
@@ -241,29 +242,29 @@ jobs:
           export DISPLAY=:99
           python tests/linux/native_e2e.py --gtk-refusal --native artifacts/linux/native --output artifacts/linux/nested
       - name: Verify tray controls without downloading models
-        if: ${{ needs.scope.outputs.settings != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.settings != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           GDK_BACKEND=x11 dbus-run-session -- python tests/linux/tray_e2e.py --package artifacts/linux/package
       - name: Verify ordinary browser fields through the production DOM adapter
-        if: ${{ needs.scope.outputs.settings != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.settings != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           python tests/linux/browser_e2e.py --chromium /usr/bin/chromium -v
       - name: Verify browser native messaging and document routing
-        if: ${{ needs.scope.outputs.settings != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.settings != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           python tests/linux/browser_native_e2e.py --package artifacts/linux/package --chromium /usr/bin/chromium -v
       - name: Probe source-owned VS Code edit transactions
-        if: ${{ needs.scope.outputs.settings != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.settings != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           set -- /usr/lib/electron*/electron
           test "$#" -eq 1
           python tests/linux/vscode_e2e.py --code "$1" --app /usr/lib/code
       - name: Probe real rich-editor transaction reentrancy
-        if: ${{ needs.scope.outputs.settings != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.settings != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
           mkdir -p artifacts/editor-probe
           cp tests/linux/fixtures/editor/package*.json artifacts/editor-probe/
@@ -271,7 +272,7 @@ jobs:
           export DISPLAY=:99
           python tests/linux/editor_probe.py --dependencies artifacts/editor-probe --chromium /usr/bin/chromium -v
       - name: Verify Firefox temporary extension and native messaging
-        if: ${{ needs.scope.outputs.settings != 'true' && !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.settings != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           python tests/linux/firefox_native_e2e.py --package artifacts/linux/package --firefox /usr/bin/firefox --geckodriver /usr/bin/geckodriver --editor-bundle artifacts/editor-probe/fixture.js -v
@@ -342,7 +343,7 @@ jobs:
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
           python tests/linux/native_e2e.py --desktop --desktop-scope setup --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/setup-desktop
       - name: Exercise the production desktop and real browser input
-        if: ${{ needs.scope.outputs.settings != 'true' && !cancelled() && steps.models.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.settings != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           export XDG_CONFIG_HOME="$PWD/artifacts/linux/desktop-config"
@@ -350,7 +351,7 @@ jobs:
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
           python tests/linux/native_e2e.py --desktop --desktop-scope browser --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/desktop --editor-bundle artifacts/editor-probe/fixture.js
       - name: Exercise relocated Fcitx and cooperative GTK with the real local model
-        if: ${{ needs.scope.outputs.settings != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.settings != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           export XDG_CONFIG_HOME="$PWD/artifacts/linux/gtk-desktop-config"
@@ -358,7 +359,7 @@ jobs:
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
           python tests/linux/native_e2e.py --desktop --desktop-scope gtk --gtk-session-bindings --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
       - name: Exercise cooperative GTK4 Entry with the real local model
-        if: ${{ needs.scope.outputs.settings != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.settings != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           export XDG_CONFIG_HOME="$PWD/artifacts/linux/gtk4-desktop-config"
@@ -366,7 +367,7 @@ jobs:
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
           python tests/linux/native_e2e.py --desktop --desktop-scope gtk4 --gtk-session-bindings --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/gtk4-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative"
       - name: Exercise relocated Qt6 widgets with the real local model
-        if: ${{ needs.scope.outputs.settings != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.qt.outcome == 'success' && steps.fcitx-package.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.settings != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.qt.outcome == 'success' && steps.fcitx-package.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           export XDG_CONFIG_HOME="$PWD/artifacts/linux/qt-desktop-config"
@@ -374,7 +375,7 @@ jobs:
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
           python tests/linux/native_e2e.py --desktop --desktop-scope qt --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/qt-desktop --fcitx-cooperative "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative" --qt-cooperative artifacts/linux/qt-cooperative
       - name: Verify installed VS Code command with the real local model
-        if: ${{ needs.scope.outputs.settings != 'true' && !cancelled() && steps.models.outcome == 'success' }}
+        if: ${{ needs.scope.outputs.settings != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' }}
         run: |
           export DISPLAY=:99
           set -- /usr/lib/electron*/electron

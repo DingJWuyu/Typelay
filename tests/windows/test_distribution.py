@@ -3,12 +3,15 @@
 import ctypes
 import json
 import os
+import queue
 import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
 
@@ -140,9 +143,17 @@ class DistributionTests(unittest.TestCase):
         ]
         callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
         user32.EnumWindows.argtypes = [callback_type, ctypes.c_void_p]
+        connection, run = uuid.uuid4(), uuid.uuid4()
         process = subprocess.Popen(
-            [str(self.home / "app/TypeLay.Practice.exe"), "--settings", str(settings)],
+            [
+                str(self.home / "app/TypeLay.Practice.exe"),
+                "--settings",
+                str(settings),
+                "--progress",
+                connection.hex,
+            ],
             cwd=self.temporary.name,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -183,15 +194,78 @@ class DistributionTests(unittest.TestCase):
             user32.GetWindowThreadProcessId(root, ctypes.byref(pid))
             self.assertIsNone(process.poll())
             self.assertEqual(pid.value, process.pid)
+            user32.GetPropW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+            user32.GetPropW.restype = ctypes.c_void_p
+
+            def exchange(kind, sequence):
+                command = {
+                    "Kind": kind,
+                    "Connection": str(connection),
+                    "Run": str(run),
+                    "Sequence": sequence,
+                    "Progress": None,
+                }
+                process.stdin.write(frame(command))
+                process.stdin.flush()
+                result = queue.Queue()
+
+                def read_ack():
+                    try:
+                        prefix = process.stdout.read(4)
+                        if len(prefix) != 4:
+                            raise AssertionError("Missing practice ACK")
+                        length = struct.unpack("<i", prefix)[0]
+                        if not 0 < length <= 4096:
+                            raise AssertionError("Invalid practice ACK length")
+                        result.put(responses(prefix + process.stdout.read(length))[0])
+                    except Exception as error:
+                        result.put(error)
+
+                # A timeout still reaches process cleanup; no blocked executor
+                # shutdown can hide a missing outer-loop acknowledgement.
+                threading.Thread(target=read_ack, daemon=True).start()
+                reply = result.get(timeout=5)
+                if isinstance(reply, Exception):
+                    raise reply
+                self.assertEqual(
+                    reply, command | {"Kind": "started" if kind == "begin" else "retired"}
+                )
+
+            exchange("begin", 1)
+            first_cookie = user32.GetPropW(field, "TypeLay.NativeInput.Lifetime.v2")
+            self.assertTrue(first_cookie)
+            exchange("retire", 2)
+            self.assertIsNone(user32.GetPropW(field, "TypeLay.NativeInput.Lifetime.v2"))
+            run = uuid.uuid4()
+            exchange("begin", 3)
+            self.assertNotEqual(
+                first_cookie, user32.GetPropW(field, "TypeLay.NativeInput.Lifetime.v2")
+            )
+            self.assertTrue(user32.GetPropW(field, "TypeLay.NativeInput.Lifetime.v2"))
             self.assertTrue(user32.PostMessageW(root, 0x0010, 0, 0))
+            # Keep stdin open until close has retired the field and acknowledged.
+            process.wait(timeout=5)
             stdout, stderr = process.communicate(timeout=5)
             self.assertEqual(process.returncode, 0)
-            self.assertEqual((stdout, stderr), (b"", b""))
+            self.assertEqual(stderr, b"")
+            self.assertEqual(
+                responses(stdout),
+                [
+                    {
+                        "Kind": "closed",
+                        "Connection": str(connection),
+                        "Run": str(run),
+                        "Sequence": 3,
+                        "Progress": None,
+                    }
+                ],
+            )
             self.assertEqual(settings.read_bytes(), original)
         finally:
             if process.poll() is None:
                 process.kill()
             process.wait(timeout=5)
+            process.stdin.close()
             process.stdout.close()
             process.stderr.close()
             settings.unlink(missing_ok=True)

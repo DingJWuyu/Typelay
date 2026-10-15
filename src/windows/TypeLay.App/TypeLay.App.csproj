@@ -24,6 +24,7 @@
   <Target Name="CopyPracticeHostForDevelopment" AfterTargets="Build">
     <ItemGroup>
       <_PracticeFiles Include="$(MSBuildThisFileDirectory)../TypeLay.Practice/bin/$(Configuration)/net10.0-windows/TypeLay.Practice.*" />
+      <_PracticeFiles Include="$(MSBuildThisFileDirectory)../TypeLay.Practice/bin/$(Configuration)/net10.0-windows/TypeLay.NativeInput.dll" Condition="'$(OS)' == 'Windows_NT'" />
     </ItemGroup>
     <Copy SourceFiles="@(_PracticeFiles)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true" />
   </Target>

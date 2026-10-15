@@ -8,11 +8,12 @@ import unittest
 from pathlib import Path
 
 SELECTOR = Path(__file__).resolve().parents[2] / "eng/shared/ci_scope.py"
-FULL = {"windows": "true", "linux": "true", "qt": "false", "settings": "false"}
+FULL = {"windows": "true", "linux": "true", "qt": "false", "settings": "false", "practice": "false"}
 LINUX = {**FULL, "windows": "false"}
 WINDOWS = {**FULL, "linux": "false"}
 QT = {**LINUX, "linux": "false", "qt": "true"}
 SETTINGS = {**LINUX, "settings": "true"}
+PRACTICE = {**LINUX, "practice": "true"}
 QT_BASELINE = "d607db1b8a3fc882cfd4a9c19a6e454d9b610189"
 SETTINGS_BASELINE = "79965d49ea1ed8494fa917cd2a3ffb669b3e093a"
 
@@ -119,6 +120,36 @@ class ScopeTests(unittest.TestCase):
                     }
                 )
                 self.assertEqual(expected, self.select(before, branch))
+
+    def test_practice_partial_is_limited_to_its_current_ui_and_test_paths(self):
+        before = self.commit({"src/shared/old.cs": "already checked"})
+        self.commit(
+            {
+                "src/linux/desktop/practice.py": "practice UI",
+                "tests/linux/practice_window.py": "widget regression",
+                "docs/practice.md": "partial evidence",
+            }
+        )
+        self.assertEqual(PRACTICE, self.select(before))
+        for evidence in (
+            {"CREATED": "true"},
+            {"FORCED": "true"},
+            {"EVENT_NAME": "workflow_dispatch"},
+        ):
+            self.assertEqual(FULL, self.select(before, **evidence))
+        for path, expected in (
+            ("src/linux/desktop/input.py", LINUX),
+            ("src/linux/desktop/practice_session.py", LINUX),
+            ("tests/linux/qt_desktop.py", LINUX),
+            ("tests/linux/desktop_e2e.py", LINUX),
+            ("src/shared/runtime.cs", FULL),
+            (".github/workflows/check.yml", FULL),
+        ):
+            with self.subTest(path=path):
+                self.reset(before)
+                self.commit({path: "temporary"})
+                self.commit({path: None, "src/linux/desktop/practice.py": "practice"})
+                self.assertEqual(expected, self.select(before))
 
     def test_shared_unknown_workflow_and_opposite_platform_require_both(self):
         for branch in ("work/linux-usability", "work/windows-experience"):

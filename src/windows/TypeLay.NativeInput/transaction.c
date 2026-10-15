@@ -64,6 +64,10 @@ _Static_assert(sizeof(Transaction) == 49264, "Protocol mapping length");
 
 typedef struct { LPARAM lparam; WPARAM wparam; uint32_t message; HANDLE hwnd; } CallMessage;
 static const WCHAR property[] = L"TypeLay.NativeInput.Lifetime.v2";
+// Only the independent practice process opts in. Its GUI thread retains this
+// record through retirement and until process exit; a wire capture/release may
+// never create, remove or rotate it. The process pins this DLL for that lifetime.
+static struct { HANDLE hwnd; uint32_t thread; uint64_t cookie; int retired; } owned;
 static const WCHAR message_name[] = L"TypeLay.NativeInput.Transaction.v2";
 
 __declspec(dllexport) uint32_t TypeLayNativeProtocolVersion(void) { return VERSION; }
@@ -140,6 +144,44 @@ static WNDPROC qualify(Transaction *tx) {
     tx->multiline = (style & 4) != 0;
     return proc;
 }
+__declspec(dllexport) uint32_t TypeLayOwnedEditVersion(void) { return 1; }
+__declspec(dllexport) int TypeLayOwnedEditControl(HANDLE hwnd, uint32_t operation, uint64_t seed) {
+    uint32_t pid = 0;
+    uint32_t thread = GetCurrentThreadId();
+    if (!hwnd || GetWindowThreadProcessId(hwnd, &pid) != thread || pid != GetCurrentProcessId()) return 0;
+    if (operation == 1) { // Register exactly once, before showing the field.
+        if (owned.hwnd || !seed) return 0;
+        WindowClass stock;
+        WCHAR name[32];
+        if (!IsWindowUnicode(hwnd) || GetClassNameW(hwnd, name, 32) != 4
+            || !equal(name, (const WCHAR *)L"Edit", 4)
+            || !GetClassInfoW(0, (const WCHAR *)L"Edit", &stock) || !stock.procedure
+            || GetWindowLongPtrW(hwnd, -4) != (intptr_t)stock.procedure
+            || GetClassLongPtrW(hwnd, -24) != (intptr_t)stock.procedure) return 0;
+        owned.hwnd = hwnd; owned.thread = thread; owned.cookie = seed; owned.retired = 1;
+        RemovePropW(hwnd, property);
+        return 1;
+    }
+    if (owned.hwnd != hwnd || owned.thread != thread || seed) return 0;
+    if (operation == 2) { // Only an ordered private Begin may mint a new lifetime.
+        if (!owned.retired || owned.cookie == UINT64_MAX) return 0;
+        owned.cookie++;
+        if (!SetPropW(hwnd, property, (HANDLE)(uintptr_t)owned.cookie)) return 0;
+        owned.retired = 0;
+        return 1;
+    }
+    if (operation == 3) {
+        owned.retired = 1;
+        RemovePropW(hwnd, property);
+        return 1;
+    }
+    return 0;
+}
+static int owned_current(const Transaction *tx) {
+    return owned.hwnd != (HANDLE)(uintptr_t)tx->hwnd
+        || (!owned.retired && owned.thread == GetCurrentThreadId() && tx->thread == owned.thread
+            && tx->cookie == owned.cookie);
+}
 static int read_text(Transaction *tx, WNDPROC proc) {
     HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd;
     LRESULT length = CallWindowProcW(proc, hwnd, 0x0e, 0, 0);
@@ -153,7 +195,9 @@ static void execute(Transaction *tx) {
     tx->status = 2; tx->reason = 6; // RejectedBeforeMutation / Unsupported.
     if (tx->version != VERSION || !tx->cookie || GetTickCount64() > tx->deadline) return;
     HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd;
+    if (!owned_current(tx)) { tx->reason = 2; return; }
     if (tx->op == 3) {
+        if (owned.hwnd == hwnd) { tx->status = 1; tx->reason = 0; return; }
         if ((uint64_t)(uintptr_t)GetPropW(hwnd, property) == tx->cookie) RemovePropW(hwnd, property);
         tx->status = 1; tx->reason = 0; return;
     }
@@ -203,7 +247,7 @@ static void execute(Transaction *tx) {
     CallWindowProcW(proc, hwnd, 0xb1, (WPARAM)tx->start, (LPARAM)tx->end);
     // Selection changes may cause synchronous accessibility callbacks. Refuse if
     // any callback changed the source, lifetime, class or composition state.
-    if (!qualify(tx) || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie
+    if (!owned_current(tx) || !qualify(tx) || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie
         || ime(hwnd) != 1 || read_text(tx, proc) - 1 != tx->length
         || !equal(tx->observed, tx->expected, tx->length)
         || tx->selection_start != tx->start || tx->selection_end != tx->end
@@ -212,7 +256,7 @@ static void execute(Transaction *tx) {
     if (foreground && !authorization_current(tx)) { tx->reason = 14; return; }
     tx->status = 3; tx->reason = 20; // Unknown once mutation starts; never retry.
     CallWindowProcW(proc, hwnd, 0xc2, 1, (LPARAM)tx->replacement); // EM_REPLACESEL, undo enabled.
-    if (!qualify(tx) || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie) return;
+    if (!owned_current(tx) || !qualify(tx) || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie) return;
     if (foreground && (!foreground_source(tx) || ime(hwnd) != 1)) return;
     int after = read_text(tx, proc) - 1;
     if (foreground && (!foreground_source(tx) || ime(hwnd) != 1)) return;
@@ -227,7 +271,10 @@ static void execute(Transaction *tx) {
 __declspec(dllexport) LRESULT TypeLayCallWndProc(int code, WPARAM wp, LPARAM lp) {
     if (code >= 0) {
         const CallMessage *msg = (const CallMessage *)lp;
-        if (msg->message == 0x82) RemovePropW(msg->hwnd, property);
+        if (msg->message == 0x82) {
+            if (msg->hwnd == owned.hwnd) owned.retired = 1;
+            RemovePropW(msg->hwnd, property);
+        }
         static uint32_t message;
         if (!message) message = RegisterWindowMessageW(message_name);
         if (message && msg->message == message) {

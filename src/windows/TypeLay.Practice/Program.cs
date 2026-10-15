@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using System.Security;
 using System.Text.Json;
@@ -22,10 +23,13 @@ internal static class Program
     private static nint _window, _instance, _bodyFont, _titleFont, _backgroundBrush;
     private static Control? _title, _notice, _inputLabel, _edit, _preview, _replace, _progressNotice, _restart, _close;
     private static OnDemandPracticeProgress? _progress;
-    private sealed record ProgressUpdate(OnDemandPracticeProgress? Progress, bool Connected);
-    private static ProgressUpdate? _pendingProgress;
+    private static readonly ConcurrentQueue<PracticeMessage> PendingControls = new();
+    private static int _pendingCount, _disconnected;
+    private static OwnedPracticeField? _owned;
+    private static Guid _connection, _run;
+    private static long _sequence;
+    private static bool _retired = true, _closePending, _sendRestart;
     private static bool _progressConnected, _restartPending;
-    private static Guid _restartFrom;
     private static string _settingsPath = "";
     private static string _theme = "system";
     private static uint _backgroundColor, _textColor;
@@ -38,8 +42,8 @@ internal static class Program
         // This process owns only an ordinary source field. The running App owns
         // the production shortcuts, model, Broker, and this child process.
         if (!OperatingSystem.IsWindows() || RuntimeInformation.ProcessArchitecture != Architecture.X64
-            || args.Length is not (2 or 3) || args[0] != "--settings" || !Path.IsPathFullyQualified(args[1])
-            || (args.Length == 3 && args[2] != "--progress"))
+            || args.Length is not (2 or 4) || args[0] != "--settings" || !Path.IsPathFullyQualified(args[1])
+            || (args.Length == 4 && (args[2] != "--progress" || !Guid.TryParseExact(args[3], "N", out _connection) || _connection == Guid.Empty)))
             return Fail();
         _settingsPath = args[1];
         if (!TryReadSettings(out var settings))
@@ -77,6 +81,8 @@ internal static class Program
             _inputLabel = Add("Static", presentation.InputLabel);
             _edit = Add("Edit", presentation.SampleText,
                 0x00010000 | 0x00200000 | 0x0004 | 0x0040 | 0x1000, EditId, 0x0200);
+            if (_connection != Guid.Empty)
+                _owned = new OwnedPracticeField(_edit.Handle, Path.Combine(AppContext.BaseDirectory, "TypeLay.NativeInput.dll"));
             _preview = Add("Static", presentation.PreviewStep, id: PreviewId);
             _replace = Add("Static", presentation.ReplaceStep, id: ReplaceId);
             _progressNotice = Add("Static", presentation.ProgressNotice, id: ProgressId);
@@ -91,7 +97,7 @@ internal static class Program
             if (Native.SetTimer(_window, 1, 1000, 0) == 0)
                 return Fail();
 
-            if (args.Length == 3)
+            if (_connection != Guid.Empty)
                 _ = Task.Run(ReadProgressAsync);
             Native.ShowWindow(_window, 1);
             while (true)
@@ -101,6 +107,11 @@ internal static class Program
                     return _exitCode;
                 if (result < 0)
                     return Fail();
+                // GetMessage may dispatch sent messages or run a nested pump.
+                // Retirement is acknowledged only after that stack has unwound.
+                ApplyControls();
+                if (_window == 0)
+                    continue;
                 if (!Native.IsDialogMessageW(_window, ref message))
                 {
                     Native.TranslateMessage(ref message);
@@ -218,59 +229,134 @@ internal static class Program
             var input = Console.OpenStandardInput();
             while (true)
             {
-                var progress = await PracticeProgressPipe.ReadAsync(input, CancellationToken.None);
-                QueueProgress(new(progress, true));
+                var message = await PracticeProgressPipe.ReadAsync(input, CancellationToken.None);
+                if (Interlocked.Increment(ref _pendingCount) > 16)
+                    throw new InvalidDataException("practice-control-overflow");
+                PendingControls.Enqueue(message);
+                if (!Native.PostMessageW(_window, ProgressMessage, 0, 0))
+                    throw new IOException("practice-control-wake");
             }
         }
         catch (Exception error) when (error is IOException or JsonException or InvalidOperationException)
         {
-            // Loss of the owner only disables progress. The ordinary field and
-            // production shortcuts remain untouched; stale completion disappears.
-            QueueProgress(new(null, false));
+            Interlocked.Exchange(ref _disconnected, 1);
+            Native.PostMessageW(_window, ProgressMessage, 0, 0);
         }
     }
 
-    private static void QueueProgress(ProgressUpdate update)
+    private static void ApplyControls()
     {
-        Interlocked.Exchange(ref _pendingProgress, update);
-        Native.PostMessageW(_window, ProgressMessage, 0, 0);
-    }
-
-    private static void ApplyProgress()
-    {
-        var update = Interlocked.Exchange(ref _pendingProgress, null);
-        if (update is null)
+        if (!_closePending && !_sendRestart && PendingControls.IsEmpty && Volatile.Read(ref _disconnected) != 1)
             return;
-        _progressConnected = update.Connected;
-        if (!_restartPending || update.Progress?.RunId != _restartFrom || !update.Connected)
+        if (_owned is null)
         {
-            _progress = update.Progress;
-            _restartPending = false;
+            if (_closePending)
+                Native.DestroyWindow(_window);
+            return;
+        }
+        try
+        {
+            if (Volatile.Read(ref _disconnected) != 0)
+            {
+                _owned.Retire();
+                _retired = true;
+                _progressConnected = false;
+                _progress = null;
+                _sendRestart = false;
+                Interlocked.Exchange(ref _disconnected, 2);
+                while (PendingControls.TryDequeue(out _))
+                {
+                }
+            }
+            else
+            {
+                while (PendingControls.TryDequeue(out var message))
+                {
+                    Interlocked.Decrement(ref _pendingCount);
+                    if (Volatile.Read(ref _disconnected) != 0)
+                        throw new IOException("practice-control-disconnected");
+                    if (message.Connection != _connection)
+                        throw new InvalidDataException("practice-control-connection");
+                    if (message.Kind == "begin" && _retired && message.Run != _run && message.Sequence == _sequence + 1)
+                    {
+                        _owned.Begin();
+                        _run = message.Run;
+                        _sequence = message.Sequence;
+                        _retired = false;
+                        _progressConnected = true;
+                        _restartPending = false;
+                        _progress = null;
+                        Reply("started");
+                    }
+                    else if (message.Kind == "retire" && message.Run == _run && message.Sequence == _sequence + 1)
+                    {
+                        _owned.Retire();
+                        _retired = true;
+                        _sequence = message.Sequence;
+                        _progress = null;
+                        Reply("retired");
+                    }
+                    else if (message.Kind == "progress" && !_retired && message.Run == _run && message.Sequence == _sequence)
+                        _progress = message.Progress;
+                    else
+                        throw new InvalidDataException("practice-control-order");
+                }
+                if (Volatile.Read(ref _disconnected) != 0)
+                    throw new IOException("practice-control-disconnected");
+                if (_sendRestart)
+                {
+                    _sendRestart = false;
+                    Reply("restart");
+                }
+            }
+            if (_closePending)
+            {
+                _owned.Retire();
+                _retired = true;
+                if (_progressConnected && _sequence != 0)
+                    Reply("closed");
+                Native.DestroyWindow(_window);
+                return;
+            }
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException)
+        {
+            _owned.Retire();
+            _retired = true;
+            Interlocked.Exchange(ref _disconnected, 2);
+            _sendRestart = false;
+            _progressConnected = false;
+            _progress = null;
+            if (_closePending)
+                Native.DestroyWindow(_window);
         }
         if (_restart is not null)
             Native.EnableWindow(_restart.Handle, _progressConnected && !_restartPending);
         RefreshSettings();
     }
 
+    private static void Reply(string kind)
+    {
+        // This small private control exchange is bounded and deliberately does
+        // not pump GUI messages. An ACK cannot overtake an executing transaction.
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        PracticeProgressPipe.WriteAsync(Console.OpenStandardOutput(),
+            new(kind, _connection, _run, _sequence), deadline.Token).GetAwaiter().GetResult();
+    }
+
     private static void RestartPractice()
     {
-        _restartFrom = _progress?.RunId ?? Guid.Empty;
         _restartPending = true;
+        _sendRestart = true;
         _progress = null;
         Native.EnableWindow(_restart!.Handle, false);
-        RefreshSettings();
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-                await PracticeProgressPipe.WriteRestartAsync(Console.OpenStandardOutput(), deadline.Token);
-            }
-            catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException)
-            {
-                QueueProgress(new(null, false));
-            }
-        });
+        Native.PostMessageW(_window, ProgressMessage, 0, 0);
+    }
+
+    private static void ClosePractice()
+    {
+        _closePending = true;
+        Native.PostMessageW(_window, ProgressMessage, 0, 0);
     }
 
     private static void RefreshTheme()
@@ -456,7 +542,7 @@ internal static class Program
             switch (message)
             {
                 case ProgressMessage:
-                    ApplyProgress();
+                    // Wake only; the outer loop owns control consumption.
                     return 0;
                 case 0x0002: // WM_DESTROY, including partial construction.
                     Native.KillTimer(window, 1);
@@ -475,7 +561,7 @@ internal static class Program
                         Native.SetFocus(_edit.Handle);
                     return 0;
                 case 0x0010: // WM_CLOSE
-                    Native.DestroyWindow(window);
+                    ClosePractice();
                     return 0;
                 case 0x0014: // WM_ERASEBKGND
                     Native.GetClientRect(window, out var background);
@@ -497,7 +583,7 @@ internal static class Program
                 case 0x0111: // WM_COMMAND
                     int id = (int)(wParam & 0xffff), notification = (int)((wParam >> 16) & 0xffff);
                     if (id == CloseId && notification == 0)
-                        Native.DestroyWindow(window);
+                        ClosePractice();
                     else if (id == RestartId && notification == 0 && _progressConnected && !_restartPending)
                         RestartPractice();
                     else if (id == EditId && notification == 0x0100 && _edit is not null)

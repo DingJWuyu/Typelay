@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using TypeLay.Windows;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -18,10 +19,55 @@ internal static class Program
             return 2;
         }
         bool hookTest = args.Length == 1 && args[0] is "--hook-test" or "--hook-test-automation";
-        bool stockControls = args.Length == 1 && args[0] == "--stock-controls";
+        bool ownedControls = args.Length == 4 && args[0] == "--owned-controls"
+            && Path.IsPathFullyQualified(args[1]) && Guid.TryParse(args[2], out _ownedConnection)
+            && Guid.TryParse(args[3], out _ownedRun);
+        if (ownedControls)
+            _ownedPath = args[1];
+        bool stockControls = ownedControls || (args.Length == 1 && args[0] == "--stock-controls");
         if (args.Length != 0 && !hookTest && !stockControls)
             return 2;
         return RunWindows(hookTest, args.Contains("--hook-test-automation", StringComparer.Ordinal), stockControls);
+    }
+
+    private static string? _ownedPath;
+    private static Guid _ownedConnection, _ownedRun;
+    private static long _ownedSequence = 1;
+    private static OwnedPracticeField? _ownedField;
+    private static readonly ConcurrentQueue<PracticeMessage> OwnedControls = new();
+    [SupportedOSPlatform("windows")]
+    private static async Task ReadOwnedControls()
+    {
+        while (true)
+        {
+            var message = await PracticeProgressPipe.ReadAsync(Console.OpenStandardInput(), CancellationToken.None);
+            OwnedControls.Enqueue(message);
+            if (!N.PostMessage(_root, 0x8050, 0, 0))
+                throw new InvalidOperationException("Owned fixture wake failed.");
+        }
+    }
+    private static void ApplyOwnedControls()
+    {
+        while (OwnedControls.TryDequeue(out var command))
+        {
+            if (_ownedField is null || command.Connection != _ownedConnection || command.Sequence != _ownedSequence + 1)
+                throw new InvalidDataException("Owned fixture control identity.");
+            if (command.Kind == "retire" && command.Run == _ownedRun)
+                _ownedField.Retire();
+            else if (command.Kind == "begin" && command.Run != _ownedRun)
+            {
+                _ownedField.Begin();
+                _ownedRun = command.Run;
+            }
+            else
+                throw new InvalidDataException("Owned fixture control order.");
+            _ownedSequence = command.Sequence;
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            PracticeProgressPipe.WriteAsync(Console.OpenStandardOutput(), command with
+            {
+                Kind = command.Kind == "retire" ? "retired" : "started"
+            }, deadline.Token).GetAwaiter().GetResult();
+        }
     }
 
     [SupportedOSPlatform("windows")]
@@ -75,6 +121,12 @@ internal static class Program
             _replayStatus = N.CreateWindow(0, "Static", "Replay has not run", 0x50000000,
                 30, 610, 800, 24, _root, 0, instance, 0);
         }
+        if (_ownedPath is not null)
+        {
+            _ownedField = new OwnedPracticeField(_replayField, _ownedPath);
+            _ownedField.Begin();
+            _ = Task.Run(ReadOwnedControls);
+        }
         N.ShowWindow(_root, 5);
         N.SetForegroundWindow(_root);
         N.SetFocus((nint)fields[0].Hwnd);
@@ -99,6 +151,7 @@ internal static class Program
                     return 0;
                 if (status < 0)
                     return 1;
+                ApplyOwnedControls(); // The same outer-loop retirement boundary as Practice.
                 if (!N.IsDialogMessage(_root, ref message))
                 {
                     N.TranslateMessage(ref message);
