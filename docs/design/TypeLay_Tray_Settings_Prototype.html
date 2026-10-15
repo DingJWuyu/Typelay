@@ -1,188 +1,2340 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>TypeLay Tray & Settings Prototype v1</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TypeLay · 托盘与设置原型</title>
+<!-- A fresh, single-direction UI study. Reference: the user's settings panel; Apple settings hierarchy;
+     Linear's quiet grouped rows. Only in-memory demonstration data; no client or system mutations. -->
 <style>
-:root{
-  --bg:#e9edf4;--panel:rgba(255,255,255,.96);--panel-solid:#fff;--panel2:#f6f7f9;--line:#dde2ea;
-  --text:#1c2027;--muted:#626c7c;--blue:#3267e3;--blue-soft:#eaf0ff;--good:#299766;--warn:#d18a21;
-  --shadow:0 18px 54px rgba(25,34,52,.18),0 3px 10px rgba(25,34,52,.08);--radius:18px;
+:root {
+  color-scheme:light;
+  --canvas:#e8e9eb;
+  --panel:#fff;
+  --sidebar:#f5f5f6;
+  --soft:#f7f7f8;
+  --hover:#ececef;
+  --line:#e6e6e9;
+  --ink:#222327;
+  --muted:#62636b;
+  --accent:#2365d8;
+  --accent-soft:#edf3ff;
+  --green:#25754d;
+  --warn:#9b501a;
+  --warn-bg:#fff6ed;
+  --shadow:0 28px 80px #20252e1c,0 3px 12px #20252e0a
 }
-*{box-sizing:border-box} html,body{height:100%} body{margin:0;font-family:Inter,"Segoe UI",system-ui,-apple-system,sans-serif;color:var(--text);overflow:hidden;background:#dce2eb}
-button,select,input,textarea{font:inherit} button{cursor:pointer} button:focus-visible,.selectWrap select:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid #2458c6;outline-offset:3px}
-.desktop{height:100%;position:relative;overflow:hidden;background:
- radial-gradient(circle at 20% 20%,rgba(92,126,216,.24),transparent 32%),
- radial-gradient(circle at 78% 58%,rgba(111,175,205,.22),transparent 34%),
- linear-gradient(145deg,#e9edf5 0%,#dfe5ef 42%,#edf0f5 100%)}
-.wallpaperMark{position:absolute;left:7%;top:12%;font-size:48px;font-weight:800;letter-spacing:-.04em;color:rgba(57,75,111,.08);user-select:none}
-.demoBadge{position:absolute;right:18px;top:18px;z-index:120;background:rgba(255,255,255,.83);backdrop-filter:blur(14px);border:1px solid rgba(207,214,225,.9);border-radius:14px;padding:10px 12px;box-shadow:0 7px 20px rgba(28,36,54,.08);width:260px}
-.demoBadge b{display:block;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#697487;margin-bottom:4px}.demoBadge span{font-size:11px;line-height:1.45;color:#7b8390}.demoBadge button{margin-top:8px;width:100%;height:30px;border:1px solid #d8dee8;background:#fff;border-radius:9px;color:#4f5866;font-size:11px}.demoBadge button:hover{background:#f5f7fa}
-.taskbar{position:absolute;left:0;right:0;bottom:0;height:52px;background:rgba(245,247,250,.88);backdrop-filter:blur(24px);border-top:1px solid rgba(205,211,220,.9);display:flex;align-items:center;justify-content:center;z-index:80;box-shadow:0 -4px 18px rgba(25,33,49,.06)}
-.taskCenter{display:flex;align-items:center;gap:6px;height:100%}.taskIcon{width:36px;height:36px;border:0;border-radius:9px;background:transparent;display:grid;place-items:center;color:#566173;font-size:15px}.taskIcon:hover{background:rgba(218,223,232,.72)}
-.startLogo{width:16px;height:16px;display:grid;grid-template-columns:1fr 1fr;gap:2px}.startLogo i{display:block;background:#4d72c8;border-radius:1px}
-.trayArea{position:absolute;right:8px;height:100%;display:flex;align-items:center;gap:2px}.trayButton{height:38px;min-width:38px;border:0;background:transparent;border-radius:9px;display:flex;align-items:center;justify-content:center}.trayButton:hover,.trayButton.active{background:rgba(214,220,230,.8)}
-.trayLogo{width:22px;height:22px;border-radius:7px;background:linear-gradient(135deg,#315fd5,#7497ef);display:grid;place-items:center;color:white;font-weight:800;font-size:10px;box-shadow:0 2px 7px rgba(49,95,214,.25)}
-.systemGlyph{font-size:13px;color:#596373;padding:0 4px}.clock{min-width:72px;text-align:center;font-size:10.5px;line-height:1.25;color:#4f5864;padding:0 6px;user-select:none}
-.quickPanel{position:absolute;right:10px;bottom:61px;width:322px;background:var(--panel);backdrop-filter:blur(24px);border:1px solid rgba(205,212,222,.96);border-radius:18px;box-shadow:var(--shadow);z-index:100;overflow:hidden;transform-origin:bottom right;animation:panelIn .15s ease}.quickPanel[hidden]{display:none}@keyframes panelIn{from{opacity:0;transform:translateY(7px) scale(.985)}to{opacity:1;transform:none}}
-.qHead{height:60px;padding:0 15px;display:flex;align-items:center;border-bottom:1px solid #edf0f4}.qBrand{display:flex;align-items:center;gap:9px;min-width:0}.qLogo{width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,#315fd5,#7899ed);display:grid;place-items:center;color:#fff;font-weight:800;font-size:12px}.qTitle{font-weight:720;font-size:14px}.qSub{font-size:10px;color:#8a929f;margin-top:2px}
-.switch{margin-left:auto;width:38px;height:22px;border:0;border-radius:99px;padding:2px;background:#c9cfd8;position:relative;transition:.14s}.switch::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.18);transition:.14s}.switch.on{background:#3a6de2}.switch.on::after{transform:translateX(16px)}
-.qSection{padding:13px 14px}.qLabel{font-size:10px;font-weight:700;color:#7c8594;margin:0 0 7px}.langRow{display:grid;grid-template-columns:1fr 28px 1fr;gap:7px;align-items:center}.selectWrap{position:relative}.selectWrap select{appearance:none;width:100%;height:38px;padding:0 29px 0 10px;border:1px solid #dfe3ea;background:#fff;border-radius:10px;color:#343b46;font-size:12px;outline:none}.selectWrap::after{content:"⌄";position:absolute;right:10px;top:8px;color:#8c94a0;pointer-events:none;font-size:12px}.swap{width:28px;height:30px;border:0;border-radius:8px;background:transparent;color:#68717e}.swap:hover:not(:disabled){background:#f0f3f8;color:#3f4c5d}.swap:disabled{opacity:.32;cursor:default}
-.statusLine{display:flex;align-items:center;gap:8px;padding:11px 14px;border-top:1px solid #eef0f3;border-bottom:1px solid #eef0f3;font-size:11.5px;color:#4f5864}.statusDot{width:7px;height:7px;border-radius:50%;background:var(--good)}.statusDot.paused{background:#a6adb8}.statusMeta{margin-left:auto;color:#8a929f;font-size:10.5px}
-.qActions{padding:7px}.qAction{width:100%;height:38px;border:0;background:transparent;border-radius:10px;display:flex;align-items:center;padding:0 9px;color:#414955;font-size:11.5px;text-align:left}.qAction:hover{background:#f1f3f6}.qAction.danger{color:#9c4545}.qIcon{width:26px;color:#7b8492;font-size:14px}.qAction.danger .qIcon{color:#a95a5a}
-.settingsWindow{position:absolute;left:50%;top:50%;transform:translate(-50%,-52%);width:min(920px,88vw);height:min(650px,82vh);background:#fff;border:1px solid #d8dde6;border-radius:20px;box-shadow:0 24px 70px rgba(22,31,48,.2),0 5px 18px rgba(22,31,48,.08);z-index:95;overflow:hidden;display:grid;grid-template-rows:48px minmax(0,1fr) auto;animation:windowIn .16s ease}.settingsWindow[hidden]{display:none}@keyframes windowIn{from{opacity:0;transform:translate(-50%,-50%) scale(.99)}to{opacity:1;transform:translate(-50%,-52%) scale(1)}}
-.sTitlebar{display:flex;align-items:center;padding:0 14px;border-bottom:1px solid #e8ebf0;background:#fafbfc;user-select:none}.sTitle{display:flex;align-items:center;gap:9px;font-size:12.5px;font-weight:700}.sLogo{width:23px;height:23px;border-radius:7px;background:linear-gradient(135deg,#315fd5,#7497ef);display:grid;place-items:center;color:white;font-size:10px}.closeSettings{margin-left:auto;width:34px;height:30px;border:0;border-radius:8px;background:transparent;color:#69717e}.closeSettings:hover{background:#eef1f5}
-.sBody{display:grid;grid-template-columns:205px 1fr;min-height:0}.nav{background:#f7f8fa;border-right:1px solid #e9ebef;padding:12px 9px;overflow:auto}.navItem{width:100%;height:38px;border:0;background:transparent;border-radius:10px;padding:0 11px;display:flex;align-items:center;gap:10px;text-align:left;color:#5d6674;font-size:12px;margin-bottom:3px}.navItem:hover{background:#eef1f5}.navItem.active{background:#e9eef9;color:#294c98;font-weight:700}.navItem:focus-visible{outline:2px solid #3267e3;outline-offset:-2px}.navIcon{width:18px;text-align:center;color:#7d8794}.navItem.active .navIcon{color:#4e74cf}
-.content{overflow:hidden;min-height:0}.page{display:none;height:100%;overflow:auto;padding:24px 30px}.page.active{display:block}.pageTitle{font-size:22px;font-weight:760;letter-spacing:-.02em;margin:0}.pageSub{font-size:12px;color:#626c7c;margin:6px 0 24px;line-height:1.5}.section{border-top:1px solid #eceff3;padding:18px 0}.section:first-of-type{border-top:0;padding-top:0}.sectionTitle{font-size:12px;font-weight:720;margin:0 0 11px}.settingRow{min-height:52px;display:flex;align-items:center;gap:18px;padding:7px 0}.settingText{flex:1;min-width:0}.settingName{font-size:12.5px;color:#333a44}.settingDesc{font-size:12px;color:#626c7c;line-height:1.45;margin-top:3px}.smallSelect{height:34px;min-width:155px;border:1px solid #dce1e9;border-radius:9px;background:#fff;padding:0 28px 0 10px;color:#3d4551;font-size:11.5px}.miniSwitch{width:36px;height:20px;border:0;border-radius:99px;background:#cbd1da;position:relative;padding:0}.miniSwitch::after{content:"";position:absolute;width:14px;height:14px;border-radius:50%;background:white;left:3px;top:3px;box-shadow:0 1px 3px rgba(0,0,0,.15);transition:.14s}.miniSwitch.on{background:#3a6de2}.miniSwitch.on::after{transform:translateX(16px)}
-.outlineBtn,.primaryBtn{height:32px;border-radius:8px;padding:0 11px;font-size:11px}.outlineBtn{border:1px solid #d8dee7;background:#fff;color:#505967}.outlineBtn:hover{background:#f5f7fa}.primaryBtn{border:1px solid #315fd6;background:#315fd6;color:#fff}.primaryBtn:hover{background:#2855c7}.kbd{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;border:1px solid #cfd4de;background:#fff;border-bottom-width:2px;border-radius:5px;padding:2px 6px;color:#555d69;font-size:10px}.shortcutBox{display:flex;align-items:center;gap:5px}.mutedNote{font-size:12px;color:#626c7c}.privacyCard{border:1px solid #dfe5ee;background:#f8fafc;border-radius:13px;padding:14px;display:flex;gap:11px}.privacyIcon{width:30px;height:30px;border-radius:9px;background:#e9f0ff;color:#3965c8;display:grid;place-items:center;font-size:14px}.privacyCard b{font-size:12px}.privacyCard p{font-size:12px;color:#626c7c;line-height:1.55;margin:4px 0 0}
-.overlayDim{position:absolute;inset:0 0 52px 0;background:rgba(56,66,82,.12);z-index:90}.overlayDim[hidden]{display:none}
-.exited{position:absolute;left:50%;top:42%;transform:translate(-50%,-50%);background:rgba(255,255,255,.86);backdrop-filter:blur(14px);border:1px solid #d8dee8;border-radius:16px;padding:18px 22px;box-shadow:0 12px 36px rgba(30,39,57,.12);z-index:60;text-align:center;color:#657080;font-size:11.5px}.exited[hidden]{display:none}.exited b{display:block;color:#303845;font-size:14px;margin-bottom:4px}
-@media(max-width:760px){.settingsWindow{width:94vw;height:86vh}.sBody{grid-template-columns:160px 1fr}.page{padding:22px}.demoBadge{display:none}}
-.saveBar{border-top:1px solid #e8ebf0;background:#f7f8fa;padding:12px 20px}.saveBar p{margin:0 0 7px;font-size:12px;line-height:1.5;color:#626c7c}.saveActions{display:flex;align-items:center;gap:12px;justify-content:space-between}.primaryBtn:disabled{opacity:.5;cursor:default}.draftInput{width:180px;height:34px;border:1px solid #dce1e9;border-radius:8px;padding:6px 9px}.exclusions{display:block;width:100%;min-height:85px;resize:vertical;border:1px solid #dce1e9;border-radius:8px;padding:9px}.prepareActions{display:flex;gap:8px;flex-wrap:wrap}.prepareActions button{flex:0 0 auto}.navItem .navIcon{pointer-events:none}
-@media (prefers-reduced-motion: reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+[data-theme=dark] {
+  color-scheme:dark;
+  --canvas:#191a1d;
+  --panel:#25262a;
+  --sidebar:#202125;
+  --soft:#2d2e33;
+  --hover:#37383e;
+  --line:#3b3c43;
+  --ink:#f3f3f5;
+  --muted:#b5b5bf;
+  --accent:#83aeff;
+  --accent-soft:#283b5c;
+  --green:#8fcea8;
+  --warn:#f4bb88;
+  --warn-bg:#3c3026;
+  --shadow:0 28px 80px #0005,0 3px 12px #0003
+}
+* {
+  box-sizing:border-box
+}
+body {
+  margin:0;
+  background:var(--canvas);
+  color:var(--ink);
+  font-family:Inter,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  font-size:14px;
+  line-height:1.5
+}
+button,input,select,textarea {
+  font:inherit
+}
+button,a,select {
+  -webkit-tap-highlight-color:transparent
+}
+button {
+  cursor:pointer
+}
+button {
+  color:inherit
+}
+button:disabled {
+  cursor:default;
+  opacity:.48
+}
+button:focus-visible,a:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-visible,summary:focus-visible {
+  outline:3px solid var(--accent);
+  outline-offset:3px
+}
+button {
+  border:0
+}
+button,a,input,select,textarea {
+  touch-action:manipulation
+}
+a {
+  color:var(--accent);
+  text-decoration:none
+}
+a:hover {
+  text-decoration:underline
+}
+svg {
+  width:19px;
+  height:19px;
+  fill:none;
+  stroke:currentColor;
+  stroke-width:1.65;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+  flex:none
+}
+svg.sprite {
+  position:absolute;
+  width:0;
+  height:0;
+  overflow:hidden
+}
+[hidden] {
+  display:none!important
+}
+h1,h2,p {
+  margin:0
+}
+h1 {
+  font-size:25px;
+  line-height:1.25;
+  letter-spacing:-.5px;
+  font-weight:650
+}
+h2 {
+  font-size:14px;
+  font-weight:650
+}
+.muted {
+  color:var(--muted)
+}
+.small {
+  font-size:13px
+}
+.lab {
+  max-width:1040px;
+  margin:0 auto;
+  padding:23px 22px 0;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:20px;
+  color:var(--muted)
+}
+.lab-title {
+  font-size:13px;
+  display:flex;
+  gap:10px;
+  align-items:center
+}
+.lab-title strong {
+  font-weight:600;
+  color:var(--ink)
+}
+.lab-links {
+  display:flex;
+  align-items:center;
+  gap:18px;
+  font-size:13px
+}
+.lab details {
+  position:relative
+}
+.lab summary {
+  cursor:pointer;
+  list-style:none
+}
+.lab summary::after {
+  content:'⌄';
+  margin-left:7px
+}
+.lab-panel {
+  position:absolute;
+  top:31px;
+  right:0;
+  width:310px;
+  z-index:20;
+  border:1px solid var(--line);
+  background:var(--panel);
+  padding:18px;
+  border-radius:14px;
+  box-shadow:var(--shadow)
+}
+.lab-panel p {
+  font-size:12px;
+  margin-bottom:14px
+}
+.lab-panel label {
+  display:grid;
+  grid-template-columns:84px 1fr;
+  align-items:center;
+  gap:8px;
+  margin-top:10px
+}
+.lab-panel select {
+  min-width:0
+}
+.lab-panel .button {
+  width:100%;
+  margin-top:12px
+}
+.stage {
+  min-height:calc(100vh - 62px);
+  padding:30px 20px 64px;
+  display:flex;
+  align-items:center;
+  justify-content:center
+}
+.settings {
+  width:min(940px,100%);
+  height:min(750px,calc(100vh - 140px));
+  min-height:480px;
+  display:grid;
+  grid-template-columns:188px minmax(0,1fr);
+  background:var(--panel);
+  border:1px solid color-mix(in srgb,var(--line) 80%,transparent);
+  border-radius:20px;
+  box-shadow:var(--shadow);
+  overflow:hidden
+}
+.sidebar {
+  background:var(--sidebar);
+  border-right:1px solid var(--line);
+  padding:28px 14px 20px;
+  display:flex;
+  flex-direction:column;
+  min-width:0
+}
+.brand {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:0 11px;
+  margin-bottom:30px;
+  font-size:17px;
+  font-weight:650;
+  letter-spacing:-.3px
+}
+.brand-mark {
+  width:30px;
+  height:30px;
+  display:grid;
+  place-items:center;
+  background:var(--ink);
+  color:var(--panel);
+  border-radius:9px;
+  font-size:19px;
+  font-weight:500;
+  line-height:1
+}
+.brand-mark span {
+  transform:translateY(-1px)
+}
+.nav-button {
+  width:100%;
+  display:flex;
+  align-items:center;
+  gap:11px;
+  background:none;
+  text-align:left;
+  border-radius:8px;
+  padding:11px 12px;
+  margin:2px 0;
+  font-size:14px;
+  color:var(--muted);
+  transition:background 120ms,color 120ms
+}
+.nav-button:hover {
+  background:var(--hover)
+}
+.nav-button[aria-current=page] {
+  color:var(--ink);
+  background:var(--hover);
+  font-weight:600
+}
+.nav-button[aria-current=page] svg {
+  color:var(--accent)
+}
+.sidebar-bottom {
+  margin-top:auto;
+  padding:22px 11px 0;
+  font-size:12px;
+  color:var(--muted)
+}
+.service-mini {
+  display:flex;
+  align-items:center;
+  gap:7px;
+  margin-bottom:7px
+}
+.dot {
+  width:6px;
+  height:6px;
+  flex:none;
+  border-radius:50%;
+  background:var(--green)
+}
+.dot.off {
+  background:var(--muted)
+}
+.main {
+  min-width:0;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  position:relative
+}
+.titlebar {
+  height:56px;
+  flex:none;
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  padding:0 17px
+}
+.icon-button {
+  width:30px;
+  height:30px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:7px;
+  background:transparent;
+  color:var(--muted)
+}
+.icon-button:hover {
+  background:var(--hover);
+  color:var(--ink)
+}
+.icon-button svg {
+  width:17px;
+  height:17px
+}
+.page-scroll {
+  padding:0 34px 30px;
+  overflow:auto;
+  flex:1;
+  min-height:0;
+  scrollbar-width:thin;
+  scrollbar-color:var(--line) transparent
+}
+.page-heading {
+  padding:0 0 26px
+}
+.page-heading p {
+  color:var(--muted);
+  margin-top:7px;
+  font-size:14px
+}
+.group {
+  padding:22px 0;
+  border-top:1px solid var(--line)
+}
+.group.first {
+  border-top:0;
+  padding-top:0
+}
+.group-heading {
+  margin-bottom:14px
+}
+.setting-row {
+  display:flex;
+  align-items:center;
+  gap:25px;
+  justify-content:space-between;
+  min-height:56px;
+  padding:8px 0
+}
+.setting-copy {
+  min-width:0
+}
+.setting-name {
+  font-size:14px;
+  font-weight:500
+}
+.setting-description {
+  font-size:13px;
+  color:var(--muted);
+  margin-top:4px;
+  max-width:390px;
+  line-height:1.55
+}
+.switch {
+  flex:none;
+  position:relative;
+  width:38px;
+  height:23px;
+  background:#b5b6bc;
+  border-radius:20px;
+  padding:0;
+  transition:background 150ms
+}
+.switch::after {
+  content:'';
+  display:block;
+  width:17px;
+  height:17px;
+  border-radius:50%;
+  background:#fff;
+  box-shadow:0 1px 3px #0002;
+  position:absolute;
+  left:3px;
+  top:3px;
+  transition:transform 180ms cubic-bezier(.22,1,.36,1)
+}
+.switch[aria-checked=true] {
+  background:#2563db
+}
+.switch[aria-checked=true]::after {
+  transform:translateX(15px)
+}
+.segmented {
+  display:flex;
+  gap:3px;
+  flex:none;
+  padding:3px;
+  border-radius:9px;
+  background:var(--soft);
+  border:1px solid var(--line)
+}
+.segmented button {
+  font-size:13px;
+  border-radius:6px;
+  background:transparent;
+  padding:6px 11px;
+  color:var(--muted);
+  white-space:nowrap
+}
+.segmented button[aria-pressed=true] {
+  color:var(--ink);
+  background:var(--panel);
+  box-shadow:0 1px 4px #00000014
+}
+.mode-note {
+  font-size:13px;
+  color:var(--muted);
+  margin:6px 0 0;
+  max-width:510px
+}
+.theme-options {
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:14px;
+  margin-top:17px
+}
+.theme-option {
+  background:none;
+  padding:0;
+  text-align:left
+}
+.theme-preview {
+  height:85px;
+  border:1px solid var(--line);
+  border-radius:10px;
+  padding:10px;
+  position:relative;
+  overflow:hidden;
+  background:#f4f4f6;
+  display:flex;
+  align-items:center;
+  justify-content:center
+}
+.theme-option[aria-pressed=true] .theme-preview {
+  outline:2px solid #2563db;
+  outline-offset:2px
+}
+.theme-preview.dark-preview {
+  background:#292a2f
+}
+.theme-preview.system-preview {
+  background:linear-gradient(90deg,#f4f4f6 50%,#292a2f 50%)
+}
+.mini-overlay {
+  width:100%;
+  height:51px;
+  background:#fff;
+  border:1px solid #e3e3e7;
+  border-radius:7px;
+  padding:8px;
+  box-shadow:0 2px 6px #0000000a;
+  position:relative
+}
+.dark-preview .mini-overlay {
+  background:#35363d;
+  border-color:#4a4b53
+}
+.mini-top {
+  height:3px;
+  width:34%;
+  background:#8e9199;
+  border-radius:4px;
+  margin-bottom:7px
+}
+.mini-line {
+  height:4px;
+  width:84%;
+  background:#656872;
+  border-radius:4px;
+  margin-bottom:5px
+}
+.mini-line.short {
+  width:57%
+}
+.dark-preview .mini-line {
+  background:#b8bac4
+}
+.system-preview .mini-overlay {
+  background:linear-gradient(90deg,#fff 50%,#35363d 50%);
+  border-color:#8d8e92
+}
+.theme-label {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  margin-top:10px;
+  font-size:13px;
+  color:var(--muted)
+}
+.theme-option[aria-pressed=true] .theme-label {
+  color:var(--ink)
+}
+.theme-check {
+  width:15px;
+  height:15px;
+  color:#2563db;
+  opacity:0
+}
+.theme-option[aria-pressed=true] .theme-check {
+  opacity:1
+}
+.quiet-link {
+  display:inline-flex;
+  gap:7px;
+  align-items:center;
+  background:none;
+  padding:0;
+  font-size:13px;
+  color:var(--accent)
+}
+.quiet-link svg {
+  width:15px;
+  height:15px
+}
+.support-link {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  margin-top:19px;
+  padding-top:19px;
+  border-top:1px solid var(--line);
+  gap:15px
+}
+.button {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:7px;
+  min-height:34px;
+  padding:7px 13px;
+  border:1px solid var(--line);
+  background:var(--panel);
+  border-radius:8px;
+  font-size:13px;
+  white-space:nowrap
+}
+.button:hover:not(:disabled) {
+  background:var(--soft)
+}
+.button.primary {
+  background:#2563db;
+  border-color:#2563db;
+  color:#fff
+}
+.button.primary:hover:not(:disabled) {
+  background:#1b54c4
+}
+.button.danger {
+  color:var(--warn)
+}
+select,input,textarea {
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:var(--panel);
+  color:var(--ink);
+  padding:7px 10px;
+  min-height:35px;
+  font-size:13px
+}
+select {
+  max-width:100%
+}
+input {
+  width:170px
+}
+textarea {
+  width:100%;
+  resize:vertical;
+  line-height:1.6
+}
+.language-flow {
+  display:grid;
+  grid-template-columns:1fr 34px 1fr;
+  gap:12px;
+  align-items:end;
+  margin:4px 0 22px
+}
+.language-flow label {
+  display:grid;
+  gap:10px;
+  color:var(--muted);
+  font-size:13px
+}
+.language-flow select {
+  width:100%;
+  font-size:14px;
+  height:43px
+}
+.language-flow .icon-button {
+  margin-bottom:6px
+}
+.language-preview {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  background:var(--soft);
+  padding:20px;
+  border-radius:12px;
+  gap:16px;
+  font-size:15px
+}
+.language-preview span {
+  font-size:12px;
+  color:var(--muted)
+}
+.notice {
+  display:flex;
+  align-items:flex-start;
+  gap:11px;
+  background:var(--warn-bg);
+  color:var(--warn);
+  border:1px solid color-mix(in srgb,var(--warn) 16%,transparent);
+  padding:13px 14px;
+  border-radius:10px;
+  margin-bottom:20px;
+  font-size:13px
+}
+.notice svg {
+  width:18px;
+  height:18px;
+  margin-top:2px
+}
+.notice-content {
+  flex:1;
+  min-width:0
+}
+.notice strong {
+  display:block;
+  font-size:13px;
+  font-weight:600
+}
+.notice p {
+  margin-top:3px
+}
+.notice .button {
+  background:transparent;
+  border-color:color-mix(in srgb,var(--warn) 30%,transparent);
+  color:var(--warn);
+  margin-top:9px
+}
+.notice.inline {
+  margin:14px 0 0
+}
+.status-facts {
+  display:grid;
+  grid-template-columns:repeat(3,1fr);
+  gap:16px;
+  border-top:1px solid var(--line);
+  border-bottom:1px solid var(--line);
+  padding:20px 0;
+  margin-bottom:25px
+}
+.fact-label {
+  font-size:12px;
+  color:var(--muted);
+  margin-bottom:6px
+}
+.fact-value {
+  font-size:13px;
+  font-weight:500;
+  display:flex;
+  align-items:center;
+  gap:6px
+}
+.connection-row {
+  display:flex;
+  align-items:center;
+  gap:14px;
+  margin:20px 0
+}
+.connection-icon {
+  width:40px;
+  height:40px;
+  display:grid;
+  place-items:center;
+  background:var(--soft);
+  border-radius:10px;
+  color:var(--muted)
+}
+.connection-row .setting-copy {
+  flex:1
+}
+.details {
+  margin-top:18px
+}
+.details summary {
+  cursor:pointer;
+  color:var(--muted);
+  font-size:13px;
+  list-style:none;
+  display:flex;
+  align-items:center;
+  gap:7px
+}
+.details summary::before {
+  content:'›';
+  display:inline-block;
+  transition:transform 120ms
+}
+.details[open] summary::before {
+  transform:rotate(90deg)
+}
+.details-body {
+  font-size:13px;
+  color:var(--muted);
+  padding:15px 0 0;
+  line-height:1.7
+}
+.details-body ul {
+  padding-left:19px;
+  margin:0
+}
+.details-body textarea {
+  margin:10px 0 0
+}
+.capability {
+  display:flex;
+  justify-content:space-between;
+  border-bottom:1px solid var(--line);
+  padding:8px 0;
+  gap:10px
+}
+.draft-bar {
+  flex:none;
+  background:var(--soft);
+  border-top:1px solid var(--line);
+  padding:13px 24px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:20px
+}
+.draft-bar p {
+  font-size:12px;
+  color:var(--muted);
+  max-width:380px
+}
+.draft-bar p.error {
+  color:var(--warn)
+}
+.draft-bar .button {
+  flex:none
+}
+.tray-anchor {
+  position:fixed;
+  bottom:18px;
+  right:24px;
+  display:flex;
+  align-items:center;
+  gap:14px;
+  z-index:3;
+  color:var(--muted);
+  font-size:12px
+}
+.tray-trigger {
+  height:36px;
+  width:40px;
+  display:grid;
+  place-items:center;
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:10px;
+  box-shadow:0 2px 8px #00000008
+}
+.tray-trigger .brand-mark {
+  width:23px;
+  height:23px;
+  border-radius:7px;
+  font-size:15px
+}
+.quick-panel {
+  position:fixed;
+  bottom:68px;
+  right:24px;
+  width:314px;
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:16px;
+  box-shadow:var(--shadow);
+  padding:7px;
+  z-index:8;
+  animation:tray-in 180ms cubic-bezier(.22,1,.36,1)
+}
+@keyframes tray-in {
+  from {
+    opacity:0;
+    transform:translateY(5px)
+  }
+  to {
+    opacity:1;
+    transform:none
+  }
+}
+.quick-head {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:12px 11px 17px
+}
+.quick-head .brand-mark {
+  width:31px;
+  height:31px
+}
+.quick-head strong {
+  font-weight:600;
+  font-size:15px
+}
+.quick-head p {
+  font-size:12px;
+  color:var(--muted);
+  margin-top:1px
+}
+.quick-head .switch {
+  margin-left:auto
+}
+.quick-section {
+  border-top:1px solid var(--line);
+  padding:14px 11px
+}
+.quick-label {
+  font-size:12px;
+  color:var(--muted);
+  margin-bottom:9px
+}
+.quick-panel .segmented {
+  width:100%
+}
+.quick-panel .segmented button {
+  flex:1
+}
+.quick-panel .language-flow {
+  margin:0;
+  gap:6px;
+  grid-template-columns:1fr 24px 1fr
+}
+.quick-panel .language-flow select {
+  font-size:13px;
+  height:35px
+}
+.quick-panel .language-flow .icon-button {
+  width:24px;
+  margin-bottom:2px
+}
+.quick-state {
+  font-size:12px;
+  display:flex;
+  align-items:center;
+  gap:7px
+}
+.quick-state + .quick-state {
+  margin-top:8px
+}
+.quick-state .muted {
+  margin-left:auto
+}
+.quick-action {
+  width:100%;
+  display:flex;
+  align-items:center;
+  gap:11px;
+  padding:10px 12px;
+  border-radius:8px;
+  background:none;
+  font-size:13px;
+  text-align:left
+}
+.quick-action:hover {
+  background:var(--soft)
+}
+.quick-action svg {
+  width:17px;
+  height:17px;
+  color:var(--muted)
+}
+.quick-action .chevron {
+  margin-left:auto
+}
+.quick-panel .notice {
+  margin:2px 5px 10px;
+  padding:10px;
+  font-size:12px
+}
+.quick-panel .notice strong {
+  font-size:12px
+}
+.empty-stage {
+  text-align:center;
+  color:var(--muted);
+  font-size:14px
+}
+.empty-stage p {
+  margin-top:7px
+}
+.empty-stage .button {
+  margin-top:18px
+}
+dialog {
+  color:var(--ink);
+  background:var(--panel);
+  border:1px solid var(--line);
+  border-radius:16px;
+  box-shadow:var(--shadow);
+  padding:27px;
+  max-width:min(420px,calc(100vw - 40px))
+}
+dialog::backdrop {
+  background:#14182055
+}
+dialog h2 {
+  font-size:19px;
+  font-weight:650;
+  margin-bottom:11px
+}
+dialog p {
+  color:var(--muted);
+  font-size:14px;
+  line-height:1.65
+}
+.dialog-actions {
+  display:flex;
+  justify-content:flex-end;
+  gap:9px;
+  margin-top:25px;
+  flex-wrap:wrap
+}
+.toast {
+  position:fixed;
+  bottom:21px;
+  left:50%;
+  transform:translateX(-50%);
+  background:var(--ink);
+  color:var(--panel);
+  padding:10px 17px;
+  border-radius:10px;
+  font-size:13px;
+  z-index:15
+}
+@media(max-width:800px) {
+  .stage {
+    padding-left:20px;
+    padding-right:20px
+  }
+  .settings {
+    grid-template-columns:165px minmax(0,1fr)
+  }
+  .sidebar {
+    padding:25px 10px 18px
+  }
+  .brand {
+    padding:0 8px;
+    font-size:16px
+  }
+  .page-scroll {
+    padding:0 27px 24px
+  }
+  .setting-row {
+    gap:15px
+  }
+  .theme-options {
+    gap:12px
+  }
+  .theme-preview {
+    height:76px;
+    padding:8px
+  }
+  .titlebar {
+    height:48px
+  }
+  .page-heading {
+    padding-bottom:23px
+  }
+  .group {
+    padding:19px 0
+  }
+  .setting-description {
+    font-size:13px
+  }
+  .status-facts {
+    gap:10px
+  }
+  .fact-value {
+    font-size:12px
+  }
+  .lab {
+    padding-top:18px
+  }
+  .settings {
+    height:min(750px,calc(100vh - 130px))
+  }
+}
+@media(max-width:590px) {
+  .lab {
+    padding:15px 14px 0
+  }
+  .lab-title span {
+    display:none
+  }
+  .lab-links {
+    gap:12px
+  }
+  .stage {
+    padding:23px 10px 70px;
+    align-items:flex-start
+  }
+  .settings {
+    grid-template-columns:120px minmax(0,1fr);
+    height:calc(100vh - 120px);
+    min-height:530px;
+    border-radius:15px
+  }
+  .brand {
+    font-size:14px;
+    gap:7px;
+    padding:0 4px
+  }
+  .brand-mark {
+    width:25px;
+    height:25px;
+    font-size:17px
+  }
+  .sidebar {
+    padding:20px 7px
+  }
+  .nav-button {
+    gap:7px;
+    padding:10px 7px;
+    font-size:12px
+  }
+  .nav-button svg {
+    width:16px;
+    height:16px
+  }
+  .sidebar-bottom {
+    padding:15px 4px 0;
+    font-size:11px
+  }
+  .page-scroll {
+    padding:0 17px 22px
+  }
+  h1 {
+    font-size:23px
+  }
+  .setting-row {
+    flex-wrap:wrap;
+    gap:10px
+  }
+  .setting-copy {
+    flex:1;
+    min-width:110px
+  }
+  .segmented {
+    margin-left:auto
+  }
+  .theme-options {
+    gap:8px
+  }
+  .theme-preview {
+    height:62px;
+    padding:5px
+  }
+  .mini-overlay {
+    height:43px;
+    padding:6px
+  }
+  .language-flow {
+    grid-template-columns:1fr
+  }
+  .language-flow .icon-button {
+    transform:rotate(90deg);
+    margin:auto
+  }
+  .language-preview {
+    padding:14px;
+    flex-direction:column;
+    align-items:flex-start
+  }
+  .status-facts {
+    grid-template-columns:1fr;
+    gap:12px;
+    padding:15px 0
+  }
+  .fact {
+    display:flex;
+    justify-content:space-between;
+    gap:10px
+  }
+  .fact-label {
+    margin:0
+  }
+  .connection-row {
+    flex-wrap:wrap
+  }
+  .connection-row .button {
+    margin-left:54px
+  }
+  .draft-bar {
+    padding:12px;
+    gap:10px
+  }
+  .draft-bar p {
+    font-size:11px
+  }
+  .tray-anchor {
+    right:15px
+  }
+  .quick-panel {
+    right:15px;
+    max-width:calc(100vw - 30px)
+  }
+}
+@media(prefers-reduced-motion:reduce) {
+  *,*::before,*::after {
+    animation:none!important;
+    transition:none!important;
+    scroll-behavior:auto!important
+  }
+}
 </style>
 </head>
 <body>
-<div class="desktop" id="desktop">
-  <div class="wallpaperMark">TypeLay</div>
-  <div class="demoBadge"><b>Demo controls · 非产品 UI</b><span>点击右下角 TypeLay 托盘图标打开快速面板；设置展示 Linux 当前四页分组与跨页草稿。此原型不代表真实客户端验收。保存错误应单独提示，重新选择原控件可重试；演示不模拟磁盘故障。</span><button id="restartBtn" hidden>重新启动 TypeLay</button></div>
-
-  <div class="overlayDim" id="dim" hidden></div>
-
-  <section class="settingsWindow" id="settingsWindow" hidden aria-label="TypeLay 设置">
-    <div class="sTitlebar">
-      <div class="sTitle"><span class="sLogo">T</span>TypeLay 设置</div>
-      <button class="closeSettings" id="closeSettings" aria-label="关闭设置">×</button>
+  <svg class="sprite" aria-hidden="true">
+    <defs>
+      <symbol id="i-home" viewBox="0 0 24 24">
+        <path d="m3 10 9-7 9 7v10H3Z"/>
+        <path d="M9 20v-7h6v7"/>
+      </symbol>
+      <symbol id="i-language" viewBox="0 0 24 24">
+        <path d="M3 5h12M9 3v2M6 5c0 6 5 10 8 11M13 5c0 5-5 10-10 12M14 21l4-10 4 10M15.5 17h5"/>
+      </symbol>
+      <symbol id="i-keys" viewBox="0 0 24 24">
+        <rect x="2" y="5" width="20" height="14" rx="3"/>
+        <path d="M6 9h.01M10 9h.01M14 9h.01M18 9h.01M6 12h.01M10 12h.01M14 12h.01M18 12h.01M7 16h10"/>
+      </symbol>
+      <symbol id="i-app" viewBox="0 0 24 24">
+        <rect x="3" y="3" width="7" height="7" rx="1.5"/>
+        <rect x="14" y="3" width="7" height="7" rx="1.5"/>
+        <rect x="3" y="14" width="7" height="7" rx="1.5"/>
+        <path d="M14 17.5h7M17.5 14v7"/>
+      </symbol>
+      <symbol id="i-x" viewBox="0 0 24 24">
+        <path d="m6 6 12 12M18 6 6 18"/>
+      </symbol>
+      <symbol id="i-swap" viewBox="0 0 24 24">
+        <path d="M4 8h16m-4-4 4 4-4 4M20 16H4m4-4-4 4 4 4"/>
+      </symbol>
+      <symbol id="i-check" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="10" fill="currentColor" stroke="none"/>
+        <path d="m7 12 3 3 7-7" stroke="white" stroke-width="2"/>
+      </symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24">
+        <path d="m9 5 7 7-7 7"/>
+      </symbol>
+      <symbol id="i-info" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9"/>
+        <path d="M12 11v6M12 7h.01"/>
+      </symbol>
+      <symbol id="i-desktop" viewBox="0 0 24 24">
+        <rect x="3" y="4" width="18" height="13" rx="2"/>
+        <path d="M8 21h8M12 17v4"/>
+      </symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24">
+        <path d="M4 7h16M4 17h16"/>
+        <circle cx="9" cy="7" r="3" fill="var(--panel)"/>
+        <circle cx="16" cy="17" r="3" fill="var(--panel)"/>
+      </symbol>
+      <symbol id="i-power" viewBox="0 0 24 24">
+        <path d="M12 2v10M6 5a9 9 0 1 0 12 0"/>
+      </symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24">
+        <path d="M4 12h16m-6-6 6 6-6 6"/>
+      </symbol>
+    </defs>
+  </svg>
+  <header class="lab">
+    <div class="lab-title">
+      <strong>
+        TypeLay
+      </strong>
+      <span>
+        交互原型 · 设置与托盘
+      </span>
     </div>
-    <div class="sBody">
-      <nav class="nav" id="nav" aria-label="设置导航">
-        <button class="navItem active" data-page="general"><span class="navIcon">⌂</span>常规</button>
-        <button class="navItem" data-page="language"><span class="navIcon">文</span>语言</button>
-        <button class="navItem" data-page="shortcuts"><span class="navIcon">⌨</span>快捷键</button>
-        <button class="navItem" data-page="application-support"><span class="navIcon">▦</span>应用支持</button>
-      </nav>
-      <main class="content">
-        <section class="page active" id="page-general">
-          <h1 class="pageTitle">常规</h1><p class="pageSub">TypeLay 的全局运行方式。</p>
-          <div class="section">
-            <div class="settingRow"><div class="settingText"><div class="settingName">启用 TypeLay</div><div class="settingDesc">暂停会清除当前翻译；可确认的普通输入框旁保留“恢复”，托盘与设置也可恢复。</div></div><button class="miniSwitch on" id="settingsEnable" aria-label="启用 TypeLay"></button></div>
-            <div class="settingRow"><div class="settingText"><div class="settingName">工作模式</div><div class="settingDesc" id="modeDescription">自动模式：聚焦受支持的输入框后显示翻译 UI；按需唤醒与直接替换键在此模式不启用。</div></div><select class="smallSelect" id="workMode"><option value="Automatic">自动模式</option><option value="OnDemand">按需模式</option></select></div>
-            <div class="settingRow"><div class="settingText"><div class="settingName">启用原生输入框替换</div><div class="settingDesc">即时保存；仍须通过字段、输入法状态与写回安全检查。</div></div><button class="miniSwitch" id="writebackSwitch" aria-label="启用原生输入框替换"></button></div>
-            <div class="settingRow"><div class="settingText"><div class="settingName">登录 niri 时启动</div><div class="settingDesc">可以随时在这里关闭。</div></div><button class="miniSwitch on" id="startupSwitch" aria-label="开机启动"></button></div>
-          </div>
-          <div class="section"><div class="settingRow"><div class="settingText"><div class="settingName">翻译浮层主题</div><div class="settingDesc">即时保存；这里只调整翻译浮层。</div></div><select class="smallSelect" id="overlayTheme"><option>跟随系统</option><option>浅色</option><option>深色</option></select></div></div>
-          <div class="section"><div class="privacyCard"><div class="privacyIcon">⌂</div><div><b>文本与译文保留在本机</b><p>翻译推理完全在本地进行；默认不保存翻译历史，也不需要账号或云同步。</p></div></div></div>
-
-        </section>
-
-        <section class="page" id="page-language">
-          <h1 class="pageTitle">语言</h1><p class="pageSub">选择默认翻译方向。Auto 只用于源语言，目标语言始终明确指定。</p>
-          <div class="section">
-            <div class="settingRow"><div class="settingText"><div class="settingName">源语言</div><div class="settingDesc">Auto 会根据当前输入自动判断。</div></div><select class="smallSelect syncSource"><option value="Auto">Auto</option><option value="中文">中文</option><option value="English">English</option></select></div>
-            <div class="settingRow"><div class="settingText"><div class="settingName">目标语言</div></div><select class="smallSelect syncTarget"><option value="English">English</option><option value="中文">中文</option></select></div>
-            <div class="settingRow"><div class="settingText"><div class="settingName">交换语言</div><div class="settingDesc" id="swapDesc">源语言为 Auto 时不可直接交换；选择固定源语言后启用。</div></div><button class="outlineBtn settingsSwap" disabled>交换</button></div>
-          </div>
-        </section>
-
-        <section class="page" id="page-shortcuts">
-          <h1 class="pageTitle">快捷键</h1><p class="pageSub">原型展示默认键示例；真实客户端显示已保存的实际四键。四个快捷键需点“保存修改”；普通开关、模式、语言与外观即时保存。</p>
-          <div class="section">
-            <div class="settingRow"><div class="settingText"><div class="settingName">唤醒翻译</div><div class="settingDesc">为当前输入框开始按需翻译；保存后生效。</div></div><input class="draftInput" id="wakeShortcut" value="Ctrl+Shift+F9" aria-label="唤醒翻译" /></div>
-            <div class="settingRow"><div class="settingText"><div class="settingName">直接翻译替换</div><div class="settingDesc">独立的一次性原目标替换，不发送；保存后生效。</div></div><input class="draftInput" id="directShortcut" value="Ctrl+Shift+F10" aria-label="直接翻译替换" /></div>
-            <div class="settingRow"><div class="settingText"><div class="settingName">接受译文</div><div class="settingDesc">仅在当前候选有效且可安全写回时生效。完整候选可编辑时，浮层顶部显示“译文就绪 · 点击译文编辑”；进入编辑后显示“编辑中”。编辑后第一次接受键只返回原框，第二次才尝试接受；不会发送或提交。</div></div><select class="smallSelect" id="acceptShortcut" aria-label="接受译文"><option>Tab</option></select></div>
-            <div class="settingRow"><div class="settingText"><div class="settingName">退出当前翻译</div><div class="settingDesc">结束当前 TypeLay 会话，不提交原应用内容。</div></div><select class="smallSelect" id="exitShortcut" aria-label="退出当前翻译"><option>Esc</option></select></div>
-          </div>
-        </section>
-
-        <section class="page" id="page-application-support">
-          <h1 class="pageTitle">应用支持</h1><p class="pageSub">先准备本地翻译组件，再连接需要使用的应用，最后到实际输入框试一试。模型就绪不代表应用已经连接。</p>
-          <div class="section"><h2 class="sectionTitle">准备翻译</h2><p class="settingDesc"><strong>本地翻译组件已就绪</strong><br>就绪状态示例：下一步选择要接入的应用。组件就绪不表示输入服务或目标应用已连接。</p><div class="prepareActions"><button class="primaryBtn demoAction">选择接入方式</button><button class="outlineBtn demoAction">修复本地翻译组件…</button></div><p class="settingDesc">尚未准备时，以准备操作为主；准备暂停或失败时，以继续或重新准备为主，并保留原因。已有模型可用也不能掩盖本次准备失败。此卡是状态设计示例，不模拟安装或连接。</p></div>
-          <div class="section"><h2 class="sectionTitle">连接应用</h2><p class="settingDesc">真实客户端按所选应用显示准备、连接和检查动作。这里不模拟系统权限、安装成功或输入法切换。</p><div class="prepareActions"><select class="smallSelect" aria-label="连接应用"><option>桌面普通输入框</option><option>Chromium 浏览器</option></select><button class="outlineBtn demoAction">安装接入组件…</button></div></div>
-          <div class="section" aria-label="按需练习与接入说明">
-            <h2 class="sectionTitle">按需翻译练习</h2>
-            <p class="settingDesc">设置布局原则：先显示当前准备状态、一个明确下一步和必要风险提示；完整接入说明不得挤掉首屏主要操作。此页为设计示例，不是客户端验收截图。</p>
-            <p class="settingDesc">先准备本地模型。Windows 的“试一试”打开真实练习框；Linux 的“选择接入方式”先显示接入步骤，按实际状态确认连接后再打开练习。使用窗口显示的预览快捷键生成译文，随后使用直接替换快捷键完成替换。只有本次练习框的真实结果才推进两步进度。</p>
-            <p class="settingDesc">状态示例：等待连接 → 已生成预览 → 已验证直接替换。重新开始只重置进度，保留输入。Linux 练习窗口在准备期间撤下旧进度，确认本次输入框后再显示重置结果，请按窗口第 1 步重新生成预览。关闭窗口不算完成，完整 Tab 与人工编辑教程仍单独验收。</p>
-            <p class="settingDesc">Linux 接入：检查冲突 → 记下原输入法的恢复方式（或确认此前未运行）→ 自行退出后重新检查 → 确认连接。结束后先关闭练习、移除受管接入，再按原方式手动恢复；检测到运行不代表恢复方式已验证。</p>
-            <p class="settingDesc">本段为产品行为说明，不模拟成功回执或操作系统切换。<a href="../product/application-support.md">应用接入约定</a></p>
-          </div>
-          <div class="section"><h2 class="sectionTitle">排除的应用</h2><p class="settingDesc">每行一个可执行文件名，保存后生效。密码、敏感字段及无法确认输入法状态的控件不会读取或替换。</p><textarea class="exclusions" id="excludedApplications" aria-label="排除的应用"></textarea></div>
-          <p class="mutedNote">此处同步 Linux 当前四页布局，仅演示现有控件的分组与草稿。风格持续/应用覆盖、换种说法、显式术语表和搜索式多语言仍是产品缺口，没有占位页面。Windows 与 Linux 均须分别完成真实桌面和视觉验收。</p>
-        </section>
-      </main>
+    <div class="lab-links">
+      <a href="TypeLay_UIUX_Prototype.html">
+        体验浮层 ↗
+      </a>
+      <details id="demoControls">
+        <summary>
+          演示选项
+        </summary>
+        <div class="lab-panel">
+          <p>
+            仅模拟界面和状态，不安装组件、不改系统设置。快捷键、连接和保存结果均为本页演示数据。
+          </p>
+          <label>
+            界面外观
+            <select id="demoTheme">
+              <option value="light">
+                浅色
+              </option>
+              <option value="dark">
+                深色
+              </option>
+            </select>
+          </label>
+          <label>
+            准备状态
+            <select id="demoSetup">
+              <option value="ready">
+                已就绪
+              </option>
+              <option value="missing">
+                尚未准备
+              </option>
+              <option value="failed">
+                准备失败
+              </option>
+              <option value="paused">
+                准备已暂停
+              </option>
+            </select>
+          </label>
+          <label>
+            应用连接
+            <select id="demoConnection">
+              <option value="connected">
+                已连接
+              </option>
+              <option value="disconnected">
+                未连接
+              </option>
+              <option value="conflict">
+                输入法冲突
+              </option>
+            </select>
+          </label>
+          <button class="button" id="demoSaveError">
+            下一次保存失败
+          </button>
+          <button class="button" id="demoTrayError">
+            查看托盘保存失败
+          </button>
+          <button class="button" id="demoRestart">
+            重置演示
+          </button>
+          <details class="details">
+            <summary>
+              范围与设计依据
+            </summary>
+            <div class="details-body">
+              视觉层级来自用户提供的设置参考，及 Apple、Linear 的轻量设置。仅保留现有中英方向、四键和主题设置。风格、术语表与已安装应用选择未实现，不作可用控件展示。此页不是桌面验收。
+            </div>
+          </details>
+        </div>
+      </details>
     </div>
-    <footer class="saveBar" aria-label="全局设置草稿">
-      <p>普通开关、工作模式、语言与浮层主题即时保存。四个快捷键和应用排除列表需点“保存修改”才生效。</p>
-      <p id="draftNotice" hidden>有未保存的修改；切换页面后仍会保留，关闭时需选择继续编辑或放弃。</p>
-      <div class="saveActions"><span class="mutedNote" id="saveFeedback">原型只保存本页演示数据，不更改真实客户端。</span><button class="primaryBtn" id="saveDraft" disabled>保存修改</button></div>
-    </footer>
-  </section>
-
-  <section class="quickPanel" id="quickPanel" hidden aria-label="TypeLay 快速面板">
-    <div class="qHead"><div class="qBrand"><div class="qLogo">T</div><div><div class="qTitle">TypeLay</div><div class="qSub" id="serviceSub">已启用</div></div></div><button class="switch on" id="serviceSwitch" aria-label="启用或暂停 TypeLay"></button></div>
-    <div class="qSection"><div class="qLabel">翻译方向</div><div class="langRow">
-      <div class="selectWrap"><select class="syncSource" id="quickSource"><option value="Auto">Auto</option><option value="中文">中文</option><option value="English">English</option></select></div>
-      <button class="swap quickSwap" id="quickSwap" aria-label="交换语言" disabled>⇄</button>
-      <div class="selectWrap"><select class="syncTarget" id="quickTarget"><option value="English">English</option><option value="中文">中文</option></select></div>
-    </div></div>
-    <div class="statusLine"><span class="statusDot" id="modelDot"></span><span id="modelText">本地翻译已就绪</span><span class="statusMeta">本机</span></div>
-    <div class="qActions"><button class="qAction" id="openSettings"><span class="qIcon">⚙</span>设置…</button><button class="qAction danger" id="quitApp"><span class="qIcon">⏻</span>退出 TypeLay</button></div>
-  </section>
-
-  <div class="exited" id="exited" hidden><b>TypeLay 已退出</b>托盘图标已移除。使用右上角演示按钮重新启动。</div>
-
-  <div class="taskbar">
-    <div class="taskCenter"><button class="taskIcon" aria-label="开始"><span class="startLogo"><i></i><i></i><i></i><i></i></span></button><button class="taskIcon">⌕</button><button class="taskIcon">▣</button></div>
-    <div class="trayArea"><span class="systemGlyph">⌃</span><span class="systemGlyph">⌁</span><span class="systemGlyph">▮</span><button class="trayButton" id="trayButton" aria-label="TypeLay"><span class="trayLogo">T</span></button><div class="clock"><div id="clockTime">--:--</div><div id="clockDate">--/--</div></div></div>
+  </header>
+  <main class="stage">
+    <section class="settings" id="settingsWindow" aria-label="TypeLay 设置">
+      <aside class="sidebar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <span>
+              T
+            </span>
+          </span>
+          TypeLay
+        </div>
+        <nav aria-label="设置导航">
+          <button class="nav-button" data-page="general" aria-current="page">
+            <svg>
+              <use href="#i-home"/>
+            </svg>
+            常规
+          </button>
+          <button class="nav-button" data-page="language">
+            <svg>
+              <use href="#i-language"/>
+            </svg>
+            语言
+          </button>
+          <button class="nav-button" data-page="shortcuts">
+            <svg>
+              <use href="#i-keys"/>
+            </svg>
+            快捷键
+          </button>
+          <button class="nav-button" data-page="support">
+            <svg>
+              <use href="#i-app"/>
+            </svg>
+            应用支持
+          </button>
+        </nav>
+        <div class="sidebar-bottom">
+          <div class="service-mini">
+            <span class="dot" id="sidebarDot">
+            </span>
+            <span id="sidebarService">
+              翻译服务运行中
+            </span>
+          </div>
+          <span>
+            本地翻译 · 无历史记录
+          </span>
+        </div>
+      </aside>
+      <div class="main">
+        <div class="titlebar">
+          <button class="icon-button" id="closeSettings" aria-label="关闭设置" title="关闭设置">
+            <svg>
+              <use href="#i-x"/>
+            </svg>
+          </button>
+        </div>
+        <div class="page-scroll" id="pageScroll">
+          <div class="notice" id="settingsSaveError" role="status" hidden>
+            <svg>
+              <use href="#i-info"/>
+            </svg>
+            <div class="notice-content">
+              <strong>
+                设置没有保存
+              </strong>
+              <p>
+                请检查设置目录权限或磁盘空间，再重新选择需要的设置。
+              </p>
+              <button class="button" id="retrySettings">
+                重试保存
+              </button>
+            </div>
+          </div>
+          <section class="page" id="page-general">
+            <div class="page-heading">
+              <h1>
+                常规
+              </h1>
+              <p>
+                在你需要的时候，帮你表达。
+              </p>
+            </div>
+            <div id="generalSetup" class="notice" hidden>
+              <svg>
+                <use href="#i-info"/>
+              </svg>
+              <div class="notice-content">
+                <strong id="generalSetupTitle">
+                </strong>
+                <p id="generalSetupDescription">
+                </p>
+                <button class="button" id="generalSetupAction">
+                  准备翻译
+                </button>
+              </div>
+            </div>
+            <div class="group first">
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <div class="setting-name">
+                    启用 TypeLay
+                  </div>
+                  <p class="setting-description" id="enabledDescription">
+                    在当前输入框旁显示译文。
+                  </p>
+                </div>
+                <button class="switch" id="settingsEnable" role="switch" aria-checked="true" aria-label="启用 TypeLay">
+                </button>
+              </div>
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <div class="setting-name">
+                    工作模式
+                  </div>
+                </div>
+                <div class="segmented" aria-label="工作模式">
+                  <button data-mode="Automatic" aria-pressed="true">
+                    自动
+                  </button>
+                  <button data-mode="OnDemand" aria-pressed="false">
+                    按需
+                  </button>
+                </div>
+              </div>
+              <p class="mode-note" id="modeDescription">
+                聚焦输入框后自动翻译。译文由你决定是否接受。
+              </p>
+            </div>
+            <div class="group">
+              <h2>
+                翻译浮层
+              </h2>
+              <p class="setting-description">
+                选择浮层的外观。
+              </p>
+              <div class="theme-options" aria-label="翻译浮层主题">
+                <button class="theme-option" data-overlay-theme="system" aria-pressed="true">
+                  <span class="theme-preview system-preview">
+                    <span class="mini-overlay">
+                      <span class="mini-top" style="display:block">
+                      </span>
+                      <span class="mini-line" style="display:block">
+                      </span>
+                      <span class="mini-line short" style="display:block">
+                      </span>
+                    </span>
+                  </span>
+                  <span class="theme-label">
+                    跟随系统
+                    <svg class="theme-check">
+                      <use href="#i-check"/>
+                    </svg>
+                  </span>
+                </button>
+                <button class="theme-option" data-overlay-theme="light" aria-pressed="false">
+                  <span class="theme-preview">
+                    <span class="mini-overlay">
+                      <span class="mini-top" style="display:block">
+                      </span>
+                      <span class="mini-line" style="display:block">
+                      </span>
+                      <span class="mini-line short" style="display:block">
+                      </span>
+                    </span>
+                  </span>
+                  <span class="theme-label">
+                    浅色
+                    <svg class="theme-check">
+                      <use href="#i-check"/>
+                    </svg>
+                  </span>
+                </button>
+                <button class="theme-option" data-overlay-theme="dark" aria-pressed="false">
+                  <span class="theme-preview dark-preview">
+                    <span class="mini-overlay">
+                      <span class="mini-top" style="display:block">
+                      </span>
+                      <span class="mini-line" style="display:block">
+                      </span>
+                      <span class="mini-line short" style="display:block">
+                      </span>
+                    </span>
+                  </span>
+                  <span class="theme-label">
+                    深色
+                    <svg class="theme-check">
+                      <use href="#i-check"/>
+                    </svg>
+                  </span>
+                </button>
+              </div>
+            </div>
+            <div class="group">
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <div class="setting-name">
+                    登录时启动
+                  </div>
+                </div>
+                <button class="switch" id="startupSwitch" role="switch" aria-checked="true" aria-label="登录时启动">
+                </button>
+              </div>
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <div class="setting-name">
+                    原生输入框替换
+                  </div>
+                  <p class="setting-description">
+                    实验功能。仅在当前字段通过安全检查后可用。
+                  </p>
+                </div>
+                <button class="switch" id="writebackSwitch" role="switch" aria-checked="false" aria-label="启用原生输入框替换">
+                </button>
+              </div>
+              <div class="support-link">
+                <span class="muted small">
+                  第一次使用？
+                </span>
+                <button class="quiet-link" data-practice>
+                  试一试按需翻译
+                  <svg>
+                    <use href="#i-arrow"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </section>
+          <section class="page" id="page-language" hidden>
+            <div class="page-heading">
+              <h1>
+                语言
+              </h1>
+              <p>
+                从你熟悉的语言，换一种表达。
+              </p>
+            </div>
+            <div class="group first">
+              <div class="language-flow">
+                <label>
+                  源语言
+                  <select class="sync-source" aria-label="源语言">
+                    <option value="Auto">
+                      自动检测
+                    </option>
+                    <option value="中文">
+                      中文
+                    </option>
+                    <option value="English">
+                      English
+                    </option>
+                  </select>
+                </label>
+                <button class="icon-button swap-language" aria-label="交换语言" title="选择固定源语言后可交换" disabled>
+                  <svg>
+                    <use href="#i-swap"/>
+                  </svg>
+                </button>
+                <label>
+                  目标语言
+                  <select class="sync-target" aria-label="目标语言">
+                    <option value="English">
+                      English
+                    </option>
+                    <option value="中文">
+                      中文
+                    </option>
+                  </select>
+                </label>
+              </div>
+              <div class="language-preview">
+                <strong id="languagePreview">
+                  Auto → English
+                </strong>
+                <span>
+                  当前翻译方向
+                </span>
+              </div>
+              <p class="setting-description" style="margin-top:16px" id="languageHelp">
+                自动检测只用于源语言。已经是目标语言的文本不会重新改写。
+              </p>
+            </div>
+          </section>
+          <section class="page" id="page-shortcuts" hidden>
+            <div class="page-heading">
+              <h1>
+                快捷键
+              </h1>
+              <p>
+                让翻译跟上你的输入节奏。
+              </p>
+            </div>
+            <div class="group first">
+              <h2 class="group-heading">
+                按需模式
+              </h2>
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <label class="setting-name" for="wakeShortcut">
+                    唤醒翻译
+                  </label>
+                  <p class="setting-description">
+                    开始当前输入框的持续翻译。
+                  </p>
+                </div>
+                <input id="wakeShortcut" value="Ctrl+Shift+F9" spellcheck="false">
+              </div>
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <label class="setting-name" for="directShortcut">
+                    直接翻译并替换
+                  </label>
+                  <p class="setting-description">
+                    只替换原输入框或选区，不发送。
+                  </p>
+                </div>
+                <input id="directShortcut" value="Ctrl+Shift+F10" spellcheck="false">
+              </div>
+            </div>
+            <div class="group">
+              <h2 class="group-heading">
+                翻译会话
+              </h2>
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <label class="setting-name" for="acceptShortcut">
+                    接受译文
+                  </label>
+                  <p class="setting-description">
+                    编辑时，先返回原框，再按一次接受。
+                  </p>
+                </div>
+                <select id="acceptShortcut">
+                  <option>
+                    Tab
+                  </option>
+                </select>
+              </div>
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <label class="setting-name" for="exitShortcut">
+                    退出当前翻译
+                  </label>
+                  <p class="setting-description">
+                    保留原文，不发送或提交。
+                  </p>
+                </div>
+                <select id="exitShortcut">
+                  <option>
+                    Esc
+                  </option>
+                </select>
+              </div>
+              <details class="details">
+                <summary>
+                  可用按键与作用范围
+                </summary>
+                <div class="details-body">
+                  接受和退出可使用默认 Tab / Esc 或不同的无修饰 F1–F24。按需快捷键使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1–F24 的组合，暂不支持 F12；自动模式下不启用这两个按需快捷键。
+                </div>
+              </details>
+            </div>
+          </section>
+          <section class="page" id="page-support" hidden>
+            <div class="page-heading">
+              <h1>
+                应用支持
+              </h1>
+              <p>
+                准备好翻译，再连接你正在使用的应用。
+              </p>
+            </div>
+            <div class="status-facts">
+              <div class="fact">
+                <div class="fact-label">
+                  本地模型
+                </div>
+                <div class="fact-value" id="modelFact">
+                  已就绪
+                </div>
+              </div>
+              <div class="fact">
+                <div class="fact-label">
+                  输入服务
+                </div>
+                <div class="fact-value" id="serviceFact">
+                  运行中
+                </div>
+              </div>
+              <div class="fact">
+                <div class="fact-label">
+                  应用连接
+                </div>
+                <div class="fact-value" id="connectionFact">
+                  已连接
+                </div>
+              </div>
+            </div>
+            <div class="notice" id="supportSetup" hidden>
+              <svg>
+                <use href="#i-info"/>
+              </svg>
+              <div class="notice-content">
+                <strong id="supportSetupTitle">
+                </strong>
+                <p id="supportSetupDescription">
+                </p>
+                <button class="button" id="supportSetupAction">
+                  准备翻译
+                </button>
+              </div>
+            </div>
+            <div class="group first">
+              <h2>
+                连接应用
+              </h2>
+              <div class="connection-row">
+                <span class="connection-icon">
+                  <svg>
+                    <use href="#i-desktop"/>
+                  </svg>
+                </span>
+                <div class="setting-copy">
+                  <div class="setting-name">
+                    普通桌面输入框
+                  </div>
+                  <p class="setting-description" id="connectionDescription">
+                    已检测到连接，当前字段支持译文预览。
+                  </p>
+                </div>
+                <button class="button" id="connectionAction">
+                  重新检查
+                </button>
+              </div>
+              <p class="setting-description" id="connectionOutcome" role="status" hidden>
+              </p>
+              <details class="details">
+                <summary>
+                  当前字段的能力
+                </summary>
+                <div class="details-body">
+                  <div class="capability">
+                    <span>
+                      显示译文
+                    </span>
+                    <span id="previewCapability">
+                      可用
+                    </span>
+                  </div>
+                  <div class="capability">
+                    <span>
+                      Tab 接受译文
+                    </span>
+                    <span>
+                      需当前字段确认
+                    </span>
+                  </div>
+                  <div class="capability">
+                    <span>
+                      直接翻译并替换
+                    </span>
+                    <span>
+                      需当前字段确认
+                    </span>
+                  </div>
+                  <p style="margin-top:12px">
+                    应用已连接不代表每个输入框都可写。密码、敏感输入和状态不明的字段保持安静。
+                  </p>
+                </div>
+              </details>
+              <details class="details">
+                <summary>
+                  浏览器接入
+                </summary>
+                <div class="details-body">
+                  <p>
+                    在浏览器中启用 TypeLay 接入组件后，重新打开需要翻译的页面。
+                  </p>
+                  <button class="button" id="browserGuide" style="margin-top:12px">
+                    查看接入步骤
+                  </button>
+                </div>
+              </details>
+            </div>
+            <div class="group">
+              <div class="setting-row">
+                <div class="setting-copy">
+                  <div class="setting-name">
+                    试一试按需翻译
+                  </div>
+                  <p class="setting-description">
+                    在练习输入框体验唤醒和直接替换。
+                  </p>
+                </div>
+                <button class="quiet-link" data-practice>
+                  开始练习
+                  <svg>
+                    <use href="#i-chevron"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="group">
+              <details class="details" id="exclusionsDetails" style="margin-top:0">
+                <summary>
+                  排除的应用
+                </summary>
+                <div class="details-body">
+                  <label for="excludedApplications">
+                    每行一个可执行文件名。保存后，这些应用中不再显示 TypeLay。
+                  </label>
+                  <textarea id="excludedApplications" rows="3" spellcheck="false" placeholder="例如：terminal.exe">
+                  </textarea>
+                </div>
+              </details>
+              <details class="details">
+                <summary>
+                  管理本地翻译组件
+                </summary>
+                <div class="details-body">
+                  <p>
+                    翻译文本与译文保留在本机。修复保留现有设置与模型。
+                  </p>
+                  <button class="button" id="repairComponents" style="margin-top:12px">
+                    修复组件…
+                  </button>
+                </div>
+              </details>
+            </div>
+          </section>
+        </div>
+        <footer class="draft-bar" id="draftBar" hidden>
+          <p id="draftMessage">
+            快捷键需要保存后生效。
+          </p>
+          <button class="button primary" id="saveDraft" disabled>
+            保存修改
+          </button>
+        </footer>
+      </div>
+    </section>
+    <div class="empty-stage" id="emptyStage" hidden>
+      <strong id="emptyTitle">
+        设置已关闭
+      </strong>
+      <p id="emptyDescription">
+        TypeLay 仍在后台运行。
+      </p>
+      <button class="button" id="reopenSettings">
+        打开设置
+      </button>
+    </div>
+  </main>
+  <div class="tray-anchor">
+    <span>
+      系统托盘
+    </span>
+    <button class="tray-trigger" id="trayButton" aria-label="打开 TypeLay 快速面板" aria-expanded="false">
+      <span class="brand-mark" aria-hidden="true">
+        T
+      </span>
+    </button>
   </div>
-</div>
+  <section class="quick-panel" id="quickPanel" aria-label="TypeLay 快速面板" hidden>
+    <div class="quick-head">
+      <span class="brand-mark" aria-hidden="true">
+        T
+      </span>
+      <div>
+        <strong>
+          TypeLay
+        </strong>
+        <p id="trayEnabled">
+          已启用
+        </p>
+      </div>
+      <button class="switch" id="trayEnable" role="switch" aria-checked="true" aria-label="启用 TypeLay">
+      </button>
+    </div>
+    <div class="notice" id="traySaveError" role="status" hidden>
+      <svg>
+        <use href="#i-info"/>
+      </svg>
+      <div class="notice-content">
+        <strong>
+          设置没有保存
+        </strong>
+        <p>
+          当前设置保持原值。检查权限或空间后重试。
+        </p>
+        <button class="button" id="retryTray">
+          重试保存
+        </button>
+      </div>
+    </div>
+    <div class="quick-section">
+      <div class="quick-label">
+        工作模式
+      </div>
+      <div class="segmented" aria-label="托盘工作模式">
+        <button data-mode="Automatic" aria-pressed="true">
+          自动
+        </button>
+        <button data-mode="OnDemand" aria-pressed="false">
+          按需
+        </button>
+      </div>
+    </div>
+    <div class="quick-section">
+      <div class="quick-label">
+        翻译方向
+      </div>
+      <div class="language-flow">
+        <select class="sync-source" aria-label="托盘源语言">
+          <option value="Auto">
+            Auto
+          </option>
+          <option value="中文">
+            中文
+          </option>
+          <option value="English">
+            English
+          </option>
+        </select>
+        <button class="icon-button swap-language" aria-label="交换语言" disabled>
+          <svg>
+            <use href="#i-swap"/>
+          </svg>
+        </button>
+        <select class="sync-target" aria-label="托盘目标语言">
+          <option value="English">
+            English
+          </option>
+          <option value="中文">
+            中文
+          </option>
+        </select>
+      </div>
+    </div>
+    <div class="quick-section">
+      <div class="quick-state">
+        <span class="dot">
+        </span>
+        <span id="trayModel">
+          本地模型已就绪
+        </span>
+      </div>
+      <div class="quick-state">
+        <span id="trayService">
+          输入服务运行中
+        </span>
+        <span class="muted" id="trayConnection">
+          应用已连接
+        </span>
+      </div>
+    </div>
+    <button class="quick-action" id="openSettings">
+      <svg>
+        <use href="#i-settings"/>
+      </svg>
+      设置
+      <svg class="chevron">
+        <use href="#i-chevron"/>
+      </svg>
+    </button>
+    <button class="quick-action" id="quitApp">
+      <svg>
+        <use href="#i-power"/>
+      </svg>
+      退出 TypeLay
+    </button>
+  </section>
+  <dialog id="confirmDialog" aria-labelledby="dialogTitle">
+    <h2 id="dialogTitle">
+    </h2>
+    <p id="dialogBody">
+    </p>
+    <div class="dialog-actions">
+      <button class="button" id="dialogCancel" autofocus>
+        取消
+      </button>
+      <button class="button primary" id="dialogConfirm">
+        继续
+      </button>
+    </div>
+  </dialog>
+  <div class="toast" id="toast" role="status" hidden>
+  </div>
 <script>
-(()=>{
-  const $=id=>document.getElementById(id);
-  document.querySelectorAll('.switch,.miniSwitch').forEach(btn=>{btn.setAttribute('role','switch');btn.setAttribute('aria-checked',String(btn.classList.contains('on')))});
-  const state={enabled:true,running:true,source:'Auto',target:'English',startup:true};
-  const quick=$('quickPanel'), tray=$('trayButton'), settings=$('settingsWindow'), dim=$('dim');
-  const serviceSwitch=$('serviceSwitch'),settingsEnable=$('settingsEnable'),serviceSub=$('serviceSub'),modelDot=$('modelDot'),modelText=$('modelText');
-  const sourceSelects=[...document.querySelectorAll('.syncSource')],targetSelects=[...document.querySelectorAll('.syncTarget')];
-  const swapButtons=[...document.querySelectorAll('.settingsSwap,.quickSwap')];
-  function setToggle(btn,on){btn.classList.toggle('on',on);btn.setAttribute('role','switch');btn.setAttribute('aria-checked',String(on))}
-  function syncEnabled(v){state.enabled=v;setToggle(serviceSwitch,v);setToggle(settingsEnable,v);serviceSub.textContent=v?'已启用':'已暂停';modelDot.classList.toggle('paused',!v);modelText.textContent=v?'本地翻译已就绪':'TypeLay 已暂停'}
-  function syncLanguage(){sourceSelects.forEach(s=>s.value=state.source);targetSelects.forEach(s=>s.value=state.target);swapButtons.forEach(b=>b.disabled=state.source==='Auto');$('swapDesc').textContent=state.source==='Auto'?'源语言为 Auto 时不可直接交换；选择固定源语言后启用。':'交换只改变语言配置，不修改当前文本。'}
-  function openQuick(){if(!state.running)return;quick.hidden=false;tray.classList.add('active')}
-  function closeQuick(){quick.hidden=true;tray.classList.remove('active')}
-  function openSettings(){closeQuick();settings.hidden=false;dim.hidden=false}
-  function closeSettings(){
-    if(isDirty()&&!confirm('有未保存的修改。确定放弃修改并关闭？取消将继续编辑。'))return;
-    draftFields.forEach(id=>$(id).value=savedDraft[id]);renderDraft();settings.hidden=true;dim.hidden=true;
+(() => {
+  'use strict';
+
+  const $ = id => document.getElementById(id),
+    all = q => [...document.querySelectorAll(q)];
+  const query = new URLSearchParams(location.search);
+  const state = {
+    running: true,
+    enabled: true,
+    mode: 'Automatic',
+    startup: true,
+    writeback: false,
+    overlayTheme: 'system',
+    source: 'Auto',
+    target: 'English',
+    page: 'general',
+    setup: 'ready',
+    service: 'running',
+    connection: 'connected',
+    saveError: false,
+    failNext: false,
+    lastSave: null,
+    preparationTimer: 0
+  };
+  const fields = ['wakeShortcut', 'directShortcut', 'acceptShortcut', 'exitShortcut', 'excludedApplications'];
+  let saved = {
+      wakeShortcut: 'Ctrl+Shift+F9',
+      directShortcut: 'Ctrl+Shift+F10',
+      acceptShortcut: 'Tab',
+      exitShortcut: 'Esc',
+      excludedApplications: ''
+    },
+    draftMessage = '';
+  for (let i = 1; i <= 24; i++) {
+    for (const id of ['acceptShortcut', 'exitShortcut']) $(id).add(new Option('F' + i, 'F' + i));
   }
-  tray.addEventListener('click',e=>{e.stopPropagation();quick.hidden?openQuick():closeQuick()});
-  quick.addEventListener('click',e=>e.stopPropagation()); settings.addEventListener('click',e=>e.stopPropagation());
-  document.addEventListener('click',()=>closeQuick());
-  serviceSwitch.addEventListener('click',()=>syncEnabled(!state.enabled));settingsEnable.addEventListener('click',()=>syncEnabled(!state.enabled));
-  $('startupSwitch').addEventListener('click',e=>{state.startup=!state.startup;setToggle(e.currentTarget,state.startup)});
-  sourceSelects.forEach(sel=>sel.addEventListener('change',e=>{state.source=e.target.value;syncLanguage()}));
-  targetSelects.forEach(sel=>sel.addEventListener('change',e=>{state.target=e.target.value;syncLanguage()}));
-  swapButtons.forEach(btn=>btn.addEventListener('click',()=>{if(state.source==='Auto')return;const a=state.source;state.source=state.target;state.target=a;syncLanguage()}));
-  $('openSettings').addEventListener('click',openSettings);$('closeSettings').addEventListener('click',closeSettings);dim.addEventListener('click',closeSettings);
-  const navigation=[...document.querySelectorAll('.navItem')];
-  function selectPage(btn){navigation.forEach(x=>{x.classList.toggle('active',x===btn);x.setAttribute('aria-current',x===btn?'page':'false')});document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));$('page-'+btn.dataset.page).classList.add('active')}
-  navigation.forEach((btn,index)=>{btn.addEventListener('click',()=>selectPage(btn));btn.addEventListener('keydown',event=>{if(!['ArrowDown','ArrowUp'].includes(event.key))return;event.preventDefault();const next=navigation[Math.max(0,Math.min(navigation.length-1,index+(event.key==='ArrowDown'?1:-1)))];next.focus();selectPage(next)})});
-  ['acceptShortcut','exitShortcut'].forEach(id=>{for(let i=1;i<=24;i++)$(id).add(new Option('F'+i,'F'+i))});
-  const draftFields=['wakeShortcut','directShortcut','acceptShortcut','exitShortcut','excludedApplications'];
-  let savedDraft=Object.fromEntries(draftFields.map(id=>[id,$(id).value]));
-  function isDirty(){return draftFields.some(id=>$(id).value!==savedDraft[id])}
-  function renderDraft(){$('draftNotice').hidden=!isDirty();$('saveDraft').disabled=!isDirty()}
-  draftFields.forEach(id=>$(id).addEventListener('input',renderDraft));
-  $('saveDraft').addEventListener('click',()=>{savedDraft=Object.fromEntries(draftFields.map(id=>[id,$(id).value]));renderDraft();renderMode();$('saveFeedback').textContent='已保存原型演示数据；真实客户端仍独立验证快捷键与保存结果。'});
-  function renderMode(){$('modeDescription').textContent=$('workMode').value==='OnDemand'?'按需模式：使用 '+savedDraft.wakeShortcut+' 唤醒当前输入框；'+savedDraft.directShortcut+' 独立翻译并替换原目标。':'自动模式：聚焦受支持的输入框后显示翻译 UI；按需唤醒与直接替换键在此模式不启用。'}
-  $('workMode').addEventListener('change',renderMode);
-  $('writebackSwitch').addEventListener('click',e=>setToggle(e.currentTarget,!e.currentTarget.classList.contains('on')));
-  document.querySelectorAll('.demoAction').forEach(btn=>btn.addEventListener('click',()=>{$('saveFeedback').textContent='此按钮仅展示布局。请在真实客户端查看状态并明确确认安装或连接。'}));
-  $('quitApp').addEventListener('click',()=>{closeQuick();closeSettings();if(!settings.hidden)return;state.running=false;tray.hidden=true;$('exited').hidden=false;$('restartBtn').hidden=false});
-  $('restartBtn').addEventListener('click',()=>{state.running=true;tray.hidden=false;$('exited').hidden=true;$('restartBtn').hidden=true});
-  function clock(){const d=new Date();$('clockTime').textContent=d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});$('clockDate').textContent=`${d.getMonth()+1}/${d.getDate()}`}
-  clock();setInterval(clock,30000);syncEnabled(true);syncLanguage();
+  function dirty() {
+    return fields.some(id => $(id).value !== saved[id]);
+  }
+  function toast(text) {
+    $('toast').textContent = text;
+    $('toast').hidden = false;
+    clearTimeout(toast.timer);
+    toast.timer = setTimeout(() => $('toast').hidden = true, 2200);
+  }
+  function confirmAction(title, body, label, action, cancel = '取消') {
+    $('dialogTitle').textContent = title;
+    $('dialogBody').textContent = body;
+    $('dialogConfirm').textContent = label;
+    $('dialogCancel').textContent = cancel;
+    $('confirmDialog').showModal();
+    $('dialogCancel').focus();
+    confirmAction.action = action;
+  }
+  $('dialogCancel').onclick = () => $('confirmDialog').close();
+  $('dialogConfirm').onclick = () => {
+    const action = confirmAction.action;
+    $('confirmDialog').close();
+    action?.();
+  };
+  function saveNow(changes) {
+    state.lastSave = changes;
+    if (state.failNext) {
+      state.failNext = false;
+      state.saveError = true;
+      render();
+      return false;
+    }
+    Object.assign(state, changes);
+    state.saveError = false;
+    state.lastSave = null;
+    render();
+    return true;
+  }
+  function retry() {
+    if (state.lastSave === 'draft') {
+      saveDraft();
+      return;
+    }
+    if (state.lastSave) saveNow(state.lastSave);
+  }
+  function setPage(page) {
+    state.page = page;
+    all('[data-page]').forEach(b => b.setAttribute('aria-current', b.dataset.page === page ? 'page' : 'false'));
+    all('.page').forEach(p => p.hidden = p.id !== 'page-' + page);
+    $('pageScroll').scrollTop = 0;
+    renderDraft();
+  }
+  function renderDraft() {
+    const hasDraft = dirty();
+    $('draftBar').hidden = !(state.page === 'shortcuts' || state.page === 'support' && $('exclusionsDetails').open || hasDraft);
+    $('saveDraft').disabled = !hasDraft;
+    $('draftMessage').textContent = draftMessage || (hasDraft ? '这些修改尚未保存；离开此页后仍会保留。' : state.page === 'shortcuts' ? '快捷键需要保存后生效。' : '应用排除列表需要保存后生效。');
+    $('draftMessage').classList.toggle('error', !!draftMessage && draftMessage.startsWith('未保存'));
+  }
+  function validDemand(value) {
+    const parts = value.replace(/\s+/g, '').split('+');
+    const key = parts.pop();
+    return parts.length > 0 && parts.every(x => ['Ctrl', 'Alt', 'Shift'].includes(x)) && new Set(parts).size === parts.length && parts.some(x => x === 'Ctrl' || x === 'Alt') && /^(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(key) && key !== 'F12';
+  }
+  function saveDraft() {
+    const wake = $('wakeShortcut').value,
+      direct = $('directShortcut').value;
+    if (!validDemand(wake) || !validDemand(direct) || wake.replace(/\s/g, '') === direct.replace(/\s/g, '')) {
+      draftMessage = '未保存：唤醒与直接替换需使用不同的 Ctrl / Alt 组合键；暂不支持 F12。';
+      renderDraft();
+      return;
+    }
+    if ($('acceptShortcut').value === $('exitShortcut').value) {
+      draftMessage = '未保存：接受与退出不能使用相同按键。';
+      renderDraft();
+      return;
+    }
+    if (state.failNext) {
+      state.failNext = false;
+      state.saveError = true;
+      state.lastSave = 'draft';
+      draftMessage = '未保存：请检查权限或磁盘空间。草稿仍保留。';
+      render();
+      return;
+    }
+    fields.forEach(id => saved[id] = $(id).value);
+    state.saveError = false;
+    state.lastSave = null;
+    draftMessage = '设置已保存';
+    render();
+  }
+  const setupCopy = {
+    missing: ['尚未准备本地翻译', '准备组件和模型后即可开始。', '准备翻译'],
+    failed: ['上次准备未完成', '下载中断。已有模型可用，仍需完成本次准备。', '重新准备'],
+    paused: ['准备已暂停', '进度已保留，可从这里继续。', '继续准备'],
+    downloading: ['正在准备翻译', '下载本地组件与模型。', '暂停准备']
+  };
+  function renderSetup() {
+    for (const prefix of ['general', 'support']) {
+      const card = $(prefix + 'Setup');
+      card.hidden = state.setup === 'ready';
+      if (!card.hidden) {
+        const copy = setupCopy[state.setup];
+        $(prefix + 'SetupTitle').textContent = copy[0];
+        $(prefix + 'SetupDescription').textContent = copy[1];
+        $(prefix + 'SetupAction').textContent = copy[2];
+      }
+    }
+    $('modelFact').textContent = state.setup === 'missing' ? '尚未准备' : state.setup === 'downloading' ? '准备中' : state.setup === 'paused' ? '准备已暂停' : state.setup === 'failed' ? '可用 · 准备失败' : '已就绪';
+    $('trayModel').textContent = state.setup === 'ready' ? '本地模型已就绪' : state.setup === 'failed' ? '模型可用 · 准备失败' : state.setup === 'missing' ? '模型尚未准备' : state.setup === 'paused' ? '模型准备已暂停' : '正在准备本地模型';
+  }
+  function render() {
+    for (const id of ['settingsEnable', 'trayEnable']) $(id).setAttribute('aria-checked', String(state.enabled));
+    $('startupSwitch').setAttribute('aria-checked', String(state.startup));
+    $('writebackSwitch').setAttribute('aria-checked', String(state.writeback));
+    $('trayEnabled').textContent = state.enabled ? '已启用' : '已暂停';
+    $('enabledDescription').textContent = state.enabled ? '在当前输入框旁显示译文。' : '当前翻译已清除。恢复后重新开始，不保留旧草稿。';
+    all('[data-mode]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === state.mode)));
+    $('modeDescription').textContent = state.mode === 'Automatic' ? '聚焦输入框后自动翻译。译文由你决定是否接受。' : '按 ' + saved.wakeShortcut + ' 唤醒翻译；' + saved.directShortcut + ' 直接翻译并替换。';
+    all('[data-overlay-theme]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.overlayTheme === state.overlayTheme)));
+    all('.sync-source').forEach(e => e.value = state.source);
+    all('.sync-target').forEach(e => e.value = state.target);
+    all('.swap-language').forEach(b => {
+      b.disabled = state.source === 'Auto';
+      b.title = b.disabled ? '选择固定源语言后可交换' : '交换语言，不改动原文';
+    });
+    $('languagePreview').textContent = state.source + ' → ' + state.target;
+    $('languageHelp').textContent = state.source === 'Auto' ? '自动检测只用于源语言。已经是目标语言的文本不会重新改写。' : '交换只改变翻译方向，不修改当前输入框的文本。';
+    $('settingsSaveError').hidden = !state.saveError;
+    $('traySaveError').hidden = !state.saveError;
+    renderSetup();
+    const service = state.service === 'running' ? '运行中' : '等待重新打开应用';
+    const connected = state.connection === 'connected';
+    $('serviceFact').textContent = service;
+    $('connectionFact').textContent = connected ? '已连接' : state.connection === 'conflict' ? '需要处理冲突' : '未连接';
+    $('sidebarService').textContent = state.service === 'running' ? '输入服务运行中' : '输入服务未运行';
+    $('sidebarDot').classList.toggle('off', state.service !== 'running');
+    $('trayService').textContent = '输入服务' + service;
+    $('trayConnection').textContent = connected ? '应用已连接' : '应用未连接';
+    $('connectionDescription').textContent = connected ? '已检测到连接，当前字段支持译文预览。' : state.connection === 'conflict' ? '另一个输入法正在运行，需要先确认切换。' : '尚未检测到应用连接。请重新打开需要使用的应用。';
+    $('connectionAction').textContent = state.connection === 'conflict' ? '处理输入法冲突…' : '重新检查';
+    $('previewCapability').textContent = connected ? '可用' : '未确认';
+    renderDraft();
+  }
+  function closeSettings() {
+    const close = () => {
+      $('settingsWindow').hidden = true;
+      $('emptyStage').hidden = false;
+    };
+    if (dirty()) confirmAction('放弃未保存的修改？', '关闭会放弃尚未保存的修改，已保存的设置不变。', '放弃修改', () => {
+      fields.forEach(id => $(id).value = saved[id]);
+      draftMessage = '';
+      renderDraft();
+      close();
+    }, '继续编辑');else close();
+  }
+  function openSettings() {
+    $('settingsWindow').hidden = false;
+    $('emptyStage').hidden = true;
+    closeTray();
+  }
+  function closeTray() {
+    $('quickPanel').hidden = true;
+    $('trayButton').setAttribute('aria-expanded', 'false');
+  }
+  function openTray() {
+    $('quickPanel').hidden = false;
+    $('trayButton').setAttribute('aria-expanded', 'true');
+  }
+  function prepare() {
+    if (state.setup === 'downloading') {
+      clearTimeout(state.preparationTimer);
+      state.setup = 'paused';
+      render();
+      return;
+    }
+    state.setup = 'downloading';
+    render();
+    state.preparationTimer = setTimeout(() => {
+      state.setup = 'ready';
+      render();
+      toast('本地翻译组件已就绪');
+    }, 2200);
+  }
+  all('[data-page]').forEach((button, index, buttons) => {
+    button.onclick = () => setPage(button.dataset.page);
+    button.onkeydown = event => {
+      if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+      event.preventDefault();
+      const next = buttons[(index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length];
+      next.focus();
+      setPage(next.dataset.page);
+    };
+  });
+  for (const id of ['settingsEnable', 'trayEnable']) $(id).onclick = () => saveNow({
+    enabled: !state.enabled
+  });
+  $('startupSwitch').onclick = () => saveNow({
+    startup: !state.startup
+  });
+  $('writebackSwitch').onclick = () => state.writeback ? saveNow({
+    writeback: false
+  }) : confirmAction('启用实验性替换？', '仅在已确认的原生输入框中尝试替换。未知输入法、原文变化或无法确认结果时会停止；不会自动发送。通用输入框写回仍有竞态风险。', '启用替换', () => saveNow({
+    writeback: true
+  }));
+  all('[data-mode]').forEach(b => b.onclick = () => saveNow({
+    mode: b.dataset.mode
+  }));
+  all('[data-overlay-theme]').forEach(b => b.onclick = () => saveNow({
+    overlayTheme: b.dataset.overlayTheme
+  }));
+  all('.sync-source').forEach(e => e.onchange = () => saveNow({
+    source: e.value
+  }));
+  all('.sync-target').forEach(e => e.onchange = () => saveNow({
+    target: e.value
+  }));
+  all('.swap-language').forEach(b => b.onclick = () => {
+    if (state.source !== 'Auto') saveNow({
+      source: state.target,
+      target: state.source
+    });
+  });
+  fields.forEach(id => $(id).addEventListener('input', () => {
+    draftMessage = '';
+    renderDraft();
+  }));
+  $('saveDraft').onclick = saveDraft;
+  $('exclusionsDetails').ontoggle = renderDraft;
+  $('closeSettings').onclick = closeSettings;
+  $('reopenSettings').onclick = openSettings;
+  $('openSettings').onclick = openSettings;
+  $('trayButton').onclick = () => $('quickPanel').hidden ? openTray() : closeTray();
+  $('retrySettings').onclick = retry;
+  $('retryTray').onclick = retry;
+  $('quitApp').onclick = () => {
+    const quit = () => {
+      state.running = false;
+      closeTray();
+      $('settingsWindow').hidden = true;
+      $('trayButton').hidden = true;
+      $('emptyStage').hidden = false;
+      $('emptyTitle').textContent = 'TypeLay 已退出';
+      $('emptyDescription').textContent = '翻译与托盘已关闭。可从演示选项重新开始。';
+      $('reopenSettings').hidden = true;
+    };
+    if (dirty()) confirmAction('放弃未保存的修改并退出？', '未保存的快捷键和排除列表将被放弃。TypeLay 会停止翻译并移除托盘入口。', '退出 TypeLay', quit, '继续编辑');else quit();
+  };
+  $('generalSetupAction').onclick = prepare;
+  $('supportSetupAction').onclick = prepare;
+  $('repairComponents').onclick = () => confirmAction('修复本地翻译组件？', '将检查并重新准备组件，保留现有设置与模型。', '开始修复', prepare);
+  $('connectionAction').onclick = () => {
+    if (state.connection === 'conflict') {
+      confirmAction('先退出当前输入法服务', '请先保存正在输入的内容，记录原输入法的启动方式，再手动退出它。TypeLay 不会代你结束输入法进程。确认后继续已有的私有输入服务流程；如需恢复，退出 TypeLay 私有服务，再按记录的方式启动原输入法。', '我已退出并记录恢复方式', () => {
+        $('connectionOutcome').hidden = false;
+        $('connectionOutcome').textContent = '已记录确认。下一步检查输入服务；应用连接尚未确认。';
+        render();
+      });
+    } else {
+      $('connectionOutcome').hidden = false;
+      $('connectionOutcome').textContent = state.connection === 'connected' ? '已重新检测到当前应用连接。' : '仍未检测到连接。请重新打开应用后再检查。';
+      render();
+    }
+  };
+  $('browserGuide').onclick = () => confirmAction('连接浏览器输入框', '在浏览器扩展管理页启用 TypeLay 接入组件，并由你确认所需权限。随后重新打开页面，在输入框中检查连接。此演示不会安装扩展。', '知道了', () => {}, '关闭');
+  all('[data-practice]').forEach(b => b.onclick = () => {
+    const go = () => {
+      if (state.mode !== 'OnDemand' && !saveNow({
+        mode: 'OnDemand'
+      })) return;
+      location.href = 'TypeLay_UIUX_Prototype.html?mode=ondemand&scenario=practice&theme=' + document.documentElement.dataset.theme;
+    };
+    if (state.mode !== 'OnDemand') confirmAction('切换到按需模式并练习？', '练习使用唤醒与直接替换快捷键。继续会保存全局按需模式；关闭练习不会自动改回。', '切换并练习', go);else go();
+  });
+  $('demoTheme').onchange = e => document.documentElement.dataset.theme = e.target.value;
+  $('demoSetup').onchange = e => {
+    clearTimeout(state.preparationTimer);
+    state.setup = e.target.value;
+    render();
+  };
+  $('demoConnection').onchange = e => {
+    state.connection = e.target.value;
+    render();
+  };
+  $('demoSaveError').onclick = () => {
+    state.failNext = true;
+    toast('下一次保存将模拟失败');
+  };
+  $('demoTrayError').onclick = () => {
+    state.failNext = true;
+    saveNow({
+      mode: 'OnDemand'
+    });
+    $('demoControls').open = false;
+    closeSettings();
+    openTray();
+  };
+  $('demoRestart').onclick = () => location.href = location.pathname;
+  $('demoControls').addEventListener('toggle', () => {
+    if ($('demoControls').open) closeTray();
+  });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && !$('confirmDialog').open) {
+      if (!$('quickPanel').hidden) {
+        closeTray();
+        $('trayButton').focus();
+      } else if (!$('settingsWindow').hidden) closeSettings();
+    }
+  });
+  document.addEventListener('pointerdown', e => {
+    if (!$('quickPanel').hidden && !e.target.closest('#quickPanel,#trayButton,#demoControls')) closeTray();
+  });
+  document.documentElement.dataset.theme = query.get('theme') === 'dark' ? 'dark' : 'light';
+  $('demoTheme').value = document.documentElement.dataset.theme;
+  if (query.get('setup') in setupCopy) state.setup = query.get('setup');
+  if (['connected', 'disconnected', 'conflict'].includes(query.get('connection'))) state.connection = query.get('connection');
+  if (query.get('page') && ['general', 'language', 'shortcuts', 'support'].includes(query.get('page'))) setPage(query.get('page'));
+  render();
+  if (query.get('tray') === 'error') {
+    $('settingsWindow').hidden = true;
+    $('emptyStage').hidden = true;
+    state.failNext = true;
+    saveNow({
+      mode: 'OnDemand'
+    });
+    openTray();
+  }
+  window.prototypeState = () => ({
+    ...state,
+    draft: dirty(),
+    saved: {
+      ...saved
+    }
+  });
 })();
 </script>
 </body>
