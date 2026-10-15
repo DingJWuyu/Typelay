@@ -2280,6 +2280,24 @@ class Input:
             return refused(True)
 
     async def return_to_source(self, context):
+        trace = {"phase": "request"}
+        try:
+            return await self._return_to_source(context, trace)
+        finally:
+            # One terminal record per request. Diagnostics cannot change the
+            # return result, and never read focus, a provider, or source content.
+            if os.environ.get("TYPELAY_TRACE") and getattr(self, "return_trace_count", 0) < 32:
+                self.return_trace_count = getattr(self, "return_trace_count", 0) + 1
+                try:
+                    trace["atMs"] = now_ms()
+                    print(
+                        "typelay-return " + json.dumps(trace, separators=(",", ":")),
+                        file=sys.stderr,
+                    )
+                except (OSError, TypeError, ValueError):
+                    pass
+
+    async def _return_to_source(self, context, trace):
         record = self.bound_observation
         configuration = context.get("sessionShortcuts")
         request = context.get("practiceReturn")
@@ -2323,12 +2341,19 @@ class Input:
                 and configuration.get("bindings") == acknowledgement["bindings"]
             )
 
+        trace["phase"] = "pre-current"
         if not current():
             return False
         peer, target = record["peer"], record["target"]["value"]
+        trace["phase"] = "describe"
         description = await peer.link.ask("describe", {"target": target})
-        if not current() or not await self.approve(peer, description) or not current():
+        trace["phase"] = "describe-current"
+        if not current():
             return False
+        trace["phase"] = "approval"
+        if not await self.approve(peer, description) or not current():
+            return False
+        trace["phase"] = "ack-match"
         if (
             self.session_acknowledgement(peer, description)
             != self.current_session_acknowledgement(record)
@@ -2337,6 +2362,7 @@ class Input:
             return False
         # Return only within the same active parent; the native consumer checks
         # this generation again after focus/provider callbacks, before return.
+        trace["phase"] = "native-request"
         response = await peer.link.ask(
             "return",
             {
@@ -2350,9 +2376,29 @@ class Input:
                 ),
             },
         )
-        if current() and response and response.get("returned"):
+        native_trace = response.get("returnTrace") if isinstance(response, dict) else None
+        if isinstance(response, dict) and type(response.get("returned")) is bool:
+            trace["nativeReturned"] = response["returned"]
+        if isinstance(native_trace, dict):
+            if native_trace.get("phase") in (
+                "private-precondition",
+                "native-return",
+                "private-identity",
+                "pending-identity",
+                "pending-unready",
+                "unready",
+                "ready",
+            ):
+                trace["nativePhase"] = native_trace["phase"]
+            for key in ("same", "ready"):
+                if type(native_trace.get(key)) is bool:
+                    trace[key] = native_trace[key]
+        still_current = current()
+        trace["phase"] = "native-reply" if still_current else "post-current"
+        if still_current and response and response.get("returned"):
             self.overlay_focused = False
             if editor is not None:
+                trace["phase"] = "proof"
                 proof = response.get("practiceReturn")
                 if (
                     not isinstance(proof, dict)
@@ -2380,8 +2426,12 @@ class Input:
                     if value["peer"] is peer and value["target"] == editor["target"]:
                         self.observations.pop(key)
                 self.bound_observation = None
+                trace["phase"] = "revoke-ack"
+                acknowledged = await self.confirm_practice_retirement(editor["runId"])
+                if acknowledged:
+                    trace["phase"] = "post-ack"
                 if (
-                    not await self.confirm_practice_retirement(editor["runId"])
+                    not acknowledged
                     or self.practice_return is not editor
                     or not self.practice_waiting(editor["runId"])
                     or self.shortcut_config.get("generation") != editor["commandGeneration"]
@@ -2390,6 +2440,7 @@ class Input:
                     self.retire_practice(editor["runId"])
                     return {"returned": True}
                 self.state()
+                trace["phase"] = "complete"
                 return {
                     "returned": True,
                     "practice": {
@@ -2400,6 +2451,7 @@ class Input:
                     },
                 }
             self.state()
+            trace["phase"] = "complete"
             return True
         return False
 

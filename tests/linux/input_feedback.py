@@ -1531,7 +1531,20 @@ class InputFeedbackTests(unittest.TestCase):
             "observedAtMs": 1000,
         }
         self.peer.link.receive(
-            {"id": request["id"], "data": {"returned": True, "practiceReturn": proof}}
+            {
+                "id": request["id"],
+                "data": {
+                    "returned": True,
+                    "practiceReturn": proof,
+                    "returnTrace": {
+                        "phase": "ready",
+                        "same": True,
+                        "ready": "not-a-boolean",
+                        "text": "private-source",
+                        "target": "private-target",
+                    },
+                },
+            }
         )
         revoke = await next_request("revoke")
         self.assertFalse(operation.done())
@@ -1621,6 +1634,28 @@ class InputFeedbackTests(unittest.TestCase):
         for reason in ("close", "other"):
             with self.subTest(reason=reason):
                 self.owned_edit_handoff(returning=reason)
+
+    def test_owned_return_trace_keeps_the_result_and_only_known_fields(self):
+        output = io.StringIO()
+        with patch.dict(os.environ, {"TYPELAY_TRACE": "1"}), contextlib.redirect_stderr(output):
+            self.owned_edit_handoff(returning="success")
+        records = [
+            json.loads(line.split(" ", 1)[1])
+            for line in output.getvalue().splitlines()
+            if line.startswith("typelay-return ")
+        ]
+        self.assertEqual(
+            records,
+            [
+                {
+                    "phase": "complete",
+                    "nativeReturned": True,
+                    "nativePhase": "ready",
+                    "same": True,
+                    "atMs": 1000,
+                }
+            ],
+        )
 
     def test_owned_return_rejects_non_null_ack(self):
         self.owned_edit_handoff(returning="ack")

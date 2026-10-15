@@ -277,7 +277,8 @@ static gboolean private_return_current(PendingReturn *pending) {
         && (gint64)target->im_state.context_generation == tl_integer(tl_object(pending->basis, "contextStamp"), "context", -1)
         && tl_overlay_private_return(target, pending->practice, FALSE);
 }
-static JsonObject *return_reply(PendingReturn *pending, gboolean ready, gint64 observed_at) {
+static JsonObject *return_reply(PendingReturn *pending, gboolean ready, gint64 observed_at,
+        const char *phase, gboolean same) {
     JsonObject *reply = json_object_new();
     json_object_set_boolean_member(reply, "returned", ready);
     if (ready && pending->practice && private_return_current(pending)
@@ -289,6 +290,13 @@ static JsonObject *return_reply(PendingReturn *pending, gboolean ready, gint64 o
         json_object_set_int_member(proof, "contextGeneration", (gint64)pending->target->im_state.context_generation);
         json_object_set_int_member(proof, "observedAtMs", observed_at);
         json_object_set_object_member(reply, "practiceReturn", proof);
+    }
+    if (boolean(shortcut_configuration, "trace") && pending->practice) {
+        JsonObject *trace = json_object_new();
+        json_object_set_string_member(trace, "phase", phase);
+        json_object_set_boolean_member(trace, "same", same);
+        json_object_set_boolean_member(trace, "ready", ready);
+        json_object_set_object_member(reply, "returnTrace", trace);
     }
     return reply;
 }
@@ -307,7 +315,8 @@ static gboolean await_return(gpointer data) {
         same = same && private_return_current(pending) && tl_now() - observed_at <= 150;
     ready = ready && same;
     if (!ready && same && tl_now() < pending->until) return G_SOURCE_CONTINUE;
-    respond(pending->id, return_reply(pending, ready, observed_at));
+    respond(pending->id, return_reply(pending, ready, observed_at,
+        !same ? "pending-identity" : ready ? "ready" : "pending-unready", same));
     return G_SOURCE_REMOVE;
 }
 /* Call only after the command/key path's IME observation. This check reads
@@ -505,7 +514,9 @@ static void command(JsonObject *frame) {
             g_timeout_add_full(G_PRIORITY_DEFAULT, 10, await_return, pending, free_return);
             return;
         }
-        respond(id, return_reply(&state, ready, observed_at));
+        respond(id, return_reply(&state, ready, observed_at,
+            !allowed ? "private-precondition" : !focused ? "native-return"
+            : !same ? "private-identity" : ready ? "ready" : "unready", same));
     } else if (strcmp(operation, "quarantine") == 0) {
         if (target) target->quarantined = TRUE;
         tl_clear_permit(); clear_shortcut(); respond(id, NULL);
