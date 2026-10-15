@@ -162,9 +162,13 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                             window.UpdateLayout();
                             AssertReadableSettingsText(window);
                             AssertReadableSelectedNavigation(window, "⌂  常规");
-                            var practice = Descendants(window).OfType<Button>().Single(button =>
-                                Equals(button.Content, OnDemandPracticePresentation.Create(settings.Value).StartLabel));
-                            AssertWithinSettingsViewport(window, practice);
+                            AssertWithinSettingsViewport(window, SettingToggle(window, "启用 TypeLay"));
+                            AssertWithinSettingsViewport(window, Descendants(window).OfType<ComboBox>().Single(control =>
+                                AutomationProperties.GetName(control) == "工作模式"));
+                            var themes = Descendants(window).OfType<RadioButton>().ToArray();
+                            Assert.Equal(3, themes.Length);
+                            foreach (var themeChoice in themes)
+                                AssertWithinSettingsViewport(window, themeChoice);
                             Render(window, $"settings-general-{theme}-{width}.png");
                             Stage($"general-scroll:{theme}:{width}");
                             scroll.ScrollToBottom();
@@ -296,6 +300,77 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
     }
 
     [Fact]
+    public async Task ThemePreviewsExposeSelectionSaveAndRestoreAfterFailure()
+    {
+        await desktop.RunAsync(async () =>
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "typelay-theme-ui-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                string path = Path.Combine(directory, "settings.json");
+                var settings = WindowsRuntime.CreateSettings(path);
+                settings.Update(settings.Value with
+                {
+                    Theme = "system"
+                });
+                using var model = WindowsRuntime.CreateModel();
+                var window = new SettingsWindow(settings, model, () => { });
+                window.ShowPage();
+                window.UpdateLayout();
+                Assert.Equal(790, window.ActualWidth);
+                Assert.Equal(560, window.ActualHeight);
+                int saved = 0;
+                settings.Changed += () => saved++;
+                RadioButton Choice(string name) => Descendants(window).OfType<RadioButton>().Single(control =>
+                    AutomationProperties.GetName(control) == name);
+                ISelectionItemProvider Selection(string name)
+                {
+                    var peer = Assert.IsType<RadioButtonAutomationPeer>(UIElementAutomationPeer.CreatePeerForElement(Choice(name)));
+                    Assert.Equal(name, peer.GetName());
+                    Assert.Equal(AutomationControlType.RadioButton, peer.GetAutomationControlType());
+                    Assert.True(peer.IsKeyboardFocusable());
+                    return Assert.IsAssignableFrom<ISelectionItemProvider>(peer.GetPattern(PatternInterface.SelectionItem));
+                }
+                Assert.True(Selection("跟随系统").IsSelected);
+                Assert.False(Selection("浅色").IsSelected);
+                Assert.False(Selection("深色").IsSelected);
+                Assert.Equal(0, saved);
+                Selection("浅色").Select();
+                Assert.Equal("light", WindowsRuntime.CreateSettings(path).Value.Theme);
+                Assert.True(Selection("浅色").IsSelected);
+                Assert.Equal(1, saved);
+                Selection("浅色").Select();
+                Assert.Equal(1, saved);
+                Assert.True(Choice("浅色").Focus());
+                await AwaitSettingsSave(settings, () => SendOwnedKey(window, Choice("浅色"), 0x27));
+                await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                Assert.Equal("dark", WindowsRuntime.CreateSettings(path).Value.Theme);
+                Assert.True(Selection("深色").IsSelected);
+                Assert.True(Choice("深色").IsKeyboardFocused);
+                Assert.Equal(2, saved);
+                Assert.True(Choice("跟随系统").Focus());
+                await AwaitSettingsSave(settings, () => SendOwnedKey(window, Choice("跟随系统"), 0x20));
+                await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
+                Assert.Equal("system", WindowsRuntime.CreateSettings(path).Value.Theme);
+                Assert.True(Selection("跟随系统").IsSelected);
+                Assert.Equal(3, saved);
+                using var blocked = new FileStream(path + ".tmp", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+                Selection("浅色").Select();
+                Assert.Equal("system", WindowsRuntime.CreateSettings(path).Value.Theme);
+                Assert.True(Selection("跟随系统").IsSelected);
+                Assert.False(Selection("浅色").IsSelected);
+                Assert.Equal(3, saved);
+                Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "设置未保存");
+            }
+            finally
+            {
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, true);
+            }
+        });
+    }
+
+    [Fact]
     public async Task ModeGuidanceUsesSavedShortcutsWithoutDiscardingPendingEdits()
     {
         await desktop.RunAsync(() =>
@@ -344,14 +419,14 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
 
     private static void AssertSavedGuidance(Window window, UserSettings settings)
     {
+        var details = Descendants(window).OfType<Expander>().Single(expander => Equals(expander.Header, "使用说明"));
+        details.IsExpanded = true;
         window.UpdateLayout();
         var guidance = SettingsGuidancePresentation.Create(settings, exclusionsNeedSave: false);
         var texts = Descendants(window).OfType<TextBlock>().ToArray();
         Assert.Contains(texts, text => text.Text == guidance.ModeDescription);
         Assert.Contains(texts, text => text.Text == guidance.AcceptanceDescription);
-        Assert.Contains(texts, text => text.Text == guidance.SaveScopeDescription);
-        var mode = Descendants(window).OfType<ComboBox>().Single(control => AutomationProperties.GetName(control) == "工作模式");
-        Assert.Contains(Descendants(VisualTreeHelper.GetParent(mode)).OfType<TextBlock>(), text => text.Text == guidance.ModeDescription);
+        Assert.DoesNotContain(texts, text => text.IsVisible && text.Text == guidance.SaveScopeDescription);
     }
 
     private static CheckBox SettingToggle(Window window, string name) => Descendants(window).OfType<CheckBox>()
@@ -373,12 +448,14 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
         finally { settings.Changed -= Changed; }
     }
 
-    private static void SendOwnedSpace(Window window, CheckBox toggle)
+    private static void SendOwnedSpace(Window window, CheckBox toggle) => SendOwnedKey(window, toggle, 0x20);
+
+    private static void SendOwnedKey(Window window, Control control, ushort key)
     {
         Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
-        Assert.True(toggle.IsKeyboardFocused);
+        Assert.True(control.IsKeyboardFocused);
         Assert.Equal(ModifierKeys.None, Keyboard.Modifiers);
-        Input[] input = [new() { Type = 1, Key = 0x20 }, new() { Type = 1, Key = 0x20, KeyboardFlags = 2 }];
+        Input[] input = [new() { Type = 1, Key = key }, new() { Type = 1, Key = key, KeyboardFlags = 2 }];
         uint sent = SendInput(2, input, Marshal.SizeOf<Input>());
         if (sent == 1)
             SendInput(1, [input[1]], Marshal.SizeOf<Input>());
@@ -798,9 +875,9 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
     private static void AssertReadableSettingsText(Window window)
     {
         // Read the real WPF text and its nearest painted background, including
-        // note cards. Template glyphs and disabled controls are not helper copy.
+        // notices and theme-choice templates. Disabled controls are excluded.
         foreach (var text in Descendants(window).OfType<TextBlock>().Where(text =>
-            text.IsVisible && text.IsEnabled && text.TemplatedParent is null && text.Text.Length > 0))
+            text.IsVisible && text.IsEnabled && text.Text.Length > 0))
         {
             Assert.True(text.FontSize >= 12, $"Helper text is too small: {text.Text}");
             var foreground = Assert.IsType<SolidColorBrush>(text.Foreground).Color;
@@ -836,7 +913,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
         Assert.True(button.IsVisible);
         Assert.Equal(FontWeights.SemiBold, button.FontWeight);
         var background = Assert.IsType<SolidColorBrush>(button.Background).Color;
-        Assert.Equal(Assert.IsType<SolidColorBrush>(window.FindResource("AccentSoft")).Color, background);
+        Assert.Equal(Assert.IsType<SolidColorBrush>(window.FindResource("SettingsSelection")).Color, background);
         var text = Assert.IsType<TextBlock>(button.Content);
         Assert.Contains(text, Descendants(button));
         Assert.True(text.IsVisible);
@@ -851,7 +928,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
         double first = Luminance(Assert.IsType<SolidColorBrush>(label.Foreground).Color), second = Luminance(background);
         double contrast = (Math.Max(first, second) + 0.05) / (Math.Min(first, second) + 0.05);
         Assert.True(contrast >= 4.5, $"Selected navigation contrast {contrast:F2} is below 4.5: {title}");
-        Assert.Equal(Assert.IsType<SolidColorBrush>(window.FindResource("Accent")).Color,
+        Assert.Equal(Assert.IsType<SolidColorBrush>(window.FindResource("SettingsLink")).Color,
             Assert.IsType<SolidColorBrush>(text.Inlines.FirstInline.Foreground).Color);
     }
 

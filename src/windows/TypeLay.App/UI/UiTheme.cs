@@ -101,6 +101,49 @@ internal static class UiTheme
       <Style TargetType="TextBox"><Setter Property="Foreground" Value="{DynamicResource Text}"/><Setter Property="Background" Value="{DynamicResource Panel}"/><Setter Property="BorderBrush" Value="{DynamicResource Line}"/><Setter Property="FontSize" Value="13"/></Style>
     </ResourceDictionary>
     """;
+    // Local aliases keep the settings surface neutral without recoloring the
+    // overlay or quick panel. Dynamic colors still follow system theme changes.
+    public static ResourceDictionary SettingsResources() => (ResourceDictionary)XamlReader.Parse("""
+    <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+      <SolidColorBrush x:Key="Panel" Color="{DynamicResource SettingsPanelColor}"/>
+      <SolidColorBrush x:Key="Panel2" Color="{DynamicResource SettingsSidebarColor}"/>
+      <SolidColorBrush x:Key="Line" Color="{DynamicResource SettingsLineColor}"/>
+      <SolidColorBrush x:Key="Text" Color="{DynamicResource SettingsTextColor}"/>
+      <SolidColorBrush x:Key="Muted" Color="{DynamicResource SettingsMutedColor}"/>
+      <SolidColorBrush x:Key="Accent" Color="#2365D8"/>
+      <SolidColorBrush x:Key="SettingsLink" Color="{DynamicResource SettingsLinkColor}"/>
+      <SolidColorBrush x:Key="SettingsSelection" Color="{DynamicResource SettingsSelectionColor}"/>
+      <Style x:Key="SettingsThemeChoice" TargetType="RadioButton">
+        <Setter Property="Foreground" Value="{DynamicResource Text}"/>
+        <Setter Property="FontSize" Value="13"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="RadioButton">
+          <Grid>
+            <Grid.RowDefinitions><RowDefinition Height="80"/><RowDefinition Height="28"/></Grid.RowDefinitions>
+            <Border x:Name="preview" BorderBrush="{DynamicResource Line}" BorderThickness="1" CornerRadius="8" Padding="3">
+              <ContentPresenter/>
+            </Border>
+            <DockPanel Grid.Row="1" Margin="0,5,0,0">
+              <TextBlock x:Name="selected" DockPanel.Dock="Right" Text="✓" Foreground="{DynamicResource SettingsLink}" Visibility="Hidden" Margin="8,0,0,0"/>
+              <TextBlock Text="{TemplateBinding Tag}" Foreground="{TemplateBinding Foreground}"/>
+            </DockPanel>
+            <Border x:Name="focus" Grid.RowSpan="2" BorderBrush="Transparent" BorderThickness="2" CornerRadius="10" Margin="-3" IsHitTestVisible="False"/>
+          </Grid>
+          <ControlTemplate.Triggers>
+            <Trigger Property="IsChecked" Value="True">
+              <Setter TargetName="preview" Property="BorderBrush" Value="{DynamicResource SettingsLink}"/>
+              <Setter TargetName="preview" Property="BorderThickness" Value="2"/>
+              <Setter TargetName="preview" Property="Padding" Value="2"/>
+              <Setter TargetName="selected" Property="Visibility" Value="Visible"/>
+            </Trigger>
+            <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="focus" Property="BorderBrush" Value="{DynamicResource Text}"/></Trigger>
+          </ControlTemplate.Triggers>
+        </ControlTemplate></Setter.Value></Setter>
+      </Style>
+    </ResourceDictionary>
+    """);
+
     public static void Initialize(string theme)
     {
         Application.Current.Resources.MergedDictionaries.Add((ResourceDictionary)XamlReader.Parse(StyleXml));
@@ -115,6 +158,13 @@ internal static class UiTheme
             dark = key?.GetValue("AppsUseLightTheme") is int value && value == 0;
         }
         var r = Application.Current.Resources;
+        r["SettingsPanelColor"] = (Color)ColorConverter.ConvertFromString(dark ? "#25262A" : "#FFFFFF");
+        r["SettingsSidebarColor"] = (Color)ColorConverter.ConvertFromString(dark ? "#202125" : "#F5F5F6");
+        r["SettingsLineColor"] = (Color)ColorConverter.ConvertFromString(dark ? "#3B3C43" : "#E6E6E9");
+        r["SettingsTextColor"] = (Color)ColorConverter.ConvertFromString(dark ? "#F3F3F5" : "#222327");
+        r["SettingsMutedColor"] = (Color)ColorConverter.ConvertFromString(dark ? "#B5B5BF" : "#62636B");
+        r["SettingsLinkColor"] = (Color)ColorConverter.ConvertFromString(dark ? "#83AEFF" : "#2365D8");
+        r["SettingsSelectionColor"] = (Color)ColorConverter.ConvertFromString(dark ? "#37383E" : "#ECECEF");
         r["Panel"] = Brush(dark ? "#242830" : "#FFFFFF");
         r["Panel2"] = Brush(dark ? "#20242B" : "#F7F8FA");
         r["Line"] = Brush(dark ? "#3B414C" : "#DFE3EB");

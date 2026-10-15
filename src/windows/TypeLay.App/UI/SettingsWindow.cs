@@ -18,6 +18,7 @@ internal sealed class SettingsWindow : Window
     private readonly ModelClient _model;
     private readonly StackPanel _content;
     private readonly StackPanel _nav;
+    private readonly List<RadioButton> _themeChoices = [];
     private readonly Action _openPractice;
     private readonly WindowsApplicationSupport? _support;
     private readonly Func<ModelInstaller> _createInstaller;
@@ -45,6 +46,7 @@ internal sealed class SettingsWindow : Window
     private TextBlock? _progressLabel, _practiceStatus;
     private TextBlock? _preparationStatus, _preparationGuidance, _modelStatus;
     private Button? _preparationPrimary;
+    private Border? _preparationCard;
     private StackPanel? _preparationSecondary, _preparationDiagnostics;
     private readonly List<Button> _connectionChecks = [];
     public Func<OnDemandPracticeProgress?>? PracticeProgress
@@ -54,7 +56,11 @@ internal sealed class SettingsWindow : Window
     public void RefreshPracticeProgress()
     {
         if (_practiceStatus is not null)
-            _practiceStatus.Text = OnDemandPracticePresentation.Create(_settings.Value, PracticeProgress?.Invoke()).ProgressNotice;
+        {
+            var progress = PracticeProgress?.Invoke();
+            _practiceStatus.Text = progress is null ? "" : OnDemandPracticePresentation.Create(_settings.Value, progress).ProgressNotice;
+            _practiceStatus.Visibility = progress is null ? Visibility.Collapsed : Visibility.Visible;
+        }
     }
     public Action? SessionMustEnd;
     public SettingsWindow(SettingsStore settings, ModelClient model, Action openPractice, WindowsApplicationSupport? support = null,
@@ -66,8 +72,8 @@ internal sealed class SettingsWindow : Window
         _support = support;
         _createInstaller = createInstaller ?? (() => new ModelInstaller());
         Title = "TypeLay 设置";
-        Width = 944;
-        Height = 674;
+        Width = 790;
+        Height = 560;
         MinWidth = 790;
         MinHeight = 560;
         WindowStyle = WindowStyle.None;
@@ -76,47 +82,54 @@ internal sealed class SettingsWindow : Window
         ResizeMode = ResizeMode.CanResizeWithGrip;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         FontFamily = new("Segoe UI");
+        Resources.MergedDictionaries.Add(UiTheme.SettingsResources());
         var root = new Grid();
-        root.RowDefinitions.Add(new()
+        root.ColumnDefinitions.Add(new()
         {
-            Height = new(48)
+            Width = new(176)
         });
-        root.RowDefinitions.Add(new());
-        var title = new DockPanel { Margin = new(14, 0, 12, 0) };
-        var close = UiTheme.Button("×", () => RequestClose());
-        System.Windows.Automation.AutomationProperties.SetName(close, "关闭设置");
-        close.Width = 34;
-        close.Height = 30;
-        close.BorderThickness = new(0);
-        close.Background = Brushes.Transparent;
-        DockPanel.SetDock(close, Dock.Right);
-        title.Children.Add(close);
-        title.Children.Add(UiTheme.Text("T   TypeLay 设置", 12.5, bold: true));
-        title.MouseLeftButtonDown += (_, e) => { if (e.ChangedButton == MouseButton.Left) DragMove(); };
-        var titlebar = UiTheme.Border(title, 0, "Panel2");
-        titlebar.BorderThickness = new(0, 0, 0, 1);
-        root.Children.Add(titlebar);
-        var body = new Grid();
-        body.ColumnDefinitions.Add(new()
-        {
-            Width = new(205)
-        });
-        body.ColumnDefinitions.Add(new());
-        Grid.SetRow(body, 1);
-        root.Children.Add(body);
-        _nav = new StackPanel { Margin = new(9, 12, 9, 12) };
-        var navBorder = UiTheme.Border(_nav, 0, "Panel2");
+        root.ColumnDefinitions.Add(new());
+        var sidebar = new DockPanel { LastChildFill = true, Margin = new(12, 24, 12, 20) };
+        var brand = new StackPanel { Orientation = Orientation.Horizontal, Margin = new(8, 0, 0, 26) };
+        var monogram = UiTheme.Text("T", 21, bold: true);
+        monogram.Foreground = Brushes.White;
+        monogram.HorizontalAlignment = HorizontalAlignment.Center;
+        brand.Children.Add(new Border { Child = monogram, Width = 30, Height = 30, CornerRadius = new(7), Background = UiTheme.Brush("#222327") });
+        var wordmark = UiTheme.Text("TypeLay", 17, bold: true);
+        wordmark.Margin = new(10, 0, 0, 0);
+        brand.Children.Add(wordmark);
+        brand.MouseLeftButtonDown += (_, e) => { if (e.ChangedButton == MouseButton.Left) DragMove(); };
+        DockPanel.SetDock(brand, Dock.Top);
+        sidebar.Children.Add(brand);
+        var privacy = UiTheme.Text("本地翻译 · 无历史记录", 12, true);
+        privacy.Margin = new(8, 16, 0, 0);
+        DockPanel.SetDock(privacy, Dock.Bottom);
+        sidebar.Children.Add(privacy);
+        _nav = new StackPanel();
+        sidebar.Children.Add(_nav);
+        var navBorder = UiTheme.Border(sidebar, 0, "Panel2");
         navBorder.BorderThickness = new(0, 0, 1, 0);
-        body.Children.Add(navBorder);
-        _content = new StackPanel { Margin = new(34, 27, 34, 38) };
+        root.Children.Add(navBorder);
+        _content = new StackPanel { Margin = new(28, 30, 28, 24) };
         var scroll = new ScrollViewer { Content = _content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         Grid.SetColumn(scroll, 1);
-        body.Children.Add(scroll);
-        var outer = UiTheme.Border(root, 20);
-        outer.Margin = new(12);
-        outer.Effect = new DropShadowEffect { BlurRadius = 24, ShadowDepth = 6, Opacity = .18 };
+        root.Children.Add(scroll);
+        var close = UiTheme.Button("×", () => RequestClose());
+        AutomationProperties.SetName(close, "关闭设置");
+        close.Width = 30;
+        close.Height = 28;
+        close.Margin = new(0, 8, 10, 0);
+        close.HorizontalAlignment = HorizontalAlignment.Right;
+        close.VerticalAlignment = VerticalAlignment.Top;
+        close.BorderThickness = new(0);
+        close.Background = Brushes.Transparent;
+        Grid.SetColumn(close, 1);
+        root.Children.Add(close);
+        var outer = UiTheme.Border(root, 12);
+        outer.Margin = new(8);
+        outer.Effect = new DropShadowEffect { BlurRadius = 16, ShadowDepth = 3, Opacity = .12 };
         Content = outer;
-        root.SizeChanged += (_, _) => root.Clip = new RectangleGeometry(new Rect(0, 0, root.ActualWidth, root.ActualHeight), 19, 19);
+        root.SizeChanged += (_, _) => root.Clip = new RectangleGeometry(new Rect(0, 0, root.ActualWidth, root.ActualHeight), 11, 11);
         Closing += (_, e) =>
         {
             if (_emergencyShutdown)
@@ -135,7 +148,7 @@ internal sealed class SettingsWindow : Window
             Dispatcher.BeginInvoke(new Action(RefreshModel));
             return;
         }
-        if (_renderedPage == _page && _page is "apps" or "translation")
+        if (_renderedPage == _page && (_page is "apps" or "translation" || _page == "general" && _preparationCard is not null))
         {
             RefreshPreparation();
             if (_modelStatus is not null)
@@ -240,14 +253,14 @@ internal sealed class SettingsWindow : Window
             button.Height = 38;
             button.Margin = new(0, 0, 0, 3);
             button.BorderThickness = new(0);
-            button.SetResourceReference(Control.BackgroundProperty, key == _page ? "AccentSoft" : "Panel2");
+            button.SetResourceReference(Control.BackgroundProperty, key == _page ? "SettingsSelection" : "Panel2");
             if (key == _page)
             {
                 button.FontWeight = FontWeights.SemiBold;
                 button.SetResourceReference(Control.ForegroundProperty, "Text");
                 var content = new TextBlock();
                 var icon = new Run(title[..1]);
-                icon.SetResourceReference(TextElement.ForegroundProperty, "Accent");
+                icon.SetResourceReference(TextElement.ForegroundProperty, "SettingsLink");
                 content.Inlines.Add(icon);
                 content.Inlines.Add(title[1..]);
                 button.Content = content;
@@ -258,11 +271,13 @@ internal sealed class SettingsWindow : Window
         string? focusedToggle = Keyboard.FocusedElement is ToggleButton focused && focused.IsDescendantOf(this)
             ? AutomationProperties.GetName(focused) : null;
         _content.Children.Clear();
+        _themeChoices.Clear();
         _progress = null;
         _progressLabel = null;
         _practiceStatus = null;
         _preparationStatus = _preparationGuidance = _modelStatus = null;
         _preparationPrimary = null;
+        _preparationCard = null;
         _preparationSecondary = _preparationDiagnostics = null;
         _connectionChecks.Clear();
         if (_page != "shortcuts" && _settingsError is { } error)
@@ -293,24 +308,29 @@ internal sealed class SettingsWindow : Window
         }
         if (focusedToggle is not null)
             _content.Children.OfType<Grid>().SelectMany(row => row.Children.OfType<ToggleButton>())
+                .Concat(_themeChoices)
                 .SingleOrDefault(toggle => AutomationProperties.GetName(toggle) == focusedToggle)?.Focus();
     }
-    private void Heading(string name, string description)
+    private void Heading(string name, string description = "")
     {
-        _content.Children.Add(UiTheme.Text(name, 22, bold: true));
+        var title = UiTheme.Text(name, 24, bold: true);
+        title.Margin = new(0, 0, 30, description.Length == 0 ? 18 : 0);
+        _content.Children.Add(title);
+        if (description.Length == 0)
+            return;
         var sub = UiTheme.Text(description, 12, true);
-        sub.Margin = new(0, 6, 0, 24);
+        sub.Margin = new(0, 6, 0, 18);
         _content.Children.Add(sub);
     }
     private void Rule()
     {
-        var line = new Border { Height = 1, Margin = new(0, 18, 0, 18) };
+        var line = new Border { Height = 1, Margin = new(0, 14, 0, 14) };
         line.SetResourceReference(Border.BackgroundProperty, "Line");
         _content.Children.Add(line);
     }
     private void Row(string name, string description, UIElement control)
     {
-        var grid = new Grid { MinHeight = 58, Margin = new(0, 3, 0, 3) };
+        var grid = new Grid { MinHeight = 44, Margin = new(0, 3, 0, 3) };
         grid.ColumnDefinitions.Add(new());
         grid.ColumnDefinitions.Add(new()
         {
@@ -337,16 +357,12 @@ internal sealed class SettingsWindow : Window
         body.Margin = new(0, 5, 0, 0);
         body.LineHeight = 17;
         panel.Children.Add(body);
-        var box = UiTheme.Border(panel, 13, "Panel2", 14);
+        var box = UiTheme.Border(panel, 0, "Panel", 0);
+        box.BorderThickness = new(0, 0, 0, 1);
+        box.Padding = new(0, 10, 0, 14);
         box.Margin = new(0, 4, 0, 12);
         _content.Children.Add(box);
         return body;
-    }
-    private void SaveScopeNote()
-    {
-        var text = UiTheme.Text(SettingsGuidancePresentation.Create(_settings.Value, exclusionsNeedSave: false).SaveScopeDescription, 12, true);
-        text.Margin = new(0, 10, 0, 12);
-        _content.Children.Add(text);
     }
     private bool Save(UserSettings value)
     {
@@ -370,29 +386,64 @@ internal sealed class SettingsWindow : Window
     }
     private void General()
     {
-        Heading("常规", "TypeLay 的全局运行方式。");
-        bool needsPreparation = PreparationView().PrimaryAction.Id != TranslationPreparationAction.NextStep;
-        if (needsPreparation)
-            InstallCard();
-        var practice = OnDemandPracticePresentation.Create(_settings.Value, PracticeProgress?.Invoke());
-        Row(practice.Title, practice.Summary, UiTheme.Button(practice.StartLabel, StartPractice, primary: !needsPreparation));
-        _practiceStatus = UiTheme.Text(practice.ProgressNotice, 12, true);
-        _content.Children.Add(_practiceStatus);
-        SaveScopeNote();
-        Row("启用 TypeLay", "暂停后保留托盘入口，受支持的输入框旁保留可点击恢复的小入口。", UiTheme.Toggle("启用 TypeLay", () => _settings.Value.Enabled, enabled => Save(_settings.Value with { Enabled = enabled })));
+        Heading("常规");
+        Row("启用 TypeLay", "", UiTheme.Toggle("启用 TypeLay", () => _settings.Value.Enabled, enabled => Save(_settings.Value with { Enabled = enabled })));
         var modes = new ComboBox
         {
             MinWidth = 155,
             ItemsSource = new[] { "自动模式（默认）", "按需模式" },
             SelectedIndex = _settings.Value.Mode == WorkMode.OnDemand ? 1 : 0
         };
-        System.Windows.Automation.AutomationProperties.SetName(modes, "工作模式");
+        AutomationProperties.SetName(modes, "工作模式");
         modes.SelectionChanged += (_, _) => Save(_settings.Value with { Mode = modes.SelectedIndex == 1 ? WorkMode.OnDemand : WorkMode.Automatic });
+        Row("工作模式", "", modes);
         var guidance = SettingsGuidancePresentation.Create(_settings.Value, exclusionsNeedSave: false);
-        Row("工作模式", guidance.ModeDescription, modes);
-        var acceptance = UiTheme.Text(guidance.AcceptanceDescription, 12, true);
-        acceptance.Margin = new(0, 8, 0, 12);
-        _content.Children.Add(acceptance);
+        // Reuse the saved-mode explanation; the full shortcut and safety details
+        // remain available below without pushing daily controls off the window.
+        string summary = string.Join("。", guidance.ModeDescription.Split('。').Take(_settings.Value.Enabled ? 1 : 2)) + "。";
+        var modeSummary = UiTheme.Text(summary, 12, true);
+        modeSummary.Margin = new(0, 4, 0, 0);
+        _content.Children.Add(modeSummary);
+        Rule();
+        _content.Children.Add(UiTheme.Text("翻译浮层", 13, bold: true));
+        var themes = new UniformGrid { Columns = 3, Margin = new(0, 14, 0, 0) };
+        themes.PreviewKeyDown += (_, e) =>
+        {
+            if (Keyboard.Modifiers != ModifierKeys.None || Keyboard.FocusedElement is not RadioButton focused)
+                return;
+            int step = e.Key is Key.Right or Key.Down ? 1 : e.Key is Key.Left or Key.Up ? -1 : 0;
+            int index = _themeChoices.IndexOf(focused);
+            if (step == 0 || index < 0)
+                return;
+            e.Handled = true;
+            var next = _themeChoices[(index + step + _themeChoices.Count) % _themeChoices.Count];
+            // WPF arrows normally move focus only. Keep selection, automation
+            // and persistence on the same native Checked path as pointer/Space.
+            if (next.Focus())
+                next.IsChecked = true;
+        };
+        foreach (var (value, label) in new[] { ("system", "跟随系统"), ("light", "浅色"), ("dark", "深色") })
+        {
+            var choice = new RadioButton
+            {
+                Content = ThemePreview(value),
+                Tag = label,
+                GroupName = "OverlayTheme",
+                IsChecked = _settings.Value.Theme == value,
+                IsTabStop = _settings.Value.Theme == value,
+                Margin = new(value == "system" ? 0 : 5, 0, value == "dark" ? 0 : 5, 0)
+            };
+            choice.SetResourceReference(StyleProperty, "SettingsThemeChoice");
+            AutomationProperties.SetName(choice, label);
+            choice.Checked += (_, _) => Save(_settings.Value with { Theme = value });
+            _themeChoices.Add(choice);
+            themes.Children.Add(choice);
+        }
+        _content.Children.Add(themes);
+        Rule();
+        if (PreparationView().PrimaryAction.Id != TranslationPreparationAction.NextStep)
+            InstallCard(compact: true);
+        Row("登录 Windows 后自动启动", "开启后依赖当前程序所在目录，请勿移动。", UiTheme.Toggle("登录 Windows 后自动启动", () => _settings.Value.Startup, startup => Save(_settings.Value with { Startup = startup })));
         Row("开发版实验：允许 Tab 写回", "默认关闭。跨进程非原子写回尚未完成实机安全验收；仅使用已备份的测试文本。", UiTheme.Toggle("开发版实验：允许 Tab 写回", () => _settings.Value.ExperimentalWriteback, enabled =>
         {
             if (!enabled)
@@ -410,12 +461,54 @@ internal sealed class SettingsWindow : Window
                     ExperimentalWriteback = true
                 });
         }));
-        Row("登录 Windows 后自动启动", "默认关闭。开启后依赖当前程序所在目录，请勿移动。", UiTheme.Toggle("登录 Windows 后自动启动", () => _settings.Value.Startup, startup => Save(_settings.Value with { Startup = startup })));
-        var themes = new ComboBox { MinWidth = 155, ItemsSource = new[] { "跟随系统", "浅色", "深色" }, SelectedIndex = _settings.Value.Theme switch { "light" => 1, "dark" => 2, _ => 0 } };
-        themes.SelectionChanged += (_, _) => Save(_settings.Value with { Theme = themes.SelectedIndex switch { 1 => "light", 2 => "dark", _ => "system" } });
-        Row("外观", "使用系统字体和低干扰浮层。", themes);
         Rule();
-        Note("文本与译文保留在本机", "推理完全在本地进行；默认不保存翻译历史，不需要账号或云同步。");
+        Row("第一次使用？", "", UiTheme.Button(OnDemandPracticePresentation.Create(_settings.Value).StartLabel, StartPractice));
+        _practiceStatus = UiTheme.Text("", 12, true);
+        _content.Children.Add(_practiceStatus);
+        RefreshPracticeProgress();
+        var details = new StackPanel { Margin = new(0, 10, 0, 0) };
+        details.Children.Add(UiTheme.Text(guidance.ModeDescription, 12, true));
+        var acceptance = UiTheme.Text(guidance.AcceptanceDescription, 12, true);
+        acceptance.Margin = new(0, 8, 0, 0);
+        details.Children.Add(acceptance);
+        _content.Children.Add(new Expander { Header = "使用说明", Content = details, Margin = new(0, 10, 0, 0) });
+    }
+    private static FrameworkElement ThemePreview(string theme)
+    {
+        var backdrop = new Grid();
+        backdrop.ColumnDefinitions.Add(new());
+        backdrop.ColumnDefinitions.Add(new());
+        bool dark = theme == "dark";
+        backdrop.Background = UiTheme.Brush(dark ? "#27282D" : "#F4F4F6");
+        if (theme == "system")
+        {
+            var half = new Border { Background = UiTheme.Brush("#27282D") };
+            Grid.SetColumn(half, 1);
+            backdrop.Children.Add(half);
+        }
+        var lines = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new(9) };
+        foreach (double width in new[] { 34d, 84d, 56d })
+            lines.Children.Add(new Border
+            {
+                Width = width,
+                Height = 3,
+                Margin = new(0, 3, 0, 3),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                CornerRadius = new(1.5),
+                Background = UiTheme.Brush(dark ? "#B5B5BF" : "#62636B")
+            });
+        var overlay = new Border
+        {
+            Child = lines,
+            Margin = new(8, 14, 8, 14),
+            CornerRadius = new(6),
+            BorderThickness = new(1),
+            BorderBrush = UiTheme.Brush(dark ? "#51525A" : "#DCDCE1"),
+            Background = UiTheme.Brush(dark ? "#34353B" : "#FFFFFF")
+        };
+        Grid.SetColumnSpan(overlay, 2);
+        backdrop.Children.Add(overlay);
+        return new Border { Child = backdrop, CornerRadius = new(5), ClipToBounds = true };
     }
     public void StartPractice()
     {
@@ -498,7 +591,6 @@ internal sealed class SettingsWindow : Window
     private void Languages()
     {
         Heading("语言", "Auto 只用于源语言，目标语言始终明确指定。");
-        SaveScopeNote();
         Row("源语言", "Auto 使用本地语言检测。当前已安装模型仅覆盖中文与英文。", LanguageCombo(true, _settings.Value, value => Save(value)));
         Row("目标语言", "选择希望写回的语言。", LanguageCombo(false, _settings.Value, value => Save(value)));
         var swap = UiTheme.Button("交换", () => Save(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
@@ -561,7 +653,6 @@ internal sealed class SettingsWindow : Window
         direct.TextChanged += (_, _) => ShortcutDraftChanged();
         Row("唤醒翻译 UI", "为当前输入框开启持续翻译；离开后结束。", wake);
         Row("直接翻译并替换", "一次性操作，绑定原输入框，不显示预览、不自动发送。", direct);
-        SaveScopeNote();
         var save = UiTheme.Button(_draftMessages.SaveLabel, () =>
         {
             var submitted = new ShortcutSettingsDraft(wake.Text, direct.Text,
@@ -690,7 +781,6 @@ internal sealed class SettingsWindow : Window
             _content.Children.Add(new Expander { Header = view.Labels.MoreApplications, Content = others, Margin = new(0, 8, 0, 14) });
         Rule();
         _content.Children.Add(UiTheme.Text("排除的应用", 15, bold: true));
-        SaveScopeNote();
         if (_settings.Value.Excluded.Length == 0)
             Note("当前没有排除任何应用", "排除后，该应用的所有输入框均不显示 TypeLay 界面。");
         foreach (string app in _settings.Value.Excluded)
@@ -764,8 +854,9 @@ internal sealed class SettingsWindow : Window
             detailsBody.Children.Add(button);
         }
         body.Children.Add(details);
-        var card = UiTheme.Border(body, 13, "Panel2", 14);
-        card.Margin = new(0, 0, 0, 12);
+        var card = UiTheme.Border(body, 0, "Panel", 0);
+        card.BorderThickness = new(0, 0, 0, 1);
+        card.Padding = new(0, 14, 0, 14);
         return card;
     }
     private void Translation()
@@ -777,14 +868,19 @@ internal sealed class SettingsWindow : Window
         Rule();
         Note("较长文本", "当前单段模型输入超过 384 个 token 时停止并提示缩短选区；不会在后台截断原文后给出可接受候选。换行、URL、mention 和编号采用显式结构保护。");
     }
-    private void InstallCard()
+    private void InstallCard(bool compact = false)
     {
         var panel = new StackPanel();
-        panel.Children.Add(UiTheme.Text(ApplicationSupportPresentation.Create([]).Labels.PrepareTranslation, 12, true));
-        _preparationStatus = UiTheme.Text("", 15, bold: true);
+        if (!compact)
+            panel.Children.Add(UiTheme.Text(ApplicationSupportPresentation.Create([]).Labels.PrepareTranslation, 12, true));
+        _preparationStatus = UiTheme.Text("", compact ? 13 : 15, bold: true);
         _preparationStatus.Name = "PreparationStatus";
         _preparationStatus.Margin = new(0, 6, 0, 0);
-        panel.Children.Add(_preparationStatus);
+        var header = new DockPanel();
+        if (compact)
+            panel.Children.Add(header);
+        else
+            panel.Children.Add(_preparationStatus);
         _preparationGuidance = UiTheme.Text("", 12, true);
         _preparationGuidance.Name = "PreparationGuidance";
         _preparationGuidance.Margin = new(0, 6, 0, 12);
@@ -798,12 +894,23 @@ internal sealed class SettingsWindow : Window
         var actions = new WrapPanel();
         _preparationPrimary = UiTheme.Button("", () => RunPreparationAction(PreparationView().PrimaryAction), primary: true);
         _preparationPrimary.Name = "PreparationPrimaryAction";
-        actions.Children.Add(_preparationPrimary);
+        if (compact)
+        {
+            _preparationPrimary.Margin = new(12, 0, 0, 0);
+            DockPanel.SetDock(_preparationPrimary, Dock.Right);
+            header.Children.Add(_preparationPrimary);
+            header.Children.Add(_preparationStatus);
+        }
+        else
+            actions.Children.Add(_preparationPrimary);
         _preparationSecondary = new StackPanel { Orientation = Orientation.Horizontal };
         actions.Children.Add(_preparationSecondary);
-        panel.Children.Add(actions);
+        if (!compact)
+            panel.Children.Add(actions);
 
         var detailsBody = new StackPanel();
+        if (compact)
+            detailsBody.Children.Add(actions);
         var intro = UiTheme.Text(ModelInstaller.HasReusableLocalModels
             ? "已找到本机中英双向 Argos 模型。准备时会校验并复用权重，运行组件仍需单独准备；输入文字不会上传。"
             : "准备私有运行组件与中英模型。仅在本机推理；无需自行安装 Python，也不上传输入文字。", 12, true);
@@ -815,7 +922,7 @@ internal sealed class SettingsWindow : Window
         panel.Children.Add(new Expander { Header = "组件与安装说明", Content = detailsBody, Margin = new(0, 12, 0, 0) });
         _preparationDiagnostics = new StackPanel();
         panel.Children.Add(_preparationDiagnostics);
-        var border = UiTheme.Border(panel, 13, "Panel2", 14);
+        var border = _preparationCard = UiTheme.Border(panel, compact ? 6 : 8, "Panel2", compact ? 12 : 14);
         border.Name = "TranslationPreparationCard";
         AutomationProperties.SetName(border, "准备翻译");
         border.Margin = new(0, 0, 0, 16);
@@ -859,6 +966,9 @@ internal sealed class SettingsWindow : Window
             || _preparationSecondary is null || _preparationDiagnostics is null || _progress is null || _progressLabel is null)
             return;
         var view = PreparationView();
+        if (_preparationCard is not null)
+            _preparationCard.Visibility = _page == "general" && view.PrimaryAction.Id == TranslationPreparationAction.NextStep
+                ? Visibility.Collapsed : Visibility.Visible;
         _preparationStatus.Text = view.StatusText;
         _preparationGuidance.Text = view.Guidance;
         _preparationGuidance.Visibility = view.Guidance.Length > 0 ? Visibility.Visible : Visibility.Collapsed;

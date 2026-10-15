@@ -2256,11 +2256,43 @@ def run(arguments):
             from support.gtk_accessibility import (
                 Atspi,
                 GLib,
+                bounds,
                 named,
                 select_settings_page,
                 settings_navigation,
                 settings_page_row,
                 text,
+            )
+
+            settings_window = wait_for(
+                lambda: next(
+                    (
+                        item
+                        for item in contents(request("Windows"), "Windows")
+                        if item.get("pid") == process.pid and item.get("title") == "TypeLay 设置"
+                    ),
+                    None,
+                ),
+                "settings window did not map for the small-window check",
+            )
+            if not settings_window["is_floating"]:
+                request({"Action": {"ToggleWindowFloating": {"id": settings_window["id"]}}})
+            for action, pixels in (("SetWindowWidth", 790), ("SetWindowHeight", 560)):
+                request(
+                    {
+                        "Action": {
+                            action: {"id": settings_window["id"], "change": {"SetFixed": pixels}}
+                        }
+                    }
+                )
+            wait_for(
+                lambda: any(
+                    item["id"] == settings_window["id"]
+                    and item["is_floating"]
+                    and item["layout"]["window_size"] == [790, 560]
+                    for item in contents(request("Windows"), "Windows")
+                ),
+                "settings did not fit the requested real 790 x 560 window",
             )
 
             settings_scroll_calibration = None
@@ -2545,9 +2577,13 @@ def run(arguments):
                 current = settings_navigation(process.pid)
                 index, _ = settings_page_row(current[1], title)
                 assert Atspi.Selection.is_child_selected(current[0], index)
-                assert (
-                    settings_control("保存修改").get_state_set().contains(Atspi.StateType.SHOWING)
-                ), "global save action disappeared during page navigation"
+                save = named(process.pid, "保存修改")
+                save_visible = save is not None and save.get_state_set().contains(
+                    Atspi.StateType.SHOWING
+                )
+                assert save_visible == status()["setup"]["settingsDraft"], (
+                    "global save action did not follow the cross-page draft"
+                )
                 return row
 
             navigation = wait_for(
@@ -2649,24 +2685,25 @@ def run(arguments):
                 ), "connection choice is clipped before the user scrolls or focuses it"
             repair = preparation["secondaryActions"]
             assert len(repair) == 1 and repair[0]["id"] == "Repair"
+            repair_button = named(process.pid, repair[0]["label"])
+            assert repair_button is None or not repair_button.get_state_set().contains(
+                Atspi.StateType.SHOWING
+            ), "ready repair took over the default preparation screen"
+            activate_setting("本地翻译组件管理")
             repair_button = settings_control(repair[0]["label"])
-            repair_area = Atspi.Component.get_extents(
-                repair_button.get_component_iface(), Atspi.CoordType.SCREEN
+            wait_for(
+                lambda: repair_button.get_state_set().contains(Atspi.StateType.SHOWING),
+                "ready repair was not available in model management",
             )
-            assert repair_button.get_state_set().contains(Atspi.StateType.SHOWING)
-            assert repair_area.width > 0 and repair_area.height > 0
-            assert trial_area.x < repair_area.x, "repair precedes the ready next step"
-            for clip in [*viewport_bounds, frame]:
-                assert (
-                    clip.x <= repair_area.x
-                    and clip.y <= repair_area.y
-                    and repair_area.x + repair_area.width <= clip.x + clip.width
-                    and repair_area.y + repair_area.height <= clip.y + clip.height
-                ), "secondary repair is clipped on the default preparation screen"
+            activate_setting("本地翻译组件管理")
+            wait_for(
+                lambda: not repair_button.get_state_set().contains(Atspi.StateType.SHOWING),
+                "closing model management left its repair action visible",
+            )
             calibrate_settings_scroll(trial)
             evidence.append(
                 "Connection choice and selected application primary action fully visible "
-                "in the default GTK viewport; ready repair follows the next step and is fully visible"
+                "in the real 790 x 560 GTK viewport; ready repair stays available in collapsed model management"
             )
             activate_setting(desktop_support["primaryAction"]["label"])
             bundled_component = (package / "support/desktop/component.json").is_file()
@@ -2802,6 +2839,76 @@ def run(arguments):
                 "sidebar reverse keyboard navigation did not select shortcuts",
             )
             settings_page("常规")
+            themes = {
+                value: settings_control("设置：翻译浮层主题：" + label)
+                for value, label in (("system", "跟随系统"), ("light", "浅色"), ("dark", "深色"))
+            }
+            original_theme = json.loads(paths.settings.read_text()).get("Theme", "system")
+            general_area = Atspi.Component.get_extents(
+                settings_control("设置页：常规").get_component_iface(), Atspi.CoordType.SCREEN
+            )
+            for value, option in themes.items():
+                assert option.get_role() == Atspi.Role.RADIO_BUTTON
+                assert option.get_state_set().contains(Atspi.StateType.FOCUSABLE)
+                assert option.get_state_set().contains(Atspi.StateType.CHECKED) == (
+                    value == original_theme
+                )
+                area = Atspi.Component.get_extents(
+                    option.get_component_iface(), Atspi.CoordType.SCREEN
+                )
+                bounds(option, process.pid, (790, 560))
+                assert general_area.x <= area.x <= general_area.x + general_area.width - area.width
+                assert (
+                    general_area.y <= area.y <= general_area.y + general_area.height - area.height
+                ), "theme preview was clipped on the first general screen"
+            subprocess.run(
+                ["grim", str(arguments.output / "settings-general-790.png")],
+                check=True,
+                timeout=3,
+            )
+            selected_theme = "dark" if original_theme != "dark" else "light"
+            revision = status()["commandFeedbackRevision"]
+            assert Atspi.Component.grab_focus(themes[selected_theme].get_component_iface())
+            key("space")
+            wait_for(
+                lambda: json.loads(paths.settings.read_text())["Theme"] == selected_theme
+                and themes[selected_theme].get_state_set().contains(Atspi.StateType.CHECKED)
+                and status()["commandFeedbackRevision"] == revision + 1,
+                "native theme choice did not save one effective settings change",
+            )
+            settings_before_failure = paths.settings.read_bytes()
+            blocker = paths.settings.with_suffix(".json.tmp")
+            blocker.mkdir()
+            try:
+                assert Atspi.Component.grab_focus(themes[original_theme].get_component_iface())
+                key("space")
+                wait_for(
+                    lambda: "未保存" in text(settings_control("设置反馈"))
+                    and themes[selected_theme].get_state_set().contains(Atspi.StateType.CHECKED)
+                    and not themes[original_theme]
+                    .get_state_set()
+                    .contains(Atspi.StateType.CHECKED),
+                    "failed native theme choice did not roll back to the saved option",
+                )
+                assert paths.settings.read_bytes() == settings_before_failure
+                assert status()["commandFeedbackRevision"] == revision + 1
+            finally:
+                blocker.rmdir()
+            assert Atspi.Component.grab_focus(themes[original_theme].get_component_iface())
+            key("space")
+            wait_for(
+                lambda: json.loads(paths.settings.read_text())["Theme"] == original_theme
+                and themes[original_theme].get_state_set().contains(Atspi.StateType.CHECKED)
+                and (
+                    (feedback := named(process.pid, "设置反馈")) is None
+                    or not feedback.get_state_set().contains(Atspi.StateType.SHOWING)
+                ),
+                "theme choice could not retry after persistence recovered",
+            )
+            evidence.append(
+                "Three native theme radios fit the unscrolled 790 x 560 general page; keyboard choice "
+                "persists once, actual file failure restores the saved choice, and retry recovers"
+            )
             enabled = settings_control("设置：启用 TypeLay")
             wait_for(
                 lambda: enabled.get_state_set().contains(Atspi.StateType.SHOWING),
@@ -2850,8 +2957,7 @@ def run(arguments):
             assert status()["commandFeedbackRevision"] == revision + 1, (
                 "one keyboard switch activation persisted more than one settings change"
             )
-            assert "即时保存" in text(settings_control("设置保存范围"))
-            settings_control("保存修改")
+            assert named(process.pid, "设置保存范围") is None
             settings_page("快捷键")
             wake = settings_control("设置：唤醒翻译")
             direct = settings_control("设置：直接翻译替换")
@@ -2905,10 +3011,13 @@ def run(arguments):
             )
             activate_setting("保存修改")
             wait_for(
-                lambda: not status()["setup"]["settingsDraft"],
+                lambda: not status()["setup"]["settingsDraft"]
+                and (
+                    (feedback := named(process.pid, "设置反馈")) is None
+                    or not feedback.get_state_set().contains(Atspi.StateType.SHOWING)
+                ),
                 "saved shortcuts still appeared dirty",
             )
-            assert text(settings_control("设置反馈")) == "设置已保存"
             accept_key = settings_control("设置：接受译文")
             exit_key = settings_control("设置：退出当前翻译")
             assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 7)
