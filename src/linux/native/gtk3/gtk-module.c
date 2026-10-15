@@ -267,15 +267,28 @@ static void free_return(gpointer data) {
     if (pending->practice) json_object_unref(pending->practice);
     g_free(pending);
 }
-static gboolean private_return_current(PendingReturn *pending) {
+static gboolean private_return_identity(PendingReturn *pending) {
     Target *target = pending->target;
     return connection >= 0 && pending->connection == connection_generation
         && pending->generation == return_generation && target && !target->dead
-        && target == tl_focused() && target->focus_revision == pending->focus_revision
+        && target == tl_focused()
         && (gint64)target->input_revision == tl_integer(pending->basis, "inputRevision", -1)
         && (gint64)target->content_revision == tl_integer(pending->basis, "contentRevision", -1)
         && (gint64)target->im_state.context_generation == tl_integer(tl_object(pending->basis, "contextStamp"), "context", -1)
         && tl_overlay_private_return(target, pending->practice, FALSE);
+}
+static gboolean private_return_current(PendingReturn *pending) {
+    return pending->focus_revision != 0 && private_return_identity(pending)
+        && pending->target->focus_revision == pending->focus_revision;
+}
+static gboolean private_return_observed(PendingReturn *pending, gboolean ready, gint64 observed_at) {
+    if (!private_return_identity(pending) || tl_now() - observed_at > 150
+        || tl_now() > pending->until) return FALSE;
+    /* The first successful ReturnReady observes the IM focus transition too.
+     * Before it completes, the monotonic source/editor guard owns continuity,
+     * not a provisional revision captured before that observation. */
+    if (ready && !pending->focus_revision) pending->focus_revision = pending->target->focus_revision;
+    return !pending->focus_revision || pending->target->focus_revision == pending->focus_revision;
 }
 static JsonObject *return_reply(PendingReturn *pending, gboolean ready, gint64 observed_at,
         const char *phase, gboolean same) {
@@ -305,14 +318,14 @@ static gboolean await_return(gpointer data) {
     if (connection < 0 || pending->connection != connection_generation) return G_SOURCE_REMOVE;
     gint64 observed_at = tl_now();
     gboolean same = pending->generation == return_generation && !pending->target->dead
-        && (!pending->practice || private_return_current(pending))
+        && (!pending->practice || private_return_identity(pending))
         && tl_focused() == pending->target && tl_metadata_matches(pending->target, pending->basis)
         && (gint64)pending->target->content_revision == tl_integer(pending->basis, "contentRevision", -1)
         && (gint64)pending->target->input_revision == tl_integer(pending->basis, "inputRevision", -1);
     gboolean ready = same && tl_now() <= pending->until && tl_return_ready(pending->target, pending->basis);
-    // Metadata/IME calls can dispatch callbacks. A private F2 is never refreshed.
+    // Metadata/IME calls can dispatch callbacks. Establish F2 only once, after Ready.
     if (pending->practice)
-        same = same && private_return_current(pending) && tl_now() - observed_at <= 150;
+        same = same && private_return_observed(pending, ready, observed_at);
     ready = ready && same;
     if (!ready && same && tl_now() < pending->until) return G_SOURCE_CONTINUE;
     respond(pending->id, return_reply(pending, ready, observed_at,
@@ -498,11 +511,10 @@ static void command(JsonObject *frame) {
         gboolean focused = allowed && tl_configuration_current(tl_string(data, "generation"))
             && tl_session_matches(tl_object(basis, "sessionBindings")) && tl_return(target, basis);
         PendingReturn state = {.target = target, .basis = basis, .practice = practice, .id = id,
-            .until = tl_now() + 450, .connection = owner, .generation = generation,
-            .focus_revision = focused && target ? target->focus_revision : 0};
-        gboolean same = !practice || (focused && private_return_current(&state));
+            .until = tl_now() + 450, .connection = owner, .generation = generation};
+        gboolean same = !practice || (focused && private_return_identity(&state));
         gboolean ready = focused && same && tl_return_ready(target, basis);
-        if (practice) same = same && private_return_current(&state) && tl_now() - observed_at <= 150;
+        if (practice) same = same && private_return_observed(&state, ready, observed_at);
         ready = ready && same;
         if (focused && same && !ready) {
             PendingReturn *pending = g_new0(PendingReturn, 1);
@@ -510,7 +522,7 @@ static void command(JsonObject *frame) {
             pending->basis = tl_copy(basis);
             pending->practice = practice ? tl_copy(practice) : NULL;
             /* Poll the existing bounded provider observation, never infer Clear.
-             * The private source-focus revision is fixed before this wait. */
+             * The private family guard remains monotonic until the first Ready. */
             g_timeout_add_full(G_PRIORITY_DEFAULT, 10, await_return, pending, free_return);
             return;
         }
