@@ -1,56 +1,95 @@
-name: Isolated glossary feasibility probe
+name: Isolated small-model feasibility probe
 on:
   push:
     branches: [work/glossary-probe]
 permissions:
   contents: read
-  actions: read
 jobs:
   probe:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    container: archlinux:base
     steps:
-      - name: Install existing component installer prerequisites
-        run: pacman -Syu --noconfirm git python uv curl unzip icu openssl zlib
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Verify and unpack the existing official candidate
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - name: Resolve and install hashed CPU-only experimental dependencies
+        id: dependencies
+        timeout-minutes: 6
         shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/qwen-probe
+          python -m venv .probe-venv
+          cat > artifacts/qwen-probe/requirements.in <<'PINS'
+          ctranslate2==4.8.2
+          transformers==4.56.2
+          torch @ https://download-r2.pytorch.org/whl/cpu/torch-2.8.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl#sha256=cb9a8ba8137ab24e36bf1742cb79a1294bd374db570f09fc15a5e1318160db4e
+          numpy==2.3.5
+          PyYAML==6.0.3
+          Jinja2==3.1.6
+          PINS
+          .probe-venv/bin/python -m pip install --dry-run --ignore-installed --only-binary=:all: \
+            --index-url https://pypi.org/simple --report artifacts/qwen-probe/dependencies.json \
+            -r artifacts/qwen-probe/requirements.in
+          python - <<'PY'
+          import json, re
+          from pathlib import Path
+          from urllib.parse import urlsplit
+          root = Path('artifacts/qwen-probe')
+          entries = json.loads((root / 'dependencies.json').read_text())['install']
+          lines = []
+          for entry in entries:
+              name = entry['metadata']['name']
+              info = entry['download_info']
+              url = info['url'].split('#', 1)[0]
+              digest = info['archive_info']['hashes']['sha256']
+              assert re.fullmatch(r'[A-Za-z0-9_.-]+', name)
+              assert urlsplit(url).scheme == 'https'
+              assert urlsplit(url).hostname in ('files.pythonhosted.org', 'download-r2.pytorch.org')
+              assert re.fullmatch(r'[0-9a-f]{64}', digest)
+              lines.append(f'{name} @ {url} --hash=sha256:{digest}')
+          (root / 'requirements.lock').write_text('\n'.join(lines) + '\n')
+          PY
+          .probe-venv/bin/python -m pip install --require-hashes -r artifacts/qwen-probe/requirements.lock
+          .probe-venv/bin/python -c 'import torch; assert torch.__version__ == "2.8.0+cpu"; assert torch.version.cuda is None'
+      - name: Download and verify the fixed official 0.5B snapshot
+        id: download
+        timeout-minutes: 2
+        run: .probe-venv/bin/python experiments/glossary_probe.py --phase download --root artifacts/qwen-probe-runtime --output artifacts/qwen-probe/results.json
+      - name: Convert the local snapshot offline to CPU int8
+        id: convert
+        timeout-minutes: 6
+        run: .probe-venv/bin/python experiments/glossary_probe.py --phase convert --root artifacts/qwen-probe-runtime --output artifacts/qwen-probe/results.json
+      - name: Measure complete-sentence terminology and style outputs
+        id: infer
+        timeout-minutes: 4
+        run: .probe-venv/bin/python experiments/glossary_probe.py --phase infer --root artifacts/qwen-probe-runtime --output artifacts/qwen-probe/results.json
+      - name: Retain exact stage outcomes and resolved dependency lock
+        if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
+          DEPENDENCIES: ${{ steps.dependencies.outcome }}
+          DOWNLOAD: ${{ steps.download.outcome }}
+          CONVERT: ${{ steps.convert.outcome }}
+          INFER: ${{ steps.infer.outcome }}
         run: |
-          set -euo pipefail
-          mkdir -p artifacts/probe-runtime artifacts/glossary-probe
-          curl --fail --location \
-            -H "Authorization: Bearer $GH_TOKEN" \
-            -H 'Accept: application/vnd.github+json' \
-            https://api.github.com/repos/DingJWuyu/Typelay/actions/artifacts/11970206852/zip \
-            -o artifacts/probe-runtime/evidence.zip
-          echo 'ab1d7ca3d4d35d9e3f97f53dc47d62795baa993a85cfaa411d9d2f1524280e41  artifacts/probe-runtime/evidence.zip' | sha256sum -c -
-          unzip -p artifacts/probe-runtime/evidence.zip TypeLay-Linux-preview-x86_64.tar.gz > artifacts/probe-runtime/client.tar.gz
-          echo '597b08b59fd3dd6d557cbc43ddde603206924486c09135c5ab691686937307cd  artifacts/probe-runtime/client.tar.gz' | sha256sum -c -
-          tar -xzf artifacts/probe-runtime/client.tar.gz -C artifacts/probe-runtime
-      - name: Install the same checked local translation components
-        shell: bash
-        run: |
-          set -euo pipefail
-          package="$PWD/artifacts/probe-runtime/TypeLay-Linux-preview"
-          python "$package/desktop/setup.py" "$package" "$PWD/artifacts/probe-data" "$PWD/artifacts/probe-cache"
-      - name: Compare twelve synthetic sentences with the real model
-        shell: bash
-        run: |
-          set -euo pipefail
-          artifacts/probe-data/components/current/runtime/venv/bin/python \
-            experiments/glossary_probe.py \
-            --worker "$PWD/artifacts/probe-runtime/TypeLay-Linux-preview/worker" \
-            --models "$PWD/artifacts/probe-data/components/current/models" \
-            --output "$PWD/artifacts/glossary-probe/results.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path('artifacts/qwen-probe/results.json')
+          path.parent.mkdir(parents=True, exist_ok=True)
+          result = json.loads(path.read_text()) if path.exists() else {}
+          result['workflowStages'] = {key.lower(): os.environ[key] for key in ('DEPENDENCIES', 'DOWNLOAD', 'CONVERT', 'INFER')}
+          lock = path.with_name('requirements.lock')
+          result['resolvedDependencyLock'] = lock.read_text() if lock.exists() else None
+          path.write_text(json.dumps(result, ensure_ascii=False, indent=2))
+          PY
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: glossary-probe-${{ github.sha }}
-          path: artifacts/glossary-probe/results.json
+          name: small-model-probe-${{ github.sha }}
+          path: artifacts/qwen-probe/results.json
           if-no-files-found: warn
           retention-days: 7

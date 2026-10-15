@@ -1,13 +1,30 @@
-"""Temporary synthetic-sentence feasibility probe; never shipped with TypeLay."""
+"""Throwaway Qwen whole-sentence probe; never integrate into the TypeLay product."""
 
 import argparse
-import dataclasses
 import hashlib
 import json
+import os
+import platform
 import re
+import resource
+import shutil
+import subprocess
+import sys
 import time
+import urllib.request
 from pathlib import Path
 
+MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
+REVISION = "7ae557604adf67be50417f59c2c2f167def9a775"
+WEIGHT_SIZE = 988097824
+WEIGHT_SHA256 = "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
+RUNTIME = dict(device="cpu", compute_type="int8", intra_threads=2, inter_threads=1)
+EXPLANATION = re.compile(
+    r"^(sure\b|here(?:'s| is)\b|translation:|note:|explanation:|翻译[：:]|译文[：:]|说明[：:])",
+    re.I | re.M,
+)
+COPY_FILES = ["tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt", "LICENSE"]
+FILES = ["config.json", "generation_config.json", "model.safetensors", *COPY_FILES]
 CASES = [
     ("项目方确认了预算。", "zh", "en", None),
     ("我们已经把预算发给项目方。", "zh", "en", None),
@@ -27,153 +44,254 @@ CASES = [
     ("TypeLay and TypeLayer differ; this PR is APPROVED.", "en", "zh", None),
     ("然后请项目方检查 TypeLay。", "zh", "en", "My deliberate wording: 项目方 / TypeLay / PR."),
 ]
-ASCII_WORD = r"A-Za-z0-9_"
+STYLE_INPUT = "请在周五前回复这封邮件，确认你是否可以参加下周的项目会议。"
+STYLES = {
+    "formal": "formal",
+    "concise": "concise without omitting meaning",
+    "casual": "conversational",
+}
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--worker", type=Path, required=True)
-    parser.add_argument("--models", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
-    import sys
+def save(output, report):
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    sys.path.insert(0, str(args.worker.resolve(strict=True)))
-    from typelay_worker.engine import PROTECTED, LocalEngine, merge_manual
-    from typelay_worker.protocol import valid_text
 
-    engine = LocalEngine(args.models)
-    report = {
-        "packageCommit": "52faf423fa6e055e41af0238fbd8e67e8cc10b8a",
-        "packageArtifact": 11970206852,
-        "inventorySha256": hashlib.sha256(
-            (args.models / "installed.json").read_bytes()
-        ).hexdigest(),
-        "engineSha256": hashlib.sha256(
-            (args.worker / "typelay_worker/engine.py").read_bytes()
-        ).hexdigest(),
-        "scope": "Synthetic explicit zh/en directions only; no Auto, settings, learning, or product integration.",
-        "matching": "Case-sensitive; protected structure first; leftmost longest; ASCII word boundaries for Latin terms.",
-        "rules": {"global": {"TypeLay": "TypeLay", "PR": "PR"}, "zh-en": {"项目方": "client team"}},
-        "qualityVerdict": "Requires human sentence-by-sentence assessment; exact term preservation is not a quality pass.",
-        "cases": [],
+def file_info(path):
+    with path.open("rb") as stream:
+        return {
+            "bytes": path.stat().st_size,
+            "sha256": hashlib.file_digest(stream, "sha256").hexdigest(),
+        }
+
+
+def cpu_info():
+    blocks = Path("/proc/cpuinfo").read_text().strip().split("\n\n")
+    cpus = [
+        dict(line.split(":", 1) for line in block.splitlines() if ":" in line) for block in blocks
+    ]
+    cpus = [{key.strip(): value.strip() for key, value in cpu.items()} for cpu in cpus]
+    cores = {
+        (cpu["physical id"], cpu["core id"])
+        for cpu in cpus
+        if "physical id" in cpu and "core id" in cpu
     }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
+    return {
+        "modelNames": sorted({cpu.get("model name", "unknown") for cpu in cpus}),
+        "physicalCores": len(cores) or None,
+        "logicalCpus": os.cpu_count(),
+        "availableLogicalCpus": len(os.sched_getaffinity(0)),
+        "platform": platform.platform(),
+    }
 
-    def save():
-        args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    for index, (text, source, target, preserved) in enumerate(CASES, 1):
-        started = time.monotonic()
-        baseline = engine.translate(text, source, target, preserved)
-        baseline_ms = round((time.monotonic() - started) * 1000)
-        if baseline.status != "translated":
-            report["cases"].append(
-                {
-                    "id": f"{index:02}",
-                    "source": source,
-                    "target": target,
-                    "input": text,
-                    "preserved": preserved,
-                    "baseline": dataclasses.asdict(baseline),
-                    "baselineMs": baseline_ms,
-                    "comparison": "not-entered: production baseline did not translate",
-                }
-            )
-            save()
-            continue
-        span_started = time.monotonic()
-        rules = {"TypeLay": "TypeLay", "PR": "PR"}
-        if (source, target) == ("zh", "en"):
-            rules["项目方"] = "client team"
-        terms = sorted(rules, key=lambda term: (-len(term), term))
-        patterns = [
-            rf"(?<![{ASCII_WORD}]){re.escape(term)}(?![{ASCII_WORD}])"
-            if term.isascii()
-            else re.escape(term)
-            for term in terms
-        ]
-        matcher = re.compile("|".join(patterns))
-        pair = engine._pairs[(source, target)]
-        segments = []
+def download(root, stage, report, output):
+    snapshot = root / "snapshot"
+    snapshot.mkdir(parents=True, exist_ok=True)
+    disk_free = shutil.disk_usage(snapshot.parent).free
+    meminfo = Path("/proc/meminfo").read_text().splitlines()
+    memory_available = (
+        int(next(line for line in meminfo if line.startswith("MemAvailable:")).split()[1]) * 1024
+    )
+    stage["preflight"] = {
+        "diskFreeBytes": disk_free,
+        "memoryAvailableBytes": memory_available,
+        "diskBudgetBytes": 8 * 1024**3,
+        "memoryBudgetBytes": 6 * 1024**3,
+        "diskBudgetMet": disk_free >= 8 * 1024**3,
+        "memoryBudgetMet": memory_available >= 6 * 1024**3,
+    }
+    save(output, report)
+    if not stage["preflight"]["diskBudgetMet"]:
+        raise RuntimeError("insufficient-disk-budget")
+    stage["files"] = {}
+    for name in FILES:
+        url = f"https://huggingface.co/{MODEL}/resolve/{REVISION}/{name}"
+        temporary = snapshot / (name + ".part")
+        with urllib.request.urlopen(url, timeout=120) as response, temporary.open("wb") as stream:
+            shutil.copyfileobj(response, stream, length=1024 * 1024)
+        info = file_info(temporary)
+        if name == "model.safetensors" and info != {"bytes": WEIGHT_SIZE, "sha256": WEIGHT_SHA256}:
+            raise ValueError("model-weight-integrity-mismatch")
+        temporary.replace(snapshot / name)
+        stage["files"][name] = {"url": url, **info}
+        save(output, report)
 
-        def append(kind, value, start):
-            if not value:
-                return
-            if kind == "term":
-                translated = rules[value]
-            elif kind == "structure" or not value.strip() or not any(c.isalpha() for c in value):
-                translated = value
-            else:
-                leading = value[: len(value) - len(value.lstrip())]
-                trailing = value[len(value.rstrip()) :]
-                translated = leading + pair.translate(value.strip()).strip() + trailing
-            segments.append(
-                {
-                    "kind": kind,
-                    "start": start,
-                    "end": start + len(value),
-                    "source": value,
-                    "output": translated,
-                }
-            )
 
-        def ordinary(value, offset):
-            cursor = 0
-            for match in matcher.finditer(value):
-                append("translated", value[cursor : match.start()], offset + cursor)
-                append("term", match.group(), offset + match.start())
-                cursor = match.end()
-            append("translated", value[cursor:], offset + cursor)
+def convert(root, stage):
+    # Official v4.8.2 module exposes __main__; no remote code or low-memory/accelerate path.
+    command = [sys.executable, "-m", "ctranslate2.converters.transformers"]
+    command += ["--model", str(root / "snapshot"), "--quantization", "int8"]
+    command += ["--output_dir", str(root / "ct2"), "--copy_files", *COPY_FILES]
+    stage["command"] = command
+    process = subprocess.Popen(command)
+    _, status, usage = os.wait4(process.pid, 0)
+    process.returncode = os.waitstatus_to_exitcode(status)
+    stage.update({"childPeakRssKiB": usage.ru_maxrss, "returnCode": process.returncode})
+    if process.returncode:
+        raise subprocess.CalledProcessError(process.returncode, command)
+    stage["files"] = {p.name: file_info(p) for p in sorted((root / "ct2").iterdir()) if p.is_file()}
 
-        cursor = 0
-        for protected in PROTECTED.finditer(text):
-            ordinary(text[cursor : protected.start()], cursor)
-            append("structure", protected.group(), protected.start())
-            cursor = protected.end()
-        ordinary(text[cursor:], cursor)
-        raw = "".join(segment["output"] for segment in segments)
-        spaced = ""
-        previous = None
-        for segment in segments:
-            value = segment["output"]
-            if (
-                previous
-                and "structure" not in (previous["kind"], segment["kind"])
-                and "term" in (previous["kind"], segment["kind"])
-                and spaced[-1:].isascii()
-                and spaced[-1:].isalnum()
-                and value[:1].isascii()
-                and value[:1].isalnum()
-            ):
-                spaced += " "
-            spaced += value
-            previous = segment
-        if not valid_text(raw) or not valid_text(spaced):
-            raise ValueError("invalid-candidate-output")
-        if preserved is not None:
-            raw = merge_manual(preserved, raw)
-            spaced = merge_manual(preserved, spaced)
-        report["cases"].append(
+
+def infer(root, stage, report, output):
+    cold_started = time.perf_counter()
+    import ctranslate2
+    import transformers
+
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        root / "snapshot", local_files_only=True, trust_remote_code=False
+    )
+    generator = ctranslate2.Generator(str(root / "ct2"), **RUNTIME)
+    stage["coldLoadMs"] = round((time.perf_counter() - cold_started) * 1000, 3)
+    stage["coldLoadScope"] = (
+        "Dependency imports, local tokenizer and CT2 model load; OS cache not flushed."
+    )
+    stage["versions"] = {
+        "python": platform.python_version(),
+        "ctranslate2": ctranslate2.__version__,
+        "transformers": transformers.__version__,
+    }
+    eos_ids = json.loads((root / "snapshot/generation_config.json").read_text())["eos_token_id"]
+    if isinstance(eos_ids, int):
+        eos_ids = [eos_ids]
+    eos_tokens = tokenizer.convert_ids_to_tokens(eos_ids)
+    stage["eosTokenIds"] = eos_ids
+    stage["eosTokens"] = eos_tokens
+    stage["actualComputeType"] = generator.compute_type
+    report["runs"] = []
+    jobs = [
+        (f"{i:02}", case, variant, None)
+        for i, case in enumerate(CASES, 1)
+        for variant in ("baseline", "glossary")
+    ]
+    jobs += [("style", (STYLE_INPUT, "zh", "en", None), "style", style) for style in STYLES]
+    save(output, report)
+    for case_id, (text, source, target, prefix), variant, style in jobs:
+        languages = {"zh": "Chinese", "en": "English"}
+        system = (
+            f"Translate the user's complete text from {languages[source]} to {languages[target]}. "
+            "Return only the translation, without explanations or headings. Preserve meaning and "
+            "negation. Preserve URLs, @mentions, #references and line breaks."
+        )
+        if variant == "glossary":
+            system += " Terminology rules: preserve the exact standalone terms TypeLay and PR. Do not apply these rules inside longer words."
+            if (source, target) == ("zh", "en"):
+                system += " Translate 项目方 as client team."
+        if style:
+            system += f" Use {STYLES[style]} wording."
+        # The manual prefix is never included in messages or rewritten by the model.
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": text}]
+        started = time.perf_counter()
+        prompt_ids = tokenizer.apply_chat_template(
+            messages, tokenize=True, add_generation_prompt=True
+        )
+        prompt_tokens = tokenizer.convert_ids_to_tokens(prompt_ids)
+        result = generator.generate_batch(
+            [prompt_tokens],
+            max_length=256,
+            beam_size=1,
+            sampling_topk=1,
+            end_token=eos_tokens,
+            return_end_token=True,
+            include_prompt_in_result=False,
+        )[0]
+        generated_ids = tokenizer.convert_tokens_to_ids(result.sequences[0])
+        raw = tokenizer.decode(
+            generated_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False
+        )
+        generated = tokenizer.decode(
+            generated_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
+        eos_reached = bool(generated_ids and generated_ids[-1] in eos_ids)
+        merged = generated
+        if prefix is not None:
+            separator = "" if prefix[-1:].isspace() or generated[:1].isspace() else " "
+            merged = prefix + separator + generated
+        report["runs"].append(
             {
-                "id": f"{index:02}",
+                "caseId": case_id,
+                "variant": variant,
+                "style": style,
                 "source": source,
                 "target": target,
                 "input": text,
-                "preserved": preserved,
-                "baseline": dataclasses.asdict(baseline),
-                "rawSpan": raw,
-                "spacedSpan": spaced,
-                "segments": segments,
-                "baselineMs": baseline_ms,
-                "spanInferenceAndJoinMs": round((time.monotonic() - span_started) * 1000),
+                "manualPrefix": prefix,
+                "systemPrompt": system,
+                "rawGeneratedText": raw,
+                "generatedText": generated,
+                "mergedText": merged,
+                "promptTokens": len(prompt_ids),
+                "generatedTokensIncludingEos": len(generated_ids),
+                "eosReached": eos_reached,
+                "hitMaxTokens": len(generated_ids) >= 256,
+                "truncated": len(generated_ids) >= 256 and not eos_reached,
+                "tokenizationThroughDecodeMs": elapsed_ms,
+                "inputVerbatimInOutput": text in generated,
+                "systemPromptVerbatimInOutput": system in generated,
+                "chatRoleMarkerInOutput": "<|im_start|>" in raw,
+                "explanationMarker": bool(EXPLANATION.search(generated)),
                 "manualAssessment": "pending",
-                "elapsedMs": round((time.monotonic() - started) * 1000),
             }
         )
-        save()
-    report["completedCases"] = len(report["cases"])
-    save()
+        stage["completedGenerations"] = len(report["runs"])
+        stage["selfPeakRssKiB"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        save(output, report)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--phase", choices=("download", "convert", "infer"), required=True)
+    parser.add_argument("--root", type=Path, default=Path("artifacts/qwen-probe-runtime"))
+    parser.add_argument("--output", type=Path, default=Path("artifacts/qwen-probe/results.json"))
+    args = parser.parse_args()
+    report = {
+        "model": MODEL,
+        "revision": REVISION,
+        "runtime": RUNTIME,
+        "scope": "Synthetic complete sentences; no product integration or quality claims.",
+        "timingNote": "No TTFT. Sentence latency includes tokenization through decoding.",
+        "rules": {"global": {"TypeLay": "TypeLay", "PR": "PR"}, "zh-en": {"项目方": "client team"}},
+        "generation": dict(max_length=256, beam_size=1, sampling_topk=1),
+        "qualityVerdict": "Human review pending; echo/explanation marker checks are incomplete.",
+        "stages": {},
+    }
+    stage = {"status": "running"}
+    report["stages"][args.phase] = stage
+    started = time.perf_counter()
+    try:
+        if args.output.exists() and args.phase != "download":
+            report = json.loads(args.output.read_text())
+            report["stages"][args.phase] = stage
+        if sys.platform != "linux":
+            raise RuntimeError("linux-required-for-rss-measurements")
+        stage["cpu"] = cpu_info()
+        save(args.output, report)
+        if args.phase == "download":
+            download(args.root, stage, report, args.output)
+        else:
+            os.environ.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
+            os.environ.update(
+                OMP_NUM_THREADS="2", MKL_NUM_THREADS="2", TOKENIZERS_PARALLELISM="false"
+            )
+            previous = "download" if args.phase == "convert" else "convert"
+            if report["stages"].get(previous, {}).get("status") != "completed":
+                raise RuntimeError("previous-phase-not-completed")
+            if args.phase == "convert":
+                convert(args.root, stage)
+            else:
+                infer(args.root, stage, report, args.output)
+        stage["status"] = "completed"
+    except Exception as error:
+        stage.update(
+            {"status": "failed", "errorType": type(error).__name__, "error": "probe-stage-failed"}
+        )
+        raise
+    finally:
+        stage["elapsedMs"] = round((time.perf_counter() - started) * 1000, 3)
+        if args.phase == "infer":
+            stage["selfPeakRssKiB"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        save(args.output, report)
 
 
 if __name__ == "__main__":
