@@ -118,6 +118,10 @@ class PracticeSession:
                 await self.retire()
                 return None
             automatic = self.lesson == "automatic"
+            if automatic and self.input.practice_editing(self.run):
+                # The editor keeps progress only. No describe, source-ready
+                # observation or rebind may turn this intent back into authority.
+                return progress if progress.get("target") == self.target else None
             continuing = automatic and self.input.practice_waiting(
                 self.run, acknowledged=False, require_fresh=False
             )

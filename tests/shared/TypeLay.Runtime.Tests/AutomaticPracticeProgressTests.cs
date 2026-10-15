@@ -32,6 +32,32 @@ public sealed class AutomaticPracticeProgressTests
         Assert.Empty(s.Service.Writes);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void OwnedEditorHandoffDoesNotReadTheSourceAndExpiresWithoutRealEditorFocus(bool focused)
+    {
+        using var s = new SessionScenario();
+        Bind(s);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        int captures = s.Service.Captures;
+        s.Tick(499);
+        Assert.Equal(captures, s.Service.Captures);
+        Assert.Equal(SessionState.EditingTranslation, s.View.State);
+        Assert.Null(s.Input.Permit);
+        s.Input.InEditor = focused;
+        s.Tick(1);
+        Assert.Equal(captures, s.Service.Captures);
+        if (focused)
+        {
+            Assert.NotNull(s.Controller.AutomaticPracticeProgress);
+            Assert.Equal(SessionState.EditingTranslation, s.View.State);
+        }
+        else
+            Assert.Null(s.Controller.AutomaticPracticeProgress);
+    }
+
     [Fact]
     public void EditingNeedsARealChangeFreshSourceReturnAndASecondVerifiedAcceptance()
     {

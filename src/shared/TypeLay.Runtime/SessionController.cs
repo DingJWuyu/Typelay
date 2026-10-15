@@ -411,6 +411,20 @@ public sealed partial class SessionController : IDisposable
             _permitUntil = 0;
             return;
         }
+        // A private handoff is bounded by the existing edit deadline. Do not
+        // read an unfocused source while GTK is still transferring its IM context.
+        if (_ownedPractice is not null && _editTransitionUntil != 0
+            && _session.State == SessionState.EditingTranslation && _session.Current is { } handoffSource)
+        {
+            if (_hook.GetFocus(handoffSource.Target) == FocusMember.Overlay)
+                _editTransitionUntil = 0;
+            else
+            {
+                if (now >= _editTransitionUntil)
+                    StopSession("practice-editor-timeout");
+                return;
+            }
+        }
         // The editor owns focus and its saved source basis until the user returns.
         // Chromium may expose no source selection when another window has focus.
         // Revalidate the source on return instead of polling an unfocused TextPattern.

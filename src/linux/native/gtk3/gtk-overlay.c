@@ -11,12 +11,20 @@ static struct {
     GtkCssProvider *css, *geometry_css;
     JsonObject *view, *authority;
     gulong focus_handler, active_handler;
-    gboolean setting_text, composing, focused, expanded, pending_edit, pending_resume;
+    gboolean setting_text, composing, focused, expanded, pending_edit, pending_resume, private_editor;
     char *generation;
     gint edit_offset, body_height, body_duration;
     gint64 revision, expires;
     guint expiry_timer;
 } overlay;
+
+/* Only the synchronous grab_focus call owns this proof. Keep its monotonic
+ * failure outside overlay: hide/destroy clears overlay and must not revive it. */
+typedef struct {
+    GtkWidget *source, *editor, *top;
+    gboolean failed;
+} EditHandoff;
+static EditHandoff *edit_handoff;
 
 static gboolean boolean(JsonObject *object, const char *key) {
     JsonNode *node = object ? json_object_get_member(object, key) : NULL;
@@ -112,14 +120,43 @@ void tl_overlay_sync(void) {
         emit_boolean("focus", focused);
     }
 }
+static void emit_editor_focus(GtkWidget *widget) {
+    const char *family = !active() || !widget ? "Other"
+        : widget == overlay.target->widget ? "Source"
+        : widget == overlay.text ? "Overlay" : "Other";
+    JsonObject *event = json_object_new();
+    json_object_set_string_member(event, "target", overlay.target->id);
+    json_object_set_string_member(event, "operation", "focus");
+    json_object_set_int_member(event, "revision", overlay.revision);
+    json_object_set_string_member(event, "generation", overlay.generation);
+    json_object_set_boolean_member(event, "value", strcmp(family, "Overlay") == 0);
+    json_object_set_string_member(event, "family", family);
+    tl_send_event("ui", event);
+}
 static void focus_changed(GtkWindow *window, GtkWidget *widget, gpointer data) {
-    (void)window; (void)widget; (void)data;
+    (void)data;
+    /* set-focus's argument is the destination. GTK internally clears its old
+     * focus pointer during transfer; that transient NULL is not set-focus(NULL). */
+    if (edit_handoff && GTK_WIDGET(window) == edit_handoff->top
+        && widget != edit_handoff->source && widget != edit_handoff->editor)
+        edit_handoff->failed = TRUE;
+    if ((edit_handoff || overlay.private_editor) && overlay.target) {
+        emit_editor_focus(widget);
+        if (!widget || (widget != overlay.target->widget && widget != overlay.text)) {
+            tl_overlay_hide();
+            return;
+        }
+    }
     tl_overlay_sync();
     if (active() && tl_focused() != overlay.target && (paused() || tl_focused())) tl_overlay_hide();
 }
 static void active_changed(GObject *object, GParamSpec *property, gpointer data) {
     (void)object; (void)property; (void)data;
-    if (!active()) tl_overlay_hide();
+    if (!active()) {
+        if (edit_handoff) edit_handoff->failed = TRUE;
+        if ((edit_handoff || overlay.private_editor) && overlay.target) emit_editor_focus(NULL);
+        tl_overlay_hide();
+    }
 }
 static gboolean expired(gpointer data) {
     (void)data;
@@ -132,6 +169,7 @@ static gboolean expired(gpointer data) {
     return G_SOURCE_CONTINUE;
 }
 void tl_overlay_hide(void) {
+    if (edit_handoff) edit_handoff->failed = TRUE;
     /* Clear state before destroy: source destruction and GTK callbacks are reentrant. */
     if (overlay.focused) emit_boolean("focus", FALSE);
     if (overlay.popover) emit_boolean("visible", FALSE);
@@ -552,8 +590,20 @@ static gboolean render(Target *target, JsonObject *data) {
     tl_overlay_sync();
     return TRUE;
 }
+static gboolean handoff_source_current(Target *target, JsonObject *proof) {
+    JsonObject *token = tl_object(proof, "token");
+    JsonObject *current = tl_object(tl_object(overlay.view, "viewContext"), "token");
+    return target && !target->dead && overlay.target == target && active()
+        && token && current && json_object_equal(token, current)
+        && tl_focused() == target
+        && (gint64)target->focus_revision == tl_integer(proof, "nativeFocusRevision", -1)
+        && tl_integer(proof, "contextGeneration", 0) > 0
+        && (gint64)target->im_state.context_generation == tl_integer(proof, "contextGeneration", -1)
+        && (gint64)target->input_revision == tl_integer(overlay.authority, "inputRevision", -1)
+        && (gint64)target->content_revision == tl_integer(overlay.authority, "contentRevision", -1);
+}
 JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject *data) {
-    gboolean visible = FALSE;
+    gboolean visible = FALSE, handoff = FALSE;
     if (strcmp(operation, "overlay-hide") != 0 && !tl_configuration_current(tl_string(data, "generation")))
         goto finished;
     if (strcmp(operation, "overlay-render") == 0) {
@@ -592,6 +642,9 @@ JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject
             && tl_view_context_matches(target, overlay.view)
             && boolean(tl_object(overlay.view, "viewContext"), "canEdit")
             && g_strcmp0(tl_string(overlay.view, "state"), "EditingTranslation") == 0) {
+            JsonObject *proof = tl_object(data, "practiceHandoff");
+            if (json_object_has_member(data, "practiceHandoff")
+                && (!proof || edit_handoff || !handoff_source_current(target, proof))) goto finished;
             GtkWidget *editor = g_object_ref(overlay.text);
             GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(editor));
             GtkTextIter position;
@@ -600,7 +653,30 @@ JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject
             if (overlay.text == editor && overlay.target == target
                 && overlay.revision == tl_integer(data, "revision", -1)
                 && tl_configuration_current(tl_string(data, "generation"))
-                && tl_view_context_matches(target, overlay.view)) gtk_widget_grab_focus(editor);
+                && tl_view_context_matches(target, overlay.view)
+                && (!proof || handoff_source_current(target, proof))) {
+                EditHandoff guard = {target->widget, editor, overlay.top, FALSE};
+                guint64 input_revision = target->input_revision, content_revision = target->content_revision;
+                JsonObject *view = json_object_ref(overlay.view);
+                if (proof) edit_handoff = &guard;
+                gtk_widget_grab_focus(editor);
+                if (proof) {
+                    handoff = !guard.failed && overlay.view == view && overlay.target == target
+                        && !target->dead && overlay.text == editor && overlay.top == guard.top
+                        && overlay.revision == tl_integer(data, "revision", -1)
+                        && g_strcmp0(overlay.generation, tl_string(data, "generation")) == 0
+                        && tl_configuration_current(overlay.generation) && active()
+                        /* Focus-only callbacks advance focus_revision, but any
+                         * input/context binding invalidation advances input_revision. */
+                        && target->input_revision == input_revision
+                        && target->content_revision == content_revision
+                        && (gint64)target->im_state.context_generation == tl_integer(proof, "contextGeneration", -1)
+                        && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == editor;
+                    edit_handoff = NULL;
+                    overlay.private_editor = handoff;
+                }
+                json_object_unref(view);
+            }
             g_object_unref(editor);
         }
         overlay.pending_edit = FALSE;
@@ -624,6 +700,8 @@ finished:;
     JsonObject *reply = json_object_new();
     json_object_set_boolean_member(reply, "visible", visible || (overlay.popover && gtk_widget_get_visible(overlay.popover)));
     json_object_set_boolean_member(reply, "editing", overlay.text && gtk_text_view_get_editable(GTK_TEXT_VIEW(overlay.text)));
+    if (strcmp(operation, "overlay-edit") == 0 && data && json_object_has_member(data, "practiceHandoff"))
+        json_object_set_boolean_member(reply, "handoff", handoff);
     return reply;
 }
 gboolean tl_overlay_key(guint keyval, GdkModifierType state) {

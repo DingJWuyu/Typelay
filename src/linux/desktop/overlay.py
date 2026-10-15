@@ -208,7 +208,9 @@ class Overlay:
                 self.editing = self.acceptance_ready = False
                 self.input.set_overlay_focus(False)
         elif operation == "focus":
-            self.input.set_overlay_focus(value is True and peer is self.input.focused_peer())
+            editor = self.input.practice_editor
+            if not editor or editor["phase"] == "editor":
+                self.input.set_overlay_focus(value is True and peer is self.input.focused_peer())
         elif operation == "beginEdit":
             self.tasks(self.begin_edit(peer, event["target"], token))
         elif operation == "settings":
@@ -225,6 +227,9 @@ class Overlay:
             self.host.send(operation, value)
 
     async def begin_edit(self, peer, target, token):
+        authorization = self.input.practice_authorization
+        editor = None
+        deadline = now_ms() + 500
         try:
             record = self.current_record()
             acknowledgement = self.input.current_session_acknowledgement(record)
@@ -262,6 +267,10 @@ class Overlay:
                 or self.value.get("state") != "EditingTranslation"
             ):
                 return
+            if authorization is not None:
+                editor = self.input.begin_practice_edit(authorization, editor_token, deadline)
+                if editor is None:
+                    return
             # The state transition's render precedes the reply on the host channel;
             # flush it before asking GTK to focus its editor. No source text is changed.
             value, revision = self.value, self.revision
@@ -283,17 +292,46 @@ class Overlay:
                 and self.session_token() == editor_token
                 and self.current_record() is not None
             ):
-                peer.link.command(
-                    "overlay-edit",
-                    {
-                        "target": target,
-                        "allowed": True,
-                        "revision": revision,
-                        "generation": editor_token["commandGeneration"],
-                    },
-                )
+                command = {
+                    "target": target,
+                    "allowed": True,
+                    "revision": revision,
+                    "generation": editor_token["commandGeneration"],
+                }
+                if editor is None:
+                    peer.link.command("overlay-edit", command)
+                elif await self.input.revoke_practice_editor(editor):
+                    if (
+                        self.value is not value
+                        or self.revision != revision
+                        or self.peer is not peer
+                        or self.session_token() != editor_token
+                    ):
+                        return
+                    editor["phase"] = "focusing"
+                    reply = await peer.link.ask(
+                        "overlay-edit",
+                        {
+                            **command,
+                            "practiceHandoff": {
+                                "token": editor_token,
+                                "nativeFocusRevision": editor["nativeFocusRevision"],
+                                "contextGeneration": editor["contextGeneration"],
+                            },
+                        },
+                    )
+                    if (
+                        self.value is value
+                        and self.revision == revision
+                        and self.peer is peer
+                        and self.session_token() == editor_token
+                    ):
+                        self.input.complete_practice_edit(editor, reply)
         except (OSError, EOFError, TimeoutError):
             self.conceal("transport-unavailable")
+        finally:
+            if editor is not None and editor["phase"] != "editor":
+                self.input.retire_practice(editor["runId"])
 
     async def set_languages(self, value):
         if self.settings and isinstance(value, dict):

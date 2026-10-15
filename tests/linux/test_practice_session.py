@@ -84,6 +84,7 @@ class InputPort:
         self.continuing = False
         self.foreground_fresh = True
         self.binding_reads = 0
+        self.editing = False
 
     async def practice_target(self, pid, target=None):
         return dict(self.target) if self.available else None
@@ -102,6 +103,9 @@ class InputPort:
 
     def practice_waiting(self, run, *, acknowledged=True, require_fresh=True):
         return self.continuing and self.retired == run
+
+    def practice_editing(self, run):
+        return self.editing
 
     def fresh(self):
         return self.foreground_fresh
@@ -127,6 +131,23 @@ class PracticeSessionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.host, self.input, self.owner = Host(), InputPort(), Ownership()
         self.practice = PracticeSession(self.host, self.input, self.owner)
+
+    async def test_editor_progress_never_reads_or_rebinds_the_source(self):
+        self.assertTrue(await self.practice.begin(100, False, lesson="automatic"))
+        self.host.progress = {"runId": self.practice.run, "target": None, "completed": False}
+        self.assertIsNotNone(await self.practice.progress(100, lesson="automatic"))
+        reads = self.input.binding_reads
+        binds = sum(name == "bindAutomaticPractice" for name, _ in self.host.requests)
+        self.input.editing = True
+        self.input.available = False
+        self.host.progress["editingStarted"] = True
+        progress = await self.practice.progress(100, lesson="automatic")
+        self.assertTrue(progress["editingStarted"])
+        self.assertEqual(self.input.binding_reads, reads)
+        self.assertEqual(
+            sum(name == "bindAutomaticPractice" for name, _ in self.host.requests), binds
+        )
+        self.assertFalse(progress["completed"])
 
     async def start(self, *, completed=False):
         self.assertTrue(await self.practice.begin(100, False))

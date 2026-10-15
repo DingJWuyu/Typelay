@@ -1287,6 +1287,188 @@ class InputFeedbackTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def owned_edit_handoff(self, invalidation=None):
+        async def exercise():
+            self.peer = self.connect_peer("gtk3")
+            original = self.description
+
+            def description():
+                value = original()
+                value["geometry"]["space"] = "gtk-toplevel"
+                value["authority"]["contextStamp"] = {"context": 7}
+                return value
+
+            self.description = description
+            overlay, jobs, token, view = await self.overlay_scenario()
+            binding = {
+                "runId": str(uuid.uuid4()),
+                "target": token["target"],
+                "connectionId": self.peer.connection_id,
+                "commandGeneration": self.generation,
+                "nativeFocusRevision": 1,
+                "contextGeneration": 7,
+            }
+            self.assertTrue(self.authorize_practice(binding, lambda _: True))
+            retired = []
+            self.input.practice_retired = retired.append
+            updated = {**token, "revision": 10}
+
+            async def begin_edit(_request):
+                overlay.render(
+                    {
+                        **view,
+                        "state": "EditingTranslation",
+                        "viewContext": {**view["viewContext"], "token": updated},
+                    }
+                )
+                return {"allowed": True, "token": updated}
+
+            self.host.begin_edit = begin_edit
+            self.peer.event(
+                "ui",
+                {
+                    "operation": "beginEdit",
+                    "target": "ordinary-field",
+                    "revision": overlay.revision,
+                    "generation": self.generation,
+                },
+            )
+            revoke = edit = None
+            async with asyncio.timeout(1):
+                while any(not task.done() for task in jobs):
+                    await asyncio.sleep(0)
+                    for frame in self.native_frames(self.peer):
+                        if frame["op"] == "overlay-render":
+                            self.peer.link.receive(
+                                {"id": frame["id"], "data": {"visible": True, "editing": True}}
+                            )
+                        elif frame["op"] == "revoke" and frame["id"]:
+                            revoke = frame
+                            self.assertFalse(
+                                self.input.practice_publication_allowed(
+                                    {"source": {"target": token["target"]}}, self.peer
+                                )
+                            )
+                            self.peer.link.receive(
+                                {
+                                    "id": frame["id"],
+                                    "data": False if invalidation == "revoke" else None,
+                                }
+                            )
+                        elif frame["op"] == "overlay-edit":
+                            edit = frame
+                            self.assertIsNotNone(revoke)
+                            self.assertGreater(frame["id"], 0)
+                            self.peer.event(
+                                "input",
+                                {
+                                    "target": "ordinary-field",
+                                    "textChanged": False,
+                                    "focusChanged": True,
+                                    "focused": False,
+                                },
+                            )
+                            self.assertEqual(retired, [])
+                            if invalidation == "other":
+                                self.peer.event(
+                                    "ui",
+                                    {
+                                        "operation": "focus",
+                                        "target": "ordinary-field",
+                                        "revision": overlay.revision,
+                                        "generation": self.generation,
+                                        "family": "Other",
+                                        "value": False,
+                                    },
+                                )
+                            elif invalidation == "close":
+                                self.input.retire_practice(binding["runId"])
+                            self.peer.link.receive(
+                                {
+                                    "id": frame["id"],
+                                    "data": {"visible": True, "editing": True, "handoff": True},
+                                }
+                            )
+                for task in jobs:
+                    task.result()
+            self.assertIsNotNone(revoke)
+            if invalidation == "revoke":
+                self.assertIsNone(edit)
+            else:
+                self.assertIsNotNone(edit)
+            if invalidation:
+                self.assertEqual(retired, [binding["runId"]])
+                self.assertFalse(self.input.practice_editing(binding["runId"]))
+                self.assertFalse(
+                    self.input.practice_publication_allowed(
+                        {
+                            "source": {"target": token["target"]},
+                            "practiceRunId": binding["runId"],
+                            "practiceConnectionId": binding["connectionId"],
+                            "commandGeneration": self.generation,
+                        },
+                        self.peer,
+                    )
+                )
+                self.assertFalse(self.input.prepare_practice(binding, lambda _: True))
+                return
+            self.assertEqual(retired, [])
+            self.assertEqual(self.input.focus(), "Overlay")
+            self.peer.event(
+                "ui",
+                {
+                    "operation": "draft",
+                    "target": "ordinary-field",
+                    "revision": overlay.revision,
+                    "generation": self.generation,
+                    "value": "actually changed draft",
+                },
+            )
+            self.assertIn(("draft", "actually changed draft"), self.host.events)
+            self.peer.event(
+                "ui",
+                {
+                    "operation": "focus",
+                    "target": "ordinary-field",
+                    "revision": overlay.revision,
+                    "generation": self.generation,
+                    "value": False,
+                    "family": "Source",
+                },
+            )
+            self.assertFalse(
+                self.input.practice_publication_allowed(
+                    {"source": {"target": token["target"]}}, self.peer
+                )
+            )
+            self.assertFalse(self.input.prepare_practice(binding, lambda _: True))
+            # The editing ACK is not a whole-run retirement receipt.
+            ending = asyncio.create_task(self.input.request("retireAutomaticPractice", binding))
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            final_revoke = [
+                frame
+                for frame in self.native_frames(self.peer)
+                if frame["op"] == "revoke" and frame["id"]
+            ]
+            self.assertEqual(len(final_revoke), 1)
+            self.peer.link.receive({"id": final_revoke[0]["id"], "data": None})
+            self.assertTrue(await ending)
+
+        asyncio.run(exercise())
+
+    def test_owned_edit_handoff_waits_for_revoke_and_never_restores_source_authority(self):
+        self.owned_edit_handoff()
+
+    def test_owned_edit_handoff_rejects_a_late_success_after_third_party_focus(self):
+        self.owned_edit_handoff("other")
+
+    def test_owned_edit_handoff_rejects_a_late_success_after_close(self):
+        self.owned_edit_handoff("close")
+
+    def test_owned_edit_handoff_requires_the_native_revoke_ack_shape(self):
+        self.owned_edit_handoff("revoke")
+
     def test_old_begin_edit_reply_cannot_enter_a_new_same_target_session(self):
         async def exercise():
             overlay, jobs, token, view = await self.overlay_scenario()

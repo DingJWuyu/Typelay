@@ -18,7 +18,10 @@ internal sealed class BrowserWindows
     private readonly Dictionary<int, Process> _processes = new();
     private readonly DateTime _startedAt;
     private readonly string _title;
-    public int TotalWindowCount { get; private set; }
+    public int TotalWindowCount
+    {
+        get; private set;
+    }
 
     public BrowserWindows(Process root, string title)
     {
