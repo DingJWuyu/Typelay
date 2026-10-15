@@ -88,6 +88,120 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
     def latest(self, name):
         return next(value["data"] for value in reversed(self.events) if value.get("event") == name)
 
+    async def bind_automatic_practice(self):
+        # Exercise the actual C# private-pipe contract without starting a model
+        # or claiming that these supplied observations prove a native desktop.
+        self.assertTrue(
+            await self.ask("settings", {"enabled": True, "mode": "Automatic", "theme": "dark"})
+        )
+        run = str(uuid.uuid4())
+        self.assertTrue(await self.ask("beginAutomaticPractice", run))
+        target = {
+            "backend": "linux-gtk3",
+            "value": str(uuid.uuid4()),
+            "lifetime": str(uuid.uuid4()),
+        }
+        binding = {
+            "runId": run,
+            "target": target,
+            "connectionId": str(uuid.uuid4()),
+            "commandGeneration": self.latest("shortcuts")["generation"],
+        }
+        await self.send(
+            {
+                "event": "state",
+                "data": {
+                    "ready": True,
+                    "nativeReady": True,
+                    "target": target,
+                    "focus": "Source",
+                    "connectionId": binding["connectionId"],
+                },
+            }
+        )
+        self.assertTrue(await self.ask("bindAutomaticPractice", binding))
+        return binding
+
+    async def test_private_pause_does_not_save_or_show_paused_until_executor_acknowledges(self):
+        binding = await self.bind_automatic_practice()
+        before = (self.home / "config/settings.json").read_bytes()
+        self.sequence += 1
+        pause_id = self.sequence
+        await self.send({"id": pause_id, "op": "traySettings", "data": {"enabled": False}})
+        retirement = await self.receive_until(
+            lambda item: item.get("op") == "retireAutomaticPractice"
+        )
+        self.assertEqual(retirement["data"], binding)
+        self.assertNotEqual(self.latest("shortcuts")["generation"], binding["commandGeneration"])
+        self.assertEqual((self.home / "config/settings.json").read_bytes(), before)
+        self.assertTrue(self.latest("settings")["enabled"])
+        self.assertIsNone(await self.ask("automaticPracticeProgress"))
+        self.assertFalse(await self.ask("beginAutomaticPractice", str(uuid.uuid4())))
+        await self.send({"reply": retirement["id"], "data": True})
+        reply = await self.receive_until(lambda item: item.get("reply") == pause_id)
+        self.assertIs(reply["data"], True)
+        self.assertFalse(self.latest("settings")["enabled"])
+        self.assertFalse(json.loads((self.home / "config/settings.json").read_text())["Enabled"])
+        self.assertTrue(await self.ask("endAutomaticPractice", binding["runId"]))
+
+    async def test_unconfirmed_private_retirement_blocks_pause_and_new_authority(self):
+        binding = await self.bind_automatic_practice()
+        before = (self.home / "config/settings.json").read_bytes()
+        calls = []
+
+        def refuse(operation, data):
+            calls.append((operation, data))
+            return False
+
+        self.input_reply = refuse
+        self.assertFalse(await self.ask("traySettings", {"enabled": False}))
+        self.assertEqual(calls, [("retireAutomaticPractice", binding)])
+        self.assertEqual((self.home / "config/settings.json").read_bytes(), before)
+        self.assertTrue(self.latest("settings")["enabled"])
+        self.assertFalse(await self.ask("beginAutomaticPractice", str(uuid.uuid4())))
+        self.assertFalse(await self.ask("endAutomaticPractice", binding["runId"]))
+        self.assertFalse(await self.ask("reloadModel"))
+        self.assertEqual(len(calls), 1, "unconfirmed retirement was silently retried")
+
+    async def test_identical_save_and_invalid_binding_do_not_retire_private_practice(self):
+        binding = await self.bind_automatic_practice()
+        calls = []
+        self.input_reply = lambda operation, data: calls.append((operation, data))
+        settings = self.latest("settings")
+        before = await self.ask("automaticPracticeProgress")
+        self.assertTrue(await self.ask("settings", dict(settings)))
+        self.assertEqual(await self.ask("automaticPracticeProgress"), before)
+        for key in ("runId", "connectionId", "commandGeneration"):
+            self.assertFalse(
+                await self.ask("bindAutomaticPractice", {**binding, key: str(uuid.uuid4())})
+            )
+        self.assertFalse(await self.ask("bindAutomaticPractice", {**binding, "extra": True}))
+        self.assertFalse(
+            await self.ask(
+                "bindAutomaticPractice",
+                {**binding, "target": {**binding["target"], "lifetime": str(uuid.uuid4())}},
+            )
+        )
+        self.assertEqual(calls, [])
+        self.assertEqual(await self.ask("automaticPracticeProgress"), before)
+        self.assertFalse(settings["experimentalWriteback"])
+
+    async def test_automatic_presentation_keeps_the_explicit_mode_change_separate_from_progress(
+        self,
+    ):
+        self.assertTrue(await self.ask("settings", {"mode": "OnDemand"}))
+        presentation = await self.ask("automaticPractice")
+        self.assertIn("自动", presentation["confirmationText"])
+        self.assertIn("不会自动恢复", presentation["confirmationText"])
+        self.assertIn("新的原文", presentation["replaceStep"])
+        self.assertFalse(presentation["completed"])
+        self.assertFalse(await self.ask("startAutomaticPractice", False))
+        self.assertEqual(self.latest("settings")["mode"], "OnDemand")
+        self.assertEqual(
+            await self.ask("finishAutomaticPractice", str(uuid.uuid4())),
+            {"saved": False, "retrySave": False},
+        )
+
     async def test_tray_persistence_failure_keeps_current_settings_and_allows_explicit_retry(self):
         self.assertTrue(await self.ask("settings", {"enabled": True, "theme": "dark"}))
         settings_file = self.home / "config/settings.json"

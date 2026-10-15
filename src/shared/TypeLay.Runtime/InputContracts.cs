@@ -10,7 +10,8 @@ namespace TypeLay.Runtime;
 // preserves legacy adapters without asserting ordering or duplicate protection.
 public sealed record InputNotice(string Kind, AcceptancePermit? Permit = null, long AcceptedAtMs = 0,
     long UserEpoch = 0, long ForegroundEpoch = 0, InputSnapshot? Source = null, Guid CommandGeneration = default,
-    WriteReceipt? CompletedReceipt = null, Denial Rejection = Denial.None, long CommandSequence = 0, TargetId? Target = null, long SessionRevision = 0);
+    WriteReceipt? CompletedReceipt = null, Denial Rejection = Denial.None, long CommandSequence = 0, TargetId? Target = null, long SessionRevision = 0,
+    Guid? PracticeRunId = null, Guid? PracticeConnectionId = null);
 // Only an explicit command's refusal, cancellation or failure is broadcast.
 // Revision identifies every command, including legacy sequence zero. Hosts may
 // use it for queued UI de-duplication; messages and codes never contain field text.
@@ -22,7 +23,8 @@ public sealed record SessionShortcutConfiguration(Guid Generation, SessionShortc
 public sealed record SessionShortcutAcknowledgement(TargetId Target, Guid Generation,
     SessionShortcutBindings Bindings, bool SourceReady, bool EditorReady);
 public sealed record InputLease(InputSnapshot Source, long UserEpoch, long ForegroundEpoch, bool EscapeAllowed,
-    Guid CommandGeneration = default, long SessionRevision = 0);
+    Guid CommandGeneration = default, long SessionRevision = 0,
+    Guid? PracticeRunId = null, Guid? PracticeConnectionId = null);
 public sealed record ShortcutLease(InputSnapshot Source, long ContentEpoch, long ForegroundEpoch);
 
 // Observation epochs and timestamps belong to the platform observation domain. A platform
@@ -98,6 +100,8 @@ public interface IInputMonitor : IDisposable
     {
         get;
     }
+    // An adapter-owned connection identity. Unconsumed hosts grant no owned-practice authority.
+    Guid ConnectionId => Guid.Empty;
     FocusMember GetFocus(TargetId target);
     void ConfigureShortcuts(bool enabled, string wake, string direct, SessionShortcutBindings sessionBindings, bool sessionEnabled);
     bool TryRead(out InputNotice? notice);

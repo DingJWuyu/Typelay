@@ -21,14 +21,40 @@ class Host:
         self.progress = None
         self.begin_gate = None
         self.finish_allowed = True
+        self.retry_save = True
+        self.finish_gate = None
+        self.finish_started = asyncio.Event()
+        self.finish_error = None
+        self.end_gate = None
+        self.end_allowed = True
 
     async def ask(self, operation, data=None):
         self.requests.append((operation, data))
-        if operation == "onDemandPracticeProgress":
+        if operation in ("onDemandPracticeProgress", "automaticPracticeProgress"):
             return self.progress
         if operation == "beginOnDemandPractice" and self.begin_gate:
             await self.begin_gate.wait()
-        return self.finish_allowed if operation == "finishOnDemandPractice" else True
+        if operation == "bindAutomaticPractice":
+            self.progress = {**self.progress, **data}
+        if operation == "finishAutomaticPractice":
+            self.finish_started.set()
+            if self.finish_gate:
+                await self.finish_gate.wait()
+            if self.finish_error:
+                raise self.finish_error
+            return {
+                "saved": self.finish_allowed,
+                "retrySave": not self.finish_allowed and self.retry_save,
+            }
+        if operation == "endAutomaticPractice":
+            if self.end_gate:
+                await self.end_gate.wait()
+            return self.end_allowed
+        return (
+            self.finish_allowed
+            if operation in ("finishOnDemandPractice", "finishAutomaticPractice")
+            else True
+        )
 
 
 class Ownership:
@@ -51,9 +77,40 @@ class InputPort:
             "lifetime": str(uuid.uuid4()),
         }
         self.available = True
+        self.connection = str(uuid.uuid4())
+        self.generation = str(uuid.uuid4())
+        self.authorization = None
+        self.retired = None
 
     async def practice_target(self, pid, target=None):
         return dict(self.target) if self.available else None
+
+    async def practice_binding(self, pid, target=None):
+        return (
+            {
+                "target": dict(self.target),
+                "connectionId": self.connection,
+                "commandGeneration": self.generation,
+            }
+            if self.available
+            else None
+        )
+
+    def prepare_practice(self, binding, owns_process):
+        return True
+
+    def authorize_practice(self, binding, owns_process):
+        self.authorization = binding
+        return True
+
+    def retire_practice(self, run, *, notify=True):
+        if self.authorization and self.authorization["runId"] == run:
+            self.authorization = None
+            self.retired = run
+        return self.retired == run
+
+    async def confirm_practice_retirement(self, run):
+        return self.retired == run
 
 
 class PracticeSessionTests(unittest.IsolatedAsyncioTestCase):
@@ -136,6 +193,103 @@ class PracticeSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await start)
         self.assertTrue(await close)
         self.assertIsNone(await self.practice.progress(100))
+
+    async def test_automatic_begin_cannot_authorize_an_unowned_process(self):
+        self.assertFalse(await self.practice.begin(200, True, lesson="automatic"))
+        self.assertEqual(self.host.requests, [])
+
+    async def automatic(self):
+        self.assertTrue(await self.practice.begin(100, True, lesson="automatic"))
+        run = next(
+            data for op, data in reversed(self.host.requests) if op == "beginAutomaticPractice"
+        )
+        self.host.progress = {"runId": run, "target": None, "completed": False}
+        return run
+
+    async def test_automatic_progress_binds_only_owned_current_connection_and_generation(self):
+        run = await self.automatic()
+        self.assertIsNone(self.input.authorization, "Begin granted write permission without a peer")
+        self.assertIsNone(await self.practice.progress(200, lesson="automatic"))
+        self.input.available = False
+        self.assertIsNone((await self.practice.progress(100, lesson="automatic"))["target"])
+        self.assertIsNone(self.input.authorization)
+        self.input.available = True
+        progress = await self.practice.progress(100, lesson="automatic")
+        self.assertEqual(progress["runId"], run)
+        self.assertEqual(
+            self.input.authorization,
+            {
+                "runId": run,
+                "target": self.input.target,
+                "connectionId": self.input.connection,
+                "commandGeneration": self.input.generation,
+            },
+        )
+        self.assertFalse(await self.practice.complete(100, lesson="automatic"))
+        self.assertIsNone(self.input.authorization)
+        self.assertIsNone(self.practice.finish_pending)
+        self.assertIsNone(
+            await self.practice.progress(100), "F9/F10 progress adopted an automatic run"
+        )
+
+    async def test_automatic_restart_waits_for_native_ack_and_failed_ack_blocks_future_authority(
+        self,
+    ):
+        await self.automatic()
+        await self.practice.progress(100, lesson="automatic")
+        self.host.end_gate = asyncio.Event()
+        self.host.end_allowed = False
+        restart = asyncio.create_task(self.practice.begin(100, False, lesson="automatic"))
+        await asyncio.sleep(0)
+        self.assertTrue(self.practice.ending)
+        self.assertIsNone(self.input.authorization)
+        self.assertFalse(await self.practice.begin(100, False, lesson="automatic"))
+        self.host.end_gate.set()
+        self.assertFalse(await restart)
+        self.assertTrue(self.practice.end_unconfirmed)
+        self.assertFalse(await self.practice.begin(100, True, lesson="automatic"))
+        self.assertFalse(await self.practice.complete(100, lesson="automatic"))
+        self.assertEqual(sum(op == "beginAutomaticPractice" for op, _ in self.host.requests), 1)
+
+    async def test_automatic_finish_retries_only_completed_evidence_after_retirement(self):
+        run = await self.automatic()
+        await self.practice.progress(100, lesson="automatic")
+        self.host.progress = {**self.host.progress, "completed": True}
+        self.host.finish_allowed = False
+        self.assertFalse(await self.practice.complete(100, lesson="automatic"))
+        self.input.retire_practice(run)
+        await self.practice.retire_invalidated(run)
+        self.host.progress = None
+        self.assertIsNone(await self.practice.progress(100, lesson="automatic"))
+        self.assertIsNone(self.input.authorization)
+        self.host.finish_allowed = True
+        self.assertTrue(await self.practice.complete(100, lesson="automatic"))
+        self.assertIsNone(self.input.authorization)
+        self.assertEqual(sum(op == "bindAutomaticPractice" for op, _ in self.host.requests), 1)
+
+    async def test_automatic_finish_refusal_or_timeout_retires_without_save_retry(self):
+        for failure in ("completion-changed", "timeout"):
+            with self.subTest(failure=failure):
+                self.setUp()
+                run = await self.automatic()
+                await self.practice.progress(100, lesson="automatic")
+                self.host.progress = {**self.host.progress, "completed": True}
+                self.host.finish_gate = asyncio.Event()
+                finishing = asyncio.create_task(self.practice.complete(100, lesson="automatic"))
+                await asyncio.wait_for(self.host.finish_started.wait(), 1)
+                # Runtime can receive BeginEdit after the completed progress
+                # read; it then rejects Finish rather than failing persistence.
+                self.host.progress = {**self.host.progress, "completed": False}
+                self.host.finish_allowed = self.host.retry_save = False
+                if failure == "timeout":
+                    self.host.finish_error = TimeoutError("held-finish")
+                self.host.finish_gate.set()
+                self.assertFalse(await asyncio.wait_for(finishing, 1))
+                self.assertIsNone(self.input.authorization)
+                self.assertIsNone(self.practice.finish_pending)
+                self.assertIsNone(self.practice.run)
+                self.assertIn(("endAutomaticPractice", run), self.host.requests)
+                self.assertFalse(self.practice.end_unconfirmed)
 
     async def test_final_host_check_rejects_a_settings_change_after_progress_read(self):
         await self.start(completed=True)

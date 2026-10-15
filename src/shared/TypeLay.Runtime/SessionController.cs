@@ -1,7 +1,7 @@
 using TypeLay.Core;
 namespace TypeLay.Runtime;
 
-public sealed class SessionController : IDisposable
+public sealed partial class SessionController : IDisposable
 {
     private readonly SettingsStore _settings;
     private readonly ITranslationService _model;
@@ -142,8 +142,10 @@ public sealed class SessionController : IDisposable
         PracticeProgressChanged?.Invoke(PracticeProgress);
     }
     public SessionController(SettingsStore settings, ITranslationService model, ISessionView overlay,
-        IInputMonitor input, IInputService broker, ISessionLoop loop)
+        IInputMonitor input, IInputService broker, ISessionLoop loop,
+        Func<OwnedPracticeBinding, Task<bool>>? retireOwnedPractice = null)
     {
+        _retireOwnedPractice = retireOwnedPractice;
         _broker = broker;
         _settings = settings;
         _model = model;
@@ -154,20 +156,42 @@ public sealed class SessionController : IDisposable
         _activation = new TranslationActivation(settings.Value.Mode);
         _loop.Tick += Tick;
         overlay.BeginEditing = BeginEdit;
-        overlay.DraftChanged = text => _session.ChangeDraft(text);
+        overlay.DraftChanged = ChangePracticeDraft;
         overlay.ReturnRequested = token => { if (ViewCommandIsCurrent(token, true)) _ = ReturnFromEditor(); };
         overlay.EscapeRequested = token => { if (ViewCommandIsCurrent(token, false)) _ = Escape(); };
         overlay.RegenerateRequested = () => _ = Regenerate();
-        overlay.ExcludeRequested = () =>
-        {
-            if (_disposed || !_settings.Value.Enabled)
-                return;
-            if (LastApplication is { } app)
-                _settings.Exclude(app);
-            StopSession();
-        };
+        overlay.ExcludeRequested = () => _ = ExcludeCurrentApplication();
         overlay.ResumeRequested = revision => _ = ResumePause(revision);
         settings.Changed += Configure;
+    }
+    private async Task ExcludeCurrentApplication()
+    {
+        if (_disposed || !_settings.Value.Enabled)
+            return;
+        if (LastApplication is not { } app)
+        {
+            StopSession();
+            return;
+        }
+        var next = _settings.Excluding(app);
+        bool keepPractice = AutomaticPracticeProgress is not null && !_settings.HasChanges(next);
+        if (!await PrepareSettingsChangeAsync(next) || _disposed)
+        {
+            if (!_disposed)
+                SetServiceStatus("练习尚未确认结束，未更改应用排除设置。请重启 TypeLay 后重试。", "practice-retirement-unconfirmed");
+            return;
+        }
+        // Recompute against the current settings after the retirement await.
+        try
+        {
+            _settings.Exclude(app);
+            if (!keepPractice)
+                StopSession();
+        }
+        catch (SettingsPersistenceException)
+        {
+            SetServiceStatus("排除设置未能保存，请检查设置存储后重试。", "exclude-save-failed");
+        }
     }
     public async Task StartAsync()
     {
@@ -222,6 +246,8 @@ public sealed class SessionController : IDisposable
     }
     private void Configure()
     {
+        _pendingPracticeCompletion = null;
+        RetireAutomaticPractice(false);
         if (PracticeProgress is { } practice)
             EndOnDemandPractice(practice.RunId);
         _pendingWakeCapture = null;
@@ -332,6 +358,7 @@ public sealed class SessionController : IDisposable
         if (_disposed)
             return;
         RefreshConnectionStatus();
+        CheckAutomaticPracticeIdentity();
         DrainInputNotices();
         long now = _loop.NowMs;
         if (_pendingDirect is { } pending && !_directRunning)
@@ -559,6 +586,7 @@ public sealed class SessionController : IDisposable
             // Accepting it advances generation before an obsolete read can clear it.
             if (!_disposed)
                 DrainInputNotices();
+            CheckAutomaticPracticeIdentity();
             if (_disposed || generation != _generation)
                 return;
             if (_pendingWakeCapture is { } pending && _hook.GetFocus(pending.Target) == FocusMember.Other)
@@ -644,6 +672,7 @@ public sealed class SessionController : IDisposable
                 _permitUntil = 0;
             }
             _session.Observe(snapshot, result.Focus, now);
+            ObserveAutomaticReturn();
             // Reading the source completes wake even when translation or writing remains unavailable.
             if (_pendingWakeCapture is { } wake && wake.Generation == generation
                 && wake.CommandGeneration == _hook.CommandGeneration && wake.Target == snapshot.Target
@@ -653,7 +682,10 @@ public sealed class SessionController : IDisposable
             // A keystroke arriving during a remote read must revoke acceptance, but
             // must not starve preview capture while the user continues typing.
             bool inputUnchanged = result.UserEpoch == _hook.UserEpoch && result.ForegroundEpoch == _hook.ForegroundEpoch;
-            if (inputUnchanged && result.Focus == FocusMember.Source && _model.Ready && _settings.Value.ExperimentalWriteback
+            var practiceBinding = AutomaticPracticeFor(snapshot.Target);
+            if (inputUnchanged && result.Focus == FocusMember.Source && _model.Ready
+                && !RetiredAutomaticTarget(snapshot.Target)
+                && (_settings.Value.ExperimentalWriteback || practiceBinding is not null)
                 && snapshot.WriteSupported && _hook.CanInterceptAcceptance && SessionBindingsReady(snapshot.Target, false))
             {
                 var context = new AcceptanceContext(FocusMember.Source, false, false, snapshot.Ime,
@@ -666,7 +698,9 @@ public sealed class SessionController : IDisposable
             _permitUntil = permit?.ExpiresAtMs ?? 0;
             bool escape = SessionBindingsReady(snapshot.Target, false)
                 && _session.State is not (SessionState.NoSession or SessionState.Paused or SessionState.OutcomeUnknown);
-            _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, escape, _hook.CommandGeneration, _generation), permit);
+            RememberAutomaticPermit(practiceBinding, permit);
+            _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, escape, _hook.CommandGeneration, _generation,
+                permit is null ? null : practiceBinding?.RunId, permit is null ? null : practiceBinding?.ConnectionId), permit);
             if (result.Focus == FocusMember.Source)
                 _hook.PublishShortcut(new(snapshot, contentEpoch, request.ForegroundEpoch));
             Render();
@@ -884,6 +918,7 @@ public sealed class SessionController : IDisposable
         _statusOverride = null;
         Trace("translate-start");
         var practiceCommand = _practiceWakeCommand;
+        var automaticPractice = AutomaticPracticeFor(job.Basis.Target);
         bool completed = false;
         try
         {
@@ -905,6 +940,8 @@ public sealed class SessionController : IDisposable
             if (completed && practiceCommand?.Target == job.Basis.Target && job.Kind == TranslationKind.FullOrSelection
                 && _hook.GetFocus(job.Basis.Target) != FocusMember.Other)
                 CompletePracticeCommand(practiceCommand, false);
+            if (completed)
+                CompleteAutomaticPreview(automaticPractice, job);
             Trace("translate-done");
         }
         finally { _translationRunning = false; }
@@ -918,6 +955,7 @@ public sealed class SessionController : IDisposable
             return false;
         if (!_session.BeginEdit())
             return false;
+        BeginAutomaticEdit();
         _generation++;
         _editTransitionUntil = _loop.NowMs + 500;
         RevokeInput("begin-edit");
@@ -971,6 +1009,7 @@ public sealed class SessionController : IDisposable
             RevokeInput("native-write-completed");
             _permitUntil = 0;
             _session.FinishWrite(plan, receipt);
+            CompleteAutomaticAcceptance(notice, receipt);
             _nextCapture = 0;
             Render();
         }
@@ -1009,6 +1048,7 @@ public sealed class SessionController : IDisposable
             receipt = new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
         }
         _session.FinishWrite(permit.Plan, receipt);
+        CompleteAutomaticAcceptance(notice, receipt);
         Trace("write-" + receipt.Status + "-" + receipt.Reason);
         if (receipt.Status != WriteStatus.Verified)
         {
@@ -1060,6 +1100,8 @@ public sealed class SessionController : IDisposable
     public void StopSession() => StopSession("stop-session");
     private void StopSession(string reason)
     {
+        if (_ownedPractice is not null)
+            RetireAutomaticPractice();
         if (_session.Current is not null)
             Trace(reason);
         _activation.End();
@@ -1159,6 +1201,8 @@ public sealed class SessionController : IDisposable
     }
     public void Dispose()
     {
+        _pendingPracticeCompletion = null;
+        RetireAutomaticPractice(false);
         if (PracticeProgress is { } practice)
             EndOnDemandPractice(practice.RunId);
         _disposed = true;

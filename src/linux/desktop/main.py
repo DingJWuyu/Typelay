@@ -288,7 +288,7 @@ async def desktop(paths, background, lock, tutorial=False):
     try:
         components["input"] = Input(GLib, Gdk, paths, host, task)
         support = ApplicationSupport(paths)
-        practice = PracticeSession(host, components["input"], support)
+        practice = PracticeSession(host, components["input"], support, task)
 
         async def support_view():
             await support.refresh()
@@ -366,38 +366,58 @@ async def desktop(paths, background, lock, tutorial=False):
                 components["settings"].open_tutorial()
                 return True
             if operation == "practiceStatus":
-                progress = await practice.progress(caller_pid)
+                lesson = value.get("lesson", "onDemand") if isinstance(value, dict) else "onDemand"
+                if lesson not in ("onDemand", "automatic"):
+                    return None
+                progress = await practice.progress(caller_pid, lesson=lesson)
                 return {
                     "modelReady": status.get("modelReady", False),
                     "managedPractice": support.owns_practice(caller_pid),
                     "presentation": await host.ask(
-                        "onDemandPractice", progress["runId"] if progress else None, timeout=2
+                        "automaticPractice" if lesson == "automatic" else "onDemandPractice",
+                        progress["runId"] if progress else None,
+                        timeout=2,
                     ),
                     "progress": progress,
+                    "ending": practice.ending,
+                    "endUnconfirmed": practice.end_unconfirmed,
+                    "finishPending": bool(
+                        practice.finish_pending
+                        and practice.finish_pending["pid"] == caller_pid
+                        and practice.finish_pending["lesson"] == lesson
+                        and support.owns_practice(caller_pid)
+                    ),
                     "practiceEnabled": bool(
                         components["settings"].value and components["settings"].value["enabled"]
                     ),
                 }
-            if operation == "startOnDemandPractice":
+            if operation in ("startOnDemandPractice", "startAutomaticPractice"):
                 if (
                     not isinstance(value, dict)
                     or set(value) != {"confirmedSwitch"}
                     or type(value["confirmedSwitch"]) is not bool
                 ):
                     return False
-                return await practice.begin(caller_pid, value["confirmedSwitch"])
+                return await practice.begin(
+                    caller_pid,
+                    value["confirmedSwitch"],
+                    lesson="automatic" if operation == "startAutomaticPractice" else "onDemand",
+                )
             if operation == "endOnDemandPractice":
                 return await practice.end(caller_pid) if value is None else False
             if operation == "finishOnboarding":
                 if (
                     not isinstance(value, dict)
-                    or set(value) != {"outcome"}
+                    or set(value) not in ({"outcome"}, {"outcome", "lesson"})
+                    or value.get("lesson", "onDemand") not in ("onDemand", "automatic")
                     or value["outcome"] not in ("completed", "skipped")
                     or components["settings"].value is None
                 ):
                     return False
                 if value["outcome"] == "completed":
-                    saved = await practice.complete(caller_pid)
+                    saved = await practice.complete(
+                        caller_pid, lesson=value.get("lesson", "onDemand")
+                    )
                 else:
                     saved = await host.ask("dismissOnboarding") is True
                 if saved:

@@ -71,14 +71,7 @@ public sealed class SettingsStore
     }
     public void Update(UserSettings settings)
     {
-        settings.Direction.Validate();
-        if (settings.Source is not ("auto" or "zh" or "en") || settings.Target is not ("zh" or "en"))
-            throw new ArgumentException("请选择支持的源语言和目标语言。");
-        if (!Enum.IsDefined(settings.Mode))
-            throw new ArgumentException("请选择有效的工作模式。");
-        if (!ShortcutSettingsDraft.From(settings).TryApply(settings, out var canonical, out var error))
-            throw new ArgumentException(SettingsDraftPresentation.ShortcutErrorMessage(error));
-        settings = canonical!;
+        settings = Canonical(settings);
         if (settings.Startup != Value.Startup)
             _setStartup(settings.Startup);
         string temporary = _path + ".tmp";
@@ -96,15 +89,7 @@ public sealed class SettingsStore
         {
             throw new SettingsPersistenceException(ex);
         }
-        bool changed = (settings with
-        {
-            ExcludedApplications = null
-        })
-            != (_committedValue with
-            {
-                ExcludedApplications = null
-            })
-            || !settings.Excluded.SequenceEqual(_committedValue.Excluded);
+        bool changed = ChangesFromCommitted(settings);
         _committedValue = Snapshot(settings);
         Value = settings;
         if (changed)
@@ -117,15 +102,45 @@ public sealed class SettingsStore
         ExcludedApplications = settings.ExcludedApplications?.ToArray()
     };
 
-    public void Exclude(string app)
+    // Uses the same canonical values and committed array snapshot as Update.
+    // Hosts can retire an owned practice before a real change, without disrupting
+    // drafts and practice when a settings dialog merely saves the current values.
+    public bool HasChanges(UserSettings settings) => ChangesFromCommitted(Canonical(settings));
+    private bool ChangesFromCommitted(UserSettings settings) =>
+        (settings with
+        {
+            ExcludedApplications = null
+        }) != (_committedValue with
+        {
+            ExcludedApplications = null
+        })
+        || !settings.Excluded.SequenceEqual(_committedValue.Excluded);
+    private static UserSettings Canonical(UserSettings settings)
+    {
+        settings.Direction.Validate();
+        if (settings.Source is not ("auto" or "zh" or "en") || settings.Target is not ("zh" or "en"))
+            throw new ArgumentException("请选择支持的源语言和目标语言。");
+        if (!Enum.IsDefined(settings.Mode))
+            throw new ArgumentException("请选择有效的工作模式。");
+        if (!ShortcutSettingsDraft.From(settings).TryApply(settings, out var canonical, out var error))
+            throw new ArgumentException(SettingsDraftPresentation.ShortcutErrorMessage(error));
+        return canonical!;
+    }
+    public UserSettings Excluding(string app)
     {
         app = _normalizeApplication(app);
         if (app.Length is 0 or > 128 || Value.Excluded.Length >= 256)
-            return;
-        Update(Value with
+            return Value;
+        return Value with
         {
             ExcludedApplications = Value.Excluded.Append(app).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
-        });
+        };
+    }
+    public void Exclude(string app)
+    {
+        var next = Excluding(app);
+        if (!ReferenceEquals(next, Value))
+            Update(next);
     }
 }
 

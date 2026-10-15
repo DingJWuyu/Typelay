@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from input import Input, Peer  # noqa: E402
 from overlay import Overlay  # noqa: E402
+from practice_session import PracticeSession  # noqa: E402
 from wire import Decoder  # noqa: E402
 
 
@@ -311,6 +312,265 @@ class InputFeedbackTests(unittest.TestCase):
                 self.input.practice_target(peer.pid, {**target, "lifetime": str(uuid.uuid4())})
             )
         )
+
+    def authorize_practice(self, binding, owns_process):
+        return self.input.prepare_practice(binding, owns_process) and self.input.authorize_practice(
+            binding, owns_process
+        )
+
+    def test_automatic_authority_rejects_a_non_gtk_practice_peer(self):
+        publication = asyncio.run(self.publish_acceptance(pause=False))[0]["data"]
+        binding = {
+            "runId": str(uuid.uuid4()),
+            "target": publication["lease"]["source"]["target"],
+            "connectionId": self.peer.connection_id,
+            "commandGeneration": self.generation,
+        }
+        self.assertFalse(self.authorize_practice(binding, lambda _: True))
+
+    async def bind_practice_with_held_reply(self, *, leave_source, bind_accepted=True):
+        self.peer = self.connect_peer("gtk3")
+        original_description = self.description
+        field = str(uuid.uuid4())
+
+        def description():
+            result = original_description()
+            result["target"] = result["authority"]["target"] = field
+            result["metadata"].update(automationId="typelay-practice-source", aria="GtkEntry")
+            result["geometry"]["space"] = "gtk-toplevel"
+            return result
+
+        self.description = description
+        await self.publish_acceptance(pause=False)
+        binding_started, release_binding = asyncio.Event(), asyncio.Event()
+        progress, binding = {}, None
+
+        async def ask(operation, data=None):
+            nonlocal progress, binding
+            if operation == "beginAutomaticPractice":
+                progress = {"runId": data, "target": None, "completed": False}
+            elif operation == "automaticPracticeProgress":
+                return progress
+            elif operation == "bindAutomaticPractice":
+                binding = data
+                binding_started.set()
+                await release_binding.wait()
+                if not bind_accepted:
+                    return False
+                progress = {**progress, **data}
+            elif operation == "endAutomaticPractice":
+                if not bind_accepted:
+                    return True  # Runtime never registered the rejected binding.
+                return await self.input.request("retireAutomaticPractice", binding)
+            return True
+
+        practice = PracticeSession(
+            SimpleNamespace(ask=ask),
+            self.input,
+            SimpleNamespace(owns_practice=lambda pid: pid == self.peer.pid),
+        )
+        self.assertTrue(await practice.begin(self.peer.pid, True, lesson="automatic"))
+        operation = asyncio.create_task(practice.progress(self.peer.pid, lesson="automatic"))
+        await asyncio.sleep(0)
+        requests = self.native_frames(self.peer)
+        self.assertEqual([frame["op"] for frame in requests], ["describe"])
+        self.peer.link.receive({"id": requests[0]["id"], "data": description()})
+        await asyncio.wait_for(binding_started.wait(), 1)
+        self.assertIsNone(self.input.practice_authorization)
+        if leave_source:
+            for focused in (False, True):
+                self.peer.event(
+                    "input",
+                    {
+                        "target": field,
+                        "focusChanged": True,
+                        "focused": focused,
+                        "textChanged": False,
+                    },
+                )
+            # Same peer/target and compositor focus do not prove uninterrupted
+            # source focus while Runtime's binding reply was in flight.
+            self.assertEqual(self.input.focus(), "Source")
+        release_binding.set()
+
+        async def finish():
+            while not operation.done():
+                for frame in self.native_frames(self.peer):
+                    self.assertEqual(frame["op"], "revoke")
+                    if frame["id"]:
+                        self.peer.link.receive({"id": frame["id"], "data": None})
+                await asyncio.sleep(0)
+            return await operation
+
+        result = await asyncio.wait_for(finish(), 1)
+        # Keep teardown within the scheduler's lifetime, including the positive
+        # control's still-active run. The tests assert the authorization first.
+        authorized = self.input.practice_authorization is not None
+        self.input.retire_practice(practice.run, notify=False)
+        return practice, result, authorized
+
+    def test_owned_practice_bind_reply_requires_continuous_source_focus(self):
+        practice, progress, authorized = asyncio.run(
+            self.bind_practice_with_held_reply(leave_source=True)
+        )
+        self.assertIsNone(progress)
+        self.assertFalse(authorized)
+        self.assertIsNone(self.input.practice_authorization)
+        self.assertIsNone(practice.run)
+        self.assertFalse(practice.end_unconfirmed)
+
+    def test_rejected_runtime_binding_still_waits_for_its_pending_peer_ack(self):
+        practice, progress, authorized = asyncio.run(
+            self.bind_practice_with_held_reply(leave_source=False, bind_accepted=False)
+        )
+        self.assertIsNone(progress)
+        self.assertFalse(authorized)
+        self.assertIsNone(practice.run)
+        self.assertFalse(practice.end_unconfirmed)
+        self.assertIsNone(self.input.practice_retirement)
+        self.assertIsNotNone(self.input.practice_retirement_ack)
+
+    def test_owned_practice_bind_reply_keeps_unchanged_source_eligible(self):
+        practice, progress, authorized = asyncio.run(
+            self.bind_practice_with_held_reply(leave_source=False)
+        )
+        self.assertEqual(progress["runId"], practice.run)
+        self.assertTrue(authorized)
+
+    def test_owned_practice_revoke_waits_for_original_peer_ack_and_rejects_late_publish(self):
+        self.peer = self.connect_peer("gtk3")
+        original_description = self.description
+
+        def description():
+            result = original_description()
+            result["geometry"]["space"] = "gtk-toplevel"
+            return result
+
+        self.description = description
+
+        async def exercise():
+            publication = (await self.publish_acceptance(pause=False))[0]["data"]
+            binding = {
+                "runId": str(uuid.uuid4()),
+                "target": publication["lease"]["source"]["target"],
+                "connectionId": self.peer.connection_id,
+                "commandGeneration": self.generation,
+            }
+            self.assertTrue(self.authorize_practice(binding, lambda pid: pid == self.peer.pid))
+            publication["lease"].update(
+                practiceRunId=binding["runId"], practiceConnectionId=binding["connectionId"]
+            )
+            self.input.notification("publish", publication)
+            self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["publish"])
+            forged = {
+                **publication,
+                "lease": {**publication["lease"], "practiceConnectionId": str(uuid.uuid4())},
+            }
+            self.input.notification("publish", forged)
+            self.assertEqual(self.native_frames(self.peer), [])
+            retirement = asyncio.create_task(self.input.request("retireAutomaticPractice", binding))
+
+            async def requested():
+                while True:
+                    requests = self.native_frames(self.peer)
+                    if requests:
+                        return requests
+                    await asyncio.sleep(0)
+
+            requests = await asyncio.wait_for(requested(), 1)
+            self.assertEqual([frame["op"] for frame in requests], ["revoke"])
+            self.assertGreater(requests[0]["id"], 0)
+            self.assertFalse(
+                retirement.done(), "queued revocation was reported as native completion"
+            )
+            self.input.notification("publish", publication)
+            self.assertEqual(self.native_frames(self.peer), [])
+            self.assertFalse(
+                self.authorize_practice({**binding, "runId": str(uuid.uuid4())}, lambda _: True)
+            )
+            self.peer.link.receive({"id": requests[0]["id"], "data": None})
+            self.assertTrue(await asyncio.wait_for(retirement, 1))
+            self.assertTrue(await self.input.confirm_practice_retirement(binding["runId"]))
+            self.assertFalse(await self.input.confirm_practice_retirement(str(uuid.uuid4())))
+            self.input.notification("publish", publication)
+            self.assertEqual(
+                self.native_frames(self.peer), [], "retired publication returned after native ACK"
+            )
+            self.peer.event(
+                "accepted",
+                {
+                    "planId": publication["permit"]["plan"]["id"],
+                    "acceptedAtMs": 1001,
+                    "receipt": {"status": "OutcomeUnknown", "reason": "UnknownOutcome"},
+                },
+            )
+            notice = self.host.notices[-1]
+            self.assertEqual(notice["practiceRunId"], binding["runId"])
+            self.assertEqual(notice["practiceConnectionId"], binding["connectionId"])
+            self.assertEqual(notice["completedReceipt"]["status"], "OutcomeUnknown")
+
+        asyncio.run(exercise())
+
+    def test_no_retirement_record_is_not_a_native_acknowledgement(self):
+        self.assertFalse(asyncio.run(self.input.confirm_practice_retirement(str(uuid.uuid4()))))
+
+    def test_owned_practice_native_revoke_timeout_blocks_a_new_authorization(self):
+        self.peer = self.connect_peer("gtk3")
+        original_description = self.description
+
+        def description():
+            result = original_description()
+            result["geometry"]["space"] = "gtk-toplevel"
+            return result
+
+        self.description = description
+
+        async def exercise():
+            publication = (await self.publish_acceptance(pause=False))[0]["data"]
+            binding = {
+                "runId": str(uuid.uuid4()),
+                "target": publication["lease"]["source"]["target"],
+                "connectionId": self.peer.connection_id,
+                "commandGeneration": self.generation,
+            }
+            self.assertTrue(self.authorize_practice(binding, lambda _: True))
+            self.assertFalse(
+                await asyncio.wait_for(self.input.request("retireAutomaticPractice", binding), 1)
+            )
+            self.assertFalse(
+                self.authorize_practice({**binding, "runId": str(uuid.uuid4())}, lambda _: True)
+            )
+
+        asyncio.run(exercise())
+
+    def test_owned_practice_disconnect_during_revoke_never_confirms_retirement(self):
+        self.peer = self.connect_peer("gtk3")
+        original_description = self.description
+
+        def description():
+            result = original_description()
+            result["geometry"]["space"] = "gtk-toplevel"
+            return result
+
+        self.description = description
+
+        async def exercise():
+            publication = (await self.publish_acceptance(pause=False))[0]["data"]
+            binding = {
+                "runId": str(uuid.uuid4()),
+                "target": publication["lease"]["source"]["target"],
+                "connectionId": self.peer.connection_id,
+                "commandGeneration": self.generation,
+            }
+            self.assertTrue(self.authorize_practice(binding, lambda _: True))
+            retirement = asyncio.create_task(self.input.request("retireAutomaticPractice", binding))
+            await asyncio.sleep(0)
+            self.peer.link.close()
+            self.assertFalse(await asyncio.wait_for(retirement, 1))
+            self.assertFalse(await self.input.confirm_practice_retirement(binding["runId"]))
+            self.assertFalse(self.authorize_practice(binding, lambda _: True))
+
+        asyncio.run(exercise())
 
     def test_paused_field_observation_returns_only_metadata_anchor_without_capture(self):
         result = asyncio.run(self.observe_pause(self.description()))

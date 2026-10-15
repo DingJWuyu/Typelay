@@ -115,7 +115,7 @@ def run(presentation):
                 assert not lesson.complete.get_sensitive()
                 assert not lesson.reset_button.get_sensitive()
                 assert lesson.preview_step.get_text() == lesson.replace_step.get_text() == ""
-                assert lesson.status.get_text() == lesson.progress.get_text()
+                assert not lesson.progress.get_text()
                 assert "正在准备" in lesson.status.get_text()
                 unchanged()
 
@@ -124,7 +124,7 @@ def run(presentation):
                 lesson.reset_button.clicked()
                 cleared()
                 reply(stale, previous)
-                begin = pending("startOnDemandPractice")
+                begin = pending("startAutomaticPractice")
                 cleared()
                 return begin
 
@@ -143,26 +143,55 @@ def run(presentation):
                     old = str(uuid.uuid4())
                     reply(pending("practiceStatus"), state(old, completed=True))
                     until(lambda: lesson.complete.get_sensitive())
+                    assert not lesson.status.get_text()
+                    assert (
+                        lesson.progress.get_text()
+                        == state(old, completed=True)["presentation"]["progressNotice"]
+                    )
+                    technical = lesson.capability_note.get_parent().get_parent()
+                    assert isinstance(technical, Gtk.Expander)
+                    assert technical.get_label() == "连接与输入法说明"
+                    assert not technical.get_expanded()
+                    assert lesson.capability_note.get_text() == presentation["capabilityNote"]
+                    lesson.finish("completed")
+                    dispatch(pending("finishOnboarding"), False)
+                    assert not lesson.complete.get_sensitive()
+                    assert "正在确认" in lesson.status.get_text()
+                    reply(
+                        pending("practiceStatus"),
+                        {**state(old, completed=True), "finishPending": True},
+                    )
+                    until(lambda: lesson.complete.get_sensitive())
+                    assert "重试保存" in lesson.complete.get_label()
+                    reply(pending("practiceStatus"), state(old))
+                    until(lambda: not lesson.complete.get_sensitive())
+                    assert "重试保存" not in lesson.complete.get_label()
+                    reply(pending("practiceStatus"), state(old, completed=True))
+                    until(lambda: lesson.complete.get_sensitive())
                     lesson.source.set_text(source)
                     lesson.source.select_region(2, 7)
                     reply(restart(state(old, completed=True)), True)
                     new = str(uuid.uuid4())
                     reply(pending("practiceStatus"), state(new, bound=False))
-                    until(lambda: "尚未连接" in lesson.progress.get_text())
+                    until(lambda: "等待确认" in lesson.status.get_text())
+                    assert not lesson.progress.get_text()
                     assert lesson.status.get_text() != reset_notice
                     unchanged()
                     reply(pending("practiceStatus"), state(new))
-                    until(lambda: lesson.status.get_text() == reset_notice)
+                    until(lambda: lesson.progress.get_text() == reset_notice)
+                    assert not lesson.status.get_text()
                     unchanged()
                     dispatch(pending("practiceStatus"), state(old, completed=True))
-                    assert lesson.status.get_text() == reset_notice
+                    assert lesson.progress.get_text() == reset_notice
+                    assert not lesson.status.get_text()
                     assert not lesson.complete.get_sensitive()
 
                     # A second restart before any preview clears the first receipt.
                     reply(restart(state(new)), True)
                     previous = str(uuid.uuid4())
                     reply(pending("practiceStatus"), state(previous))
-                    until(lambda: lesson.status.get_text() == reset_notice)
+                    until(lambda: lesson.progress.get_text() == reset_notice)
+                    assert not lesson.status.get_text()
                     unchanged()
 
                     reply(restart(state(previous)), False)
@@ -182,9 +211,23 @@ def run(presentation):
                     assert lesson.preview_step.get_text() == lesson.replace_step.get_text() == ""
                     assert lesson.status.get_text() != reset_notice
                     reply(pending("practiceStatus"), state(str(uuid.uuid4())))
-                    until(lambda: lesson.status.get_text() == reset_notice)
+                    until(lambda: lesson.progress.get_text() == reset_notice)
+                    assert not lesson.status.get_text()
                     unchanged()
 
+                    # Switching the lesson cannot adopt a completed reply from
+                    # the previous selection, nor replace the selected source.
+                    stale = pending("practiceStatus")
+                    lesson.lesson_choice.set_active_id("onDemand")
+                    dispatch(stale, state(str(uuid.uuid4()), completed=True))
+                    assert not lesson.complete.get_sensitive()
+                    reply(pending("practiceStatus"), {**state(), "ending": True})
+                    until(lambda: lesson.status.get_text() == "正在结束练习…")
+                    assert not lesson.start.get_sensitive() and not lesson.complete.get_sensitive()
+                    reply(pending("practiceStatus"), {**state(), "endUnconfirmed": True})
+                    until(lambda: "未确认结束" in lesson.status.get_text())
+                    assert not lesson.reset_button.get_sensitive()
+                    unchanged()
                     late = pending("practiceStatus")
                     changes = []
                     lesson.status.connect("notify::label", lambda *_: changes.append(True))
@@ -205,6 +248,40 @@ def run(presentation):
                     connection.close()
             if errors:
                 raise errors[0]
+
+            # Closing destroys the visible/native field immediately; the hidden
+            # context may only finish its already-bounded control request. Both
+            # EOF and the unchanged socket deadline must exit, without reopening.
+            for failure in ("disconnect", "timeout"):
+                lesson = Practice(SimpleNamespace(control=path))
+                connections.clear()
+
+                def close_without_reply():
+                    try:
+                        lesson.close()
+                        worker = lesson.close_thread
+                        lesson.close()
+                        assert lesson.close_thread is worker
+                        assert not lesson.window.get_visible() and lesson.source is None
+                        connection = pending("endOnDemandPractice")
+                        if failure == "disconnect":
+                            connection.close()
+                    except BaseException as error:
+                        errors.append(error)
+                    return False
+
+                GLib.idle_add(close_without_reply)
+                started = time.monotonic()
+                try:
+                    lesson.run()
+                    assert time.monotonic() - started < 3
+                    assert not lesson.close_thread.is_alive()
+                    assert not lesson.window.get_visible()
+                finally:
+                    for connection in connections:
+                        connection.close()
+                if errors:
+                    raise errors[0]
 
 
 if __name__ == "__main__":

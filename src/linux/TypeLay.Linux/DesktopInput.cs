@@ -7,7 +7,7 @@ namespace TypeLay.Linux;
 internal sealed record DesktopState(bool Ready = false, long UserEpoch = 0, long SourceUserEpoch = 0,
     long ForegroundEpoch = 0, long WindowEpoch = 0, long ContentEpoch = 0,
     TargetId? Target = null, FocusMember Focus = FocusMember.Other, bool NativeReady = false,
-    SessionShortcutAcknowledgement? SessionShortcuts = null);
+    SessionShortcutAcknowledgement? SessionShortcuts = null, Guid ConnectionId = default);
 
 internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMonitor
 {
@@ -29,6 +29,7 @@ internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMoni
     public long ForegroundEpoch => _state.ForegroundEpoch;
     public long WindowEpoch => _state.WindowEpoch;
     public long ContentEpoch => _state.ContentEpoch;
+    public Guid ConnectionId => _state.ConnectionId;
     public Guid CommandGeneration
     {
         get; private set;

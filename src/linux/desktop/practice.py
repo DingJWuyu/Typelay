@@ -40,6 +40,7 @@ class Practice:
         self.restarting = False
         self.awaiting_binding = False
         self.start_error = None
+        self.lesson = "automatic"
         self.window = Gtk.Window(title="TypeLay 实操练习")
         self.window.set_default_size(680, 500)
         self.window.set_border_width(24)
@@ -60,6 +61,13 @@ class Practice:
             container.pack_start(label, False, False, 0)
             return label
 
+        self.lesson_choice = Gtk.ComboBoxText()
+        self.lesson_choice.append("automatic", "自动翻译与编辑")
+        self.lesson_choice.append("onDemand", "按需快捷键")
+        self.lesson_choice.set_active_id(self.lesson)
+        self.lesson_choice.get_accessible().set_name("练习内容")
+        self.lesson_choice.connect("changed", self.choose_lesson)
+        content.pack_start(self.lesson_choice, False, False, 0)
         self.heading = note("")
         self.heading.get_style_context().add_class("title")
         self.summary = note("")
@@ -78,7 +86,6 @@ class Practice:
         content.pack_start(self.start, False, False, 0)
         self.status = note("等待连接当前 Wayland 会话的 TypeLay；请聚焦上面的练习框。")
         self.progress = note("尚未开始本次练习。")
-        self.capability_note = note("")
         settings = Gtk.Button(label="打开 TypeLay 设置")
         settings.connect("clicked", lambda *_: self.request_settings())
         content.pack_start(settings, False, False, 0)
@@ -87,6 +94,7 @@ class Practice:
         details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
         details.set_margin_top(8)
         technical.add(details)
+        self.capability_note = note("", details)
         content.pack_start(technical, False, False, 0)
         note(
             "实际 Fcitx 合作组件必须已由你明确启用。普通未合作的 GTK 环境尚无安全读取/替换"
@@ -100,17 +108,6 @@ class Practice:
             "完成这里的练习仍不代表其他应用或物理输入法已经通过验收。",
             details,
         )
-        automatic = Gtk.Expander(label="已有自动模式与 Tab 练习")
-        instructions = Gtk.Label(
-            label="如需练习已有自动流程，请自行在设置中选择自动模式、语言方向，并明确开启原生输入框替换。\n"
-            "1. 在上方输入，等待正式客户端的真实译文；按 Tab 只替换练习框。\n"
-            "2. 再输入一句，点击浮层译文并修改；第一次 Tab 只返回原框，第二次 Tab 接受修改。",
-            xalign=0,
-        )
-        instructions.set_line_wrap(True)
-        instructions.set_max_width_chars(70)
-        automatic.add(instructions)
-        content.pack_start(automatic, False, False, 0)
         note("以后不再自动提示；你仍可随时从设置打开练习。")
         actions = Gtk.Box(spacing=8)
         outer.pack_end(actions, False, False, 0)
@@ -120,6 +117,7 @@ class Practice:
         actions.pack_start(self.reset_button, False, False, 0)
         self.complete = Gtk.Button.new_with_mnemonic("完成并关闭(_D)")
         self.complete.set_sensitive(False)
+        self.complete.set_focus_on_click(False)
         self.complete.connect("clicked", lambda *_: self.finish("completed"))
         actions.pack_start(self.complete, False, False, 0)
         self.skip = Gtk.Button.new_with_mnemonic("跳过教程(_S)")
@@ -129,6 +127,24 @@ class Practice:
         self.close_button.connect("clicked", self.close)
         actions.pack_end(self.close_button, False, False, 0)
         self.timer = GLib.timeout_add(1000, self.poll)
+
+    def choose_lesson(self, widget):
+        lesson = widget.get_active_id()
+        if self.closed or lesson == self.lesson:
+            return
+        self.lesson = lesson
+        self.completion_failed = False
+        self.complete.set_label("完成并关闭(_D)")
+        self.request_generation += 1
+        self.practice_run = self.presentation = self.restart_from = None
+        self.awaiting_binding = self.restarting = False
+        self.start_error = None
+        self.set_start_sensitive(False)
+        self.complete.set_sensitive(False)
+        self.preview_step.set_text("")
+        self.replace_step.set_text("")
+        self.status.set_text("正在读取练习说明…")
+        self.poll()
 
     def set_start_sensitive(self, enabled):
         self.start.set_sensitive(enabled)
@@ -183,6 +199,7 @@ class Practice:
         ):
             return
         self.completion_failed = False
+        self.complete.set_label("完成并关闭(_D)")
         self.request_generation += 1
         self.restart_from = self.practice_run or self.restart_from
         self.restarting = self.restarting or self.practice_run is not None
@@ -191,12 +208,13 @@ class Practice:
         self.start_error = None
         self.presentation = {**self.presentation, "completed": False}
         self.pending_start = {"confirmedSwitch": confirmed_switch}
+        self.lesson_choice.set_sensitive(False)
         self.set_start_sensitive(False)
         self.complete.set_sensitive(False)
         self.preview_step.set_text("")
         self.replace_step.set_text("")
         self.status.set_text("正在准备本次练习，请稍候再按快捷键。")
-        self.progress.set_text("正在准备本次练习，请稍候再按快捷键。")
+        self.progress.set_text("")
         self.poll()
 
     def request_settings(self):
@@ -225,14 +243,19 @@ class Practice:
         if self.request_running:
             return True
         if self.pending_outcome is not None:
-            self.request("finishOnboarding", {"outcome": self.pending_outcome})
+            self.request(
+                "finishOnboarding", {"outcome": self.pending_outcome, "lesson": self.lesson}
+            )
         elif self.pending_start is not None:
-            self.request("startOnDemandPractice", self.pending_start)
+            self.request(
+                "startAutomaticPractice" if self.lesson == "automatic" else "startOnDemandPractice",
+                self.pending_start,
+            )
         elif self.pending_settings:
             self.pending_settings = False
             self.request("settings", None)
-        elif self.window.is_active() and not self.completion_failed:
-            self.request("practiceStatus", None)
+        elif self.window.is_active() and self.completion_failed != "skipped":
+            self.request("practiceStatus", {"lesson": self.lesson})
         return True
 
     def request(self, operation, data):
@@ -260,12 +283,13 @@ class Practice:
             # Its old run must not restore a ready/completed lesson while Begin waits.
             self.poll()
             return False
-        if operation == "startOnDemandPractice":
+        if operation in ("startOnDemandPractice", "startAutomaticPractice"):
             self.pending_start = None
+            self.lesson_choice.set_sensitive(True)
             if result is True:
                 self.source.grab_focus_without_selecting()
                 self.status.set_text("等待确认本次练习框连接，请稍候再按快捷键。")
-                self.progress.set_text("等待确认本次练习框连接，请稍候再按快捷键。")
+                self.progress.set_text("")
             else:
                 self.start_error = "未能开始本次练习。请检查当前模式、启用状态、模型和语言设置，再点击开始按钮重试。"
                 self.awaiting_binding = False
@@ -282,11 +306,16 @@ class Practice:
             if result is True:
                 self.close()
                 return False
+            self.completion_failed = self.pending_outcome
             self.pending_outcome = None
-            self.completion_failed = True
             self.complete.set_sensitive(False)
             self.skip.set_sensitive(True)
-            self.status.set_text("未能关闭提示，请重新检查或重新练习后重试。")
+            self.status.set_text(
+                "未能完成，正在确认练习状态…"
+                if self.completion_failed == "completed"
+                else "未能关闭提示，请重试跳过教程。"
+            )
+            self.poll()
         elif (
             self.pending_outcome is not None
             or self.pending_start is not None
@@ -298,6 +327,23 @@ class Practice:
             self.set_start_sensitive(False)
             self.status.set_text("未连接当前会话的 TypeLay。请先从应用菜单启动客户端。")
         else:
+            if self.completion_failed == "completed":
+                if result.get("ending") or result.get("endUnconfirmed"):
+                    self.complete.set_sensitive(False)
+                    self.set_start_sensitive(False)
+                    self.status.set_text(
+                        "未确认结束练习，请关闭练习并重新启动 TypeLay 后重试。"
+                        if result.get("endUnconfirmed")
+                        else "正在结束练习…"
+                    )
+                    return False
+                if result.get("finishPending"):
+                    self.complete.set_sensitive(True)
+                    self.complete.set_label("重试保存(_D)")
+                    self.status.set_text("完成尚未保存。可重试保存，或重新开始练习。")
+                    return False
+                self.completion_failed = False
+                self.complete.set_label("完成并关闭(_D)")
             view = result.get("presentation")
             if not isinstance(view, dict):
                 self.complete.set_sensitive(False)
@@ -322,11 +368,7 @@ class Practice:
             self.presentation = view
             self.complete.set_sensitive(view.get("completed") is True)
             if not self.start_error:
-                self.progress.set_text(
-                    view["progressNotice"]
-                    if current or not self.awaiting_binding
-                    else "等待确认本次练习框连接，请稍候再按快捷键。"
-                )
+                self.progress.set_text(view["progressNotice"] if not self.awaiting_binding else "")
             self.reset_button.set_label(view["restartLabel"] + "(_R)")
             self.reset_button.get_accessible().set_name(view["restartLabel"])
             for label, key in (
@@ -346,12 +388,23 @@ class Practice:
                 view["restartLabel"] if result.get("progress") else view["startLabel"]
             )
             self.close_button.set_label(view["closeLabel"])
+            ending = result.get("ending") or result.get("endUnconfirmed")
             self.set_start_sensitive(
-                result.get("managedPractice", False)
+                not ending
+                and result.get("managedPractice", False)
                 and result.get("modelReady", False)
                 and result.get("practiceEnabled", False)
                 and not view["languageNeedsChange"]
             )
+            if ending:
+                self.progress.set_text("")
+                self.complete.set_sensitive(False)
+                self.status.set_text(
+                    "未确认结束练习，请关闭练习并重新启动 TypeLay 后重试。"
+                    if result.get("endUnconfirmed")
+                    else "正在结束练习…"
+                )
+                return False
             if not result.get("managedPractice"):
                 self.complete.set_sensitive(False)
                 self.status.set_text(
@@ -362,20 +415,21 @@ class Practice:
                 self.status.set_text("本地模型尚未就绪。请在 TypeLay 设置中完成组件安装。")
                 return False
             if view["currentStateNotice"]:
-                self.status.set_text(view["currentStateNotice"])
+                self.status.set_text("")
                 return False
             if self.start_error:
                 self.status.set_text(self.start_error)
                 return False
             if self.awaiting_binding:
-                self.status.set_text(self.progress.get_text())
+                self.status.set_text("等待确认本次练习框连接，请稍候再按快捷键。")
                 return False
             if current and self.restarting and not progress.get("previewCompleted"):
-                self.status.set_text("练习进度已重置。请按上方第 1 步重新生成预览。")
+                self.progress.set_text("练习进度已重置。请按上方第 1 步重新生成预览。")
+                self.status.set_text("")
                 return False
             if current and progress.get("previewCompleted"):
                 self.restarting = False
-            self.status.set_text(view["progressNotice"])
+            self.status.set_text("")
         return False
 
     def close(self, *_):
@@ -387,9 +441,11 @@ class Practice:
                     control(self.paths, "endOnDemandPractice")
                 except (OSError, EOFError, ValueError):
                     pass
+                finally:
+                    # The window is already destroyed. Keep the existing GTK
+                    # context alive only for the bounded native revoke response.
+                    GLib.idle_add(lambda: (Gtk.main_quit(), False)[1])
 
-            self.close_thread = threading.Thread(target=retire, name="typelay-practice-close")
-            self.close_thread.start()
             if self.confirmation is not None:
                 self.confirmation.destroy()
                 self.confirmation = None
@@ -397,7 +453,9 @@ class Practice:
                 GLib.source_remove(self.timer)
                 self.timer = 0
             self.window.destroy()
-            Gtk.main_quit()
+            self.source = None
+            self.close_thread = threading.Thread(target=retire, name="typelay-practice-close")
+            self.close_thread.start()
         return True
 
     def run(self):

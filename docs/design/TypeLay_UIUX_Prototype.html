@@ -969,7 +969,7 @@ dialog p {
       </div>
       <div class="composer-wrap" id="composerWrap">
         <div class="practice-guide" id="practiceGuide" hidden>
-          <strong>
+          <strong id="practiceHeading">
             试一试按需翻译
           </strong>
           <span id="practiceText">
@@ -1131,7 +1131,8 @@ dialog p {
     quarantined: false,
     sendCount: 0,
     acceptCount: 0,
-    practice: 0
+    practice: 0,
+    automaticPractice: 0
   };
   const source = $('sourceInput'),
     overlay = $('overlay'),
@@ -1367,6 +1368,7 @@ dialog p {
   }
   function beginEdit() {
     if (!canEdit()) return;
+    if (state.automaticPractice === 3) state.automaticPractice = 2;
     cancelPending();
     state.manual = state.candidate;
     state.safePermit = false;
@@ -1378,6 +1380,7 @@ dialog p {
   }
   function returnToSource(fromKey = false) {
     if (state.phase !== 'editing') return;
+    const practiceEdited = state.automaticPractice === 2 && candidate.textContent !== state.candidate;
     state.candidate = candidate.textContent;
     state.manual = state.candidate;
     state.phase = 'returning';
@@ -1396,6 +1399,10 @@ dialog p {
       }
       state.phase = 'pending';
       state.safePermit = !!state.candidate.trim();
+      if (practiceEdited && state.safePermit) {
+        state.automaticPractice = 3;
+        $('practiceText').textContent = '已返回原框，尚未替换。再按一次 ' + acceptKey + ' 接受修改。';
+      }
       render();
       announce(state.candidate.trim() ? '已返回原输入框。再按一次 ' + acceptKey + ' 接受。' : '译文为空。请重新翻译或退出当前翻译。');
     }, 350);
@@ -1420,6 +1427,7 @@ dialog p {
       notice('替换结果未确认，请检查原输入框。不会自动重试。');
       return true;
     }
+    const editedPractice = state.automaticPractice === 3 && state.phase === 'pending';
     const value = state.candidate;
     if (state.selection) {
       const selection = state.selection;
@@ -1431,6 +1439,13 @@ dialog p {
       source.setSelectionRange(value.length, value.length);
     }
     state.acceptCount++;
+    if (state.automaticPractice === 1) {
+      state.automaticPractice = 2;
+      $('practiceText').textContent = '再输入一句原文，点击新译文并修改；第一次 ' + acceptKey + ' 只返回原框。';
+    } else if (editedPractice) {
+      state.automaticPractice = 4;
+      $('practiceText').textContent = '演示已完成：自动翻译、接受，再修改译文并接受。文本没有发送。';
+    }
     state.snapshot = source.value;
     clearCandidate();
     state.phase = 'idle';
@@ -1574,7 +1589,8 @@ dialog p {
       returnKeyHeld: false,
       expanded: false,
       quarantined: false,
-      practice: 0
+      practice: 0,
+      automaticPractice: 0
     });
     source.value = sample;
     source.readOnly = false;
@@ -1652,6 +1668,15 @@ dialog p {
       state.snapshot = '';
       clearCandidate();
       state.phase = 'idle';
+    } else if (name === 'automatic-practice') {
+      source.value = '';
+      state.snapshot = '';
+      clearCandidate();
+      state.phase = 'idle';
+      state.automaticPractice = 1;
+      $('practiceHeading').textContent = '试一试自动翻译与编辑';
+      $('practiceText').textContent = '输入一句中文，等待译文后按 ' + acceptKey + ' 接受。';
+      $('practiceGuide').hidden = false;
     } else if (name === 'ondemand' || name === 'practice') {
       state.mode = 'OnDemand';
       state.session = false;
@@ -1659,6 +1684,8 @@ dialog p {
       state.phase = 'hidden';
       if (name === 'practice') {
         state.practice = 1;
+        $('practiceHeading').textContent = '试一试按需翻译';
+        $('practiceText').textContent = '在下方输入框按 Ctrl+Shift+F9，查看译文。';
         $('practiceGuide').hidden = false;
       }
     }
@@ -1687,6 +1714,7 @@ dialog p {
     if (state.phase === 'editing') returnToSource(false);
   });
   source.addEventListener('input', () => {
+    if (state.automaticPractice === 3) state.automaticPractice = 2;
     notice('');
     if (!state.enabled || !state.targetSafe || state.quarantined) return;
     if (state.mode === 'OnDemand' && !state.session) return;

@@ -164,8 +164,8 @@ def run(arguments):
         "Source": "en",
         "Target": "zh",
         "OnboardingComplete": arguments.desktop_scope != "setup",
-        "ExperimentalWriteback": True,
-        "Mode": 0,
+        "ExperimentalWriteback": arguments.desktop_scope != "setup",
+        "Mode": 1 if arguments.desktop_scope == "setup" else 0,
     }
 
     session_bindings = getattr(arguments, "gtk_session_bindings", False)
@@ -2372,7 +2372,9 @@ def run(arguments):
                             )
                             assert focused(source)
                             accepted_text = text(source)
-                            practice_view = control(paths, "practiceStatus")["presentation"]
+                            practice_view = control(
+                                paths, "practiceStatus", {"lesson": "automatic"}
+                            )["presentation"]
                             restart = wait_for(
                                 lambda: named(practice.pid, practice_view["restartLabel"]),
                                 "manual practice did not expose its restart action",
@@ -2562,6 +2564,7 @@ def run(arguments):
             from support.gtk_accessibility import (
                 Atspi,
                 GLib,
+                bounds,
                 focused,
                 named,
                 select_settings_page,
@@ -3130,6 +3133,294 @@ def run(arguments):
                         print("Managed session cleanup could not confirm completion", flush=True)
 
                 resources.callback(cleanup_managed_session)
+
+                def desktop_action(identity, cancel=False):
+                    deadline = time.monotonic() + 15
+
+                    def remaining():
+                        value = deadline - time.monotonic()
+                        assert value > 0, f"settings action timed out: {identity}"
+                        return value
+
+                    def available_action():
+                        row = desktop_row()
+                        if row is not None:
+                            for action in row["actions"]:
+                                if action["id"] == identity:
+                                    return row, action
+                        return None
+
+                    # Owned process exit precedes the next read-only support
+                    # refresh. Wait for the real offered action, never invoke a
+                    # missing action or extend the existing interaction budget.
+                    row, action = wait_for(
+                        available_action,
+                        f"settings action unavailable: {identity}",
+                        timeout=remaining(),
+                    )
+                    if row["primaryAction"]["id"] != identity:
+                        details = settings_control(support["labels"]["details"], remaining())
+                        if not details.get_state_set().contains(Atspi.StateType.EXPANDED):
+                            activate_scrolled_setting(
+                                support["labels"]["details"], timeout=remaining()
+                            )
+                    activate_scrolled_setting(
+                        "开始练习…" if identity == "Connect" else action["label"],
+                        timeout=remaining(),
+                    )
+                    if identity == "Connect" and not cancel:
+                        confirm = settings_control(support["labels"]["confirm"], remaining())
+                        cancel_button = settings_control(support["labels"]["cancel"], remaining())
+                        wait_for(
+                            lambda: focused(confirm) or focused(cancel_button),
+                            "connection dialog did not focus one of its two actions",
+                            timeout=remaining(),
+                        )
+                        if not focused(confirm):
+                            key("Tab")
+                        wait_for(
+                            lambda: focused(confirm)
+                            and any(
+                                window.get("pid") == process.pid
+                                and window.get("is_focused") is True
+                                for window in contents(request("Windows"), "Windows")
+                            ),
+                            "connection confirmation lacks actual settings keyboard focus",
+                            timeout=remaining(),
+                        )
+                        # AT-SPI only observes the real button. This one
+                        # down/up travels through niri and supplies a fresh serial.
+                        key("space")
+                    else:
+                        activate_setting(
+                            support["labels"]["cancel" if cancel else "confirm"], remaining()
+                        )
+
+                assert control(paths, "settings") is True
+                # First-run Settings already selected Application Support.
+
+                wait_for(
+                    lambda: (row := desktop_row())
+                    and not any(a["id"] == "Connect" for a in row["actions"]),
+                    "fresh client must require the user's original input-method acknowledgement",
+                )
+                calibrate_settings_scroll(settings_control(next_step_label))
+                activate_scrolled_setting(
+                    "我已记下原输入法的启动方式，并知道如何恢复",
+                    evidence_name="application-support-recovery-acknowledgement-scroll",
+                )
+                wait_for(
+                    lambda: (row := desktop_row())
+                    and any(a["id"] == "Connect" for a in row["actions"]),
+                    "prepared component did not offer the explicit practice connection",
+                )
+
+                # Complete automatic/editing evidence before unrelated selector,
+                # advanced-setting and scrolling regressions. This window uses
+                # the same shipped preparation/connection actions and native path.
+                def practice_has_keyboard_focus():
+                    return any(
+                        window["id"] == managed_window["id"]
+                        and window.get("pid") == managed_window["pid"]
+                        and window.get("is_focused") is True
+                        for window in contents(request("Windows"), "Windows")
+                    )
+
+                desktop_action("Connect", cancel=True)
+                assert not any(
+                    window.get("title") == "TypeLay 实操练习"
+                    for window in contents(request("Windows"), "Windows")
+                )
+                desktop_action("Connect")
+                managed_window = wait_for(
+                    lambda: next(
+                        (
+                            window
+                            for window in contents(request("Windows"), "Windows")
+                            if window.get("title") == "TypeLay 实操练习"
+                        ),
+                        None,
+                    ),
+                    "prepared component did not open the complete lesson",
+                    timeout=60,
+                )
+                try:
+                    source = wait_for(
+                        lambda: named(managed_window["pid"], "练习输入框"),
+                        "complete lesson source missing",
+                    )
+                    # Cold preparation has the same documented token-expiry
+                    # fallback as the existing managed-practice scenario.
+                    request({"Action": {"FocusWindow": {"id": managed_window["id"]}}})
+                    request({"Action": {"FullscreenWindow": {"id": managed_window["id"]}}})
+                    wait_for(
+                        lambda: practice_has_keyboard_focus()
+                        and focused(source)
+                        and status().get("sourceSupported"),
+                        "complete lesson source not connected",
+                    )
+
+                    def practice_action(label):
+                        node = wait_for(
+                            lambda: named(managed_window["pid"], label),
+                            f"practice action missing: {label}",
+                        )
+                        assert Atspi.Action.do_action(node.get_action_iface(), 0)
+                        return node
+
+                    automatic_view = control(paths, "practiceStatus", {"lesson": "automatic"})[
+                        "presentation"
+                    ]
+                    typed(original)
+                    wait_for(lambda: text(source) == original, "practice lost keyboard input")
+                    assert (
+                        control(paths, "startAutomaticPractice", {"confirmedSwitch": True}) is False
+                    )
+                    assert (
+                        control(
+                            paths,
+                            "startAutomaticPractice",
+                            {"confirmedSwitch": True, "target": {"value": "caller-chosen"}},
+                        )
+                        is False
+                    ), "ordinary control caller supplied its own practice target"
+                    assert json.loads(paths.settings.read_text())["Mode"] == 1
+                    practice_action(automatic_view["startLabel"])
+                    practice_action(automatic_view["cancelLabel"])
+                    assert json.loads(paths.settings.read_text())["Mode"] == 1
+                    practice_action(automatic_view["startLabel"])
+                    cancel = wait_for(
+                        lambda: named(managed_window["pid"], automatic_view["cancelLabel"]),
+                        "automatic lesson confirmation missing",
+                    )
+                    actions = cancel.get_parent()
+                    confirm = next(
+                        actions.get_child_at_index(index)
+                        for index in range(actions.get_child_count())
+                        if actions.get_child_at_index(index).get_name()
+                        == automatic_view["startLabel"]
+                    )
+                    assert Atspi.Action.do_action(confirm.get_action_iface(), 0)
+                    wait_for(
+                        lambda: json.loads(paths.settings.read_text())["Mode"] == 0
+                        and focused(source),
+                        "confirmed automatic lesson did not switch mode and return to source",
+                    )
+                    assert json.loads(paths.settings.read_text())["ExperimentalWriteback"] is False
+                    key("ctrl+a")
+                    typed(original)
+                    wait_for(
+                        ready_to_accept, "owned automatic lesson did not acquire a real candidate"
+                    )
+                    checkpoint = trace_checkpoint()
+                    key("Tab")
+                    wait_for(
+                        lambda: translated(text(source)) and verified_write(checkpoint),
+                        "owned lesson first Tab was not verified",
+                    )
+                    wait_for(
+                        lambda: named(
+                            managed_window["pid"],
+                            "已验证第一次接受。请在原输入框输入新的原文，等待译文后进入编辑。",
+                        ),
+                        "first verified acceptance did not advance the lesson",
+                    )
+                    assert json.loads(paths.settings.read_text())["OnboardingComplete"] is False
+                    editing_source = "Please review this note."
+                    key("ctrl+a")
+                    typed(editing_source)
+                    wait_for(
+                        lambda: text(source) == editing_source and ready_to_accept(),
+                        "new source did not generate the lesson's fresh editing candidate",
+                    )
+                    candidate = wait_for(
+                        lambda: named(managed_window["pid"], "TypeLay 译文候选"),
+                        "managed editing candidate was not accessible",
+                    )
+                    current_window = next(
+                        window
+                        for window in contents(request("Windows"), "Windows")
+                        if window["id"] == managed_window["id"]
+                    )
+                    area, _frame = bounds(
+                        candidate, managed_window["pid"], current_window["layout"]["window_size"]
+                    )
+                    x, y, width, height = area
+                    subprocess.run(
+                        [
+                            "xdotool",
+                            "mousemove",
+                            "--window",
+                            nested[0],
+                            str(x + width // 2),
+                            str(y + height // 2),
+                            "click",
+                            "1",
+                        ],
+                        check=True,
+                        timeout=3,
+                    )
+                    wait_for(
+                        lambda: focused(candidate) and view("EditingTranslation"),
+                        "real managed candidate click did not enter editing",
+                    )
+                    draft = "Edited practice translation."
+                    key("ctrl+a")
+                    typed(draft)
+                    wait_for(lambda: text(candidate) == draft, "managed editor lost the real draft")
+                    assert text(source) == editing_source
+                    checkpoint = trace_checkpoint()
+                    key("Tab")
+                    wait_for(
+                        lambda: focused(source) and ready_to_accept("EditedTranslationPending"),
+                        "edited practice did not return and acquire a fresh source observation",
+                    )
+                    assert text(source) == editing_source and not new_write_outcomes(checkpoint)
+                    checkpoint = trace_checkpoint()
+                    key("Tab")
+                    wait_for(
+                        lambda: text(source) == draft and verified_write(checkpoint),
+                        "second edited Tab did not verify the actual draft",
+                    )
+                    wait_for(
+                        lambda: named(
+                            managed_window["pid"], "完整练习已完成：已验证自动接受和编辑后接受。"
+                        ),
+                        "real automatic/editing receipts did not complete this lesson",
+                    )
+                    complete = named(managed_window["pid"], "完成并关闭")
+                    assert complete and complete.get_state_set().contains(Atspi.StateType.SENSITIVE)
+                    assert json.loads(paths.settings.read_text())["ExperimentalWriteback"] is False
+                    assert json.loads(paths.settings.read_text())["OnboardingComplete"] is False
+                    subprocess.run(
+                        ["grim", str(arguments.output / "managed-automatic-practice.png")],
+                        check=True,
+                        timeout=3,
+                    )
+                    evidence.append(
+                        "Owned GTK3 complete lesson: explicit Automatic confirmation, real CPU preview, "
+                        "Verified Tab, new source, actual edited draft, return without write, fresh capture "
+                        "and second Verified Tab; global ExperimentalWriteback remains false"
+                    )
+                finally:
+                    close_managed_window()
+                wait_for(
+                    lambda: not any(
+                        window["id"] == managed_window["id"]
+                        for window in contents(request("Windows"), "Windows")
+                    ),
+                    "complete lesson did not close its native source",
+                )
+                stopped = cleanup_managed_session()
+                assert stopped and stopped["ok"], "complete lesson retained its owned session"
+                managed_window = None
+                assert json.loads(paths.settings.read_text())["OnboardingComplete"] is False
+                assert json.loads(paths.settings.read_text())["ExperimentalWriteback"] is False
+                assert user_profile.read_bytes() == before_profile
+                assert control(paths, "settings") is True
+                request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
+                settings_page("应用支持")
+
                 # One owned, ordinary GTK ELF registered in this isolated HOME.
                 # Exercise the real selector and guardian, never a desktop-file
                 # path/argv command or an app-name-based capability exception.
@@ -3143,7 +3434,6 @@ def run(arguments):
                     f'Exec="{executable}" %U\n'
                 )
                 resources.callback(registration.unlink, missing_ok=True)
-                activate_scrolled_setting("我已记下原输入法的启动方式，并知道如何恢复")
 
                 def application_view():
                     return status()["setup"]["applicationSupport"]["installedApplication"]
@@ -3975,70 +4265,10 @@ def run(arguments):
                 settings = json.loads(paths.settings.read_text())
                 stop()
                 settings["OnboardingComplete"] = False
+                settings["ExperimentalWriteback"] = False
+                settings["Mode"] = 0
                 start()
                 assert not status()["setup"]["onboardingComplete"]
-
-                def desktop_action(identity, cancel=False):
-                    deadline = time.monotonic() + 15
-
-                    def remaining():
-                        value = deadline - time.monotonic()
-                        assert value > 0, f"settings action timed out: {identity}"
-                        return value
-
-                    def available_action():
-                        row = desktop_row()
-                        if row is not None:
-                            for action in row["actions"]:
-                                if action["id"] == identity:
-                                    return row, action
-                        return None
-
-                    # Owned process exit precedes the next read-only support
-                    # refresh. Wait for the real offered action, never invoke a
-                    # missing action or extend the existing interaction budget.
-                    row, action = wait_for(
-                        available_action,
-                        f"settings action unavailable: {identity}",
-                        timeout=remaining(),
-                    )
-                    if row["primaryAction"]["id"] != identity:
-                        details = settings_control(support["labels"]["details"], remaining())
-                        if not details.get_state_set().contains(Atspi.StateType.EXPANDED):
-                            activate_scrolled_setting(
-                                support["labels"]["details"], timeout=remaining()
-                            )
-                    activate_scrolled_setting(
-                        "开始练习…" if identity == "Connect" else action["label"],
-                        timeout=remaining(),
-                    )
-                    if identity == "Connect" and not cancel:
-                        confirm = settings_control(support["labels"]["confirm"], remaining())
-                        cancel_button = settings_control(support["labels"]["cancel"], remaining())
-                        wait_for(
-                            lambda: focused(confirm) or focused(cancel_button),
-                            "connection dialog did not focus one of its two actions",
-                            timeout=remaining(),
-                        )
-                        if not focused(confirm):
-                            key("Tab")
-                        wait_for(
-                            lambda: focused(confirm)
-                            and any(
-                                window.get("pid") == process.pid
-                                and window.get("is_focused") is True
-                                for window in contents(request("Windows"), "Windows")
-                            ),
-                            "connection confirmation lacks actual settings keyboard focus",
-                            timeout=remaining(),
-                        )
-                        # AT-SPI only observes the real button. This one
-                        # down/up travels through niri and supplies a fresh serial.
-                        key("space")
-                    else:
-                        activate_setting(
-                            support["labels"]["cancel" if cancel else "confirm"], remaining()
-                        )
 
                 assert control(paths, "settings") is True
                 # First-run Settings already selected Application Support.
@@ -4058,6 +4288,7 @@ def run(arguments):
                     and any(a["id"] == "Connect" for a in row["actions"]),
                     "prepared component did not offer the explicit practice connection",
                 )
+
                 managed_window = None
 
                 def practice_has_keyboard_focus():
@@ -4101,19 +4332,6 @@ def run(arguments):
                         and status().get("sourceSupported"),
                         "managed practice did not connect through the production adapter",
                     )
-                    typed(original)
-                    wait_for(lambda: text(source) == original, "practice lost keyboard input")
-                    wait_for(ready_to_accept, "managed practice lacked a model candidate")
-                    checkpoint = trace_checkpoint()
-                    key("Tab")
-                    wait_for(lambda: translated(text(source)), "managed practice Tab did not write")
-                    wait_for(lambda: verified_write(checkpoint), "managed write was not verified")
-                    latest_preferences = json.loads(paths.settings.read_text())
-                    practice_view = control(paths, "practiceStatus")["presentation"]
-                    assert (
-                        control(paths, "startOnDemandPractice", {"confirmedSwitch": False}) is False
-                    ), "a stale OnDemand button silently changed Automatic mode"
-                    assert json.loads(paths.settings.read_text())["Mode"] == 0
 
                     def practice_action(label):
                         node = wait_for(
@@ -4122,6 +4340,21 @@ def run(arguments):
                         )
                         assert Atspi.Action.do_action(node.get_action_iface(), 0)
                         return node
+
+                    # Keep the existing independent F9/F10 lesson in this same
+                    # shipped window, with no inherited completion or authority.
+                    choice = named(managed_window["pid"], "练习内容")
+                    assert Atspi.Selection.select_child(choice.get_selection_iface(), 1)
+                    practice_view = control(paths, "practiceStatus")["presentation"]
+                    wait_for(
+                        lambda: named(managed_window["pid"], practice_view["title"]),
+                        "on-demand lesson selection did not update the shared presentation",
+                    )
+                    latest_preferences = json.loads(paths.settings.read_text())
+                    assert (
+                        control(paths, "startOnDemandPractice", {"confirmedSwitch": False}) is False
+                    )
+                    assert json.loads(paths.settings.read_text())["Mode"] == 0
 
                     practice_action(practice_view["startLabel"])
                     practice_action(practice_view["cancelLabel"])
@@ -4196,7 +4429,13 @@ def run(arguments):
                     )
                     assert control(paths, "finishOnboarding", {"outcome": "completed"}) is False
                     key("ctrl+shift+F9")
-                    wait_for(ready_to_accept, "practice F9 did not produce the real model preview")
+                    wait_for(
+                        lambda: view("ValidTranslation"),
+                        "practice F9 did not produce the real model preview",
+                    )
+                    assert not status()["acceptanceReady"], (
+                        "metadata-only F9 progress granted Tab permission"
+                    )
                     assert text(source) == original, "practice preview changed the source"
                     wait_for(
                         lambda: named(
@@ -4315,7 +4554,9 @@ def run(arguments):
                         lambda: json.loads(paths.settings.read_text())["Source"] == "zh",
                         "practice language change did not save",
                     )
-                    changed_view = control(paths, "practiceStatus")["presentation"]
+                    changed_view = control(paths, "practiceStatus", {"lesson": "automatic"})[
+                        "presentation"
+                    ]
                     assert changed_view["languageNeedsChange"]
                     assert changed_view["sampleText"] != practice_view["sampleText"]
                     assert (

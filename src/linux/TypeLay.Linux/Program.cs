@@ -41,7 +41,16 @@ internal static class Program
         var settings = new SettingsStore(Path.Combine(config, "settings.json"),
             enabled => SetStartup(enabled, home, config), app => Path.GetFileName(app.Trim()).ToLowerInvariant());
         using var model = LinuxModelFactory.Create(home, data);
-        using var controller = new SessionController(settings, model, view, input, input, loop);
+        using var controller = new SessionController(settings, model, view, input, input, loop,
+            async binding => (await link.Ask("retireAutomaticPractice", binding, timeoutMs: 2000)).ValueKind == JsonValueKind.True);
+        async Task<bool> ApplySettings(UserSettings next)
+        {
+            var expected = settings.Value;
+            if (!await controller.PrepareSettingsChangeAsync(next) || !ReferenceEquals(expected, settings.Value))
+                return false;
+            settings.Update(next);
+            return true;
+        }
         void Status() => link.Send("status", new
         {
             model = model.Status,
@@ -143,7 +152,12 @@ internal static class Program
                     }
                     try
                     {
-                        settings.Update(updated!);
+                        if (!await ApplySettings(updated!))
+                            return new
+                            {
+                                saved = false,
+                                message = "练习尚未确认结束，设置未保存。请重启 TypeLay 后重试。"
+                            };
                         return new
                         {
                             saved = true,
@@ -158,6 +172,55 @@ internal static class Program
                             message = SettingsDraftPresentation.Create().InvalidMessage
                         };
                     }
+                case "automaticPractice":
+                    var automaticProgress = controller.AutomaticPracticeProgress;
+                    return AutomaticPracticePresentation.Create(settings.Value,
+                        value.ValueKind == JsonValueKind.String && value.TryGetGuid(out var automaticPresentationRun)
+                            && automaticProgress?.RunId == automaticPresentationRun ? automaticProgress : null);
+                case "automaticPracticeProgress":
+                    return controller.AutomaticPracticeProgress;
+                case "startAutomaticPractice":
+                    if (value.ValueKind is not (JsonValueKind.True or JsonValueKind.False)
+                        || !model.Ready || !settings.Value.Enabled || settings.Value.Source == settings.Value.Target
+                        || settings.Value.Mode != WorkMode.Automatic && !value.GetBoolean())
+                        return false;
+                    if (settings.Value.Mode != WorkMode.Automatic)
+                        return await ApplySettings(settings.Value with
+                        {
+                            Mode = WorkMode.Automatic
+                        });
+                    return true;
+                case "beginAutomaticPractice":
+                    return value.ValueKind == JsonValueKind.String && value.TryGetGuid(out var automaticRun)
+                        && controller.BeginAutomaticPractice(automaticRun);
+                case "bindAutomaticPractice":
+                    // Only the inherited desktop pipe reaches this operation. The
+                    // desktop has authenticated its managed process and exact field;
+                    // control-socket callers cannot supply this binding themselves.
+                    if (!ValidAutomaticBinding(value))
+                        return false;
+                    return controller.BindAutomaticPractice(DesktopLink.Decode<OwnedPracticeBinding>(value));
+                case "endAutomaticPractice":
+                    return value.ValueKind == JsonValueKind.String && value.TryGetGuid(out var automaticEnd)
+                        && await controller.EndAutomaticPracticeAsync(automaticEnd);
+                case "finishAutomaticPractice":
+                    if (value.ValueKind != JsonValueKind.String || !value.TryGetGuid(out var automaticFinish))
+                        return new
+                        {
+                            saved = false,
+                            retrySave = false
+                        };
+                    bool automaticSaved = false;
+                    try
+                    {
+                        automaticSaved = await controller.FinishAutomaticPracticeAsync(automaticFinish);
+                    }
+                    catch (SettingsPersistenceException) { }
+                    return new
+                    {
+                        saved = automaticSaved,
+                        retrySave = controller.CanRetryAutomaticPracticeSave(automaticFinish)
+                    };
                 case "onDemandPractice":
                     var practiceProgress = controller.PracticeProgress;
                     return OnDemandPracticePresentation.Create(settings.Value,
@@ -169,21 +232,19 @@ internal static class Program
                     if (value.ValueKind != JsonValueKind.Null)
                         return false;
                     // Legacy onboarding completion is only a prompt preference.
-                    settings.Update(settings.Value with
+                    return await ApplySettings(settings.Value with
                     {
                         OnboardingComplete = true
                     });
-                    return true;
                 case "finishOnDemandPractice":
                     if (value.ValueKind != JsonValueKind.String || !value.TryGetGuid(out var finishRun)
                         || controller.PracticeProgress is not { Completed: true } finishedPractice
                         || finishedPractice.RunId != finishRun)
                         return false;
-                    settings.Update(settings.Value with
+                    return await ApplySettings(settings.Value with
                     {
                         OnboardingComplete = true
                     });
-                    return true;
                 case "beginOnDemandPractice":
                     if (value.ValueKind != JsonValueKind.String || !value.TryGetGuid(out var beginRun)
                         || !controller.BeginOnDemandPractice(beginRun))
@@ -220,7 +281,7 @@ internal static class Program
                     // Check and update on the settings owner's event loop. A GTK
                     // snapshot may lag an already queued tray or language change.
                     if (settings.Value.Mode != WorkMode.OnDemand)
-                        settings.Update(settings.Value with
+                        return await ApplySettings(settings.Value with
                         {
                             Mode = WorkMode.OnDemand
                         });
@@ -248,8 +309,7 @@ internal static class Program
                         return false;
                     try
                     {
-                        settings.Update(traySettings);
-                        return true;
+                        return await ApplySettings(traySettings);
                     }
                     catch (SettingsPersistenceException)
                     {
@@ -260,10 +320,11 @@ internal static class Program
                     if (next.Schema != 1 || next.Theme is not ("system" or "light" or "dark")
                         || next.Excluded.Length > 256 || next.Excluded.Any(app => string.IsNullOrWhiteSpace(app) || app.Length > 128))
                         return false;
-                    settings.Update(next);
-                    return true;
+                    return await ApplySettings(next);
                 case "reloadModel":
                     if (model.Busy || !modelStart.IsCompleted)
+                        return false;
+                    if (!await controller.RetireAutomaticPracticeAsync() || model.Busy || !modelStart.IsCompleted)
                         return false;
                     model.Dispose();
                     modelStart = model.StartAsync();
@@ -284,6 +345,24 @@ internal static class Program
             return 1;
         }
     }
+    private static bool ValidAutomaticBinding(JsonElement value)
+    {
+        if (value.ValueKind != JsonValueKind.Object || value.EnumerateObject().Count() != 4
+            || !value.TryGetProperty("runId", out var run) || !NonEmptyGuid(run)
+            || !value.TryGetProperty("connectionId", out var connection) || !NonEmptyGuid(connection)
+            || !value.TryGetProperty("commandGeneration", out var generation) || !NonEmptyGuid(generation)
+            || !value.TryGetProperty("target", out var target) || target.ValueKind != JsonValueKind.Object
+            || target.EnumerateObject().Count() != 3
+            || !target.TryGetProperty("backend", out var backend) || backend.ValueKind != JsonValueKind.String
+            || backend.GetString() != "linux-gtk3"
+            || !target.TryGetProperty("value", out var field) || !NonEmptyGuid(field)
+            || !target.TryGetProperty("lifetime", out var lifetime) || !NonEmptyGuid(lifetime))
+            return false;
+        return true;
+    }
+    private static bool NonEmptyGuid(JsonElement value) => value.ValueKind == JsonValueKind.String
+        && value.TryGetGuid(out var result) && result != Guid.Empty;
+
     private static bool TryApplyTraySettings(JsonElement patch, UserSettings current, out UserSettings updated)
     {
         updated = current;

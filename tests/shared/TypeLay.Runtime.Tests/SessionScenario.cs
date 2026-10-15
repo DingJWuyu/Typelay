@@ -32,7 +32,8 @@ internal sealed class SessionScenario : IDisposable
     }
 
     public SessionScenario(WorkMode mode = WorkMode.Automatic, bool experimental = false,
-        bool initiallyAvailable = false, bool inputReady = true, bool start = true, Action<bool>? setStartup = null)
+        bool initiallyAvailable = false, bool inputReady = true, bool start = true, Action<bool>? setStartup = null,
+        Func<OwnedPracticeBinding, Task<bool>>? retireOwnedPractice = null)
     {
         SynchronizationContext.SetSynchronizationContext(_context);
         Source = new(new("controlled", "field-a", Guid.NewGuid()), "hello", new(5, 5),
@@ -50,7 +51,7 @@ internal sealed class SessionScenario : IDisposable
             Mode = mode,
             ExperimentalWriteback = experimental
         });
-        Controller = new(Settings, Model, View, Input, Service, Loop);
+        Controller = new(Settings, Model, View, Input, Service, Loop, retireOwnedPractice ?? (_ => Task.FromResult(true)));
         if (start)
             Controller.StartAsync().GetAwaiter().GetResult();
     }
@@ -65,6 +66,7 @@ internal sealed class SessionScenario : IDisposable
             pending.SetException(new IOException("controlled start failure"));
         _context.Drain();
     }
+    public UserSettings ReloadSettings() => new SettingsStore(Path.Combine(_directory, "settings.json")).Value;
     public void BlockSettingsWrites() => Directory.CreateDirectory(Path.Combine(_directory, "settings.json.tmp"));
     public void AllowSettingsWrites() => Directory.Delete(Path.Combine(_directory, "settings.json.tmp"));
     public void Tick(long elapsed = 40)
@@ -176,6 +178,7 @@ internal sealed class SessionScenario : IDisposable
         {
             get; set;
         }
+        public Guid ConnectionId { get; set; } = Guid.NewGuid();
         public bool InEditor
         {
             get; set;

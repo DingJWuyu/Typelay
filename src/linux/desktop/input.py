@@ -47,6 +47,7 @@ class Peer:
         self.backend = "gtk3"
         self.ancestors = {}
         self.lifetime = None
+        self.connection_id = str(uuid.uuid4())
         self.shortcut = None
         self.command_id = 0
         self.command_generation = None
@@ -156,6 +157,13 @@ class Input:
         self.shortcut_command = None
         self.shortcut_diagnostic_count = 0
         self.publish_diagnostics = []
+        self.practice_authorization = None
+        self.practice_pending = None
+        self.practice_retirement = None
+        self.practice_retirement_task = None
+        self.practice_retirement_ack = None
+        self.practice_retired = lambda _run: None
+        self.practice_settings_changed = lambda: None
         self.closing = False
         self.niri = Niri(glib, self.changed)
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -199,6 +207,9 @@ class Input:
         )
 
     def lost(self, peer):
+        practice = self.practice_authorization or self.practice_pending
+        if practice and practice["peer"] is peer:
+            self.retire_practice(practice["runId"])
         self.invalidate_pause()
         peer.support_observation = None
         self.clear_browser_capture()
@@ -286,6 +297,175 @@ class Input:
         except (OSError, EOFError, ValueError, TypeError, TimeoutError):
             return None
 
+    async def practice_binding(self, pid, target=None):
+        """Return a host-owned connection and acknowledged, exact source binding."""
+        native = await self.practice_target(pid, target)
+        if native is None:
+            return None
+        peers = [
+            peer for peer in self.peers if peer.pid == pid and peer.lifetime == native["lifetime"]
+        ]
+        if len(peers) != 1:
+            return None
+        peer = peers[0]
+        record = self.bound_observation
+        acknowledgement = self.current_session_acknowledgement(record)
+        if (
+            not record
+            or record["peer"] is not peer
+            or record["target"] != native
+            or not acknowledgement
+            or not acknowledgement["sourceReady"]
+            or self.bound != native
+            or self.focus() not in ("Source", "Overlay")
+        ):
+            return None
+        return {
+            "target": native,
+            "connectionId": peer.connection_id,
+            "commandGeneration": acknowledgement["generation"],
+        }
+
+    def prepare_practice(self, binding, owns_process):
+        if (
+            self.practice_retirement is not None
+            or self.practice_pending is not None
+            or self.practice_authorization is not None
+        ):
+            return False
+        peers = [peer for peer in self.peers if peer.connection_id == binding["connectionId"]]
+        if len(peers) != 1:
+            return False
+        peer = peers[0]
+        if (
+            peer.backend != "gtk3"
+            or not owns_process(peer.pid)
+            or not peer.link.channel.alive
+            or target_id(peer, binding["target"]["value"]) != binding["target"]
+            or self.bound != binding["target"]
+            or self.shortcut_config.get("generation") != binding["commandGeneration"]
+            or self.focus() not in ("Source", "Overlay")
+        ):
+            return False
+        # A pending binding is an ACK destination, never publication authority.
+        # The source must remain continuously valid across Runtime's bind await.
+        self.practice_retirement_ack = None
+        self.practice_pending = {
+            **binding,
+            "peer": peer,
+            "ownsProcess": owns_process,
+            "windowEpoch": self.window_epoch,
+        }
+        return True
+
+    def authorize_practice(self, binding, owns_process):
+        pending = self.practice_pending
+        if (
+            pending is None
+            or self.practice_retirement is not None
+            or any(
+                binding.get(key) != pending[key]
+                for key in ("runId", "target", "connectionId", "commandGeneration")
+            )
+            or pending["windowEpoch"] != self.window_epoch
+            or pending["peer"] not in self.peers
+            or not pending["peer"].link.channel.alive
+            or not owns_process(pending["peer"].pid)
+            or self.bound != pending["target"]
+            or self.shortcut_config.get("generation") != pending["commandGeneration"]
+            or self.focus() not in ("Source", "Overlay")
+        ):
+            return False
+        self.practice_pending = None
+        self.practice_authorization = pending
+        return True
+
+    def retire_practice(self, run, *, notify=True):
+        authorization = self.practice_authorization or self.practice_pending
+        if authorization is None or authorization["runId"] != run:
+            return (
+                self.practice_retirement is not None and self.practice_retirement["runId"] == run
+            ) or (self.practice_retirement_ack is not None and self.practice_retirement_ack == run)
+        # This synchronous point closes new host publications. An already
+        # published permit still belongs to native until its FIFO revoke ACK.
+        self.practice_authorization = self.practice_pending = None
+        self.practice_retirement = authorization
+        self.practice_retirement_task = None
+        self.practice_retirement_ack = None
+        self.invalidate_publication()
+        if notify:
+            self.practice_retired(run)
+        return True
+
+    async def confirm_practice_retirement(self, run):
+        retirement = self.practice_retirement
+        if retirement is None:
+            return self.practice_retirement_ack is not None and self.practice_retirement_ack == run
+        if retirement["runId"] != run:
+            return False
+        if self.practice_retirement_task is None:
+            import asyncio
+
+            async def revoke():
+                peer = retirement["peer"]
+                if peer not in self.peers or not peer.link.channel.alive:
+                    return False
+                try:
+                    # Fixed Peer/connection plus the ordered stream associates
+                    # this response with clearing that connection's publication.
+                    # New/late practice publications have already been rejected.
+                    await peer.link.ask("revoke", {"shortcuts": 1})
+                except (OSError, EOFError, ValueError, TimeoutError):
+                    return False
+                return (
+                    peer in self.peers
+                    and peer.link.channel.alive
+                    and peer.connection_id == retirement["connectionId"]
+                )
+
+            self.practice_retirement_task = asyncio.create_task(revoke())
+        confirmed = await self.practice_retirement_task
+        if confirmed and self.practice_retirement is retirement:
+            self.practice_retirement_ack = run
+            self.practice_retirement = None
+        return confirmed
+
+    def check_practice(self):
+        authorization = self.practice_authorization or self.practice_pending
+        if authorization is None:
+            return
+        peer = authorization["peer"]
+        if (
+            peer not in self.peers
+            or not peer.link.channel.alive
+            or not authorization["ownsProcess"](peer.pid)
+            or self.enabled is False
+            or self.shortcut_config.get("generation") != authorization["commandGeneration"]
+            or (
+                self.fresh()
+                and (
+                    self.bound != authorization["target"]
+                    or self.focus() not in ("Source", "Overlay")
+                )
+            )
+        ):
+            self.retire_practice(authorization["runId"])
+
+    def practice_publication_allowed(self, lease, peer):
+        run, connection = lease.get("practiceRunId"), lease.get("practiceConnectionId")
+        if run is None and connection is None:
+            return True
+        self.check_practice()
+        authorization = self.practice_authorization
+        return bool(
+            authorization
+            and authorization["runId"] == run
+            and authorization["connectionId"] == connection
+            and authorization["peer"] is peer
+            and authorization["target"] == lease["source"]["target"]
+            and authorization["commandGeneration"] == lease.get("commandGeneration")
+        )
+
     def focus(self):
         if self.bound and self.overlay_focused and self.fresh():
             return "Overlay"
@@ -295,9 +475,15 @@ class Input:
         return "Other"
 
     def state(self):
+        self.check_practice()
         paused = self.current_pause_record()
         value = {
             "ready": self.fresh(),
+            "connectionId": self.bound_observation["peer"].connection_id
+            if self.bound_observation
+            and self.bound_observation["peer"] in self.peers
+            and self.bound_observation["target"] == self.bound
+            else "00000000-0000-0000-0000-000000000000",
             "nativeReady": self.focused_peer() is not None,
             "sessionShortcuts": self.current_session_acknowledgement(self.bound_observation)
             if self.bound_observation
@@ -1239,6 +1425,8 @@ class Input:
         peer = record["peer"]
         if self.focused_peer() is not peer or self.overlay_focused:
             return
+        if not shortcut and not self.practice_publication_allowed(lease, peer):
+            return
         if shortcut:
             if not self.shortcut_config.get("enabled") or value[
                 "generation"
@@ -1439,6 +1627,18 @@ class Input:
         elif name == "ui":
             self.ui_event(peer, value)
         elif name == "input":
+            authorization = self.practice_authorization or self.practice_pending
+            if (
+                authorization
+                and authorization["peer"] is peer
+                and value.get("target") == authorization["target"]["value"]
+                and value.get("focusChanged") is True
+                and value.get("focused") is False
+                and not self.overlay_focused
+            ):
+                # Native emits its overlay-focus transition before source
+                # focus-out. Other controls are outside the lesson's family.
+                self.retire_practice(authorization["runId"])
             self.invalidate_pause()
             self.clear_browser_capture()
             if self.published_plan and self.published_plan[0] is peer:
@@ -1486,6 +1686,8 @@ class Input:
                 {
                     "kind": "accept",
                     "commandGeneration": issued["lease"].get("commandGeneration"),
+                    "practiceRunId": issued["lease"].get("practiceRunId"),
+                    "practiceConnectionId": issued["lease"].get("practiceConnectionId"),
                     "target": issued["lease"]["source"]["target"],
                     "permit": issued["permit"],
                     "completedReceipt": receipt,
@@ -1608,6 +1810,17 @@ class Input:
         return False
 
     async def request(self, operation, value):
+        if operation == "retireAutomaticPractice":
+            authorization = (
+                self.practice_authorization or self.practice_pending or self.practice_retirement
+            )
+            if not authorization or any(
+                value.get(key) != authorization[key]
+                for key in ("runId", "target", "connectionId", "commandGeneration")
+            ):
+                return False
+            self.retire_practice(authorization["runId"])
+            return await self.confirm_practice_retirement(authorization["runId"])
         if operation == "observePause":
             return await self.observe_pause(value)
         if operation == "capture":
@@ -1620,6 +1833,7 @@ class Input:
 
     def notification(self, operation, value):
         if operation == "settings":
+            self.practice_settings_changed()
             self.settings_generation += 1
             self.enabled = value.get("enabled")
             self.invalidate_pause()
