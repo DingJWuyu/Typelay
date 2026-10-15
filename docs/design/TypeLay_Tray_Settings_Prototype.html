@@ -1730,11 +1730,16 @@ dialog p {
               <p class="setting-description" id="applicationOutcome" role="status" hidden></p>
               <p class="setting-description" id="connectionOutcome" role="status" hidden>
               </p>
+              <p class="setting-description" id="privateSessionWarning" role="status" hidden></p>
               <details class="details">
                 <summary>
-                  当前字段的能力
+                  查看详情
                 </summary>
                 <div class="details-body">
+                  <div id="privateSessionDetails" hidden>
+                    <p>打开应用或练习前，先保存工作并记下原输入法的启动方式。已有 Fcitx/IBus 时，由你手动退出后再检查；TypeLay 不会替你停止或切换。</p>
+                    <p>私有会话使用独立配置。结束时先正常关闭受管应用、练习及其子窗口，再确认移除接入，随后按原方式恢复输入法。关闭 TypeLay 本身不会结束这些窗口或恢复原输入法。</p>
+                  </div>
                   <div class="capability">
                     <span>
                       显示译文
@@ -2239,7 +2244,7 @@ dialog p {
     $('previewCapability').textContent = connected ? '可用' : '未确认';
     const linux = state.platform === 'linux';
     $('registeredApplicationRow').hidden = !linux || state.integration !== 'ready';
-    $('applicationOutcome').hidden = !linux || !state.application;
+    $('applicationOutcome').hidden = !linux || !state.application || (state.applicationLaunched && connected);
     $('selectedApplication').textContent = state.application
       ? applicationNames[state.application]
       : '尚未选择应用';
@@ -2249,6 +2254,13 @@ dialog p {
       : state.applicationLaunched
         ? connected ? '已检测到所选应用连接。当前输入框能力仍单独检查。' : '已请求启动，等待连接。若应用已在运行，请保存工作并正常退出后再打开。'
         : '尚未启动。';
+    $('privateSessionWarning').hidden = !linux || state.integration !== 'ready';
+    $('privateSessionDetails').hidden = !linux;
+    $('privateSessionWarning').textContent = state.connection === 'conflict'
+      ? '先保存工作、记下恢复方式，再手动退出原输入法。'
+      : state.applicationLaunched
+        ? '结束时先关闭受管应用，再移除接入并按原方式恢复输入法。'
+        : '打开前须确认原输入法已退出，并记下恢复方式。';
     $('exclusionsDetails').hidden = state.platform !== 'linux';
     renderDraft();
   }
@@ -2425,7 +2437,7 @@ dialog p {
     $('applicationDialog').close();
     render();
   };
-  $('openApplication').onclick = () => confirmAction('通过 TypeLay 打开应用？', '请先保存工作。已有窗口可能需要正常退出后重新打开。请确认原输入法已退出，并已记录恢复方式；TypeLay 不会代你结束输入法进程。', '已确认，打开应用', () => {
+  $('openApplication').onclick = () => confirmAction('通过 TypeLay 打开应用？', '请先保存工作。已有窗口可能需要正常退出后重新打开。请确认原输入法已退出，并已记录恢复方式；TypeLay 不会代你结束输入法进程。关闭 TypeLay 不会关闭应用或结束私有会话。结束时先正常关闭受管应用，再移除接入并按原方式恢复输入法。', '已确认，打开应用', () => {
     state.applicationLaunched = true;
     state.connection = 'disconnected';
     render();

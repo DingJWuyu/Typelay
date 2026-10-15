@@ -792,20 +792,45 @@ class ApplicationSupportTests(unittest.TestCase):
         guidance = self.support.desktop_guidance()
         self.assertFalse(guidance["originalMethodRecorded"])
         self.assertTrue(guidance["canRecordOriginalMethod"])
+        for requirement in ("启动方式", "手动恢复", "手动退出"):
+            self.assertIn(requirement, guidance["notice"])
         self.assertNotIn("Connect", self.support.desktop_fact()["supportedActions"])
         self.assertTrue(self.support.record_original_method())
         self.assertIn("Connect", self.support.desktop_fact()["supportedActions"])
         self.assertIn("由你确认", self.support.desktop_guidance()["steps"])
+        self.assertNotIn("记下", self.support.desktop_guidance()["notice"])
+        self.assertFalse(self.support.desktop_guidance()["canRecordOriginalMethod"])
         reopened = ApplicationSupport(Paths(self.package))
         reopened.desktop_session_state = {"state": "inactive"}
         self.assertFalse(reopened.desktop_guidance()["originalMethodRecorded"])
         self.assertNotIn("Connect", reopened.desktop_fact()["supportedActions"])
+
+    def test_unchecked_input_method_stays_in_details_until_components_are_ready(self):
+        guidance = self.support.desktop_guidance()
+        self.assertEqual(guidance["notice"], "")
+        self.assertIn("尚未确认", guidance["steps"])
+        self.assertFalse(guidance["canRecordOriginalMethod"])
+        self.assertFalse(guidance["canRecordNoOriginalMethod"])
+
+    def test_active_session_shows_only_current_exit_requirement_above_details(self):
+        self.support.desktop_session_state = {"state": "active"}
+        self.assertTrue(self.support.record_original_method())
+        guidance = self.support.desktop_guidance()
+        self.assertIn("应用或练习", guidance["notice"])
+        self.assertIn("手动恢复", guidance["notice"])
+        self.assertIn("移除", guidance["notice"])
+        self.assertNotIn("记下", guidance["notice"])
+        self.assertNotIn("开始练习", guidance["notice"])
+        self.assertIn("已由你确认", guidance["steps"])
+        self.assertFalse(guidance["canRecordOriginalMethod"])
+        self.assertFalse(guidance["canRecordNoOriginalMethod"])
 
     def test_restoration_guidance_never_treats_detection_as_original_restore_proof(self):
         self.support.desktop_session_state = {"state": "unknown", "detail": "unknown"}
         self.assertFalse(self.support.record_original_method())
         self.assertFalse(self.support.desktop_guidance()["canRecordOriginalMethod"])
         self.assertIn("尚未确认", self.support.desktop_guidance()["steps"])
+        self.assertIn("尚未确认", self.support.desktop_guidance()["notice"])
         self.support.practice_component_removed = True
         for source in ("user-service", "unconfirmed"):
             self.support.desktop_session_state = {
@@ -816,6 +841,7 @@ class ApplicationSupportTests(unittest.TestCase):
             guidance = self.support.desktop_guidance()
             self.assertIn("检测到 Fcitx 正在运行", guidance["steps"])
             self.assertIn("不能证明原启动方式已恢复", guidance["steps"])
+            self.assertIn("不能证明原启动方式已恢复", guidance["notice"])
             self.assertNotIn("Connect", self.support.desktop_fact()["supportedActions"])
         self.support.desktop_session_state = {"state": "inactive"}
         self.assertIn("手动恢复", self.support.desktop_guidance()["steps"])
@@ -828,6 +854,12 @@ class ApplicationSupportTests(unittest.TestCase):
         self.assertFalse(self.support.record_original_method(no_original=True))
         self.support.desktop_session_state = {"state": "inactive"}
         self.assertTrue(self.support.record_original_method(no_original=True))
+        self.assertEqual(self.support.desktop_guidance()["notice"], "")
+        self.support.desktop_session_state = {"state": "active"}
+        self.assertIn("应用或练习", self.support.desktop_guidance()["notice"])
+        self.assertIn("没有原输入法需要恢复", self.support.desktop_guidance()["notice"])
+        self.assertNotIn("手动恢复", self.support.desktop_guidance()["notice"])
+        self.support.desktop_session_state = {"state": "inactive"}
         self.support.practice_component_removed = True
         self.assertIn("没有原输入法需要恢复", self.support.desktop_guidance()["steps"])
         self.support.desktop_session_state = {"state": "unknown"}
@@ -896,6 +928,22 @@ class ApplicationSupportTests(unittest.TestCase):
         with patch.dict(os.environ, {"PATH": str(self.home / "input-status-tools")}):
             asyncio.run(self.support.refresh())
         self.assertNotIn("Connect", self.support.desktop_fact()["supportedActions"])
+
+    def test_live_connection_removes_duplicate_success_but_keeps_failed_application_result(self):
+        self.support.selected_application = {"id": "org.typelay.Sample.desktop", "name": "Sample"}
+        self.support.application_result = "已请求打开应用，尚未确认连接。"
+        fact = self.support.desktop_fact(connected=True)
+        view = self.support.installed_application_view([fact])
+        self.assertEqual(view["name"], "Sample")
+        self.assertEqual(view["result"], "")
+        self.assertFalse(view["canOpen"])
+        self.assertEqual(fact["capabilities"], {})
+        self.support.application_failed = True
+        self.support.application_result = "应用启动失败，请正常退出旧窗口后重试。"
+        self.assertEqual(
+            self.support.installed_application_view([fact])["result"],
+            "应用启动失败，请正常退出旧窗口后重试。",
+        )
 
     def test_component_preparation_success_does_not_hide_later_package_damage(self):
         self.desktop_payload()

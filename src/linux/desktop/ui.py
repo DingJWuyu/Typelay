@@ -186,8 +186,6 @@ class ApplicationSupportPane:
         self.title = Gtk.Label(label="应用支持", xalign=0)
         self.title.get_style_context().add_class("settings-page-title")
         self.box.pack_start(self.title, False, False, 0)
-        self.summary = self.note("")
-        self.summary.get_style_context().add_class("dim-label")
         self.preparation_details = Gtk.Expander()
         self.preparation_details.get_accessible().set_name("本地翻译组件管理")
         self.preparation_details.set_margin_top(8)
@@ -247,7 +245,7 @@ class ApplicationSupportPane:
         self.state.get_style_context().add_class("settings-section-title")
         self.reason = self.note("")
         self.reason.get_style_context().add_class("dim-label")
-        self.desktop_safety = self.note("若原有输入法，请先记下启动方式，并手动退出与恢复。")
+        self.desktop_safety = self.note("")
         self.desktop_safety.set_no_show_all(True)
         self.desktop_safety.get_style_context().add_class("settings-warning")
         self.primary = Gtk.Box(spacing=8)
@@ -255,11 +253,12 @@ class ApplicationSupportPane:
         self.desktop_guide = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
         self.desktop_guide.set_no_show_all(True)
         self.box.pack_start(self.desktop_guide, False, False, 0)
-        self.desktop_steps = self.note("", self.desktop_guide)
         self.record_original = Gtk.Button(label="我已记下原输入法的启动方式，并知道如何恢复")
+        self.record_original.set_no_show_all(True)
         self.record_original.connect("clicked", lambda *_: self.record_original_method())
         self.desktop_guide.pack_start(self.record_original, False, False, 0)
         self.no_original = Gtk.Button(label="此前未运行输入法，无需恢复")
+        self.no_original.set_no_show_all(True)
         self.no_original.connect(
             "clicked", lambda *_: self.record_original_method(no_original=True)
         )
@@ -268,12 +267,16 @@ class ApplicationSupportPane:
         self.box.pack_start(self.details, False, False, 0)
         detail_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         self.details.add(detail_box)
+        self.summary = self.note("", detail_box)
+        self.summary.get_style_context().add_class("dim-label")
         self.description = self.note("", detail_box)
         self.capabilities = self.note("", detail_box)
         self.capability_note = self.note("", detail_box)
         self.guidance = self.note("", detail_box)
         self.shortcut_status = self.note("", detail_box)
         self.shortcut_status.set_no_show_all(True)
+        self.desktop_steps = self.note("", detail_box)
+        self.desktop_steps.set_no_show_all(True)
         self.technical = self.note("", detail_box)
         self.technical.set_selectable(True)
         self.secondary = Gtk.Box(spacing=8)
@@ -405,11 +408,19 @@ class ApplicationSupportPane:
         if not row or not self.value:
             return
         self.state.set_text(row["statusText"])
-        self.reason.set_text(row["reasonText"])
+        connected = row["state"] in ("Connected", "BuiltInAvailable")
+        self.reason.set_text(
+            row["capabilitySummary"]
+            if connected
+            and row["reason"] in ("None", "LimitedFields", "PreviewOnly", "NoDirectWrite")
+            else row["reasonText"]
+        )
         self.description.set_text(row["description"])
         self.capabilities.set_text(row["capabilityText"])
         self.capability_note.set_text(self.value["capabilityNote"])
-        self.guidance.set_text(row["guidance"])
+        self.guidance.set_text(
+            row["reasonText"] + "\n" + row["guidance"] if connected else row["guidance"]
+        )
         self.technical.set_text(row.get("details") or "")
         application = self.value.get("installedApplication")
         if row["id"] == "desktop-text" and application:
@@ -427,25 +438,20 @@ class ApplicationSupportPane:
             self.installed.hide()
         guidance = self.value.get("desktopGuidance")
         if row["id"] == "desktop-text" and guidance:
-            self.desktop_safety.show()
+            self.desktop_safety.set_text(guidance["notice"])
+            self.desktop_safety.set_visible(bool(guidance["notice"]))
             self.desktop_steps.set_text(guidance["title"] + "\n" + guidance["steps"])
-            self.record_original.set_label(
-                "已确认此前无输入法（仅你的确认）"
-                if guidance["noOriginalMethod"]
-                else "已确认记下原启动方式（仅你的确认）"
-                if guidance["originalMethodRecorded"]
-                else "我已记下原输入法的启动方式，并知道如何恢复"
-            )
-            self.record_original.set_sensitive(
-                guidance["canRecordOriginalMethod"] and not self.busy
-            )
-            self.desktop_guide.show()
             self.desktop_steps.show()
-            self.record_original.show()
+            self.record_original.set_visible(guidance["canRecordOriginalMethod"])
+            self.record_original.set_sensitive(not self.busy)
             self.no_original.set_visible(guidance["canRecordNoOriginalMethod"])
             self.no_original.set_sensitive(not self.busy)
+            self.desktop_guide.set_visible(
+                guidance["canRecordOriginalMethod"] or guidance["canRecordNoOriginalMethod"]
+            )
         else:
             self.desktop_safety.hide()
+            self.desktop_steps.hide()
             self.desktop_guide.hide()
         signature = (row["id"], row.get("primaryAction"), row["secondaryActions"], self.busy)
         if signature != self.action_signature:

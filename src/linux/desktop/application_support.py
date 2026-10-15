@@ -392,7 +392,7 @@ class ApplicationSupport:
         fact = next(row for row in facts if row["id"] == "desktop-text")
         detail = self.application_result
         if selected and not self.application_failed and fact["state"] == "Connected":
-            detail = "已检测到本次打开的应用连接；当前字段能力见详情。"
+            detail = ""
         elif selected and not self.application_failed and self.application_launch:
             detail = (
                 "尚未检测到本次应用连接。若应用已运行，请保存工作并正常退出，再通过 TypeLay 打开。"
@@ -501,26 +501,26 @@ class ApplicationSupport:
         return True
 
     def desktop_guidance(self):
-        """Small manual sequence from existing facts; no inferred service commands."""
+        """Present current session requirements separately from the full manual flow."""
         session = self.desktop_session_state
         state = session["state"]
-        running = (
-            {
-                "existing-fcitx-session": "Fcitx",
-                "existing-ibus-session": "IBus",
-            }.get(session.get("reason"))
-            if state == "conflict"
-            else None
-        )
+        running = {
+            "existing-fcitx-session": "Fcitx",
+            "existing-ibus-session": "IBus",
+        }.get(session.get("reason"))
         observed = (
             f"检测到 {running} 正在运行。"
-            if running
+            if state == "conflict" and running
+            else "已有输入法正在运行。"
+            if state == "conflict"
             else "当前未检测到 Fcitx/IBus 冲突。"
             if state == "inactive"
-            else "TypeLay 自有练习输入法正在运行。"
+            else "TypeLay 私有输入法会话正在运行。"
             if state == "active"
-            else "请正常关闭仍在运行的练习及其子窗口，再重新检查。"
+            else "私有输入法已退出，请正常关闭仍在运行的应用或练习及其子窗口，再重新检查。"
             if state == "applications-running"
+            else "私有输入法会话仍在启动，请稍后重新检查。"
+            if state == "starting"
             else "当前输入法状态尚未确认，请先重新检查；未知状态不能开始或宣告恢复。"
         )
         recorded = (
@@ -528,38 +528,45 @@ class ApplicationSupport:
             if self.no_original_method
             else "已由你确认记下原启动方式；TypeLay 没有验证该方式。"
             if self.original_method_recorded
-            else "请先在自己的记录中记下原输入法如何启动，并确认知道练习后如何恢复。"
+            else "请先记下原输入法的启动方式，并确认知道结束私有会话后如何手动恢复。"
         )
-        restore = "练习后请按原启动方式手动恢复输入法，再点“重新检查”。"
+        before = (
+            "重新检查无冲突后，可通过 TypeLay 打开应用或开始练习。"
+            if self.no_original_method
+            else "保存工作、完成候选，手动退出原输入法；重新检查无冲突后，再打开应用或练习。"
+        )
+        restore = "正常关闭应用或练习及其子窗口，再用本页“移除”结束私有输入法会话；"
+        restore += (
+            "你此前确认没有原输入法需要恢复，移除后请重新检查。"
+            if self.no_original_method
+            else "随后按记录手动恢复原输入法并重新检查。"
+        )
         if self.practice_component_removed:
             restore = (
-                "受管组件已移除。"
-                + observed
-                + "这不能证明原启动方式已恢复，请按自己的记录手动恢复并核对，再重新检查。"
+                "受管组件已移除，当前未检测到输入法冲突。你此前确认没有原输入法需要恢复。"
+                if self.no_original_method and state == "inactive"
+                else "受管组件已移除。这不能证明原启动方式已恢复，"
+                "请按自己的记录手动恢复并核对，再重新检查。"
             )
-        elif self.practice_session_started or state in ("active", "applications-running"):
-            restore = "先正常关闭练习及其子窗口，再用本页“移除”确认结束自有输入法；随后手动恢复原输入法并重新检查。"
-        if self.no_original_method:
-            if self.practice_component_removed and state == "inactive":
-                restore = "受管组件已移除，当前未检测到输入法冲突。你此前确认没有原输入法需要恢复。"
-            elif not self.practice_component_removed:
-                restore = "练习后正常关闭练习及子窗口，再确认“移除”并重新检查。你确认此前没有原输入法需要恢复。"
-        exit_step = (
-            "3. 你确认此前未运行输入法；重新检查无冲突后继续。\n"
-            if self.no_original_method
-            else "3. 保存工作、完成候选，由你手动退出原输入法，然后重新检查。\n"
-        )
+        if self.practice_component_removed or state in ("active", "applications-running"):
+            notice = restore
+        elif state in ("inactive", "conflict"):
+            notice = observed if state == "conflict" else ""
+            if not self.original_method_recorded:
+                notice += (
+                    "请先记下原输入法的启动方式并确认能手动恢复；"
+                    "保存工作、完成候选后，手动退出原输入法并重新检查。"
+                )
+            elif not self.no_original_method:
+                notice += (
+                    "请保存工作、完成候选，手动退出原输入法后重新检查；结束私有会话后需手动恢复。"
+                )
+        else:
+            notice = "" if state == "unchecked" else observed
         return {
             "title": "输入法接入与恢复",
-            "steps": (
-                "1. 检查原输入法：" + observed + "\n"
-                "2. 记录恢复方式："
-                + recorded
-                + "\n"
-                + exit_step
-                + "4. 确认无冲突后，使用本页“开始练习…”的确认窗口启动练习。\n"
-                "5. " + restore
-            ),
+            "notice": notice,
+            "steps": observed + "\n" + recorded + "\n" + before + "\n" + restore,
             "originalMethodRecorded": self.original_method_recorded,
             "noOriginalMethod": self.no_original_method,
             "canRecordNoOriginalMethod": state == "inactive"
@@ -593,7 +600,7 @@ class ApplicationSupport:
                 if session["state"] == "inactive":
                     actions.extend(["Connect", "Remove"])
                 elif session["state"] == "active":
-                    details += "\n\n独立练习输入法正在运行，尚需从实际输入框确认连接和能力。"
+                    details += "\n\n私有输入法会话正在运行，尚需从实际输入框确认连接和能力。"
                     if session["bundle"] == str(prepared["directory"]):
                         actions.append("Connect")
                     else:
@@ -609,12 +616,12 @@ class ApplicationSupport:
                         details += (
                             "\n\n已识别当前 Fcitx 来自专用用户服务。此检查只确认当前启动来源，"
                             "不会自动停止或恢复服务，也未确认具体服务名称或完整恢复方法；"
-                            "结束练习后仍需按你记下并核对的方式手动恢复输入法。"
+                            "结束私有会话后仍需按你记下并核对的方式手动恢复输入法。"
                         )
                     elif session.get("reason") == "existing-fcitx-session":
                         details += (
                             "\n\n原输入法的专用启动来源尚未确认。请记下原来的启动方式，"
-                            "自行退出并在练习结束后按原方式恢复；这不表示系统不支持。"
+                            "自行退出并在私有会话结束后按原方式恢复；这不表示系统不支持。"
                         )
                     actions.append("Remove")
                 elif session["state"] == "abnormal":
@@ -624,12 +631,12 @@ class ApplicationSupport:
                     details += "\n\n私有会话仍在启动，请稍后检查连接；不会重复启动另一个输入法。"
                 elif session["state"] == "applications-running":
                     details += (
-                        "\n\n输入法已经退出，但练习或其子窗口仍在运行。请正常关闭后重新检查。"
+                        "\n\n输入法已经退出，但应用或练习及其子窗口仍在运行。请正常关闭后重新检查。"
                     )
                 elif session["state"] == "unknown":
                     details += "\n\n" + session["detail"]
                 else:
-                    details += "\n\n请先检查当前会话，再决定是否开始练习。"
+                    details += "\n\n请先检查当前会话，再决定是否打开应用或练习。"
             else:
                 actions.append("Install")
                 details = (
@@ -641,11 +648,11 @@ class ApplicationSupport:
                     state, reason = "Error", "ComponentMissing"
                     details += "\n组件校验未通过，请使用完整可信的 TypeLay 主包重试。"
         if prepared["state"] != "prepared" and session["state"] == "active":
-            details += "\n\n受管练习会话仍在运行；组件文件变化不会自动停止该会话。"
+            details += "\n\n受管私有输入法会话仍在运行；组件文件变化不会自动停止该会话。"
             if session.get("canStop"):
                 actions.append("Remove")
             else:
-                details += " 请先正常关闭练习及子窗口，再重新检查。"
+                details += " 请先正常关闭应用或练习及其子窗口，再重新检查。"
         if "Connect" in actions and not self.original_method_recorded:
             actions.remove("Connect")
         if "Connect" in actions:
