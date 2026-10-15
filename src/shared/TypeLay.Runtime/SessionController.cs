@@ -34,6 +34,9 @@ public sealed partial class SessionController : IDisposable
     private string? _statusOverride;
     private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
     private string? _lastTrace;
+    private Guid _practiceCaptureTraceGeneration;
+    private int _practiceCaptureTraceCount;
+    private bool _practiceCaptureTracePublished;
     public string ShortcutStatus => _settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand && !_hook.ShortcutsReady
         ? "快捷键输入观察未就绪，当前不会执行按需命令。" : _hook.ShortcutStatus;
     public bool InputAvailable => _broker.Available && _hook.Ready;
@@ -473,7 +476,7 @@ public sealed partial class SessionController : IDisposable
     private InputContext Context() => new(_hook.UserEpoch, _hook.ForegroundEpoch,
         _hook.SourceUserEpoch, _session.Current?.Target, _settings.Value.Excluded,
         _settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand,
-        new(_hook.CommandGeneration, CurrentSessionBindings), ContinuousPracticeRead());
+        new(_hook.CommandGeneration, CurrentSessionBindings), PracticeReturnRead() ?? ContinuousPracticeRead());
     private bool PauseAnchorIsCurrent(long now) => _pauseAnchor is { IsUsable: true } anchor
         && _pauseWindowEpoch == _hook.WindowEpoch && _pauseForegroundEpoch == _hook.ForegroundEpoch
         && anchor.FocusEpoch == _hook.ForegroundEpoch && _hook.GetFocus(anchor.Target) == FocusMember.Source
@@ -593,9 +596,34 @@ public sealed partial class SessionController : IDisposable
         long windowEpoch = _hook.WindowEpoch;
         long contentEpoch = _hook.ContentEpoch;
         var request = Context();
+        bool traceCapture = false;
+        if (!string.IsNullOrWhiteSpace(_tracePath) && _settings.Value.Mode == WorkMode.OnDemand
+            && PracticeProgress is { } practice && request.SessionShortcuts is { } configuration
+            && practice.CommandGeneration == configuration.Generation)
+        {
+            if (_practiceCaptureTraceGeneration != configuration.Generation)
+            {
+                _practiceCaptureTraceGeneration = configuration.Generation;
+                _practiceCaptureTraceCount = 0;
+                _practiceCaptureTracePublished = false;
+            }
+            traceCapture = !_practiceCaptureTracePublished && _practiceCaptureTraceCount < 16;
+            if (traceCapture)
+                _practiceCaptureTraceCount++;
+        }
+        long startedAtMs = traceCapture ? _loop.NowMs : 0;
+        long? resumedAtMs = null, observedAtMs = null;
+        FocusMember? resultFocus = null, checkedFocus = null;
+        string captureExit = "exception";
         try
         {
             var result = await _broker.CaptureAsync(request);
+            if (traceCapture)
+            {
+                resumedAtMs = _loop.NowMs;
+                observedAtMs = result.Snapshot?.ObservedAtMs;
+                resultFocus = result.Focus;
+            }
             // Input already queued before this read completed owns the earlier action.
             // Accepting it advances generation before an obsolete read can clear it.
             if (!_disposed)
@@ -610,11 +638,15 @@ public sealed partial class SessionController : IDisposable
                 StopSession("practice-continuity-lost");
             CheckAutomaticPracticeIdentity();
             if (_disposed || generation != _generation)
+            {
+                captureExit = _disposed ? "disposed" : "generation-changed";
                 return;
+            }
             if (_pendingWakeCapture is { } pending && _hook.GetFocus(pending.Target) == FocusMember.Other)
                 _pendingWakeCapture = null;
             if (windowEpoch != _hook.WindowEpoch)
             {
+                captureExit = "window-changed";
                 _pendingWakeCapture = null;
                 Trace("capture-window-changed", detail: new
                 {
@@ -641,11 +673,18 @@ public sealed partial class SessionController : IDisposable
                 RefreshConnectionStatus();
             }
             if (SuspendAutomaticRead(request, result, now))
+            {
+                captureExit = "automatic-read-suspended";
                 return;
-            if (ObserveAwaitingPractice(result, now))
+            }
+            if (ObserveAwaitingPractice(result, now) || ObservePracticeReturn(result, now))
+            {
+                captureExit = "awaiting-practice";
                 return;
+            }
             if (result.Snapshot is not { } snapshot || result.Focus == FocusMember.Other)
             {
+                captureExit = "capture-empty";
                 var pendingWake = _pendingWakeCapture;
                 StopSession("capture-empty");
                 if (result.Snapshot is null && pendingWake is not null && pendingWake.Generation == generation
@@ -655,10 +694,15 @@ public sealed partial class SessionController : IDisposable
                         pendingWake.CommandGeneration, pendingWake.CommandSequence);
                 return;
             }
-            if (_hook.GetFocus(snapshot.Target) == FocusMember.Other)
+            checkedFocus = _hook.GetFocus(snapshot.Target);
+            if (checkedFocus == FocusMember.Other)
+            {
+                captureExit = "focus-changed";
                 return;
+            }
             if (!observationFresh)
             {
+                captureExit = "capture-expired";
                 RevokeInput("capture-expired");
                 _permitUntil = 0;
                 Render();
@@ -666,7 +710,10 @@ public sealed partial class SessionController : IDisposable
             }
             if (_editTransitionUntil > now && result.Focus == FocusMember.Source
                 && _session.State == SessionState.EditingTranslation)
+            {
+                captureExit = "edit-transition";
                 return;
+            }
             if (result.Focus == FocusMember.Overlay)
                 _editTransitionUntil = 0;
             _sessionShortcuts = result.SessionShortcuts is { } acknowledgement
@@ -685,7 +732,14 @@ public sealed partial class SessionController : IDisposable
                 _permitUntil = 0;
                 _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, false, _hook.CommandGeneration, _generation), null);
                 if (result.Focus == FocusMember.Source)
+                {
                     _hook.PublishShortcut(new(snapshot, contentEpoch, request.ForegroundEpoch));
+                    captureExit = "shortcut-publish-called";
+                    if (traceCapture)
+                        _practiceCaptureTracePublished = true;
+                }
+                else
+                    captureExit = "inactive-non-source";
                 _overlay.HideQuietly();
                 return;
             }
@@ -698,6 +752,11 @@ public sealed partial class SessionController : IDisposable
                 _permitUntil = 0;
             }
             _session.Observe(snapshot, result.Focus, now);
+            if (_awaitingPracticeReturn is not null && _session.State != SessionState.EditedTranslationPending)
+            {
+                StopSession("practice-return-source-changed");
+                return;
+            }
             ObserveAutomaticReturn();
             // Reading the source completes wake even when translation or writing remains unavailable.
             if (_pendingWakeCapture is { } wake && wake.Generation == generation
@@ -728,16 +787,29 @@ public sealed partial class SessionController : IDisposable
             _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, escape, _hook.CommandGeneration, _generation,
                 permit is null ? null : practiceBinding?.RunId, permit is null ? null : practiceBinding?.ConnectionId), permit);
             if (result.Focus == FocusMember.Source)
+            {
                 _hook.PublishShortcut(new(snapshot, contentEpoch, request.ForegroundEpoch));
+                captureExit = "shortcut-publish-called";
+                if (traceCapture)
+                    _practiceCaptureTracePublished = true;
+            }
+            else
+                captureExit = "active-non-source";
             Render();
             Trace(inputUnchanged ? "capture" : "capture-input-changed");
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
+            if (traceCapture)
+                resumedAtMs ??= _loop.NowMs;
+            captureExit = "capture-failed";
             if (!_disposed)
                 DrainInputNotices();
             if (_disposed || generation != _generation)
+            {
+                captureExit = _disposed ? "disposed" : "generation-changed";
                 return;
+            }
             var pendingWake = _pendingWakeCapture;
             StopSession("capture-failed");
             _inputReadFailed = true;
@@ -750,7 +822,31 @@ public sealed partial class SessionController : IDisposable
                 SetServiceStatus("暂时无法读取当前输入框，请保持焦点后再试一次。", "wake-capture-unavailable",
                     pendingWake.CommandGeneration, pendingWake.CommandSequence);
         }
-        finally { _capturing = false; }
+        finally
+        {
+            _capturing = false;
+            // Only the first bounded observations of a registered on-demand practice.
+            // Record existing gate results; never probe native focus for diagnostics.
+            if (traceCapture)
+                Trace("practice-capture-exit", detail: new
+                {
+                    reason = captureExit,
+                    captureGeneration = generation,
+                    currentGeneration = _generation,
+                    captureCommandGeneration = request.SessionShortcuts?.Generation,
+                    commandGeneration = _hook.CommandGeneration,
+                    captureWindowEpoch = windowEpoch,
+                    captureContentEpoch = contentEpoch,
+                    captureForegroundEpoch = request.ForegroundEpoch,
+                    startedAtMs,
+                    resumedAtMs,
+                    awaitMs = resumedAtMs - startedAtMs,
+                    afterResumeMs = _loop.NowMs - resumedAtMs,
+                    observedAtMs,
+                    resultFocus = resultFocus?.ToString(),
+                    checkedFocus = checkedFocus?.ToString()
+                }, inspectFocus: false);
+        }
     }
     private void Wake(InputNotice notice)
     {
@@ -998,17 +1094,28 @@ public sealed partial class SessionController : IDisposable
         _permitUntil = 0;
         Render();
         _returningToSource = true;
-        bool returned = false;
+        var request = _ownedPractice is { } owned
+            ? new OwnedPracticeReturnRequest(owned, new(source.Target, _hook.CommandGeneration, generation)) : null;
+        _automaticPlans.Clear();
+        InputReturn result = new(false);
         try
         {
-            returned = await _broker.ReturnToSourceAsync(Context());
+            result = await _broker.ReturnToSourceAsync(Context() with
+            {
+                PracticeReturn = request
+            });
         }
         catch (Exception ex) when (ex is not OutOfMemoryException) { }
         finally { _returningToSource = false; }
         if (_disposed || generation != _generation)
             return false;
-        if (returned)
+        if (result.Returned)
         {
+            if (request is not null && !AwaitPracticeReturn(request, result.Practice))
+            {
+                StopSession("practice-return-unproven");
+                return false;
+            }
             _nextCapture = 0;
             return true;
         }
@@ -1126,7 +1233,7 @@ public sealed partial class SessionController : IDisposable
     public void StopSession() => StopSession("stop-session");
     private void StopSession(string reason)
     {
-        if (_ownedPractice is not null || _awaitingPractice is not null)
+        if (_ownedPractice is not null || _awaitingPractice is not null || _awaitingPracticeReturn is not null)
             RetireAutomaticPractice();
         if (_session.Current is not null)
             Trace(reason);

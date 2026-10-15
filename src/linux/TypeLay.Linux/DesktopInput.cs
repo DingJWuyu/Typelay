@@ -59,10 +59,10 @@ internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMoni
         var reply = await link.Ask("observePause", context);
         return reply.ValueKind == JsonValueKind.Null ? new(null) : DesktopLink.Decode<PauseObservation>(reply);
     }
-    public async Task<bool> ReturnToSourceAsync(InputContext context)
+    public async Task<InputReturn> ReturnToSourceAsync(InputContext context)
     {
         var reply = await link.Ask("return", context);
-        return reply.ValueKind == JsonValueKind.True;
+        return reply.ValueKind == JsonValueKind.Object ? DesktopLink.Decode<InputReturn>(reply) : new(reply.ValueKind == JsonValueKind.True);
     }
     public Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs)
     {

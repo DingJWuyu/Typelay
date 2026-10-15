@@ -165,6 +165,7 @@ class Input:
         self.practice_retirement_binding = None
         self.practice_continuity = None
         self.practice_editor = None
+        self.practice_return = None
         self.practice_retired = lambda _run: None
         self.practice_settings_changed = lambda: None
         self.closing = False
@@ -215,6 +216,7 @@ class Input:
             or self.practice_pending
             or self.practice_continuity
             or self.practice_editor
+            or self.practice_return
         )
         if practice and practice["peer"] is peer:
             self.retire_practice(practice["runId"])
@@ -310,7 +312,9 @@ class Input:
 
     async def practice_binding(self, pid, target=None):
         """Return a host-owned connection and acknowledged, exact source binding."""
-        if self.practice_continuity is not None and not self.fresh():
+        if (
+            self.practice_continuity is not None or self.practice_return is not None
+        ) and not self.fresh():
             self.check_practice()
             return None
         native = await self.practice_target(pid, target)
@@ -346,6 +350,17 @@ class Input:
                 or not 0 <= now_ms() - record["authority"].get("observedAtMs", 0) <= 150
             ):
                 return None
+        returned = self.practice_return
+        if returned is not None and (
+            not self.practice_waiting(returned["runId"])
+            or record.get("commandGeneration") != self.shortcut_config.get("generation")
+            or record.get("commandGeneration") == returned["commandGeneration"]
+            or record["authority"].get("focusRevision") != returned["returnedFocusRevision"]
+            or record["authority"].get("contextStamp", {}).get("context")
+            != returned["contextGeneration"]
+            or not 0 <= now_ms() - record["authority"].get("observedAtMs", 0) <= 150
+        ):
+            return None
         return {
             "target": native,
             "connectionId": peer.connection_id,
@@ -394,6 +409,16 @@ class Input:
             or self.bound_observation.get("commandGeneration") != binding["commandGeneration"]
         ):
             return False
+        returned = self.practice_return
+        if returned is not None and (
+            not self.practice_waiting(binding["runId"])
+            or binding["commandGeneration"] == returned["commandGeneration"]
+            or binding != self.practice_return_binding(returned)
+            or self.bound_observation is None
+            or self.bound_observation.get("commandGeneration") != binding["commandGeneration"]
+        ):
+            return False
+        self.practice_return = None
         self.practice_continuity = None
         # A pending binding is an ACK destination, never publication authority.
         # The source must remain continuously valid across Runtime's bind await.
@@ -403,18 +428,28 @@ class Input:
             "peer": peer,
             "ownsProcess": owns_process,
             "windowEpoch": self.window_epoch,
+            "settingsGeneration": self.settings_generation,
         }
         return True
 
-    def authorize_practice(self, binding, owns_process):
+    def authorize_practice(self, binding, owns_process, expected_pending=None):
         pending = self.practice_pending
         if (
             pending is None
+            or (expected_pending is not None and pending is not expected_pending)
             or self.practice_retirement is not None
             or any(
-                binding.get(key) != pending[key]
-                for key in ("runId", "target", "connectionId", "commandGeneration")
+                binding.get(key) != pending.get(key)
+                for key in (
+                    "runId",
+                    "target",
+                    "connectionId",
+                    "commandGeneration",
+                    "nativeFocusRevision",
+                    "contextGeneration",
+                )
             )
+            or pending["settingsGeneration"] != self.settings_generation
             or pending["windowEpoch"] != self.window_epoch
             or pending["peer"] not in self.peers
             or not pending["peer"].link.channel.alive
@@ -429,6 +464,11 @@ class Input:
         return True
 
     def retire_practice(self, run, *, notify=True):
+        returned = self.practice_return
+        if returned is not None and returned["runId"] == run:
+            self.practice_return = None
+            if notify:
+                self.practice_retired(run)
         continuity = self.practice_continuity
         if continuity is not None and continuity["runId"] == run:
             self.practice_continuity = None
@@ -467,11 +507,12 @@ class Input:
                     # Fixed Peer/connection plus the ordered stream associates
                     # this response with clearing that connection's publication.
                     # New/late practice publications have already been rejected.
-                    await peer.link.ask("revoke", {"shortcuts": 1})
+                    reply = await peer.link.ask("revoke", {"shortcuts": 1})
                 except (OSError, EOFError, ValueError, TimeoutError):
                     return False
                 return (
-                    peer in self.peers
+                    reply is None
+                    and peer in self.peers
                     and peer.link.channel.alive
                     and peer.connection_id == retirement["connectionId"]
                 )
@@ -484,7 +525,37 @@ class Input:
             self.practice_retirement = None
         return confirmed
 
+    def practice_return_binding(self, value):
+        return {
+            **{key: value[key] for key in ("runId", "target", "connectionId", "contextGeneration")},
+            "nativeFocusRevision": value["returnedFocusRevision"],
+            "commandGeneration": self.shortcut_config.get("generation"),
+        }
+
     def practice_waiting(self, run, *, acknowledged=True, require_fresh=True):
+        returned = self.practice_return
+        if returned is not None:
+            return bool(
+                returned["runId"] == run
+                and (
+                    not acknowledged
+                    or (
+                        self.practice_retirement is None
+                        and self.practice_retirement_binding is returned
+                    )
+                )
+                and returned["peer"] in self.peers
+                and returned["peer"].link.channel.alive
+                and returned["ownsProcess"](returned["peer"].pid)
+                and returned["settingsGeneration"] == self.settings_generation
+                and returned["windowEpoch"] == self.window_epoch
+                and returned["foregroundEpoch"] == self.foreground_epoch
+                and self.bound == returned["target"]
+                and self.focused_peer() is returned["peer"]
+                and not self.overlay_focused
+                and self.fresh()
+                and self.enabled is True
+            )
         value = self.practice_continuity
         return bool(
             value
@@ -681,6 +752,11 @@ class Input:
         return True
 
     def check_practice(self):
+        returned = self.practice_return
+        if returned is not None and not self.practice_waiting(
+            returned["runId"], acknowledged=False
+        ):
+            self.retire_practice(returned["runId"])
         editor = self.practice_editor
         if editor is not None and not self.practice_editing(editor["runId"]):
             self.retire_practice(editor["runId"])
@@ -724,7 +800,7 @@ class Input:
             self.retire_practice(authorization["runId"])
 
     def practice_publication_allowed(self, lease, peer):
-        editor = self.practice_editor
+        editor = self.practice_editor or self.practice_return
         if editor and editor["peer"] is peer and editor["target"] == lease["source"]["target"]:
             return False
         run, connection = lease.get("practiceRunId"), lease.get("practiceConnectionId")
@@ -759,6 +835,9 @@ class Input:
             if self.bound_observation
             and self.bound_observation["peer"] in self.peers
             and self.bound_observation["target"] == self.bound
+            else self.practice_return["connectionId"]
+            if self.practice_return
+            and self.practice_waiting(self.practice_return["runId"], acknowledged=False)
             else self.practice_continuity["connectionId"]
             if self.practice_continuity
             and self.practice_waiting(
@@ -1249,14 +1328,16 @@ class Input:
         settings_generation = self.settings_generation
         command_generation = self.shortcut_config.get("generation")
         editor = self.practice_editor
-        practice = self.practice_authorization or self.practice_continuity
+        returning = self.practice_return
+        practice = self.practice_authorization or self.practice_continuity or returning
+        expected_practice = self.practice_return_binding(returning) if returning else practice
         eligible = context.get("practiceRead")
         if (
             not isinstance(eligible, dict)
             or practice is None
             or eligible.get("commandGeneration") != command_generation
             or any(
-                eligible.get(key) != practice.get(key)
+                eligible.get(key) != expected_practice.get(key)
                 for key in (
                     "runId",
                     "target",
@@ -1352,7 +1433,12 @@ class Input:
             capture_data["traceRound"] = round_timing["round"]
         native_failure = {} if peer.backend == "gtk3" and os.environ.get("TYPELAY_TRACE") else None
         continuity = (
-            {} if practice is not None and focus == "Source" and practice["peer"] is peer else None
+            {}
+            if practice is not None
+            and returning is None
+            and focus == "Source"
+            and practice["peer"] is peer
+            else None
         )
         if continuity is not None:
             capture_data["ownedSource"] = True
@@ -1380,7 +1466,7 @@ class Input:
                         round_timing[key] = stamp
         if self.enabled is False or settings_generation != self.settings_generation:
             return self.captured("settings-changed")
-        if editor is not self.practice_editor:
+        if editor is not self.practice_editor or returning is not self.practice_return:
             return self.captured("practice-edit-changed")
         if not native:
             if continuity:
@@ -1404,7 +1490,7 @@ class Input:
             authority = native.get("authority", {})
             baseline = authorization.get("contextGeneration", 0)
             if (baseline > 0 and authority.get("contextStamp", {}).get("context") != baseline) or (
-                practice is authorization
+                authorization.get("nativeFocusRevision", 0) > 0
                 and authority.get("focusRevision") != authorization.get("nativeFocusRevision")
             ):
                 self.retire_practice(authorization["runId"])
@@ -1419,6 +1505,24 @@ class Input:
             return self.captured("no-visible-anchor")
         waiting = self.practice_continuity
         owned_source = None
+        if returning is not None:
+            authority = native.get("authority", {})
+            if (
+                practice is not returning
+                or not self.practice_waiting(returning["runId"])
+                or returning["peer"] is not peer
+                or target_id(peer, native["target"]) != returning["target"]
+                or authority.get("focusRevision") != returning["returnedFocusRevision"]
+                or authority.get("contextStamp", {}).get("context")
+                != returning["contextGeneration"]
+                or command_generation == returning["commandGeneration"]
+            ):
+                return self.captured("practice-return-identity-lost")
+            owned_source = {
+                "binding": self.practice_return_binding(returning),
+                "observedAtMs": native["observedAtMs"],
+                "contextAdvanced": False,
+            }
         if waiting is not None:
             authority = native.get("authority", {})
             if (
@@ -2036,6 +2140,7 @@ class Input:
                 or self.practice_pending
                 or self.practice_continuity
                 or self.practice_editor
+                or self.practice_return
             )
             if (
                 authorization
@@ -2177,11 +2282,35 @@ class Input:
     async def return_to_source(self, context):
         record = self.bound_observation
         configuration = context.get("sessionShortcuts")
+        request = context.get("practiceReturn")
+        editor = self.practice_editor if isinstance(request, dict) else None
+        keys = (
+            "runId",
+            "target",
+            "connectionId",
+            "commandGeneration",
+            "nativeFocusRevision",
+            "contextGeneration",
+        )
+        if request is not None and (
+            editor is None
+            or not self.practice_editing(editor["runId"])
+            or any(request.get("binding", {}).get(key) != editor[key] for key in keys)
+            or request.get("token", {}).get("target") != editor["target"]
+            or request.get("token", {}).get("commandGeneration") != editor["commandGeneration"]
+            or type(request.get("token", {}).get("revision")) is not int
+            or request["token"]["revision"] <= editor["token"]["revision"]
+        ):
+            return False
 
         def current():
             acknowledgement = self.current_session_acknowledgement(record)
             return bool(
                 record
+                and (
+                    editor is None
+                    or (self.practice_editor is editor and self.practice_editing(editor["runId"]))
+                )
                 and record is self.bound_observation
                 and self.bound == context.get("boundTarget")
                 and record["peer"] in self.peers
@@ -2214,10 +2343,62 @@ class Input:
                 "target": target,
                 "authority": record["authority"],
                 "generation": configuration["generation"],
+                **(
+                    {"practiceReturn": {"editorToken": editor["token"], "token": request["token"]}}
+                    if editor is not None
+                    else {}
+                ),
             },
         )
         if current() and response and response.get("returned"):
             self.overlay_focused = False
+            if editor is not None:
+                proof = response.get("practiceReturn")
+                if (
+                    not isinstance(proof, dict)
+                    or proof.get("token") != request["token"]
+                    or proof.get("target") != target
+                    or type(proof.get("nativeFocusRevision")) is not int
+                    or proof["nativeFocusRevision"] <= editor["nativeFocusRevision"]
+                    or proof.get("contextGeneration") != editor["contextGeneration"]
+                    or type(proof.get("observedAtMs")) is not int
+                    or not 0 <= now_ms() - proof["observedAtMs"] <= 150
+                ):
+                    self.retire_practice(editor["runId"])
+                    return {"returned": True}
+                # Permanently retire G1, then obtain a new operation's real ACK.
+                # The exact old binding stays intact; F2 belongs only to this intent.
+                self.retire_practice(editor["runId"], notify=False)
+                editor.update(
+                    {
+                        "returnedFocusRevision": proof["nativeFocusRevision"],
+                        "windowEpoch": self.window_epoch,
+                    }
+                )
+                self.practice_return = editor
+                for key, value in list(self.observations.items()):
+                    if value["peer"] is peer and value["target"] == editor["target"]:
+                        self.observations.pop(key)
+                self.bound_observation = None
+                if (
+                    not await self.confirm_practice_retirement(editor["runId"])
+                    or self.practice_return is not editor
+                    or not self.practice_waiting(editor["runId"])
+                    or self.shortcut_config.get("generation") != editor["commandGeneration"]
+                    or not 0 <= now_ms() - proof["observedAtMs"] <= 150
+                ):
+                    self.retire_practice(editor["runId"])
+                    return {"returned": True}
+                self.state()
+                return {
+                    "returned": True,
+                    "practice": {
+                        "binding": {key: editor[key] for key in keys},
+                        "token": request["token"],
+                        "nativeFocusRevision": proof["nativeFocusRevision"],
+                        "observedAtMs": proof["observedAtMs"],
+                    },
+                }
             self.state()
             return True
         return False
@@ -2236,9 +2417,9 @@ class Input:
             if acknowledged and all(value.get(key) == acknowledged.get(key) for key in keys):
                 # A prepared successor must not hide this exact completed ACK.
                 # Answer only the old binding: never confirm or retire its successor.
-                waiting = self.practice_continuity
+                waiting = self.practice_continuity or self.practice_return
                 if waiting and all(waiting.get(key) == acknowledged.get(key) for key in keys):
-                    self.practice_continuity = None
+                    self.practice_continuity = self.practice_return = None
                     self.practice_retired(acknowledged["runId"])
                 return True
             authorization = (

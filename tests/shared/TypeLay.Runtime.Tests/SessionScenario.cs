@@ -301,7 +301,8 @@ internal sealed class SessionScenario : IDisposable
             return PendingCapture?.Task ?? Task.FromResult(new InputCapture(host.Fresh,
                 host.Input.GetFocus(host.Source.Target), "org.typelay.ControlledApp", context.UserEpoch, context.ForegroundEpoch,
                 TransformAcknowledgement(new(host.Source.Target, host.Input.CommandGeneration, host.Input.SessionBindings,
-                    host.Input.SessionEnabled, host.Input.SessionEnabled))));
+                    host.Input.SessionEnabled, host.Input.SessionEnabled)),
+                OwnedSource: context.PracticeRead is { } practice ? new(practice, host.Loop.NowMs, false) : null));
         }
         public List<InputContext> PauseRequests { get; } = [];
         public TaskCompletionSource<PauseObservation>? PendingPauseObservation
@@ -317,13 +318,28 @@ internal sealed class SessionScenario : IDisposable
             PauseRequests.Add(context);
             return PendingPauseObservation?.Task ?? Task.FromResult(PauseResult ?? host.FreshPause);
         }
-        public async Task<bool> ReturnToSourceAsync(InputContext context)
+        public OwnedPracticeReturn? ReturnedPractice
+        {
+            get; private set;
+        }
+        public Func<OwnedPracticeReturn, OwnedPracticeReturn?> ReturnEvidence { get; set; } = value => value;
+        public async Task<InputReturn> ReturnToSourceAsync(InputContext context)
         {
             Returns++;
             bool returned = PendingReturn is { } pending ? await pending.Task : ReturnAllowed;
             if (returned)
                 host.Input.InEditor = false;
-            return returned;
+            if (returned && context.PracticeReturn is { } request)
+            {
+                host.Source = host.Source with
+                {
+                    FocusEpoch = request.Binding.NativeFocusRevision + 2
+                };
+                ReturnedPractice = ReturnEvidence(new(request.Binding, request.Token, host.Source.FocusEpoch, host.Loop.NowMs));
+            }
+            else
+                ReturnedPractice = null;
+            return new(returned, ReturnedPractice);
         }
         public Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs)
         {

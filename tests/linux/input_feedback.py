@@ -1287,7 +1287,7 @@ class InputFeedbackTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-    def owned_edit_handoff(self, invalidation=None):
+    def owned_edit_handoff(self, invalidation=None, returning=None):
         async def exercise():
             self.peer = self.connect_peer("gtk3")
             original = self.description
@@ -1425,6 +1425,9 @@ class InputFeedbackTests(unittest.TestCase):
                 },
             )
             self.assertIn(("draft", "actually changed draft"), self.host.events)
+            if returning is not None:
+                await self.owned_return(overlay, jobs, view, binding, returning)
+                return
             self.peer.event(
                 "ui",
                 {
@@ -1456,6 +1459,171 @@ class InputFeedbackTests(unittest.TestCase):
             self.assertTrue(await ending)
 
         asyncio.run(exercise())
+
+    async def owned_return(self, overlay, jobs, view, binding, invalidation):
+        token = {**overlay.session_token(), "revision": 11}
+        overlay.render(
+            {
+                **view,
+                "state": "ReturningToSource",
+                "viewContext": {**view["viewContext"], "token": token},
+            }
+        )
+        await self.settle_overlay(jobs)
+        old_generation = self.generation
+        context = {
+            "boundTarget": binding["target"],
+            "sessionShortcuts": {
+                "generation": self.generation,
+                "bindings": {"accept": "Tab", "exit": "Esc"},
+            },
+            "practiceReturn": {"binding": binding, "token": token},
+        }
+        operation = asyncio.create_task(self.input.request("return", context))
+
+        async def next_request(kind):
+            async with asyncio.timeout(1):
+                while True:
+                    await asyncio.sleep(0)
+                    for frame in self.native_frames(self.peer):
+                        if frame["op"] == kind and frame["id"]:
+                            return frame
+                    if operation.done():
+                        self.fail(f"return/capture finished before {kind}: {operation.result()}")
+
+        current = self.description()
+        current["sessionBindings"] = {
+            "generation": self.generation,
+            "accept": "Tab",
+            "exit": "Esc",
+            "sourceReady": True,
+            "editorReady": True,
+        }
+        describe = await next_request("describe")
+        self.peer.link.receive({"id": describe["id"], "data": current})
+        request = await next_request("return")
+        self.assertEqual(request["data"]["practiceReturn"]["token"], token)
+        self.peer.event(
+            "input",
+            {
+                "target": binding["target"]["value"],
+                "focusChanged": True,
+                "focused": True,
+                "textChanged": False,
+            },
+        )
+        self.peer.event(
+            "ui",
+            {
+                "operation": "focus",
+                "target": binding["target"]["value"],
+                "revision": token["revision"],
+                "generation": self.generation,
+                "family": "Source",
+                "value": False,
+            },
+        )
+        proof = {
+            "target": binding["target"]["value"],
+            "token": token,
+            "nativeFocusRevision": 3,
+            "contextGeneration": 7,
+            "observedAtMs": 1000,
+        }
+        self.peer.link.receive(
+            {"id": request["id"], "data": {"returned": True, "practiceReturn": proof}}
+        )
+        revoke = await next_request("revoke")
+        self.assertFalse(operation.done())
+        self.assertIsNone(self.input.practice_authorization)
+        old_lease = {
+            "source": {"target": binding["target"]},
+            "commandGeneration": old_generation,
+            "practiceRunId": binding["runId"],
+            "practiceConnectionId": binding["connectionId"],
+        }
+        self.assertFalse(self.input.practice_publication_allowed(old_lease, self.peer))
+        if invalidation == "close":
+            self.input.retire_practice(binding["runId"])
+        elif invalidation == "other":
+            self.peer.event(
+                "input",
+                {
+                    "target": binding["target"]["value"],
+                    "focusChanged": True,
+                    "focused": False,
+                    "textChanged": False,
+                },
+            )
+        self.peer.link.receive(
+            {"id": revoke["id"], "data": False if invalidation == "ack" else None}
+        )
+        result = await asyncio.wait_for(operation, 1)
+        if invalidation != "success":
+            self.assertNotIn("practice", result)
+            self.assertIsNone(self.input.practice_return)
+            self.assertIsNone(self.input.practice_authorization)
+            return
+        self.assertEqual(result["practice"]["binding"], binding)
+        self.assertEqual(result["practice"]["nativeFocusRevision"], 3)
+        self.assertFalse(self.input.practice_editing(binding["runId"]))
+        self.assertTrue(self.input.practice_waiting(binding["runId"]))
+        self.assertIsNone(self.input.bound_observation)
+        self.generation = str(uuid.uuid4())
+        self.configure()
+        self.native_frames(self.peer)
+        new_binding = {**binding, "commandGeneration": self.generation, "nativeFocusRevision": 3}
+        self.assertFalse(self.input.prepare_practice(new_binding, lambda _: True))
+        operation = asyncio.create_task(
+            self.input.request("capture", {"practiceRead": new_binding})
+        )
+        current["authority"]["focusRevision"] = 3
+        current["sessionBindings"]["generation"] = self.generation
+        describe = await next_request("describe")
+        self.peer.link.receive({"id": describe["id"], "data": current})
+        capture = await next_request("capture")
+        self.assertNotIn("ownedSource", capture["data"])
+        self.peer.link.receive(
+            {
+                "id": capture["id"],
+                "data": {
+                    **current,
+                    "text": "source unchanged",
+                    "selection": {"start": 16, "end": 16},
+                    "ime": "Clear",
+                    "observedAtMs": 1000,
+                    "writeSupported": True,
+                },
+            }
+        )
+        captured = await asyncio.wait_for(operation, 1)
+        self.assertEqual(captured["ownedSource"]["binding"], new_binding)
+        self.assertTrue(self.input.prepare_practice(new_binding, lambda _: True))
+        pending = self.input.practice_pending
+        self.assertTrue(self.input.authorize_practice(new_binding, lambda _: True, pending))
+        self.assertFalse(self.input.practice_publication_allowed(old_lease, self.peer))
+        self.assertTrue(
+            self.input.practice_publication_allowed(
+                {**old_lease, "commandGeneration": self.generation}, self.peer
+            )
+        )
+        # The old exact ACK cannot retire this new instance without a new ask.
+        operation = asyncio.create_task(self.input.request("retireAutomaticPractice", new_binding))
+        revoke = await next_request("revoke")
+        self.assertFalse(operation.done())
+        self.peer.link.receive({"id": revoke["id"], "data": None})
+        self.assertTrue(await operation)
+
+    def test_owned_return_needs_its_own_ack_and_fresh_new_generation_binding(self):
+        self.owned_edit_handoff(returning="success")
+
+    def test_owned_return_rejects_late_ack_after_close_or_source_focus_loss(self):
+        for reason in ("close", "other"):
+            with self.subTest(reason=reason):
+                self.owned_edit_handoff(returning=reason)
+
+    def test_owned_return_rejects_non_null_ack(self):
+        self.owned_edit_handoff(returning="ack")
 
     def test_owned_edit_handoff_waits_for_revoke_and_never_restores_source_authority(self):
         self.owned_edit_handoff()

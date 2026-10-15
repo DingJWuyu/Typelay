@@ -30,7 +30,7 @@ public sealed record ShortcutLease(InputSnapshot Source, long ContentEpoch, long
 // Observation epochs and timestamps belong to the platform observation domain. A platform
 // must map its clock into the session loop's monotonic milliseconds before returning a capture.
 public sealed record InputContext(long UserEpoch, long ForegroundEpoch, long SourceUserEpoch,
-    TargetId? BoundTarget, string[] Excluded, bool CaptureDirect, SessionShortcutConfiguration? SessionShortcuts = null, OwnedPracticeBinding? PracticeRead = null);
+    TargetId? BoundTarget, string[] Excluded, bool CaptureDirect, SessionShortcutConfiguration? SessionShortcuts = null, OwnedPracticeBinding? PracticeRead = null, OwnedPracticeReturnRequest? PracticeReturn = null);
 public sealed record InputCapture(InputSnapshot? Snapshot, FocusMember Focus = FocusMember.Other,
     string? Application = null, long UserEpoch = 0, long ForegroundEpoch = 0,
     SessionShortcutAcknowledgement? SessionShortcuts = null, OwnedSourceEvidence? OwnedSource = null,
@@ -39,6 +39,12 @@ public sealed record InputCapture(InputSnapshot? Snapshot, FocusMember Focus = F
 // Body-free evidence for an existing owned lesson only. ContextAdvanced implies
 // this read was refused and its original executor acknowledged revocation.
 public sealed record OwnedSourceEvidence(OwnedPracticeBinding Binding, long ObservedAtMs, bool ContextAdvanced);
+
+// A private return proves a new source-focus baseline, never source write authority.
+public sealed record OwnedPracticeReturnRequest(OwnedPracticeBinding Binding, SessionViewToken Token);
+public sealed record OwnedPracticeReturn(OwnedPracticeBinding Binding, SessionViewToken Token,
+    long NativeFocusRevision, long ObservedAtMs);
+public sealed record InputReturn(bool Returned, OwnedPracticeReturn? Practice = null);
 
 // The service must authorize metadata before reading it and must not capture
 // field text, selections or native write bindings for this observation.
@@ -55,7 +61,7 @@ public interface IInputService : IDisposable
     Task StartAsync();
     Task<InputCapture> CaptureAsync(InputContext context);
     Task<PauseObservation> ObservePauseAsync(InputContext context);
-    Task<bool> ReturnToSourceAsync(InputContext context);
+    Task<InputReturn> ReturnToSourceAsync(InputContext context);
     Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs);
     Task<WriteReceipt> WriteDirectAsync(WritePlan plan, string[] excluded);
     Task ClearAsync(InputContext context);

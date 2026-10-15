@@ -257,27 +257,57 @@ static void capture_response(gint64 id, JsonObject *data, const CaptureFailure *
 }
 typedef struct {
     Target *target;
-    JsonObject *basis;
+    JsonObject *basis, *practice;
     gint64 id, until;
-    guint64 connection, generation;
+    guint64 connection, generation, focus_revision;
 } PendingReturn;
 static void free_return(gpointer data) {
     PendingReturn *pending = data;
     json_object_unref(pending->basis);
+    if (pending->practice) json_object_unref(pending->practice);
     g_free(pending);
+}
+static gboolean private_return_current(PendingReturn *pending) {
+    Target *target = pending->target;
+    return connection >= 0 && pending->connection == connection_generation
+        && pending->generation == return_generation && target && !target->dead
+        && target == tl_focused() && target->focus_revision == pending->focus_revision
+        && (gint64)target->input_revision == tl_integer(pending->basis, "inputRevision", -1)
+        && (gint64)target->content_revision == tl_integer(pending->basis, "contentRevision", -1)
+        && (gint64)target->im_state.context_generation == tl_integer(tl_object(pending->basis, "contextStamp"), "context", -1)
+        && tl_overlay_private_return(target, pending->practice, FALSE);
+}
+static JsonObject *return_reply(PendingReturn *pending, gboolean ready, gint64 observed_at) {
+    JsonObject *reply = json_object_new();
+    json_object_set_boolean_member(reply, "returned", ready);
+    if (ready && pending->practice && private_return_current(pending)
+        && tl_now() >= observed_at && tl_now() - observed_at <= 150 && tl_now() <= pending->until) {
+        JsonObject *proof = json_object_new();
+        json_object_set_string_member(proof, "target", pending->target->id);
+        json_object_set_object_member(proof, "token", tl_copy(tl_object(pending->practice, "token")));
+        json_object_set_int_member(proof, "nativeFocusRevision", (gint64)pending->focus_revision);
+        json_object_set_int_member(proof, "contextGeneration", (gint64)pending->target->im_state.context_generation);
+        json_object_set_int_member(proof, "observedAtMs", observed_at);
+        json_object_set_object_member(reply, "practiceReturn", proof);
+    }
+    return reply;
 }
 static gboolean await_return(gpointer data) {
     PendingReturn *pending = data;
     if (connection < 0 || pending->connection != connection_generation) return G_SOURCE_REMOVE;
+    gint64 observed_at = tl_now();
     gboolean same = pending->generation == return_generation && !pending->target->dead
+        && (!pending->practice || private_return_current(pending))
         && tl_focused() == pending->target && tl_metadata_matches(pending->target, pending->basis)
         && (gint64)pending->target->content_revision == tl_integer(pending->basis, "contentRevision", -1)
         && (gint64)pending->target->input_revision == tl_integer(pending->basis, "inputRevision", -1);
     gboolean ready = same && tl_now() <= pending->until && tl_return_ready(pending->target, pending->basis);
+    // Metadata/IME calls can dispatch callbacks. A private F2 is never refreshed.
+    if (pending->practice)
+        same = same && private_return_current(pending) && tl_now() - observed_at <= 150;
+    ready = ready && same;
     if (!ready && same && tl_now() < pending->until) return G_SOURCE_CONTINUE;
-    JsonObject *reply = json_object_new();
-    json_object_set_boolean_member(reply, "returned", ready);
-    respond(pending->id, reply);
+    respond(pending->id, return_reply(pending, ready, observed_at));
     return G_SOURCE_REMOVE;
 }
 /* Call only after the command/key path's IME observation. This check reads
@@ -451,23 +481,31 @@ static void command(JsonObject *frame) {
         capture_response(id, captured, trace, continuity);
     } else if (strcmp(operation, "direct") == 0) respond(id, tl_write(target, data, TRUE));
     else if (strcmp(operation, "return") == 0) {
-        return_generation++;
-        JsonObject *basis = tl_object(data, "authority");
-        gboolean focused = tl_configuration_current(tl_string(data, "generation"))
+        guint64 generation = ++return_generation, owner = connection_generation;
+        JsonObject *basis = tl_object(data, "authority"), *practice = tl_object(data, "practiceReturn");
+        gint64 observed_at = tl_now();
+        gboolean allowed = !json_object_has_member(data, "practiceReturn")
+            || (practice && tl_overlay_private_return(target, practice, TRUE));
+        gboolean focused = allowed && tl_configuration_current(tl_string(data, "generation"))
             && tl_session_matches(tl_object(basis, "sessionBindings")) && tl_return(target, basis);
-        gboolean ready = focused && tl_return_ready(target, basis);
-        if (focused && !ready) {
+        PendingReturn state = {.target = target, .basis = basis, .practice = practice, .id = id,
+            .until = tl_now() + 450, .connection = owner, .generation = generation,
+            .focus_revision = focused && target ? target->focus_revision : 0};
+        gboolean same = !practice || (focused && private_return_current(&state));
+        gboolean ready = focused && same && tl_return_ready(target, basis);
+        if (practice) same = same && private_return_current(&state) && tl_now() - observed_at <= 150;
+        ready = ready && same;
+        if (focused && same && !ready) {
             PendingReturn *pending = g_new0(PendingReturn, 1);
-            *pending = (PendingReturn){.target = target, .basis = tl_copy(basis), .id = id,
-                .until = tl_now() + 450, .connection = connection_generation, .generation = return_generation};
-            /* Poll a real bounded provider observation, never infer Clear from
-               elapsed time. Leave room inside the host's 600 ms RPC deadline. */
+            *pending = state;
+            pending->basis = tl_copy(basis);
+            pending->practice = practice ? tl_copy(practice) : NULL;
+            /* Poll the existing bounded provider observation, never infer Clear.
+             * The private source-focus revision is fixed before this wait. */
             g_timeout_add_full(G_PRIORITY_DEFAULT, 10, await_return, pending, free_return);
             return;
         }
-        JsonObject *reply = json_object_new();
-        json_object_set_boolean_member(reply, "returned", ready);
-        respond(id, reply);
+        respond(id, return_reply(&state, ready, observed_at));
     } else if (strcmp(operation, "quarantine") == 0) {
         if (target) target->quarantined = TRUE;
         tl_clear_permit(); clear_shortcut(); respond(id, NULL);

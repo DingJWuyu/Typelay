@@ -151,6 +151,8 @@ dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows
 
 `capture-window-changed` 对照 capture 起点与返回时的 window/content/foreground epochs、配置及会话代次，并报告 `hasSnapshot` / `resultFocus`。Broker 的 `observed-native` 或练习目标绑定先发生，并不能证明 Runtime 接纳了返回值或 Hook 已发布租约。Hook 队列稍后才写盘，文件顺序不是跨组件全局顺序；这些字段也没有建立一一对应的 Broker 请求因果。缺字段的旧 trace 保持可读，未知诊断字段不参与产品控制。
 
+`practice-capture-exit` 仅覆盖已登记按需练习至首次调用 `PublishShortcut` 的采集，每个配置代次最多 16 条，记录原 gate 的固定退出原因、await 恢复及后续处理耗时与既有焦点检查结果；首次调用仅表示宿主调用发生，不证明原生端已接纳，也不表示首次 F9 竞态已修复。
+
 `SessionDiagnosticsTests` 在确定性公开宿主端口覆盖命令关联、旧代次/过期拒绝、窗口改变不发布租约、正文与目标隐私、TRACE 开关、不可写日志及无新增焦点探测。`SessionShortcutHookTests.ShortcutDiagnosticsPreserveNoLeaseRejectionAndIdentifyLeaseRemoval` 在真实 Hook 上对照 TRACE 开/关、无租约、显式撤销与配置清除；[090062a 的 Windows 实跑](https://github.com/DingJWuyu/Typelay/actions/runs/38700885927/job/116308546345)已通过 TRACE 开/关两例与 Runtime 诊断回归。同次真实模型按需练习在 F9 入口失败：Hook 记录 `wake` / `no-lease`，Runtime 拒绝 `StaleObservation`，结果为 `practice-preview-feedback`；尚未证实原 F9 故障修复。诊断回归不重新按键重试生产失败、不运行模型，也不证明物理输入法通过。
 
 生产 App 的 `--automation-test` 参数仅对该进程允许注入 Tab/Esc，界面明确标示，不写入设置。仅在退出已有客户端、设置好发行根 TYPELAY_HOME 后直接启动发行目录的 `app/TypeLay.App.exe --automation-test`；测试完成退出该进程，再用 TypeLay.exe 恢复普通模式。注入模式仍须遵守全部写回、焦点、IME 和期限检查，不能作为物理键盘验收。

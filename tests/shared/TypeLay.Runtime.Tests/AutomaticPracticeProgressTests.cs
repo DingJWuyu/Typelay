@@ -76,11 +76,14 @@ public sealed class AutomaticPracticeProgressTests
         Assert.True(s.Controller.AutomaticPracticeProgress.DraftChanged);
         s.View.ReturnRequested!(s.View.Token);
         Assert.Equal(SessionState.ReturningToSource, s.View.State);
+        Assert.True(s.Controller.AutomaticPracticeProgress!.AwaitingFreshSource);
         Assert.False(s.Controller.AutomaticPracticeProgress.ReturnedToSource);
         Assert.Equal("second source", s.Source.Text);
         Assert.Null(s.Input.Permit);
         Assert.Empty(s.Service.Writes);
         s.Tick();
+        Assert.Null(s.Input.Permit);
+        BindReturned(s);
         Assert.True(s.Controller.AutomaticPracticeProgress.ReturnedToSource);
         Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
         Assert.Equal("personally edited translation", s.Input.Permit!.Plan.Replacement);
@@ -88,6 +91,86 @@ public sealed class AutomaticPracticeProgressTests
         CompleteAcceptance(s);
         Assert.True(s.Controller.AutomaticPracticeProgress.Completed);
         Assert.Equal("personally edited translation", s.Source.Text);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("old-token")]
+    [InlineData("old-focus")]
+    public void OwnedReturnRejectsMissingOrUnrelatedFreshIdentity(string failure)
+    {
+        using var s = new SessionScenario();
+        var binding = Bind(s);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("retained edited draft");
+        s.Service.ReturnEvidence = proof => failure switch
+        {
+            "missing" => null,
+            "old-token" => proof with { Token = proof.Token with { Revision = proof.Token.Revision - 1 } },
+            _ => proof with { NativeFocusRevision = binding.NativeFocusRevision }
+        };
+        s.View.ReturnRequested!(s.View.Token);
+        s.Tick();
+        Assert.Null(s.Controller.AutomaticPracticeProgress);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.Controller.BindAutomaticPractice(binding));
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ReturnedSourceCannotSpliceAnotherFocusVersionOrObservationTime(bool otherFocus)
+    {
+        using var s = new SessionScenario();
+        Bind(s);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("retained edited draft");
+        s.View.ReturnRequested!(s.View.Token);
+        var returned = Assert.IsType<OwnedPracticeReturn>(s.Service.ReturnedPractice);
+        var binding = returned.Binding with
+        {
+            NativeFocusRevision = returned.NativeFocusRevision,
+            CommandGeneration = s.Input.CommandGeneration
+        };
+        s.Service.PendingCapture = new();
+        s.Tick();
+        var source = s.Fresh with
+        {
+            FocusEpoch = returned.NativeFocusRevision + (otherFocus ? 1 : 0),
+            ObservedAtMs = s.Loop.NowMs - (otherFocus ? 0 : 1)
+        };
+        s.CompleteCapture(new(source, FocusMember.Source, SessionShortcuts:
+            new(source.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true),
+            OwnedSource: new(binding, s.Loop.NowMs, false)));
+        Assert.Null(s.Controller.AutomaticPracticeProgress);
+        Assert.False(s.Controller.BindAutomaticPractice(binding));
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void LateOwnedReturnAfterCloseCannotBindOrRestoreDraftAuthority()
+    {
+        using var s = new SessionScenario();
+        var binding = Bind(s);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("retained edited draft");
+        var pending = s.Service.PendingReturn = new();
+        s.View.ReturnRequested!(s.View.Token);
+        Assert.True(s.Controller.EndAutomaticPractice(binding.RunId));
+        pending.SetResult(true);
+        s.Tick();
+        Assert.Null(s.Controller.AutomaticPracticeProgress);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.Controller.BindAutomaticPractice(binding));
         Assert.Empty(s.Service.Writes);
     }
 
@@ -290,6 +373,12 @@ public sealed class AutomaticPracticeProgressTests
             s.Service.ReturnAllowed = false;
         s.View.ReturnRequested!(s.View.Token);
         s.Tick();
+        if (condition == "source-changed")
+        {
+            Assert.Null(s.Controller.AutomaticPracticeProgress);
+            Assert.Null(s.Input.Permit);
+            return;
+        }
         Assert.False(s.Controller.AutomaticPracticeProgress!.ReturnedToSource);
         if (s.Input.Permit is not null)
             CompleteAcceptance(s);
@@ -843,8 +932,21 @@ public sealed class AutomaticPracticeProgressTests
         s.View.DraftChanged!("edited final translation");
         s.View.ReturnRequested!(s.View.Token);
         s.Tick();
+        BindReturned(s);
         CompleteAcceptance(s);
         Assert.True(s.Controller.AutomaticPracticeProgress!.Completed);
+    }
+
+    private static void BindReturned(SessionScenario s)
+    {
+        var returned = Assert.IsType<OwnedPracticeReturn>(s.Service.ReturnedPractice);
+        var binding = returned.Binding with
+        {
+            NativeFocusRevision = returned.NativeFocusRevision,
+            CommandGeneration = s.Input.CommandGeneration
+        };
+        Assert.True(s.Controller.BindAutomaticPractice(binding));
+        s.Tick();
     }
 
     private static void NewSource(SessionScenario s)

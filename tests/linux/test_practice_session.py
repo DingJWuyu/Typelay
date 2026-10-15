@@ -85,6 +85,7 @@ class InputPort:
         self.foreground_fresh = True
         self.binding_reads = 0
         self.editing = False
+        self.practice_pending = None
 
     async def practice_target(self, pid, target=None):
         return dict(self.target) if self.available else None
@@ -111,9 +112,10 @@ class InputPort:
         return self.foreground_fresh
 
     def prepare_practice(self, binding, owns_process):
+        self.practice_pending = binding
         return True
 
-    def authorize_practice(self, binding, owns_process):
+    def authorize_practice(self, binding, owns_process, expected_pending=None):
         self.authorization = binding
         return True
 

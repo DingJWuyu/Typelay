@@ -156,11 +156,12 @@ class PracticeSession:
                 if automatic and not self.input.prepare_practice(data, self.support.owns_practice):
                     await self.retire()
                     return None
+                pending = self.input.practice_pending if automatic else None
                 if await self.host.ask(self.operation("bind"), data) is not True:
                     await self.retire()
                     return None
                 if automatic and not self.input.authorize_practice(
-                    data, self.support.owns_practice
+                    data, self.support.owns_practice, pending
                 ):
                     await self.retire()
                     return None

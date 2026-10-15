@@ -54,16 +54,16 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
         });
         return new(result.PauseAnchor, result.Focus, result.Application, result.ForegroundEpoch);
     }
-    public async Task<bool> ReturnToSourceAsync(InputContext context)
+    public async Task<InputReturn> ReturnToSourceAsync(InputContext context)
     {
         if (!SessionConfigurationCurrent(context) || context.BoundTarget is not { } id || !WindowsTarget.TryDecode(id, out var target))
-            return false;
+            return new(false);
         if (broker.ProcessId != 0)
             Native.AllowSetForegroundWindow((uint)broker.ProcessId);
         Native.SetForegroundWindow((nint)target.RootHwnd);
         if (!SessionConfigurationCurrent(context))
-            return false;
-        return (await broker.CallAsync(Request("return", context), TimeSpan.FromMilliseconds(800))).Status == "focused";
+            return new(false);
+        return new((await broker.CallAsync(Request("return", context), TimeSpan.FromMilliseconds(800))).Status == "focused");
     }
     private bool SessionConfigurationCurrent(InputContext context) => context.SessionShortcuts is { } configuration
         && monitor?.HasSessionConfiguration(configuration) == true;

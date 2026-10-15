@@ -9,9 +9,10 @@ static struct {
     GtkWidget *popover, *top, *card, *header, *language, *status, *scroll, *text;
     GtkWidget *footer, *hint, *actions, *expand, *menu, *source, *destination, *resume, *exit;
     GtkCssProvider *css, *geometry_css;
-    JsonObject *view, *authority;
+    JsonObject *view, *authority, *editor_token;
     gulong focus_handler, active_handler;
     gboolean setting_text, composing, focused, expanded, pending_edit, pending_resume, private_editor;
+    gboolean return_started, return_source_seen;
     char *generation;
     gint edit_offset, body_height, body_duration;
     gint64 revision, expires;
@@ -141,8 +142,12 @@ static void focus_changed(GtkWindow *window, GtkWidget *widget, gpointer data) {
         && widget != edit_handoff->source && widget != edit_handoff->editor)
         edit_handoff->failed = TRUE;
     if ((edit_handoff || overlay.private_editor) && overlay.target) {
+        /* Once this private return reaches the source, even a trip through the
+         * same editor invalidates it. F2 cannot launder source/editor/source. */
+        gboolean reversed = overlay.return_started && overlay.return_source_seen && widget == overlay.text;
+        if (overlay.return_started && widget == overlay.target->widget) overlay.return_source_seen = TRUE;
         emit_editor_focus(widget);
-        if (!widget || (widget != overlay.target->widget && widget != overlay.text)) {
+        if (reversed || !widget || (widget != overlay.target->widget && widget != overlay.text)) {
             tl_overlay_hide();
             return;
         }
@@ -177,7 +182,7 @@ void tl_overlay_hide(void) {
     GtkWidget *popover = overlay.popover, *top = overlay.top;
     gulong focus_handler = overlay.focus_handler, active_handler = overlay.active_handler;
     GtkCssProvider *css = overlay.css, *geometry_css = overlay.geometry_css;
-    JsonObject *view = overlay.view, *authority = overlay.authority;
+    JsonObject *view = overlay.view, *authority = overlay.authority, *editor_token = overlay.editor_token;
     char *generation = overlay.generation;
     if (overlay.expiry_timer) g_source_remove(overlay.expiry_timer);
     memset(&overlay, 0, sizeof overlay);
@@ -190,6 +195,7 @@ void tl_overlay_hide(void) {
     if (css) g_object_unref(css);
     if (geometry_css) g_object_unref(geometry_css);
     if (view) json_object_unref(view);
+    if (editor_token) json_object_unref(editor_token);
     if (authority) json_object_unref(authority);
     g_free(generation);
 }
@@ -590,6 +596,21 @@ static gboolean render(Target *target, JsonObject *data) {
     tl_overlay_sync();
     return TRUE;
 }
+gboolean tl_overlay_private_return(Target *target, JsonObject *proof, gboolean starting) {
+    JsonObject *token = tl_object(proof, "token"), *editor = tl_object(proof, "editorToken");
+    JsonObject *current = tl_object(tl_object(overlay.view, "viewContext"), "token");
+    gboolean valid = target && !target->dead && overlay.target == target && active()
+        && overlay.private_editor && overlay.editor_token && token && editor && current
+        && json_object_equal(editor, overlay.editor_token) && json_object_equal(token, current)
+        && tl_view_context_matches(target, overlay.view)
+        && g_strcmp0(tl_string(overlay.view, "state"), "ReturningToSource") == 0
+        && tl_integer(token, "revision", 0) > tl_integer(editor, "revision", 0)
+        && (starting ? !overlay.return_started && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == overlay.text
+                     : overlay.return_started && overlay.return_source_seen);
+    if (valid && starting) overlay.return_started = TRUE;
+    return valid;
+}
+
 static gboolean handoff_source_current(Target *target, JsonObject *proof) {
     JsonObject *token = tl_object(proof, "token");
     JsonObject *current = tl_object(tl_object(overlay.view, "viewContext"), "token");
@@ -674,6 +695,10 @@ JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject
                         && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == editor;
                     edit_handoff = NULL;
                     overlay.private_editor = handoff;
+                    if (handoff) {
+                        if (overlay.editor_token) json_object_unref(overlay.editor_token);
+                        overlay.editor_token = tl_copy(tl_object(proof, "token"));
+                    }
                 }
                 json_object_unref(view);
             }

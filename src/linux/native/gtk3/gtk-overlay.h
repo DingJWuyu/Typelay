@@ -10,3 +10,6 @@ void tl_overlay_sync(void);
 void tl_overlay_acceptance(void);
 gboolean tl_overlay_key(guint keyval, GdkModifierType state);
 JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject *data);
+
+/* Exact, already-proved editor family; no source/provider observation. */
+gboolean tl_overlay_private_return(Target *target, JsonObject *proof, gboolean starting);

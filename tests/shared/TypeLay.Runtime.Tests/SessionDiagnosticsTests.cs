@@ -76,6 +76,128 @@ public sealed class SessionDiagnosticsTests
         });
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PracticeCaptureTraceExplainsTheFocusGateWithoutProbingAgain(bool tracing)
+    {
+        WithTrace(path =>
+        {
+            using var s = new SessionScenario(WorkMode.OnDemand);
+            Assert.True(s.Controller.BeginOnDemandPractice(Guid.NewGuid()));
+            s.Service.PendingCapture = new();
+            s.Tick();
+            long startedAt = s.Loop.NowMs;
+            s.Loop.Advance(75);
+            s.Input.FocusedTarget = new("private-backend", "private-other-target", Guid.NewGuid());
+            int checks = s.Input.FocusChecks;
+            s.CompleteCapture(new(s.Fresh with
+            {
+                Text = "private-source-marker"
+            }, FocusMember.Source, "private-application-marker"));
+            Assert.Equal(1, s.Input.FocusChecks - checks);
+            Assert.Empty(s.Input.PublishedShortcuts);
+            Assert.Empty(s.Model.Jobs);
+            Assert.Empty(s.Service.Writes);
+            if (!tracing)
+            {
+                Assert.False(File.Exists(path));
+                return;
+            }
+            string trace = File.ReadAllText(path);
+            Assert.DoesNotContain("private-", trace);
+            using var entry = ReadOperation(trace, "practice-capture-exit");
+            var detail = entry.RootElement.GetProperty("detail");
+            Assert.Equal("focus-changed", detail.GetProperty("reason").GetString());
+            Assert.Equal(startedAt, detail.GetProperty("startedAtMs").GetInt64());
+            Assert.Equal(startedAt + 75, detail.GetProperty("resumedAtMs").GetInt64());
+            Assert.Equal(75, detail.GetProperty("awaitMs").GetInt64());
+            Assert.Equal(0, detail.GetProperty("afterResumeMs").GetInt64());
+            Assert.Equal("Source", detail.GetProperty("resultFocus").GetString());
+            Assert.Equal("Other", detail.GetProperty("checkedFocus").GetString());
+            Assert.Equal(JsonValueKind.Null, entry.RootElement.GetProperty("focus").ValueKind);
+        }, tracing);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PracticeCaptureTraceStopsAtFirstPublicationWithoutChangingItsResult(bool tracing)
+    {
+        WithTrace(path =>
+        {
+            using var s = new SessionScenario(WorkMode.OnDemand);
+            Assert.True(s.Controller.BeginOnDemandPractice(Guid.NewGuid()));
+            for (int i = 0; i < 100; i++)
+                s.Tick();
+            Assert.NotNull(s.Input.Shortcut);
+            Assert.Empty(s.Model.Jobs);
+            Assert.Empty(s.Service.Writes);
+            Assert.False(s.View.Visible);
+            if (tracing)
+            {
+                string trace = File.ReadAllText(path);
+                Assert.Single(File.ReadAllLines(path), line => line.Contains("practice-capture-exit"));
+                using var entry = ReadOperation(trace, "practice-capture-exit");
+                Assert.Equal("shortcut-publish-called", entry.RootElement.GetProperty("detail").GetProperty("reason").GetString());
+            }
+            else
+                Assert.False(File.Exists(path));
+        }, tracing);
+    }
+
+    [Fact]
+    public void PracticeCaptureTraceIsBoundedEvenWhenEveryObservationIsEmpty()
+    {
+        WithTrace(path =>
+        {
+            using var s = new SessionScenario(WorkMode.OnDemand);
+            Assert.True(s.Controller.BeginOnDemandPractice(Guid.NewGuid()));
+            for (int i = 0; i < 25; i++)
+            {
+                s.Service.PendingCapture = new();
+                s.Tick();
+                s.CompleteCapture(new(null));
+            }
+            Assert.Empty(s.Input.PublishedShortcuts);
+            Assert.Empty(s.Model.Jobs);
+            Assert.Empty(s.Service.Writes);
+            Assert.Equal(16, File.ReadAllLines(path).Count(line => line.Contains("practice-capture-exit")));
+        });
+    }
+
+    [Theory]
+    [InlineData("generation-changed")]
+    [InlineData("window-changed")]
+    [InlineData("capture-expired")]
+    [InlineData("capture-failed")]
+    public void PracticeCaptureTracePreservesTheExistingRefusal(string reason)
+    {
+        WithTrace(path =>
+        {
+            using var s = new SessionScenario(WorkMode.OnDemand);
+            Assert.True(s.Controller.BeginOnDemandPractice(Guid.NewGuid()));
+            s.Service.PendingCapture = new();
+            s.Tick();
+            var capture = new InputCapture(s.Fresh, FocusMember.Source);
+            if (reason == "generation-changed")
+                s.Controller.StopSession();
+            if (reason == "window-changed")
+                s.Input.WindowEpoch++;
+            if (reason == "capture-expired")
+                s.Loop.Advance(Limits.ObservationMaxAgeMs + 1);
+            if (reason == "capture-failed")
+                s.FailCapture();
+            else
+                s.CompleteCapture(capture);
+            Assert.Empty(s.Input.PublishedShortcuts);
+            Assert.Empty(s.Model.Jobs);
+            Assert.Empty(s.Service.Writes);
+            using var entry = ReadOperation(File.ReadAllText(path), "practice-capture-exit");
+            Assert.Equal(reason, entry.RootElement.GetProperty("detail").GetProperty("reason").GetString());
+        });
+    }
+
     [Fact]
     public void WakeTraceUsesItsAcceptedNoticeIdentity()
     {
