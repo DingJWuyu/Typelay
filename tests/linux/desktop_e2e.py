@@ -3260,13 +3260,33 @@ def run(arguments):
                         "complete lesson source not connected",
                     )
 
-                    def practice_action(label):
-                        node = wait_for(
-                            lambda: named(managed_window["pid"], label),
-                            f"practice action missing: {label}",
+                    def start_automatic_lesson():
+                        wait_for(
+                            practice_has_keyboard_focus,
+                            "automatic lesson did not naturally return to its practice window",
+                            timeout=confirmation_deadline - time.monotonic(),
                         )
-                        assert Atspi.Action.do_action(node.get_action_iface(), 0)
-                        return node
+                        start = wait_for(
+                            lambda: named(managed_window["pid"], automatic_view["startLabel"]),
+                            "automatic lesson start action missing",
+                            timeout=confirmation_deadline - time.monotonic(),
+                        )
+                        wait_for(
+                            lambda: practice_has_keyboard_focus()
+                            and (focused(source) or focused(start)),
+                            "automatic lesson did not naturally return to its source or start action",
+                            timeout=confirmation_deadline - time.monotonic(),
+                        )
+                        if not focused(start):
+                            key("Tab")
+                        wait_for(
+                            lambda: practice_has_keyboard_focus()
+                            and focused(start)
+                            and start.get_state_set().contains(Atspi.StateType.SHOWING),
+                            "automatic start action lacks actual practice keyboard focus",
+                            timeout=confirmation_deadline - time.monotonic(),
+                        )
+                        key("space")
 
                     automatic_view = control(paths, "practiceStatus", {"lesson": "automatic"})[
                         "presentation"
@@ -3285,11 +3305,28 @@ def run(arguments):
                         is False
                     ), "ordinary control caller supplied its own practice target"
                     assert json.loads(paths.settings.read_text())["Mode"] == 1
-                    practice_action(automatic_view["startLabel"])
-                    practice_action(automatic_view["cancelLabel"])
-                    assert json.loads(paths.settings.read_text())["Mode"] == 1
-                    practice_action(automatic_view["startLabel"])
                     confirmation_deadline = time.monotonic() + 15
+                    start_automatic_lesson()
+                    cancel = wait_for(
+                        lambda: named(managed_window["pid"], automatic_view["cancelLabel"]),
+                        "automatic lesson cancel action missing",
+                        timeout=confirmation_deadline - time.monotonic(),
+                    )
+                    wait_for(
+                        lambda: focused(cancel)
+                        and cancel.get_state_set().contains(Atspi.StateType.SHOWING)
+                        and any(
+                            window.get("pid") == managed_window["pid"]
+                            and window["id"] != managed_window["id"]
+                            and window.get("is_focused") is True
+                            for window in contents(request("Windows"), "Windows")
+                        ),
+                        "automatic cancel action lacks actual dialog keyboard focus",
+                        timeout=confirmation_deadline - time.monotonic(),
+                    )
+                    key("space")
+                    assert json.loads(paths.settings.read_text())["Mode"] == 1
+                    start_automatic_lesson()
                     cancel = wait_for(
                         lambda: named(managed_window["pid"], automatic_view["cancelLabel"]),
                         "automatic lesson confirmation missing",

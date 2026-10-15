@@ -61,7 +61,7 @@ dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release 
 
 该算法程序也调用生产 owned 登记/开始/退休导出，验证退休后旧 op1/op3/op4/op2/op5 被拒及新 run 中旧 op3/op1 不能复活；仍不替代 Windows wire。`ProductionForegroundWriteTests` 的 owned 模式使用同一生产 DLL 和未修改的 Edit，覆盖退休 ACK 后旧请求拒绝、新 run 的 Undo 正例，以及已实际排队的旧事务先收束再 ACK；GUI barrier 不证明退休消息已在释放前入队。搬迁包练习测试实际执行生产 begin/retire/begin/close 握手，验证 DLL 随包可用与寿命换代。
 
-[c78f7cf 的 Windows 实际回归](https://github.com/DingJWuyu/Typelay/actions/runs/38592369617)已通过该提交当时的 20 项前台正负控、原后台直接写回、16 项受控原生适配器，以及包含算法回归的 15 项打包检查；该算法程序已在 Windows 真正链接并执行。该轮完整作业仍因 Chrome 前置及清理失败保红，不能概括为产品全验通过。`EM_SETSEL` 内同步重入导致的期限/焦点变化尚无不修改 stock Edit 的确定性触发证据；系统 API 替身的算法故障注入不等于该 OS 行为已实测。真实同步重入证明仍是完整教程授权启用前的阻塞项。此片不验证完整自动教程、练习授权、物理按键所有权或第三方应用支持。
+[654906ed 的 Windows 实跑](https://github.com/DingJWuyu/Typelay/actions/runs/38760488940/job/116510216177)已通过 22 项前台事务回归（含两项 owned 退休 wire）、5 项生产练习生命周期、11 项练习管道，以及 16 项受控原生适配器和 15 项打包检查。真实 DLL 构建、完整格式检查、搬迁包 begin/retire/begin/close 握手均通过；真实模型按需练习取得 verified，重启进度和关闭保留设置均通过。App 测试为 129 过、1 失败；唯一失败是 Chrome 页面/窗口/DOM 焦点启动前置，尚未进入输入捕获，完整作业仍未通过。`EM_SETSEL` 内同步重入导致的期限/焦点变化尚无不修改 stock Edit 的确定性触发证据；系统 API 替身的算法故障注入不等于该 OS 行为已实测。真实同步重入证明仍是完整教程授权启用前的阻塞项。此片不验证完整自动教程、练习授权、物理按键所有权或第三方应用支持。
 
 ## 暂停入口回归
 
