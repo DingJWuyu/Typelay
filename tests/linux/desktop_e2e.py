@@ -3281,14 +3281,26 @@ def run(arguments):
                     )
                     assert not status()["overlayVisible"] and not status()["acceptanceReady"]
                     assert control(paths, "settings") is True
+                    settings_focus_deadline = time.monotonic() + 15
+                    assert any(
+                        window.get("id") == settings_window["id"]
+                        and window.get("pid") == process.pid
+                        and window.get("title") == "TypeLay 设置"
+                        for window in contents(request("Windows"), "Windows")
+                    ), "registered application flow lost its original settings window"
+                    # Returning to edit exclusions is an explicit window switch;
+                    # the tokenless settings IPC does not promise activation.
+                    request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
                     wait_for(
                         lambda: any(
-                            window.get("pid") == process.pid
+                            window.get("id") == settings_window["id"]
+                            and window.get("pid") == process.pid
                             and window.get("title") == "TypeLay 设置"
                             and window.get("is_focused")
                             for window in contents(request("Windows"), "Windows")
                         ),
                         "settings did not become visible for connected-application evidence",
+                        timeout=settings_focus_deadline - time.monotonic(),
                     )
                     subprocess.run(
                         ["grim", str(arguments.output / "installed-application-connected.png")],
