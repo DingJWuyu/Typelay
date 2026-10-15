@@ -3077,7 +3077,7 @@ def run(arguments):
 
                 # Exercise the newly prepared application's main path before
                 # unrelated legacy settings and tutorial regressions.
-                from desktop_session import receipts
+                from desktop_session import process_identity, receipts
 
                 def desktop_row():
                     view = (status().get("setup") or {}).get("applicationSupport") or {}
@@ -3229,15 +3229,33 @@ def run(arguments):
                 )
                 activate_scrolled_setting("通过 TypeLay 打开")
                 activate_setting(support["labels"]["confirm"])
+
+                def registered_application_window():
+                    launched = [
+                        item
+                        for item in receipts(paths.data)
+                        if item["kind"] == "application"
+                        and item["state"] == "running"
+                        and all(item["name"] != previous["name"] for previous in before_selection)
+                    ]
+                    assert len(launched) <= 1, "multiple applications launched from one selection"
+                    if not launched:
+                        return None
+                    child = launched[0]["child"]
+                    if process_identity(child["pid"]) != child or Path(
+                        f"/proc/{child['pid']}/exe"
+                    ).resolve() != Path(executable):
+                        return None
+                    windows = [
+                        window
+                        for window in contents(request("Windows"), "Windows")
+                        if window.get("pid") == child["pid"]
+                    ]
+                    assert len(windows) <= 1, "registered fixture opened multiple windows"
+                    return windows[0] if windows else None
+
                 managed_window = wait_for(
-                    lambda: next(
-                        (
-                            window
-                            for window in contents(request("Windows"), "Windows")
-                            if window.get("title") == "TypeLay GTK contract fixture"
-                        ),
-                        None,
-                    ),
+                    registered_application_window,
                     "registered fixture did not open through TypeLay",
                     timeout=60,
                 )
