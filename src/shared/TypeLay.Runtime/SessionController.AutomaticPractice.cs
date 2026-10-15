@@ -5,6 +5,8 @@ namespace TypeLay.Runtime;
 public sealed partial class SessionController
 {
     private OwnedPracticeBinding? _ownedPractice;
+    private OwnedPracticeBinding? _awaitingPractice;
+    private OwnedSourceEvidence? _freshPracticeEvidence;
     private readonly Func<OwnedPracticeBinding, Task<bool>>? _retireOwnedPractice;
     private Task<bool>? _automaticRetirement;
     private bool _automaticRetirementUnconfirmed;
@@ -56,6 +58,15 @@ public sealed partial class SessionController
             return false;
         if (_ownedPractice is not null)
             return _ownedPractice == binding;
+        if (_awaitingPractice is { } previous &&
+            (binding != previous with
+            {
+                CommandGeneration = _hook.CommandGeneration
+            }
+                || _freshPracticeEvidence is not { ContextAdvanced: false } fresh || fresh.Binding != binding
+                || _loop.NowMs < fresh.ObservedAtMs || _loop.NowMs - fresh.ObservedAtMs > Limits.ObservationMaxAgeMs
+                || _hook.GetFocus(binding.Target) != FocusMember.Source))
+            return false;
         // A pre-binding capture/model job may still be pending. It cannot gain
         // authority or lesson credit merely because registration subsequently won.
         _generation++;
@@ -64,11 +75,14 @@ public sealed partial class SessionController
         _session.LeaveFamily();
         _nextCapture = 0;
         _ownedPractice = binding;
+        _awaitingPractice = null;
+        _freshPracticeEvidence = null;
         _retiredAutomaticTarget = null;
         UpdateAutomaticPractice(progress with
         {
             Target = binding.Target,
-            ConnectionId = binding.ConnectionId
+            ConnectionId = binding.ConnectionId,
+            AwaitingFreshSource = false
         });
         return true;
     }
@@ -161,13 +175,15 @@ public sealed partial class SessionController
         if (AutomaticPracticeProgress is not { } progress)
             return;
         _lastRetiredAutomaticRun = progress.RunId;
-        var binding = _ownedPractice;
+        var binding = _ownedPractice ?? _awaitingPractice;
         if (binding is not null)
         {
             _automaticRetirementUnconfirmed = true;
             _retiredAutomaticTarget = binding.Target;
         }
         _ownedPractice = null;
+        _awaitingPractice = null;
+        _freshPracticeEvidence = null;
         _automaticPlans.Clear();
         _automaticEditSeed = null;
         _automaticEditRevision = -1;
@@ -192,6 +208,84 @@ public sealed partial class SessionController
         _permitUntil = 0;
     }
 
+    private OwnedPracticeBinding? ContinuousPracticeRead()
+    {
+        if (_awaitingPractice is { } waiting && AutomaticPracticeProgress is { AwaitingFreshSource: true }
+            && _hook.GetFocus(waiting.Target) == FocusMember.Source)
+            return waiting with
+            {
+                CommandGeneration = _hook.CommandGeneration
+            };
+        return _ownedPractice is { NativeFocusRevision: > 0, ContextGeneration: > 0 } binding
+            && AutomaticPracticeProgress is { EditingStarted: false }
+            && _session.State is not (SessionState.EditingTranslation or SessionState.ReturningToSource or SessionState.EditedTranslationPending
+                or SessionState.Applying or SessionState.OutcomeUnknown)
+            && AutomaticPracticeIsCurrent(binding) && _hook.GetFocus(binding.Target) == FocusMember.Source ? binding : null;
+    }
+
+    private bool SuspendAutomaticRead(InputContext request, InputCapture capture, long now)
+    {
+        if (capture.Snapshot is not null || capture.Focus != FocusMember.Source
+            || capture.OwnedSource is not { ContextAdvanced: true } evidence
+            || request.PracticeRead is not { } binding || !ReferenceEquals(binding, _ownedPractice)
+            || ContinuousPracticeRead() != binding || evidence.Binding != binding
+            || now < evidence.ObservedAtMs || now - evidence.ObservedAtMs > Limits.ObservationMaxAgeMs)
+            return false;
+        // The adapter has already closed publication and received its fixed-peer
+        // revoke ACK. Keep only intent and verified lesson facts, never this grant.
+        _awaitingPractice = binding;
+        _ownedPractice = null;
+        _freshPracticeEvidence = null;
+        _retiredAutomaticTarget = binding.Target;
+        _automaticPlans.Clear();
+        _automaticEditSeed = null;
+        _automaticEditRevision = -1;
+        _session.LeaveFamily();
+        _pendingWakeCapture = null;
+        _practiceWakeCommand = null;
+        RotatePracticeConfiguration();
+        UpdateAutomaticPractice(AutomaticPracticeProgress! with
+        {
+            CommandGeneration = _hook.CommandGeneration,
+            AwaitingFreshSource = true
+        });
+        _overlay.HideQuietly();
+        _nextCapture = 0;
+        return true;
+    }
+
+    private bool ObserveAwaitingPractice(InputCapture capture, long now)
+    {
+        if (_awaitingPractice is not { } binding)
+            return false;
+        var expected = binding with
+        {
+            CommandGeneration = _hook.CommandGeneration
+        };
+        if (capture.Snapshot is null && capture.Focus == FocusMember.Source
+            && capture.OwnedSource is { ContextAdvanced: true } advanced && advanced.Binding == expected
+            && now >= advanced.ObservedAtMs && now - advanced.ObservedAtMs <= Limits.ObservationMaxAgeMs)
+        {
+            // A new proven refusal does not renew an old observation or grant.
+            _freshPracticeEvidence = null;
+            return true;
+        }
+        if (capture.Snapshot is not { } source || capture.Focus != FocusMember.Source
+            || capture.OwnedSource is not { ContextAdvanced: false } evidence || evidence.Binding != expected
+            || source.Target != binding.Target || source.FocusEpoch != binding.NativeFocusRevision
+            || source.ObservedAtMs != evidence.ObservedAtMs || now < evidence.ObservedAtMs
+            || now - evidence.ObservedAtMs > Limits.ObservationMaxAgeMs)
+        {
+            StopSession("practice-continuity-lost");
+            return true;
+        }
+        _freshPracticeEvidence = capture.SessionShortcuts is { SourceReady: true } ack
+            && ack.Target == source.Target && ack.Generation == _hook.CommandGeneration && ack.Bindings == CurrentSessionBindings
+            ? evidence : null;
+        // No model job or permit exists until the trusted host binds a new instance.
+        return true;
+    }
+
     private bool AutomaticPracticeIsCurrent(OwnedPracticeBinding? binding) => binding is not null
         && ReferenceEquals(binding, _ownedPractice) && AutomaticPracticeProgress?.RunId == binding.RunId
         && !_disposed && _settings.Value.Enabled && _settings.Value.Mode == WorkMode.Automatic
@@ -211,6 +305,11 @@ public sealed partial class SessionController
     {
         if (_ownedPractice is not null && !AutomaticPracticeIsCurrent(_ownedPractice))
             StopSession("practice-identity-lost");
+        if (_awaitingPractice is { } waiting && (AutomaticPracticeProgress is not { AwaitingFreshSource: true } progress
+            || progress.RunId != waiting.RunId || progress.CommandGeneration != _hook.CommandGeneration
+            || !_settings.Value.Enabled || _settings.Value.Mode != WorkMode.Automatic || !_hook.Ready || !_broker.Available
+            || _hook.ConnectionId != waiting.ConnectionId || _hook.GetFocus(waiting.Target) != FocusMember.Source))
+            StopSession("practice-continuity-lost");
     }
 
     private void UpdateAutomaticPractice(AutomaticPracticeProgress progress)

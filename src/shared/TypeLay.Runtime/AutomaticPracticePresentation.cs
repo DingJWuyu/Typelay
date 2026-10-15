@@ -4,13 +4,14 @@ namespace TypeLay.Runtime;
 
 // Only a trusted host's owned-process/field path may supply this binding. A run
 // identifier or a progress record alone is never authority to accept a candidate.
-public sealed record OwnedPracticeBinding(Guid RunId, TargetId Target, Guid ConnectionId, Guid CommandGeneration);
+public sealed record OwnedPracticeBinding(Guid RunId, TargetId Target, Guid ConnectionId, Guid CommandGeneration,
+    long NativeFocusRevision = 0, long ContextGeneration = 0);
 
 // Ephemeral, body-free lesson evidence. It cannot be used as an input permit.
 public sealed record AutomaticPracticeProgress(Guid RunId, TargetId? Target, Guid? ConnectionId,
     Guid CommandGeneration, long Revision, bool PreviewCompleted = false, bool AcceptanceCompleted = false,
     bool EditingStarted = false, bool DraftChanged = false, bool ReturnedToSource = false,
-    bool EditedAcceptanceCompleted = false)
+    bool EditedAcceptanceCompleted = false, bool AwaitingFreshSource = false)
 {
     public bool Completed => PreviewCompleted && AcceptanceCompleted && EditingStarted && DraftChanged
         && ReturnedToSource && EditedAcceptanceCompleted;

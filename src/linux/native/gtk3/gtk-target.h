@@ -50,7 +50,7 @@ Target *tl_focused(void);
 Target *tl_lookup(const char *id);
 void tl_discover(GtkWidget *widget, gboolean before_input);
 JsonObject *tl_describe(Target *target);
-JsonObject *tl_capture(Target *target, JsonObject *authority, CaptureFailure *failure);
+JsonObject *tl_capture(Target *target, JsonObject *authority, CaptureFailure *failure, JsonObject **continuity);
 JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct);
 gboolean tl_return(Target *target, JsonObject *authority);
 gboolean tl_metadata_matches(Target *target, JsonObject *authority);

@@ -347,7 +347,9 @@ internal static class Program
     }
     private static bool ValidAutomaticBinding(JsonElement value)
     {
-        if (value.ValueKind != JsonValueKind.Object || value.EnumerateObject().Count() != 4
+        if (value.ValueKind != JsonValueKind.Object || value.EnumerateObject().Count() != 6
+            || !value.TryGetProperty("nativeFocusRevision", out var focus) || !PositiveNativeRevision(focus)
+            || !value.TryGetProperty("contextGeneration", out var context) || !PositiveNativeRevision(context)
             || !value.TryGetProperty("runId", out var run) || !NonEmptyGuid(run)
             || !value.TryGetProperty("connectionId", out var connection) || !NonEmptyGuid(connection)
             || !value.TryGetProperty("commandGeneration", out var generation) || !NonEmptyGuid(generation)
@@ -360,6 +362,9 @@ internal static class Program
             return false;
         return true;
     }
+    private static bool PositiveNativeRevision(JsonElement value) => value.ValueKind == JsonValueKind.Number
+        && value.TryGetInt64(out long revision) && revision > 0 && revision < 1L << 53;
+
     private static bool NonEmptyGuid(JsonElement value) => value.ValueKind == JsonValueKind.String
         && value.TryGetGuid(out var result) && result != Guid.Empty;
 

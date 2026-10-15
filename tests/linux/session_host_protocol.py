@@ -106,6 +106,8 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
             "target": target,
             "connectionId": str(uuid.uuid4()),
             "commandGeneration": self.latest("shortcuts")["generation"],
+            "nativeFocusRevision": 1,
+            "contextGeneration": 7,
         }
         await self.send(
             {
@@ -176,6 +178,14 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
                 await self.ask("bindAutomaticPractice", {**binding, key: str(uuid.uuid4())})
             )
         self.assertFalse(await self.ask("bindAutomaticPractice", {**binding, "extra": True}))
+        for key in ("nativeFocusRevision", "contextGeneration"):
+            for invalid in (None, True, 0, -1, 1.5, "1", 2**53):
+                self.assertFalse(await self.ask("bindAutomaticPractice", {**binding, key: invalid}))
+            self.assertFalse(
+                await self.ask(
+                    "bindAutomaticPractice", {k: v for k, v in binding.items() if k != key}
+                )
+            )
         self.assertFalse(
             await self.ask(
                 "bindAutomaticPractice",

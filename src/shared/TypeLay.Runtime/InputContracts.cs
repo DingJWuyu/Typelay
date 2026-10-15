@@ -30,10 +30,14 @@ public sealed record ShortcutLease(InputSnapshot Source, long ContentEpoch, long
 // Observation epochs and timestamps belong to the platform observation domain. A platform
 // must map its clock into the session loop's monotonic milliseconds before returning a capture.
 public sealed record InputContext(long UserEpoch, long ForegroundEpoch, long SourceUserEpoch,
-    TargetId? BoundTarget, string[] Excluded, bool CaptureDirect, SessionShortcutConfiguration? SessionShortcuts = null);
+    TargetId? BoundTarget, string[] Excluded, bool CaptureDirect, SessionShortcutConfiguration? SessionShortcuts = null, OwnedPracticeBinding? PracticeRead = null);
 public sealed record InputCapture(InputSnapshot? Snapshot, FocusMember Focus = FocusMember.Other,
     string? Application = null, long UserEpoch = 0, long ForegroundEpoch = 0,
-    SessionShortcutAcknowledgement? SessionShortcuts = null);
+    SessionShortcutAcknowledgement? SessionShortcuts = null, OwnedSourceEvidence? OwnedSource = null);
+
+// Body-free evidence for an existing owned lesson only. ContextAdvanced implies
+// this read was refused and its original executor acknowledged revocation.
+public sealed record OwnedSourceEvidence(OwnedPracticeBinding Binding, long ObservedAtMs, bool ContextAdvanced);
 
 // The service must authorize metadata before reading it and must not capture
 // field text, selections or native write bindings for this observation.

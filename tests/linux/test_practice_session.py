@@ -81,6 +81,7 @@ class InputPort:
         self.generation = str(uuid.uuid4())
         self.authorization = None
         self.retired = None
+        self.continuing = False
 
     async def practice_target(self, pid, target=None):
         return dict(self.target) if self.available else None
@@ -95,6 +96,9 @@ class InputPort:
             if self.available
             else None
         )
+
+    def practice_waiting(self, run, *, acknowledged=True):
+        return self.continuing and self.retired == run
 
     def prepare_practice(self, binding, owns_process):
         return True
@@ -231,6 +235,26 @@ class PracticeSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(
             await self.practice.progress(100), "F9/F10 progress adopted an automatic run"
         )
+
+    async def test_continuity_waits_for_new_capture_and_only_then_binds_the_same_run(self):
+        run = await self.automatic()
+        await self.practice.progress(100, lesson="automatic")
+        first = self.input.authorization
+        self.input.retire_practice(run, notify=False)
+        self.input.continuing = True
+        self.input.available = False
+        self.assertIsNotNone(await self.practice.progress(100, lesson="automatic"))
+        self.host.progress = {**self.host.progress, "awaitingFreshSource": True}
+        self.assertIsNotNone(await self.practice.progress(100, lesson="automatic"))
+        self.assertIsNone(self.input.authorization)
+        self.input.available = True
+        self.input.generation = str(uuid.uuid4())
+        await self.practice.progress(100, lesson="automatic")
+        self.assertEqual(self.input.authorization["runId"], run)
+        self.assertNotEqual(
+            self.input.authorization["commandGeneration"], first["commandGeneration"]
+        )
+        self.assertEqual(sum(name == "beginAutomaticPractice" for name, _ in self.host.requests), 1)
 
     async def test_automatic_restart_waits_for_native_ack_and_failed_ack_blocks_future_authority(
         self,

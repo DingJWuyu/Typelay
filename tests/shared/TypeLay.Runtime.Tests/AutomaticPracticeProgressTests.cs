@@ -65,6 +65,132 @@ public sealed class AutomaticPracticeProgressTests
         Assert.Empty(s.Service.Writes);
     }
 
+    [Fact]
+    public void ContextAdvanceKeepsOnlyIntentAndRequiresANewGenerationAndFreshOwnedCapture()
+    {
+        using var s = new SessionScenario();
+        var binding = Bind(s) with
+        {
+            NativeFocusRevision = 1,
+            ContextGeneration = 7
+        };
+        // Initial binding is unchanged; restart gives the tested immutable baseline.
+        Assert.True(s.Controller.EndAutomaticPractice(binding.RunId));
+        Guid run = Guid.NewGuid();
+        Assert.True(s.Controller.BeginAutomaticPractice(run));
+        binding = binding with
+        {
+            RunId = run,
+            CommandGeneration = s.Input.CommandGeneration
+        };
+        Assert.True(s.Controller.BindAutomaticPractice(binding));
+        s.ReadyCandidate();
+        CompleteAcceptance(s);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null, FocusMember.Source, OwnedSource: new(binding, s.Loop.NowMs, true)));
+        var progress = s.Controller.AutomaticPracticeProgress;
+        Assert.NotNull(progress);
+        Assert.True(progress.AwaitingFreshSource);
+        Assert.True(progress.AcceptanceCompleted);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.View.Preview);
+        Assert.NotEqual(binding.CommandGeneration, s.Input.CommandGeneration);
+        Assert.False(s.Controller.BindAutomaticPractice(binding));
+        var next = binding with
+        {
+            CommandGeneration = s.Input.CommandGeneration
+        };
+        Assert.False(s.Controller.BindAutomaticPractice(next));
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null, FocusMember.Source, OwnedSource: new(next, s.Loop.NowMs, true)));
+        Assert.Equal(next.CommandGeneration, s.Input.CommandGeneration);
+        Assert.True(s.Controller.AutomaticPracticeProgress!.AwaitingFreshSource);
+        Assert.Null(s.Input.Permit);
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(s.Fresh, FocusMember.Source, SessionShortcuts:
+            new(s.Source.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true),
+            OwnedSource: new(next, s.Loop.NowMs, false)));
+        Assert.True(s.Controller.BindAutomaticPractice(next));
+        Assert.False(s.Controller.AutomaticPracticeProgress!.AwaitingFreshSource);
+        Assert.True(s.Controller.AutomaticPracticeProgress.AcceptanceCompleted);
+        Assert.False(s.Settings.Value.ExperimentalWriteback);
+    }
+
+    [Theory]
+    [InlineData("focus")]
+    [InlineData("context")]
+    [InlineData("connection")]
+    [InlineData("age")]
+    [InlineData("unknown")]
+    [InlineData("editing")]
+    public void IncompleteContinuityEvidenceStillRetiresTheOwnedLesson(string change)
+    {
+        using var s = new SessionScenario();
+        Guid run = Guid.NewGuid();
+        Assert.True(s.Controller.BeginAutomaticPractice(run));
+        var binding = new OwnedPracticeBinding(run, s.Source.Target, s.Input.ConnectionId, s.Input.CommandGeneration, 1, 7);
+        Assert.True(s.Controller.BindAutomaticPractice(binding));
+        s.ReadyCandidate();
+        if (change == "editing")
+        {
+            CompleteAcceptance(s);
+            NewSource(s);
+            s.ReadyCandidate();
+        }
+        s.Service.PendingCapture = new();
+        s.Tick();
+        if (change == "editing")
+            Assert.True(s.View.BeginEditing!(s.View.Token));
+        var evidence = new OwnedSourceEvidence(change switch
+        {
+            "focus" => binding with { NativeFocusRevision = 3 },
+            "context" => binding with { ContextGeneration = 9 },
+            "connection" => binding with { ConnectionId = Guid.NewGuid() },
+            _ => binding
+        }, s.Loop.NowMs - (change == "age" ? Limits.ObservationMaxAgeMs + 1 : 0), true);
+        s.CompleteCapture(new(null, FocusMember.Source, OwnedSource: change == "unknown" ? null : evidence));
+        if (change == "editing")
+        {
+            // The obsolete capture cannot erase the newer manual draft.
+            Assert.False(s.Controller.AutomaticPracticeProgress!.AwaitingFreshSource);
+            Assert.Equal(SessionState.EditingTranslation, s.View.State);
+        }
+        else
+        {
+            Assert.Null(s.Controller.AutomaticPracticeProgress);
+            Assert.False(s.Controller.BindAutomaticPractice(binding));
+        }
+        Assert.Null(s.Input.Permit);
+    }
+
+    [Fact]
+    public void ClosingAnAwaitingRunRejectsItsLateFreshCaptureAndBinding()
+    {
+        using var s = new SessionScenario();
+        Guid run = Guid.NewGuid();
+        Assert.True(s.Controller.BeginAutomaticPractice(run));
+        var binding = new OwnedPracticeBinding(run, s.Source.Target, s.Input.ConnectionId, s.Input.CommandGeneration, 1, 7);
+        Assert.True(s.Controller.BindAutomaticPractice(binding));
+        s.ReadyCandidate();
+        s.Service.PendingCapture = new();
+        s.Tick();
+        s.CompleteCapture(new(null, FocusMember.Source, OwnedSource: new(binding, s.Loop.NowMs, true)));
+        var next = binding with
+        {
+            CommandGeneration = s.Input.CommandGeneration
+        };
+        s.Service.PendingCapture = new();
+        s.Tick();
+        Assert.True(s.Controller.EndAutomaticPractice(run));
+        s.CompleteCapture(new(s.Fresh, FocusMember.Source, OwnedSource: new(next, s.Loop.NowMs, false)));
+        Assert.Null(s.Controller.AutomaticPracticeProgress);
+        Assert.False(s.Controller.BindAutomaticPractice(next));
+        Assert.Null(s.Input.Permit);
+    }
+
     [Theory]
     [InlineData("unchanged")]
     [InlineData("changed-back")]

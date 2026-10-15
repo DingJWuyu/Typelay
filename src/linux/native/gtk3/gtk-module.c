@@ -223,8 +223,19 @@ static void respond(gint64 id, JsonObject *data) {
     else json_object_set_null_member(frame, "data");
     send_frame(frame);
 }
-static void capture_response(gint64 id, JsonObject *data, const CaptureFailure *failure) {
-    if (id <= 0 || data || !failure || !failure->reason) { respond(id, data); return; }
+static void capture_response(gint64 id, JsonObject *data, const CaptureFailure *failure, JsonObject *continuity) {
+    if (id <= 0 || data || ((!failure || !failure->reason) && !continuity)) {
+        if (continuity) json_object_unref(continuity);
+        respond(id, data); return;
+    }
+    if (continuity) {
+        JsonObject *frame = json_object_new();
+        json_object_set_int_member(frame, "id", id);
+        json_object_set_null_member(frame, "data");
+        json_object_set_object_member(frame, "captureContinuity", continuity);
+        send_frame(frame);
+        return;
+    }
     JsonObject *trace = json_object_new(), *frame = json_object_new();
     json_object_set_string_member(trace, "reason", failure->reason);
     if (failure->target_matches_before >= 0)
@@ -432,8 +443,12 @@ static void command(JsonObject *frame) {
     } else if (strcmp(operation, "capture") == 0) {
         CaptureFailure failure;
         CaptureFailure *trace = g_getenv("TYPELAY_TRACE") ? &failure : NULL;
-        JsonObject *captured = tl_capture(target, tl_object(data, "authority"), trace);
-        capture_response(id, captured, trace);
+        JsonObject *continuity = NULL;
+        gboolean owned_source = json_object_has_member(data, "ownedSource")
+            && json_object_get_boolean_member(data, "ownedSource");
+        JsonObject *captured = tl_capture(target, tl_object(data, "authority"), trace,
+            owned_source ? &continuity : NULL);
+        capture_response(id, captured, trace, continuity);
     } else if (strcmp(operation, "direct") == 0) respond(id, tl_write(target, data, TRUE));
     else if (strcmp(operation, "return") == 0) {
         return_generation++;
@@ -719,7 +734,7 @@ static gboolean trigger_shortcut(const char *kind, Target *target, JsonObject *a
     if (failure) goto rejected;
     if (!description) { failure = "description"; reason = "Unsupported"; goto rejected; }
     phase = "capture";
-    read = tl_capture(target, tl_object(description, "authority"), NULL);
+    read = tl_capture(target, tl_object(description, "authority"), NULL, NULL);
     failure = shortcut_failure(&attempt, TRUE, &reason);
     if (failure) goto rejected;
     if (!read) { failure = "capture"; reason = "Unsupported"; goto rejected; }

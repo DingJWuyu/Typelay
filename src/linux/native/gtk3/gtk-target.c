@@ -561,7 +561,43 @@ static guint64 capture_revision(guint64 value, gint64 *observed) {
     if (observed && value <= G_MAXINT64) *observed = (gint64)value;
     return value;
 }
-JsonObject *tl_capture(Target *target, JsonObject *approved, CaptureFailure *failure) {
+/* A refused read can prove only continuity of an already-owned source. This
+   never approves the old stamp or reads text. The caller must revoke and await
+   its original connection, then require a wholly new approved capture. */
+static JsonObject *source_continuity(Target *target, JsonObject *approved) {
+    JsonObject *stamp = tl_object(approved, "contextStamp");
+    if (!standard_entry(target) || !stamp || !target->ime_known || target->composing
+        || !state_clear(&target->im_state)) return NULL;
+    TlFcitxStateV1 state = target->im_state;
+    guint64 focus = target->focus_revision;
+    gint64 observed = tl_integer(approved, "observedAtMs", 0), age = tl_now() - observed;
+    if (age < 0 || age > 150 || (gint64)focus != tl_integer(approved, "focusRevision", -1)
+        || (gint64)state.context_generation != tl_integer(stamp, "context", -1)
+        || tl_integer(stamp, "flags", -1) != (TL_FCITX_KNOWN | TL_FCITX_FOCUSED)
+        || tl_integer(stamp, "server", -1) != tl_integer(stamp, "applied", -2)
+        || tl_integer(stamp, "epoch", -1) < 0 || tl_integer(stamp, "input", -1) < 0
+        || tl_integer(stamp, "server", -1) < 0
+        || state.epoch < (guint64)tl_integer(stamp, "epoch", -1)
+        || state.input_epoch < (guint64)tl_integer(stamp, "input", -1)
+        || state.server_serial < (guint64)tl_integer(stamp, "server", -1)
+        || state.applied_serial < (guint64)tl_integer(stamp, "applied", -1)
+        || !tl_metadata_matches(target, approved)) return NULL;
+    /* Metadata access may dispatch application callbacks. Recheck every identity
+       and freshness condition afterwards, without another provider observation. */
+    age = tl_now() - observed;
+    if (target->dead || !standard_entry(target) || age < 0 || age > 150
+        || target != tl_focused() || target->dead || target->focus_revision != focus
+        || !target->ime_known || target->composing || !same_state(&state, &target->im_state)) return NULL;
+    JsonObject *value = json_object_new();
+    json_object_set_string_member(value, "target", target->id);
+    json_object_set_int_member(value, "nativeFocusRevision", (gint64)focus);
+    json_object_set_int_member(value, "contextGeneration", (gint64)state.context_generation);
+    /* Keep the original approval deadline, never redate a rejected read. */
+    json_object_set_int_member(value, "observedAtMs", observed);
+    return value;
+}
+JsonObject *tl_capture(Target *target, JsonObject *approved, CaptureFailure *failure, JsonObject **continuity) {
+    if (continuity) *continuity = NULL;
     if (failure) *failure = (CaptureFailure){.age_before = G_MININT64, .age_after = G_MININT64,
         .storage_before = -1, .input_before = -1, .focus_before = -1,
         .storage_after = -1, .input_after = -1, .focus_after = -1,
@@ -571,7 +607,10 @@ JsonObject *tl_capture(Target *target, JsonObject *approved, CaptureFailure *fai
     if (!tl_ime_clear(target)) return capture_refused(failure, "ime-unavailable");
     if (!capture_focus(target == tl_focused(), failure ? &failure->target_matches_before : NULL))
         return capture_refused(failure, "focus-before");
-    if (!stamp_matches(target, approved)) return capture_refused(failure, "stamp-before");
+    if (!stamp_matches(target, approved)) {
+        if (continuity) *continuity = source_continuity(target, approved);
+        return capture_refused(failure, "stamp-before");
+    }
     gint64 age = tl_now() - tl_integer(approved, "observedAtMs", 0);
     if (failure) failure->age_before = age;
     if (age < 0 || age > 150) return capture_refused(failure, "age-before");

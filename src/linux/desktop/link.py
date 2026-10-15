@@ -65,10 +65,13 @@ class Link:
         self.sequence = 0
         self.pending = {}
         self.capture_traces = {}
+        self.capture_continuities = {}
         self.tasks = set()
         self.channel = Channel(glib, read_fd, write_fd, self.receive, self.disconnected, owner)
 
-    async def ask(self, operation, data=None, timeout=0.6, *, capture_trace=None):
+    async def ask(
+        self, operation, data=None, timeout=0.6, *, capture_trace=None, capture_continuity=None
+    ):
         if len(self.pending) >= 16:
             raise OSError("request-capacity")
         self.sequence += 1
@@ -77,12 +80,15 @@ class Link:
         self.pending[identity] = future
         if operation == "capture" and type(capture_trace) is dict:
             self.capture_traces[identity] = capture_trace
+        if operation == "capture" and type(capture_continuity) is dict:
+            self.capture_continuities[identity] = capture_continuity
         try:
             self.channel.send({"id": identity, "op": operation, "data": data})
             return await asyncio.wait_for(future, timeout)
         finally:
             self.pending.pop(identity, None)
             self.capture_traces.pop(identity, None)
+            self.capture_continuities.pop(identity, None)
 
     def send(self, operation, data=None):
         self.channel.send({"event": operation, "data": data})
@@ -97,6 +103,28 @@ class Link:
             future = self.pending.get(frame[self.response_key])
             if future is not None and not future.done():
                 future.set_result(frame.get("data"))
+                continuity = self.capture_continuities.get(frame[self.response_key])
+                value = frame.get("captureContinuity")
+                if continuity is not None and frame.get("data") is None and isinstance(value, dict):
+                    if (
+                        isinstance(value.get("target"), str)
+                        and len(value["target"]) <= 128
+                        and all(
+                            type(value.get(key)) is int and 0 < value[key] < 2**53
+                            for key in ("nativeFocusRevision", "contextGeneration", "observedAtMs")
+                        )
+                    ):
+                        continuity.update(
+                            {
+                                key: value[key]
+                                for key in (
+                                    "target",
+                                    "nativeFocusRevision",
+                                    "contextGeneration",
+                                    "observedAtMs",
+                                )
+                            }
+                        )
                 trace = self.capture_traces.get(frame[self.response_key])
                 if trace is not None and frame.get("data") is None:
                     # A diagnostic cannot alter the reply, reject a connection,

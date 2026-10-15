@@ -267,6 +267,212 @@ class InputFeedbackTests(unittest.TestCase):
         ):
             asyncio.run(exercise())
 
+    def owned_context_advance(self, invalidation=None, *, resume=False, retire_during_bind=False):
+        self.peer = self.connect_peer("gtk3")
+        original = self.description
+
+        def description():
+            value = original()
+            value["geometry"]["space"] = "gtk-toplevel"
+            value["authority"]["contextStamp"] = {
+                "context": 7,
+                "epoch": 1,
+                "input": 1,
+                "server": 1,
+                "applied": 1,
+                "flags": 3,
+            }
+            return value
+
+        self.description = description
+
+        async def exercise():
+            publication = (await self.publish_acceptance(pause=False))[0]["data"]
+            binding = {
+                "runId": str(uuid.uuid4()),
+                "target": publication["lease"]["source"]["target"],
+                "connectionId": self.peer.connection_id,
+                "commandGeneration": self.generation,
+                "nativeFocusRevision": 1,
+                "contextGeneration": 7,
+            }
+            self.assertTrue(self.authorize_practice(binding, lambda _: True))
+            publication["lease"].update(
+                practiceRunId=binding["runId"], practiceConnectionId=binding["connectionId"]
+            )
+            self.native_frames(self.peer)
+            operation = asyncio.create_task(
+                self.input.request("capture", {"practiceRead": binding})
+            )
+
+            async def request(name):
+                while True:
+                    frames = self.native_frames(self.peer)
+                    matches = [
+                        frame
+                        for frame in frames
+                        if frame.get("op") == name and frame.get("id", 0) > 0
+                    ]
+                    if matches:
+                        return matches[0]
+                    if operation.done():
+                        self.fail("capture returned before the executor revoke acknowledgement")
+                    await asyncio.sleep(0)
+
+            describe = await asyncio.wait_for(request("describe"), 1)
+            self.peer.link.receive({"id": describe["id"], "data": description()})
+            capture = await asyncio.wait_for(request("capture"), 1)
+            self.peer.link.receive(
+                {
+                    "id": capture["id"],
+                    "data": None,
+                    "captureContinuity": {
+                        "target": binding["target"]["value"],
+                        "nativeFocusRevision": 1,
+                        "contextGeneration": 7,
+                        "observedAtMs": 1000,
+                    },
+                }
+            )
+            revoke = await asyncio.wait_for(request("revoke"), 1)
+            self.assertFalse(operation.done())
+            self.input.notification("publish", publication)
+            self.assertEqual(self.native_frames(self.peer), [])
+            if invalidation == "focus":
+                self.peer.event(
+                    "input",
+                    {
+                        "target": binding["target"]["value"],
+                        "focusChanged": True,
+                        "focused": False,
+                        "textChanged": False,
+                    },
+                )
+            elif invalidation == "settings":
+                self.input.notification("settings", {"enabled": True})
+            elif invalidation == "close":
+                self.input.retire_practice(binding["runId"])
+            elif invalidation == "disconnect":
+                self.input.lost(self.peer)
+            self.peer.link.receive({"id": revoke["id"], "data": None})
+            result = await asyncio.wait_for(operation, 1)
+            if invalidation:
+                self.assertIsNone(result)
+                self.assertIsNone(self.input.practice_authorization)
+                self.assertIsNone(self.input.practice_continuity)
+                return
+            self.assertIsNone(result["snapshot"])
+            self.assertEqual(result["ownedSource"]["binding"], binding)
+            self.assertTrue(result["ownedSource"]["contextAdvanced"])
+            self.assertIsNone(self.input.practice_authorization)
+            self.input.notification("publish", publication)
+            self.assertEqual(self.native_frames(self.peer), [])
+            # The next independent refusal keeps only the already-ACKed intent.
+            self.generation = str(uuid.uuid4())
+            self.configure()
+            self.native_frames(self.peer)
+            second = {**binding, "commandGeneration": self.generation}
+            operation = asyncio.create_task(self.input.request("capture", {"practiceRead": second}))
+            describe = await asyncio.wait_for(request("describe"), 1)
+            self.peer.link.receive({"id": describe["id"], "data": description()})
+            capture = await asyncio.wait_for(request("capture"), 1)
+            self.assertTrue(capture["data"]["ownedSource"])
+            self.peer.link.receive(
+                {
+                    "id": capture["id"],
+                    "data": None,
+                    "captureContinuity": {
+                        "target": binding["target"]["value"],
+                        "nativeFocusRevision": 1,
+                        "contextGeneration": 7,
+                        "observedAtMs": 1000,
+                    },
+                }
+            )
+            repeated = await asyncio.wait_for(operation, 1)
+            self.assertEqual(repeated["ownedSource"]["binding"], second)
+            self.assertEqual(
+                self.native_frames(self.peer), [], "a repeated witness issued another revoke"
+            )
+            self.assertIsNone(self.input.practice_authorization)
+            if resume:
+                # A complete new capture with the new target-bound ACK is the
+                # only route back to a newly constructed private authorization.
+                operation = asyncio.create_task(
+                    self.input.request("capture", {"practiceRead": second})
+                )
+                current = description()
+                current["sessionBindings"] = {
+                    "generation": self.generation,
+                    "accept": "Tab",
+                    "exit": "Esc",
+                    "sourceReady": True,
+                    "editorReady": True,
+                }
+                describe = await asyncio.wait_for(request("describe"), 1)
+                self.peer.link.receive({"id": describe["id"], "data": current})
+                capture = await asyncio.wait_for(request("capture"), 1)
+                self.peer.link.receive(
+                    {
+                        "id": capture["id"],
+                        "data": {
+                            **current,
+                            "text": "new source",
+                            "selection": {"start": 10, "end": 10},
+                            "ime": "Clear",
+                            "observedAtMs": 1000,
+                            "writeSupported": True,
+                        },
+                    }
+                )
+                complete = await asyncio.wait_for(operation, 1)
+                self.assertFalse(complete["ownedSource"]["contextAdvanced"])
+                self.assertEqual(complete["ownedSource"]["binding"], second)
+                if retire_during_bind:
+                    self.assertTrue(self.input.prepare_practice(second, lambda _: True))
+                    # Runtime ends its still-awaiting G1 before it handles Bind G2:
+                    # the new configure is sent before its old-binding retirement.
+                    self.generation = str(uuid.uuid4())
+                    self.configure()
+                    self.native_frames(self.peer)
+                    self.assertTrue(await self.input.request("retireAutomaticPractice", binding))
+                    self.assertFalse(self.input.authorize_practice(second, lambda _: True))
+                    self.assertIsNone(self.input.practice_authorization)
+                    self.assertNotEqual(self.input.practice_retirement_ack, second["runId"])
+                    return
+                self.assertTrue(self.authorize_practice(second, lambda _: True))
+                self.input.notification("publish", publication)
+                self.assertEqual(
+                    self.native_frames(self.peer),
+                    [],
+                    "old generation revived after the new binding",
+                )
+                return
+            # Close between this ACK and Runtime consuming the witness can join
+            # exactly the old binding's real ACK, without granting a later run.
+            self.assertTrue(await self.input.request("retireAutomaticPractice", binding))
+            self.assertFalse(
+                await self.input.request(
+                    "retireAutomaticPractice", {**binding, "commandGeneration": str(uuid.uuid4())}
+                )
+            )
+
+        asyncio.run(exercise())
+
+    def test_owned_context_advance_waits_for_revoke_ack_and_keeps_old_publish_closed(self):
+        self.owned_context_advance()
+
+    def test_new_complete_owned_capture_rebinds_without_reviving_old_publication(self):
+        self.owned_context_advance(resume=True)
+
+    def test_prepared_next_binding_does_not_hide_the_old_exact_retirement_ack(self):
+        self.owned_context_advance(resume=True, retire_during_bind=True)
+
+    def test_context_witness_cannot_survive_identity_or_intent_change_while_awaiting_ack(self):
+        for invalidation in ("focus", "settings", "close", "disconnect"):
+            with self.subTest(invalidation=invalidation):
+                self.owned_context_advance(invalidation)
+
     async def observe_pause(self, description, before_reply=None):
         self.input.notification("settings", {"enabled": False})
         self.focus(self.peer)

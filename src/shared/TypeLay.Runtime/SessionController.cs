@@ -459,7 +459,7 @@ public sealed partial class SessionController : IDisposable
     private InputContext Context() => new(_hook.UserEpoch, _hook.ForegroundEpoch,
         _hook.SourceUserEpoch, _session.Current?.Target, _settings.Value.Excluded,
         _settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand,
-        new(_hook.CommandGeneration, CurrentSessionBindings));
+        new(_hook.CommandGeneration, CurrentSessionBindings), ContinuousPracticeRead());
     private bool PauseAnchorIsCurrent(long now) => _pauseAnchor is { IsUsable: true } anchor
         && _pauseWindowEpoch == _hook.WindowEpoch && _pauseForegroundEpoch == _hook.ForegroundEpoch
         && anchor.FocusEpoch == _hook.ForegroundEpoch && _hook.GetFocus(anchor.Target) == FocusMember.Source
@@ -618,6 +618,10 @@ public sealed partial class SessionController : IDisposable
                 _inputReadFailed = false;
                 RefreshConnectionStatus();
             }
+            if (SuspendAutomaticRead(request, result, now))
+                return;
+            if (ObserveAwaitingPractice(result, now))
+                return;
             if (result.Snapshot is not { } snapshot || result.Focus == FocusMember.Other)
             {
                 var pendingWake = _pendingWakeCapture;
@@ -1100,7 +1104,7 @@ public sealed partial class SessionController : IDisposable
     public void StopSession() => StopSession("stop-session");
     private void StopSession(string reason)
     {
-        if (_ownedPractice is not null)
+        if (_ownedPractice is not null || _awaitingPractice is not null)
             RetireAutomaticPractice();
         if (_session.Current is not null)
             Trace(reason);

@@ -37,6 +37,7 @@ class Native:
             frame = receive_sync(self.connection)
             if frame.get("id") == self.id:
                 self.capture_trace = frame.get("captureTrace")
+                self.capture_continuity = frame.get("captureContinuity")
                 return frame["data"]
             self.events.append(frame)
 
@@ -172,12 +173,16 @@ def inside(arguments):
         geometry = anchor_geometry(description["geometry"])
         assert geometry is not None, "refusal must exercise a visible ordinary GTK field"
         assert (
-            client.call("capture", {"target": target, "authority": description["authority"]})
+            client.call(
+                "capture",
+                {"target": target, "authority": description["authority"], "ownedSource": True},
+            )
             is None
         ), "Unknown IME exposed source text"
         assert client.capture_trace == {"reason": "ime-unavailable"}, (
             "first-guard refusal must not report unobserved identity or revision fields"
         )
+        assert client.capture_continuity is None, "Unknown IME cannot retain an owned source intent"
         checks.append("visible GTK metadata excludes body; Unknown IME capture returns no snapshot")
 
         paused = client.call(

@@ -118,7 +118,16 @@ class PracticeSession:
                 await self.retire()
                 return None
             automatic = self.lesson == "automatic"
+            continuing = automatic and self.input.practice_waiting(self.run, acknowledged=False)
+            if continuing and not progress.get("awaitingFreshSource"):
+                return progress
             binding = await self.input.practice_binding(pid, self.target) if automatic else None
+            if (
+                continuing
+                and binding is None
+                and self.input.practice_waiting(self.run, acknowledged=False)
+            ):
+                return progress
             target = (
                 (binding["target"] if binding else None)
                 if automatic
@@ -130,7 +139,9 @@ class PracticeSession:
             if self.target is not None and target != self.target:
                 await self.retire()
                 return None
-            if self.target is None and target is not None:
+            if target is not None and (
+                self.target is None or (automatic and progress.get("awaitingFreshSource"))
+            ):
                 data = (
                     {"runId": self.run, **binding}
                     if automatic
