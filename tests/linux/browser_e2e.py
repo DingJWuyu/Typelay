@@ -7,6 +7,8 @@ is not physical IME, native-host routing or complete desktop acceptance.
 """
 
 import argparse
+import base64
+import json
 import os
 import shutil
 import tempfile
@@ -1063,7 +1065,7 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.accepted(), [])
 
     def test_overlay_keeps_translation_primary_and_actions_visible(self):
-        output = ROOT / "artifacts/linux/browser-overlay"
+        output = ROOT / "artifacts/linux/browser-native/overlay"
         output.mkdir(parents=True, exist_ok=True)
         self.page.keyboard.insert_text("Hello")
         for theme in ("light", "dark"):
@@ -1250,6 +1252,9 @@ class BrowserContract(unittest.TestCase):
         self.assertNotIn("Tab 接受译文", names)
         self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
         click_button("展开")
+        self.page.wait_for_function(
+            "document.querySelector('html > div').getBoundingClientRect().width === 520"
+        )
         expanded = self.page.locator("html > div").bounding_box()
         self.assertEqual(expanded["width"], 520)
         self.assertGreater(expanded["width"], compact["width"])
@@ -1259,6 +1264,13 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
         self.assertIn("缩小", menu_names(False))
         click_button("缩小")
+        self.page.wait_for_function(
+            """expected => {
+          const rect = document.querySelector('html > div').getBoundingClientRect();
+          return ['x', 'y', 'width', 'height'].every(name => rect[name] === expected[name]);
+        }""",
+            arg=compact,
+        )
         self.assertEqual(self.page.locator("html > div").bounding_box(), compact)
         names = menu_names(False)
         self.assertNotIn("复制译文", names)
@@ -1273,6 +1285,215 @@ class BrowserContract(unittest.TestCase):
         self.command("overlay-hide")
         names = [node.get("name", {}).get("value") for node in accessible_nodes()]
         self.assertNotIn("更多", names)
+
+    def motion_view(self):
+        self.page.emulate_media(reduced_motion="no-preference")
+        self.page.locator("#source").evaluate("""element => {
+          element.style.cssText = 'display:block;margin-top:500px;margin-left:160px;width:480px;box-sizing:border-box';
+        }""")
+        snapshot = self.type_source()
+        data = {
+            "target": snapshot["target"],
+            "authority": snapshot["authority"],
+            "view": {
+                "presentation": {
+                    "visible": True,
+                    "editorOwnsText": False,
+                    "tabHint": "Tab 接受译文",
+                },
+                "text": "Current candidate. " * 80,
+                "editable": True,
+                "state": "ValidTranslation",
+                "sourceLanguage": "en",
+                "targetLanguage": "zh",
+                "status": "译文就绪",
+            },
+            "revision": 1,
+            "theme": "light",
+        }
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        return data
+
+    def overlay_control(self, name, role="button"):
+        nodes = self.cdp.send("Accessibility.getFullAXTree")["nodes"]
+        node = next(
+            node
+            for node in nodes
+            if not node.get("ignored")
+            and node.get("role", {}).get("value") == role
+            and node.get("name", {}).get("value") == name
+        )
+        return self.cdp.send("DOM.resolveNode", {"backendNodeId": node["backendDOMNodeId"]})[
+            "object"
+        ]["objectId"]
+
+    def overlay_dom(self, object_id, function):
+        return self.cdp.send(
+            "Runtime.callFunctionOn",
+            {
+                "objectId": object_id,
+                "functionDeclaration": function,
+                "returnByValue": True,
+            },
+        )["result"].get("value")
+
+    def click_overlay_control(self, name):
+        rect = self.overlay_dom(
+            self.overlay_control(name),
+            "function() { return this.getBoundingClientRect().toJSON(); }",
+        )
+        self.page.mouse.click(rect["x"] + rect["width"] / 2, rect["y"] + rect["height"] / 2)
+
+    def observe_overlay_frames(self):
+        # Public browser DOM/RAF observation of the real closed-shadow widgets.
+        # It neither reads adapter variables nor supplies an animation model.
+        self.overlay_dom(
+            self.overlay_control("TypeLay 译文", "textbox"),
+            """function() {
+          const editor = this, panel = editor.parentElement, host = panel.getRootNode().host;
+          const exit = panel.querySelector('footer button');
+          window.fixtureMotionFrames = [];
+          const start = performance.now();
+          function sample(now) {
+            fixtureMotionFrames.push({ms: now - start, connected: host.isConnected,
+              host: host.getBoundingClientRect().toJSON(), editor: editor.getBoundingClientRect().toJSON(),
+              exit: exit.getBoundingClientRect().toJSON(), text: editor.value,
+              start: editor.selectionStart, end: editor.selectionEnd,
+              sourceFocused: document.activeElement.id === 'source'});
+            if (now - start < 360) requestAnimationFrame(sample);
+            else window.fixtureMotionDone = true;
+          }
+          window.fixtureMotionDone = false;
+          requestAnimationFrame(sample);
+        }""",
+        )
+
+    def motion_frames(self):
+        self.page.wait_for_function("window.fixtureMotionDone === true")
+        return self.page.evaluate("fixtureMotionFrames")
+
+    def test_overlay_resize_has_intermediate_frames_and_preserves_anchors_and_focus(self):
+        self.motion_view()
+        output = ROOT / "artifacts/linux/browser-native/overlay/motion"
+        output.mkdir(parents=True, exist_ok=True)
+        screenshots = []
+
+        def save_frame(event):
+            if len(screenshots) < 12:
+                path = output / f"resize-{len(screenshots):02d}.png"
+                path.write_bytes(base64.b64decode(event["data"]))
+                screenshots.append(path.name)
+            self.cdp.send("Page.screencastFrameAck", {"sessionId": event["sessionId"]})
+
+        self.cdp.on("Page.screencastFrame", save_frame)
+        self.cdp.send("Page.startScreencast", {"format": "png", "everyNthFrame": 2})
+        try:
+            before = self.page.locator("html > div").bounding_box()
+            self.observe_overlay_frames()
+            self.click_overlay_control("展开")
+            frames = self.motion_frames()
+        finally:
+            self.cdp.send("Page.stopScreencast")
+            self.cdp.remove_listener("Page.screencastFrame", save_frame)
+        (output / "resize.json").write_text(
+            json.dumps({"frames": frames, "screenshots": screenshots}, indent=2)
+        )
+        end = frames[-1]["host"]
+        self.assertEqual(end["width"], 520)
+        self.assertGreater(end["height"], before["height"])
+        self.assertGreater(len({round(frame["host"]["height"], 1) for frame in frames}), 3)
+        self.assertGreaterEqual(len(screenshots), 3)
+        for frame in frames:
+            self.assertTrue(frame["sourceFocused"])
+            self.assertAlmostEqual(frame["host"]["right"], end["right"], delta=1)
+            self.assertAlmostEqual(frame["host"]["bottom"], end["bottom"], delta=1)
+            self.assertGreaterEqual(frame["exit"]["top"], frame["host"]["top"])
+            self.assertLessEqual(frame["exit"]["bottom"], frame["host"]["bottom"])
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+
+    def test_new_view_interrupts_resize_and_replaces_body_and_hints_immediately(self):
+        data = self.motion_view()
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        self.click_overlay_control("展开")
+        data["revision"] = 2
+        data["view"]["text"] = "New current candidate"
+        data["view"]["status"] = "新译文"
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        self.assertEqual(
+            self.overlay_dom(editor, "function() { return this.value; }"), "New current candidate"
+        )
+        self.observe_overlay_frames()
+        frames = self.motion_frames()
+        self.assertTrue(all(frame["text"] == "New current candidate" for frame in frames))
+        self.assertEqual(len({frame["host"]["height"] for frame in frames}), 1)
+        self.assertTrue(self.overlay_control("新译文", "StaticText"))
+        self.assertTrue(self.overlay_control("Tab 交还应用", "StaticText"))
+
+    def test_rapid_resize_and_same_content_renew_do_not_restart_motion(self):
+        data = self.motion_view()
+        before = self.page.locator("html > div").bounding_box()
+        self.click_overlay_control("展开")
+        self.command("overlay-renew", {"target": data["target"], "authority": data["authority"]})
+        self.click_overlay_control("缩小")
+        self.observe_overlay_frames()
+        # Same-content renewals are display proofs only; their arrival cannot
+        # replay expansion or extend the numeric resize's 280ms duration.
+        self.command("overlay-renew", {"target": data["target"], "authority": data["authority"]})
+        frames = self.motion_frames()
+        end = frames[-1]["host"]
+        for name in ("x", "y", "width", "height"):
+            self.assertAlmostEqual(end[name], before[name], delta=1)
+        settled = [frame for frame in frames if frame["ms"] >= 300]
+        self.assertTrue(all(abs(frame["host"]["height"] - end["height"]) < 1 for frame in settled))
+        self.assertTrue(all(frame["sourceFocused"] for frame in frames))
+        self.assertEqual(self.accepted(), [])
+
+    def test_hide_during_resize_clears_live_editor_and_never_revives(self):
+        data = self.motion_view()
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        data["revision"] = 2
+        data["view"]["presentation"]["editorOwnsText"] = True
+        data["view"]["state"] = "EditingTranslation"
+        self.command("overlay-render", data)
+        self.command("overlay-edit", {"target": data["target"], "allowed": True})
+        self.click_overlay_control("展开")
+        self.page.keyboard.press("Escape")
+        self.assertTrue(
+            self.page.evaluate("""fixtureMessages.some(message =>
+          message.event === 'ui' && message.data.operation === 'escape')""")
+        )
+        # The fixture host acknowledges Escape using the normal hide command.
+        self.command("overlay-hide")
+        self.assertEqual(self.overlay_dom(editor, "function() { return this.value; }"), "")
+        self.page.wait_for_timeout(360)  # Observation window beyond the original motion deadline.
+        self.assertEqual(self.page.locator("html > div").count(), 0)
+        self.page.locator("#source").focus()
+        data = self.motion_view()
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        self.click_overlay_control("展开")
+        self.page.locator("#source").evaluate("element => element.remove()")
+        self.page.wait_for_timeout(360)
+        self.assertEqual(self.page.locator("html > div").count(), 0)
+        self.assertEqual(self.overlay_dom(editor, "function() { return this.value; }"), "")
+        self.assertEqual(self.accepted(), [])
+
+    def test_reduced_motion_lands_directly_and_cancels_running_resize(self):
+        data = self.motion_view()
+        self.page.emulate_media(reduced_motion="reduce")
+        self.click_overlay_control("展开")
+        self.observe_overlay_frames()
+        frames = self.motion_frames()
+        self.assertEqual({frame["host"]["width"] for frame in frames}, {520})
+        self.assertEqual(len({frame["host"]["height"] for frame in frames}), 1)
+        self.command("overlay-renew", {"target": data["target"], "authority": data["authority"]})
+        self.page.emulate_media(reduced_motion="no-preference")
+        self.click_overlay_control("缩小")
+        self.page.emulate_media(reduced_motion="reduce")
+        self.observe_overlay_frames()
+        frames = self.motion_frames()
+        self.assertEqual({frame["host"]["width"] for frame in frames}, {480})
+        self.assertEqual(len({frame["host"]["height"] for frame in frames}), 1)
 
     def test_hint_preserves_unchanged_text_and_updates_on_revocation(self):
         snapshot = self.type_source()
@@ -1396,7 +1617,8 @@ class BrowserContract(unittest.TestCase):
             },
         )
         self.page.locator("#source").evaluate(
-            "element => {element.style.marginTop = '220px'; element.style.width = '480px';}"
+            """element => {element.style.cssText =
+              'display:block;margin-top:500px;margin-left:160px;width:480px;box-sizing:border-box';} """
         )
         snapshot = self.type_source()
         revision = snapshot["authority"]["inputRevision"]
@@ -1442,7 +1664,32 @@ class BrowserContract(unittest.TestCase):
         self.command("overlay-render", data)
         self.command("overlay-edit", {"target": snapshot["target"], "allowed": True})
         self.page.keyboard.press("Control+A")
-        self.page.keyboard.insert_text("Human draft")
+        human_draft = (
+            "中文人工草稿，保留选区与原生撤销。" * 20 if accept == "Tab" else "Human draft"
+        )
+        self.page.keyboard.insert_text(human_draft)
+        if accept == "Tab":
+            # Reuse the existing two-stage return case for motion, Chinese
+            # selection and Chromium's actual textarea undo/redo stack.
+            self.page.keyboard.press("Shift+ArrowLeft")
+            editor = self.overlay_control("TypeLay 译文", "textbox")
+            selection = self.overlay_dom(
+                editor, "function() { return [this.selectionStart, this.selectionEnd]; }"
+            )
+            self.observe_overlay_frames()
+            self.click_overlay_control("展开")
+            frames = self.motion_frames()
+            self.assertGreater(len({round(frame["host"]["height"], 1) for frame in frames}), 3)
+            self.assertTrue(all(frame["text"] == human_draft for frame in frames))
+            self.assertTrue(all([frame["start"], frame["end"]] == selection for frame in frames))
+            self.page.keyboard.press("Control+Z")
+            self.assertEqual(
+                self.overlay_dom(editor, "function() { return this.value; }"), "Initial candidate"
+            )
+            self.page.keyboard.press("Control+Y")
+            self.assertEqual(
+                self.overlay_dom(editor, "function() { return this.value; }"), human_draft
+            )
         view["text"] = "Stale remote candidate"
         data["revision"] = 3
         self.command("overlay-render", data)
@@ -1462,7 +1709,7 @@ class BrowserContract(unittest.TestCase):
         self.page.keyboard.insert_text("!")
         draft = self.page.evaluate("""window.fixtureMessages.findLast(message =>
           message.event === 'ui' && message.data.operation === 'draft').data.value""")
-        self.assertEqual(draft, "Human draft!")
+        self.assertEqual(draft, human_draft + "!")
         self.session_key(accept, "down")
         self.assertTrue(
             self.page.evaluate("""window.fixtureMessages.some(message =>
@@ -1492,7 +1739,7 @@ class BrowserContract(unittest.TestCase):
         self.publish(returned, self.plan(returned, draft))
         self.session_key(accept, "down")
         self.session_key(accept, "up")
-        self.assertEqual(self.page.locator("#source").input_value(), "Human draft!")
+        self.assertEqual(self.page.locator("#source").input_value(), human_draft + "!")
         self.assertEqual(len(self.accepted()), 1)
         if accept == "F24":
             self.assert_f24_events(

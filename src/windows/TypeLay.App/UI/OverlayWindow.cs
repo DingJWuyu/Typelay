@@ -44,6 +44,13 @@ internal sealed class OverlayWindow : Window, ISessionView
     private double _panelWidth = 390;
     private nint _hwnd;
     private (int X, int Y, int Width, int Height)? _placement;
+    private (TargetId Target, RectPx Bounds, RectPx Work, double Scale, bool Above)? _heightAnchor;
+    private HeightTransition? _heightTransition;
+    private TimeSpan? _heightFrameTime;
+    private sealed record HeightTransition(
+        (int X, int Y, int Width, int Height) From,
+        (int X, int Y, int Width, int Height) To,
+        double FromBodyHeight, double ToBodyHeight, double MaximumBodyHeight, bool Above, long Started);
     public nint Handle => _hwnd;
     public Func<SessionViewToken, bool>? BeginEditing
     {
@@ -322,6 +329,7 @@ internal sealed class OverlayWindow : Window, ISessionView
             HwndSource.FromHwnd(_hwnd)?.AddHook(WindowMessage);
             SetNoActivate(true);
         };
+        Closed += (_, _) => CancelHeightTransition();
         new WindowInteropHelper(this).EnsureHandle();
     }
     private static Border Keycap(string value)
@@ -519,7 +527,7 @@ internal sealed class OverlayWindow : Window, ISessionView
         (double MeasureMs, double ShowMs, double SetWindowPosMs) timing = default;
         double scale = Math.Max(1, Native.GetDpiForWindow((nint)target.AsWindows().RootHwnd) / 96.0);
         _panelWidth = idle ? 140 : Math.Clamp(bounds.Width / scale, 320, 520);
-        _editor.MaxHeight = _expanded ? 360 : 160;
+        double maximumBodyHeight = _expanded ? 360 : 160;
         double lineHeight = TextBlock.GetLineHeight(_editor);
         var measurementKey = (_editor.Text, _panelWidth, scale, _editor.FontFamily, _editor.FontSize, lineHeight, CultureInfo.CurrentUICulture);
         if (!idle && _measurementKey != measurementKey)
@@ -545,8 +553,7 @@ internal sealed class OverlayWindow : Window, ISessionView
         // Cache natural text height, not the clipped height: expansion and edits
         // must still resize the persistent editor on the next render.
         double bodyHeight = idle ? 54 : Math.Clamp(_measuredTextHeight + _editor.Padding.Top + _editor.Padding.Bottom
-            + _editor.BorderThickness.Top + _editor.BorderThickness.Bottom + 2, 54, _editor.MaxHeight);
-        _editor.Height = bodyHeight;
+            + _editor.BorderThickness.Top + _editor.BorderThickness.Bottom + 2, 54, maximumBodyHeight);
         double height = idle ? 60 : 34 + bodyHeight + 34 + 26, width = _panelWidth + 26;
         var rect = new Native.Rect
         {
@@ -561,7 +568,7 @@ internal sealed class OverlayWindow : Window, ISessionView
         RectPx? placement = OverlayPlacement.Place(bounds, work, width * scale, height * scale, gap: 0, minimumHeight: (idle ? 60 : 126) * scale);
         if (placement is not { } position)
         {
-            HideImmediately();
+            HideQuietly();
             return timing;
         }
         bool showing = !IsVisible;
@@ -570,23 +577,36 @@ internal sealed class OverlayWindow : Window, ISessionView
             ResetFade();
         if (showing && animate)
             Opacity = 0;
-        var pixels = (X: (int)position.X, Y: (int)position.Y, Width: (int)position.Width, Height: (int)position.Height);
-        if (showing || _placement != pixels)
+        bool above = position.Y < bounds.Y;
+        // Round the anchored edge once. Independently truncating top and
+        // height can otherwise move the bottom by a pixel between text sizes.
+        var pixels = (X: (int)position.X, Y: above ? (int)bounds.Y - (int)position.Height : (int)position.Y,
+            Width: (int)position.Width, Height: (int)position.Height);
+        var anchor = (target, bounds, work, scale, above);
+        // Only height changes at an unchanged source anchor can interpolate.
+        // New targets, moved parents, width/DPI changes and avoidance flips use
+        // their final placement immediately, without travelling across inputs.
+        bool resize = !showing && animate && !idle && _heightAnchor == anchor
+            && _placement is { } current && current.X == pixels.X && current.Width == pixels.Width
+            && (above ? current.Y + current.Height == pixels.Y + pixels.Height : current.Y == pixels.Y);
+        _heightAnchor = anchor;
+        long positionStarted = trace ? Stopwatch.GetTimestamp() : 0;
+        // A session/permit renewal must not restart the visual deadline.
+        bool continuing = resize && _heightTransition is { } pending && pending.To == pixels
+            && pending.ToBodyHeight == bodyHeight && pending.MaximumBodyHeight == maximumBodyHeight;
+        if (!continuing)
         {
-            // WPF's Width/Height setters each resize the HWND synchronously.
-            // Move and resize once; WM_SIZE updates both WPF dimensions. Do not
-            // reveal a hidden HWND here: the normal Show below owns visibility.
-            long positionStarted = trace ? Stopwatch.GetTimestamp() : 0;
-            bool positioned = Native.SetWindowPos(_hwnd, (nint)(-1), pixels.X, pixels.Y, pixels.Width, pixels.Height, 0x0010);
-            if (trace)
-                timing.SetWindowPosMs = Stopwatch.GetElapsedTime(positionStarted).TotalMilliseconds;
-            _placement = positioned ? pixels : null;
-            if (!positioned)
+            CancelHeightTransition();
+            if (resize && _placement is { } from && from.Height != pixels.Height)
             {
-                HideImmediately();
-                return timing;
+                _heightTransition = new(from, pixels, _editor.Height, bodyHeight, maximumBodyHeight, above, Stopwatch.GetTimestamp());
+                CompositionTarget.Rendering += AdvanceHeightTransition;
             }
+            else if (!SetPlacement(pixels, bodyHeight, maximumBodyHeight, showing))
+                return timing;
         }
+        if (trace)
+            timing.SetWindowPosMs = Stopwatch.GetElapsedTime(positionStarted).TotalMilliseconds;
         if (showing)
         {
             long showStarted = trace ? Stopwatch.GetTimestamp() : 0;
@@ -603,6 +623,55 @@ internal sealed class OverlayWindow : Window, ISessionView
                 }, HandoffBehavior.SnapshotAndReplace);
         }
         return timing;
+    }
+    private void AdvanceHeightTransition(object? sender, EventArgs args)
+    {
+        if (_heightTransition is not { } transition)
+            return;
+        if (!IsVisible)
+        {
+            CancelHeightTransition();
+            return;
+        }
+        TimeSpan frameTime = ((RenderingEventArgs)args).RenderingTime;
+        if (_heightFrameTime == frameTime)
+            return;
+        _heightFrameTime = frameTime;
+        bool animate = _clientAreaAnimation();
+        if (!animate)
+            ResetFade();
+        double progress = animate
+            ? Math.Clamp(Stopwatch.GetElapsedTime(transition.Started).TotalMilliseconds / 280, 0, 1) : 1;
+        double eased = 1 - Math.Pow(1 - progress, 3);
+        int height = (int)Math.Round(transition.From.Height + (transition.To.Height - transition.From.Height) * eased);
+        int y = transition.Above ? transition.To.Y + transition.To.Height - height : transition.To.Y;
+        double bodyHeight = transition.FromBodyHeight + (transition.ToBodyHeight - transition.FromBodyHeight) * eased;
+        if (progress >= 1)
+            CancelHeightTransition();
+        SetPlacement((transition.To.X, y, transition.To.Width, height), bodyHeight, transition.MaximumBodyHeight);
+    }
+    private bool SetPlacement((int X, int Y, int Width, int Height) pixels, double bodyHeight, double maximumBodyHeight,
+        bool force = false)
+    {
+        // Resize the live editor with its shell. In particular, lowering its
+        // MaxHeight at collapse start would clip the body/footer before motion.
+        _editor.MaxHeight = Math.Max(maximumBodyHeight, bodyHeight);
+        _editor.Height = bodyHeight;
+        if (!force && _placement == pixels)
+            return true;
+        // WPF's Width/Height setters each resize the HWND synchronously.
+        // Move and resize once; WM_SIZE updates both WPF dimensions. This
+        // never shows or activates a hidden HWND and never changes focus.
+        bool positioned = Native.SetWindowPos(_hwnd, (nint)(-1), pixels.X, pixels.Y, pixels.Width, pixels.Height, 0x0010);
+        _placement = positioned ? pixels : null;
+        if (!positioned)
+            HideQuietly();
+        return positioned;
+    }
+    private void CancelHeightTransition()
+    {
+        CompositionTarget.Rendering -= AdvanceHeightTransition;
+        _heightTransition = null;
     }
     private void TraceRender(long atMs, double totalMs, double uiMs, double textMs,
         (double MeasureMs, double ShowMs, double SetWindowPosMs) timing)
@@ -646,12 +715,16 @@ internal sealed class OverlayWindow : Window, ISessionView
     }
     private void HideImmediately()
     {
+        CancelHeightTransition();
+        _heightAnchor = null;
         ResetFade();
         if (IsVisible)
             Hide();
     }
     private void ClearSessionContent()
     {
+        CancelHeightTransition();
+        _heightAnchor = null;
         _viewContext = null;
         _measurementKey = null;
         _editing = false;

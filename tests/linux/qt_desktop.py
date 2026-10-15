@@ -704,6 +704,32 @@ def run_qt(
                     )
                     return result
 
+                def start_motion(name, *, screenshots=False):
+                    before = state()
+                    command(
+                        "observe-motion",
+                        directory=str(arguments.output / name) if screenshots else "",
+                    )
+                    wait_for(
+                        lambda: state()["motionArmed"] == before["motionArmed"] + 1,
+                        "Qt fixture did not arm the finite widget-frame observation",
+                    )
+                    click_overlay("typelay-expand")
+                    return before["motionRecordings"]
+
+                def finish_motion(recording, name):
+                    actual = wait_for(
+                        lambda: value
+                        if (value := state())["motionRecordings"] == recording + 1
+                        else None,
+                        "Qt widget frames did not reach the original resize deadline",
+                    )
+                    frames = actual["motionFrames"]
+                    (arguments.output / f"{name}.json").write_text(
+                        json.dumps(frames, indent=2) + "\n"
+                    )
+                    return frames
+
                 def unchanged_theme_input(before, after):
                     for field in ("first", "second"):
                         for name in (
@@ -860,6 +886,93 @@ def run_qt(
                         bounds["x"] + bounds["width"]
                         <= overlay_bounds["x"] + overlay_bounds["width"]
                     )
+                # One controlled viewport, using the existing real model,
+                # provider, widgets and host renewals. The finite frame record
+                # spans the original 280ms resize and never reads private motion state.
+                assert initial_application["animationDuration"] > 0
+                recording = start_motion("qt-motion-expand", screenshots=True)
+                motion_frames = finish_motion(recording, "qt-motion-expand")
+                heights = [frame["editor"]["height"] for frame in motion_frames]
+                assert heights[-1] == 280 and len(set(heights)) > 3, heights
+                assert any(100 < height < 280 for height in heights)
+                end = motion_frames[-1]["overlay"]
+                above = end["y"] < initial_application["first"]["geometry"]["y"]
+                for frame in motion_frames:
+                    bounds, footer = frame["overlay"], frame["footer"]
+                    assert frame["sourceFocused"] and frame["text"] == candidate
+                    assert bounds["x"] + bounds["width"] == end["x"] + end["width"]
+                    anchor = bounds["y"] + (bounds["height"] if above else 0)
+                    assert anchor == end["y"] + (end["height"] if above else 0)
+                    assert footer["y"] >= bounds["y"]
+                    assert footer["y"] + footer["height"] <= bounds["y"] + bounds["height"]
+                # Observe the actual reversal; XTest process scheduling alone
+                # is not proof that the second click beat the first deadline.
+                # The real host continues its ordinary 200ms renewals.
+                recording = start_motion("qt-motion-reverse")
+                click_overlay("typelay-expand")
+                reverse_frames = finish_motion(recording, "qt-motion-reverse")
+                wait_for(
+                    lambda: state()["editorGeometry"]["height"] == 280,
+                    "Qt did not settle at the last requested expanded height",
+                )
+                reverse_heights = [frame["editor"]["height"] for frame in reverse_frames]
+                reversed_before_endpoint = 100 < min(reverse_heights) < 280 and any(
+                    later > earlier for earlier, later in zip(reverse_heights, reverse_heights[1:])
+                )
+                evidence.append(
+                    "Qt6 observed reversal "
+                    + (
+                        "before reaching the compact endpoint"
+                        if reversed_before_endpoint
+                        else "with no captured pre-endpoint direction change; rapid-interruption timing is unverified"
+                    )
+                )
+                assert all(frame["sourceFocused"] for frame in reverse_frames)
+                command("application-motion", reduced=True)
+                wait_for(
+                    lambda: state()["animationDuration"] == 0,
+                    "Qt did not expose the real zero-duration style preference",
+                )
+                recording = start_motion("qt-motion-reduced")
+                reduced_frames = finish_motion(recording, "qt-motion-reduced")
+                assert {frame["editor"]["height"] for frame in reduced_frames} == {100}
+                command("application-motion", reduced=False)
+                wait_for(
+                    lambda: state()["animationDuration"] > 0,
+                    "Qt did not restore its original animation style preference",
+                )
+                # Existing metadata invalidation must withdraw a resizing
+                # surface, then stay hidden beyond its original finish time.
+                recording = start_motion("qt-motion-safety-hide")
+                command("metadata", text="Password")
+                wait_for(
+                    lambda: not state()["overlayVisible"] and state()["editorText"] == "",
+                    "sensitive metadata did not clear the resizing overlay",
+                )
+                hidden_frames = finish_motion(recording, "qt-motion-safety-hide")
+                hidden = next(i for i, frame in enumerate(hidden_frames) if not frame["visible"])
+                assert all(
+                    not frame["visible"] and frame["text"] == "" for frame in hidden_frames[hidden:]
+                )
+                assert not state()["overlayVisible"] and state()["editorText"] == ""
+                command("metadata", text="Message one")
+                wait_for(
+                    lambda: state()["first"]["accessibleName"] == "Message one",
+                    "fixture did not restore ordinary source metadata",
+                )
+                # Restore the existing following scenarios to their exact source.
+                candidate = enter_source(original)
+                if state()["editorGeometry"]["height"] != 100:
+                    click_overlay("typelay-expand")
+                    wait_for(
+                        lambda: state()["editorGeometry"]["height"] == 100,
+                        "Qt did not restore compact height",
+                    )
+                initial_application = state()
+                evidence.append(
+                    "Qt6 finite live-widget resize frames retain anchor, footer and source focus; "
+                    "repeated resize, host renewals, safety-hide cancellation and real style reduced motion"
+                )
                 # The sparse desktop fixture omits Theme. SettingsStore applies
                 # UserSettings' default on load without rewriting the file.
                 original_theme = json.loads(Paths(arguments.package).settings.read_text()).get(
@@ -1011,6 +1124,7 @@ def run_qt(
 
                 editing_source = "Please review this note."
                 enter_source(editing_source)
+                click_overlay("typelay-expand")
                 actual = state()
                 click_rectangle(actual, actual["editorGeometry"])
                 wait_for(
@@ -1036,6 +1150,14 @@ def run_qt(
                     and not state()["editorReadOnly"],
                     "the actual editor did not retain the synthetic Chinese draft",
                 )
+                # The new editing view has applied before any later draft
+                # test. Do not require model/IME round trips to fit a frame window.
+                assert state()["editorGeometry"]["height"] == 280
+                click_overlay("typelay-expand")
+                wait_for(
+                    lambda: state()["editorGeometry"]["height"] == 100,
+                    "new editing view did not restore compact geometry",
+                )
                 key("ctrl+End")
                 typed(" MARK")
                 key("shift+Left")
@@ -1052,6 +1174,20 @@ def run_qt(
                     else None,
                     "real editor typing did not establish the selected undoable suffix",
                 )
+                recording = start_motion("qt-motion-chinese-draft", screenshots=True)
+                draft_frames = finish_motion(recording, "qt-motion-chinese-draft")
+                for frame in draft_frames:
+                    assert frame["text"] == long_draft + " MARK"
+                    assert frame["cursor"] == draft_length - 1 and frame["anchor"] == draft_length
+                    assert frame["editorFocused"]
+                click_overlay("typelay-expand")
+                wait_for(
+                    lambda: state()["editorGeometry"]["height"] == 100,
+                    "Qt draft did not return to compact height",
+                )
+                # The existing Ctrl+Z and two-stage Tab assertions below now
+                # validate the same editor after both animated size changes.
+                editing_theme_before = state()
                 editing_theme_trace = trace_checkpoint()
                 for appearance in ("light", "dark"):
                     application_theme(appearance)

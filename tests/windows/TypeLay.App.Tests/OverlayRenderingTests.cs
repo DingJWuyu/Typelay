@@ -187,7 +187,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
     [Fact]
     public async Task DisabledClientAnimationShowsImmediatelyAndStopsAnExistingFade()
     {
-        await desktop.RunAsync(() =>
+        await desktop.RunAsync(async () =>
         {
             var (window, input, source) = OpenSource();
             var settings = new UserSettings(Theme: "light");
@@ -212,6 +212,23 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             Assert.Contains("交还应用", VisibleLabels(overlay));
             Assert.Equal(1d, overlay.Opacity);
             Assert.False(overlay.HasAnimatedProperties);
+            Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+            Assert.True(input.IsKeyboardFocused);
+
+            // A height change can overlap first appearance. Turning motion
+            // off must also settle that fade on the next actual frame even
+            // when no session/permit render arrives to notice the preference.
+            overlay.HideQuietly();
+            animationsEnabled = true;
+            overlay.Render(Ready(source, "A short fading preview"), settings, false);
+            overlay.Render(Ready(source, string.Join("\n", Enumerable.Repeat("A taller preview", 12))), settings, false);
+            Assert.True(overlay.HasAnimatedProperties);
+            animationsEnabled = false;
+            await ObserveRenderingFor(TimeSpan.Zero);
+            overlay.UpdateLayout();
+            Assert.Equal(1d, overlay.Opacity);
+            Assert.False(overlay.HasAnimatedProperties);
+            Assert.InRange(Descendants(overlay).OfType<TextBox>().Single().ActualHeight, 159, 161);
             Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
             Assert.True(input.IsKeyboardFocused);
 
@@ -317,6 +334,377 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             Assert.True(N.IsWindowVisible(overlay.Handle));
             Assert.Equal(1d, overlay.Opacity);
             Assert.Equal("The next preview after a cancelled fade", Descendants(overlay).OfType<TextBox>().Single().Text);
+            Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+            Assert.True(input.IsKeyboardFocused);
+            Assert.Equal("Source text", input.Text);
+        });
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SameTargetExpansionAndCollapseKeepTheirAnchorAndSourceFocusAcrossRealFrames(bool above)
+    {
+        await desktop.RunAsync(async () =>
+        {
+            var (window, input, source) = OpenSource();
+            if (!above)
+            {
+                window.Top = SystemParameters.WorkArea.Top + 40;
+                window.UpdateLayout();
+                source = source with
+                {
+                    Bounds = InputBounds(input)
+                };
+            }
+            var settings = new UserSettings(Theme: "light");
+            string preview = string.Join("\n", Enumerable.Repeat("A readable preview line", 12));
+            var session = Ready(source, preview);
+            var context = EditableView(source);
+            var overlay = new OverlayWindow(clientAreaAnimation: () => true);
+            overlay.Render(session, settings, true, context: context);
+            overlay.UpdateLayout();
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(180));
+            var editor = Descendants(overlay).OfType<TextBox>().Single();
+            var compact = Bounds(overlay);
+            double fontSize = editor.FontSize;
+            double lineHeight = editor.GetRectFromCharacterIndex(2).Height;
+            Assert.InRange(editor.ActualHeight, 159, 161);
+            ToggleExpansion(overlay, expand: true);
+            overlay.Render(session, settings, true, context: context);
+            Assert.Equal(compact, Bounds(overlay));
+            var expansion = new List<(int Left, int Top, int Width, int Height)> { compact };
+            var images = new List<BitmapSource> { CaptureScreenshot(overlay) };
+            var expansionSamples = new List<object>();
+            var motionClock = System.Diagnostics.Stopwatch.StartNew();
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
+            {
+                overlay.UpdateLayout();
+                var bounds = Bounds(overlay);
+                expansion.Add(bounds);
+                expansionSamples.Add(new
+                {
+                    elapsedMs = motionClock.Elapsed.TotalMilliseconds,
+                    bounds.Left,
+                    bounds.Top,
+                    bounds.Width,
+                    bounds.Height,
+                    bodyHeight = editor.ActualHeight,
+                    fontSize = editor.FontSize,
+                    sourceFocused = input.IsKeyboardFocused
+                });
+                Assert.Equal(compact.Left, bounds.Left);
+                Assert.Equal(compact.Width, bounds.Width);
+                Assert.Equal(above ? compact.Top + compact.Height : compact.Top,
+                    above ? bounds.Top + bounds.Height : bounds.Top);
+                Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+                Assert.True(input.IsKeyboardFocused);
+                Assert.Same(editor, Descendants(overlay).OfType<TextBox>().Single());
+                Assert.Equal(preview, editor.Text);
+                Assert.Equal(fontSize, editor.FontSize);
+                Assert.Equal(lineHeight, editor.GetRectFromCharacterIndex(2).Height);
+                Assert.True(editor.RenderTransform.Value.IsIdentity);
+                Assert.True(editor.LayoutTransform.Value.IsIdentity);
+                AssertNativeSize(overlay);
+                foreach (var label in Descendants(overlay).OfType<TextBlock>().Where(label => label.IsVisible))
+                    AssertTextFullyVisible(label, overlay);
+                // Capture a bounded sequence from real intermediate geometry,
+                // rather than a recreated animation or final-state montage.
+                if (above && images.Count < 4 && bounds.Height > compact.Height + images.Count * 30)
+                    images.Add(CaptureScreenshot(overlay));
+            });
+            var expanded = Bounds(overlay);
+            Assert.True(expanded.Height > compact.Height + 100);
+            AssertContinuousHeight(expansion, increasing: true);
+            AssertEditorTextFullyVisible(editor);
+            if (above)
+            {
+                images.Add(CaptureScreenshot(overlay));
+                for (int index = 0; index < images.Count; index++)
+                    SaveScreenshot(images[index], $"overlay-height-expand-{index:00}.png");
+            }
+
+            ToggleExpansion(overlay, expand: false);
+            overlay.Render(session, settings, false, context: context);
+            Assert.Equal(expanded, Bounds(overlay));
+            Assert.Contains("交还应用", VisibleLabels(overlay));
+            var collapse = new List<(int Left, int Top, int Width, int Height)> { expanded };
+            var collapseSamples = new List<object>();
+            motionClock.Restart();
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
+            {
+                overlay.UpdateLayout();
+                var bounds = Bounds(overlay);
+                collapse.Add(bounds);
+                collapseSamples.Add(new
+                {
+                    elapsedMs = motionClock.Elapsed.TotalMilliseconds,
+                    bounds.Left,
+                    bounds.Top,
+                    bounds.Width,
+                    bounds.Height,
+                    bodyHeight = editor.ActualHeight,
+                    fontSize = editor.FontSize,
+                    sourceFocused = input.IsKeyboardFocused
+                });
+                Assert.Equal(compact.Left, bounds.Left);
+                Assert.Equal(compact.Width, bounds.Width);
+                Assert.Equal(above ? compact.Top + compact.Height : compact.Top,
+                    above ? bounds.Top + bounds.Height : bounds.Top);
+                Assert.InRange(editor.ActualHeight, 159, 315);
+                Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+                Assert.True(input.IsKeyboardFocused);
+            });
+            Assert.Equal(compact, Bounds(overlay));
+            AssertContinuousHeight(collapse, increasing: false);
+            Assert.InRange(editor.ActualHeight, 159, 161);
+            Assert.Equal("Source text", input.Text);
+            File.WriteAllText(Path.Combine(RenderingDirectory(), $"overlay-height-{(above ? "above" : "below")}.json"),
+                System.Text.Json.JsonSerializer.Serialize(new
+                {
+                    expansion = expansionSamples,
+                    collapse = collapseSamples
+                }));
+        });
+    }
+
+    [Fact]
+    public async Task NewContentReversesFromTheRenderedHeightAndRenewalsDoNotRestartIt()
+    {
+        await desktop.RunAsync(async () =>
+        {
+            var (window, input, source) = OpenSource();
+            var settings = new UserSettings(Theme: "light");
+            var context = EditableView(source);
+            var overlay = new OverlayWindow(clientAreaAnimation: () => true);
+            var shortSession = Ready(source, "A short preview");
+            overlay.Render(shortSession, settings, true, context: context);
+            overlay.UpdateLayout();
+            var compact = Bounds(overlay);
+            var editor = Descendants(overlay).OfType<TextBox>().Single();
+            var longSession = Ready(source, string.Join("\n", Enumerable.Repeat("The new preview line", 12)));
+            overlay.Render(longSession, settings, true, context: context);
+            Assert.Equal(longSession.Preview, editor.Text);
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(60));
+            var reversing = Bounds(overlay);
+            Assert.True(reversing.Height > compact.Height + 10);
+            Assert.True(editor.Height < 160);
+
+            var next = context with
+            {
+                Token = context.Token with
+                {
+                    Revision = 2
+                },
+                CanEdit = false
+            };
+            var latest = Ready(source, "The latest short preview");
+            overlay.Render(latest, settings, false, context: next);
+            Assert.Equal(reversing, Bounds(overlay));
+            Assert.Equal(latest.Preview, editor.Text);
+            Assert.Contains("交还应用", VisibleLabels(overlay));
+            Assert.True(editor.IsReadOnly);
+            Assert.False(editor.Focusable);
+            Assert.Null(editor.ToolTip);
+            var frames = new List<(int Left, int Top, int Width, int Height)> { reversing };
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
+            {
+                // These are normal view/permit refreshes at the real render
+                // boundary, not permission extensions or a simulated clock.
+                var before = Bounds(overlay);
+                overlay.Render(latest, settings, false, context: next);
+                Assert.Equal(before, Bounds(overlay));
+                frames.Add(before);
+                AssertAnchored(overlay, source.Bounds);
+                Assert.Equal(latest.Preview, editor.Text);
+                Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+                Assert.True(input.IsKeyboardFocused);
+            });
+            AssertContinuousHeight(frames, increasing: false);
+            Assert.Equal(compact, Bounds(overlay));
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(100), () => Assert.Equal(compact, Bounds(overlay)));
+            Assert.Equal("Source text", input.Text);
+        });
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ExitAndSafetyHideCancelResizingAndEraseTextBeforeItsDeadline(bool exit)
+    {
+        await desktop.RunAsync(async () =>
+        {
+            var (window, input, source) = OpenSource();
+            var settings = new UserSettings(Theme: "light");
+            var session = Ready(source, string.Join("\n", Enumerable.Repeat("An expiring preview line", 12)));
+            var context = EditableView(source);
+            var overlay = new OverlayWindow(clientAreaAnimation: () => true);
+            overlay.EscapeRequested = token =>
+            {
+                Assert.Equal(context.Token, token);
+                session.Escape();
+                overlay.Render(session, settings, false, context: context);
+            };
+            overlay.Render(session, settings, true, context: context);
+            overlay.UpdateLayout();
+            var editor = Descendants(overlay).OfType<TextBox>().Single();
+            int compactHeight = Bounds(overlay).Height;
+            ToggleExpansion(overlay, expand: true);
+            overlay.Render(session, settings, true, context: context);
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(60));
+            Assert.True(Bounds(overlay).Height > compactHeight);
+            if (exit)
+            {
+                var escape = Descendants(overlay).OfType<Button>().Single(button =>
+                    Descendants(button).OfType<TextBlock>().Any(label => label.Text == "Esc"));
+                escape.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            }
+            else
+                overlay.HideQuietly();
+            Assert.Empty(editor.Text);
+            Assert.False(editor.CanUndo);
+            Assert.True(editor.IsReadOnly);
+            Assert.False(editor.Focusable);
+            Assert.False(overlay.IsVisible);
+            Assert.False(N.IsWindowVisible(overlay.Handle));
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
+            {
+                Assert.False(overlay.IsVisible);
+                Assert.False(N.IsWindowVisible(overlay.Handle));
+                Assert.Empty(editor.Text);
+                Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
+                Assert.True(input.IsKeyboardFocused);
+            });
+            overlay.Render(Ready(source, "A fresh preview"), settings, false, context: EditableView(source));
+            overlay.UpdateLayout();
+            Assert.Equal("A fresh preview", editor.Text);
+            Assert.InRange(editor.ActualHeight, 53, 55);
+            var fresh = Bounds(overlay);
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () => Assert.Equal(fresh, Bounds(overlay)));
+            Assert.Equal("Source text", input.Text);
+        });
+    }
+
+    [Fact]
+    public async Task LiveDraftSelectionAndUndoSurviveResizingAndDisablingMotionSettlesImmediately()
+    {
+        await desktop.RunAsync(async () =>
+        {
+            var (_, input, source) = OpenSource();
+            var settings = new UserSettings(Theme: "light");
+            string preview = string.Join("\n", Enumerable.Repeat("A manual draft line", 12));
+            var session = Ready(source, preview);
+            var context = EditableView(source);
+            bool animationsEnabled = true;
+            var overlay = new OverlayWindow(clientAreaAnimation: () => animationsEnabled)
+            {
+                BeginEditing = _ => session.BeginEdit(),
+                DraftChanged = session.ChangeDraft
+            };
+            overlay.Render(session, settings, false, context: context);
+            overlay.UpdateLayout();
+            var editor = Descendants(overlay).OfType<TextBox>().Single();
+            editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+            {
+                RoutedEvent = Mouse.PreviewMouseDownEvent
+            });
+            editor.Select(editor.Text.Length, 0);
+            editor.SelectedText = " edited";
+            editor.Select(3, 6);
+            Assert.True(editor.CanUndo);
+            string draft = editor.Text;
+            var compact = Bounds(overlay);
+            void AssertDraft()
+            {
+                Assert.Same(editor, Descendants(overlay).OfType<TextBox>().Single());
+                Assert.Equal(draft, editor.Text);
+                Assert.Equal(draft, session.Draft);
+                Assert.Equal(3, editor.SelectionStart);
+                Assert.Equal(6, editor.SelectionLength);
+                Assert.True(editor.CanUndo);
+                Assert.True(editor.IsKeyboardFocused);
+                Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
+            }
+            ToggleExpansion(overlay, expand: true);
+            overlay.Render(session, settings, false, context: context);
+            var expansion = new List<(int Left, int Top, int Width, int Height)> { compact };
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
+            {
+                overlay.Render(session, settings, false, context: context);
+                expansion.Add(Bounds(overlay));
+                AssertDraft();
+            });
+            AssertContinuousHeight(expansion, increasing: true);
+            var expanded = Bounds(overlay);
+            ToggleExpansion(overlay, expand: false);
+            overlay.Render(session, settings, false, context: context);
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(60), AssertDraft);
+            Assert.True(Bounds(overlay).Height < expanded.Height);
+            Assert.True(Bounds(overlay).Height > compact.Height);
+            animationsEnabled = false;
+            overlay.Render(session, settings, false, context: context);
+            overlay.UpdateLayout();
+            Assert.Equal(compact, Bounds(overlay));
+            AssertDraft();
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () =>
+            {
+                Assert.Equal(compact, Bounds(overlay));
+                AssertDraft();
+            });
+            ToggleExpansion(overlay, expand: true);
+            overlay.Render(session, settings, false, context: context);
+            Assert.Equal(expanded, Bounds(overlay));
+            AssertDraft();
+            editor.Undo();
+            Assert.Equal(preview, editor.Text);
+            Assert.Equal(preview, session.Draft);
+            Assert.Equal("Source text", input.Text);
+        });
+    }
+
+    [Fact]
+    public async Task ChangedTargetsParentsAndAvoidanceSidesUseFinalGeometryWithoutARebound()
+    {
+        await desktop.RunAsync(async () =>
+        {
+            var (window, input, source) = OpenSource();
+            var settings = new UserSettings(Theme: "light");
+            var overlay = new OverlayWindow(clientAreaAnimation: () => true);
+            string longPreview = string.Join("\n", Enumerable.Repeat("A growing preview line", 12));
+            overlay.Render(Ready(source, "A short preview"), settings, false);
+            overlay.UpdateLayout();
+            overlay.Render(Ready(source, longPreview), settings, false);
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(60));
+            source = source with
+            {
+                Target = (source.Target.AsWindows() with
+                {
+                    ElementToken = "another-source"
+                }).Id
+            };
+            overlay.Render(Ready(source, "Another source preview"), settings, false);
+            overlay.UpdateLayout();
+            var editor = Descendants(overlay).OfType<TextBox>().Single();
+            Assert.InRange(editor.ActualHeight, 53, 55);
+            var changedTarget = Bounds(overlay);
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () => Assert.Equal(changedTarget, Bounds(overlay)));
+
+            overlay.Render(Ready(source, longPreview), settings, false);
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(60));
+            window.Left += 30;
+            window.Top = SystemParameters.WorkArea.Top + 40;
+            window.UpdateLayout();
+            source = source with
+            {
+                Bounds = InputBounds(input)
+            };
+            overlay.Render(Ready(source, longPreview), settings, false);
+            overlay.UpdateLayout();
+            var moved = Bounds(overlay);
+            Assert.InRange(Math.Abs(moved.Left - source.Bounds.X), 0, 1);
+            Assert.InRange(Math.Abs(moved.Top - source.Bounds.Bottom), 0, 1);
+            Assert.InRange(editor.ActualHeight, 159, 161);
+            await ObserveRenderingFor(TimeSpan.FromMilliseconds(340), () => Assert.Equal(moved, Bounds(overlay)));
             Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
             Assert.True(input.IsKeyboardFocused);
             Assert.Equal("Source text", input.Text);
@@ -682,7 +1070,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             };
             var session = new Session(settings.Direction);
             session.Observe(source, FocusMember.Source, 1000);
-            var overlay = new OverlayWindow();
+            var overlay = new OverlayWindow(clientAreaAnimation: () => false);
             Assert.False(overlay.IsVisible);
             Assert.False(N.IsWindowVisible(overlay.Handle));
             Assert.Equal(new WindowInteropHelper(window).Handle, Native.GetForegroundWindow());
@@ -792,7 +1180,11 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             string preview = string.Join("\n", Enumerable.Repeat("Preview line", 12));
             var session = Ready(source, preview);
             var context = EditableView(source);
-            var overlay = new OverlayWindow { BeginEditing = _ => session.BeginEdit(), DraftChanged = session.ChangeDraft };
+            var overlay = new OverlayWindow(clientAreaAnimation: () => false)
+            {
+                BeginEditing = _ => session.BeginEdit(),
+                DraftChanged = session.ChangeDraft
+            };
             void Render()
             {
                 overlay.Render(session, settings, false, context: context);
@@ -1039,11 +1431,17 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         TimeSpan? firstFrame = null;
         EventHandler rendering = (_, args) =>
         {
-            observeFrame?.Invoke();
-            TimeSpan current = ((RenderingEventArgs)args).RenderingTime;
-            firstFrame ??= current;
-            if (current - firstFrame.Value >= duration)
-                elapsed.TrySetResult();
+            if (elapsed.Task.IsCompleted)
+                return;
+            try
+            {
+                observeFrame?.Invoke();
+                TimeSpan current = ((RenderingEventArgs)args).RenderingTime;
+                firstFrame ??= current;
+                if (current - firstFrame.Value >= duration)
+                    elapsed.TrySetResult();
+            }
+            catch (Exception error) { elapsed.TrySetException(error); }
         };
         CompositionTarget.Rendering += rendering;
         try
@@ -1149,6 +1547,25 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
     }
 
     private static void SaveScreenshot(OverlayWindow overlay, string name)
+        => SaveScreenshot(CaptureScreenshot(overlay), name);
+
+    private static BitmapSource CaptureScreenshot(OverlayWindow overlay)
+    {
+        var image = new RenderTargetBitmap((int)Math.Ceiling(overlay.ActualWidth), (int)Math.Ceiling(overlay.ActualHeight),
+            96, 96, PixelFormats.Pbgra32);
+        image.Render((FrameworkElement)overlay.Content);
+        return image;
+    }
+
+    private static void SaveScreenshot(BitmapSource image, string name)
+    {
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(image));
+        using var output = File.Create(Path.Combine(RenderingDirectory(), name));
+        encoder.Save(output);
+    }
+
+    private static string RenderingDirectory()
     {
         var repository = new DirectoryInfo(AppContext.BaseDirectory);
         while (repository is not null && !File.Exists(Path.Combine(repository.FullName, "TypeLay.slnx")))
@@ -1156,13 +1573,32 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         Assert.NotNull(repository);
         string directory = Path.Combine(repository.FullName, "artifacts", "test-results", "rendering");
         Directory.CreateDirectory(directory);
-        var image = new RenderTargetBitmap((int)Math.Ceiling(overlay.ActualWidth), (int)Math.Ceiling(overlay.ActualHeight),
-            96, 96, PixelFormats.Pbgra32);
-        image.Render((FrameworkElement)overlay.Content);
-        var encoder = new PngBitmapEncoder();
-        encoder.Frames.Add(BitmapFrame.Create(image));
-        using var output = File.Create(Path.Combine(directory, name));
-        encoder.Save(output);
+        return directory;
+    }
+
+    private static void ToggleExpansion(OverlayWindow overlay, bool expand)
+    {
+        Descendants(overlay).OfType<Button>().Single(button => Equals(button.Content, "⋯"))
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        var menu = PresentationSource.CurrentSources.OfType<HwndSource>()
+            .Select(value => value.RootVisual).OfType<DependencyObject>()
+            .SelectMany(root => Descendants(root).Prepend(root))
+            .OfType<ContextMenu>().Single(control => control.IsOpen);
+        try
+        {
+            menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, expand ? "展开编辑面板" : "收起编辑面板"))
+                .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        }
+        finally { menu.IsOpen = false; }
+    }
+
+    private static void AssertContinuousHeight(List<(int Left, int Top, int Width, int Height)> frames, bool increasing)
+    {
+        Assert.True(frames.Select(frame => frame.Height).Distinct().Count() >= 4,
+            "A height transition must expose multiple real intermediate HWND sizes.");
+        for (int index = 1; index < frames.Count; index++)
+            Assert.True(increasing ? frames[index].Height >= frames[index - 1].Height
+                : frames[index].Height <= frames[index - 1].Height, "The height must not rebound.");
     }
 
     private static Color ResourceColor(OverlayWindow overlay, string name) =>

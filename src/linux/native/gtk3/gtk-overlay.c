@@ -301,7 +301,9 @@ static void theme(const char *choice) {
         "#typelay-overlay #typelay-actions button { font-size: 11px; }"
         "#typelay-overlay #typelay-candidate, #typelay-overlay #typelay-candidate text { background: %s; color: %s; font-size: 15px; }"
         "#typelay-overlay #typelay-candidate { border: 1px solid transparent; border-radius: 7px; outline: none; box-shadow: none; }"
-        "#typelay-overlay #typelay-candidate:focus { border-color: %s; }"
+        /* GTK3 paints the text node's frame; the main node keeps layout padding. */
+        "#typelay-overlay #typelay-candidate > text { border: 1px solid transparent; border-radius: 7px; }"
+        "#typelay-overlay #typelay-candidate:focus > text { border-color: %s; }"
         "#typelay-overlay #typelay-header .pending { color: %s; }",
         bg, fg, border, muted, line, muted, muted, hover, fg, bg, fg, accent,
         dark ? "#f2bb8d" : "#99511f");

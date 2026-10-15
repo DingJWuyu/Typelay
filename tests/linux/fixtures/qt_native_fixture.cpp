@@ -9,6 +9,8 @@
 #include <QDynamicPropertyChangeEvent>
 #include <QHash>
 #include <QJsonDocument>
+#include <QJsonArray>
+#include <QDir>
 #include <QJsonObject>
 #include <QKeyEvent>
 #include <QLabel>
@@ -26,6 +28,7 @@
 #include <QSaveFile>
 #include <QSocketNotifier>
 #include <QStyleHints>
+#include <QStyle>
 #include <QTimer>
 #include <QToolTip>
 #include <QVBoxLayout>
@@ -93,7 +96,7 @@ public:
         if (!widget || !window || widget->window() != window) return;
         const auto name = widget->objectName();
         const bool control = name == QStringLiteral("typelay-menu-trigger")
-            || name == QStringLiteral("typelay-copy") || name == QStringLiteral("typelay-source-auto")
+            || name == QStringLiteral("typelay-copy") || name == QStringLiteral("typelay-expand") || name == QStringLiteral("typelay-source-auto")
             || name == QStringLiteral("typelay-source-en") || name == QStringLiteral("typelay-resume");
         if (!control && name != QStringLiteral("typelay-overlay") && name != QStringLiteral("typelay-menu")) return;
         const QRect bounds(widget->mapTo(window, QPoint()), widget->size());
@@ -288,6 +291,10 @@ int main(int argc, char **argv) {
     QPointer<QObject> savedEditorProvider;
     QObject unavailableEditorProvider;
     QString editorProviderAction;
+    QJsonArray motionFrames;
+    int motionRecordings = 0, motionArmed = 0;
+    bool motionRecording = false;
+    const auto initialStyleSheet = app.styleSheet();
     auto publish = [&] {
         if (path.isEmpty()) return;
         const auto paletteState = [](const QPalette &palette) {
@@ -351,7 +358,7 @@ int main(int argc, char **argv) {
         observer.observeOverlay(overlay);
         observer.observeOverlay(menu);
         QJsonObject overlayControls;
-        for (const auto *name : {"typelay-menu-trigger", "typelay-copy", "typelay-source-auto", "typelay-source-en", "typelay-resume"}) {
+        for (const auto *name : {"typelay-menu-trigger", "typelay-copy", "typelay-expand", "typelay-source-auto", "typelay-source-en", "typelay-resume"}) {
             auto *button = window.findChild<QAbstractButton *>(QLatin1String(name));
             observer.observeOverlay(button);
             if (button) overlayControls.insert(QLatin1String(name), QJsonObject{
@@ -369,6 +376,8 @@ int main(int argc, char **argv) {
             {"applicationPalette", paletteState(app.palette())},
             {"applicationThemeChanges", applicationThemeChanges},
             {"themeSampleCount", themeSampleCount}, {"themeSamples", themeSamples},
+            { "motionArmed", motionArmed }, {"motionFrames", motionFrames}, {"motionRecordings", motionRecordings}, {"motionRecording", motionRecording},
+            {"animationDuration", overlay ? overlay->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, overlay) : -1},
             {"fullscreen", window.isFullScreen()}, {"width", window.width()}, {"height", window.height()},
             {"scale", window.devicePixelRatioF()}, {"keys", observer.counts},
             {"focusTransitions", qint64(observer.focusTransitions)}, {"firstChangeContext", firstChangeContext},
@@ -439,7 +448,56 @@ int main(int argc, char **argv) {
             const bool multiline = command.value("field").toString() == "plain";
             auto *field = command.value("field").toString() == "second" ? second : first;
             QWidget *widget = multiline ? static_cast<QWidget *>(plain) : field;
-            if (op == "sample-theme") {
+            if (op == "application-motion") {
+                // Exercise Qt's public style preference on this isolated app.
+                // This does not claim the compositor exports an OS preference.
+                app.setStyleSheet(command.value("reduced").toBool()
+                    ? initialStyleSheet + QStringLiteral("\n* { widget-animation-duration: 0; }") : initialStyleSheet);
+            }
+            else if (op == "observe-motion") {
+                auto *expand = window.findChild<QAbstractButton *>(QStringLiteral("typelay-expand"));
+                if (!expand || motionRecording) qFatal("Overlay motion observation unavailable");
+                const auto directory = command.value("directory").toString();
+                if (!directory.isEmpty() && !QDir().mkpath(directory)) qFatal("Motion output directory unavailable");
+                QObject::connect(expand, &QAbstractButton::clicked, &window, [&, directory] {
+                    motionFrames = {};
+                    motionRecording = true;
+                    const auto started = observedAtMs();
+                    const QPointer<QWidget> surface = window.findChild<QWidget *>(QStringLiteral("typelay-overlay"));
+                    const QPointer<QPlainTextEdit> translation = window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"));
+                    const QPointer<QWidget> footer = window.findChild<QWidget *>(QStringLiteral("typelay-footer"));
+                    auto *samples = new QTimer(&window);
+                    auto sample = [&, samples, surface, translation, footer, started, directory] {
+                        const auto elapsed = observedAtMs() - started;
+                        const auto cursor = translation ? translation->textCursor() : QTextCursor();
+                        motionFrames.append(QJsonObject{{"ms", elapsed},
+                            {"visible", surface && surface->isVisible()},
+                            {"overlay", surface ? rectangle(surface) : QJsonObject()},
+                            {"editor", translation ? rectangle(translation) : QJsonObject()},
+                            {"footer", footer ? rectangle(footer) : QJsonObject()},
+                            {"text", translation ? translation->toPlainText() : QString()},
+                            {"cursor", translation ? cursor.position() : -1},
+                            {"anchor", translation ? cursor.anchor() : -1},
+                            {"editorFocused", translation && translation->hasFocus()}, {"sourceFocused", first->hasFocus()}});
+                        // Finite real-widget paint frames, never an animation mock.
+                        const auto index = motionFrames.size();
+                        if (!directory.isEmpty() && (index == 1 || index == 5 || index == 10 || index == 18 || elapsed >= 450)) {
+                            if (!window.grab().save(directory + QStringLiteral("/frame-%1.png").arg(index, 2, 10, QLatin1Char('0'))))
+                                qFatal("Motion frame could not be saved");
+                        }
+                        if (elapsed >= 450) {
+                            samples->stop(); samples->deleteLater();
+                            motionRecording = false;
+                            ++motionRecordings;
+                        }
+                    };
+                    QObject::connect(samples, &QTimer::timeout, &window, sample);
+                    sample();
+                    samples->start(16);
+                }, Qt::SingleShotConnection);
+                ++motionArmed;
+            }
+            else if (op == "sample-theme") {
                 // Render only two fixed blank surface points on demand. Do not
                 // add painting to the fixture's periodic state observations.
                 auto *overlay = window.findChild<QWidget *>(QStringLiteral("typelay-overlay"));

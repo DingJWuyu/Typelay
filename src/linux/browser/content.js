@@ -514,12 +514,23 @@
   const observer = new MutationObserver(mutations);
   observer.observe(document, {subtree: true, childList: true, characterData: true, attributes: true});
   function drainMutations() { mutations(observer.takeRecords()); }
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+  function cancelMotion(current) {
+    current?.motion?.animation.cancel();
+    if (current) current.motion = null;
+  }
+  reducedMotion.addEventListener("change", () => {
+    if (reducedMotion.matches && overlay) { cancelMotion(overlay); position(); }
+  });
   function hide() {
     clearTimeout(hintTimer); hintTimer = null;
     if (!overlay) return;
     const previous = overlay;
     ui("visible", false);
     overlay = null;
+    cancelMotion(previous);
+    previous.editor.value = "";
+    previous.hint.textContent = previous.status.textContent = "";
     previous.host.remove();
   }
   function refreshHint() {
@@ -540,13 +551,18 @@
       hintTimer = setTimeout(refreshHint, Math.max(1, Math.ceil(remaining)));
     }
   }
-  function position() {
+  function position(previous = null) {
     refreshHint();
     if (!overlay) return;
     const geo = geometry(overlay.field);
     if (!geo || !overlay.host.isConnected || !document.hasFocus() || !fresh(overlay.renewed, 800)
       || overlay.paused && !pauseCurrent(overlay.field, overlay.authority, true)) { hide(); return; }
-    const {bounds} = geo, host = overlay.host;
+    const current = overlay;
+    const {bounds} = geo, host = current.host;
+    const geometryKey = JSON.stringify(geo);
+    if (!previous && current.motion && current.motion.geometryKey === geometryKey
+      && !reducedMotion.matches) return; // Renewal must not restart a running resize.
+    cancelMotion(current);
     const width = overlay.paused ? Math.min(innerWidth - 16, 160)
       : Math.min(innerWidth - 16, Math.max(180, Math.min(overlay.expanded ? 720 : 520, overlay.expanded ? Math.max(520, bounds.width) : bounds.width)));
     host.style.width = `${width}px`;
@@ -555,6 +571,26 @@
     const height = host.getBoundingClientRect().height;
     host.style.top = `${Math.max(8, Math.min(innerHeight - height - 8,
       bounds.y >= height + 8 ? bounds.y - height - 6 : bounds.y + bounds.height + 6))}px`;
+    if (!previous || reducedMotion.matches || typeof host.animate !== "function") return;
+    const end = host.getBoundingClientRect();
+    const above = previous.bottom < bounds.y;
+    const sameAnchor = above === (end.bottom < bounds.y)
+      && Math.abs((above ? previous.bottom - end.bottom : previous.top - end.top)) < 1
+      && Math.abs(previous.right - end.right) < 1;
+    if (!sameAnchor || Math.abs(previous.width - end.width) + Math.abs(previous.height - end.height) < 1) return;
+    // Animate only this live shell. Its one textarea already contains the
+    // current view; no old body, snapshot layer or permission is retained.
+    const frame = rect => ({left: `${rect.left}px`, top: `${rect.top}px`,
+      width: `${rect.width}px`, height: `${rect.height}px`});
+    try {
+      const animation = host.animate([frame(previous), frame(end)], {
+        duration: 280, easing: "cubic-bezier(.22,1,.36,1)"
+      });
+      current.motion = {animation, geometryKey};
+      animation.onfinish = () => {
+        if (overlay === current && current.motion?.animation === animation) cancelMotion(current);
+      };
+    } catch (_) { cancelMotion(current); } // Unsupported animation lands at the measured final layout.
   }
   function render(field, data) {
     if (!viewCurrent(field, data)) return {visible: false};
@@ -574,7 +610,7 @@
     if (overlay && overlay.field !== field) hide();
     if (!overlay) {
       const host = document.createElement("div");
-      host.style.cssText = "all:initial;position:fixed;z-index:2147483647;display:block;max-width:calc(100vw - 16px)";
+      host.style.cssText = "all:initial;position:fixed;z-index:2147483647;display:block;max-width:calc(100vw - 16px);border-radius:12px";
       const shadow = host.attachShadow({mode: "closed"});
       const style = document.createElement("style");
       style.textContent = `
@@ -583,13 +619,13 @@
           --muted:light-dark(#666b75,#b6bdc9);--line:light-dark(#dfe3eb,#48515e);
           --hover:light-dark(#f1f3f6,#303741);--accent:light-dark(#3267e3,#83a7ff);
           font:13px system-ui;color:var(--ink);background:var(--surface);border:1px solid var(--line);
-          border-radius:12px;box-shadow:0 8px 24px #0002;overflow:hidden}
-        header,footer{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+          display:flex;flex-direction:column;box-sizing:border-box;height:100%;border-radius:12px;box-shadow:0 8px 24px #0002;overflow:hidden}
+        header,footer{flex:none;display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
         header{padding:10px 12px 6px;flex-wrap:wrap}
         header .status{flex:1;min-width:0;text-align:right;overflow-wrap:anywhere}
         footer{margin:8px 12px 0;padding:7px 0 8px;border-top:1px solid var(--line);flex-wrap:wrap}
         footer .hint{flex:1}
-        .more-actions{display:flex;flex-direction:column;gap:4px;margin:0 12px;padding:8px 0;
+        .more-actions{flex:none;display:flex;flex-direction:column;gap:4px;margin:0 12px;padding:8px 0;
           border-top:1px solid var(--line);color:var(--muted);font-size:12px}
         .more-actions button{text-align:left}
         textarea{box-sizing:border-box;display:block;resize:none;width:calc(100% - 16px);margin:0 8px;
@@ -655,9 +691,10 @@
       expand.addEventListener("pointerdown", event => event.preventDefault());
       expand.addEventListener("click", event => {
         if (!event.isTrusted || !overlay) return;
+        const previous = overlay.host.getBoundingClientRect();
         overlay.expanded = !overlay.expanded;
         expand.textContent = overlay.expanded ? "缩小" : "展开";
-        setMoreOpen(false);
+        setMoreOpen(false, previous);
       });
       const collapse = document.createElement("button");
       collapse.textContent = "收起";
@@ -671,10 +708,10 @@
       menu.setAttribute("role", "group");
       menu.setAttribute("aria-label", "更多操作");
       menu.hidden = true;
-      const setMoreOpen = open => {
+      const setMoreOpen = (open, previous = overlay?.host.getBoundingClientRect()) => {
         menu.hidden = !open;
         more.setAttribute("aria-expanded", String(open));
-        position();
+        position(previous);
       };
       // Disclosure controls retain source/editor focus just like the existing
       // actions. Opening this UI never renews its host lease or a write permit.
@@ -710,6 +747,9 @@
       overlay = {field, host, shadow, panel, editor, language, status, resume, hint, footer, more, menu, expand, collapse, editing: false, composing: false, expanded: false};
     }
     if (data.revision < (overlay.revision || 0)) return {visible: true, editing: overlay.editing};
+    // A new view is authoritative immediately, including during a resize.
+    // Land at its current layout rather than carrying an older revision's motion.
+    cancelMotion(overlay);
     if (overlay.revision !== data.revision) overlay.resumePending = false;
     overlay.revision = data.revision;
     overlay.generation = data.generation;
@@ -1021,8 +1061,8 @@
     if (held.get(event.code)) { event.preventDefault(); event.stopImmediatePropagation(); }
     held.delete(event.code);
   }, true);
-  window.addEventListener("scroll", position, true);
-  window.addEventListener("resize", position);
+  window.addEventListener("scroll", () => position(), true);
+  window.addEventListener("resize", () => position());
   window.addEventListener("pagehide", observationInterrupted, true);
   document.addEventListener("freeze", observationInterrupted, true);
   setInterval(() => { if (!document.hidden) reportFocus(); position(); }, 100);

@@ -27,7 +27,11 @@ dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release 
 
 `OverlayRenderingTests` 检查实际 HWND 位置/尺寸、源焦点、长词换行、字体变化、短文重显及主题/展开/手动草稿。320/520 宽度的浅深色回归保留简短状态、编辑入口的工具提示和 UI Automation 名称，检查正文完整可见、单条编辑焦点边框与中性底色；原生指针回归检查 hover 提示随编辑资格撤回而消失、源焦点不变，并将预览/编辑截图写入 CI 已收集的 `artifacts/test-results/rendering/`。这些检查须在 Windows 实跑；Linux 跨编译不是视觉验收。测量必须与编辑框的 `TextWrapping.Wrap` 一致：[WPF 10.0.12 的 `FormattedText.Trimming` 实现](https://github.com/dotnet/wpf/blob/v10.0.12/src/Microsoft.DotNet.Wpf/src/PresentationCore/System/Windows/Media/FormattedText.cs#L1342-L1360)表明 `None` 才强制拆分超宽单词，默认省略会低估无空格文本高度。保留连续长词反例，不能用插入空格让回归通过；这些合成会话只验证展示，真实模型连续更新由下方独立模式验证。
 
-浮层只在首次出现时使用 140ms 透明度淡入，遵循 Windows 的 [ClientAreaAnimation](https://learn.microsoft.com/en-us/dotnet/api/system.windows.systemparameters.clientareaanimation) 偏好；更新、撤销接受资格和安全隐藏不等待动画。隐藏及重新显示前移除旧时钟，最终基础透明度为 1，以 [FillBehavior.Stop 与移除属性动画](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/graphics-multimedia/how-to-set-a-property-after-animating-it-with-a-storyboard) 避免旧 HoldEnd 值影响后续显示。两项专门 WPF 回归仅替换系统偏好读取，不修改全局设置或模拟动画时钟；通过真实渲染帧、HWND 可见性与源焦点验证禁用动画、显示/隐藏/再显示、最终透明度及更新不重播。此新增回归尚待 Windows 实际运行，不能将本地跨编译计为视觉验收。
+浮层只在首次出现时使用 140ms 透明度淡入，遵循 Windows 的 [ClientAreaAnimation](https://learn.microsoft.com/en-us/dotnet/api/system.windows.systemparameters.clientareaanimation) 偏好；更新、撤销接受资格和安全隐藏不等待动画。隐藏及重新显示前移除旧时钟，最终基础透明度为 1，以 [FillBehavior.Stop 与移除属性动画](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/graphics-multimedia/how-to-set-a-property-after-animating-it-with-a-storyboard) 避免旧 HoldEnd 值影响后续显示。淡入回归仅替换系统偏好读取，不修改全局设置或模拟动画时钟；通过真实渲染帧、HWND 可见性与源焦点验证禁用动画、显示/隐藏/再显示、最终透明度及更新不重播。
+
+同一目标、源框锚点、工作区、DPI、宽度及上下避让侧保持不变时，展开/收起和正文自然高度变化使用约 280ms ease-out。通过 [CompositionTarget.Rendering](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/graphics-multimedia/how-to-render-on-a-per-frame-interval-using-compositiontarget) 调整同一编辑框的视口高度，并以每帧至多一次 `SetWindowPos(SWP_NOACTIVATE)` 更新 HWND；文字不缩放，保留左锚和上方底锚/下方顶锚。新正文、提示和编辑资格立即生效，不创建旧正文副本、不延长接受许可。重复刷新不重启，反向变化从当前几何接续；换目标、源框移动、宽度/DPI或避让变化直接落位。减少动态效果立即到终点，安全隐藏清空正文并撤除帧回调。
+
+高度回归在真实 WPF 渲染帧读取 HWND 几何，检查多个连续中间尺寸、锚点/源焦点、固定字号与字形高度、底栏完整、反向/更新不回弹、Esc/安全隐藏后不复活、人工草稿选区/撤销及减少动态效果。最多五张真实展开帧 `overlay-height-expand-*.png` 和上下锚几何序列 `overlay-height-{above,below}.json` 写入同一 `artifacts/test-results/rendering/`；需检查实际图像以区分视口变高与缩放文字。相关回归须在 Windows 实际运行，跨编译与纯几何计算不能计为动态视觉验收。
 
 ## 会话接受与退出按键回归
 

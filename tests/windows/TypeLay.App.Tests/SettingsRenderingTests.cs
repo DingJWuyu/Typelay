@@ -916,6 +916,9 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
 
     private static void AssertReadableSettingsText(Window window)
     {
+        var themeChoiceStyle = (Style)window.FindResource("SettingsThemeChoice");
+        var themeChoiceTemplate = themeChoiceStyle.Setters.OfType<Setter>()
+            .Single(setter => setter.Property == Control.TemplateProperty).Value;
         // Read the real WPF text and its nearest painted background, including
         // notices and theme-choice templates. Disabled controls are excluded.
         foreach (var text in Descendants(window).OfType<TextBlock>().Where(text =>
@@ -935,6 +938,10 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                     // Aero2 Expander's header template paints a transparent Grid;
                     // its ToggleButton default #DDDDDD is not a painted surface.
                     ToggleButton { TemplatedParent: Expander } => null,
+                    // This exact theme-choice template also leaves its label
+                    // surface transparent. Other RadioButton templates and the
+                    // ComboBox's sibling background keep the Control fallback.
+                    RadioButton radio when ReferenceEquals(radio.Template, themeChoiceTemplate) => null,
                     Control control => control.Background,
                     _ => null
                 };

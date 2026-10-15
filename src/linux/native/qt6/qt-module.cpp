@@ -24,6 +24,7 @@
 #include <QScopedValueRollback>
 #include <QSocketNotifier>
 #include <QStyleHints>
+#include <QStyle>
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QTextFrame>
@@ -31,6 +32,7 @@
 #include <QTimer>
 #include <QUuid>
 #include <QVariant>
+#include <QVariantAnimation>
 #include <QVBoxLayout>
 #include <QtEndian>
 #include <cerrno>
@@ -1117,8 +1119,19 @@ private:
         auto *source = focused();
         if (card_ && source != overlayTarget_ && (paused() || source)) hideOverlay();
     }
+    void stopOverlayMotion() {
+        overlayMotion_.stop();
+        disconnect(&overlayMotion_, nullptr, this, nullptr);
+    }
     void hideOverlay() {
+        stopOverlayMotion();
         if (!card_) return;
+        // deleteLater does not clear the live editor until a later event turn.
+        // Withdraw its body synchronously, without publishing an empty draft.
+        if (editor_) {
+            QScopedValueRollback<bool> setting(settingText_, true);
+            editor_->clear();
+        }
         if (overlayFocused_) ui("focus", false);
         if (composing_) ui("composition", false);
         ui("visible", false);
@@ -1184,20 +1197,83 @@ private:
             hint = shortcuts.value(ready(overlayTarget_, publication_) ? "acceptHint" : "passThroughHint").toString();
         hint_->setText(hint);
     }
-    void arrangeOverlay() {
+    void arrangeOverlay(int editorHeight = -1) {
+        if (editorHeight < 0) stopOverlayMotion();
         if (!card_ || !overlayTarget_ || !overlayTarget_->field) return;
         auto *field = overlayTarget_->field.data();
         auto *top = field->window();
+        if (card_->parentWidget() != top) { hideOverlay(); return; }
         const bool capsule = paused() || overlayView_.value("state").toString() == "IdleCapsule";
         const int width = qMin(capsule && !menu_->isVisible() ? 160 : qBound(390, field->width(), 520),
             qMax(1, top->width() - 16));
-        editor_->setFixedHeight(expanded_ ? 280 : 100);
-        card_->setFixedWidth(width); card_->adjustSize();
+        editor_->setFixedHeight(editorHeight < 0 ? (expanded_ ? 280 : 100) : editorHeight);
+        card_->setFixedWidth(width);
+        card_->layout()->activate();
+        card_->adjustSize();
         const auto bounds = geometry(overlayTarget_).value("bounds").toObject();
         const int x = qBound(0, int(integer(bounds, "x") + integer(bounds, "width")) - width, qMax(0, top->width() - width));
         const int above = int(integer(bounds, "y")) - card_->height() - 6;
         const int y = above >= 0 ? above : int(integer(bounds, "y") + integer(bounds, "height")) + 6;
         card_->move(x, qBound(0, y, qMax(0, top->height() - card_->height())));
+    }
+    void resizeOverlay() {
+        if (!card_ || !editor_ || !overlayActive()) { arrangeOverlay(); return; }
+        const int startHeight = editor_->height();
+        const QRect start = card_->geometry();
+        arrangeOverlay();
+        if (!card_) return;
+        const QRect end = card_->geometry();
+        const int endHeight = editor_->height();
+        // The current Qt style is the public platform/application preference.
+        // A zero duration disables motion; it is not a universal OS preference API.
+        if (startHeight == endHeight || start.width() != end.width()
+            || card_->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, card_) <= 0)
+            return;
+        const auto bounds = geometry(overlayTarget_);
+        const auto fieldBounds = bounds.value("bounds").toObject();
+        const int sourceY = int(integer(fieldBounds, "y"));
+        const bool above = start.bottom() < sourceY;
+        // Keep the same upper bottom-edge or lower top-edge anchor throughout.
+        // Near a parent edge a side change or clamp lands directly instead.
+        if (above != (end.bottom() < sourceY)
+            || (above ? start.bottom() != end.bottom() : start.top() != end.top())) return;
+        const QPointer<QWidget> parent = card_->parentWidget();
+        const QRect parentBounds = parent->geometry();
+        motionRevision_ = overlayRevision_;
+        motionSource_ = overlayTarget_->field;
+        motionParent_ = parent;
+        motionParentBounds_ = parentBounds;
+        motionGeometry_ = bounds;
+        motionEditor_ = editor_;
+        motionDocument_ = editor_->document();
+        motionDocumentRevision_ = motionDocument_->revision();
+        motionReadOnly_ = editor_->isReadOnly();
+        motionFocusPolicy_ = editor_->focusPolicy();
+        const auto generation = overlayGeneration_;
+        arrangeOverlay(startHeight);
+        overlayMotion_.setDuration(280);
+        QEasingCurve easing(QEasingCurve::BezierSpline);
+        easing.addCubicBezierSegment(QPointF(.22, 1), QPointF(.36, 1), QPointF(1, 1));
+        overlayMotion_.setEasingCurve(easing);
+        overlayMotion_.setStartValue(startHeight);
+        overlayMotion_.setEndValue(endHeight);
+        connect(&overlayMotion_, &QVariantAnimation::valueChanged, this,
+            [this, parent, parentBounds, bounds, generation](const QVariant &value) {
+                if (!overlayActive()) { hideOverlay(); return; }
+                if (!parent || card_->parentWidget() != parent || parent->geometry() != parentBounds
+                    || overlayRevision_ != motionRevision_ || overlayGeneration_ != generation
+                    || editor_ != motionEditor_ || overlayTarget_->field != motionSource_
+                    || editor_->document() != motionDocument_ || editor_->document()->revision() != motionDocumentRevision_
+                    || editor_->isReadOnly() != motionReadOnly_ || editor_->focusPolicy() != motionFocusPolicy_
+                    || geometry(overlayTarget_) != bounds
+                    || card_->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, card_) <= 0) {
+                    arrangeOverlay(); return;
+                }
+                arrangeOverlay(value.toInt());
+            });
+        // No completion callback: the final value only lays out the current
+        // widgets. Nothing can show, restore text, focus or renew a hidden view.
+        overlayMotion_.start();
     }
     void chooseLanguages(const QString &source, const QString &target) {
         ui("languages", QJsonObject{{"source", source}, {"target", target}});
@@ -1241,6 +1317,8 @@ private:
                     expanded_ = !expanded_;
                     value->setText(expanded_ ? QStringLiteral("缩小") : QStringLiteral("展开"));
                     ui("expand", expanded_);
+                    resizeOverlay();
+                    return;
                 } else {
                     menu_->hide();
                     if (qstrcmp(operation, "copy") == 0) {
@@ -1267,7 +1345,7 @@ private:
         toolsLayout->setContentsMargins(0, 0, 0, 0);
         toolsLayout->setSpacing(2);
         button(tools_, toolsLayout, QStringLiteral("重译"), "regenerate");
-        button(tools_, toolsLayout, expanded_ ? QStringLiteral("缩小") : QStringLiteral("展开"), "expand");
+        button(tools_, toolsLayout, expanded_ ? QStringLiteral("缩小") : QStringLiteral("展开"), "expand")->setObjectName(QStringLiteral("typelay-expand"));
         header->addWidget(tools_);
         resume_ = button(frame, header, QStringLiteral("恢复"), "resume");
         resume_->setObjectName(QStringLiteral("typelay-resume"));
@@ -1363,6 +1441,16 @@ private:
                 && target->field->window()->isActiveWindow() && !geometry(target).isEmpty() && viewCurrent(target, data);
             if (!valid) hideOverlay();
             else {
+                const bool continueMotion = overlayMotion_.state() == QAbstractAnimation::Running
+                    && integer(data, "visualExpansionFrom", -1) == overlayRevision_
+                    && integer(data, "revision", -1) == overlayRevision_ + 1
+                    && target == overlayTarget_ && target->field == motionSource_ && editor_ == motionEditor_
+                    && editor_ && editor_->document() == motionDocument_ && editor_->document()->revision() == motionDocumentRevision_
+                    && editor_->isReadOnly() == motionReadOnly_ && editor_->focusPolicy() == motionFocusPolicy_
+                    && card_ && card_->parentWidget() == motionParent_ && motionParent_
+                    && motionParent_->geometry() == motionParentBounds_ && target->field->window() == motionParent_
+                    && geometry(target) == motionGeometry_ && data.value("generation") == overlayGeneration_
+                    && view == overlayView_ && data.value("theme").toString(QStringLiteral("system")) == overlayTheme_;
                 if (!card_ || overlayTarget_ != target) { hideOverlay(); createOverlay(target); }
                 if (overlayRevision_ != integer(data, "revision", 0)) pendingResume_ = false;
                 overlayView_ = view; overlayAuthority_ = basis; overlayGeneration_ = data.value("generation");
@@ -1410,7 +1498,11 @@ private:
                 status_->setVisible(isPaused || !capsule);
                 language_->setVisible(!isPaused); resume_->setVisible(isPaused); resume_->setEnabled(!pendingResume_);
                 if (isPaused) menu_->hide();
-                arrangeOverlay();
+                // Only the exact one-use expansion echo may continue geometry.
+                // All current view/authority/edit state above has already applied.
+                if (continueMotion) motionRevision_ = overlayRevision_;
+                arrangeOverlay(continueMotion ? editor_->height() : -1);
+                if (!card_) return {{"visible", false}, {"editing", false}};
                 overlayTheme_ = data.value("theme").toString(QStringLiteral("system"));
                 applyOverlayTheme();
                 card_->show(); card_->raise(); syncOverlay();
@@ -1709,6 +1801,16 @@ private:
     QStringList consumed_;
     QString lifetime_ = QUuid::createUuid().toString(QUuid::WithoutBraces);
     QTimer reconnect_, expiry_;
+    QVariantAnimation overlayMotion_;
+    QPointer<QWidget> motionSource_, motionParent_;
+    QPointer<QPlainTextEdit> motionEditor_;
+    QPointer<QTextDocument> motionDocument_;
+    int motionDocumentRevision_ = 0;
+    bool motionReadOnly_ = true;
+    Qt::FocusPolicy motionFocusPolicy_ = Qt::NoFocus;
+    QRect motionParentBounds_;
+    QJsonObject motionGeometry_;
+    qint64 motionRevision_ = 0;
     int fd_ = -1;
     QPointer<QSocketNotifier> reader_, writer_;
     QByteArray incoming_, outgoing_;

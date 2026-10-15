@@ -18,6 +18,10 @@ Qt 6.11.2 与固定 Fcitx Qt 5.1.15 的隔离 Wayland/niri 链路已有实际模
 
 浮层主题沿用设置的 `system` / `light` / `dark` 小写合同。显式浅色或深色只作用于 `typelay-overlay` 子树；跟随系统时读取 Qt 当前有效颜色方案，平台返回 Unknown 时以应用的 Window/WindowText 调色板回退，不修改宿主应用的全局主题。当前可见浮层随颜色方案或应用调色板变化重画，保留正文、光标、焦点、几何与原有效期。译文编辑器的可访问名称为“译文”，预览与卡片使用一致底色，编辑焦点边框与文字选区仍可辨认；按钮保留原动作与点击区域。
 
+展开/收起只在当前原生 `QPlainTextEdit` 上改变高度，约 280ms，宽度不变；右侧与上方底侧（或下方顶侧）锚保持不变。父窗口边缘需要换侧或裁限时直接落位。现有展开通知与显示续期保持；宿主仅对该次展开排队的下一份视图附一次性 `visualExpansionFrom` 标记，后续排队覆盖、发送前消费。客户端只在完整目标、代次、源/编辑器实例、父窗口、几何、全文视图与主题都未变时沿原结束时刻继续几何，标记不提供接受或编辑资格。其它新视图直接取消旧动效；续租不会重播。所有隐藏先取消动画并清正文，没有退出残影或完成后恢复/聚焦。
+
+减少动态效果通过当前 Qt 样式的公开 `QStyle::SH_Widget_Animation_Duration` 读取，零值直接最终布局。Qt 6.11 的公开 `QAccessibilityHints` 仅提供对比度偏好，没有通用减少动态效果属性；此实现不能保证每个 Linux 桌面/样式都转发系统偏好。依据：[QStyle](https://doc.qt.io/qt-6.11/qstyle.html)、[QAccessibilityHints](https://doc.qt.io/qt-6.11/qaccessibilityhints.html)。桌面 fixture 的有限控件实绘帧与几何进入现有输出目录 `qt-motion-*`，包含真实样式零值、展开/反转、续期、新编辑视图、隐藏取消、中文选区与后续原生撤销/两阶段返回；新增场景需由对应提交实际运行，不以源码或旧截图标为通过。
+
 ## 输入法与写回边界
 
 合作 Fcitx Qt provider 使用 QtCore-only、版本化 IID，在实际焦点 QObject 上发布自身。消费者经 `qobject_cast` 验证接口并使用弱生命周期引用。`inspect` 读取真实 context、在途请求、输出与字段代次；`validateLocal` 只能验证同一次观察，不能自行建立 Clear；`prepareCaret` 后仍须重新观察与核对原目标。

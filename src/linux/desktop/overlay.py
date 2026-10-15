@@ -17,6 +17,7 @@ class Overlay:
         self.value = self.settings = self.peer = None
         self.visible = self.editing = self.acceptance_ready = False
         self.revision = 0
+        self.visual_expansion = None
         self.edit_trace_count = 0
         self.pending = False
         self.lock = asyncio.Lock()
@@ -54,8 +55,11 @@ class Overlay:
             return None
         return record
 
-    def schedule(self):
+    def schedule(self, visual_expansion_from=None):
         self.revision += 1
+        # A later schedule replaces this one-use visual hint, even if its view
+        # happens to have identical text. It grants no input/display authority.
+        self.visual_expansion = (self.revision, visual_expansion_from)
         if not self.pending:
             self.pending = True
             self.tasks(self.update())
@@ -75,6 +79,7 @@ class Overlay:
                 return False
             peer = record["peer"]
             revision = self.revision
+            visual_expansion, self.visual_expansion = self.visual_expansion, None
             if self.peer and self.peer is not peer and self.peer.link.channel.alive:
                 self.peer.link.command("overlay-hide")
             self.peer = peer
@@ -86,6 +91,9 @@ class Overlay:
                     "generation": self.input.shortcut_config.get("generation"),
                     "view": self.value,
                     "revision": revision,
+                    "visualExpansionFrom": visual_expansion[1]
+                    if visual_expansion and visual_expansion[0] == revision
+                    else None,
                     "theme": (self.settings or {}).get("theme", "system"),
                     "expiresAtMs": now_ms() + 800,
                 },
@@ -208,7 +216,7 @@ class Overlay:
         elif operation == "languages":
             self.tasks(self.set_languages(value))
         elif operation == "expand":
-            self.schedule()
+            self.schedule(visual_expansion_from=event["revision"])
         elif operation in ("return", "escape"):
             self.host.send(operation, token)
         elif operation in ("regenerate", "exclude"):

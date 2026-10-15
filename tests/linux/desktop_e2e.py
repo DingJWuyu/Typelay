@@ -2918,8 +2918,11 @@ def run(arguments):
             revision = status()["commandFeedbackRevision"]
             assert Atspi.Component.grab_focus(themes[selected_theme].get_component_iface())
             key("space")
+            # A valid pre-save file can omit Theme; the loader treats that as
+            # system until this asynchronous save replaces it with the full value.
             wait_for(
-                lambda: json.loads(paths.settings.read_text())["Theme"] == selected_theme
+                lambda: json.loads(paths.settings.read_text()).get("Theme", "system")
+                == selected_theme
                 and themes[selected_theme].get_state_set().contains(Atspi.StateType.CHECKED)
                 and status()["commandFeedbackRevision"] == revision + 1,
                 "native theme choice did not save one effective settings change",
@@ -2945,7 +2948,8 @@ def run(arguments):
             assert Atspi.Component.grab_focus(themes[original_theme].get_component_iface())
             key("space")
             wait_for(
-                lambda: json.loads(paths.settings.read_text())["Theme"] == original_theme
+                lambda: json.loads(paths.settings.read_text()).get("Theme", "system")
+                == original_theme
                 and themes[original_theme].get_state_set().contains(Atspi.StateType.CHECKED)
                 and (
                     (feedback := named(process.pid, "设置反馈")) is None
