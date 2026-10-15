@@ -66,6 +66,12 @@ internal static class Program
         });
         controller.Changed += Status;
         controller.OperationFeedback += feedback => link.Send("operationFeedback", feedback);
+        controller.AutomaticPracticeCompletionRetiring += (binding, revision) =>
+            link.Send("automaticPracticeCompletionRetiring", new
+            {
+                binding,
+                revision
+            });
         model.Changed += Status;
         link.Notification = (operation, value) =>
         {

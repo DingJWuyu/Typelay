@@ -17,17 +17,68 @@ class PracticeSession:
         self.lesson = "onDemand"
         self.ending = self.end_unconfirmed = False
         self.finish_pending = None
+        self.completion_pending = None
         self.input.practice_retired = self.invalidated
         self.input.practice_settings_changed = self.clear_completion
 
     def clear_completion(self):
+        pending, finishing = self.completion_pending, self.finish_pending
         self.finish_pending = None
+        self.completion_pending = None
+        if pending is not None and finishing is None:
+            self.invalidated(pending["binding"]["runId"])
+
+    def completing(self, value):
+        binding = value.get("binding") if isinstance(value, dict) else None
+        revision = value.get("revision") if isinstance(value, dict) else None
+        authorization = self.input.practice_authorization
+        if (
+            self.lesson != "automatic"
+            or self.ending
+            or self.end_unconfirmed
+            or self.completion_pending is not None
+            or not self.support.owns_practice(self.pid)
+            or not isinstance(binding, dict)
+            or not authorization
+            or type(revision) is not int
+            or revision <= 0
+            or binding.get("runId") != self.run
+            or binding.get("target") != self.target
+            or any(
+                binding.get(key) != authorization.get(key)
+                for key in (
+                    "runId",
+                    "target",
+                    "connectionId",
+                    "commandGeneration",
+                    "nativeFocusRevision",
+                    "contextGeneration",
+                )
+            )
+        ):
+            return
+        pending = {"binding": dict(binding), "revision": revision, "acknowledged": False}
+        self.completion_pending = pending
+        self.ending = True
+        # This notification precedes Configure on the trusted host pipe. Fence
+        # before its ordinary invalidation can mistake completion for an End.
+        self.input.retire_practice(self.run, notify=False)
+        self.schedule(self.confirm_completion(pending))
+
+    async def confirm_completion(self, pending):
+        confirmed = await self.input.confirm_practice_retirement(pending["binding"]["runId"])
+        if self.completion_pending is pending and self.support.owns_practice(self.pid):
+            pending["acknowledged"] = confirmed
+            self.end_unconfirmed = not confirmed
+            self.ending = False
 
     def operation(self, action):
         name = "AutomaticPractice" if self.lesson == "automatic" else "OnDemandPractice"
         return action + name if action else name[0].lower() + name[1:]
 
     def invalidated(self, run):
+        if self.completion_pending and self.completion_pending["binding"]["runId"] == run:
+            return
         if run == self.run:
             self.ending = True
             self.schedule(self.retire_invalidated(run))
@@ -45,6 +96,7 @@ class PracticeSession:
 
     async def retire(self):
         run, automatic = self.run, self.lesson == "automatic"
+        self.completion_pending = None
         if self.end_unconfirmed:
             return False
         if run is None:
@@ -93,6 +145,8 @@ class PracticeSession:
         # The window destroys its native source immediately. Releasing ownership
         # also prevents a pending Begin attaching after the process has closed.
         self.support.release_practice(pid)
+        if self.pid == pid:
+            self.completion_pending = None
         async with self.lock:
             pending = self.finish_pending
             self.finish_pending = None
@@ -106,14 +160,35 @@ class PracticeSession:
         async with self.lock:
             if self.finish_pending is not None:
                 return None
-            if self.run is None or self.ending or lesson != self.lesson:
+            if (
+                self.run is None
+                or (self.ending and self.completion_pending is None)
+                or lesson != self.lesson
+            ):
                 return None
             if not self.support.owns_practice(self.pid):
                 await self.retire()
                 return None
             if pid != self.pid:
                 return None
+            pending = self.completion_pending
             progress = await self.host.ask(self.operation("") + "Progress")
+            if pending is not None or self.completion_pending is not None:
+                pending = pending or self.completion_pending
+                if (
+                    self.completion_pending is pending
+                    and self.support.owns_practice(pid)
+                    and pending["acknowledged"]
+                    and isinstance(progress, dict)
+                    and progress.get("completed") is True
+                    and progress.get("revision") == pending["revision"]
+                    and all(
+                        progress.get(key) == pending["binding"].get(key)
+                        for key in ("runId", "target", "connectionId", "commandGeneration")
+                    )
+                ):
+                    return progress
+                return None
             if not isinstance(progress, dict) or progress.get("runId") != self.run:
                 await self.retire()
                 return None
@@ -128,6 +203,8 @@ class PracticeSession:
             if continuing and (not progress.get("awaitingFreshSource") or not self.input.fresh()):
                 return progress
             binding = await self.input.practice_binding(pid, self.target) if automatic else None
+            if self.completion_pending is not None:
+                return None
             if (
                 continuing
                 and binding is None
@@ -178,7 +255,12 @@ class PracticeSession:
 
     async def can_complete(self, pid, *, lesson="onDemand"):
         progress = await self.progress(pid, lesson=lesson)
-        return bool(progress and self.target is not None and progress.get("completed") is True)
+        return bool(
+            progress
+            and self.target is not None
+            and progress.get("completed") is True
+            and (lesson != "automatic" or self.completion_pending is not None)
+        )
 
     async def complete(self, pid, *, lesson="onDemand"):
         if self.finish_pending is None and not await self.can_complete(pid, lesson=lesson):
@@ -233,6 +315,7 @@ class PracticeSession:
             acknowledged = await self.input.confirm_practice_retirement(pending["run"])
             self.end_unconfirmed = not (ended and acknowledged)
             self.finish_pending = pending if retry and not self.end_unconfirmed else None
+            self.completion_pending = None
             if self.run == pending["run"]:
                 self.pid = self.run = self.target = None
             self.ending = False

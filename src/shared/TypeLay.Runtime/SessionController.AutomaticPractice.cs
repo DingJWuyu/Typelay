@@ -14,7 +14,15 @@ public sealed partial class SessionController
     private Task<bool>? _automaticRetirement;
     private bool _automaticRetirementUnconfirmed;
     private TargetId? _retiredAutomaticTarget;
-    private sealed record PendingPracticeCompletion(Guid RunId, long Revision, long ConfigurationRevision);
+    private sealed record PendingPracticeCompletion(AutomaticPracticeProgress Progress,
+        OwnedPracticeBinding Binding, long ConfigurationRevision)
+    {
+        public Guid RunId => Progress.RunId;
+        public bool Confirmed
+        {
+            get; set;
+        }
+    }
     private PendingPracticeCompletion? _pendingPracticeCompletion;
     private Guid _lastRetiredAutomaticRun;
     private long _automaticProgressRevision, _automaticEditRevision = -1;
@@ -26,6 +34,7 @@ public sealed partial class SessionController
         get; private set;
     }
     public event Action<AutomaticPracticeProgress?>? AutomaticPracticeProgressChanged;
+    public event Action<OwnedPracticeBinding, long>? AutomaticPracticeCompletionRetiring;
 
     // This registration intentionally grants nothing. The host must separately
     // prove its owned field and active connection through BindAutomaticPractice.
@@ -37,8 +46,10 @@ public sealed partial class SessionController
             return false;
         if (AutomaticPracticeProgress?.RunId == runId)
             return true;
-        if (AutomaticPracticeProgress is not null)
+        if (AutomaticPracticeProgress is not null && _pendingPracticeCompletion is null)
             return false;
+        if (_pendingPracticeCompletion is { } completed)
+            EndAutomaticPractice(completed.RunId);
         StopSession();
         if (PracticeProgress is { } previous)
             EndOnDemandPractice(previous.RunId);
@@ -51,7 +62,8 @@ public sealed partial class SessionController
 
     public bool BindAutomaticPractice(OwnedPracticeBinding binding)
     {
-        if (_disposed || _automaticRetirementUnconfirmed || _automaticRetirement is { IsCompleted: false }
+        if (_disposed || _pendingPracticeCompletion is not null
+            || _automaticRetirementUnconfirmed || _automaticRetirement is { IsCompleted: false }
             || _retireOwnedPractice is null || AutomaticPracticeProgress is not { } progress || progress.RunId != binding.RunId
             || progress.CommandGeneration != binding.CommandGeneration || binding.CommandGeneration == Guid.Empty
             || binding.CommandGeneration != _hook.CommandGeneration || binding.ConnectionId == Guid.Empty
@@ -133,18 +145,18 @@ public sealed partial class SessionController
     public async Task<bool> FinishAutomaticPracticeAsync(Guid runId)
     {
         var expected = _settings.Value;
-        if (AutomaticPracticeProgress is { } progress && progress.RunId == runId)
+        var pending = _pendingPracticeCompletion;
+        if (pending is null || pending.RunId != runId)
         {
-            // Repeating a lesson still requires retirement when the historical
-            // onboarding preference is already true. The saved evidence below
-            // is never authority to bind a field, translate or publish a permit.
-            if (!await RetireAutomaticPracticeAsync() || !progress.Completed
-                || _disposed || !ReferenceEquals(expected, _settings.Value))
-                return false;
-            _pendingPracticeCompletion = new(runId, progress.Revision, _configurationRevision);
+            if (AutomaticPracticeProgress?.RunId == runId)
+                await RetireAutomaticPracticeAsync();
+            return false;
         }
-        else if (_pendingPracticeCompletion is not { } pending || pending.RunId != runId
-            || pending.ConfigurationRevision != _configurationRevision || _disposed)
+        var retirement = _automaticRetirement;
+        if (retirement is null || !await retirement || !pending.Confirmed
+            || !ReferenceEquals(pending, _pendingPracticeCompletion)
+            || pending.ConfigurationRevision != _configurationRevision || _disposed
+            || !ReferenceEquals(expected, _settings.Value))
             return false;
         // A recoverable persistence failure leaves only this run's body-free
         // completion watermark. A new run, real settings change or close clears it.
@@ -153,12 +165,45 @@ public sealed partial class SessionController
             OnboardingComplete = true
         });
         _pendingPracticeCompletion = null;
+        // A repeated lesson may save an already-true preference, so Configure
+        // need not run. Consume its read-only completion after a successful save.
+        if (AutomaticPracticeProgress?.RunId == runId)
+        {
+            AutomaticPracticeProgress = null;
+            AutomaticPracticeProgressChanged?.Invoke(null);
+        }
         return true;
     }
 
     public bool CanRetryAutomaticPracticeSave(Guid runId) => !_disposed
         && _pendingPracticeCompletion is { } pending && pending.RunId == runId
-        && pending.ConfigurationRevision == _configurationRevision;
+        && pending.Confirmed && pending.ConfigurationRevision == _configurationRevision;
+
+    private void SealAutomaticCompletion(OwnedPracticeBinding binding, AutomaticPracticeProgress progress)
+    {
+        var pending = new PendingPracticeCompletion(progress with
+        {
+            Revision = ++_automaticProgressRevision,
+            EditedAcceptanceCompleted = true
+        }, binding, _configurationRevision);
+        _pendingPracticeCompletion = pending;
+        // The trusted adapter sees this body-free intent before configuration
+        // invalidation. It fences the exact final grant, never declares success.
+        AutomaticPracticeCompletionRetiring?.Invoke(binding, pending.Progress.Revision);
+        RetireAutomaticPractice();
+        StopSession("practice-completed");
+        _ = ConfirmAutomaticCompletion(pending, _automaticRetirement!);
+    }
+
+    private async Task ConfirmAutomaticCompletion(PendingPracticeCompletion pending, Task<bool> retirement)
+    {
+        if (!await retirement || _disposed || !ReferenceEquals(pending, _pendingPracticeCompletion)
+            || pending.ConfigurationRevision != _configurationRevision)
+            return;
+        pending.Confirmed = true;
+        AutomaticPracticeProgress = pending.Progress;
+        AutomaticPracticeProgressChanged?.Invoke(AutomaticPracticeProgress);
+    }
 
     // Only this private practice requires executor retirement before a settings
     // operation may report success. The ordinary settings path remains unchanged.
@@ -172,6 +217,8 @@ public sealed partial class SessionController
     {
         if (AutomaticPracticeProgress is { } progress)
             EndAutomaticPractice(progress.RunId);
+        else if (_pendingPracticeCompletion is { } pending)
+            EndAutomaticPractice(pending.RunId);
         return _automaticRetirement is null ? !_automaticRetirementUnconfirmed : await _automaticRetirement;
     }
 
@@ -576,9 +623,6 @@ public sealed partial class SessionController
             });
         else if (issued.Edited && progress.AcceptanceCompleted && progress.EditingStarted && progress.DraftChanged
             && progress.ReturnedToSource && !progress.EditedAcceptanceCompleted)
-            UpdateAutomaticPractice(progress with
-            {
-                EditedAcceptanceCompleted = true
-            });
+            SealAutomaticCompletion(issued.Binding, progress);
     }
 }

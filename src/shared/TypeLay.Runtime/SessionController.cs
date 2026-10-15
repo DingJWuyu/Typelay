@@ -392,6 +392,11 @@ public sealed partial class SessionController : IDisposable
             _overlay.HideQuietly();
             return;
         }
+        // A finished owned field has no remaining translation or acceptance
+        // work. Its body-free receipt survives ordinary observation changes.
+        if (_pendingPracticeCompletion is { } completed
+            && _hook.GetFocus(completed.Binding.Target) != FocusMember.Other)
+            return;
         if (!_settings.Value.Enabled)
         {
             RevokeInput("paused");

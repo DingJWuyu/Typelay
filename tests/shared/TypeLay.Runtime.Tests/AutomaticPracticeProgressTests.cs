@@ -874,6 +874,29 @@ public sealed class AutomaticPracticeProgressTests
         Assert.False(s.Controller.BindAutomaticPractice(binding));
     }
 
+    [Fact]
+    public void VerifiedCompletionRetiresBeforeFurtherSourceObservations()
+    {
+        int retirements = 0;
+        using var s = new SessionScenario(retireOwnedPractice: _ =>
+        {
+            retirements++;
+            return Task.FromResult(true);
+        });
+        var binding = Bind(s);
+        FinishSteps(s);
+        Assert.Equal(1, retirements);
+        var completed = s.Controller.AutomaticPracticeProgress;
+        int captures = s.Service.Captures;
+        s.Tick(1000);
+        Assert.Equal(captures, s.Service.Captures);
+        s.Input.Ready = false;
+        s.Tick();
+        Assert.Same(completed, s.Controller.AutomaticPracticeProgress);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.Controller.BindAutomaticPractice(binding));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -887,7 +910,7 @@ public sealed class AutomaticPracticeProgressTests
         });
         var binding = Bind(s);
         Assert.False(await s.Controller.FinishAutomaticPracticeAsync(Guid.NewGuid()));
-        FinishSteps(s);
+        FinishSteps(s, confirmed: false);
         var finishing = s.Controller.FinishAutomaticPracticeAsync(binding.RunId);
         Assert.False(finishing.IsCompleted);
         Assert.Equal(previouslyDismissed, s.ReloadSettings().OnboardingComplete);
@@ -898,6 +921,7 @@ public sealed class AutomaticPracticeProgressTests
         Assert.True(s.ReloadSettings().OnboardingComplete);
         Assert.Equal(WorkMode.Automatic, s.ReloadSettings().Mode);
         Assert.False(s.ReloadSettings().ExperimentalWriteback);
+        Assert.True(s.Controller.BeginAutomaticPractice(Guid.NewGuid()));
     }
 
     [Fact]
@@ -988,34 +1012,34 @@ public sealed class AutomaticPracticeProgressTests
         Assert.Null(s.Controller.OperationStatus);
     }
 
-    [Fact]
-    public async Task CompletionInvalidatedByNewEditingRetiresBeforeReturningAnUnretryableFailure()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CompletionCannotBeSavedAfterFailedAcknowledgementOrClose(bool closed)
     {
         var acknowledgement = new TaskCompletionSource<bool>();
         using var s = new SessionScenario(retireOwnedPractice: _ => acknowledgement.Task);
         var binding = Bind(s);
-        FinishSteps(s);
-        Assert.True(s.Controller.AutomaticPracticeProgress!.Completed);
-        // A UI read of Completed can race with a newer genuine editor action.
-        NewSource(s);
-        s.ReadyCandidate();
-        Assert.True(s.View.BeginEditing!(s.View.Token));
-        s.Input.InEditor = true;
-        Assert.False(s.Controller.AutomaticPracticeProgress.Completed);
+        FinishSteps(s, confirmed: false);
+        Assert.Null(s.Controller.AutomaticPracticeProgress);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.Controller.CanRetryAutomaticPracticeSave(binding.RunId));
+        Assert.False(s.Controller.BindAutomaticPractice(binding));
+        Assert.False(s.Controller.BeginAutomaticPractice(Guid.NewGuid()));
         var finishing = s.Controller.FinishAutomaticPracticeAsync(binding.RunId);
         Assert.False(finishing.IsCompleted);
-        Assert.Null(s.Controller.AutomaticPracticeProgress);
-        Assert.False(s.Controller.BeginAutomaticPractice(Guid.NewGuid()));
-        acknowledgement.SetResult(true);
+        if (closed)
+            Assert.True(s.Controller.EndAutomaticPractice(binding.RunId));
+        acknowledgement.SetResult(closed);
         s.Tick();
         Assert.False(await finishing);
+        Assert.Null(s.Controller.AutomaticPracticeProgress);
         Assert.False(s.Controller.CanRetryAutomaticPracticeSave(binding.RunId));
         Assert.False(s.ReloadSettings().OnboardingComplete);
         Assert.Null(s.Input.Permit);
-        Assert.False(s.Controller.BindAutomaticPractice(binding));
     }
 
-    private static void FinishSteps(SessionScenario s)
+    private static void FinishSteps(SessionScenario s, bool confirmed = true)
     {
         s.ReadyCandidate();
         CompleteAcceptance(s);
@@ -1028,7 +1052,10 @@ public sealed class AutomaticPracticeProgressTests
         s.Tick();
         BindReturned(s);
         CompleteAcceptance(s);
-        Assert.True(s.Controller.AutomaticPracticeProgress!.Completed);
+        if (confirmed)
+            Assert.True(s.Controller.AutomaticPracticeProgress!.Completed);
+        else
+            Assert.Null(s.Controller.AutomaticPracticeProgress);
     }
 
     private static void BindReturned(SessionScenario s)

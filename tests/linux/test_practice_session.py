@@ -86,6 +86,12 @@ class InputPort:
         self.binding_reads = 0
         self.editing = False
         self.practice_pending = None
+        self.ack_gate = None
+        self.acknowledged = True
+
+    @property
+    def practice_authorization(self):
+        return self.authorization
 
     async def practice_target(self, pid, target=None):
         return dict(self.target) if self.available else None
@@ -97,6 +103,8 @@ class InputPort:
                 "target": dict(self.target),
                 "connectionId": self.connection,
                 "commandGeneration": self.generation,
+                "nativeFocusRevision": 2,
+                "contextGeneration": 3,
             }
             if self.available
             else None
@@ -126,7 +134,9 @@ class InputPort:
         return self.retired == run
 
     async def confirm_practice_retirement(self, run):
-        return self.retired == run
+        if self.ack_gate:
+            await self.ack_gate.wait()
+        return self.acknowledged and self.retired == run
 
 
 class PracticeSessionTests(unittest.IsolatedAsyncioTestCase):
@@ -256,6 +266,8 @@ class PracticeSessionTests(unittest.IsolatedAsyncioTestCase):
                 "target": self.input.target,
                 "connectionId": self.input.connection,
                 "commandGeneration": self.input.generation,
+                "nativeFocusRevision": 2,
+                "contextGeneration": 3,
             },
         )
         self.assertFalse(await self.practice.complete(100, lesson="automatic"))
@@ -309,10 +321,56 @@ class PracticeSessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(await self.practice.complete(100, lesson="automatic"))
         self.assertEqual(sum(op == "beginAutomaticPractice" for op, _ in self.host.requests), 1)
 
+    def seal_completion(self):
+        binding = dict(self.input.authorization)
+        self.host.progress = {**self.host.progress, "revision": 50, "completed": True}
+        self.practice.completing({"binding": binding, "revision": 50})
+        return binding
+
+    async def test_completed_receipt_waits_for_ack_without_reading_and_close_cannot_revive_it(self):
+        for outcome in ("confirmed", "failed", "closed", "settings"):
+            with self.subTest(outcome=outcome):
+                self.setUp()
+                run = await self.automatic()
+                await self.practice.progress(100, lesson="automatic")
+                self.input.ack_gate = asyncio.Event()
+                self.input.acknowledged = outcome != "failed"
+                binding = self.seal_completion()
+                reads = self.input.binding_reads
+                self.assertIsNone(self.input.authorization)
+                self.practice.invalidated(run)  # Configure's ordinary retirement notification.
+                self.assertFalse(await self.practice.can_complete(100, lesson="automatic"))
+                closing = None
+                if outcome == "closed":
+                    closing = asyncio.create_task(self.practice.end(100))
+                    await asyncio.sleep(0)
+                elif outcome == "settings":
+                    self.practice.clear_completion()
+                    await asyncio.sleep(0)
+                self.input.ack_gate.set()
+                await asyncio.sleep(0)
+                self.input.available = False
+                if closing:
+                    await closing
+                    self.practice.completing({"binding": binding, "revision": 50})
+                self.assertEqual(
+                    await self.practice.can_complete(100, lesson="automatic"),
+                    outcome == "confirmed",
+                )
+                self.assertEqual(self.input.binding_reads, reads)
+                self.assertIsNone(self.input.authorization)
+                self.assertFalse(
+                    any(op == "finishAutomaticPractice" for op, _ in self.host.requests)
+                )
+                if outcome == "failed":
+                    self.assertTrue(self.practice.end_unconfirmed)
+                    self.assertFalse(await self.practice.begin(100, True, lesson="automatic"))
+
     async def test_automatic_finish_retries_only_completed_evidence_after_retirement(self):
         run = await self.automatic()
         await self.practice.progress(100, lesson="automatic")
-        self.host.progress = {**self.host.progress, "completed": True}
+        self.seal_completion()
+        await asyncio.sleep(0)
         self.host.finish_allowed = False
         self.assertFalse(await self.practice.complete(100, lesson="automatic"))
         self.input.retire_practice(run)
@@ -331,12 +389,12 @@ class PracticeSessionTests(unittest.IsolatedAsyncioTestCase):
                 self.setUp()
                 run = await self.automatic()
                 await self.practice.progress(100, lesson="automatic")
-                self.host.progress = {**self.host.progress, "completed": True}
+                self.seal_completion()
+                await asyncio.sleep(0)
                 self.host.finish_gate = asyncio.Event()
                 finishing = asyncio.create_task(self.practice.complete(100, lesson="automatic"))
                 await asyncio.wait_for(self.host.finish_started.wait(), 1)
-                # Runtime can receive BeginEdit after the completed progress
-                # read; it then rejects Finish rather than failing persistence.
+                # A host refusal or timeout is not evidence of a retryable save.
                 self.host.progress = {**self.host.progress, "completed": False}
                 self.host.finish_allowed = self.host.retry_save = False
                 if failure == "timeout":

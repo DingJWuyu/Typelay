@@ -153,7 +153,9 @@ async def desktop(paths, background, lock, tutorial=False):
         if input_service:
             input_service.notification(operation, value)
         overlay, settings = components["overlay"], components["settings"]
-        if operation == "settings":
+        if operation == "automaticPracticeCompletionRetiring":
+            practice.completing(value)
+        elif operation == "settings":
             first_settings = settings.value is None
             settings.configure(value)
             overlay.configure(value)
