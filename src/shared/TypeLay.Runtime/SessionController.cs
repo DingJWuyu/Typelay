@@ -363,6 +363,8 @@ public sealed partial class SessionController : IDisposable
         RefreshConnectionStatus();
         CheckAutomaticPracticeIdentity();
         DrainInputNotices();
+        if (_awaitingPractice is not null && (_automaticRetirementUnconfirmed || _automaticRetirement is { IsCompleted: false }))
+            return;
         long now = _loop.NowMs;
         if (_pendingDirect is { } pending && !_directRunning)
         {

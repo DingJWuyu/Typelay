@@ -51,7 +51,8 @@ public sealed partial class SessionController
 
     public bool BindAutomaticPractice(OwnedPracticeBinding binding)
     {
-        if (_disposed || _retireOwnedPractice is null || AutomaticPracticeProgress is not { } progress || progress.RunId != binding.RunId
+        if (_disposed || _automaticRetirementUnconfirmed || _automaticRetirement is { IsCompleted: false }
+            || _retireOwnedPractice is null || AutomaticPracticeProgress is not { } progress || progress.RunId != binding.RunId
             || progress.CommandGeneration != binding.CommandGeneration || binding.CommandGeneration == Guid.Empty
             || binding.CommandGeneration != _hook.CommandGeneration || binding.ConnectionId == Guid.Empty
             || binding.ConnectionId != _hook.ConnectionId || !_hook.Ready || !_broker.Available
@@ -278,7 +279,8 @@ public sealed partial class SessionController
 
     private OwnedPracticeBinding? ContinuousPracticeRead()
     {
-        if (_awaitingPractice is { } waiting && AutomaticPracticeProgress is { AwaitingFreshSource: true }
+        if (_awaitingPractice is { } waiting && !_automaticRetirementUnconfirmed
+            && _automaticRetirement is not { IsCompleted: false } && AutomaticPracticeProgress is { AwaitingFreshSource: true }
             && _hook.GetFocus(waiting.Target) == FocusMember.Source)
             return waiting with
             {
@@ -299,8 +301,13 @@ public sealed partial class SessionController
             || ContinuousPracticeRead() != binding || evidence.Binding != binding
             || now < evidence.ObservedAtMs || now - evidence.ObservedAtMs > Limits.ObservationMaxAgeMs)
             return false;
-        // The adapter has already closed publication and received its fixed-peer
-        // revoke ACK. Keep only intent and verified lesson facts, never this grant.
+        // The adapter has already closed publication and received its fixed-peer ACK.
+        AwaitAutomaticSource(binding, rotateConfiguration: true);
+        return true;
+    }
+
+    private void AwaitAutomaticSource(OwnedPracticeBinding binding, bool rotateConfiguration)
+    {
         _awaitingPractice = binding;
         _awaitingPracticeWindowEpoch = _hook.WindowEpoch;
         _awaitingForegroundExpired = false;
@@ -313,13 +320,63 @@ public sealed partial class SessionController
         _session.LeaveFamily();
         _pendingWakeCapture = null;
         _practiceWakeCommand = null;
-        RotatePracticeConfiguration();
+        if (rotateConfiguration)
+            RotatePracticeConfiguration();
+        else
+        {
+            _sessionShortcuts = null;
+            _generation++;
+            RevokeInput("practice-foreground-suspending");
+            _permitUntil = 0;
+        }
         UpdateAutomaticPractice(AutomaticPracticeProgress! with
         {
             CommandGeneration = _hook.CommandGeneration,
             AwaitingFreshSource = true
         });
         _overlay.HideQuietly();
+        _nextCapture = 0;
+    }
+
+    private bool SuspendPracticeForeground(OwnedPracticeBinding binding)
+    {
+        if (_hook.PracticeForegroundSuspension != binding || binding.NativeFocusRevision <= 0 || binding.ContextGeneration <= 0
+            || AutomaticPracticeProgress is not { EditingStarted: false } progress || progress.RunId != binding.RunId
+            || _session.State is SessionState.EditingTranslation or SessionState.ReturningToSource or SessionState.EditedTranslationPending
+                or SessionState.Applying or SessionState.OutcomeUnknown
+            || !_settings.Value.Enabled || _settings.Value.Mode != WorkMode.Automatic || !_broker.Available
+            || binding.ConnectionId != _hook.ConnectionId || binding.CommandGeneration != _hook.CommandGeneration
+            || !(_hook.Ready ? _hook.GetFocus(binding.Target) == FocusMember.Source : _hook.ForegroundExpired))
+            return false;
+        AwaitAutomaticSource(binding, rotateConfiguration: false);
+        _automaticRetirementUnconfirmed = true;
+        _automaticRetirement = ConfirmForegroundSuspension(binding, _configurationRevision);
+        return true;
+    }
+
+    private async Task<bool> ConfirmForegroundSuspension(OwnedPracticeBinding binding, long configurationRevision)
+    {
+        bool confirmed = false;
+        try { confirmed = await _broker.SuspendOwnedSourceAsync(binding); }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { }
+        // Close/settings/new-run may already own this retirement. A late answer
+        // must neither rotate their generation nor restore the previous intent.
+        if (!ReferenceEquals(_awaitingPractice, binding) || AutomaticPracticeProgress?.RunId != binding.RunId)
+            return confirmed;
+        if (!confirmed || _disposed || configurationRevision != _configurationRevision
+            || _hook.PracticeForegroundSuspension != binding || binding.ConnectionId != _hook.ConnectionId
+            || binding.CommandGeneration != _hook.CommandGeneration || _hook.WindowEpoch != _awaitingPracticeWindowEpoch
+            || !(_hook.Ready ? _hook.GetFocus(binding.Target) == FocusMember.Source : _hook.ForegroundExpired))
+        {
+            StopSession("practice-foreground-suspension-failed");
+            return false;
+        }
+        _automaticRetirementUnconfirmed = false;
+        RotatePracticeConfiguration();
+        UpdateAutomaticPractice(AutomaticPracticeProgress! with
+        {
+            CommandGeneration = _hook.CommandGeneration
+        });
         _nextCapture = 0;
         return true;
     }
@@ -379,7 +436,8 @@ public sealed partial class SessionController
 
     private void CheckAutomaticPracticeIdentity()
     {
-        if (_ownedPractice is not null && !AutomaticPracticeIsCurrent(_ownedPractice))
+        if (_ownedPractice is { } active && (_hook.PracticeForegroundSuspension == active
+            ? !SuspendPracticeForeground(active) : !AutomaticPracticeIsCurrent(active)))
             StopSession("practice-identity-lost");
         if (_awaitingPracticeReturn is { } returned &&
             (AutomaticPracticeProgress is not { AwaitingFreshSource: true } returning
@@ -411,8 +469,8 @@ public sealed partial class SessionController
         _freshPracticeEvidence = null;
         if (_awaitingForegroundExpired)
             return;
-        // This intent has already acknowledged retirement. No new command
-        // generation, executor ACK, job or permit is created by an age gap.
+        // Retirement is already pending or acknowledged. An age gap creates no
+        // new command generation, executor ACK, job or permit.
         _awaitingForegroundExpired = true;
         _generation++;
         RevokeInput("practice-foreground-expired");

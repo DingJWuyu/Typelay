@@ -268,7 +268,13 @@ class InputFeedbackTests(unittest.TestCase):
             asyncio.run(exercise())
 
     def owned_context_advance(
-        self, invalidation=None, *, resume=False, retire_during_bind=False, age_gap=False
+        self,
+        invalidation=None,
+        *,
+        resume=False,
+        retire_during_bind=False,
+        age_gap=False,
+        foreground_gap=False,
     ):
         self.peer = self.connect_peer("gtk3")
         original = self.description
@@ -276,6 +282,7 @@ class InputFeedbackTests(unittest.TestCase):
         def description():
             value = original()
             value["geometry"]["space"] = "gtk-toplevel"
+            value["authority"]["observedAtMs"] = self.clock.return_value
             value["authority"]["contextStamp"] = {
                 "context": 7,
                 "epoch": 1,
@@ -303,9 +310,21 @@ class InputFeedbackTests(unittest.TestCase):
                 practiceRunId=binding["runId"], practiceConnectionId=binding["connectionId"]
             )
             self.native_frames(self.peer)
-            operation = asyncio.create_task(
-                self.input.request("capture", {"practiceRead": binding})
-            )
+            if foreground_gap:
+                self.clock.return_value = 1151
+                self.input.state()
+                self.assertIsNone(self.input.practice_authorization)
+                self.assertEqual(self.input.last_state["practiceForegroundSuspension"], binding)
+                self.assertTrue(
+                    self.input.practice_waiting(
+                        binding["runId"], acknowledged=False, require_fresh=False
+                    )
+                )
+                operation = asyncio.create_task(self.input.request("suspendOwnedSource", binding))
+            else:
+                operation = asyncio.create_task(
+                    self.input.request("capture", {"practiceRead": binding})
+                )
 
             async def request(name):
                 while True:
@@ -321,23 +340,34 @@ class InputFeedbackTests(unittest.TestCase):
                         self.fail("capture returned before the executor revoke acknowledgement")
                     await asyncio.sleep(0)
 
-            describe = await asyncio.wait_for(request("describe"), 1)
-            self.peer.link.receive({"id": describe["id"], "data": description()})
-            capture = await asyncio.wait_for(request("capture"), 1)
-            self.peer.link.receive(
-                {
-                    "id": capture["id"],
-                    "data": None,
-                    "captureContinuity": {
-                        "target": binding["target"]["value"],
-                        "nativeFocusRevision": 1,
-                        "contextGeneration": 7,
-                        "observedAtMs": 1000,
-                    },
-                }
-            )
+            if not foreground_gap:
+                describe = await asyncio.wait_for(request("describe"), 1)
+                self.peer.link.receive({"id": describe["id"], "data": description()})
+                capture = await asyncio.wait_for(request("capture"), 1)
+                self.peer.link.receive(
+                    {
+                        "id": capture["id"],
+                        "data": None,
+                        "captureContinuity": {
+                            "target": binding["target"]["value"],
+                            "nativeFocusRevision": 1,
+                            "contextGeneration": 7,
+                            "observedAtMs": self.clock.return_value,
+                        },
+                    }
+                )
             revoke = await asyncio.wait_for(request("revoke"), 1)
             self.assertFalse(operation.done())
+            if foreground_gap:
+                self.input.niri.observed_at = self.clock.return_value
+                self.input.state()
+                self.assertEqual(self.input.last_state["practiceForegroundSuspension"], binding)
+                self.assertFalse(self.input.prepare_practice(binding, lambda _: True))
+                self.assertFalse(self.input.practice_waiting(binding["runId"]))
+                self.assertIsNone(
+                    await self.input.practice_binding(self.peer.pid, binding["target"])
+                )
+                self.assertEqual(self.native_frames(self.peer), [])
             self.input.notification("publish", publication)
             self.assertEqual(self.native_frames(self.peer), [])
             if invalidation == "focus":
@@ -356,16 +386,24 @@ class InputFeedbackTests(unittest.TestCase):
                 self.input.retire_practice(binding["runId"])
             elif invalidation == "disconnect":
                 self.input.lost(self.peer)
-            self.peer.link.receive({"id": revoke["id"], "data": None})
+            self.peer.link.receive(
+                {"id": revoke["id"], "data": False if invalidation == "ack" else None}
+            )
             result = await asyncio.wait_for(operation, 1)
             if invalidation:
-                self.assertIsNone(result)
+                if foreground_gap:
+                    self.assertFalse(result)
+                else:
+                    self.assertIsNone(result)
                 self.assertIsNone(self.input.practice_authorization)
                 self.assertIsNone(self.input.practice_continuity)
                 return
-            self.assertIsNone(result["snapshot"])
-            self.assertEqual(result["ownedSource"]["binding"], binding)
-            self.assertTrue(result["ownedSource"]["contextAdvanced"])
+            if foreground_gap:
+                self.assertTrue(result)
+            else:
+                self.assertIsNone(result["snapshot"])
+                self.assertEqual(result["ownedSource"]["binding"], binding)
+                self.assertTrue(result["ownedSource"]["contextAdvanced"])
             self.assertIsNone(self.input.practice_authorization)
             self.input.notification("publish", publication)
             self.assertEqual(self.native_frames(self.peer), [])
@@ -387,7 +425,7 @@ class InputFeedbackTests(unittest.TestCase):
                         "target": binding["target"]["value"],
                         "nativeFocusRevision": 1,
                         "contextGeneration": 7,
-                        "observedAtMs": 1000,
+                        "observedAtMs": self.clock.return_value,
                     },
                 }
             )
@@ -515,6 +553,12 @@ class InputFeedbackTests(unittest.TestCase):
             )
 
         asyncio.run(exercise())
+
+    def test_active_foreground_expiry_requires_ack_even_when_freshness_recovers(self):
+        self.owned_context_advance(foreground_gap=True, resume=True)
+
+    def test_active_foreground_expiry_rejects_failed_ack(self):
+        self.owned_context_advance("ack", foreground_gap=True)
 
     def test_owned_context_advance_waits_for_revoke_ack_and_keeps_old_publish_closed(self):
         self.owned_context_advance()

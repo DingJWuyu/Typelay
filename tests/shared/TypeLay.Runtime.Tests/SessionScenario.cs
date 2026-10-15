@@ -165,6 +165,10 @@ internal sealed class SessionScenario : IDisposable
     internal sealed class InputMonitor : IInputMonitor
     {
         public bool Ready { get; set; } = true;
+        public OwnedPracticeBinding? PracticeForegroundSuspension
+        {
+            get; set;
+        }
         public bool ForegroundExpired
         {
             get; set;
@@ -259,6 +263,16 @@ internal sealed class SessionScenario : IDisposable
         public TaskCompletionSource<bool>? PendingReturn
         {
             get; set;
+        }
+        public TaskCompletionSource<bool>? PendingSuspension
+        {
+            get; set;
+        }
+        public List<OwnedPracticeBinding> SuspensionRequests { get; } = [];
+        public Task<bool> SuspendOwnedSourceAsync(OwnedPracticeBinding binding)
+        {
+            SuspensionRequests.Add(binding);
+            return PendingSuspension?.Task ?? Task.FromResult(false);
         }
         public int Captures
         {

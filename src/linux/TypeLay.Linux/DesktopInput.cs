@@ -7,7 +7,7 @@ namespace TypeLay.Linux;
 internal sealed record DesktopState(bool Ready = false, long UserEpoch = 0, long SourceUserEpoch = 0,
     long ForegroundEpoch = 0, long WindowEpoch = 0, long ContentEpoch = 0,
     TargetId? Target = null, FocusMember Focus = FocusMember.Other, bool NativeReady = false,
-    SessionShortcutAcknowledgement? SessionShortcuts = null, Guid ConnectionId = default, bool ForegroundExpired = false);
+    SessionShortcutAcknowledgement? SessionShortcuts = null, Guid ConnectionId = default, bool ForegroundExpired = false, OwnedPracticeBinding? PracticeForegroundSuspension = null);
 
 internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMonitor
 {
@@ -15,6 +15,7 @@ internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMoni
     private readonly Queue<InputNotice> _notices = new();
     public bool Available => link.Alive;
     public bool Ready => link.Alive && _state.Ready;
+    public OwnedPracticeBinding? PracticeForegroundSuspension => link.Alive ? _state.PracticeForegroundSuspension : null;
     public bool ForegroundExpired => link.Alive && !_state.Ready && _state.ForegroundExpired;
     public bool ShortcutsReady => Ready && _state.NativeReady;
     public bool CanInterceptAcceptance => ShortcutsReady
@@ -59,6 +60,8 @@ internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMoni
         var reply = await link.Ask("observePause", context);
         return reply.ValueKind == JsonValueKind.Null ? new(null) : DesktopLink.Decode<PauseObservation>(reply);
     }
+    public async Task<bool> SuspendOwnedSourceAsync(OwnedPracticeBinding binding) =>
+        (await link.Ask("suspendOwnedSource", binding, timeoutMs: 2000)).ValueKind == JsonValueKind.True;
     public async Task<InputReturn> ReturnToSourceAsync(InputContext context)
     {
         var reply = await link.Ask("return", context);

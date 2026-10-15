@@ -62,6 +62,7 @@ public interface IInputService : IDisposable
     Task<InputCapture> CaptureAsync(InputContext context);
     Task<PauseObservation> ObservePauseAsync(InputContext context);
     Task<InputReturn> ReturnToSourceAsync(InputContext context);
+    Task<bool> SuspendOwnedSourceAsync(OwnedPracticeBinding binding) => Task.FromResult(false);
     Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs);
     Task<WriteReceipt> WriteDirectAsync(WritePlan plan, string[] excluded);
     Task ClearAsync(InputContext context);
@@ -115,6 +116,8 @@ public interface IInputMonitor : IDisposable
     Guid ConnectionId => Guid.Empty;
     // Only an age-expired foreground observation, never unavailable native identity.
     bool ForegroundExpired => false;
+    // Pending old-grant retirement only; never a fresh source observation.
+    OwnedPracticeBinding? PracticeForegroundSuspension => null;
     FocusMember GetFocus(TargetId target);
     void ConfigureShortcuts(bool enabled, string wake, string direct, SessionShortcutBindings sessionBindings, bool sessionEnabled);
     bool TryRead(out InputNotice? notice);

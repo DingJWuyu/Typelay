@@ -58,8 +58,10 @@ public sealed class AutomaticPracticeProgressTests
             Assert.Null(s.Controller.AutomaticPracticeProgress);
     }
 
-    [Fact]
-    public void EditingNeedsARealChangeFreshSourceReturnAndASecondVerifiedAcceptance()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void EditingNeedsARealChangeFreshSourceReturnAndASecondVerifiedAcceptance(bool ageSuspended)
     {
         using var s = new SessionScenario();
         Bind(s);
@@ -88,6 +90,23 @@ public sealed class AutomaticPracticeProgressTests
         Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
         Assert.Equal("personally edited translation", s.Input.Permit!.Plan.Replacement);
         Assert.False(s.Controller.AutomaticPracticeProgress.Completed);
+        if (ageSuspended)
+        {
+            var returned = Assert.IsType<OwnedPracticeReturn>(s.Service.ReturnedPractice);
+            s.Input.PracticeForegroundSuspension = returned.Binding with
+            {
+                NativeFocusRevision = returned.NativeFocusRevision,
+                CommandGeneration = s.Input.CommandGeneration
+            };
+            // The adapter fenced this grant while stale; Ready recovered before
+            // Runtime saw its marker. Edited intent is not eligible for suspension.
+            Assert.True(s.Input.Ready);
+            s.Tick();
+            Assert.Null(s.Controller.AutomaticPracticeProgress);
+            Assert.Null(s.Input.Permit);
+            Assert.Empty(s.Service.SuspensionRequests);
+            return;
+        }
         CompleteAcceptance(s);
         Assert.True(s.Controller.AutomaticPracticeProgress.Completed);
         Assert.Equal("personally edited translation", s.Source.Text);
@@ -247,6 +266,81 @@ public sealed class AutomaticPracticeProgressTests
         Assert.True(s.Controller.BindAutomaticPractice(next));
         Assert.False(s.Controller.AutomaticPracticeProgress!.AwaitingFreshSource);
         Assert.True(s.Controller.AutomaticPracticeProgress.AcceptanceCompleted);
+        Assert.False(s.Settings.Value.ExperimentalWriteback);
+    }
+
+    [Theory]
+    [InlineData("success")]
+    [InlineData("ack-failed")]
+    [InlineData("close-newrun")]
+    [InlineData("unknown")]
+    public void ActiveAgeSuspensionRetiresAuthorityBeforeAckAndCannotResumeALaterRun(string outcome)
+    {
+        using var s = new SessionScenario(retireOwnedPractice: _ => Task.FromResult(outcome != "ack-failed"));
+        Guid run = Guid.NewGuid();
+        Assert.True(s.Controller.BeginAutomaticPractice(run));
+        var binding = new OwnedPracticeBinding(run, s.Source.Target, s.Input.ConnectionId, s.Input.CommandGeneration, 1, 7);
+        Assert.True(s.Controller.BindAutomaticPractice(binding));
+        s.ReadyCandidate();
+        CompleteAcceptance(s);
+        var pending = s.Service.PendingSuspension = new();
+        int captures = s.Service.Captures;
+        s.Input.Ready = false;
+        s.Input.ForegroundExpired = true;
+        s.Input.FocusedTarget = default;
+        s.Input.PracticeForegroundSuspension = binding;
+        s.Tick();
+        Assert.NotNull(s.Controller.AutomaticPracticeProgress);
+        Assert.True(s.Controller.AutomaticPracticeProgress.AwaitingFreshSource);
+        Assert.True(s.Controller.AutomaticPracticeProgress.AcceptanceCompleted);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.View.Preview);
+        Assert.Equal(binding, Assert.Single(s.Service.SuspensionRequests));
+        Assert.Equal(captures, s.Service.Captures);
+        s.Input.Ready = true;
+        s.Input.ForegroundExpired = false;
+        s.Input.FocusedTarget = binding.Target;
+        s.Tick();
+        Assert.Equal(captures, s.Service.Captures);
+        Assert.False(s.Controller.BindAutomaticPractice(binding));
+        Guid? nextRun = null;
+        if (outcome == "close-newrun")
+        {
+            Assert.True(s.Controller.EndAutomaticPractice(run));
+            nextRun = Bind(s).RunId;
+        }
+        else if (outcome == "unknown")
+        {
+            s.Input.Ready = false;
+            s.Tick();
+            Assert.Null(s.Controller.AutomaticPracticeProgress);
+        }
+        if (outcome == "success")
+            s.Service.PendingCapture = new();
+        pending.SetResult(outcome != "ack-failed");
+        s.Tick();
+        if (outcome == "close-newrun")
+            Assert.Equal(nextRun, s.Controller.AutomaticPracticeProgress!.RunId);
+        else if (outcome != "success")
+        {
+            Assert.Null(s.Controller.AutomaticPracticeProgress);
+            Assert.Null(s.Input.Permit);
+        }
+        else
+        {
+            var next = binding with
+            {
+                CommandGeneration = s.Input.CommandGeneration
+            };
+            Assert.NotEqual(binding.CommandGeneration, next.CommandGeneration);
+            Assert.False(s.Controller.BindAutomaticPractice(next));
+            s.Tick();
+            s.CompleteCapture(new(s.Fresh, FocusMember.Source, SessionShortcuts:
+                new(s.Source.Target, next.CommandGeneration, s.Input.SessionBindings, true, true),
+                OwnedSource: new(next, s.Loop.NowMs, false)));
+            Assert.True(s.Controller.BindAutomaticPractice(next));
+            Assert.True(s.Controller.AutomaticPracticeProgress!.AcceptanceCompleted);
+        }
         Assert.False(s.Settings.Value.ExperimentalWriteback);
     }
 

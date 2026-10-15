@@ -312,9 +312,9 @@ class Input:
 
     async def practice_binding(self, pid, target=None):
         """Return a host-owned connection and acknowledged, exact source binding."""
-        if (
-            self.practice_continuity is not None or self.practice_return is not None
-        ) and not self.fresh():
+        if (self.practice_continuity is not None or self.practice_return is not None) and (
+            self.practice_retirement is not None or not self.fresh()
+        ):
             self.check_practice()
             return None
         native = await self.practice_target(pid, target)
@@ -561,7 +561,10 @@ class Input:
             value
             and value["runId"] == run
             and (
-                (not acknowledged and self.fresh())
+                (
+                    not acknowledged
+                    and (self.fresh() or (not require_fresh and self.foreground_expired()))
+                )
                 or (self.practice_retirement is None and self.practice_retirement_ack == run)
             )
             and value["peer"] in self.peers
@@ -569,6 +572,7 @@ class Input:
             and value["ownsProcess"](value["peer"].pid)
             and value["settingsGeneration"] == self.settings_generation
             and value["windowEpoch"] == self.window_epoch
+            and value["foregroundEpoch"] == self.foreground_epoch
             and self.bound == value["target"]
             and (
                 (self.fresh() and self.focused_peer() is value["peer"])
@@ -587,6 +591,62 @@ class Input:
             and not self.overlay_focused
             and self.enabled is True
         )
+
+    def suspend_practice_source(self, authorization, *, foreground=False):
+        self.retire_practice(authorization["runId"], notify=False)
+        waiting = {
+            **authorization,
+            "settingsGeneration": self.settings_generation,
+            "windowEpoch": self.window_epoch,
+            "foregroundEpoch": self.foreground_epoch,
+            "foregroundSuspension": authorization if foreground else None,
+        }
+        self.practice_continuity = waiting
+        for key, record in list(self.observations.items()):
+            if (
+                record["peer"] is authorization["peer"]
+                and record["target"] == authorization["target"]
+            ):
+                self.observations.pop(key)
+        self.bound_observation = None
+        return waiting
+
+    async def suspend_owned_source(self, binding):
+        waiting = self.practice_continuity
+        owner = waiting.get("foregroundSuspension") if waiting else None
+        if (
+            owner is None
+            or any(
+                binding.get(key) != owner.get(key)
+                for key in (
+                    "runId",
+                    "target",
+                    "connectionId",
+                    "commandGeneration",
+                    "nativeFocusRevision",
+                    "contextGeneration",
+                )
+            )
+            or self.shortcut_config.get("generation") != owner["commandGeneration"]
+            or not self.practice_waiting(owner["runId"], acknowledged=False, require_fresh=False)
+            or (
+                self.practice_retirement is not owner
+                and self.practice_retirement_binding is not owner
+            )
+        ):
+            return False
+        confirmed = await self.confirm_practice_retirement(owner["runId"])
+        if (
+            not confirmed
+            or self.practice_continuity is not waiting
+            or self.practice_retirement_binding is not owner
+            or self.shortcut_config.get("generation") != owner["commandGeneration"]
+            or not self.practice_waiting(owner["runId"], require_fresh=False)
+        ):
+            if self.practice_continuity is waiting:
+                self.retire_practice(owner["runId"])
+            return False
+        return True
 
     async def context_advanced(
         self, authorization, proof, window_epoch, settings_generation, command_generation
@@ -634,21 +694,7 @@ class Input:
                     "contextAdvanced": True,
                 },
             }
-        self.retire_practice(authorization["runId"], notify=False)
-        waiting = {
-            **authorization,
-            "settingsGeneration": settings_generation,
-            "windowEpoch": window_epoch,
-        }
-        self.practice_continuity = waiting
-        # Old leases cannot find their captured observations after the ACK.
-        for key, record in list(self.observations.items()):
-            if (
-                record["peer"] is authorization["peer"]
-                and record["target"] == authorization["target"]
-            ):
-                self.observations.pop(key)
-        self.bound_observation = None
+        waiting = self.suspend_practice_source(authorization)
         if (
             not await self.confirm_practice_retirement(authorization["runId"])
             or self.practice_continuity is not waiting
@@ -761,10 +807,10 @@ class Input:
         if editor is not None and not self.practice_editing(editor["runId"]):
             self.retire_practice(editor["runId"])
         waiting = self.practice_continuity
-        if waiting is not None and self.practice_retirement is None:
-            if not self.practice_waiting(waiting["runId"], require_fresh=False):
+        if waiting is not None:
+            if not self.practice_waiting(waiting["runId"], acknowledged=False, require_fresh=False):
                 self.retire_practice(waiting["runId"])
-            elif self.foreground_expired():
+            elif self.foreground_expired() and self.practice_retirement is None:
                 if not waiting.get("foregroundExpired"):
                     # Replace the waiting token to fence reads begun before this
                     # gap. Keep only the immutable baseline and verified steps.
@@ -798,6 +844,26 @@ class Input:
             )
         ):
             self.retire_practice(authorization["runId"])
+            return
+        if (
+            authorization is self.practice_authorization
+            and self.foreground_expired()
+            and not self.overlay_focused
+            and self.bound == authorization["target"]
+            and authorization["settingsGeneration"] == self.settings_generation
+            and authorization.get("nativeFocusRevision", 0) > 0
+            and authorization.get("contextGeneration", 0) > 0
+            and self.niri.focused
+            and [
+                candidate
+                for candidate in self.peers
+                if candidate.lifetime and candidate.matches_process(self.niri.focused.get("pid"))
+            ]
+            == [peer]
+        ):
+            # Age is not fresh identity. Fence the old grant before reporting
+            # only its pending retirement metadata to Runtime.
+            self.suspend_practice_source(authorization, foreground=True)
 
     def practice_publication_allowed(self, lease, peer):
         editor = self.practice_editor or self.practice_return
@@ -831,6 +897,19 @@ class Input:
         value = {
             "ready": self.fresh(),
             "foregroundExpired": self.foreground_expired(),
+            "practiceForegroundSuspension": {
+                key: self.practice_continuity[key]
+                for key in (
+                    "runId",
+                    "target",
+                    "connectionId",
+                    "commandGeneration",
+                    "nativeFocusRevision",
+                    "contextGeneration",
+                )
+            }
+            if self.practice_continuity and self.practice_continuity.get("foregroundSuspension")
+            else None,
             "connectionId": self.bound_observation["peer"].connection_id
             if self.bound_observation
             and self.bound_observation["peer"] in self.peers
@@ -2456,6 +2535,8 @@ class Input:
         return False
 
     async def request(self, operation, value):
+        if operation == "suspendOwnedSource":
+            return await self.suspend_owned_source(value)
         if operation == "retireAutomaticPractice":
             keys = (
                 "runId",
