@@ -1,5 +1,6 @@
 """Production nonblocking transport over real pipes and headless GLib sources."""
 
+import asyncio
 import fcntl
 import os
 import socket
@@ -9,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+import warnings
 from pathlib import Path
 from unittest.mock import patch
 
@@ -16,6 +18,7 @@ from gi.repository import GLib
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
+from link import Link  # noqa: E402
 from niri import Niri  # noqa: E402
 from paths import Paths  # noqa: E402
 from wire import MAX_FRAME, Channel, Decoder, encode, now_ms, receive_sync  # noqa: E402
@@ -50,6 +53,7 @@ class CompositorDispatchTests(unittest.TestCase):
         timer = GLib.timeout_add(10, lambda: (timer_dispatches.append(time.monotonic()), True)[1])
         context = GLib.MainContext.default()
         with (
+            warnings.catch_warnings(),
             patch("niri.request", return_value={"Version": "test"}),
             patch("niri.request_many", side_effect=reply),
             # Advance the clock after the first request. Applying its snapshot
@@ -59,6 +63,14 @@ class CompositorDispatchTests(unittest.TestCase):
                 side_effect=lambda: now_ms() if completed.is_set() else original_stamp,
             ),
         ):
+            # PyGObject repeatedly enters catch_warnings while querying this
+            # deprecated policy, invalidating the default once-per-site cache.
+            warnings.filterwarnings(
+                "ignore",
+                message=r"^'asyncio\.get_event_loop_policy' is deprecated and slated for removal in Python 3\.16$",
+                category=DeprecationWarning,
+                module=r"^gi\.events$",
+            )
             observer = Niri(GLib, lambda: applied.append((time.monotonic(), observer.observed_at)))
             try:
                 self.assertTrue(completed.wait(2), "compositor request did not complete")
@@ -118,6 +130,69 @@ class PipeTransportTests(unittest.TestCase):
         # Closing from the owner callback must be harmless, including when the
         # failure is detected synchronously inside send().
         self.channel.close()
+
+    def test_capture_failure_trace_is_private_to_its_pending_null_reply(self):
+        self.channel.close()
+        link = Link(
+            GLib,
+            self.input_read,
+            self.output_write,
+            lambda *_: None,
+            None,
+            lambda: None,
+            response_key="id",
+        )
+        self.addCleanup(link.close)
+        trace = {"reason": "stamp-before", "ageBeforeMs": 4, "targetMatchesBefore": True}
+        unsafe = {**trace, "text": "private", "target": "private", "beforeInputRevision": True}
+
+        async def exercise():
+            context = GLib.MainContext.default()
+
+            async def begin(operation, diagnostics, timeout=1):
+                task = asyncio.create_task(
+                    link.ask(operation, {}, timeout=timeout, capture_trace=diagnostics)
+                )
+                await asyncio.sleep(0)
+                request = Decoder().feed(os.read(self.output_read, MAX_FRAME))[0]
+                return task, request["id"]
+
+            def respond(identity, data, diagnostic):
+                os.write(
+                    self.input_write,
+                    encode({"id": identity, "data": data, "captureTrace": diagnostic}),
+                )
+                context.iteration(False)
+
+            for operation, data, diagnostic, expected in (
+                ("capture", None, unsafe, trace),
+                ("describe", None, unsafe, {}),
+                ("capture", {"text": "normal result"}, unsafe, {}),
+                ("capture", None, {"reason": "private exception"}, {}),
+                (
+                    "capture",
+                    None,
+                    {"reason": "stamp-before", "ageBeforeMs": 2**60},
+                    {"reason": "stamp-before"},
+                ),
+            ):
+                with self.subTest(operation=operation, data=data, diagnostic=diagnostic):
+                    diagnostics = {}
+                    task, identity = await begin(operation, diagnostics)
+                    respond(identity, data, diagnostic)
+                    self.assertEqual(await task, data)
+                    self.assertEqual(diagnostics, expected)
+                    self.assertTrue(link.channel.alive)
+
+            diagnostics = {}
+            task, identity = await begin("capture", diagnostics, timeout=0.001)
+            with self.assertRaises(TimeoutError):
+                await task
+            respond(identity, None, trace)
+            self.assertEqual(diagnostics, {}, "late trace changed a finished request")
+            self.assertTrue(link.channel.alive)
+
+        asyncio.run(exercise())
 
     def test_writable_pipe_receives_frame_without_event_dispatch(self):
         message = {"event": "publish", "data": {"generation": 7}}

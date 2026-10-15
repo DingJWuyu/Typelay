@@ -5,6 +5,47 @@ import asyncio
 from wire import Channel
 
 
+def capture_failure_trace(value):
+    """Allow diagnostic scalars only; this never supplies an input result."""
+    if not isinstance(value, dict) or value.get("reason") not in (
+        "ime-unavailable",
+        "focus-before",
+        "stamp-before",
+        "age-before",
+        "metadata-before",
+        "text-unavailable",
+        "description-unavailable",
+        "ime-unknown",
+        "ime-composing",
+        "stamp-after",
+        "age-after",
+        "focus-after",
+        "storage-changed",
+        "input-changed",
+        "focus-revision-changed",
+        "metadata-after",
+    ):
+        return {}
+    result = {"reason": value["reason"]}
+    for key in (
+        "ageBeforeMs",
+        "ageAfterMs",
+        "beforeStorageRevision",
+        "beforeInputRevision",
+        "beforeFocusRevision",
+        "afterStorageRevision",
+        "afterInputRevision",
+        "afterFocusRevision",
+    ):
+        item = value.get(key)
+        if type(item) is int and -(2**53) < item < 2**53 and (key.startswith("age") or item >= 0):
+            result[key] = item
+    for key in ("targetMatchesBefore", "targetMatchesAfter"):
+        if type(value.get(key)) is bool:
+            result[key] = value[key]
+    return result
+
+
 class Link:
     def __init__(
         self,
@@ -23,21 +64,25 @@ class Link:
         self.response_key = response_key
         self.sequence = 0
         self.pending = {}
+        self.capture_traces = {}
         self.tasks = set()
         self.channel = Channel(glib, read_fd, write_fd, self.receive, self.disconnected, owner)
 
-    async def ask(self, operation, data=None, timeout=0.6):
+    async def ask(self, operation, data=None, timeout=0.6, *, capture_trace=None):
         if len(self.pending) >= 16:
             raise OSError("request-capacity")
         self.sequence += 1
         identity = self.sequence
         future = asyncio.get_running_loop().create_future()
         self.pending[identity] = future
+        if operation == "capture" and type(capture_trace) is dict:
+            self.capture_traces[identity] = capture_trace
         try:
             self.channel.send({"id": identity, "op": operation, "data": data})
             return await asyncio.wait_for(future, timeout)
         finally:
             self.pending.pop(identity, None)
+            self.capture_traces.pop(identity, None)
 
     def send(self, operation, data=None):
         self.channel.send({"event": operation, "data": data})
@@ -52,6 +97,14 @@ class Link:
             future = self.pending.get(frame[self.response_key])
             if future is not None and not future.done():
                 future.set_result(frame.get("data"))
+                trace = self.capture_traces.get(frame[self.response_key])
+                if trace is not None and frame.get("data") is None:
+                    # A diagnostic cannot alter the reply, reject a connection,
+                    # or attach to a timed-out/different operation's request.
+                    try:
+                        trace.update(capture_failure_trace(frame.get("captureTrace")))
+                    except Exception:
+                        pass
         elif "event" in frame:
             self.notification(frame["event"], frame.get("data"))
         elif self.request is not None and len(self.tasks) < 16:

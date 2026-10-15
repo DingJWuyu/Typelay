@@ -549,22 +549,58 @@ static gboolean stamp_matches(Target *target, JsonObject *approved) {
         && (gint64)target->im_state.applied_serial == tl_integer(stamp, "applied", -1)
         && (gint64)target->im_state.flags == tl_integer(stamp, "flags", -1);
 }
-JsonObject *tl_capture(Target *target, JsonObject *approved) {
-    if (!tl_ime_clear(target) || target != tl_focused() || !stamp_matches(target, approved)) return NULL;
+static JsonObject *capture_refused(CaptureFailure *failure, const char *reason) {
+    if (failure) failure->reason = reason;
+    return NULL;
+}
+static gboolean capture_focus(gboolean matches, gint *observed) {
+    if (observed) *observed = matches;
+    return matches;
+}
+static guint64 capture_revision(guint64 value, gint64 *observed) {
+    if (observed && value <= G_MAXINT64) *observed = (gint64)value;
+    return value;
+}
+JsonObject *tl_capture(Target *target, JsonObject *approved, CaptureFailure *failure) {
+    if (failure) *failure = (CaptureFailure){.age_before = G_MININT64, .age_after = G_MININT64,
+        .storage_before = -1, .input_before = -1, .focus_before = -1,
+        .storage_after = -1, .input_after = -1, .focus_after = -1,
+        .target_matches_before = -1, .target_matches_after = -1};
+    /* Keep the original guard order and short circuit. Only record scalars at
+       their original read; never probe again or inspect a rejected target. */
+    if (!tl_ime_clear(target)) return capture_refused(failure, "ime-unavailable");
+    if (!capture_focus(target == tl_focused(), failure ? &failure->target_matches_before : NULL))
+        return capture_refused(failure, "focus-before");
+    if (!stamp_matches(target, approved)) return capture_refused(failure, "stamp-before");
     gint64 age = tl_now() - tl_integer(approved, "observedAtMs", 0);
-    if (age < 0 || age > 150 || !tl_metadata_matches(target, approved)) return NULL;
+    if (failure) failure->age_before = age;
+    if (age < 0 || age > 150) return capture_refused(failure, "age-before");
+    if (!tl_metadata_matches(target, approved)) return capture_refused(failure, "metadata-before");
     guint64 storage = target->storage_revision, input = target->input_revision, focus = target->focus_revision;
+    if (failure) {
+        capture_revision(storage, &failure->storage_before);
+        capture_revision(input, &failure->input_before);
+        capture_revision(focus, &failure->focus_before);
+    }
     gint start, end;
     char *text = read_text(target, &start, &end);
-    if (!text) return NULL;
+    if (!text) return capture_refused(failure, "text-unavailable");
     JsonObject *description = tl_describe(target);
     age = tl_now() - tl_integer(approved, "observedAtMs", 0);
-    if (!description || !target->ime_known || target->composing || !stamp_matches(target, approved)
-        || age < 0 || age > 150 || target != tl_focused() || target->storage_revision != storage
-        || target->input_revision != input || target->focus_revision != focus
-        || !tl_metadata_matches(target, approved)) {
+    if (failure) failure->age_after = age;
+    const char *reason = !description ? "description-unavailable"
+        : !target->ime_known ? "ime-unknown"
+        : target->composing ? "ime-composing"
+        : !stamp_matches(target, approved) ? "stamp-after"
+        : age < 0 || age > 150 ? "age-after"
+        : !capture_focus(target == tl_focused(), failure ? &failure->target_matches_after : NULL) ? "focus-after"
+        : capture_revision(target->storage_revision, failure ? &failure->storage_after : NULL) != storage ? "storage-changed"
+        : capture_revision(target->input_revision, failure ? &failure->input_after : NULL) != input ? "input-changed"
+        : capture_revision(target->focus_revision, failure ? &failure->focus_after : NULL) != focus ? "focus-revision-changed"
+        : !tl_metadata_matches(target, approved) ? "metadata-after" : NULL;
+    if (reason) {
         if (description) json_object_unref(description);
-        g_free(text); return NULL;
+        g_free(text); return capture_refused(failure, reason);
     }
     json_object_set_string_member(description, "text", text);
     JsonObject *selection = json_object_new();

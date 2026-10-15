@@ -627,7 +627,7 @@ class Input:
         metric["maxMs"] = max(metric["maxMs"], value)
         metric["lastMs"] = value
 
-    def captured(self, reason, result=None):
+    def captured(self, reason, result=None, *, native_failure=None):
         # Fixed reason codes and counts only: no source, title or field metadata.
         self.capture_status = reason
         self.capture_counts[reason] = min(self.capture_counts[reason] + 1, 2**31 - 1)
@@ -647,6 +647,8 @@ class Input:
                     "compositorAgeMs": stamp - self.niri.observed_at,
                 }
             )
+            if native_failure:
+                self.capture_failures[-1]["nativeFailure"] = native_failure
             if (
                 self.browser_rounds
                 and self.browser_rounds[-1]["startedMs"] == self.capture_started_at
@@ -1019,7 +1021,8 @@ class Input:
         }
         if round_timing is not None and os.environ.get("TYPELAY_TRACE"):
             capture_data["traceRound"] = round_timing["round"]
-        native = await peer.link.ask("capture", capture_data)
+        native_failure = {} if peer.backend == "gtk3" and os.environ.get("TYPELAY_TRACE") else None
+        native = await peer.link.ask("capture", capture_data, capture_trace=native_failure)
         if round_timing is not None:
             round_timing["capturedMs"] = now_ms()
             trace = native.get("captureTrace") if isinstance(native, dict) else None
@@ -1042,7 +1045,7 @@ class Input:
         if self.enabled is False or settings_generation != self.settings_generation:
             return self.captured("settings-changed")
         if not native:
-            return self.captured("native-read-declined")
+            return self.captured("native-read-declined", native_failure=native_failure)
         if not self.fresh():
             return self.captured("compositor-stale")
         if window_epoch != self.window_epoch:

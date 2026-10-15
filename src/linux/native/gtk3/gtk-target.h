@@ -7,6 +7,15 @@
 #define TL_MAX_TEXT 8192
 
 typedef struct Target Target;
+/* Diagnostics only. Unknown/short-circuited observations remain omitted. */
+typedef struct {
+    const char *reason;
+    gint64 age_before, age_after;
+    gint64 storage_before, input_before, focus_before;
+    gint64 storage_after, input_after, focus_after;
+    /* Original target == tl_focused() comparisons, not a continuity proof. */
+    gint target_matches_before, target_matches_after;
+} CaptureFailure;
 struct Target {
     GtkWidget *widget; /* weak; removed in the widget's destroy handler */
     GObject *buffer;
@@ -41,7 +50,7 @@ Target *tl_focused(void);
 Target *tl_lookup(const char *id);
 void tl_discover(GtkWidget *widget, gboolean before_input);
 JsonObject *tl_describe(Target *target);
-JsonObject *tl_capture(Target *target, JsonObject *authority);
+JsonObject *tl_capture(Target *target, JsonObject *authority, CaptureFailure *failure);
 JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct);
 gboolean tl_return(Target *target, JsonObject *authority);
 gboolean tl_metadata_matches(Target *target, JsonObject *authority);

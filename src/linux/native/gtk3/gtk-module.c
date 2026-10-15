@@ -223,6 +223,27 @@ static void respond(gint64 id, JsonObject *data) {
     else json_object_set_null_member(frame, "data");
     send_frame(frame);
 }
+static void capture_response(gint64 id, JsonObject *data, const CaptureFailure *failure) {
+    if (id <= 0 || data || !failure || !failure->reason) { respond(id, data); return; }
+    JsonObject *trace = json_object_new(), *frame = json_object_new();
+    json_object_set_string_member(trace, "reason", failure->reason);
+    if (failure->target_matches_before >= 0)
+        json_object_set_boolean_member(trace, "targetMatchesBefore", failure->target_matches_before != 0);
+    if (failure->target_matches_after >= 0)
+        json_object_set_boolean_member(trace, "targetMatchesAfter", failure->target_matches_after != 0);
+    if (failure->age_before != G_MININT64) json_object_set_int_member(trace, "ageBeforeMs", failure->age_before);
+    if (failure->age_after != G_MININT64) json_object_set_int_member(trace, "ageAfterMs", failure->age_after);
+    const gint64 revisions[] = {failure->storage_before, failure->input_before, failure->focus_before,
+        failure->storage_after, failure->input_after, failure->focus_after};
+    const char *names[] = {"beforeStorageRevision", "beforeInputRevision", "beforeFocusRevision",
+        "afterStorageRevision", "afterInputRevision", "afterFocusRevision"};
+    for (guint index = 0; index < G_N_ELEMENTS(revisions); index++)
+        if (revisions[index] >= 0) json_object_set_int_member(trace, names[index], revisions[index]);
+    json_object_set_int_member(frame, "id", id);
+    json_object_set_null_member(frame, "data");
+    json_object_set_object_member(frame, "captureTrace", trace);
+    send_frame(frame);
+}
 typedef struct {
     Target *target;
     JsonObject *basis;
@@ -408,9 +429,12 @@ static void command(JsonObject *frame) {
         JsonObject *description = tl_describe(target);
         if (description) json_object_set_object_member(description, "publication", publication_state(target));
         respond(id, description);
-    } else if (strcmp(operation, "capture") == 0)
-        respond(id, tl_capture(target, tl_object(data, "authority")));
-    else if (strcmp(operation, "direct") == 0) respond(id, tl_write(target, data, TRUE));
+    } else if (strcmp(operation, "capture") == 0) {
+        CaptureFailure failure;
+        CaptureFailure *trace = g_getenv("TYPELAY_TRACE") ? &failure : NULL;
+        JsonObject *captured = tl_capture(target, tl_object(data, "authority"), trace);
+        capture_response(id, captured, trace);
+    } else if (strcmp(operation, "direct") == 0) respond(id, tl_write(target, data, TRUE));
     else if (strcmp(operation, "return") == 0) {
         return_generation++;
         JsonObject *basis = tl_object(data, "authority");
@@ -695,7 +719,7 @@ static gboolean trigger_shortcut(const char *kind, Target *target, JsonObject *a
     if (failure) goto rejected;
     if (!description) { failure = "description"; reason = "Unsupported"; goto rejected; }
     phase = "capture";
-    read = tl_capture(target, tl_object(description, "authority"));
+    read = tl_capture(target, tl_object(description, "authority"), NULL);
     failure = shortcut_failure(&attempt, TRUE, &reason);
     if (failure) goto rejected;
     if (!read) { failure = "capture"; reason = "Unsupported"; goto rejected; }

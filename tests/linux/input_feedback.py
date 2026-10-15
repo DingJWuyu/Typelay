@@ -230,6 +230,43 @@ class InputFeedbackTests(unittest.TestCase):
             },
         }
 
+    def test_declined_capture_keeps_null_and_only_fixed_failure_metadata(self):
+        async def exercise():
+            peer = self.connect_peer("gtk3")
+            self.focus(peer)
+            self.host.capture_allowed = True
+            self.native_frames(peer)
+            task = asyncio.create_task(self.input.request("capture", {}))
+            await asyncio.sleep(0)
+            describe = self.native_frames(peer)[0]
+            peer.link.receive({"id": describe["id"], "data": self.description()})
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            capture = self.native_frames(peer)[0]
+            self.assertEqual(capture["op"], "capture")
+            peer.link.receive(
+                {
+                    "id": capture["id"],
+                    "data": None,
+                    "captureTrace": {
+                        "reason": "ime-unavailable",
+                        "text": "private",
+                        "target": "private",
+                    },
+                }
+            )
+            self.assertIsNone(await task)
+            failure = self.input.diagnostics()["captureFailures"][-1]
+            self.assertEqual(failure["reason"], "native-read-declined")
+            self.assertEqual(failure["nativeFailure"], {"reason": "ime-unavailable"})
+            self.assertNotIn("private", json.dumps(failure))
+
+        with (
+            patch.dict(os.environ, {"TYPELAY_TRACE": "1"}),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            asyncio.run(exercise())
+
     async def observe_pause(self, description, before_reply=None):
         self.input.notification("settings", {"enabled": False})
         self.focus(self.peer)

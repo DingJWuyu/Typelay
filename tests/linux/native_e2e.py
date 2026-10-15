@@ -36,6 +36,7 @@ class Native:
         while True:
             frame = receive_sync(self.connection)
             if frame.get("id") == self.id:
+                self.capture_trace = frame.get("captureTrace")
                 return frame["data"]
             self.events.append(frame)
 
@@ -106,6 +107,7 @@ def inside(arguments):
         **os.environ,
         "GTK3_MODULES": str(arguments.native / "libtypelay-gtk3.so"),
         "GDK_BACKEND": "wayland",
+        "TYPELAY_TRACE": "1",
     }
     environment.pop("TYPELAY_DESKTOP", None)
     state_path = arguments.output / "fixture.json"
@@ -173,6 +175,9 @@ def inside(arguments):
             client.call("capture", {"target": target, "authority": description["authority"]})
             is None
         ), "Unknown IME exposed source text"
+        assert client.capture_trace == {"reason": "ime-unavailable"}, (
+            "first-guard refusal must not report unobserved identity or revision fields"
+        )
         checks.append("visible GTK metadata excludes body; Unknown IME capture returns no snapshot")
 
         paused = client.call(
