@@ -236,7 +236,197 @@ public sealed class SettingsBehaviorTests : IDisposable
         {
             Theme = "dark"
         });
+        store.Update(store.Value);
         Assert.Single(changes);
+    }
+
+    [Fact]
+    public void UnchangedSaveStillCreatesTheFileWithoutReportingAConfigurationChange()
+    {
+        var store = new SettingsStore(SettingsPath);
+        int changes = 0;
+        store.Changed += () => changes++;
+        Assert.False(File.Exists(SettingsPath));
+        store.Update(store.Value);
+        Assert.True(File.Exists(SettingsPath));
+        Assert.Equal(store.Value, new SettingsStore(SettingsPath).Value);
+        Assert.Equal(0, changes);
+        Assert.False(File.Exists(SettingsPath + ".tmp"));
+    }
+
+    [Fact]
+    public void CanonicalEquivalentSavePersistsWithoutReportingAConfigurationChange()
+    {
+        var store = new SettingsStore(SettingsPath);
+        store.Update(store.Value with { ExcludedApplications = ["private-app"] });
+        int changes = 0;
+        store.Changed += () => changes++;
+        store.Update(store.Value with
+        {
+            WakeShortcut = "shift+ctrl+f9", DirectShortcut = "shift+ctrl+f10",
+            AcceptShortcut = "tab", ExitShortcut = "esc", ExcludedApplications = ["private-app"]
+        });
+        var reloaded = new SettingsStore(SettingsPath).Value;
+        Assert.Equal("Ctrl+Shift+F9", reloaded.WakeShortcut);
+        Assert.Equal("Ctrl+Shift+F10", reloaded.DirectShortcut);
+        Assert.Equal("Tab", reloaded.AcceptShortcut);
+        Assert.Equal("Esc", reloaded.ExitShortcut);
+        Assert.Equal(["private-app"], reloaded.Excluded);
+        Assert.Equal(0, changes);
+    }
+
+    [Theory]
+    [InlineData("shift+ctrl+f9", "shift+ctrl+f10", "Ctrl+Shift+F9", "Ctrl+Shift+F10")]
+    [InlineData("shift+ctrl+k", "alt+f8", "Ctrl+Shift+K", "Alt+F8")]
+    public void ResavingLoadedEquivalentShortcutsDoesNotReportAConfigurationChange(
+        string wake, string direct, string expectedWake, string expectedDirect)
+    {
+        Directory.CreateDirectory(_directory);
+        File.WriteAllText(SettingsPath, System.Text.Json.JsonSerializer.Serialize(new UserSettings(
+            WakeShortcut: wake, DirectShortcut: direct, ExcludedApplications: ["private-app"])));
+        var store = new SettingsStore(SettingsPath);
+        int changes = 0;
+        store.Changed += () => changes++;
+        store.Update(store.Value);
+        Assert.Equal(0, changes);
+        var reloaded = new SettingsStore(SettingsPath).Value;
+        Assert.Equal(expectedWake, reloaded.WakeShortcut);
+        Assert.Equal(expectedDirect, reloaded.DirectShortcut);
+        Assert.Equal(["private-app"], reloaded.Excluded);
+    }
+
+    [Fact]
+    public void NullAndEmptyExclusionsHaveTheSameEffectiveValueInBothDirections()
+    {
+        var store = new SettingsStore(SettingsPath);
+        int changes = 0;
+        store.Changed += () => changes++;
+        store.Update(store.Value with { ExcludedApplications = [] });
+        Assert.Empty(new SettingsStore(SettingsPath).Value.Excluded);
+        store.Update(store.Value with { ExcludedApplications = null });
+        Assert.Empty(new SettingsStore(SettingsPath).Value.Excluded);
+        Assert.Equal(0, changes);
+    }
+
+    [Theory]
+    [InlineData("case")]
+    [InlineData("order")]
+    [InlineData("duplicate")]
+    public void ExclusionContentChangesAreNotSilentlyTreatedAsTheSameSettings(string change)
+    {
+        var store = new SettingsStore(SettingsPath);
+        store.Update(store.Value with { ExcludedApplications = ["first-app", "second-app"] });
+        int changes = 0;
+        store.Changed += () => changes++;
+        string[] exclusions = change switch
+        {
+            "case" => ["FIRST-APP", "second-app"],
+            "order" => ["second-app", "first-app"],
+            _ => ["first-app", "second-app", "first-app"]
+        };
+        store.Update(store.Value with { ExcludedApplications = exclusions });
+        Assert.Equal(1, changes);
+        Assert.Equal(exclusions, new SettingsStore(SettingsPath).Value.Excluded);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MutatingAnExposedArrayStillReportsTheNextSavedChange(bool mutateValue)
+    {
+        var store = new SettingsStore(SettingsPath);
+        var input = store.Value with { ExcludedApplications = new[] { "first-app" } };
+        store.Update(input);
+        int changes = 0;
+        store.Changed += () => changes++;
+        var exclusions = mutateValue ? store.Value.Excluded : input.Excluded;
+        exclusions[0] = "second-app";
+        Assert.Equal(["first-app"], new SettingsStore(SettingsPath).Value.Excluded);
+        store.Update(mutateValue ? store.Value : input);
+        Assert.Equal(1, changes);
+        Assert.Equal(["second-app"], new SettingsStore(SettingsPath).Value.Excluded);
+        store.Update(store.Value);
+        Assert.Equal(1, changes);
+    }
+
+    [Fact]
+    public void MutatingAnArrayLoadedFromDiskStillReportsTheNextSavedChange()
+    {
+        Directory.CreateDirectory(_directory);
+        File.WriteAllText(SettingsPath, """{"ExcludedApplications":["first-app"]}""");
+        var store = new SettingsStore(SettingsPath);
+        int changes = 0;
+        store.Changed += () => changes++;
+        store.Value.Excluded[0] = "second-app";
+        store.Update(store.Value);
+        Assert.Equal(1, changes);
+        Assert.Equal(["second-app"], new SettingsStore(SettingsPath).Value.Excluded);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UnchangedSaveStillReportsStorageFailureAndCanBeRetried(bool previouslySaved)
+    {
+        var store = new SettingsStore(SettingsPath);
+        if (previouslySaved)
+            store.Update(store.Value);
+        var before = store.Value;
+        string? saved = previouslySaved ? File.ReadAllText(SettingsPath) : null;
+        int changes = 0;
+        store.Changed += () => changes++;
+        Directory.CreateDirectory(SettingsPath + ".tmp");
+        Assert.Throws<UnauthorizedAccessException>(() => store.Update(store.Value));
+        Assert.Same(before, store.Value);
+        Assert.Equal(0, changes);
+        Assert.Equal(previouslySaved, File.Exists(SettingsPath));
+        if (previouslySaved)
+            Assert.Equal(saved, File.ReadAllText(SettingsPath));
+        Directory.Delete(SettingsPath + ".tmp");
+        store.Update(store.Value);
+        Assert.True(File.Exists(SettingsPath));
+        Assert.Equal(0, changes);
+    }
+
+    [Fact]
+    public void FailedSaveDoesNotConsumeAnExternallyMutatedArrayChangeBeforeRetry()
+    {
+        var store = new SettingsStore(SettingsPath);
+        store.Update(store.Value with { ExcludedApplications = ["first-app"] });
+        string saved = File.ReadAllText(SettingsPath);
+        int changes = 0;
+        store.Changed += () => changes++;
+        store.Value.Excluded[0] = "second-app";
+        Directory.CreateDirectory(SettingsPath + ".tmp");
+        Assert.Throws<UnauthorizedAccessException>(() => store.Update(store.Value));
+        Assert.Equal(0, changes);
+        Assert.Equal(saved, File.ReadAllText(SettingsPath));
+        Directory.Delete(SettingsPath + ".tmp");
+        store.Update(store.Value);
+        Assert.Equal(1, changes);
+        Assert.Equal(["second-app"], new SettingsStore(SettingsPath).Value.Excluded);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FailedFileReplacementDoesNotPublishSettingsAndRetryStillNotifiesRealChanges(bool changed)
+    {
+        var store = new SettingsStore(SettingsPath);
+        var before = store.Value;
+        var submitted = changed ? before with { Target = "zh" } : before;
+        int changes = 0;
+        store.Changed += () => changes++;
+        // Serialization can succeed while replacing the destination still fails.
+        Directory.CreateDirectory(SettingsPath);
+        Assert.Throws<IOException>(() => store.Update(submitted));
+        Assert.Same(before, store.Value);
+        Assert.Equal(0, changes);
+        Assert.True(Directory.Exists(SettingsPath));
+        Directory.Delete(SettingsPath);
+        store.Update(submitted);
+        Assert.Equal(changed ? 1 : 0, changes);
+        Assert.Equal(changed ? "zh" : "en", new SettingsStore(SettingsPath).Value.Target);
     }
 
     public void Dispose()

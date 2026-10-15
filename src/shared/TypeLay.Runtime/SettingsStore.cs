@@ -17,6 +17,7 @@ public sealed class SettingsStore
     private readonly string _path;
     private readonly Action<bool> _setStartup;
     private readonly Func<string, string> _normalizeApplication;
+    private UserSettings _committedValue;
     public UserSettings Value
     {
         get; private set;
@@ -55,6 +56,9 @@ public sealed class SettingsStore
             AcceptShortcut = sessionKeys.Accept,
             ExitShortcut = sessionKeys.Exit
         };
+        // Loaded shortcuts may be valid but not canonically spelled yet.
+        ShortcutSettingsDraft.From(Value).TryApply(Value, out var canonical, out _);
+        _committedValue = Snapshot(canonical!);
     }
     public void Update(UserSettings settings)
     {
@@ -76,9 +80,21 @@ public sealed class SettingsStore
             stream.Flush(true);
         }
         File.Move(temporary, _path, true);
+        bool changed = (settings with { ExcludedApplications = null })
+            != (_committedValue with { ExcludedApplications = null })
+            || !settings.Excluded.SequenceEqual(_committedValue.Excluded);
+        _committedValue = Snapshot(settings);
         Value = settings;
-        Changed?.Invoke();
+        if (changed)
+            Changed?.Invoke();
     }
+    // UserSettings is only shallowly immutable. Keep the comparison baseline
+    // independent of arrays exposed through Value or supplied by its caller.
+    private static UserSettings Snapshot(UserSettings settings) => settings with
+    {
+        ExcludedApplications = settings.ExcludedApplications?.ToArray()
+    };
+
     public void Exclude(string app)
     {
         app = _normalizeApplication(app);

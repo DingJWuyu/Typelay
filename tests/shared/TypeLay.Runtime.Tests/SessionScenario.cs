@@ -32,7 +32,7 @@ internal sealed class SessionScenario : IDisposable
     }
 
     public SessionScenario(WorkMode mode = WorkMode.Automatic, bool experimental = false,
-        bool initiallyAvailable = false, bool inputReady = true, bool start = true)
+        bool initiallyAvailable = false, bool inputReady = true, bool start = true, Action<bool>? setStartup = null)
     {
         SynchronizationContext.SetSynchronizationContext(_context);
         Source = new(new("controlled", "field-a", Guid.NewGuid()), "hello", new(5, 5),
@@ -44,7 +44,7 @@ internal sealed class SessionScenario : IDisposable
             Available = initiallyAvailable
         };
         Input.Ready = inputReady;
-        Settings = new(Path.Combine(_directory, "settings.json"));
+        Settings = new(Path.Combine(_directory, "settings.json"), setStartup);
         Settings.Update(Settings.Value with
         {
             Mode = mode,
