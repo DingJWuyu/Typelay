@@ -3402,6 +3402,26 @@ def run(arguments):
                         "Verified Tab, new source, actual edited draft, return without write, fresh capture "
                         "and second Verified Tab; global ExperimentalWriteback remains false"
                     )
+                except BaseException:
+                    try:
+                        (arguments.output / "managed-automatic-failure.json").write_text(
+                            json.dumps(
+                                {
+                                    "mode": json.loads(paths.settings.read_text())["Mode"],
+                                    "windows": contents(request("Windows"), "Windows"),
+                                    "status": status(),
+                                },
+                                indent=2,
+                            )
+                        )
+                        subprocess.run(
+                            ["grim", str(arguments.output / "managed-automatic-failure.png")],
+                            check=False,
+                            timeout=3,
+                        )
+                    except (OSError, EOFError, ValueError, subprocess.SubprocessError):
+                        pass  # Keep the original failure before normal window cleanup.
+                    raise
                 finally:
                     close_managed_window()
                 wait_for(

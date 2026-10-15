@@ -140,6 +140,29 @@ def run(presentation):
                     assert len(windows) == 1, "practice control test window is not unique"
                     request({"Action": {"FocusWindow": {"id": windows[0]["id"]}}})
                     until(lesson.window.is_active)
+                    initial = state()
+                    initial["presentation"]["confirmationText"] = "确认切换工作模式并开始练习？"
+                    reply(pending("practiceStatus"), initial)
+                    until(lambda: lesson.start.get_sensitive())
+                    lesson.source.set_text(source)
+                    lesson.source.select_region(2, 7)
+                    lesson.start.clicked()
+                    until(
+                        lambda: lesson.confirmation is not None and lesson.confirmation.is_active()
+                    )
+                    lesson.confirmation.response(Gtk.ResponseType.CANCEL)
+                    assert lesson.pending_start is None
+                    unchanged()
+                    lesson.start.clicked()
+                    until(
+                        lambda: lesson.confirmation is not None and lesson.confirmation.is_active()
+                    )
+                    lesson.confirmation.response(Gtk.ResponseType.OK)
+                    begin = pending("startAutomaticPractice")
+                    until(lesson.window.is_active)
+                    unchanged()
+                    reply(begin, True)
+                    until(lesson.source.has_focus)
                     old = str(uuid.uuid4())
                     reply(pending("practiceStatus"), state(old, completed=True))
                     until(lambda: lesson.complete.get_sensitive())

@@ -183,8 +183,12 @@ class Practice:
             if self.confirmation is not widget:
                 return
             self.confirmation = None
+            timestamp = Gtk.get_current_event_time()
             widget.destroy()
             if response == Gtk.ResponseType.OK and not self.closed:
+                # Return to this top-level within the user's confirmation event.
+                # A later Host reply must not activate a window they have left.
+                self.window.present_with_time(timestamp)
                 self.begin(True)
 
         dialog.connect("response", respond)
@@ -287,7 +291,8 @@ class Practice:
             self.pending_start = None
             self.lesson_choice.set_sensitive(True)
             if result is True:
-                self.source.grab_focus_without_selecting()
+                if self.window.is_active():
+                    self.source.grab_focus_without_selecting()
                 self.status.set_text("等待确认本次练习框连接，请稍候再按快捷键。")
                 self.progress.set_text("")
             else:
