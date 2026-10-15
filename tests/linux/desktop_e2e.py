@@ -3263,7 +3263,8 @@ def run(arguments):
                     request({"Action": {"FocusWindow": {"id": managed_window["id"]}}})
                     wait_for(
                         lambda: desktop_row()["state"] == "Connected"
-                        and "本次打开" in application_view()["result"],
+                        and application_view()["id"] == application_id
+                        and application_view()["result"] == "",
                         "owned registered fixture did not connect",
                     )
                     assert any(
