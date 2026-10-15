@@ -163,6 +163,8 @@ static void find_candidate(GtkWidget *widget, gpointer data) {
         find_candidate(child, data);
 }
 
+#include "gtk_motion.inc"
+
 static gboolean report_state(gpointer unused) {
     (void)unused;
     remove_session_controller(report_window, FALSE);
@@ -173,6 +175,7 @@ static gboolean report_state(gpointer unused) {
         focus_field = gtk_widget_get_parent(focus_field);
     JsonBuilder *builder = json_builder_new();
     json_builder_begin_object(builder);
+    motion_report(builder);
     json_builder_set_member_name(builder, "observedAtMs");
     json_builder_add_int_value(builder, g_get_monotonic_time() / 1000);
     json_builder_set_member_name(builder, "first");
@@ -436,11 +439,14 @@ int main(void) {
         }
         watch_entry(first, &first_evidence);
         watch_entry(second, &second_evidence);
+        motion_init();
         g_timeout_add(25, report_state, NULL);
     }
     g_main_loop_run(loop);
     g_main_loop_unref(loop);
     g_free(last_report);
+    g_free(motion_mode); g_free(motion_body);
+    if (motion_frames) json_array_unref(motion_frames);
     for (guint index = 0; index < G_N_ELEMENTS(focus_transitions); index++)
         if (focus_transitions[index]) json_object_unref(focus_transitions[index]);
     if (first_insert_context) json_object_unref(first_insert_context);

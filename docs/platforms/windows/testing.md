@@ -45,7 +45,7 @@ dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release 
 
 当前增量的配置合同支持默认 Tab/Esc 和无修饰 F1-F24；四键设置共用保存与关闭草稿流程。`SettingsRenderingTests` 验证重复键、写盘失败、后台刷新、切页和关闭保留，并确认保存只合并最新设置中的四个键，不恢复旧工作模式或启用状态。任意修饰键组合及完整冲突覆盖尚未完成，不能据此关闭冻结规格 §18 的全部缺口。以上测试使用合成内容、受控会话或显式软件注入，Windows 实际结果须以对应运行记录为准。
 
-`QuickPanelRenderingTests` 从快速面板的启用、工作模式、源语言、目标语言及交换控件，以及生产托盘菜单的点击接线进入真实设置保存。临时文件锁阻止写入时，检查已确认设置和磁盘不变、面板保留错误；模型刷新与隐藏重开不能抹去错误。解除文件锁后重新操作原控件应成功并清除错误，不变值的成功保存也须清除错误而不发布配置变化。模式使用原生单选控件，公开 UI Automation 与窗口内实际方向键、空格路径检查选中、单次配置变化及持久化；保存成功、失败回滚后均须保留键盘焦点，解除锁后直接用空格重试。后台刷新与初次渲染不触发保存。明暗主题各一张正常面板及原有窄面板错误截图保存在 `artifacts/test-results/rendering`。这些用例需要实际 Windows WPF 执行，交叉编译不算通过。
+`QuickPanelRenderingTests` 从快速面板的启用、工作模式、源语言、目标语言及交换控件，以及生产托盘菜单的点击接线进入真实设置保存。临时文件锁阻止写入时，检查已确认设置和磁盘不变、面板保留错误；模型刷新与隐藏重开不能抹去错误。解除文件锁后重新操作原控件应成功并清除错误，不变值的成功保存也须清除错误而不发布配置变化。模式使用原生单选控件，公开 UI Automation 与窗口内实际方向键、空格路径检查选中、单次配置变化及持久化；保存成功、失败回滚后均须保留键盘焦点，解除锁后直接用空格重试。后台刷新与初次渲染不触发保存。明暗主题各一张正常面板及原有窄面板错误截图保存在 `artifacts/test-results/rendering`。[090062a 的 Windows 实跑](https://github.com/DingJWuyu/Typelay/actions/runs/38700885927/job/116308546345)已通过该套件 9 项，包含新增模式渲染、写锁失败恢复和连续键盘操作 3 项；四张明暗正常/错误截图已核对。该证据限于受控 WPF 窗口与软件键注入，不替代物理键盘、输入法及完整桌面验收。
 
 ## 系统 Edit 前台事务回归
 
@@ -147,7 +147,7 @@ dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows
 
 `capture-window-changed` 对照 capture 起点与返回时的 window/content/foreground epochs、配置及会话代次，并报告 `hasSnapshot` / `resultFocus`。Broker 的 `observed-native` 或练习目标绑定先发生，并不能证明 Runtime 接纳了返回值或 Hook 已发布租约。Hook 队列稍后才写盘，文件顺序不是跨组件全局顺序；这些字段也没有建立一一对应的 Broker 请求因果。缺字段的旧 trace 保持可读，未知诊断字段不参与产品控制。
 
-`SessionDiagnosticsTests` 在确定性公开宿主端口覆盖命令关联、旧代次/过期拒绝、窗口改变不发布租约、正文与目标隐私、TRACE 开关、不可写日志及无新增焦点探测。`SessionShortcutHookTests.ShortcutDiagnosticsPreserveNoLeaseRejectionAndIdentifyLeaseRemoval` 在真实 Hook 上对照 TRACE 开/关、无租约、显式撤销与配置清除；[7affb7d 的 Windows 实跑](https://github.com/DingJWuyu/Typelay/actions/runs/38628122172/job/116072496508) 已通过 TRACE 开/关两例与 Runtime 诊断回归，原 F9 竞态本轮未复现，尚未证实修复。它不重新按键重试生产失败、不运行模型、不证明物理输入法或原 F9 故障已修复。
+`SessionDiagnosticsTests` 在确定性公开宿主端口覆盖命令关联、旧代次/过期拒绝、窗口改变不发布租约、正文与目标隐私、TRACE 开关、不可写日志及无新增焦点探测。`SessionShortcutHookTests.ShortcutDiagnosticsPreserveNoLeaseRejectionAndIdentifyLeaseRemoval` 在真实 Hook 上对照 TRACE 开/关、无租约、显式撤销与配置清除；[090062a 的 Windows 实跑](https://github.com/DingJWuyu/Typelay/actions/runs/38700885927/job/116308546345)已通过 TRACE 开/关两例与 Runtime 诊断回归。同次真实模型按需练习在 F9 入口失败：Hook 记录 `wake` / `no-lease`，Runtime 拒绝 `StaleObservation`，结果为 `practice-preview-feedback`；尚未证实原 F9 故障修复。诊断回归不重新按键重试生产失败、不运行模型，也不证明物理输入法通过。
 
 生产 App 的 `--automation-test` 参数仅对该进程允许注入 Tab/Esc，界面明确标示，不写入设置。仅在退出已有客户端、设置好发行根 TYPELAY_HOME 后直接启动发行目录的 `app/TypeLay.App.exe --automation-test`；测试完成退出该进程，再用 TypeLay.exe 恢复普通模式。注入模式仍须遵守全部写回、焦点、IME 和期限检查，不能作为物理键盘验收。
 

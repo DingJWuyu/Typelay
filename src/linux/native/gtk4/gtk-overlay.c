@@ -8,13 +8,13 @@ static struct {
     Target *target;
     GtkWidget *popover, *top, *card, *header, *language, *status, *scroll, *text;
     GtkWidget *footer, *hint, *actions, *expand, *menu, *source, *destination, *resume, *exit;
-    GtkCssProvider *css;
+    GtkCssProvider *css, *geometry_css;
     GdkDisplay *display;
     JsonObject *view, *authority;
     gulong focus_handler, active_handler;
     gboolean setting_text, composing, focused, expanded, pending_edit, pending_resume;
     char *generation;
-    gint edit_offset;
+    gint edit_offset, body_height, body_duration;
     gint64 revision, expires;
     guint expiry_timer;
 } overlay;
@@ -150,7 +150,7 @@ void tl_overlay_hide(void) {
     if (overlay.composing) emit_boolean("composition", FALSE);
     GtkWidget *popover = overlay.popover, *top = overlay.top;
     gulong focus_handler = overlay.focus_handler, active_handler = overlay.active_handler;
-    GtkCssProvider *css = overlay.css;
+    GtkCssProvider *css = overlay.css, *geometry_css = overlay.geometry_css;
     GdkDisplay *display = overlay.display;
     JsonObject *view = overlay.view, *authority = overlay.authority;
     char *generation = overlay.generation;
@@ -168,6 +168,7 @@ void tl_overlay_hide(void) {
     }
     if (css && display) gtk_style_context_remove_provider_for_display(display, GTK_STYLE_PROVIDER(css));
     if (css) g_object_unref(css);
+    if (geometry_css) g_object_unref(geometry_css);
     if (display) g_object_unref(display);
     if (view) json_object_unref(view);
     if (authority) json_object_unref(authority);
@@ -334,6 +335,32 @@ static void theme(const char *choice) {
 #endif
     g_free(css);
 }
+/* GTK owns interpolation and frame scheduling. Geometry CSS is separate from
+ * theme refreshes; unchanged render/renew requests must not restart a resize. */
+static void body_height(gint height, gboolean animate) {
+    gboolean enabled = FALSE;
+    GtkSettings *settings = gtk_widget_get_settings(overlay.scroll);
+    g_object_get(settings, "gtk-enable-animations", &enabled, NULL);
+    /* Read the optional newer preference without raising the GTK minimum. */
+    if (g_object_class_find_property(G_OBJECT_GET_CLASS(settings), "gtk-interface-reduced-motion")) {
+        /* GtkReducedMotion: NO_PREFERENCE = 0, REDUCE = 1 (since 4.22). */
+        gint reduced = 0;
+        g_object_get(settings, "gtk-interface-reduced-motion", &reduced, NULL);
+        enabled = enabled && reduced == 0;
+    }
+    gint duration = animate && enabled && gtk_widget_get_mapped(overlay.scroll) ? 280 : 0;
+    if (height == overlay.body_height && duration == overlay.body_duration) return;
+    overlay.body_height = height;
+    overlay.body_duration = duration;
+    char *css = g_strdup_printf(
+        "#typelay-body { min-height: %dpx; transition: min-height %dms ease-out; }", height, duration);
+#if GTK_CHECK_VERSION(4, 12, 0)
+    gtk_css_provider_load_from_string(overlay.geometry_css, css);
+#else
+    gtk_css_provider_load_from_data(overlay.geometry_css, css, -1);
+#endif
+    g_free(css);
+}
 static void create(Target *target) {
     overlay.target = target;
     overlay.top = GTK_WIDGET(gtk_widget_get_root(target->widget));
@@ -366,6 +393,11 @@ static void create(Target *target) {
     overlay.resume = button(overlay.header, "恢复", "resume");
     gtk_widget_set_name(overlay.resume, "typelay-resume");
     overlay.scroll = gtk_scrolled_window_new();
+    gtk_widget_set_name(overlay.scroll, "typelay-body");
+    overlay.geometry_css = gtk_css_provider_new();
+    gtk_style_context_add_provider(gtk_widget_get_style_context(overlay.scroll),
+        GTK_STYLE_PROVIDER(overlay.geometry_css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+    gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(overlay.scroll), FALSE);
     gtk_widget_set_margin_start(overlay.scroll, 8);
     gtk_widget_set_margin_end(overlay.scroll, 8);
     /* GtkScrolledWindow can itself take Tab focus when its text child cannot. */
@@ -480,6 +512,18 @@ static gboolean render(Target *target, JsonObject *data) {
     JsonObject *geometry = tl_geometry(target);
     if (!geometry) return pause_render_result(is_paused, "geometry", request_revision, FALSE);
     if (!tl_configuration_current(generation)) { json_object_unref(geometry); return FALSE; }
+    /* This transport hint is visual only. A new body, surface, generation or
+       anchor lands directly, after all existing view/authority checks above. */
+    GtkWidget *old_popover = overlay.popover, *old_editor = overlay.text, *old_scroll = overlay.scroll;
+    gint old_width = -1;
+    GtkAllocation old_parent, current_parent;
+    gtk_widget_get_allocation(top, &old_parent);
+    if (overlay.card) gtk_widget_get_size_request(overlay.card, &old_width, NULL);
+    gboolean same_view = overlay.target == target && overlay.top == top && overlay.view
+        && g_strcmp0(overlay.generation, generation) == 0 && json_object_equal(overlay.view, value);
+    gboolean expansion = same_view && tl_integer(data, "visualExpansionFrom", -1) == overlay.revision
+        && overlay.revision < G_MAXINT64
+        && tl_integer(data, "revision", -1) == overlay.revision + 1;
     if (overlay.target != target || overlay.top != top) { tl_overlay_hide(); create(target); }
     g_free(overlay.generation);
     overlay.generation = g_strdup(generation);
@@ -540,7 +584,6 @@ static gboolean render(Target *target, JsonObject *data) {
     gint height;
     pango_layout_get_pixel_size(layout, NULL, &height); g_object_unref(layout);
     height = CLAMP(height + 24, 54, overlay.expanded ? 360 : 160);
-    gtk_widget_set_size_request(overlay.scroll, -1, height);
     gtk_widget_set_visible(overlay.scroll, !capsule);
     gtk_widget_set_visible(overlay.footer, !capsule);
     gtk_widget_set_visible(overlay.actions, !capsule);
@@ -561,6 +604,16 @@ static gboolean render(Target *target, JsonObject *data) {
         .y = (gint)tl_integer(bounds, "y", 0) - (gint)origin.y,
         .width = 1, .height = (gint)tl_integer(bounds, "height", 1)
     };
+    gtk_widget_get_allocation(top, &current_parent);
+    GdkRectangle previous_anchor;
+    gboolean same_surface = overlay.popover == old_popover && overlay.text == old_editor
+        && overlay.scroll == old_scroll && gtk_widget_get_mapped(overlay.scroll);
+    gboolean same_anchor = gtk_popover_get_pointing_to(GTK_POPOVER(overlay.popover), &previous_anchor)
+        && gdk_rectangle_equal(&anchor, &previous_anchor);
+    body_height(height, !capsule && (editable_preview || editing)
+        && same_view && same_surface && same_anchor && old_width == width
+        && gdk_rectangle_equal(&old_parent, &current_parent)
+        && (expansion || (height == overlay.body_height && overlay.body_duration > 0)));
     gtk_popover_set_pointing_to(GTK_POPOVER(overlay.popover), &anchor);
     json_object_unref(geometry);
     gtk_popover_popup(GTK_POPOVER(overlay.popover));
@@ -626,6 +679,7 @@ JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject
                 if (overlay.authority) json_object_unref(overlay.authority);
                 overlay.authority = tl_copy(tl_object(data, "authority"));
                 json_object_unref(geometry);
+                body_height(overlay.body_height, overlay.body_duration > 0);
             }
             else { if (geometry) json_object_unref(geometry); tl_overlay_hide(); }
         } else tl_overlay_hide();

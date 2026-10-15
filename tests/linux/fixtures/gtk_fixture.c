@@ -138,12 +138,15 @@ static void find_candidate(GtkWidget *widget, gpointer data) {
     else if (GTK_IS_CONTAINER(widget)) gtk_container_forall(GTK_CONTAINER(widget), find_candidate, data);
 }
 
+#include "gtk_motion.inc"
+
 static gboolean report_state(gpointer unused) {
     (void)unused;
     GtkWidget *active = other_window && gtk_window_is_active(GTK_WINDOW(other_window)) ? other_window : report_window;
     GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(active));
     JsonBuilder *builder = json_builder_new();
     json_builder_begin_object(builder);
+    motion_report(builder);
     json_builder_set_member_name(builder, "observedAtMs");
     json_builder_add_int_value(builder, g_get_monotonic_time() / 1000);
     json_builder_set_member_name(builder, "first");
@@ -355,10 +358,13 @@ int main(int argc, char **argv) {
         g_signal_connect(window, "key-release-event", G_CALLBACK(observe_key), NULL);
         watch_entry(first, &first_evidence);
         watch_entry(second, &second_evidence);
+        motion_init();
         g_timeout_add(25, report_state, NULL);
     }
     gtk_main();
     g_free(last_report);
+    g_free(motion_mode); g_free(motion_body);
+    if (motion_frames) json_array_unref(motion_frames);
     if (first_insert_context) json_object_unref(first_insert_context);
     if (first_delete_context) json_object_unref(first_delete_context);
     return 0;

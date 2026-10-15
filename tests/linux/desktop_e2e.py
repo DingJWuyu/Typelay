@@ -648,6 +648,7 @@ def run(arguments):
                     "[Groups/0/Items/1]\nName=pinyin\nLayout=\n[GroupOrder]\n0=Default\n"
                 )
                 state_path = arguments.output / "gtk-cooperative-state.json"
+                motion_path = home / "overlay-motion"
                 gtk_environment = {
                     **environment,
                     "HOME": str(home),
@@ -664,6 +665,7 @@ def run(arguments):
                     "GDK_BACKEND": "wayland",
                     "GTK3_MODULES": str(arguments.native / "libtypelay-gtk3.so"),
                     "TYPELAY_FIXTURE_STATE": str(state_path),
+                    "TYPELAY_FIXTURE_MOTION": str(motion_path),
                     "TYPELAY_FIXTURE_INITIAL_TEXT": original,
                     "TYPELAY_FIXTURE_COOPERATIVE": "1",
                     "TYPELAY_FIXTURE_FULLSCREEN": "1",
@@ -1000,7 +1002,250 @@ def run(arguments):
                             "Wayland GTK keyboard-us: actual typed source, CPU translation, one configured acceptance key, verified write and retained focus"
                         )
 
-                        def edit_and_accept(accept_key, hold_return=False):
+                        def check_overlay_motion(draft):
+                            from support.gtk_accessibility import Atspi, named
+
+                            records = []
+                            original = gtk_state()["motionAnimations"]
+                            original_reduced = gtk_state()["motionReduced"]
+                            reduced_supported = gtk_state()["motionReducedSupported"]
+                            if not reduced_supported:
+                                records.append(
+                                    {
+                                        "mode": "reduced-motion",
+                                        "notRun": "GtkSettings property unavailable",
+                                    }
+                                )
+                            key("ctrl+Home")
+                            key("shift+Right")
+
+                            def capture(label):
+                                # grim samples actual compositor output and may perturb timing.
+                                # The midpoint must remain between two observed intermediate allocations.
+                                before = gtk_state()["motionFrames"][-1]
+                                started = time.monotonic_ns() // 1_000_000
+                                name = "gtk-overlay-" + label + ".png"
+                                subprocess.run(
+                                    ["grim", str(arguments.output / name)], check=True, timeout=3
+                                )
+                                finished = time.monotonic_ns() // 1_000_000
+                                observed = wait_for(
+                                    lambda: value
+                                    if (value := gtk_state())["motionFrames"][-1]["atMonoMs"]
+                                    >= finished
+                                    else None,
+                                    "GTK screenshot did not receive a fresh frame within the bounded sample budget",
+                                )
+                                return {
+                                    "file": name,
+                                    "startedAtMonoMs": started,
+                                    "finishedAtMonoMs": finished,
+                                    "frameBeforeAtMonoMs": before["atMonoMs"],
+                                    "frameAfterAtMonoMs": observed["motionFrames"][-1]["atMonoMs"],
+                                    "heightBefore": before["height"],
+                                    "heightAfter": observed["motionFrames"][-1]["height"],
+                                }
+
+                            def activate(label, mode):
+                                node = wait_for(
+                                    lambda: named(fixture.pid, label),
+                                    "GTK motion button is absent: " + label,
+                                )
+                                assert node.get_process_id() == fixture.pid
+                                assert node.get_role() == Atspi.Role.PUSH_BUTTON
+                                states = node.get_state_set()
+                                assert states.contains(Atspi.StateType.SHOWING)
+                                assert states.contains(Atspi.StateType.SENSITIVE)
+                                parent = node
+                                for _ in range(16):
+                                    assert (
+                                        parent is not None
+                                        and parent.get_process_id() == fixture.pid
+                                    )
+                                    if parent.get_role() == Atspi.Role.FRAME:
+                                        break
+                                    parent = parent.get_parent()
+                                else:
+                                    raise AssertionError("GTK motion button has no owned frame")
+                                assert parent.get_name() == window["title"]
+                                action = node.get_action_iface()
+                                assert action is not None
+                                motion_path.write_text(mode)
+                                initial = wait_for(
+                                    lambda: value
+                                    if (value := gtk_state()).get("motionMode") == mode
+                                    and value.get("motionFrames")
+                                    else None,
+                                    "fixture motion sampling did not start",
+                                )
+                                assert initial["motionAnimations"] is not mode.startswith(
+                                    "disabled"
+                                )
+                                assert initial["motionReduced"] == (
+                                    1 if mode.startswith("reduced") else 0
+                                )
+                                screenshots = (
+                                    [capture("expand-start")] if mode == "animate-expand" else []
+                                )
+                                started = time.monotonic_ns() // 1_000_000
+                                receipt = {
+                                    "mode": mode,
+                                    "action": label,
+                                    "pid": fixture.pid,
+                                    "frame": parent.get_name(),
+                                    "showing": True,
+                                    "sensitive": True,
+                                    "atMonoMs": started,
+                                    "screenshots": screenshots,
+                                }
+                                records.append(receipt)
+                                receipt["actionAccepted"] = bool(Atspi.Action.do_action(action, 0))
+                                assert receipt["actionAccepted"]
+                                return initial["motionFrames"][0], started
+
+                            try:
+                                baseline = None
+                                for label, mode, expected in (
+                                    ("展开", "animate-expand", 360),
+                                    ("收起", "animate-collapse", 160),
+                                    ("展开", "disabled-expand", 360),
+                                    (
+                                        "收起",
+                                        "reduced-collapse"
+                                        if reduced_supported
+                                        else "disabled-collapse",
+                                        160,
+                                    ),
+                                ):
+                                    before, started = activate(label, mode)
+                                    assert before["height"] == (160 if expected == 360 else 360)
+                                    identity = tuple(
+                                        before[name]
+                                        for name in ("editor", "buffer", "scroll", "shell")
+                                    )
+                                    if baseline is None:
+                                        baseline = identity
+                                    assert identity == baseline
+                                    if mode == "animate-expand":
+                                        wait_for(
+                                            lambda: 160
+                                            < gtk_state()["motionFrames"][-1].get("height", 0)
+                                            < 360,
+                                            "GTK expand had no intermediate allocation for its screenshot",
+                                            timeout=3,
+                                        )
+                                        shot = capture("expand-middle")
+                                        records[-1]["screenshots"].append(shot)
+                                        assert (
+                                            160 < shot["heightBefore"] <= shot["heightAfter"] < 360
+                                        ), shot
+                                    actual = wait_for(
+                                        lambda: value
+                                        if (value := gtk_state()).get("observedAtMs", 0)
+                                        >= started + 650
+                                        else None,
+                                        "GTK resize did not reach its bounded observation window",
+                                        timeout=3,
+                                    )
+                                    frames = actual["motionFrames"]
+                                    records[-1]["frames"] = frames
+                                    if mode == "animate-expand":
+                                        records[-1]["screenshots"].append(capture("expand-end"))
+                                    assert 2 <= len(frames) <= 64
+                                    assert (
+                                        frames[-1]["height"] == expected
+                                        and frames[-1]["scrollable"]
+                                    )
+                                    heights = [frame["height"] for frame in frames]
+                                    low, high = sorted((before["height"], expected))
+                                    middle = {height for height in heights if low < height < high}
+                                    assert (
+                                        len(middle) >= 2
+                                        if mode.startswith("animate")
+                                        else not middle
+                                    )
+                                    for frame in frames:
+                                        assert low <= frame["height"] <= high
+                                        assert frame["textMatches"] and frame["focused"]
+                                        assert frame["start"] != frame["end"]
+                                        assert frame["header"] and frame["footer"]
+                                        for field in (
+                                            "editor",
+                                            "buffer",
+                                            "scroll",
+                                            "shell",
+                                            "start",
+                                            "end",
+                                        ):
+                                            assert frame[field] == before[field], (
+                                                field,
+                                                frame,
+                                                before,
+                                            )
+                                        assert frame["shellHeight"] > frame["height"]
+                                    direction = 1 if expected > before["height"] else -1
+                                    assert all(
+                                        direction * (b - a) >= 0
+                                        for a, b in zip(heights, heights[1:])
+                                    )
+                                    assert (
+                                        actual["motionText"] == actual["candidate"]["text"] == draft
+                                    )
+
+                                before, _ = activate("展开", "animate-hide")
+                                wait_for(
+                                    lambda: (frames := gtk_state().get("motionFrames", []))
+                                    and before["height"] < frames[-1].get("height", 0) < 360,
+                                    "GTK expand did not expose an in-flight frame before exit",
+                                    timeout=3,
+                                )
+                                records[-1]["exitRequestedAtMonoMs"] = (
+                                    time.monotonic_ns() // 1_000_000
+                                )
+                                key("Escape")
+                                hidden = wait_for(
+                                    lambda: value
+                                    if (value := gtk_state()).get("candidate") is None
+                                    and value.get("focus") == "fixture-first"
+                                    and not status().get("overlayVisible")
+                                    and not status().get("acceptanceReady")
+                                    else None,
+                                    "ordinary GTK exit retained candidate or acceptance",
+                                )
+                                after = wait_for(
+                                    lambda: value
+                                    if (value := gtk_state()).get("observedAtMs", 0)
+                                    >= hidden["observedAtMs"] + 400
+                                    else None,
+                                    "GTK exit observation did not advance past the animation duration",
+                                    timeout=3,
+                                )
+                                assert after["candidate"] is None
+                                assert not status().get("overlayVisible")
+                                records[-1]["frames"] = after["motionFrames"]
+                                evidence.append(
+                                    "GTK mapped long draft: real AT-SPI expand/collapse, native frame heights, "
+                                    "same editor/buffer/selection/focus, visible controls, reduced motion and immediate exit"
+                                )
+                            finally:
+                                (arguments.output / "gtk-overlay-motion.json").write_text(
+                                    json.dumps(
+                                        {"text": draft, "cases": records},
+                                        ensure_ascii=False,
+                                        indent=2,
+                                    )
+                                )
+                                motion_path.unlink(missing_ok=True)
+                                restored = wait_for(
+                                    lambda: value
+                                    if (value := gtk_state()).get("motionMode") == ""
+                                    else None,
+                                    "fixture animation preference was not restored",
+                                )
+                                assert restored["motionAnimations"] is original
+                                assert restored["motionReduced"] == original_reduced
+
+                        def edit_and_accept(accept_key, hold_return=False, motion=False):
                             editing_source = "Please review this note."
                             enter_source(editing_source)
                             actual = wait_for(
@@ -1045,7 +1290,11 @@ def run(arguments):
                                 "clicking the actual GTK candidate did not enter the production editor",
                             )
                             switch_im("keyboard-us")
-                            draft = "Manually edited candidate."
+                            draft = (
+                                ("Manually edited candidate.\n" * 24)
+                                if motion
+                                else "Manually edited candidate."
+                            )
                             key("ctrl+a")
                             typed(draft)
                             wait_for(
@@ -1054,6 +1303,10 @@ def run(arguments):
                                 "real GTK editor did not retain the typed draft",
                             )
                             assert gtk_state()["first"] == editing_source
+                            if motion:
+                                check_overlay_motion(draft)
+                                assert gtk_state()["first"] == editing_source
+                                return
                             if not hold_return:
                                 subprocess.run(
                                     ["grim", str(arguments.output / "gtk-overlay-editing.png")],
@@ -1123,6 +1376,7 @@ def run(arguments):
                                 "Wayland GTK editor: actual candidate click and draft typing, first configured key returns without writing, second independent key verifies the exact draft"
                             )
 
+                        edit_and_accept("Tab", motion=True)
                         edit_and_accept("Tab")
 
                         switch_im("pinyin")
