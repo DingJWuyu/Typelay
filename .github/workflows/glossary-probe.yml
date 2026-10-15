@@ -55,7 +55,7 @@ jobs:
           PY
           .probe-venv/bin/python -m pip install --require-hashes -r artifacts/qwen-probe/requirements.lock
           .probe-venv/bin/python -c 'import torch; assert torch.__version__ == "2.8.0+cpu"; assert torch.version.cuda is None'
-      - name: Download and verify the fixed official 0.5B snapshot
+      - name: Download and verify the fixed official 1.5B snapshot
         id: download
         timeout-minutes: 2
         run: .probe-venv/bin/python experiments/glossary_probe.py --phase download --root artifacts/qwen-probe-runtime --output artifacts/qwen-probe/results.json

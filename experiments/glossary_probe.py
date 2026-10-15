@@ -14,10 +14,10 @@ import time
 import urllib.request
 from pathlib import Path
 
-MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
-REVISION = "7ae557604adf67be50417f59c2c2f167def9a775"
-WEIGHT_SIZE = 988097824
-WEIGHT_SHA256 = "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
+MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+REVISION = "989aa7980e4cf806f80c7fef2b1adb7bc71aa306"
+WEIGHT_SIZE = 3087467144
+WEIGHT_SHA256 = "dd924a11b4c220f385b51ffa522daea7c9f3d850e31b162bb5661df483c6d3ee"
 RUNTIME = dict(device="cpu", compute_type="int8", intra_threads=2, inter_threads=1)
 EXPLANATION = re.compile(
     r"^(sure\b|here(?:'s| is)\b|translation:|note:|explanation:|翻译[：:]|译文[：:]|说明[：:])",
@@ -96,14 +96,16 @@ def download(root, stage, report, output):
     stage["preflight"] = {
         "diskFreeBytes": disk_free,
         "memoryAvailableBytes": memory_available,
-        "diskBudgetBytes": 8 * 1024**3,
-        "memoryBudgetBytes": 6 * 1024**3,
-        "diskBudgetMet": disk_free >= 8 * 1024**3,
-        "memoryBudgetMet": memory_available >= 6 * 1024**3,
+        "diskBudgetBytes": 12 * 1024**3,
+        "memoryBudgetBytes": 10 * 1024**3,
+        "diskBudgetMet": disk_free >= 12 * 1024**3,
+        "memoryBudgetMet": memory_available >= 10 * 1024**3,
     }
     save(output, report)
     if not stage["preflight"]["diskBudgetMet"]:
         raise RuntimeError("insufficient-disk-budget")
+    if not stage["preflight"]["memoryBudgetMet"]:
+        raise RuntimeError("insufficient-memory-budget")
     stage["files"] = {}
     for name in FILES:
         url = f"https://huggingface.co/{MODEL}/resolve/{REVISION}/{name}"
