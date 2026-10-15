@@ -398,6 +398,9 @@ class ApplicationSupportPane:
         self.render_selected()
 
     def render_selected(self):
+        self.owner.add_exclusion.set_sensitive(
+            self.owner.draft_messages is not None and not self.busy
+        )
         row = self.rows.get(self.selector.get_active_id())
         if not row or not self.value:
             return
@@ -1293,7 +1296,7 @@ class Settings:
                 if isinstance(widget, Gtk.Entry):
                     widget.set_sensitive(True)
             self.excluded.set_sensitive(True)
-            self.add_exclusion.set_sensitive(True)
+            self.add_exclusion.set_sensitive(not self.application_support.busy)
             self.render_exclusions()
             self.render_draft()
         except (OSError, ValueError, EOFError, TimeoutError):
@@ -1401,7 +1404,6 @@ class Settings:
         self.excluded.get_buffer().set_text("\n".join(values))
 
     async def add_excluded_application(self, identity):
-        self.add_exclusion.set_sensitive(False)
         try:
             name = await self.application_support.action_requested(
                 "desktop-text", "ResolveApplicationExclusion", desktop_id=identity
@@ -1416,7 +1418,6 @@ class Settings:
                 else "无法读取应用，请重试或在高级编辑中填写可执行文件名。"
             )
         finally:
-            self.add_exclusion.set_sensitive(self.draft_messages is not None)
             self.application_support.busy = False
             self.application_support.render_selected()
 

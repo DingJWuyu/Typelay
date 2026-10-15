@@ -2712,6 +2712,19 @@ def run(arguments):
                 deadline = time.monotonic() + timeout
                 node = settings_control(name, timeout=deadline - time.monotonic())
                 assert node.get_process_id() == process.pid and node.get_name() == name
+
+                def interactive():
+                    node.clear_cache()
+                    states = node.get_state_set()
+                    return states.contains(Atspi.StateType.SENSITIVE) and states.contains(
+                        Atspi.StateType.ENABLED
+                    )
+
+                wait_for(
+                    interactive,
+                    "scrolled settings control did not become interactive: " + name,
+                    timeout=deadline - time.monotonic(),
+                )
                 before_scroll = Atspi.Component.get_extents(
                     node.get_component_iface(), Atspi.CoordType.SCREEN
                 )
@@ -2730,7 +2743,12 @@ def run(arguments):
                     states = node.get_state_set()
                     last_scroll_check["showing"] = states.contains(Atspi.StateType.SHOWING)
                     last_scroll_check["focused"] = states.contains(Atspi.StateType.FOCUSED)
-                    if not (last_scroll_check["showing"] and last_scroll_check["focused"]):
+                    if not (
+                        last_scroll_check["showing"]
+                        and last_scroll_check["focused"]
+                        and states.contains(Atspi.StateType.SENSITIVE)
+                        and states.contains(Atspi.StateType.ENABLED)
+                    ):
                         return None
                     area = Atspi.Component.get_extents(
                         node.get_component_iface(), Atspi.CoordType.SCREEN
