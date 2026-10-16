@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -87,6 +88,43 @@ internal static partial class ContinuousTranslationCheck
                 bool sourceFocused = (focus.Root, focus.Control) == (root, field);
                 if (!sourceFocused)
                 {
+                    string? processName = null, processLookupFailure = null, rootClass = null, rootClassFailure = null;
+                    bool? managedChild = null;
+                    // Enrich only the already-observed PID/HWND. These later metadata
+                    // lookups must neither reread focus nor replace the original failure.
+                    if (focus.ProcessId != 0)
+                    {
+                        try
+                        {
+                            using var process = Process.GetProcessById(checked((int)focus.ProcessId));
+                            processName = process.ProcessName;
+                            managedChild = process.Id == child!.Process.Id && !child.Process.HasExited
+                                && process.StartTime.ToUniversalTime().Ticks == child.Process.StartTime.ToUniversalTime().Ticks;
+                        }
+                        catch (Exception error) when (error is not OutOfMemoryException)
+                        {
+                            processLookupFailure = error.GetType().Name;
+                        }
+                    }
+                    else
+                        processLookupFailure = "ProcessIdUnavailable";
+                    if (focus.Root != 0)
+                    {
+                        try
+                        {
+                            var name = new StringBuilder(256);
+                            if (N.GetClassName(focus.Root, name, name.Capacity) > 0)
+                                rootClass = name.ToString();
+                            else
+                                rootClassFailure = "GetClassNameFailed";
+                        }
+                        catch (Exception error) when (error is not OutOfMemoryException)
+                        {
+                            rootClassFailure = error.GetType().Name;
+                        }
+                    }
+                    else
+                        rootClassFailure = "RootUnavailable";
                     // Preserve this failed observation, never a later cleanup-time reread.
                     previewFocusFailure = new
                     {
@@ -101,7 +139,13 @@ internal static partial class ContinuousTranslationCheck
                         guiThreadInfoError = focus.GuiThreadInfoError,
                         expectedRoot = (long)root,
                         expectedControl = (long)field,
-                        overlayRoot = (long)overlay.Handle
+                        overlayRoot = (long)overlay.Handle,
+                        processName,
+                        currentFixture = focus.ProcessId == (uint)Environment.ProcessId,
+                        managedChild,
+                        processLookupFailure,
+                        rootClass,
+                        rootClassFailure
                     };
                 }
                 Require(sourceFocused, "owned-preview-focus");
