@@ -830,6 +830,7 @@ class Settings:
         self.draft_messages = None
         self.loading_draft_messages = False
         self.pending_settings = {}
+        self.language_choices = None
         self.swapping_languages = False
         self.settings_lock = asyncio.Lock()
         self.settings_feedback_owned = False
@@ -999,8 +1000,8 @@ class Settings:
             ),
             ("startup", "登录 niri 时启动", True),
             ("experimentalWriteback", "启用原生输入框替换", True),
-            ("source", "源语言", [("auto", "自动识别"), ("zh", "中文"), ("en", "英语")]),
-            ("target", "目标语言", [("en", "英语"), ("zh", "中文")]),
+            ("source", "源语言", []),
+            ("target", "目标语言", []),
             ("wakeShortcut", "唤醒翻译", ""),
             ("directShortcut", "直接翻译替换", ""),
             ("acceptShortcut", "接受译文", [("Tab", "Tab")] + function_keys),
@@ -1100,7 +1101,7 @@ class Settings:
                 widget = Gtk.ComboBoxText()
                 for identity, title in choices:
                     widget.append(identity, title)
-                if key in ("acceptShortcut", "exitShortcut"):
+                if key in ("source", "target", "acceptShortcut", "exitShortcut"):
                     widget.set_sensitive(False)
             else:
                 widget = Gtk.Entry()
@@ -1329,6 +1330,21 @@ class Settings:
         self.render_footer()
 
     def render_guidance(self, value):
+        choices = value["languageChoices"]
+        if choices != self.language_choices:
+            self.language_choices = choices
+            self.configuring = True
+            try:
+                for key in ("source", "target"):
+                    widget = self.controls[key]
+                    widget.remove_all()
+                    for choice in choices[key]:
+                        widget.append(choice["code"], choice["label"])
+                    if self.value is not None:
+                        widget.set_active_id(self.pending_settings.get(key, self.value[key]))
+            finally:
+                self.configuring = False
+            self.render_language_swap()
         saved = self.value
         if saved and saved["mode"] == "OnDemand":
             summary = f"按 {saved['wakeShortcut']} 唤醒当前输入框翻译。"
@@ -1369,14 +1385,15 @@ class Settings:
             self.pages.set_visible_child_name("application-support")
 
     def render_language_swap(self):
+        ready = self.value is not None and self.language_choices is not None
         self.language_swap.set_sensitive(
-            self.value is not None
+            ready
             and self.value["source"] != "auto"
             and not self.swapping_languages
             and not {"source", "target"}.intersection(self.pending_settings)
         )
         for key in ("source", "target"):
-            self.controls[key].set_sensitive(not self.swapping_languages)
+            self.controls[key].set_sensitive(ready and not self.swapping_languages)
 
     def swap_languages(self):
         if not self.language_swap.get_sensitive():

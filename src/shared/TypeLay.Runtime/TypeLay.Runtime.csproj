@@ -2,5 +2,6 @@
   <ItemGroup>
     <ProjectReference Include="../TypeLay.Core/TypeLay.Core.csproj" />
     <ProjectReference Include="../TypeLay.Protocol/TypeLay.Protocol.csproj" />
+    <EmbeddedResource Include="../TypeLay.Worker/model-catalog.json" LogicalName="TypeLay.ModelCatalog.json" />
   </ItemGroup>
 </Project>

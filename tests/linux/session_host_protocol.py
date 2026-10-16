@@ -358,7 +358,18 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
         settings_file = self.home / "config/settings.json"
         before = settings_file.stat().st_mtime_ns
         self.events.clear()
-        for patch in ({"theme": "dark"}, {"enabled": 0}, {"mode": 1}, {"target": "auto"}, {}):
+        for patch in (
+            {"theme": "dark"},
+            {"enabled": 0},
+            {"mode": 1},
+            {"source": None},
+            {"target": 1},
+            {"target": "auto"},
+            {"source": "fr", "target": "en"},
+            {"source": "en", "target": "fr"},
+            {"source": "fr", "target": "fr"},
+            {},
+        ):
             with self.subTest(patch=patch):
                 self.assertIs(await self.ask("traySettings", patch), False)
         self.sequence += 1
@@ -443,6 +454,33 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
             lambda value: value.get("event") == "status"
             and value["data"].get("connectionState") == "ListenerUnavailable"
         )
+
+    async def test_language_choices_remain_available_without_claiming_a_ready_model(self):
+        self.assertTrue(await self.ask("start"))
+        status = self.latest("status")
+        self.assertFalse(status["modelReady"])
+        self.assertFalse(status["modelInstalled"])
+        choices = self.latest("settingsGuidance")["languageChoices"]
+        self.assertEqual([choice["code"] for choice in choices["source"]], ["auto", "zh", "en"])
+        self.assertEqual([choice["code"] for choice in choices["target"]], ["en", "zh"])
+        self.assertEqual(status["modelDirections"], [])
+
+        saved = self.latest("settings")
+        self.assertEqual((saved["source"], saved["target"]), ("auto", "en"))
+        for source, target in (("auto", "zh"), ("zh", "zh"), ("en", "en"), ("en", "zh")):
+            with self.subTest(source=source, target=target):
+                self.assertTrue(
+                    await self.ask("traySettings", {"source": source, "target": target})
+                )
+                self.assertEqual(self.latest("settingsGuidance")["languageChoices"], choices)
+                self.assertEqual(
+                    (self.latest("settings")["source"], self.latest("settings")["target"]),
+                    (source, target),
+                )
+        self.assertFalse(await self.ask("reloadModel"))
+        self.assertEqual(self.latest("status")["modelDirections"], [])
+        persisted = json.loads((self.home / "config/settings.json").read_text())
+        self.assertEqual((persisted["Source"], persisted["Target"]), ("en", "zh"))
 
     async def test_settings_guidance_tracks_saved_mode_and_shortcuts_in_owner_order(self):
         self.assertTrue(await self.ask("start"))

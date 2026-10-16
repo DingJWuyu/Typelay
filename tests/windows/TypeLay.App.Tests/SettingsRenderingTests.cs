@@ -32,6 +32,51 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
     private void Stage(string name) => _stages.Enqueue($"{_elapsed.ElapsedMilliseconds} ms: {name}");
 
     [Fact]
+    public Task LanguageChoicesKeepTheSavedDirectionWhenNoModelIsInstalled() => desktop.RunAsync(async () =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-language-settings-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string path = Path.Combine(directory, "settings.json");
+            var settings = WindowsRuntime.CreateSettings(path);
+            settings.Update(settings.Value with
+            {
+                Source = "en",
+                Target = "zh"
+            });
+            string persisted = File.ReadAllText(path);
+            using var model = new ModelClient(new(Path.Combine(directory, "missing-python"),
+                Path.Combine(directory, "missing-worker"), Path.Combine(directory, "models")),
+                info => new ChildProcess(info));
+            var window = new SettingsWindow(settings, model, () => { });
+            try
+            {
+                for (int attempt = 0; attempt < 2; attempt++)
+                {
+                    window.ShowPage("language");
+                    window.UpdateLayout();
+                    var languages = Descendants(window).OfType<ComboBox>().ToArray();
+                    Assert.Equal(2, languages.Length);
+                    Assert.Equal(new[] { "Auto", "中文", "English" }, languages[0].Items.Cast<object>().Select(item => item.ToString()));
+                    Assert.Equal(new[] { "中文", "English" }, languages[1].Items.Cast<object>().Select(item => item.ToString()));
+                    Assert.Equal("English", languages[0].SelectedItem?.ToString());
+                    Assert.Equal("中文", languages[1].SelectedItem?.ToString());
+                    Assert.All(languages, language => Assert.True(language.IsEnabled));
+                    Assert.Contains(Descendants(window).OfType<TextBlock>(), text =>
+                        text.Text == "Auto 使用本地语言检测。当前提供中文与英文模型。");
+                    Assert.False(model.Ready);
+                    Assert.False(model.Installed);
+                    Assert.Empty(model.AvailableDirections);
+                    Assert.Equal(persisted, File.ReadAllText(path));
+                    await model.StartAsync();
+                }
+            }
+            finally { window.Close(); }
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    });
+
+    [Fact]
     public async Task SettingsUiSavesModeAndShortcutsAndRendersAtSupportedSizes()
     {
         _elapsed.Start();

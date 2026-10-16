@@ -27,17 +27,14 @@ def main() -> int:
         # No stack traces or exception messages cross the privacy boundary.
         return 2
     if args.self_check:
-        samples = [
-            ("你好，我想确认一下明天下午的会议时间。", "zh", "en"),
-            ("Please send me the final version.", "en", "zh"),
-        ]
         results = []
-        for text, source, target in samples:
+        for direction in engine.catalog:
+            text, source, target = direction.self_check_text, direction.source, direction.target
             start = time.perf_counter()
             result = engine.translate(text, source, target)
             results.append(
                 {
-                    "direction": source + "_" + target,
+                    "direction": direction.id,
                     "status": result.status,
                     "nonempty": bool(result.text),
                     "differs": result.text != text,
@@ -64,7 +61,7 @@ def main() -> int:
             start = time.perf_counter()
             operation = request.get("op")
             if operation == "hello":
-                response = {"id": request_id, "status": "ready"}
+                response = {"id": request_id, "status": "ready", "directions": engine.directions}
             elif operation == "translate":
                 result = engine.translate(
                     request.get("text"),

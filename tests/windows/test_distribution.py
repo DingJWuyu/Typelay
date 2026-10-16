@@ -94,6 +94,26 @@ class DistributionTests(unittest.TestCase):
         for path in self.home.rglob("*"):
             self.assertFalse(forbidden.intersection(path.relative_to(self.home).parts), str(path))
 
+    def test_relocated_worker_reads_its_shared_model_catalog(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                "import sys,json; sys.path.insert(0, sys.argv[1]); "
+                "from typelay_worker.catalog import load_catalog; "
+                "print(json.dumps([d.id for d in load_catalog()]))",
+                str(self.home / "worker"),
+            ],
+            cwd=self.home,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["zh_en", "en_zh"])
+
     def test_runtime_dependencies_survive_relocation(self):
         for relative in (
             "TypeLay.exe",
@@ -109,6 +129,8 @@ class DistributionTests(unittest.TestCase):
             "app/coreclr.dll",
             "worker/run_worker.py",
             "worker/typelay_worker/engine.py",
+            "worker/typelay_worker/catalog.py",
+            "worker/model-catalog.json",
         ):
             with self.subTest(path=relative):
                 self.assertTrue((self.home / relative).is_file(), relative)

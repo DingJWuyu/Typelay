@@ -43,7 +43,7 @@ public sealed class SettingsStore
             Value = JsonSerializer.Deserialize<UserSettings>(File.ReadAllText(_path)) ?? new();
         }
         catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException) { Value = new(); }
-        if (Value.Schema != 1 || Value.Source is not ("auto" or "zh" or "en") || Value.Target is not ("zh" or "en")
+        if (Value.Schema != 1 || !ModelCatalog.IsSupportedSetting(Value.Source, Value.Target)
             || Value.Theme is not ("system" or "light" or "dark") || Value.Excluded.Length > 256)
             Value = new();
         // New preferences must not discard an existing user's privacy exclusions.
@@ -118,7 +118,7 @@ public sealed class SettingsStore
     private static UserSettings Canonical(UserSettings settings)
     {
         settings.Direction.Validate();
-        if (settings.Source is not ("auto" or "zh" or "en") || settings.Target is not ("zh" or "en"))
+        if (!ModelCatalog.IsSupportedSetting(settings.Source, settings.Target))
             throw new ArgumentException("请选择支持的源语言和目标语言。");
         if (!Enum.IsDefined(settings.Mode))
             throw new ArgumentException("请选择有效的工作模式。");

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from .catalog import ModelDirection, load_catalog
 from .protocol import valid_text
 
 # Keep original line separators, URLs, @mentions, issue references and emoji byte-for-byte.
@@ -107,8 +108,9 @@ class Ct2Pair:
 
 class LocalEngine:
     def __init__(self, models: Path, *, verify: bool = True):
+        self.catalog = load_catalog()
         if verify:
-            self._verify_inventory(models)
+            self._verify_inventory(models, self.catalog)
         from lingua import LanguageDetectorBuilder
 
         # A real offline detector is used; Auto is not a Han/non-Han dictionary substitute.
@@ -117,14 +119,16 @@ class LocalEngine:
         )
         threads = max(1, min(4, (os.cpu_count() or 2) // 2))
         self._pairs = {
-            ("zh", "en"): Ct2Pair(models / "zh_en", threads),
-            ("en", "zh"): Ct2Pair(models / "en_zh", threads),
+            (direction.source, direction.target): Ct2Pair(models / direction.id, threads)
+            for direction in self.catalog
         }
 
     @staticmethod
-    def _verify_inventory(models: Path) -> None:
+    def _verify_inventory(models: Path, catalog: tuple[ModelDirection, ...]) -> None:
         try:
             inventory = json.loads((models / "installed.json").read_text(encoding="utf-8"))
+            if type(inventory.get("schema")) is not int or inventory["schema"] != 1:
+                raise EngineError("model-inventory")
             entries = inventory["files"]
             if not isinstance(entries, list) or not 4 <= len(entries) <= 20000:
                 raise EngineError("model-inventory")
@@ -141,18 +145,35 @@ class LocalEngine:
                     raise EngineError("model-integrity")
             required = {
                 f"{p}/{f}"
-                for p in ("zh_en", "en_zh")
+                for p in (direction.id for direction in catalog)
                 for f in ("model/model.bin", "sentencepiece.model")
             }
             if not required.issubset(seen):
                 raise EngineError("model-inventory")
+            # Legacy schema-1 inventories have no direction claim. Infer the full bundle
+            # only after every listed file and both directions' required files pass.
+            if "directions" in inventory:
+                directions = inventory["directions"]
+                if (
+                    not isinstance(directions, list)
+                    or any(not isinstance(value, str) for value in directions)
+                    or len(directions) != len(catalog)
+                    or set(directions) != {direction.id for direction in catalog}
+                ):
+                    raise EngineError("model-inventory")
         except (OSError, KeyError, ValueError, TypeError):
             raise EngineError("model-inventory") from None
+
+    @property
+    def directions(self) -> tuple[str, ...]:
+        return tuple(direction.id for direction in self.catalog)
 
     def translate(
         self, text: str, source: str, target: str, preserved: str | None = None
     ) -> Result:
-        if not valid_text(text) or source not in {"auto", "zh", "en"} or target not in {"zh", "en"}:
+        sources = {direction.source for direction in self.catalog}
+        targets = {direction.target for direction in self.catalog}
+        if not valid_text(text) or source not in sources | {"auto"} or target not in targets:
             return Result("error", code="invalid-request")
         if preserved is not None and not valid_text(preserved):
             return Result("error", code="invalid-manual-append")

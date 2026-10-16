@@ -47,15 +47,31 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
     {
         link.Send("settings", settings);
         var guidance = SettingsGuidancePresentation.Create(settings, exclusionsNeedSave: true);
+        string defaultTarget = new UserSettings().Target;
         link.Send("settingsGuidance", new
         {
             guidance.ModeDescription,
             guidance.AcceptanceDescription,
             guidance.SaveScopeDescription,
             SettingsDraftPresentation.SaveUnconfirmedMessage,
-            SettingsDraftPresentation.UnknownSaveMessage
+            SettingsDraftPresentation.UnknownSaveMessage,
+            languageChoices = new
+            {
+                source = ModelCatalog.SourceChoices.Select(LanguageChoice),
+                target = ModelCatalog.TargetChoices.OrderBy(choice => choice.Code == defaultTarget ? 0 : 1)
+                    .Select(LanguageChoice)
+            }
         });
     }
+    private static ModelLanguageChoice LanguageChoice(ModelLanguageChoice choice) => choice with
+    {
+        Label = choice.Code switch
+        {
+            "auto" => "自动识别",
+            "en" => "英语",
+            _ => choice.Label
+        }
+    };
     public void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null, SessionViewContext? context = null)
     {
         var presentation = Presentation.From(session.State, canAccept, session.Preview.Length > 0,

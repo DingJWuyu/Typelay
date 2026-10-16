@@ -59,6 +59,7 @@ internal static class Program
             model = model.Status,
             modelReady = model.Ready,
             modelInstalled = model.Installed,
+            modelDirections = model.AvailableDirections,
             controller.ServiceStatus,
             controller.ConnectionState,
             controller.ConnectionStatus,
@@ -429,15 +430,13 @@ internal static class Program
                         Mode = property.Value.GetString() == "Automatic" ? WorkMode.Automatic : WorkMode.OnDemand
                     };
                     break;
-                case "source" when property.Value.ValueKind == JsonValueKind.String
-                    && property.Value.GetString() is "auto" or "zh" or "en":
+                case "source" when property.Value.ValueKind == JsonValueKind.String:
                     updated = updated with
                     {
                         Source = property.Value.GetString()!
                     };
                     break;
-                case "target" when property.Value.ValueKind == JsonValueKind.String
-                    && property.Value.GetString() is "zh" or "en":
+                case "target" when property.Value.ValueKind == JsonValueKind.String:
                     updated = updated with
                     {
                         Target = property.Value.GetString()!
@@ -447,7 +446,7 @@ internal static class Program
                     return false;
             }
         }
-        return fields.Count > 0;
+        return fields.Count > 0 && ModelCatalog.IsSupportedSetting(updated.Source, updated.Target);
     }
 
     private static object SetupPresentation(string? code) => new

@@ -25,6 +25,20 @@ public sealed class ProtocolContractTests
         Check(json.Contains("\"op\":\"hello\"", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task WorkerDirectionCapabilitiesCrossTheRealFrameContract()
+    {
+        using var stream = new MemoryStream();
+        await Wire.WriteAsync(stream, new ModelResponse(9, "ready", Directions: ["zh_en", "en_zh"]), TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        var response = await Wire.ReadAsync<ModelResponse>(stream, TestContext.Current.CancellationToken);
+        Assert.Equal(9, response.Id);
+        Assert.Equal("ready", response.Status);
+        Assert.NotNull(response.Directions);
+        Assert.Equal(["zh_en", "en_zh"], response.Directions);
+        Assert.Null(JsonSerializer.Deserialize<ModelResponse>("""{"id":9,"status":"ready"}""", Wire.Json)!.Directions);
+    }
+
     [Fact(DisplayName = "wire-reject-truncated-header")]
     public async Task WireRejectTruncatedHeader()
     {

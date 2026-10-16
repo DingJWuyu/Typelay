@@ -28,10 +28,14 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
+sys.path.insert(0, str(ROOT / "src/shared/TypeLay.Worker"))
 import setup  # noqa: E402
 from application_support import ApplicationSupport  # noqa: E402
 from paths import Paths  # noqa: E402
+from typelay_worker.catalog import load_catalog  # noqa: E402
 from wire import now_ms  # noqa: E402
+
+DIRECTIONS = {direction.id: direction for direction in load_catalog()}
 
 
 class Response(io.BytesIO):
@@ -47,6 +51,20 @@ class Response(io.BytesIO):
         if self.interrupt and self.tell():
             raise OSError("interrupted transport")
         return super().read(size)
+
+
+class CatalogTests(unittest.TestCase):
+    def test_relocated_setup_reads_the_selected_distribution_catalog(self):
+        with tempfile.TemporaryDirectory(prefix="typelay-catalog-搬迁 ") as directory:
+            home = Path(directory)
+            shutil.copytree(ROOT / "src/shared/TypeLay.Worker", home / "worker")
+            directions = setup.model_catalog(home)
+            self.assertEqual([direction.id for direction in directions], ["zh_en", "en_zh"])
+            self.assertEqual(directions[0].source_name, "中文")
+            catalog = home / "worker/model-catalog.json"
+            catalog.unlink()
+            with self.assertRaisesRegex(ValueError, "^model-catalog$"):
+                setup.model_catalog(home)
 
 
 class DownloadTests(unittest.TestCase):
@@ -79,7 +97,7 @@ class DownloadTests(unittest.TestCase):
             )
         )
         with self.assertRaises(OSError):
-            setup.download("zh_en", self.cache)
+            setup.download(DIRECTIONS["zh_en"], self.cache)
 
     def test_interruption_resumes_only_the_same_representation(self):
         self.interrupted()
@@ -90,7 +108,7 @@ class DownloadTests(unittest.TestCase):
                 {"Content-Length": 6, "Content-Range": "bytes 5-10/11", "ETag": '"v1"'},
             )
         )
-        archive, _ = setup.download("zh_en", self.cache)
+        archive, _ = setup.download(DIRECTIONS["zh_en"], self.cache)
         self.assertEqual(self.requests[-1].get_header("Range"), "bytes=5-")
         self.assertEqual(self.requests[-1].get_header("If-range"), '"v1"')
         self.assertEqual(archive.read_bytes(), b"firstsecond")
@@ -98,7 +116,7 @@ class DownloadTests(unittest.TestCase):
     def test_ignored_range_overwrites_partial_instead_of_appending(self):
         self.interrupted()
         self.responses.append(Response(b"new model", headers={"Content-Length": 9, "ETag": '"v2"'}))
-        archive, _ = setup.download("zh_en", self.cache)
+        archive, _ = setup.download(DIRECTIONS["zh_en"], self.cache)
         self.assertEqual(archive.read_bytes(), b"new model")
 
     def test_changed_etag_or_wrong_range_restarts_without_mixing_bytes(self):
@@ -114,7 +132,7 @@ class DownloadTests(unittest.TestCase):
                         Response(b"new model", headers={"Content-Length": 9, "ETag": '"v2"'}),
                     ]
                 )
-                archive, _ = setup.download("zh_en", self.cache)
+                archive, _ = setup.download(DIRECTIONS["zh_en"], self.cache)
                 self.assertIsNone(self.requests[-1].get_header("Range"))
                 self.assertEqual(archive.read_bytes(), b"new model")
                 archive.unlink()
@@ -123,7 +141,7 @@ class DownloadTests(unittest.TestCase):
         self.interrupted()
         (self.cache / "zh_en-1.9.part").write_bytes(b"other")
         self.responses.append(Response(b"whole", headers={"Content-Length": 5}))
-        archive, _ = setup.download("zh_en", self.cache)
+        archive, _ = setup.download(DIRECTIONS["zh_en"], self.cache)
         self.assertIsNone(self.requests[-1].get_header("Range"))
         self.assertEqual(archive.read_bytes(), b"whole")
 
@@ -136,7 +154,7 @@ class DownloadTests(unittest.TestCase):
                 saved["validatorHeaders"] = headers
                 checkpoint.write_text(json.dumps(saved))
                 self.responses.append(Response(b"whole", headers={"Content-Length": 5}))
-                archive, _ = setup.download("zh_en", self.cache)
+                archive, _ = setup.download(DIRECTIONS["zh_en"], self.cache)
                 self.assertIsNone(self.requests[-1].get_header("Range"))
                 self.assertEqual(archive.read_bytes(), b"whole")
                 archive.unlink()
@@ -144,7 +162,7 @@ class DownloadTests(unittest.TestCase):
     def test_weak_etag_without_strong_date_cannot_resume(self):
         self.interrupted(ETag='W/"v1"')
         self.responses.append(Response(b"whole", headers={"Content-Length": 5}))
-        archive, _ = setup.download("zh_en", self.cache)
+        archive, _ = setup.download(DIRECTIONS["zh_en"], self.cache)
         self.assertIsNone(self.requests[-1].get_header("Range"))
         self.assertEqual(archive.read_bytes(), b"whole")
 
@@ -157,7 +175,7 @@ class DownloadTests(unittest.TestCase):
             }
         )
         self.responses.append(Response(b"whole", headers={"Content-Length": 5}))
-        archive, _ = setup.download("zh_en", self.cache)
+        archive, _ = setup.download(DIRECTIONS["zh_en"], self.cache)
         self.assertIsNone(self.requests[-1].get_header("If-range"))
         self.assertEqual(archive.read_bytes(), b"whole")
 
@@ -173,7 +191,7 @@ class DownloadTests(unittest.TestCase):
                 b"second", 206, {**headers, "Content-Length": 6, "Content-Range": "bytes 5-10/11"}
             )
         )
-        archive, _ = setup.download("zh_en", self.cache)
+        archive, _ = setup.download(DIRECTIONS["zh_en"], self.cache)
         self.assertEqual(self.requests[-1].get_header("If-range"), headers["Last-Modified"])
         self.assertEqual(archive.read_bytes(), b"firstsecond")
 
@@ -185,7 +203,7 @@ class DownloadTests(unittest.TestCase):
                 Response(b"whole", headers={"Content-Length": 5}),
             ]
         )
-        archive, _ = setup.download("zh_en", self.cache)
+        archive, _ = setup.download(DIRECTIONS["zh_en"], self.cache)
         self.assertEqual(archive.read_bytes(), b"whole")
         self.assertIsNone(self.requests[-1].get_header("Range"))
 
@@ -194,7 +212,7 @@ class DownloadTests(unittest.TestCase):
             Response(b"too much", headers={"Content-Length": setup.MAX_ARCHIVE + 1})
         )
         with self.assertRaises(ValueError):
-            setup.download("zh_en", self.cache)
+            setup.download(DIRECTIONS["zh_en"], self.cache)
         self.assertFalse((self.cache / "zh_en-1.9.argosmodel").exists())
 
     def test_pause_preserves_a_verified_prefix(self):
@@ -206,7 +224,7 @@ class DownloadTests(unittest.TestCase):
 
         self.responses.append(Pausing(b"first", headers={"Content-Length": 11, "ETag": '"v1"'}))
         with self.assertRaises(setup.Paused):
-            setup.download("zh_en", self.cache)
+            setup.download(DIRECTIONS["zh_en"], self.cache)
         self.responses.append(
             Response(
                 b"second",
@@ -214,7 +232,7 @@ class DownloadTests(unittest.TestCase):
                 {"Content-Length": 6, "Content-Range": "bytes 5-10/11", "ETag": '"v1"'},
             )
         )
-        archive, _ = setup.download("zh_en", self.cache)
+        archive, _ = setup.download(DIRECTIONS["zh_en"], self.cache)
         self.assertEqual(self.requests[-1].get_header("Range"), "bytes=5-")
         self.assertEqual(archive.read_bytes(), b"firstsecond")
 
@@ -267,7 +285,7 @@ class HTTPDownloadTests(unittest.TestCase):
             cache = Path(directory)
             responses.append((200, {"Content-Length": 11, "ETag": '"v1"'}, b"first"))
             with self.assertRaises(OSError):
-                setup.download("zh_en", cache)
+                setup.download(DIRECTIONS["zh_en"], cache)
             responses.append(
                 (
                     206,
@@ -275,16 +293,16 @@ class HTTPDownloadTests(unittest.TestCase):
                     b"second",
                 )
             )
-            archive, _ = setup.download("zh_en", cache)
+            archive, _ = setup.download(DIRECTIONS["zh_en"], cache)
             self.assertEqual(archive.read_bytes(), b"firstsecond")
             self.assertEqual(requests[-1]["Range"], "bytes=5-")
             self.assertEqual(requests[-1]["If-Range"], '"v1"')
             archive.unlink()
             responses.append((200, {"Content-Length": 11, "ETag": '"v1"'}, b"first"))
             with self.assertRaises(OSError):
-                setup.download("zh_en", cache)
+                setup.download(DIRECTIONS["zh_en"], cache)
             responses.append((200, {"Content-Length": 9, "ETag": '"v2"'}, b"new model"))
-            archive, _ = setup.download("zh_en", cache)
+            archive, _ = setup.download(DIRECTIONS["zh_en"], cache)
             self.assertEqual(archive.read_bytes(), b"new model")
             self.assertEqual(requests[-1]["Range"], "bytes=5-")
 
@@ -1363,6 +1381,7 @@ class InstallationFailureTests(unittest.TestCase):
     ):
         with tempfile.TemporaryDirectory(prefix="typelay-install-failure-") as directory:
             base = Path(directory)
+            shutil.copytree(ROOT / "src/shared/TypeLay.Worker", base / "home/worker")
             current = base / "data/components/old"
             current.mkdir(parents=True)
             (current / "retained").write_text("old usable version")
@@ -1454,6 +1473,15 @@ class InstallationFailureTests(unittest.TestCase):
             else:
                 self.assertNotEqual(os.readlink(current.parent / "current"), "old")
                 self.assertTrue((current.parent / "current/self-check.json").is_file())
+                inventory = json.loads(
+                    (current.parent / "current/models/installed.json").read_text()
+                )
+                self.assertEqual(inventory["schema"], 1)
+                self.assertEqual(inventory["directions"], ["zh_en", "en_zh"])
+                self.assertEqual(
+                    {entry["path"].split("/")[0] for entry in inventory["files"]},
+                    {"zh_en", "en_zh"},
+                )
             self.assertEqual((current / "retained").read_text(), "old usable version")
             if expected_code and cleanup_error is None:
                 self.assertEqual(
@@ -1590,6 +1618,7 @@ class InstallationProcessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="typelay-setup-stop-") as directory:
             base = Path(directory)
             home = base / "home"
+            shutil.copytree(ROOT / "src/shared/TypeLay.Worker", home / "worker")
             (home / "native").mkdir(parents=True)
             (home / "native/typelay-supervise").symlink_to(self.supervisor)
             (base / "bin").mkdir()
@@ -1664,6 +1693,7 @@ class PresentationProcessTests(unittest.TestCase):
     def test_pause_during_failure_guidance_keeps_the_first_failure_and_previous_version(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
+            shutil.copytree(ROOT / "src/shared/TypeLay.Worker", home / "worker")
             (home / "app").mkdir()
             pid = home / "formatter-pid"
             executable = home / "app/TypeLay.Linux"
@@ -1750,6 +1780,7 @@ if __name__ == "__main__":
     mode.add_argument("--supervisor", type=Path)
     options, remaining = parser.parse_known_args()
     suite = [
+        "CatalogTests",
         "DownloadTests",
         "InstallationFailureTests",
         "ApplicationSupportTests",

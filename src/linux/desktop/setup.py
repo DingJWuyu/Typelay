@@ -224,11 +224,18 @@ def validator(headers):
     return {}
 
 
-def download(pair, cache):
-    if pair not in ("zh_en", "en_zh"):
-        raise ValueError("model-direction")
-    url = f"https://argos-net.com/v1/translate-{pair}-1_9.argosmodel"
-    archive = cache / f"{pair}-1.9.argosmodel"
+def model_catalog(home):
+    # Source checkouts and installed packages have different layouts. Setup consumes
+    # only the explicitly selected distribution, just like its worker subprocess.
+    sys.path.insert(0, str(home / "worker"))
+    from typelay_worker.catalog import load_catalog
+
+    return load_catalog(home / "worker/model-catalog.json")
+
+
+def download(direction, cache):
+    pair, url = direction.id, direction.url
+    archive = cache / f"{pair}-{direction.version}.argosmodel"
     if archive.is_file() and not archive.is_symlink() and 0 < archive.stat().st_size <= MAX_ARCHIVE:
         return archive, url
     partial = archive.with_suffix(".part")
@@ -386,7 +393,7 @@ def download(pair, cache):
     raise OSError("model-download-retry")
 
 
-def extract_model(archive, destination, pair):
+def extract_model(archive, destination, direction):
     with zipfile.ZipFile(archive) as package:
         entries = package.infolist()
         if len(entries) > 30000 or sum(item.file_size for item in entries) > 2 * MAX_ARCHIVE:
@@ -411,11 +418,10 @@ def extract_model(archive, destination, pair):
         if len(metadata) != 1 or metadata[0].file_size > 65536:
             raise ValueError("model-metadata")
         description = json.loads(package.read(metadata[0]))
-        source, target = pair.split("_")
         if (
-            description.get("from_code") != source
-            or description.get("to_code") != target
-            or description.get("package_version") != "1.9"
+            description.get("from_code") != direction.source
+            or description.get("to_code") != direction.target
+            or description.get("package_version") != direction.version
         ):
             raise ValueError("model-direction")
         root = PurePosixPath(metadata[0].filename).parent
@@ -492,8 +498,10 @@ def install(home, data, cache):
         result = run(["uv", *arguments, "--no-config"], 1200, capture)
         return result.decode().strip() if capture else None
 
-    stage = "runtime"
+    stage = "prepare"
     try:
+        directions = model_catalog(home)
+        stage = "runtime"
         print("正在安装私有 CPython 3.13.16 运行时", flush=True)
         uv("python", "install", PYTHON, "--no-bin")
         python = Path(
@@ -536,12 +544,13 @@ def install(home, data, cache):
         )
         models = private_directory(version / "models")
         dependencies = []
-        for pair in ("zh_en", "en_zh"):
+        for direction in directions:
+            pair = direction.id
             stage = "model-download"
-            archive, url = download(pair, download_cache)
+            archive, url = download(direction, download_cache)
             stage = "model-extract"
             try:
-                extract_model(archive, models / pair, pair)
+                extract_model(archive, models / pair, direction)
             except (ValueError, zipfile.BadZipFile):
                 archive.unlink(missing_ok=True)
                 raise
@@ -549,10 +558,16 @@ def install(home, data, cache):
             # No upstream archive hash exists for these pinned Argos entries.
             # This is a recorded first-install TLS download hash, not a publisher pin.
             dependencies.append(
-                {"name": pair, "version": "1.9", "url": url, "observedSha256": digest(archive)}
+                {
+                    "name": pair,
+                    "version": direction.version,
+                    "url": url,
+                    "observedSha256": digest(archive),
+                }
             )
         inventory = {
             "schema": 1,
+            "directions": [direction.id for direction in directions],
             "pythonVersion": PYTHON,
             "dependencies": dependencies,
             "requirementsSha256": digest(requirements),

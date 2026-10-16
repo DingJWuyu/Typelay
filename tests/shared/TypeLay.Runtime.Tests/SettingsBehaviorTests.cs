@@ -9,6 +9,27 @@ public sealed class SettingsBehaviorTests : IDisposable
     private readonly string _directory = Path.Combine(Path.GetTempPath(), "typelay-settings-test-" + Guid.NewGuid().ToString("N"));
     private string SettingsPath => Path.Combine(_directory, "settings.json");
 
+    [Theory]
+    [InlineData("auto", "en")]
+    [InlineData("auto", "zh")]
+    [InlineData("zh", "en")]
+    [InlineData("en", "zh")]
+    [InlineData("zh", "zh")]
+    [InlineData("en", "en")]
+    public void CatalogSettingsPersistWithoutAnInstalledModel(string source, string target)
+    {
+        var store = new SettingsStore(SettingsPath);
+        store.Update(store.Value with
+        {
+            Source = source,
+            Target = target,
+            ExcludedApplications = ["private-app"]
+        });
+        var reloaded = new SettingsStore(SettingsPath).Value;
+        Assert.Equal((source, target), (reloaded.Source, reloaded.Target));
+        Assert.Equal(["private-app"], reloaded.Excluded);
+    }
+
     [Fact]
     public void UpgradeKeepsAutomaticModeAndPrivacyExclusions()
     {

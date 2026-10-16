@@ -69,7 +69,7 @@ function Publish-Distribution([bool]$SelfContained) {
     }
     # The deployment surface is explicit. Never copy a repository, developer data, or model cache.
     New-Item -ItemType Directory -Force (Join-Path $stage 'worker/typelay_worker') | Out-Null
-    Copy-Item 'src/shared/TypeLay.Worker/run_worker.py', 'src/shared/TypeLay.Worker/requirements.txt' (Join-Path $stage 'worker')
+    Copy-Item 'src/shared/TypeLay.Worker/run_worker.py', 'src/shared/TypeLay.Worker/requirements.txt', 'src/shared/TypeLay.Worker/model-catalog.json' (Join-Path $stage 'worker')
     Copy-Item 'src/shared/TypeLay.Worker/typelay_worker/*.py' (Join-Path $stage 'worker/typelay_worker')
     New-Item -ItemType Directory -Force (Join-Path $stage 'bootstrap') | Out-Null
     Copy-Item 'packaging/windows/start.ps1' (Join-Path $stage 'bootstrap/start.ps1')

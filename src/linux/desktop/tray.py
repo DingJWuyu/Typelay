@@ -10,6 +10,7 @@ class Tray:
     def __init__(self, paths, host, tasks, show_settings, quit_requested, availability_changed):
         self.host, self.tasks = host, tasks
         self.value = self.guidance = None
+        self.language_choices = None
         self.save_problem = None
         self.updating = self.pending = self.closed = False
         self.connected = False
@@ -30,10 +31,10 @@ class Tray:
         self.enabled.connect("toggled", self.toggle_enabled)
         self.menu.append(self.enabled)
         self.groups = {}
-        self.parents = []
+        self.parents = {}
         self.choices("mode", "工作模式", [("Automatic", "自动模式"), ("OnDemand", "按需模式")])
-        self.choices("source", "源语言", [("auto", "自动识别"), ("zh", "中文"), ("en", "英语")])
-        self.choices("target", "目标语言", [("en", "英语"), ("zh", "中文")])
+        self.choices("source", "源语言", [])
+        self.choices("target", "目标语言", [])
         self.swap = self.item("交换语言", lambda *_: self.swap_languages())
         self.menu.append(Gtk.SeparatorMenuItem())
         settings = self.item("设置…", lambda *_: show_settings())
@@ -71,10 +72,13 @@ class Tray:
         return item
 
     def choices(self, key, label, choices):
-        parent = self.item(label)
+        parent = self.parents.get(key)
+        if parent is None:
+            parent = self.parents[key] = self.item(label)
+        else:
+            parent.get_submenu().destroy()
         submenu = Gtk.Menu()
         parent.set_submenu(submenu)
-        self.parents.append(parent)
         group = None
         entries = self.groups[key] = {}
         for value, title in choices:
@@ -83,6 +87,7 @@ class Tray:
             item.connect("toggled", self.choose, key, value)
             submenu.append(item)
             entries[value] = item
+        submenu.show_all()
 
     def connection_changed(self, _indicator, connected):
         if not self.closed:
@@ -97,6 +102,19 @@ class Tray:
     def render_guidance(self, value):
         if not self.closed:
             self.guidance = value
+            choices = value["languageChoices"]
+            if choices != self.language_choices:
+                self.language_choices = choices
+                self.updating = True
+                try:
+                    for key, label in (("source", "源语言"), ("target", "目标语言")):
+                        self.choices(
+                            key,
+                            label,
+                            [(choice["code"], choice["label"]) for choice in choices[key]],
+                        )
+                finally:
+                    self.updating = False
             self.refresh()
 
     def refresh(self):
@@ -106,6 +124,7 @@ class Tray:
             ready = (
                 self.value is not None
                 and self.guidance is not None
+                and self.language_choices is not None
                 and not self.pending
                 and not self.closed
             )
@@ -113,7 +132,7 @@ class Tray:
             self.save_notice.set_label(message)
             self.save_notice.set_visible(bool(message))
             self.enabled.set_sensitive(ready)
-            for parent in self.parents:
+            for parent in self.parents.values():
                 parent.set_sensitive(ready)
             source = (self.value or {}).get("source", "auto")
             self.swap.set_sensitive(ready and source != "auto")
@@ -123,11 +142,17 @@ class Tray:
             enabled = self.value["enabled"]
             self.enabled.set_active(enabled)
             for key, entries in self.groups.items():
-                entries[self.value[key]].set_active(True)
+                if item := entries.get(self.value[key]):
+                    item.set_active(True)
             state = "已启用" if enabled else "已暂停"
-            names = {"auto": "自动识别", "en": "英语", "zh": "中文"}
+            names = {
+                choice["code"]: choice["label"]
+                for choices in (self.language_choices or {}).values()
+                for choice in choices
+            }
             self.status.set_label(
-                f"TypeLay · {state} · {names[source]} → {names[self.value['target']]}"
+                f"TypeLay · {state} · {names.get(source, source)} → "
+                f"{names.get(self.value['target'], self.value['target'])}"
             )
             if self.indicator is not None:
                 self.indicator.set_title("TypeLay · " + state)

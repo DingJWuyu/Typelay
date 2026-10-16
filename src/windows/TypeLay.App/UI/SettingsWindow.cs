@@ -720,7 +720,7 @@ internal sealed class SettingsWindow : Window
     private void Languages()
     {
         Heading("语言", "Auto 只用于源语言，目标语言始终明确指定。");
-        Row("源语言", "Auto 使用本地语言检测。当前已安装模型仅覆盖中文与英文。", LanguageCombo(true, _settings.Value, async value => await SaveAsync(value)));
+        Row("源语言", "Auto 使用本地语言检测。当前提供中文与英文模型。", LanguageCombo(true, _settings.Value, async value => await SaveAsync(value)));
         Row("目标语言", "选择希望写回的语言。", LanguageCombo(false, _settings.Value, async value => await SaveAsync(value)));
         var swap = UiTheme.Button("交换", async () => await SaveAsync(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
         swap.IsEnabled = _settings.Value.Source != "auto";
@@ -730,11 +730,8 @@ internal sealed class SettingsWindow : Window
     }
     internal static ComboBox LanguageCombo(bool source, UserSettings settings, Action<UserSettings> save)
     {
-        var options = new List<LanguageChoice>();
-        if (source)
-            options.Add(new("auto", "Auto"));
-        options.Add(new("zh", "中文"));
-        options.Add(new("en", "English"));
+        var options = (source ? ModelCatalog.SourceChoices : ModelCatalog.TargetChoices)
+            .Select(choice => new LanguageChoice(choice.Code, choice.Label)).ToList();
         var combo = new ComboBox
         {
             ItemsSource = options,

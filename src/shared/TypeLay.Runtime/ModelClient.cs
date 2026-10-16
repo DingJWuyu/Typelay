@@ -24,7 +24,9 @@ public sealed class ModelClient : ITranslationService, IDisposable
         get; private set;
     }
     public string Status { get; private set; } = "未安装本地模型";
+    public IReadOnlyList<string> AvailableDirections { get; private set; } = Array.AsReadOnly(Array.Empty<string>());
     public event Action? Changed;
+    // Installation markers allow a startup attempt; they do not verify models.
     public bool Installed => File.Exists(_paths.Python) && File.Exists(Path.Combine(_paths.Models, "installed.json"));
     public async Task StartAsync()
     {
@@ -51,7 +53,9 @@ public sealed class ModelClient : ITranslationService, IDisposable
         {
             _child = _startProcess(info);
             var response = await ExchangeAsync(new(0, "hello"), TimeSpan.FromSeconds(120));
-            Ready = response.Status == "ready";
+            Ready = response.Status == "ready" && ModelCatalog.IsCompleteDirectionSet(response.Directions);
+            if (Ready)
+                AvailableDirections = Array.AsReadOnly(response.Directions!.ToArray());
             Status = Ready ? "本地翻译已就绪" : "模型无法加载（请检查本地组件）";
             if (!Ready)
                 Stop();
@@ -69,6 +73,13 @@ public sealed class ModelClient : ITranslationService, IDisposable
     {
         if (!Ready)
             return new(0, "error", Code: "not-ready");
+        if (!ModelCatalog.IsSupportedSetting(request.Source, request.Target))
+            return new(0, "error", Code: "invalid-request");
+        // Auto has no source until the worker detects it. Require an installed
+        // incoming direction only; the worker checks the actual detected edge.
+        if (request.Source != request.Target && !AvailableDirections.Select(ModelCatalog.Get).Any(direction =>
+            direction.Target == request.Target && (request.Source == "auto" || direction.Source == request.Source)))
+            return new(0, "error", Code: "language-unavailable");
         Busy = true;
         try
         {
@@ -99,6 +110,7 @@ public sealed class ModelClient : ITranslationService, IDisposable
     private void Stop()
     {
         Ready = false;
+        AvailableDirections = Array.AsReadOnly(Array.Empty<string>());
         Interlocked.Exchange(ref _child, null)?.Dispose();
     }
     public void Dispose() => Stop();

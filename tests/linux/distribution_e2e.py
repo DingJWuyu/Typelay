@@ -64,6 +64,26 @@ class DistributionTests(unittest.TestCase):
     def assert_success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_relocated_worker_reads_its_shared_model_catalog(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-c",
+                "import sys,json; sys.path.insert(0, sys.argv[1]); "
+                "from typelay_worker.catalog import load_catalog; "
+                "print(json.dumps([d.id for d in load_catalog()]))",
+                str(self.package / "worker"),
+            ],
+            cwd=self.package,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout), ["zh_en", "en_zh"])
+
     def test_setup_failures_explain_next_steps_without_starting_the_desktop(self):
         for category, remedy in (
             ("network", "网络"),

@@ -141,6 +141,29 @@ public sealed class ModelInstallerTests
     }
 
     [Fact]
+    public async Task SuccessfulCheckActivatesAnInventoryWithBothInstalledDirections()
+    {
+        using var files = new SetupFiles();
+        // The controlled external check exercises activation, not real model inference.
+        var installer = files.Installer(files.Responses(ModelArchive),
+            startProcess: files.Child("{\"status\":\"passed\"}"));
+        await installer.InstallAsync(NoProgress, TestContext.Current.CancellationToken);
+        using var inventory = JsonDocument.Parse(File.ReadAllText(Path.Combine(files.Root, "models", "installed.json")));
+        Assert.Equal(1, inventory.RootElement.GetProperty("schema").GetInt32());
+        Assert.Equal(new[] { "zh_en", "en_zh" }, inventory.RootElement.GetProperty("directions")
+            .EnumerateArray().Select(value => value.GetString()).ToArray());
+        Assert.All(inventory.RootElement.GetProperty("files").EnumerateArray(), entry =>
+        {
+            string relative = entry.GetProperty("path").GetString()!;
+            string expected = entry.GetProperty("sha256").GetString()!;
+            string actual = Convert.ToHexString(SHA256.HashData(
+                File.ReadAllBytes(Path.Combine(files.Root, "models", relative)))).ToLowerInvariant();
+            Assert.Equal(expected, actual);
+        });
+        files.AssertChildrenExited();
+    }
+
+    [Fact]
     public async Task LockedCompletedArchiveIsPermissionFailureAndIsRetained()
     {
         using var files = new SetupFiles();

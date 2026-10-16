@@ -41,6 +41,12 @@ public sealed class QuickPanelRenderingTests(WpfDesktopFixture desktop)
             Assert.Equal(346, fixture.Panel.ActualWidth);
             Assert.False(ModeSelection(fixture.Panel, "自动").IsSelected);
             Assert.True(ModeSelection(fixture.Panel, "按需").IsSelected);
+            var languages = Descendants(fixture.Panel).OfType<ComboBox>().ToArray();
+            Assert.Equal(2, languages.Length);
+            Assert.Equal(new[] { "Auto", "中文", "English" }, languages[0].Items.Cast<object>().Select(item => item.ToString()));
+            Assert.Equal(new[] { "中文", "English" }, languages[1].Items.Cast<object>().Select(item => item.ToString()));
+            Assert.Equal("中文", languages[0].SelectedItem?.ToString());
+            Assert.Equal("English", languages[1].SelectedItem?.ToString());
             foreach (var choice in Descendants(fixture.Panel).OfType<RadioButton>())
             {
                 Assert.True(choice.IsVisible);

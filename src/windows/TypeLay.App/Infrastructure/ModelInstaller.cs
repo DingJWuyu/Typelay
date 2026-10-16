@@ -54,8 +54,8 @@ internal sealed class ModelInstaller
 
     private static string DefaultLocalPackages => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share", "argos-translate", "packages");
-    public static bool HasReusableLocalModels => FindLocalPackage("zh_en", AppPaths.Models, DefaultLocalPackages) is not null
-        && FindLocalPackage("en_zh", AppPaths.Models, DefaultLocalPackages) is not null;
+    public static bool HasReusableLocalModels => ModelCatalog.Directions.All(
+        direction => FindLocalPackage(direction, AppPaths.Models, DefaultLocalPackages) is not null);
 
     public async Task InstallAsync(IProgress<SetupProgress> progress, CancellationToken ct)
     {
@@ -122,16 +122,17 @@ internal sealed class ModelInstaller
             }
             string modelStage = Path.Combine(staging, "models");
             Directory.CreateDirectory(modelStage);
-            foreach (string pair in new[] { "zh_en", "en_zh" })
+            foreach (var direction in ModelCatalog.Directions)
             {
+                string pair = direction.Id;
                 string dest = Path.Combine(modelStage, pair);
                 stage = ModelSetupStage.ModelVerify;
-                if (await TryStageLocalModel(pair, dest, progress, ct))
+                if (await TryStageLocalModel(direction, dest, progress, ct))
                     continue;
                 stage = ModelSetupStage.ModelDownload;
-                string modelUrl = $"https://argos-net.com/v1/translate-{pair}-1_9.argosmodel";
-                string archive = await Download(modelUrl, pair + "-1.9.argosmodel", null,
-                    pair == "zh_en" ? "下载中文 → English 模型" : "下载 English → 中文模型", progress, ct);
+                string modelUrl = direction.Url;
+                string archive = await Download(modelUrl, pair + "-" + direction.Version + ".argosmodel", null,
+                    $"下载{direction.SourceName} → {direction.TargetName} 模型", progress, ct);
                 // Argos publishes no archive checksum for these entries. HTTPS is the first-install
                 // authenticity boundary; the observed SHA is recorded, not misrepresented as upstream-pinned.
                 string extraction = Path.Combine(staging, pair);
@@ -145,10 +146,9 @@ internal sealed class ModelInstaller
                     if (metadataPaths.Length != 1)
                         throw new InvalidDataException("model-layout");
                     using var metadata = JsonDocument.Parse(await File.ReadAllTextAsync(metadataPaths[0], ct));
-                    var parts = pair.Split('_');
-                    if (metadata.RootElement.GetProperty("from_code").GetString() != parts[0]
-                        || metadata.RootElement.GetProperty("to_code").GetString() != parts[1]
-                        || metadata.RootElement.GetProperty("package_version").GetString() != "1.9")
+                    if (metadata.RootElement.GetProperty("from_code").GetString() != direction.Source
+                        || metadata.RootElement.GetProperty("to_code").GetString() != direction.Target
+                        || metadata.RootElement.GetProperty("package_version").GetString() != direction.Version)
                         throw new InvalidDataException("model-direction");
                     package = Path.GetDirectoryName(metadataPaths[0])!;
                     foreach (string relative in ModelFiles)
@@ -166,7 +166,7 @@ internal sealed class ModelInstaller
                 Directory.Move(Path.Combine(package, "model"), Path.Combine(dest, "model"));
                 foreach (string file in Directory.GetFiles(package))
                     File.Copy(file, Path.Combine(dest, Path.GetFileName(file)), true);
-                _locks.Add(new("argos-" + pair, "1.9", modelUrl, await Hash(archive, ct)));
+                _locks.Add(new("argos-" + pair, direction.Version, modelUrl, await Hash(archive, ct)));
             }
             stage = ModelSetupStage.ModelVerify;
             progress.Report(new("校验模型并执行真实 CPU 翻译自检"));
@@ -180,6 +180,7 @@ internal sealed class ModelInstaller
             await File.WriteAllTextAsync(Path.Combine(modelStage, "installed.json"), JsonSerializer.Serialize(new
             {
                 schema = 1,
+                directions = ModelCatalog.Directions.Select(direction => direction.Id).ToArray(),
                 installedAt = DateTimeOffset.UtcNow,
                 files,
                 dependencies = _locks
@@ -235,11 +236,11 @@ internal sealed class ModelInstaller
             catch (UnauthorizedAccessException) { }
         }
     }
-    private static string? FindLocalPackage(string pair, string models, string localPackages)
+    private static string? FindLocalPackage(ModelDirection direction, string models, string localPackages)
     {
         string[] candidates =
-        [Path.Combine(models, pair),
-         Path.Combine(localPackages, $"translate-{pair}-1_9")];
+        [Path.Combine(models, direction.Id),
+         Path.Combine(localPackages, $"translate-{direction.Id}-{direction.Version.Replace('.', '_')}")];
         foreach (string source in candidates)
         {
             try
@@ -260,10 +261,9 @@ internal sealed class ModelInstaller
                     continue;
                 using var metadata = JsonDocument.Parse(File.ReadAllText(Path.Combine(source, "metadata.json")));
                 var root = metadata.RootElement;
-                string[] direction = pair.Split('_');
-                if (!root.TryGetProperty("package_version", out var version) || version.GetString() != "1.9"
-                    || !root.TryGetProperty("from_code", out var from) || from.GetString() != direction[0]
-                    || !root.TryGetProperty("to_code", out var to) || to.GetString() != direction[1])
+                if (!root.TryGetProperty("package_version", out var version) || version.GetString() != direction.Version
+                    || !root.TryGetProperty("from_code", out var from) || from.GetString() != direction.Source
+                    || !root.TryGetProperty("to_code", out var to) || to.GetString() != direction.Target)
                     continue;
                 return source;
             }
@@ -273,12 +273,12 @@ internal sealed class ModelInstaller
         }
         return null;
     }
-    private async Task<bool> TryStageLocalModel(string pair, string destination, IProgress<SetupProgress> progress, CancellationToken ct)
+    private async Task<bool> TryStageLocalModel(ModelDirection direction, string destination, IProgress<SetupProgress> progress, CancellationToken ct)
     {
-        string? source = FindLocalPackage(pair, Models, _localPackages);
+        string? source = FindLocalPackage(direction, Models, _localPackages);
         if (source is null)
             return false;
-        progress.Report(new(pair == "zh_en" ? "复用本机中文 → English 模型" : "复用本机 English → 中文模型"));
+        progress.Report(new($"复用本机{direction.SourceName} → {direction.TargetName} 模型"));
         try
         {
             foreach (string relative in ModelFiles)
@@ -291,7 +291,7 @@ internal sealed class ModelInstaller
                 await input.CopyToAsync(output, ct);
             }
             // The lock identifies the copied model bytes; the full file inventory is written below.
-            _locks.Add(new("argos-" + pair, "1.9", "local-installed-model:model/model.bin",
+            _locks.Add(new("argos-" + direction.Id, direction.Version, "local-installed-model:model/model.bin",
                 await Hash(Path.Combine(destination, "model", "model.bin"), ct)));
             return true;
         }

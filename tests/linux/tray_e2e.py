@@ -1,4 +1,4 @@
-"""Real GTK/Ayatana menu + published host, isolated D-Bus; no model or input fixture.
+"""Real GTK settings/Ayatana menu + published host; no model or input fixture.
 
 Run under a fresh dbus-run-session and an available GTK display. The watcher is
 only a panel boundary, not evidence of Waybar pixels or physical pointer input.
@@ -26,6 +26,7 @@ def main():
     from gi.repository import Gio, GLib, Gtk
     from link import Link
     from tray import Tray
+    from ui import Settings
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package", type=Path, required=True)
@@ -101,7 +102,7 @@ def main():
             None,
         )
         jobs = set()
-        tray = host = process = None
+        tray = settings_surface = host = process = None
         parent, child = socket.socketpair()
         temporary = tempfile.TemporaryDirectory(prefix="typelay-tray-")
         try:
@@ -122,6 +123,7 @@ def main():
             )
             child.close()
             state = {}
+            model_state = {}
             enabled_notifications = []
             request_results = []
             settled_jobs = []
@@ -131,10 +133,17 @@ def main():
                     enabled_notifications.append(value["enabled"])
                     state.update(value)
                     tray.configure(value)
+                    if settings_surface is not None:
+                        settings_surface.configure(value)
                 elif operation == "settingsGuidance":
                     tray.render_guidance(value)
+                    if settings_surface is not None:
+                        settings_surface.render_guidance(value)
                 elif operation == "status":
+                    model_state.update(value)
                     tray.report(value)
+                    if settings_surface is not None:
+                        settings_surface.report(value)
 
             def tasks(coroutine):
                 future = asyncio.create_task(coroutine)
@@ -236,6 +245,23 @@ def main():
             assert not jobs, "rendering acknowledged settings wrote settings again"
             menu = tray.indicator.get_menu()
             items = {item.get_label(): item for item in menu.get_children() if item.get_label()}
+            assert list(tray.groups["source"]) == ["auto", "zh", "en"]
+            assert list(tray.groups["target"]) == ["en", "zh"]
+            assert [item.get_label() for item in tray.groups["source"].values()] == [
+                "自动识别",
+                "中文",
+                "英语",
+            ]
+            assert tray.groups["source"]["auto"].get_active()
+            assert tray.groups["target"]["en"].get_active()
+            assert tray.model.get_label() == "本地模型尚未就绪"
+            saved_language_choices = (directory / "config/settings.json").read_bytes()
+            assert await host.ask("reloadModel") is False
+            assert tray.groups["source"]["auto"].get_active()
+            assert tray.groups["target"]["en"].get_active()
+            assert tray.parents["source"].get_sensitive() and tray.parents["target"].get_sensitive()
+            assert (directory / "config/settings.json").read_bytes() == saved_language_choices
+            assert not jobs, "unavailable model changed or tried to save the selected languages"
             metadata = {
                 "process": "ordinary-example",
                 "label": "",
@@ -308,6 +334,49 @@ def main():
             await settled()
             assert (state["source"], state["target"]) == ("en", "zh")
             assert state["theme"] == "dark"
+            settings_surface = Settings(
+                host,
+                tasks,
+                lambda: None,
+                lambda: None,
+                lambda: None,
+                None,
+                None,
+                None,
+                None,
+            )
+            settings_surface.configure(state)
+            settings_surface.render_guidance(tray.guidance)
+            settings_surface.report(model_state)
+            await settled()
+            settings_surface.window.show_all()
+            settings_surface.pages.set_visible_child_name("language")
+            assert model_state["modelReady"] is False
+            assert model_state["modelDirections"] == []
+            for key, codes, labels, selected in (
+                ("source", ["auto", "zh", "en"], ["自动识别", "中文", "英语"], "en"),
+                ("target", ["en", "zh"], ["英语", "中文"], "zh"),
+            ):
+                control = settings_surface.controls[key]
+                assert [row[1] for row in control.get_model()] == codes
+                assert [row[0] for row in control.get_model()] == labels
+                assert control.get_active_id() == selected and control.get_sensitive()
+            before_refresh = settings_file.read_bytes()
+            settings_surface.render_guidance(tray.guidance)
+            settings_surface.configure(state)
+            assert not jobs, "rendering catalog choices tried to save settings"
+            assert settings_file.read_bytes() == before_refresh
+            settings_surface.language_swap.clicked()
+            await settled()
+            assert (state["source"], state["target"]) == ("zh", "en")
+            assert settings_surface.controls["source"].get_active_id() == "zh"
+            assert settings_surface.controls["target"].get_active_id() == "en"
+            settings_surface.language_swap.clicked()
+            await settled()
+            assert (state["source"], state["target"]) == ("en", "zh")
+            assert settings_surface.controls["source"].get_active_id() == "en"
+            assert settings_surface.controls["target"].get_active_id() == "zh"
+            settings_surface.window.hide()
             # Another settings surface restores enabled after A pauses. Deliver
             # A's actual acknowledgement and then B's actual broadcast together.
             host.settings_after_tray_reply = dict(state)
@@ -390,7 +459,8 @@ def main():
                 raise AssertionError(panel_failure)
             print(
                 "PASS: native tray registration, pause/resume, settings persistence, modes, "
-                "language swap, persistence failure/report/retry, secondary settings action and exit action"
+                "catalog-driven settings/tray languages without a model, language swap, "
+                "persistence failure/report/retry, secondary settings action and exit action"
             )
         finally:
             for job in jobs:
@@ -399,6 +469,9 @@ def main():
                 await asyncio.gather(*jobs, return_exceptions=True)
             if tray is not None and not tray.closed:
                 tray.close()
+            if settings_surface is not None:
+                settings_surface.tutorial.window.destroy()
+                settings_surface.window.destroy()
             if host is not None:
                 host.close()
             parent.close()
