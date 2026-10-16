@@ -346,6 +346,146 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
     });
 
     [Fact]
+    public Task HostRenewalInvalidationPreservesTheOriginalPressWithinItsDeadline() => desktop.RunAsync(async () =>
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(25));
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-owned-host-" + Guid.NewGuid().ToString("N"));
+        string path = Path.Combine(directory, "settings.json");
+        ChildProcess? child = null;
+        var overlay = new OverlayWindow(automationTest: true);
+        bool tabDown = false;
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(path);
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.Automatic,
+                ExperimentalWriteback = false
+            });
+            using var model = WindowsRuntime.CreateModel(); // Controlled plans below do not invoke a model.
+            using var host = new PracticeHost(info => child = new ChildProcess(info));
+            using var hook = new KeyboardHook(allowInjectedInput: true);
+            host.Initialize(settings, hook, allowInjectedInput: true);
+            using var input = new WindowsInputService(new BrokerClient(), overlay.Handle, monitor: hook, practice: host);
+            using var controller = new SessionController(settings, model, overlay, hook, input, new ManualPracticeLoop(),
+                host.RetireAutomaticAsync, host.ConfirmRetiredAutomaticAsync);
+            host.Bind(controller);
+            await controller.StartAsync().WaitAsync(deadline.Token);
+            host.Open(path);
+            await Until(() => host.CaptureDescriptor is not null && hook.ShortcutsReady);
+            var descriptor = host.CaptureDescriptor!;
+            nint root = (nint)descriptor.RootHwnd, field = (nint)descriptor.ControlHwnd;
+            Assert.Equal((root, field), N.Focused());
+            Assert.False(Native.GetAsyncKeyState(1) < 0);
+            Assert.False(Native.GetAsyncKeyState(9) < 0);
+            var first = await CapturePlan();
+            hook.Publish(first.Lease, first.Permit);
+            await Until(() => Ready(first));
+            string original = N.ReadText(field, Limits.MaxTextUnits);
+
+            // No candidate is queued. The heartbeat still expires the original
+            // grant; publishing the same expired observation cannot renew it.
+            await Until(() => WindowsInterruptClock.NowMs > first.Permit.ExpiresAtMs);
+            host.PollAcceptance();
+            hook.Publish(first.Lease, first.Permit);
+            Assert.False(Ready(first));
+            Assert.Equal(original, N.ReadText(field, Limits.MaxTextUnits));
+
+            var current = await CapturePlan();
+            hook.Publish(current.Lease, current.Permit);
+            await Until(() => Ready(current));
+            long contentEpoch = hook.ContentEpoch;
+            // A real unmatched mouse release changes the LL content watermark,
+            // without changing this field's text, selection or focus. It denies
+            // renewal, but is not evidence that the current transaction ended.
+            Assert.Equal(1u, SendInput(1, [new KeyInput { MouseFlags = 4 }], Marshal.SizeOf<KeyInput>()));
+            await Until(() => hook.ContentEpoch > contentEpoch);
+            Assert.Equal(current.Lease.Source.Text, N.ReadText(field, Limits.MaxTextUnits));
+            Assert.Equal(current.Lease.Source.Selection, N.ReadSelection(field));
+            Assert.Equal((root, field), N.Focused());
+            hook.Publish(current.Lease, current.Permit);
+            host.PollAcceptance();
+            Assert.True(Ready(current), "Dropping a renewal candidate must not revoke the original live plan.");
+
+            Assert.Equal(1u, SendInput(1, [new KeyInput { Type = 1, Key = 9 }], Marshal.SizeOf<KeyInput>()));
+            tabDown = true;
+            // Same UI turn as the original input, before draining its receipt.
+            hook.Publish(current.Lease, current.Permit);
+            host.PollAcceptance();
+            Assert.Equal(1u, SendInput(1, [new KeyInput { Type = 1, Key = 9, Flags = 2 }], Marshal.SizeOf<KeyInput>()));
+            tabDown = false;
+            InputNotice? accepted = null;
+            await Until(() =>
+            {
+                while (hook.TryRead(out var notice))
+                    if (notice?.CompletedReceipt is not null)
+                        accepted = notice;
+                return accepted is not null || host.RejectedAcceptance(current.Lease.PracticeRunId!.Value) is not null;
+            });
+            Assert.Null(host.RejectedAcceptance(current.Lease.PracticeRunId!.Value));
+            Assert.NotNull(accepted);
+            Assert.Equal(WriteStatus.Verified, accepted.CompletedReceipt!.Status);
+            Assert.Equal(current.Permit.Plan.Id, accepted.Permit!.Plan.Id);
+            Assert.InRange(accepted.AcceptedAtMs, current.Permit.ObservedAtMs, current.Permit.ExpiresAtMs);
+            Assert.Equal(QueueScene.Replacement, N.ReadText(field, Limits.MaxTextUnits));
+            Assert.Equal(new TextRange(QueueScene.Replacement.Length, QueueScene.Replacement.Length), N.ReadSelection(field));
+            Assert.Equal((root, field), N.Focused());
+            Assert.True(N.PostMessage(root, 0x0010, 0, 0));
+            await child!.Process.WaitForExitAsync(deadline.Token);
+
+            bool Ready((InputLease Lease, AcceptancePermit Permit) plan) => hook.AcceptanceReady(
+                new(plan.Lease.Source.Target, plan.Lease.CommandGeneration, plan.Lease.SessionRevision),
+                plan.Permit, WindowsInterruptClock.NowMs);
+            async Task<(InputLease Lease, AcceptancePermit Permit)> CapturePlan()
+            {
+                var captured = await input.CaptureAsync(new(hook.UserEpoch, hook.ForegroundEpoch, hook.SourceUserEpoch,
+                    null, [], false)).WaitAsync(deadline.Token);
+                var source = Assert.IsType<InputSnapshot>(captured.Snapshot);
+                Assert.Equal(ImeState.Clear, source.Ime);
+                Assert.True(source.WriteSupported);
+                Assert.True(host.SourceReady(source.Target));
+                var binding = Assert.IsType<OwnedSourceEvidence>(captured.OwnedSource).Binding;
+                var plan = new WritePlan(Guid.NewGuid(), Guid.NewGuid(), 1, source, null,
+                    QueueScene.Replacement, QueueScene.Replacement, QueueScene.Replacement.Length);
+                return (new(source, captured.UserEpoch, captured.ForegroundEpoch, true,
+                    hook.CommandGeneration, 1, binding.RunId, binding.ConnectionId),
+                    new(plan, source.InputEpoch, source.FocusEpoch, source.ObservedAtMs, source.ObservedAtMs + Limits.PermitMaxAgeMs));
+            }
+            async Task Until(Func<bool> condition)
+            {
+                while (!condition())
+                {
+                    Assert.False(child!.Process.HasExited);
+                    await Task.Delay(1, deadline.Token);
+                }
+            }
+        }
+        finally
+        {
+            if (tabDown)
+                Assert.Equal(1u, SendInput(1, [new KeyInput { Type = 1, Key = 9, Flags = 2 }], Marshal.SizeOf<KeyInput>()));
+            overlay.Close();
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    });
+
+    // The production host, hook and child run normally; only the controller's
+    // inference/capture heartbeat is held so these controlled plans stay local.
+    private sealed class ManualPracticeLoop : ISessionLoop
+    {
+        public long NowMs => WindowsInterruptClock.NowMs;
+        public event Action? Tick { add { } remove { } }
+        public void Start()
+        {
+        }
+        public void Stop()
+        {
+        }
+    }
+
+    [Fact]
     public Task RetirementAcknowledgementPreventsTheOldPlanOrALateInstallFromExecuting() => desktop.RunAsync(async () =>
     {
         await using var scene = new QueueScene(true);

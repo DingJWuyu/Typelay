@@ -221,18 +221,20 @@ internal sealed partial class PracticeHost
             RevokeAcceptance();
             return;
         }
-        if (_acceptance is { } attempted && (attempted.Received || _monitor.OwnedPlanAttempted(attempted.RenewalAttemptFloor)))
-        {
-            RevokeAcceptance();
-            return;
-        }
         if (_acceptance is { } current && SameAcceptanceOperation(current.Plan.Permit.Plan, permit.Plan))
         {
-            // Keep the newest real observation, but never rebase the input
-            // watermark of this unchanged operation while an ACK is in flight.
-            if (!RenewalCurrent(lease, permit, current.RenewalAttemptFloor, current.ContentEpoch))
+            if (!CurrentAcceptanceBasis(current) || !SameAcceptanceLease(current.Lease, lease) || current.Received)
             {
                 RevokeAcceptance();
+                return;
+            }
+            // Losing renewal eligibility does not revoke the original Tab
+            // transaction between its LL witness and the child's GUI dispatch.
+            // The original watermark and deadline still bound that transaction.
+            if (!RenewalCurrent(lease, permit, current.RenewalAttemptFloor, current.ContentEpoch))
+            {
+                _nextAcceptance = null;
+                PollAcceptance();
                 return;
             }
             if (permit.ObservedAtMs <= current.Plan.Permit.ObservedAtMs
@@ -259,6 +261,24 @@ internal sealed partial class PracticeHost
         }
     } == proposed;
 
+    private static bool SameAcceptanceLease(InputLease original, InputLease proposed) => original with
+    {
+        Source = original.Source with
+        {
+            ObservedAtMs = proposed.Source.ObservedAtMs,
+            Bounds = proposed.Source.Bounds
+        }
+    } == proposed;
+
+    private bool CurrentAcceptanceBasis(PendingPlan current) =>
+        !_disposed && !_disconnecting && _nativeActive && _pending is null && !_editorSealed
+        && _communication is { IsCancellationRequested: false }
+        && current.Lease.PracticeRunId == _runId && current.Lease.PracticeConnectionId == _connection
+        && _descriptor == current.Plan.Descriptor && _monitor is { ShortcutsReady: true, CanInterceptAcceptance: true }
+        && current.Lease.CommandGeneration == _monitor.CommandGeneration
+        && current.Lease.UserEpoch == _monitor.UserEpoch && current.Lease.ForegroundEpoch == _monitor.ForegroundEpoch
+        && SourceReady(current.Lease.Source.Target);
+
     private bool RenewalCurrent(InputLease lease, AcceptancePermit permit, long attemptFloorSequence, long contentEpoch) =>
         !_disposed && !_disconnecting && _nativeActive && _pending is null && !_editorSealed
         && _communication is { IsCancellationRequested: false }
@@ -272,18 +292,47 @@ internal sealed partial class PracticeHost
     internal void PollAcceptance()
     {
         _dispatcher.VerifyAccess();
-        if (_nextAcceptance is not { ReplacesPlanSequence: > 0 } next)
-            return;
-        if (_acceptance is not { } current || current.Plan.PlanSequence != next.ReplacesPlanSequence
-            || !RenewalCurrent(next.Lease, next.Permit, current.RenewalAttemptFloor, next.ContentEpoch)
-            || current.Received || !SameAcceptanceOperation(current.Plan.Permit.Plan, next.Permit.Plan))
+        if (_acceptance is not { } current)
         {
+            if (_nextAcceptance is { ReplacesPlanSequence: > 0 })
+                _nextAcceptance = null;
+            return;
+        }
+        bool attempted = _monitor?.OwnedPlanAttempted(current.Plan.PlanSequence) == true;
+        if (!CurrentAcceptanceBasis(current) || current.Received
+            || !attempted && _monitor?.OwnedPlanAttempted(current.RenewalAttemptFloor) == true)
+        {
+            // A late predecessor attempt forbids this unconsumed successor.
+            // Only the current plan's own attempt may await its original receipt.
             RevokeAcceptance();
             return;
         }
-        if (current.State is "install" or "installed"
-            && current.Plan.Permit.ExpiresAtMs - WindowsInterruptClock.NowMs <= 25)
-            RevokeCurrentAcceptance();
+        long now = WindowsInterruptClock.NowMs;
+        if (attempted)
+        {
+            _nextAcceptance = null;
+            if (now > current.Plan.Permit.ExpiresAtMs)
+                RevokeAcceptance();
+            return;
+        }
+        if (_nextAcceptance is { ReplacesPlanSequence: > 0 } next)
+        {
+            if (current.Plan.PlanSequence != next.ReplacesPlanSequence
+                || !SameAcceptanceOperation(current.Plan.Permit.Plan, next.Permit.Plan)
+                || !SameAcceptanceLease(current.Lease, next.Lease)
+                || !RenewalCurrent(next.Lease, next.Permit, current.RenewalAttemptFloor, next.ContentEpoch))
+                _nextAcceptance = null;
+            else
+            {
+                if (current.State is "install" or "installed" && current.Plan.Permit.ExpiresAtMs - now <= 25)
+                    RevokeCurrentAcceptance();
+                return;
+            }
+        }
+        // No receipt is guaranteed for every refused edge. With no valid
+        // candidate, clean up at the original deadline even after dropping next.
+        if (now > current.Plan.Permit.ExpiresAtMs)
+            RevokeAcceptance();
     }
     internal void RevokeAcceptance()
     {
