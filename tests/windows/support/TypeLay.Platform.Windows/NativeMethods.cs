@@ -60,7 +60,7 @@ public static class NativeMethods
     }
 
     [DllImport("user32.dll")] public static extern nint GetForegroundWindow();
-    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(nint hwnd, out uint pid);
+    [DllImport("user32.dll", SetLastError = true)] public static extern uint GetWindowThreadProcessId(nint hwnd, out uint pid);
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GetGUIThreadInfo(uint thread, ref GuiThreadInfo info);
@@ -164,11 +164,26 @@ public static class NativeMethods
         public uint MessageId { get; } = messageId;
         public int Win32Error { get; } = win32Error;
     }
-    public static (nint Root, nint Control) Focused()
+    // A null GUI result means the call was skipped. GetForegroundWindow has no last-error contract.
+    public readonly record struct FocusObservation(nint Root, nint Control, uint ThreadId, uint ProcessId,
+        int? ThreadLookupError, bool? GuiThreadInfoSucceeded, int? GuiThreadInfoError);
+
+    public static FocusObservation ReadFocus()
     {
         nint root = GetForegroundWindow();
-        uint thread = GetWindowThreadProcessId(root, out _);
+        uint thread = GetWindowThreadProcessId(root, out uint process);
+        int? threadError = thread == 0 ? Marshal.GetLastPInvokeError() : null;
         var info = new GuiThreadInfo { Size = (uint)Marshal.SizeOf<GuiThreadInfo>() };
-        return thread != 0 && GetGUIThreadInfo(thread, ref info) ? (root, info.Focus) : (root, 0);
+        if (thread == 0)
+            return new(root, 0, thread, process, threadError, null, null);
+        bool succeeded = GetGUIThreadInfo(thread, ref info);
+        int? guiError = succeeded ? null : Marshal.GetLastPInvokeError();
+        return new(root, succeeded ? info.Focus : 0, thread, process, threadError, succeeded, guiError);
+    }
+
+    public static (nint Root, nint Control) Focused()
+    {
+        var observation = ReadFocus();
+        return (observation.Root, observation.Control);
     }
 }

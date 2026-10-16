@@ -31,6 +31,7 @@ internal static partial class ContinuousTranslationCheck
         bool settingsPreserved = false, tutorialIncomplete = false;
         int injectedTabPresses = 0;
         string? feedbackCode = null;
+        object? previewFocusFailure = null;
         try
         {
             await UntilAsync(() => { Require(model.Ready, "owned-model-unavailable"); return !model.Busy; }, cancellation);
@@ -82,7 +83,28 @@ internal static partial class ContinuousTranslationCheck
             await UntilAsync(() =>
             {
                 Require(feedbackCode is null, "owned-preview-feedback");
-                Require(N.Focused() == (root, field), "owned-preview-focus");
+                var focus = N.ReadFocus();
+                bool sourceFocused = (focus.Root, focus.Control) == (root, field);
+                if (!sourceFocused)
+                {
+                    // Preserve this failed observation, never a later cleanup-time reread.
+                    previewFocusFailure = new
+                    {
+                        foregroundAvailable = focus.Root != 0,
+                        actualRoot = (long)focus.Root,
+                        actualControl = (long)focus.Control,
+                        foregroundThreadId = focus.ThreadId,
+                        foregroundProcessId = focus.ProcessId,
+                        threadLookupSucceeded = focus.ThreadId != 0,
+                        threadLookupError = focus.ThreadLookupError,
+                        guiThreadInfoSucceeded = focus.GuiThreadInfoSucceeded,
+                        guiThreadInfoError = focus.GuiThreadInfoError,
+                        expectedRoot = (long)root,
+                        expectedControl = (long)field,
+                        overlayRoot = (long)overlay.Handle
+                    };
+                }
+                Require(sourceFocused, "owned-preview-focus");
                 bool visible = VisibleTranslation(overlay, editor);
                 if (visible)
                 {
@@ -195,6 +217,7 @@ internal static partial class ContinuousTranslationCheck
                 acceptanceReadyMs,
                 acceptedMs,
                 feedbackCode,
+                previewFocusFailure,
                 sourceUnchanged,
                 sourceReady,
                 editorReady,
