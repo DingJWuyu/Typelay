@@ -37,6 +37,8 @@ internal static class Program
     private static OwnedAcceptancePlan? _plan;
     private static OwnedEditorControl? _editorFence;
     private static EditorHandoff _editorHandoff;
+    private static bool _editorAppLeft;
+    private static uint _editorOverlayThread, _editorOverlayProcess;
     private static long _editorEventSequence;
     private static string? _editorNotice;
     private static readonly string? EditorTracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
@@ -44,21 +46,21 @@ internal static class Program
     private static int _editorTraceCount;
     private enum EditorEvent
     {
-        Fenced, FenceRejected, Root, FocusGained, FocusLost, Left, Invalid
+        Fenced, FenceRejected, App, Root, FocusGained, FocusLost, Left, Invalid
     }
     private enum EditorReason
     {
-        None, Fence, Root, Field, Deadline, Cancel, Retire, Close, Restart
+        None, Fence, App, Root, Field, Deadline, Cancel, Retire, Close, Restart
     }
     private enum EditorPeer
     {
-        None, Overlay, Other
+        None, Overlay, OverlayThread, Other
     }
     private sealed record EditorTrace(long AtMs, int Order, Guid Intent, long SourceSequence,
         EditorHandoff State, EditorEvent Event, EditorReason Reason, EditorPeer Peer, bool? Active);
     private enum EditorHandoff
     {
-        None, Armed, RootLeft, Left, Invalid
+        None, Armed, RootLeft, FieldLeft, Left, Invalid
     }
     private static AutomaticPracticeProgress? _automaticProgress;
     private static byte[]? _transaction;
@@ -169,7 +171,7 @@ internal static class Program
                         while (_inputCompletions?.TryDequeue(out var completion) == true)
                             WriteReply(completion);
                     inputBurst = 0;
-                    uint wait = _editorFence is { } pendingEditor && _editorHandoff is EditorHandoff.Armed or EditorHandoff.RootLeft
+                    uint wait = _editorFence is { } pendingEditor && _editorHandoff is EditorHandoff.Armed or EditorHandoff.RootLeft or EditorHandoff.FieldLeft
                         ? (uint)Math.Clamp(pendingEditor.ExpiresAtMs - WindowsInterruptClock.NowMs, 0, 500)
                         : uint.MaxValue;
                     if (Native.MsgWaitForMultipleObjectsEx(0, 0, wait, 0x04ff, 4) == uint.MaxValue)
@@ -490,7 +492,7 @@ internal static class Program
                 _planActive = false;
                 Reply("restart");
             }
-            if (_editorFence is { } editor && _editorHandoff is EditorHandoff.Armed or EditorHandoff.RootLeft
+            if (_editorFence is { } editor && _editorHandoff is EditorHandoff.Armed or EditorHandoff.RootLeft or EditorHandoff.FieldLeft
                 && WindowsInterruptClock.NowMs >= editor.ExpiresAtMs)
                 InvalidateEditorHandoff(EditorReason.Deadline);
             if (_editorNotice is { } editorNotice && _editorFence is { } fenced)
@@ -562,9 +564,18 @@ internal static class Program
             QueueEditorTrace(control.Intent, EditorEvent.FenceRejected, EditorReason.Fence);
             throw new InvalidDataException("practice-editor-fence");
         }
+        uint overlayThread = Native.GetWindowThreadProcessId((nint)control.OverlayHwnd, out uint overlayProcess);
+        if (control.OverlayHwnd == 0 || overlayThread == 0 || overlayProcess == 0)
+        {
+            QueueEditorTrace(control.Intent, EditorEvent.FenceRejected, EditorReason.Fence);
+            throw new InvalidDataException("practice-editor-fence");
+        }
         _planActive = false;
         _editorFence = control;
         _editorHandoff = EditorHandoff.Armed;
+        _editorAppLeft = false;
+        _editorOverlayThread = overlayThread;
+        _editorOverlayProcess = overlayProcess;
         _editorNotice = null;
         WriteReply(new("edit-fenced", _connection, _run, _sequence,
             Editing: control with
@@ -572,6 +583,30 @@ internal static class Program
                 SourceEventSequence = checked(++_editorEventSequence)
             }));
         QueueEditorTrace(control.Intent, EditorEvent.Fenced);
+    }
+
+    private static void ObserveEditorApp(nuint activation, nint peerThread)
+    {
+        if (_editorFence is not { } editor)
+            return;
+        QueueEditorTrace(editor.Intent, EditorEvent.App,
+            peer: peerThread == 0 ? EditorPeer.None : peerThread == (nint)_editorOverlayThread ? EditorPeer.OverlayThread : EditorPeer.Other,
+            active: activation != 0);
+        if (_editorHandoff == EditorHandoff.Invalid)
+            return;
+        // This thread edge is independent of root->EN ordering. It does not
+        // identify a root HWND; the local root and field evidence remain required.
+        if (!_editorAppLeft && activation == 0 && _editorOverlayThread != 0
+            && peerThread == (nint)_editorOverlayThread
+            && Native.GetWindowThreadProcessId((nint)editor.OverlayHwnd, out uint process) == _editorOverlayThread
+            && process == _editorOverlayProcess && WindowsInterruptClock.NowMs < editor.ExpiresAtMs)
+        {
+            _editorEventSequence = checked(_editorEventSequence + 1);
+            _editorAppLeft = true;
+            CompleteEditorHandoff();
+        }
+        else
+            InvalidateEditorHandoff(EditorReason.App);
     }
 
     private static void ObserveEditorRoot(nuint activation, nint peer)
@@ -584,7 +619,7 @@ internal static class Program
         if (_editorHandoff == EditorHandoff.Invalid)
             return;
         if (_editorHandoff == EditorHandoff.Armed && (activation & 0xffff) == 0
-            && peer == (nint)editor.OverlayHwnd && peer != 0
+            && (peer == 0 || peer == (nint)editor.OverlayHwnd)
             && WindowsInterruptClock.NowMs < editor.ExpiresAtMs)
         {
             _editorEventSequence = checked(_editorEventSequence + 1);
@@ -607,12 +642,20 @@ internal static class Program
             && WindowsInterruptClock.NowMs < editor.ExpiresAtMs)
         {
             _editorEventSequence = checked(_editorEventSequence + 1);
-            _editorHandoff = EditorHandoff.Left;
-            _editorNotice = "edit-left";
-            QueueEditorTrace(editor.Intent, EditorEvent.Left);
+            _editorHandoff = EditorHandoff.FieldLeft;
+            CompleteEditorHandoff();
         }
         else
             InvalidateEditorHandoff(EditorReason.Field);
+    }
+
+    private static void CompleteEditorHandoff()
+    {
+        if (!_editorAppLeft || _editorHandoff != EditorHandoff.FieldLeft || _editorFence is not { } editor)
+            return;
+        _editorHandoff = EditorHandoff.Left;
+        _editorNotice = "edit-left";
+        QueueEditorTrace(editor.Intent, EditorEvent.Left);
     }
 
     private static void InvalidateEditorHandoff(EditorReason reason)
@@ -719,6 +762,8 @@ internal static class Program
     {
         _editorFence = null;
         _editorHandoff = EditorHandoff.None;
+        _editorAppLeft = false;
+        _editorOverlayThread = _editorOverlayProcess = 0;
         _editorNotice = null;
     }
 
@@ -1183,6 +1228,9 @@ internal static class Program
                     if ((wParam & 0xffff) != 0)
                         RefreshSettings();
                     break;
+                case 0x001c: // WM_ACTIVATEAPP
+                    ObserveEditorApp(wParam, lParam);
+                    break;
                 case 0x0007: // WM_SETFOCUS; never activate another window.
                     if (_edit is not null)
                         Native.SetFocus(_edit.Handle);
@@ -1358,6 +1406,7 @@ internal static class Program
         [DllImport("user32.dll")] internal static extern nint GetFocus();
         [DllImport("user32.dll")] internal static extern short GetKeyState(int virtualKey);
         [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
+        [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(nint window, out uint process);
         [DllImport("kernel32.dll")] internal static extern uint GetCurrentThreadId();
         [DllImport("kernel32.dll")] internal static extern ulong GetTickCount64();
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool IsDialogMessageW(nint window, ref Message message);

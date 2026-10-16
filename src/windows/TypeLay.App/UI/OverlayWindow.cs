@@ -30,7 +30,7 @@ internal sealed class OverlayWindow : Window, ISessionView
     private SessionViewContext? _viewContext;
     private PracticeHost? _ownedEditorHost;
     private OwnedEditorControl? _ownedEditor;
-    private bool _ownedActivationRequested, _ownedRootActive, _ownedFocusAcquired;
+    private bool _ownedActivationRequested, _ownedAppActive, _ownedRootActive, _ownedFocusAcquired;
     private SessionViewToken? _pressedExitToken;
     private bool _exitPressPending;
     private readonly Grid _surface;
@@ -370,6 +370,24 @@ internal sealed class OverlayWindow : Window, ISessionView
 
     private nint WindowMessage(nint hwnd, int msg, nint wp, nint lp, ref bool handled)
     {
+        if (msg == 0x001c && _ownedEditor is { } appAttempt) // WM_ACTIVATEAPP
+        {
+            bool active = wp != 0;
+            bool sourceThread = appAttempt.Descriptor.ThreadId != 0 && lp == (nint)appAttempt.Descriptor.ThreadId;
+            _ownedEditorHost?.TraceOwnedEditor(appAttempt.Intent, OwnedEditorEvent.UiApp,
+                peer: lp == 0 ? OwnedEditorPeer.None : sourceThread ? OwnedEditorPeer.SourceThread : OwnedEditorPeer.Other,
+                active: active);
+            // APP identifies the peer GUI thread, independently of the local
+            // root->editor focus path. Either side may arrive first.
+            if (_ownedActivationRequested && !_ownedAppActive && active && sourceThread
+                && WindowsInterruptClock.NowMs <= appAttempt.ExpiresAtMs)
+            {
+                _ownedAppActive = true;
+                _ownedEditorHost?.ConfirmOwnedEditorApp(appAttempt.Intent);
+            }
+            else
+                InvalidateOwnedEditor(OwnedEditorReason.UiApp);
+        }
         if (msg == 0x0006 && _ownedEditor is { } attempt) // WM_ACTIVATE
         {
             bool active = (wp.ToInt64() & 0xffff) != 0;
@@ -378,7 +396,7 @@ internal sealed class OverlayWindow : Window, ISessionView
                     ? OwnedEditorPeer.SourceRoot : lp == _hwnd ? OwnedEditorPeer.OverlayRoot : OwnedEditorPeer.Other,
                 active: active);
             if (_ownedActivationRequested && !_ownedRootActive && !_ownedFocusAcquired
-                && active && lp == (nint)attempt.Descriptor.RootHwnd
+                && active && (lp == 0 || lp == (nint)attempt.Descriptor.RootHwnd)
                 && WindowsInterruptClock.NowMs <= attempt.ExpiresAtMs)
                 _ownedRootActive = true;
             else
@@ -553,7 +571,7 @@ internal sealed class OverlayWindow : Window, ISessionView
         if (_ownedEditor?.Intent != intent)
             return;
         _ownedEditor = null;
-        _ownedActivationRequested = _ownedRootActive = _ownedFocusAcquired = false;
+        _ownedActivationRequested = _ownedAppActive = _ownedRootActive = _ownedFocusAcquired = false;
         _editing = _composing = _canEditPreview = false;
         _editor.IsReadOnly = true;
         _editor.IsUndoEnabled = false;

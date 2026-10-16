@@ -28,6 +28,33 @@ internal sealed partial class KeyboardHook
     private OwnedInstalled? _ownedInstalled;
     private long _ownedAttemptSequence;
     private Func<TargetId, bool>? _ownedEditorFocus;
+    private sealed class EditorForeground(Guid intent, nint source, nint overlay, Action<Guid> cancel)
+    {
+        public Guid Intent { get; } = intent;
+        public nint Source { get; } = source;
+        public nint Overlay { get; } = overlay;
+        public Action<Guid> Cancel { get; } = cancel;
+        public int Invalid;
+    }
+    private EditorForeground? _editorForeground;
+    internal void BeginOwnedEditorForeground(Guid intent, nint source, nint overlay, Action<Guid> cancel) =>
+        Interlocked.Exchange(ref _editorForeground, new(intent, source, overlay, cancel));
+    internal bool OwnedEditorForegroundCurrent(Guid intent) => Volatile.Read(ref _editorForeground) is { } current
+        && current.Intent == intent && Volatile.Read(ref current.Invalid) == 0;
+    internal void EndOwnedEditorForeground(Guid intent)
+    {
+        if (Volatile.Read(ref _editorForeground) is { } current && current.Intent == intent)
+            Interlocked.CompareExchange(ref _editorForeground, null, current);
+    }
+    private void ObserveEditorForeground(nint window)
+    {
+        // This existing asynchronous event stream only revokes. It never proves
+        // arrival, drains earlier events, or restores a cancelled editor attempt.
+        if (Volatile.Read(ref _editorForeground) is { } current
+            && window != current.Source && window != current.Overlay
+            && Interlocked.Exchange(ref current.Invalid, 1) == 0)
+            current.Cancel(current.Intent);
+    }
     private long _editorInputSequence;
     private sealed record EditorPress(long Sequence, uint Time, int X, int Y, bool Injected, bool Released);
     private EditorPress? _editorPress;
@@ -211,6 +238,7 @@ internal sealed partial class KeyboardHook
     }
     internal void ClearOwnedChannel()
     {
+        Interlocked.Exchange(ref _editorForeground, null);
         RevokeOwnedPlan();
         Interlocked.Exchange(ref _ownedSource, null);
         Interlocked.Exchange(ref _ownedChannel, null);

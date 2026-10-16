@@ -96,13 +96,15 @@ internal sealed partial class KeyboardHook : IInputMonitor
         _ownedGate = new(allowInjectedInput);
         _callback = OnKey;
         _mouseCallback = OnMouse;
-        _focusCallback = (_, ev, _, _, _, _, _) =>
+        _focusCallback = (_, ev, window, _, _, _, _) =>
         {
             if (ev == 3)
                 Interlocked.Increment(ref _windowEpoch);
             Interlocked.Increment(ref _foregroundEpoch);
             _gate.Revoke();
             _ownedGate.Revoke();
+            if (ev == 3)
+                ObserveEditorForeground(window);
         };
         _thread = new Thread(Run) { IsBackground = true, Name = "TypeLay.Input" };
         _thread.Start();

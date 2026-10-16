@@ -7,17 +7,17 @@ namespace TypeLay.App;
 internal enum OwnedEditorEvent
 {
     Admitted, AdmissionRejected, FenceQueued, FenceAck, SourceLeftAck, SourceInvalidAck,
-    Activation, UiRoot, UiFocusGained, UiFocusLost, UiActivation, Cancelled, Complete, PipeFailure
+    Activation, UiApp, UiRoot, UiFocusGained, UiFocusLost, UiActivation, Cancelled, Complete, PipeFailure
 }
 internal enum OwnedEditorReason
 {
     None, Admission, Identity, Deadline, InputIntent, SourceIdentity, SourceFocus, SourceInvalid,
-    Activation, EditorFocus, UiRoot, UiFocusGained, UiFocusLost, UiRender, UiHidden, UiClosed,
+    Activation, EditorFocus, UiApp, UiRoot, UiFocusGained, UiFocusLost, UiRender, UiHidden, UiClosed, Foreground,
     Retirement, Connection
 }
 internal enum OwnedEditorPeer
 {
-    None, SourceRoot, OverlayRoot, Editor, Other
+    None, SourceRoot, OverlayRoot, SourceThread, OverlayThread, Editor, Other
 }
 
 internal sealed partial class PracticeHost
@@ -52,7 +52,13 @@ internal sealed partial class PracticeHost
         {
             get; set;
         }
-        public bool Complete => Activated && SourceLeft && !Cancelled;
+        public bool AppActivated
+        {
+            get; set;
+        }
+        // Editing entered with no source write authority, not a global atomic
+        // foreground-history proof. Observed departures still cancel afterwards.
+        public bool Complete => Activated && AppActivated && SourceLeft && !Cancelled;
         public int TraceCount
         {
             get; set;
@@ -118,6 +124,10 @@ internal sealed partial class PracticeHost
             return Rejected(OwnedEditorAdmissionReason.HostGeneration);
         if (_editorOverlay is null)
             return Rejected(OwnedEditorAdmissionReason.HostOverlay);
+        nint overlay = _editorOverlay.Handle;
+        if (overlay == 0 || Native.GetWindowThreadProcessId(overlay, out uint overlayProcess) != Native.GetCurrentThreadId()
+            || overlayProcess != Environment.ProcessId)
+            return Rejected(OwnedEditorAdmissionReason.HostOverlay);
         long inputSequence = monitor.BeginOwnedEditorInput(out var reason, out object? detail);
         if (inputSequence == 0)
         {
@@ -133,7 +143,7 @@ internal sealed partial class PracticeHost
         if (admitted is null || admitted.Target != displayed.Target
             || admitted.CommandGeneration != displayed.CommandGeneration || admitted.Revision <= displayed.Revision
             || _disposed || !ReferenceEquals(child, _child) || connection != _connection || run != _runId
-            || sequence != _sequence || !_nativeActive || _pending is not null
+            || sequence != _sequence || !_nativeActive || _pending is not null || _editorOverlay.Handle != overlay
             || !DescriptorCurrent(descriptor) || !KeyboardHook.OwnedFocus(descriptor)
             || inputSequence != monitor.EditorInputSequence || WindowsInterruptClock.NowMs >= expires)
         {
@@ -152,9 +162,14 @@ internal sealed partial class PracticeHost
             return null;
         }
         var control = new OwnedEditorControl(Guid.NewGuid(), descriptor, displayed, admitted,
-            (long)_editorOverlay.Handle, expires, inputSequence);
+            (long)overlay, expires, inputSequence);
         var attempt = new PendingEditor(control, child, connection, run, sequence);
         _editorAttempt = attempt;
+        monitor.BeginOwnedEditorForeground(control.Intent, (nint)descriptor.RootHwnd, overlay, intent =>
+        {
+            if (!_dispatcher.HasShutdownStarted && !_dispatcher.HasShutdownFinished)
+                _dispatcher.BeginInvoke(new Action(() => CancelOwnedEditing(intent, OwnedEditorReason.Foreground)));
+        });
         TraceOwnedEditor(control.Intent, OwnedEditorEvent.Admitted);
         var cancellation = _communication!.Token;
         Enqueue(new("edit-fence", connection, run, sequence, Editing: control));
@@ -170,6 +185,10 @@ internal sealed partial class PracticeHost
         && _sequence == attempt.Sequence && _nativeActive && _pending is null
         && _descriptor == attempt.Control.Descriptor && _target == attempt.Control.AdmittedToken.Target
         && _monitor is { ShortcutsReady: true } && _monitor.CommandGeneration == attempt.Control.AdmittedToken.CommandGeneration
+        && _monitor.OwnedEditorForegroundCurrent(attempt.Control.Intent)
+        // Once exact local editor focus was acquired, normal draft typing is
+        // allowed while the independent APP/source acknowledgements arrive.
+        && (attempt.Activated || _monitor.EditorInputSequence == attempt.Control.InputSequence)
         && DescriptorCurrent(attempt.Control.Descriptor, checkFocusRevision: false);
 
     private bool OwnsEditorFocus(TargetId target)
@@ -184,6 +203,27 @@ internal sealed partial class PracticeHost
 
     internal bool EditorHandoffComplete(TargetId target) => _editorAttempt is { Complete: true } attempt
         && target == attempt.Control.AdmittedToken.Target && OwnsEditorFocus(target);
+
+    internal void ConfirmOwnedEditorApp(Guid intent)
+    {
+        _dispatcher.VerifyAccess();
+        if (_editorAttempt is not { Cancelled: false } attempt || attempt.Control.Intent != intent)
+            return;
+        if (!attempt.Fenced || attempt.AppActivated || !EditorIdentityCurrent(attempt)
+            || WindowsInterruptClock.NowMs >= attempt.Control.ExpiresAtMs)
+        {
+            CancelOwnedEditing(intent, OwnedEditorReason.UiApp);
+            return;
+        }
+        attempt.AppActivated = true;
+        if (attempt.Complete)
+        {
+            if (!OwnsEditorFocus(attempt.Control.AdmittedToken.Target))
+                CancelOwnedEditing(intent, OwnedEditorReason.EditorFocus);
+            else
+                TraceOwnedEditor(intent, OwnedEditorEvent.Complete);
+        }
+    }
 
     private bool HandleEditingMessage(PracticeMessage message)
     {
@@ -244,15 +284,15 @@ internal sealed partial class PracticeHost
         }
         else
         {
-            // The source owns its ordering: fenced, exact root departure, then
-            // the one Edit loss. This does not infer a cross-process timeline.
+            // The source proves one exact peer-thread APP edge independently
+            // of its strict root->Edit loss pair. No cross-process total order.
             if (!attempt.Fenced || !attempt.Activated || attempt.SourceLeft
-                || evidence.SourceEventSequence - previous != 2)
+                || evidence.SourceEventSequence - previous != 3)
                 throw new InvalidDataException("practice-editor-left-order");
             attempt.SourceLeft = true;
             if (!OwnsEditorFocus(attempt.Control.AdmittedToken.Target))
                 CancelOwnedEditing(attempt.Control.Intent, OwnedEditorReason.EditorFocus);
-            else
+            else if (attempt.Complete)
                 TraceOwnedEditor(attempt.Control.Intent, OwnedEditorEvent.Complete);
         }
         return true;
@@ -283,6 +323,7 @@ internal sealed partial class PracticeHost
             sourceSequence = sourceSequence ?? attempt.SourceSequence,
             attempt.Fenced,
             attempt.Activated,
+            attempt.AppActivated,
             attempt.SourceLeft,
             attempt.Cancelled
         });
@@ -302,6 +343,7 @@ internal sealed partial class PracticeHost
         if (_editorAttempt is not { Cancelled: false } attempt)
             return;
         attempt.Cancelled = true;
+        _monitor?.EndOwnedEditorForeground(attempt.Control.Intent);
         TraceOwnedEditor(attempt.Control.Intent, OwnedEditorEvent.Cancelled, reason);
         // The old generation stays sealed through all late ACKs and captures.
         // Only the ordinary retire/new-run path can establish a fresh one.
