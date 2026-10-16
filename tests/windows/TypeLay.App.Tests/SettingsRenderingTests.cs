@@ -290,7 +290,8 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                 Assert.Equal(3, saved);
                 Assert.False(WindowsRuntime.CreateSettings(path).Value.Enabled);
                 Assert.Equal(ToggleState.Off, ToggleProvider(SettingToggle(window, "启用 TypeLay")).ToggleState);
-                Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "设置未保存");
+                Assert.Contains(Descendants(window).OfType<TextBlock>(), text =>
+                    text.IsVisible && text.Text == "设置未保存\n请检查当前用户目录与组织策略。");
             }
             finally
             {
@@ -402,7 +403,8 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                 Assert.True(Selection("跟随系统").IsSelected);
                 Assert.False(Selection("浅色").IsSelected);
                 Assert.Equal(3, saved);
-                Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == "设置未保存");
+                Assert.Contains(Descendants(window).OfType<TextBlock>(), text =>
+                    text.IsVisible && text.Text == "设置未保存\n请检查当前用户目录与组织策略。");
             }
             finally
             {

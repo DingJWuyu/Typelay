@@ -517,7 +517,8 @@ internal static partial class ContinuousTranslationCheck
                 Choose(true);
                 window.UpdateLayout();
                 saveFailureVisible = window.IsVisible && child is null && settings.Value.Mode == WorkMode.Automatic
-                    && Descendants(window).OfType<TextBlock>().Any(text => text.Text == "设置未保存");
+                    && Descendants(window).OfType<TextBlock>().Any(text =>
+                        text.IsVisible && text.Text == "设置未保存\n请检查当前用户目录与组织策略。");
                 Require(saveFailureVisible, "practice-settings-failure-not-visible");
             }
             result.Stage = "practice-current-mode-entry";
