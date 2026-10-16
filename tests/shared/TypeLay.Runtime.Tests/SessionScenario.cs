@@ -171,6 +171,10 @@ internal sealed class SessionScenario : IDisposable
         {
             get; set;
         }
+        public OwnedPracticeReturnRequest? PendingPracticeReturn
+        {
+            get; set;
+        }
         public bool ForegroundExpired
         {
             get; set;
@@ -345,9 +349,14 @@ internal sealed class SessionScenario : IDisposable
             get; private set;
         }
         public Func<OwnedPracticeReturn, OwnedPracticeReturn?> ReturnEvidence { get; set; } = value => value;
+        public OwnedPracticeReturnRequest? LastReturnRequest
+        {
+            get; private set;
+        }
         public async Task<InputReturn> ReturnToSourceAsync(InputContext context)
         {
             Returns++;
+            LastReturnRequest = context.PracticeReturn;
             bool returned = PendingReturn is { } pending ? await pending.Task : ReturnAllowed;
             if (returned)
                 host.Input.InEditor = false;

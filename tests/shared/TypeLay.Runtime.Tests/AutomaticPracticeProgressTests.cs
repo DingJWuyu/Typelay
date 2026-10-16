@@ -182,6 +182,61 @@ public sealed class AutomaticPracticeProgressTests
     }
 
     [Theory]
+    [InlineData("complete")]
+    [InlineData("withdrawn")]
+    [InlineData("configuration")]
+    public void ExactPendingOwnedReturnAllowsOnlyTheUnprivilegedFocusGap(string outcome)
+    {
+        using var s = new SessionScenario();
+        Bind(s);
+        s.ReadyCandidate();
+        CompleteAcceptance(s);
+        NewSource(s);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("retained edited draft");
+        var pending = s.Service.PendingReturn = new();
+        s.View.ReturnRequested!(s.View.Token);
+        s.Input.PendingPracticeReturn = Assert.IsType<OwnedPracticeReturnRequest>(s.Service.LastReturnRequest);
+        s.Input.InEditor = false;
+        s.Input.FocusedTarget = new("controlled", "focus-gap", Guid.NewGuid());
+        int captures = s.Service.Captures;
+        s.Tick();
+        Assert.Equal(SessionState.ReturningToSource, s.View.State);
+        Assert.NotNull(s.Controller.AutomaticPracticeProgress);
+        Assert.Equal(captures, s.Service.Captures);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+
+        if (outcome == "complete")
+        {
+            s.Input.FocusedTarget = s.Source.Target;
+            pending.SetResult(true);
+            s.Tick();
+            s.Input.PendingPracticeReturn = null;
+            s.Tick();
+            BindReturned(s);
+            Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+            Assert.Equal("retained edited draft", s.Input.Permit!.Plan.Replacement);
+        }
+        else
+        {
+            if (outcome == "withdrawn")
+                s.Input.PendingPracticeReturn = null;
+            else
+                s.Input.ConfigureShortcuts(false, "", "", s.Input.SessionBindings, true);
+            s.Tick();
+            Assert.Null(s.Controller.AutomaticPracticeProgress);
+            Assert.Null(s.Input.Permit);
+            Assert.Equal(captures, s.Service.Captures);
+            pending.SetResult(false);
+            s.Tick();
+        }
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
     [InlineData("missing")]
     [InlineData("old-token")]
     [InlineData("old-focus")]

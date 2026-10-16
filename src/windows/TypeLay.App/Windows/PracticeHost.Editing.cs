@@ -70,7 +70,7 @@ internal sealed partial class PracticeHost
     {
         _editorOverlay = overlay;
         overlay.ConfigureOwnedEditing(this);
-        _monitor!.ConfigureOwnedEditorFocus(OwnsEditorFocus, OwnsReturnedFocus);
+        _monitor!.ConfigureOwnedEditorFocus(OwnsEditorFocus, OwnsReturnedFocus, PendingOwnedReturn);
     }
 
     internal bool IsOwnedEditorTarget(TargetId target) => OwnsAutomaticTarget(target);

@@ -386,7 +386,7 @@ public sealed partial class SessionController : IDisposable
             _pendingWakeCapture = null;
         if (_session.Current is { } current)
         {
-            if (_hook.GetFocus(current.Target) == FocusMember.Other)
+            if (_hook.GetFocus(current.Target) == FocusMember.Other && !PracticeReturnIsPending(current.Target))
                 StopSession("focus-left");
         }
         if (!_hook.Ready || !_broker.Available)

@@ -686,6 +686,7 @@ internal static partial class ContinuousTranslationCheck
         public Guid ConnectionId => inner.ConnectionId;
         public bool ForegroundExpired => ((IInputMonitor)inner).ForegroundExpired;
         public OwnedPracticeBinding? PracticeForegroundSuspension => ((IInputMonitor)inner).PracticeForegroundSuspension;
+        public OwnedPracticeReturnRequest? PendingPracticeReturn => inner.PendingPracticeReturn;
         public bool AcceptanceReady(SessionViewToken token, AcceptancePermit issued, long nowMs) =>
             inner.AcceptanceReady(token, issued, nowMs);
         public FocusMember GetFocus(TargetId target) => inner.GetFocus(target);

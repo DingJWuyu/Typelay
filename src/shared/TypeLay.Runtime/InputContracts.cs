@@ -121,6 +121,9 @@ public interface IInputMonitor : IDisposable
     bool ForegroundExpired => false;
     // Pending old-grant retirement only; never a fresh source observation.
     OwnedPracticeBinding? PracticeForegroundSuspension => null;
+    // The exact zero-authority return request while its local focus edges are
+    // pending. This is neither a Source/Overlay observation nor a write grant.
+    OwnedPracticeReturnRequest? PendingPracticeReturn => null;
     // Presentation only: an asynchronous adapter may not have installed the
     // issued operation yet. This read never creates or refreshes write authority.
     bool AcceptanceReady(SessionViewToken token, AcceptancePermit issued, long nowMs) => true;

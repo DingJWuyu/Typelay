@@ -512,6 +512,15 @@ public sealed partial class SessionController
         && binding.CommandGeneration == _hook.CommandGeneration
         && _hook.GetFocus(binding.Target) != FocusMember.Other;
 
+    private bool PracticeReturnIsPending(TargetId target) => _returningToSource
+        && _session.State == SessionState.ReturningToSource && _ownedPractice is { } binding && binding.Target == target
+        && AutomaticPracticeProgress?.RunId == binding.RunId && !_disposed
+        && _settings.Value.Enabled && _settings.Value.Mode == WorkMode.Automatic
+        && _hook.Ready && _broker.Available && binding.ConnectionId == _hook.ConnectionId
+        && binding.CommandGeneration == _hook.CommandGeneration
+        && _hook.PendingPracticeReturn is { } request && ReferenceEquals(request.Binding, binding)
+        && request.Token == new SessionViewToken(target, _hook.CommandGeneration, _generation);
+
     // A retired owned field cannot silently fall back to global experimental
     // permission while its close/restart/settings operation is still settling.
     // A fresh explicit owned binding is required to reuse that exact lifetime.
@@ -523,7 +532,7 @@ public sealed partial class SessionController
     private void CheckAutomaticPracticeIdentity()
     {
         if (_ownedPractice is { } active && (_hook.PracticeForegroundSuspension == active
-            ? !SuspendPracticeForeground(active) : !AutomaticPracticeIsCurrent(active)))
+            ? !SuspendPracticeForeground(active) : !AutomaticPracticeIsCurrent(active) && !PracticeReturnIsPending(active.Target)))
             StopSession("practice-identity-lost");
         if (_awaitingPracticeReturn is { } returned &&
             (AutomaticPracticeProgress is not { AwaitingFreshSource: true } returning

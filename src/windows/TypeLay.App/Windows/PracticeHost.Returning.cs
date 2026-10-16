@@ -86,6 +86,19 @@ internal sealed partial class PracticeHost
             && _monitor.OwnedReturnInputCurrent(pending.Input))
         && DescriptorCurrent(pending.Editor.Control.Descriptor, checkFocusRevision: false);
 
+    private OwnedPracticeReturnRequest? PendingOwnedReturn()
+    {
+        if (_returnAttempt is not { Delivered: false, Request: { } request, Control: { } control } pending
+            || !_editorSealed || request.Token != control.ReturningToken || !ReturnIdentityCurrent(pending)
+            || WindowsInterruptClock.NowMs >= pending.Input.ExpiresAtMs)
+            return null;
+        nint foreground = Native.GetForegroundWindow();
+        var descriptor = pending.Editor.Control.Descriptor;
+        return foreground == (nint)pending.Editor.Control.OverlayHwnd
+            || foreground == (nint)descriptor.RootHwnd && KeyboardHook.OwnedReturnFocusGap(descriptor)
+            ? request : null;
+    }
+
     // This is an actual exact-field focus observation for family classification,
     // not a new binding, capture permission, or write grant.
     private bool OwnsReturnedFocus(TargetId target) => _returnAttempt is { } pending

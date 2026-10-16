@@ -29,6 +29,8 @@ internal sealed partial class KeyboardHook
     private long _ownedAttemptSequence;
     private Func<TargetId, bool>? _ownedEditorFocus;
     private Func<TargetId, bool>? _ownedReturnFocus;
+    private Func<OwnedPracticeReturnRequest?>? _pendingPracticeReturn;
+    public OwnedPracticeReturnRequest? PendingPracticeReturn => _pendingPracticeReturn?.Invoke();
     internal sealed record ReturnInput(Guid EditorIntent, OwnedReturnKind Kind, long Sequence,
         long ReceivedAtMs, int X, int Y, bool Injected, bool Released)
     {
@@ -117,10 +119,12 @@ internal sealed partial class KeyboardHook
         }
         _shortcutTrace.Enqueue(record);
     }
-    internal void ConfigureOwnedEditorFocus(Func<TargetId, bool> focused, Func<TargetId, bool>? returned = null)
+    internal void ConfigureOwnedEditorFocus(Func<TargetId, bool> focused, Func<TargetId, bool>? returned = null,
+        Func<OwnedPracticeReturnRequest?>? pendingReturn = null)
     {
         _ownedEditorFocus = focused;
         _ownedReturnFocus = returned;
+        _pendingPracticeReturn = pendingReturn;
     }
     internal long EditorInputSequence => Interlocked.Read(ref _editorInputSequence);
     internal long BeginOwnedEditorInput(out long expiresAtMs, out OwnedEditorAdmissionReason reason, out object? detail)
@@ -375,6 +379,12 @@ internal sealed partial class KeyboardHook
             && GetGUIThreadInfo(descriptor.ThreadId, ref gui) && gui.Focus == (nint)descriptor.ControlHwnd
             && (ulong)(long)GetPropW((nint)descriptor.ControlHwnd, "TypeLay.NativeInput.Lifetime.v2") == descriptor.NativeCookie
             && (long)GetPropW((nint)descriptor.ControlHwnd, "TypeLay.OwnedFocusRevision.v1") == descriptor.NativeFocusRevision;
+    }
+    internal static bool OwnedReturnFocusGap(OwnedCaptureDescriptor descriptor)
+    {
+        var gui = new GuiThreadInfo { Size = Marshal.SizeOf<GuiThreadInfo>() };
+        return GetGUIThreadInfo(descriptor.ThreadId, ref gui)
+            && (gui.Focus == 0 || gui.Focus == (nint)descriptor.RootHwnd || gui.Focus == (nint)descriptor.ControlHwnd);
     }
     [StructLayout(LayoutKind.Sequential)]
     private struct GuiThreadInfo
