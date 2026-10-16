@@ -218,9 +218,14 @@ internal sealed partial class PracticeHost
             throw new InvalidDataException("practice-return-ack-identity");
         if (attempt.Cancelled)
             return true;
-        if (message.Kind == "return-invalid" || !ReturnIdentityCurrent(attempt))
+        if (message.Kind == "return-invalid")
         {
             CancelOwnedEditing(expected.EditorIntent, OwnedEditorReason.SourceInvalid);
+            return true;
+        }
+        if (!ReturnIdentityCurrent(attempt))
+        {
+            CancelOwnedEditing(expected.EditorIntent, OwnedEditorReason.Identity);
             return true;
         }
         if (message.Kind == "return-fenced")

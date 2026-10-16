@@ -645,6 +645,9 @@ internal static partial class Program
             throw new InvalidDataException("practice-editor-fence");
         }
         _planActive = false;
+        // Each admitted editor intent has its own bounded evidence budget.
+        // Already queued records retain their original intent and order.
+        _editorTraceCount = 0;
         _editorFence = control;
         _editorHandoff = EditorHandoff.Armed;
         _editorAppLeft = false;
