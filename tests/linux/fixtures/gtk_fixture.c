@@ -210,9 +210,6 @@ static gboolean report_state(gpointer unused) {
             json_builder_add_int_value(builder, gtk_widget_get_allocated_width(candidate));
             json_builder_set_member_name(builder, "height");
             json_builder_add_int_value(builder, gtk_widget_get_allocated_height(candidate));
-            json_builder_set_member_name(builder, "editablePreview");
-            json_builder_add_boolean_value(builder,
-                gtk_style_context_has_class(gtk_widget_get_style_context(candidate), "editable-preview"));
             GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(candidate));
             GtkTextIter first, last;
             gtk_text_buffer_get_bounds(buffer, &first, &last);

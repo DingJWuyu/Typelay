@@ -828,6 +828,7 @@ class Settings:
         self.draft_messages = None
         self.loading_draft_messages = False
         self.pending_settings = {}
+        self.swapping_languages = False
         self.settings_lock = asyncio.Lock()
         self.settings_feedback_owned = False
         self.model_ready = False
@@ -1134,6 +1135,13 @@ class Settings:
                 grid.attach(self.acceptance_description, 0, row, 2, 1)
                 row += 1
             next_rows[page] = row
+        self.language_swap = Gtk.Button(label="⇄")
+        self.language_swap.get_accessible().set_name("交换语言")
+        self.language_swap.set_tooltip_text("交换语言")
+        self.language_swap.set_valign(Gtk.Align.CENTER)
+        self.language_swap.set_sensitive(False)
+        self.language_swap.connect("clicked", lambda *_: self.swap_languages())
+        grids["language"].attach(self.language_swap, 2, 1, 1, 2)
         exclusions_grid = Gtk.Grid(column_spacing=24, row_spacing=10)
         exclusions_grid.attach(Gtk.Label(label="排除的应用", xalign=0), 0, 0, 1, 1)
         self.add_exclusion = Gtk.Button(label="添加应用…")
@@ -1358,8 +1366,51 @@ class Settings:
                 )
         finally:
             self.configuring = False
+        self.render_language_swap()
         if first and not value["onboardingComplete"]:
             self.pages.set_visible_child_name("application-support")
+
+    def render_language_swap(self):
+        self.language_swap.set_sensitive(
+            self.value is not None
+            and self.value["source"] != "auto"
+            and not self.swapping_languages
+            and not {"source", "target"}.intersection(self.pending_settings)
+        )
+        for key in ("source", "target"):
+            self.controls[key].set_sensitive(not self.swapping_languages)
+
+    def swap_languages(self):
+        if not self.language_swap.get_sensitive():
+            return
+        self.swapping_languages = True
+        self.render_language_swap()
+        self.tasks(self.save_language_swap())
+
+    async def save_language_swap(self):
+        try:
+            async with self.settings_lock:
+                if self.value["source"] == "auto":
+                    return
+                try:
+                    # Reuse the host's paired patch so unrelated settings are
+                    # merged with its current committed value, not a UI snapshot.
+                    saved = await self.host.ask(
+                        "traySettings",
+                        {"source": self.value["target"], "target": self.value["source"]},
+                    )
+                except (OSError, ValueError, EOFError, TimeoutError):
+                    saved = None
+                self.report_save_result(
+                    saved is True,
+                    "未保存，已恢复原设置。请检查语言方向或系统权限。"
+                    if saved is False
+                    else "上次设置操作结果未确认，请打开设置检查。",
+                )
+        finally:
+            self.swapping_languages = False
+            # Only broadcasts from the host replace the committed direction.
+            self.configure(self.value)
 
     def draft_value(self, key):
         if key in ("acceptShortcut", "exitShortcut"):
@@ -1442,6 +1493,7 @@ class Settings:
         if self.configuring or self.value is None or value is None:
             return
         self.pending_settings[key] = value
+        self.render_language_swap()
         self.tasks(self.save_control(key, value))
 
     async def save_control(self, key, value):

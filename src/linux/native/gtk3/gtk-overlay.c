@@ -348,10 +348,9 @@ static void theme(const char *choice) {
         "#typelay-overlay #typelay-candidate { border: 1px solid transparent; border-radius: 7px; outline: none; box-shadow: none; }"
         /* GTK3 paints the text node's frame; the main node keeps layout padding. */
         "#typelay-overlay #typelay-candidate > text { border: 1px solid transparent; border-radius: 7px; }"
-        "#typelay-overlay #typelay-candidate.editable-preview:hover > text { border-color: %s; }"
         "#typelay-overlay #typelay-candidate:focus > text { border-color: %s; }"
         "#typelay-overlay #typelay-header .pending { color: %s; }",
-        bg, fg, border, muted, line, muted, muted, hover, fg, bg, fg, line, accent,
+        bg, fg, border, muted, line, muted, muted, hover, fg, bg, fg, accent,
         dark ? "#f2bb8d" : "#99511f");
     gtk_css_provider_load_from_data(overlay.css, css, -1, NULL);
     g_free(css);
@@ -546,9 +545,6 @@ static gboolean render(Target *target, JsonObject *data) {
     gboolean editable_preview = boolean(value, "editable") && tl_view_context_matches(target, value)
         && boolean(tl_object(value, "viewContext"), "canEdit")
         && (g_strcmp0(state, "ValidTranslation") == 0 || g_strcmp0(state, "EditedTranslationPending") == 0);
-    context = gtk_widget_get_style_context(overlay.text);
-    if (editable_preview) gtk_style_context_add_class(context, "editable-preview");
-    else gtk_style_context_remove_class(context, "editable-preview");
     gtk_widget_set_tooltip_text(overlay.text, editable_preview ? "点击译文编辑" : NULL);
     theme(text_or_empty(data, "theme"));
     gboolean capsule = is_paused || g_strcmp0(tl_string(value, "state"), "IdleCapsule") == 0;

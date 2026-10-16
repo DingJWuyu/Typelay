@@ -948,23 +948,29 @@ def run(arguments):
                             "cooperative GTK source did not receive a real model candidate",
                         )
                         assert gtk_state()["first"] == original
-                        preview = wait_for(
-                            lambda: value
-                            if (value := gtk_state()).get("fullscreen")
-                            and (value.get("candidate") or {}).get("text")
-                            else None,
-                            "GTK preview did not expose its actual candidate before visual evidence",
-                        )
-                        candidate = preview["candidate"]
-                        assert candidate["editablePreview"]
-                        scale = preview["scale"]
-                        x = int((candidate["x"] + candidate["width"] / 2) * scale)
-                        y = int((candidate["y"] + candidate["height"] / 2) * scale)
-                        subprocess.run(
-                            ["xdotool", "mousemove", "--window", nested[0], str(x), str(y)],
-                            check=True,
-                            timeout=3,
-                        )
+                        if gtk4:
+                            preview = wait_for(
+                                lambda: value
+                                if (value := gtk_state()).get("fullscreen")
+                                and (value.get("candidate") or {}).get("text")
+                                else None,
+                                "GTK preview did not expose its actual candidate before visual evidence",
+                            )
+                            candidate = preview["candidate"]
+                            assert candidate["editablePreview"]
+                            scale = preview["scale"]
+                            x = int((candidate["x"] + candidate["width"] / 2) * scale)
+                            y = int((candidate["y"] + candidate["height"] / 2) * scale)
+                            subprocess.run(
+                                ["xdotool", "mousemove", "--window", nested[0], str(x), str(y)],
+                                check=True,
+                                timeout=3,
+                            )
+                        else:
+                            wait_for(
+                                lambda: (gtk_state().get("candidate") or {}).get("text"),
+                                "GTK preview did not expose its actual candidate before visual evidence",
+                            )
                         subprocess.run(
                             ["grim", str(arguments.output / "gtk-cooperative.png")],
                             check=True,
@@ -1355,7 +1361,8 @@ def run(arguments):
                                 else None,
                                 "real GTK editor did not retain the typed draft",
                             )
-                            assert not edited["candidate"]["editablePreview"]
+                            if gtk4:
+                                assert not edited["candidate"]["editablePreview"]
                             assert edited["first"] == editing_source
                             if motion:
                                 check_overlay_motion(draft)
@@ -3053,6 +3060,70 @@ def run(arguments):
                 "Connection choice and selected application primary action fully visible "
                 "in the real 790 x 560 GTK viewport; ready repair stays available in collapsed model management"
             )
+            settings_page("语言")
+            source_language = settings_control("设置：源语言")
+            target_language = settings_control("设置：目标语言")
+            swap_language = settings_control("交换语言")
+            before_language = json.loads(paths.settings.read_text())
+            assert (before_language["Source"], before_language["Target"]) == ("en", "zh")
+            revision = status()["commandFeedbackRevision"]
+            activate_setting("交换语言")
+            wait_for(
+                lambda: (value := json.loads(paths.settings.read_text()))["Source"] == "zh"
+                and value["Target"] == "en"
+                and Atspi.Selection.is_child_selected(source_language.get_selection_iface(), 1)
+                and Atspi.Selection.is_child_selected(target_language.get_selection_iface(), 0)
+                and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE)
+                and status()["commandFeedbackRevision"] == revision + 1,
+                "settings language swap did not save and display one paired direction change",
+            )
+            before_swap_failure = paths.settings.read_bytes()
+            blocker = paths.settings.with_suffix(".json.tmp")
+            blocker.mkdir()
+            try:
+                activate_setting("交换语言")
+                wait_for(
+                    lambda: "未保存" in text(settings_control("设置反馈"))
+                    and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE)
+                    and Atspi.Selection.is_child_selected(source_language.get_selection_iface(), 1)
+                    and Atspi.Selection.is_child_selected(target_language.get_selection_iface(), 0),
+                    "failed language swap did not retain the actual saved direction",
+                )
+                assert paths.settings.read_bytes() == before_swap_failure
+                assert status()["commandFeedbackRevision"] == revision + 1
+            finally:
+                blocker.rmdir()
+            activate_setting("交换语言")
+            wait_for(
+                lambda: (value := json.loads(paths.settings.read_text()))["Source"] == "en"
+                and value["Target"] == "zh"
+                and Atspi.Selection.is_child_selected(source_language.get_selection_iface(), 2)
+                and Atspi.Selection.is_child_selected(target_language.get_selection_iface(), 1)
+                and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE),
+                "language swap could not recover after the save blocker was removed",
+            )
+            assert Atspi.Selection.select_child(source_language.get_selection_iface(), 0)
+            wait_for(
+                lambda: json.loads(paths.settings.read_text())["Source"] == "auto"
+                and not swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE),
+                "Auto source did not disable language swap",
+            )
+            assert json.loads(paths.settings.read_text())["Target"] == "zh"
+            assert Atspi.Selection.select_child(source_language.get_selection_iface(), 2)
+            wait_for(
+                lambda: json.loads(paths.settings.read_text())["Source"] == "en"
+                and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE),
+                "fixed source did not restore language swap",
+            )
+            subprocess.run(
+                ["grim", str(arguments.output / "settings-language.png")], check=True, timeout=3
+            )
+            evidence.append(
+                "Real GTK settings language swap saves one paired direction change; "
+                "failed persistence retains both saved choices and retries after recovery; "
+                "Auto disables swap and returning to a fixed source enables it"
+            )
+            settings_page("应用支持")
             activate_setting(desktop_support["primaryAction"]["label"])
             bundled_component = (package / "support/desktop/component.json").is_file()
             if bundled_component:
