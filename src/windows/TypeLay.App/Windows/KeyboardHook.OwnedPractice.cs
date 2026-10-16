@@ -46,16 +46,45 @@ internal sealed partial class KeyboardHook
     }
     internal void ConfigureOwnedEditorFocus(Func<TargetId, bool> focused) => _ownedEditorFocus = focused;
     internal long EditorInputSequence => Interlocked.Read(ref _editorInputSequence);
-    internal long BeginOwnedEditorInput()
+    internal long BeginOwnedEditorInput(out OwnedEditorAdmissionReason reason, out object? detail)
     {
         var press = Volatile.Read(ref _editorPress);
         uint position = GetMessagePos();
         int x = unchecked((short)position), y = unchecked((short)(position >> 16));
+        OwnedEditorAdmissionReason rejected = OwnedEditorAdmissionReason.None;
+        long? inputSequence = null;
+        uint? messageTime = null;
+        bool Rejected(OwnedEditorAdmissionReason value)
+        {
+            rejected = value;
+            return false;
+        }
         // WM_MOUSEACTIVATE belongs to the queued original press, not whichever
         // click happened most recently while the UI thread was busy.
-        return ShortcutsReady && press is not null && press.Sequence == EditorInputSequence
-            && press.Time == unchecked((uint)GetMessageTime()) && press.X == x && press.Y == y
-            && (!press.Injected || _allowInjectedInput) ? press.Sequence : 0;
+        bool admitted = (ShortcutsReady || Rejected(OwnedEditorAdmissionReason.InputNotReady))
+            && (press is not null || Rejected(OwnedEditorAdmissionReason.InputPressMissing))
+            && (press!.Sequence == (inputSequence = EditorInputSequence) || Rejected(OwnedEditorAdmissionReason.InputSequence))
+            && (press.Time == (messageTime = unchecked((uint)GetMessageTime())) || Rejected(OwnedEditorAdmissionReason.InputTime))
+            && (press.X == x || Rejected(OwnedEditorAdmissionReason.InputX))
+            && (press.Y == y || Rejected(OwnedEditorAdmissionReason.InputY))
+            && (!press.Injected || _allowInjectedInput || Rejected(OwnedEditorAdmissionReason.InputInjected));
+        reason = rejected;
+        // Only already-read press/message values. A short-circuited native time
+        // or input-sequence check stays null rather than acquiring new evidence.
+        detail = admitted ? null : new
+        {
+            pressSequence = press?.Sequence,
+            inputSequence,
+            pressTime = press?.Time,
+            messageTime,
+            pressX = press?.X,
+            pressY = press?.Y,
+            messageX = x,
+            messageY = y,
+            injected = press?.Injected,
+            released = press?.Released
+        };
+        return admitted ? press!.Sequence : 0;
     }
     private void ObserveEditorMouse(int message, nint dataPointer)
     {

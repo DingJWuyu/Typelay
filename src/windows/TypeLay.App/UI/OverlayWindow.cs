@@ -403,20 +403,60 @@ internal sealed class OverlayWindow : Window, ISessionView
             else
                 Native.GetCursorPos(out cursor);
             var local = _editor.PointFromScreen(new(cursor.X, cursor.Y));
-            bool inEditor = _editor.IsVisible && local.X >= 0 && local.Y >= 0 && local.X < _editor.ActualWidth && local.Y < _editor.ActualHeight;
+            var refusal = OwnedEditorAdmissionReason.None;
+            bool Refuse(OwnedEditorAdmissionReason reason)
+            {
+                refusal = reason;
+                return false;
+            }
+            bool editorVisible = _editor.IsVisible;
+            double? editorWidth = null, editorHeight = null;
+            int? triggeringMessage = null;
+            bool inEditor = (editorVisible || Refuse(OwnedEditorAdmissionReason.UiEditorHidden))
+                && (local.X >= 0 || Refuse(OwnedEditorAdmissionReason.UiEditorLeft))
+                && (local.Y >= 0 || Refuse(OwnedEditorAdmissionReason.UiEditorTop))
+                && (local.X < (editorWidth = _editor.ActualWidth).Value || Refuse(OwnedEditorAdmissionReason.UiEditorRight))
+                && (local.Y < (editorHeight = _editor.ActualHeight).Value || Refuse(OwnedEditorAdmissionReason.UiEditorBottom));
+            object AdmissionDetail() => new
+            {
+                cursorX = cursor.X,
+                cursorY = cursor.Y,
+                localX = local.X,
+                localY = local.Y,
+                editorVisible,
+                editorWidth,
+                editorHeight,
+                triggeringMessage
+            };
             if (ownedTarget)
             {
                 // Eat this press rather than replaying it later. The source is
                 // still active until its exact GUI fence ACK has been checked.
-                if (inEditor && _ownedEditor is null && _pausedRevision is null
-                    && _viewContext is { CanEdit: true } displayed
-                    && ((lp.ToInt64() >> 16) & 0xffff) == 0x0201) // WM_LBUTTONDOWN only.
-                    _ownedEditor = _ownedEditorHost!.BeginOwnedEditing(displayed.Token, () =>
-                        BeginEditing?.Invoke(displayed.Token) == true && _viewContext is { CanEdit: true } admitted
-                            ? admitted.Token : null);
+                if (inEditor)
+                {
+                    if (_ownedEditor is not null)
+                        refusal = OwnedEditorAdmissionReason.UiPending;
+                    else if (_pausedRevision is not null)
+                        refusal = OwnedEditorAdmissionReason.UiPaused;
+                    else if (_viewContext is not { CanEdit: true } displayed)
+                        refusal = OwnedEditorAdmissionReason.UiView;
+                    else
+                    {
+                        triggeringMessage = (int)((lp.ToInt64() >> 16) & 0xffff);
+                        if (triggeringMessage != 0x0201) // WM_LBUTTONDOWN only.
+                            refusal = OwnedEditorAdmissionReason.UiButton;
+                        else
+                            _ownedEditor = _ownedEditorHost!.BeginOwnedEditing(displayed.Token, () =>
+                                BeginEditing?.Invoke(displayed.Token) == true && _viewContext is { CanEdit: true } admitted
+                                    ? admitted.Token : null);
+                    }
+                }
+                if (refusal != OwnedEditorAdmissionReason.None)
+                    _ownedEditorHost?.TraceOwnedEditorAdmission(refusal, AdmissionDetail());
                 handled = true;
                 return 4; // MA_NOACTIVATEANDEAT, including a rejected or pending owned intent.
             }
+            _ownedEditorHost?.TraceOwnedEditorAdmission(OwnedEditorAdmissionReason.UiTarget, AdmissionDetail());
             if (inEditor && (_editing || StartEdit()))
             {
                 handled = true;

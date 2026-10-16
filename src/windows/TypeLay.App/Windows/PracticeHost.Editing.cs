@@ -19,11 +19,19 @@ internal enum OwnedEditorPeer
 {
     None, SourceRoot, OverlayRoot, Editor, Other
 }
+internal enum OwnedEditorAdmissionReason
+{
+    None, UiTarget, UiEditorHidden, UiEditorLeft, UiEditorTop, UiEditorRight, UiEditorBottom,
+    UiPending, UiPaused, UiView, UiButton, HostDisposed, HostSealed, HostNotReady, HostPending,
+    HostChild, HostMonitor, HostDescriptor, HostGeneration, HostOverlay,
+    InputNotReady, InputPressMissing, InputSequence, InputTime, InputX, InputY, InputInjected
+}
 
 internal sealed partial class PracticeHost
 {
     private OverlayWindow? _editorOverlay;
     private bool _editorSealed;
+    private int _editorAdmissionTraceCount;
     private sealed class PendingEditor(OwnedEditorControl control, IChildProcess child, Guid connection, Guid run, long sequence)
     {
         public OwnedEditorControl Control { get; } = control;
@@ -74,16 +82,55 @@ internal sealed partial class PracticeHost
     internal bool SuppressOwnedCapture(InputContext context) => _editorSealed
         && (context.BoundTarget is { } target && OwnsAutomaticTarget(target) || CapturesAutomaticForeground);
 
+    internal void TraceOwnedEditorAdmission(OwnedEditorAdmissionReason reason, object? detail = null)
+    {
+        if (!_automatic || _runId == Guid.Empty || _editorAdmissionTraceCount >= 16)
+            return;
+        _monitor?.QueueOwnedEditorTrace(new
+        {
+            atMs = WindowsInterruptClock.NowMs,
+            operation = "owned-editor-admission",
+            order = ++_editorAdmissionTraceCount,
+            connection = _connection,
+            run = _runId,
+            sequence = _sequence,
+            reason = reason.ToString(),
+            detail
+        });
+    }
+
     internal OwnedEditorControl? BeginOwnedEditing(SessionViewToken displayed, Func<SessionViewToken?> admit)
     {
         _dispatcher.VerifyAccess();
-        if (_disposed || _editorSealed || !EditorReady(displayed.Target) || _pending is not null
-            || _child is not { } child || _monitor is not { } monitor || _descriptor is not { } descriptor
-            || displayed.CommandGeneration != monitor.CommandGeneration || _editorOverlay is null)
+        OwnedEditorControl? Rejected(OwnedEditorAdmissionReason reason)
+        {
+            TraceOwnedEditorAdmission(reason);
             return null;
-        long inputSequence = monitor.BeginOwnedEditorInput();
+        }
+        if (_disposed)
+            return Rejected(OwnedEditorAdmissionReason.HostDisposed);
+        if (_editorSealed)
+            return Rejected(OwnedEditorAdmissionReason.HostSealed);
+        if (!EditorReady(displayed.Target))
+            return Rejected(OwnedEditorAdmissionReason.HostNotReady);
+        if (_pending is not null)
+            return Rejected(OwnedEditorAdmissionReason.HostPending);
+        if (_child is not { } child)
+            return Rejected(OwnedEditorAdmissionReason.HostChild);
+        if (_monitor is not { } monitor)
+            return Rejected(OwnedEditorAdmissionReason.HostMonitor);
+        if (_descriptor is not { } descriptor)
+            return Rejected(OwnedEditorAdmissionReason.HostDescriptor);
+        if (displayed.CommandGeneration != monitor.CommandGeneration)
+            return Rejected(OwnedEditorAdmissionReason.HostGeneration);
+        if (_editorOverlay is null)
+            return Rejected(OwnedEditorAdmissionReason.HostOverlay);
+        long inputSequence = monitor.BeginOwnedEditorInput(out var reason, out object? detail);
         if (inputSequence == 0)
+        {
+            TraceOwnedEditorAdmission(reason, detail);
             return null;
+        }
         long expires = checked(WindowsInterruptClock.NowMs + 500);
         Guid connection = _connection, run = _runId;
         long sequence = _sequence;
