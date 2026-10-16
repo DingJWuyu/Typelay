@@ -6,6 +6,14 @@ using TypeLay.Windows.Contracts;
 
 namespace TypeLay.App;
 
+internal enum OwnedEditorAdmissionReason
+{
+    None, UiTarget, UiEditorHidden, UiEditorLeft, UiEditorTop, UiEditorRight, UiEditorBottom,
+    UiPending, UiPaused, UiView, UiButton, HostDisposed, HostSealed, HostNotReady, HostPending,
+    HostChild, HostMonitor, HostDescriptor, HostGeneration, HostOverlay,
+    InputNotReady, InputPressMissing, InputSequence, InputTime, InputX, InputY, InputInjected
+}
+
 internal sealed partial class KeyboardHook
 {
     private readonly AcceptanceGate _ownedGate;
