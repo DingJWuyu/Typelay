@@ -68,6 +68,15 @@ GTK3/GTK4 默认与配置按键、编辑回源、暂停恢复及后台原字段�
 
 ## 安装、启动与首次配置
 
+先核对 CachyOS 系统依赖。发行包自带 .NET 和私有合作组件，但不安装系统桌面包；设置需要 Python、PyGObject 和 GTK3，原生合作组件需要 JSON-GLib，托盘需要 Ayatana AppIndicator，已注册应用识别需要 binutils。
+
+```fish
+pacman -Q python python-gobject gtk3 json-glib libayatana-appindicator binutils
+pacman -Q fcitx5 fcitx5-chinese-addons fcitx5-gtk libime opencc
+```
+
+受管练习和应用接入同样要求系统 `fcitx5-chinese-addons 5.1.14`、`libime 1.1.16` 及匹配的官方 pinyinhelper 数据，发行修订号可不同。独立会话配置不免除此检查，详见[合作组件预检与数据校验](fcitx.md#预检)。缺包、版本或数据不匹配时先停止接入，不盲装滚动最新版或自行降级系统。以上查询不切换输入法，也不修改全局配置。
+
 ```fish
 cd artifacts
 sha256sum -c TypeLay-Linux-preview-x86_64.tar.gz.sha256

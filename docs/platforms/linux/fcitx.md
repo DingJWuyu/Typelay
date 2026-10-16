@@ -41,6 +41,8 @@ python packaging/linux/fcitx-cooperative/pack.py \
 
 包内包含私有运行库、原始许可证、修改后的对应源码、补丁、固定来源校验和与重建脚本。保留整个源码与许可证目录后再分发；不要只抽取修改后的二进制。LGPL 组件的原 SPDX 声明及修改说明保留在源码中。系统库版本、构建记录与文件校验和见包内 manifest.json。
 
+### 预检
+
 解压到独立用户目录即可，不需要安装或 sudo。以下只是用户审阅后明确执行的操作，不会由 TypeLay 自动执行。
 
 ```sh
@@ -49,11 +51,19 @@ cd TypeLay-Fcitx-cooperative
 python fcitx-cooperative.py preflight
 ```
 
-preflight 校验包文件、实际 ELF 依赖、私有 Core/Config/Utils 和三个 LibIME 库的解析路径，以及 5.1.22 daemon 版本。共用原 profile 时，用户系统 Chinese Addons 必须为 5.1.14、LibIME 必须为 1.1.16，不能以构建机器的系统版本代替私有源码版本。构建机器可有较新的系统组件，但本包完整构建并链接固定私有组件，记录源码、安装库、构建机器和用户现装四类版本。GTK3/glibc 仍须满足实际动态依赖。缺失或不匹配时拒绝启动，不得忽略错误继续。
+preflight 校验包文件、实际 ELF 依赖、私有 Core/Config/Utils 和三个 LibIME 库的解析路径，以及 5.1.22 daemon 版本。用户系统 Chinese Addons 必须为 5.1.14、LibIME 必须为 1.1.16；启动器核对上游版本，发行修订号可不同。此要求也适用于主包设置启动的独立受管练习与应用会话，不能以独立配置或随包私有组件代替系统前置。构建机器可有较新的系统组件，但本包完整构建并链接固定私有组件，记录源码、安装库、构建机器和用户现装四类版本。GTK3/glibc 仍须满足实际动态依赖。缺失或不匹配时拒绝启动，不得忽略错误继续。
 
 词典与语言模型由 LibIME 1.1.16 源码指定的官方归档与 SHA256 生成，安装到私有目录。私有模型搜索不回退系统模型；XDG 数据路径优先私有词典，个人数据路径仍保留。三个 LibIME 数据归档的 LGPL-2.1-or-later 与权利人依据 [Debian 官方逐文件版权声明](https://metadata.ftp-master.debian.org/changelogs/main/libi/libime/unstable_copyright)，原档、完整许可、固定 KenLM 子模块及对应源码一起保留。生成的官方码表配置改用包内相对路径，用户码表配置不修改。
 
 Chinese 的 py_table.mb / py_stroke.mb 及两份原始归档不随本包分发，因为尚未核实两份数据的单独许可声明。它们来自用户已安装的官方 Chinese 5.1.14：preflight 核验 /usr/share/fcitx5/pinyinhelper 下两文件的固定 SHA256，原模块通过原 StandardPaths::PkgData 读取。私有启动环境保留个人数据优先级，并在末尾确保系统官方数据目录存在。缺失或被改动时拒绝启动，不静默缺少查询功能。包内保留官方下载 recipe/hash 供自行重建。
+
+可先只读核对系统数据；摘要与发行启动器的 `HELPER_FILES` 一致：
+
+```sh
+printf '%s  %s\n' \
+  9b526eab3ef2679d63155c8304fc4b11f701c2bf5db7946e7d3e940f54f3aaa9 /usr/share/fcitx5/pinyinhelper/py_stroke.mb \
+  19b3e593e5a211fe548f39c894d9a2e2e07a08e3edee0083087b1471e5ba026b /usr/share/fcitx5/pinyinhelper/py_table.mb | sha256sum -c -
+```
 
 GTK IM 缓存包含安装路径，不能直接搬运 CI 缓存。每次逐应用启动都使用官方 gtk-query-immodules-3.0 为当前解压目录生成缓存，写入当前用户 XDG_RUNTIME_DIR；不修改系统 GTK 模块缓存。
 
