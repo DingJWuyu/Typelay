@@ -39,6 +39,23 @@ internal static class Program
     private static EditorHandoff _editorHandoff;
     private static long _editorEventSequence;
     private static string? _editorNotice;
+    private static readonly string? EditorTracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
+    private static readonly List<EditorTrace> EditorTraces = [];
+    private static int _editorTraceCount;
+    private enum EditorEvent
+    {
+        Fenced, FenceRejected, Root, FocusGained, FocusLost, Left, Invalid
+    }
+    private enum EditorReason
+    {
+        None, Fence, Root, Field, Deadline, Cancel, Retire, Close, Restart
+    }
+    private enum EditorPeer
+    {
+        None, Overlay, Other
+    }
+    private sealed record EditorTrace(long AtMs, int Order, Guid Intent, long SourceSequence,
+        EditorHandoff State, EditorEvent Event, EditorReason Reason, EditorPeer Peer, bool? Active);
     private enum EditorHandoff
     {
         None, Armed, RootLeft, Left, Invalid
@@ -353,7 +370,7 @@ internal static class Program
             // ACK happen at this outer boundary, never from the pipe reader.
             if (_closePending)
             {
-                InvalidateEditorHandoff();
+                InvalidateEditorHandoff(EditorReason.Close);
                 _owned.Retire();
                 _retired = true;
                 ReleaseAcceptance();
@@ -407,7 +424,7 @@ internal static class Program
                 }
                 else if (message.Kind == "retire" && message.Run == _run && message.Sequence == _sequence + 1)
                 {
-                    InvalidateEditorHandoff();
+                    InvalidateEditorHandoff(EditorReason.Retire);
                     _owned.Retire();
                     _retired = true;
                     // Retirement is the terminal ACK for this generation. Do
@@ -442,7 +459,7 @@ internal static class Program
                         case "edit-cancel" when _automatic:
                             if (_editorFence is null || message.Editing != _editorFence)
                                 throw new InvalidDataException("practice-editor-order");
-                            InvalidateEditorHandoff();
+                            InvalidateEditorHandoff(EditorReason.Cancel);
                             break;
                         case "install" when _automatic:
                             InstallPlan(message.Acceptance ?? throw new InvalidDataException("practice-install-missing"));
@@ -475,7 +492,7 @@ internal static class Program
             }
             if (_editorFence is { } editor && _editorHandoff is EditorHandoff.Armed or EditorHandoff.RootLeft
                 && WindowsInterruptClock.NowMs >= editor.ExpiresAtMs)
-                InvalidateEditorHandoff();
+                InvalidateEditorHandoff(EditorReason.Deadline);
             if (_editorNotice is { } editorNotice && _editorFence is { } fenced)
             {
                 _editorNotice = null;
@@ -513,6 +530,10 @@ internal static class Program
             _automaticProgress = null;
             changed = true;
         }
+        finally
+        {
+            FlushEditorTrace();
+        }
         if (changed)
         {
             if (_restart is not null)
@@ -537,7 +558,10 @@ internal static class Program
             || control.SourceEventSequence != 0 || control.Descriptor != Descriptor()
             || !SourceFocused() || _closePending || _restartPending
             || WindowsInterruptClock.NowMs >= control.ExpiresAtMs)
+        {
+            QueueEditorTrace(control.Intent, EditorEvent.FenceRejected, EditorReason.Fence);
             throw new InvalidDataException("practice-editor-fence");
+        }
         _planActive = false;
         _editorFence = control;
         _editorHandoff = EditorHandoff.Armed;
@@ -547,11 +571,17 @@ internal static class Program
             {
                 SourceEventSequence = checked(++_editorEventSequence)
             }));
+        QueueEditorTrace(control.Intent, EditorEvent.Fenced);
     }
 
     private static void ObserveEditorRoot(nuint activation, nint peer)
     {
-        if (_editorFence is not { } editor || _editorHandoff == EditorHandoff.Invalid)
+        if (_editorFence is not { } editor)
+            return;
+        QueueEditorTrace(editor.Intent, EditorEvent.Root,
+            peer: peer == 0 ? EditorPeer.None : peer == (nint)editor.OverlayHwnd ? EditorPeer.Overlay : EditorPeer.Other,
+            active: (activation & 0xffff) != 0);
+        if (_editorHandoff == EditorHandoff.Invalid)
             return;
         if (_editorHandoff == EditorHandoff.Armed && (activation & 0xffff) == 0
             && peer == (nint)editor.OverlayHwnd && peer != 0
@@ -561,12 +591,15 @@ internal static class Program
             _editorHandoff = EditorHandoff.RootLeft;
         }
         else
-            InvalidateEditorHandoff();
+            InvalidateEditorHandoff(EditorReason.Root);
     }
 
     private static void ObserveEditorField(int notification)
     {
-        if (_editorFence is not { } editor || _editorHandoff == EditorHandoff.Invalid)
+        if (_editorFence is not { } editor)
+            return;
+        QueueEditorTrace(editor.Intent, notification == 0x0200 ? EditorEvent.FocusLost : EditorEvent.FocusGained);
+        if (_editorHandoff == EditorHandoff.Invalid)
             return;
         // An early EN_KILLFOCUS cannot be saved and repaired by a later root
         // edge. Only the exact root->one Edit loss path closes this side.
@@ -576,12 +609,13 @@ internal static class Program
             _editorEventSequence = checked(_editorEventSequence + 1);
             _editorHandoff = EditorHandoff.Left;
             _editorNotice = "edit-left";
+            QueueEditorTrace(editor.Intent, EditorEvent.Left);
         }
         else
-            InvalidateEditorHandoff();
+            InvalidateEditorHandoff(EditorReason.Field);
     }
 
-    private static void InvalidateEditorHandoff()
+    private static void InvalidateEditorHandoff(EditorReason reason)
     {
         if (_editorFence is null || _editorHandoff == EditorHandoff.Invalid)
             return;
@@ -591,6 +625,45 @@ internal static class Program
         // Invalid wins over an unsent left edge. WndProc records only; stdio
         // is emitted by ApplyControls after normal native dispatch unwinds.
         _editorNotice = "edit-invalid";
+        QueueEditorTrace(_editorFence.Intent, EditorEvent.Invalid, reason);
+    }
+
+    private static void QueueEditorTrace(Guid intent, EditorEvent kind, EditorReason reason = EditorReason.None,
+        EditorPeer peer = EditorPeer.None, bool? active = null)
+    {
+        if (string.IsNullOrWhiteSpace(EditorTracePath) || _editorTraceCount >= 16)
+            return;
+        EditorTraces.Add(new(WindowsInterruptClock.NowMs, ++_editorTraceCount, intent, _editorEventSequence,
+            _editorHandoff, kind, reason, peer, active));
+    }
+
+    private static void FlushEditorTrace()
+    {
+        if (EditorTraces.Count == 0)
+            return;
+        try
+        {
+            // Only this outer GUI boundary writes, after the original ACK path.
+            // WndProc retains bounded enum/sequence facts, never text or handles.
+            var lines = new StringBuilder();
+            foreach (var entry in EditorTraces)
+                lines.AppendLine(JsonSerializer.Serialize(new
+                {
+                    atMs = entry.AtMs,
+                    operation = "owned-editor-source",
+                    order = entry.Order,
+                    intent = entry.Intent,
+                    sourceSequence = entry.SourceSequence,
+                    state = entry.State.ToString(),
+                    kind = entry.Event.ToString(),
+                    reason = entry.Reason.ToString(),
+                    peer = entry.Peer.ToString(),
+                    active = entry.Active
+                }));
+            File.AppendAllText(EditorTracePath + ".practice.jsonl", lines.ToString());
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { }
+        finally { EditorTraces.Clear(); }
     }
 
     private static void InstallPlan(OwnedAcceptanceControl control)
@@ -893,7 +966,7 @@ internal static class Program
 
     private static void RestartPractice()
     {
-        InvalidateEditorHandoff();
+        InvalidateEditorHandoff(EditorReason.Restart);
         _planActive = false;
         _restartPending = true;
         _sendRestart = true;
@@ -904,7 +977,7 @@ internal static class Program
 
     private static void ClosePractice()
     {
-        InvalidateEditorHandoff();
+        InvalidateEditorHandoff(EditorReason.Close);
         _planActive = false;
         _owned?.Retire();
         _closePending = true;

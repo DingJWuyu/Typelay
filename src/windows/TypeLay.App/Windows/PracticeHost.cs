@@ -353,6 +353,8 @@ internal sealed partial class PracticeHost : IDisposable
         _dispatcher.VerifyAccess();
         if (_disposed || cancellation.IsCancellationRequested || !ReferenceEquals(_child, child))
             return;
+        if (_editorAttempt is { } editor)
+            TraceOwnedEditor(editor.Control.Intent, OwnedEditorEvent.PipeFailure, OwnedEditorReason.Connection);
         _session?.StopSession();
         Retire();
         // EOF queues native retirement on the child's outer loop. This is not

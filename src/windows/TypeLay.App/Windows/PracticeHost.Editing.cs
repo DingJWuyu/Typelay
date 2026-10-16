@@ -4,6 +4,22 @@ using TypeLay.Windows;
 
 namespace TypeLay.App;
 
+internal enum OwnedEditorEvent
+{
+    Admitted, AdmissionRejected, FenceQueued, FenceAck, SourceLeftAck, SourceInvalidAck,
+    Activation, UiRoot, UiFocusGained, UiFocusLost, UiActivation, Cancelled, Complete, PipeFailure
+}
+internal enum OwnedEditorReason
+{
+    None, Admission, Identity, Deadline, InputIntent, SourceIdentity, SourceFocus, SourceInvalid,
+    Activation, EditorFocus, UiRoot, UiFocusGained, UiFocusLost, UiRender, UiHidden, UiClosed,
+    Retirement, Connection
+}
+internal enum OwnedEditorPeer
+{
+    None, SourceRoot, OverlayRoot, Editor, Other
+}
+
 internal sealed partial class PracticeHost
 {
     private OverlayWindow? _editorOverlay;
@@ -36,6 +52,10 @@ internal sealed partial class PracticeHost
             get; set;
         }
         public bool Complete => Activated && SourceLeft && !Cancelled;
+        public int TraceCount
+        {
+            get; set;
+        }
     }
     private PendingEditor? _editorAttempt;
 
@@ -77,6 +97,17 @@ internal sealed partial class PracticeHost
             || !DescriptorCurrent(descriptor) || !KeyboardHook.OwnedFocus(descriptor)
             || inputSequence != monitor.EditorInputSequence || WindowsInterruptClock.NowMs >= expires)
         {
+            monitor.QueueOwnedEditorTrace(new
+            {
+                atMs = WindowsInterruptClock.NowMs,
+                operation = "owned-editor",
+                intent = Guid.Empty,
+                connection,
+                run,
+                sequence,
+                stage = OwnedEditorEvent.AdmissionRejected.ToString(),
+                reason = OwnedEditorReason.Admission.ToString()
+            });
             _session?.StopSession();
             return null;
         }
@@ -84,8 +115,10 @@ internal sealed partial class PracticeHost
             (long)_editorOverlay.Handle, expires, inputSequence);
         var attempt = new PendingEditor(control, child, connection, run, sequence);
         _editorAttempt = attempt;
+        TraceOwnedEditor(control.Intent, OwnedEditorEvent.Admitted);
         var cancellation = _communication!.Token;
         Enqueue(new("edit-fence", connection, run, sequence, Editing: control));
+        TraceOwnedEditor(control.Intent, OwnedEditorEvent.FenceQueued);
         if (attempt.Cancelled || cancellation.IsCancellationRequested)
             return null;
         _ = ExpireEditorAttemptAsync(attempt, cancellation);
@@ -116,6 +149,13 @@ internal sealed partial class PracticeHost
     {
         if (message.Kind is not ("edit-fenced" or "edit-left" or "edit-invalid"))
             return false;
+        if (message.Editing is { } received)
+            TraceOwnedEditor(received.Intent, message.Kind switch
+            {
+                "edit-fenced" => OwnedEditorEvent.FenceAck,
+                "edit-left" => OwnedEditorEvent.SourceLeftAck,
+                _ => OwnedEditorEvent.SourceInvalidAck
+            }, sourceSequence: received.SourceEventSequence);
         if (_editorAttempt is not { } attempt || message.Editing is not { } evidence
             || evidence with
             {
@@ -131,10 +171,17 @@ internal sealed partial class PracticeHost
             throw new InvalidDataException("practice-editor-ack-sequence");
         long previous = attempt.SourceSequence;
         attempt.SourceSequence = evidence.SourceEventSequence;
-        if (message.Kind == "edit-invalid" || !EditorIdentityCurrent(attempt)
-            || WindowsInterruptClock.NowMs >= attempt.Control.ExpiresAtMs)
+        OwnedEditorReason reason = OwnedEditorReason.None;
+        bool SetReason(OwnedEditorReason value)
         {
-            CancelOwnedEditing(attempt.Control.Intent);
+            reason = value;
+            return true;
+        }
+        if (message.Kind == "edit-invalid" && SetReason(OwnedEditorReason.SourceInvalid)
+            || !EditorIdentityCurrent(attempt) && SetReason(OwnedEditorReason.Identity)
+            || WindowsInterruptClock.NowMs >= attempt.Control.ExpiresAtMs && SetReason(OwnedEditorReason.Deadline))
+        {
+            CancelOwnedEditing(attempt.Control.Intent, reason);
             return true;
         }
         if (message.Kind == "edit-fenced")
@@ -142,16 +189,18 @@ internal sealed partial class PracticeHost
             if (attempt.Fenced || previous != 0)
                 throw new InvalidDataException("practice-editor-fence-order");
             attempt.Fenced = true;
-            if (_monitor?.EditorInputSequence != attempt.Control.InputSequence
-                || !DescriptorCurrent(attempt.Control.Descriptor) || !KeyboardHook.OwnedFocus(attempt.Control.Descriptor)
-                || _editorOverlay?.ActivateOwnedEditor(attempt.Control) != true)
+            if (_monitor?.EditorInputSequence != attempt.Control.InputSequence && SetReason(OwnedEditorReason.InputIntent)
+                || !DescriptorCurrent(attempt.Control.Descriptor) && SetReason(OwnedEditorReason.SourceIdentity)
+                || !KeyboardHook.OwnedFocus(attempt.Control.Descriptor) && SetReason(OwnedEditorReason.SourceFocus)
+                || _editorOverlay?.ActivateOwnedEditor(attempt.Control) != true && SetReason(OwnedEditorReason.Activation))
             {
-                CancelOwnedEditing(attempt.Control.Intent);
+                CancelOwnedEditing(attempt.Control.Intent, reason);
                 return true;
             }
             attempt.Activated = true;
+            TraceOwnedEditor(attempt.Control.Intent, OwnedEditorEvent.Activation);
             if (!OwnsEditorFocus(attempt.Control.AdmittedToken.Target))
-                CancelOwnedEditing(attempt.Control.Intent);
+                CancelOwnedEditing(attempt.Control.Intent, OwnedEditorReason.EditorFocus);
         }
         else
         {
@@ -162,25 +211,58 @@ internal sealed partial class PracticeHost
                 throw new InvalidDataException("practice-editor-left-order");
             attempt.SourceLeft = true;
             if (!OwnsEditorFocus(attempt.Control.AdmittedToken.Target))
-                CancelOwnedEditing(attempt.Control.Intent);
+                CancelOwnedEditing(attempt.Control.Intent, OwnedEditorReason.EditorFocus);
+            else
+                TraceOwnedEditor(attempt.Control.Intent, OwnedEditorEvent.Complete);
         }
         return true;
     }
 
-    internal void CancelOwnedEditing(Guid intent)
+    internal void TraceOwnedEditor(Guid intent, OwnedEditorEvent evt, OwnedEditorReason reason = OwnedEditorReason.None,
+        OwnedEditorPeer peer = OwnedEditorPeer.None, OwnedEditorPeer nextPeer = OwnedEditorPeer.None,
+        bool? active = null, long? sourceSequence = null)
+    {
+        if (_editorAttempt is not { } attempt || attempt.Control.Intent != intent || attempt.TraceCount >= 32)
+            return;
+        // Only bounded enum/identity metadata enters the existing monitor queue.
+        // TryRead owns serialization and I/O, never a WndProc or activation call.
+        _monitor?.QueueOwnedEditorTrace(new
+        {
+            atMs = WindowsInterruptClock.NowMs,
+            operation = "owned-editor",
+            intent,
+            connection = attempt.Connection,
+            run = attempt.Run,
+            sequence = attempt.Sequence,
+            eventSequence = ++attempt.TraceCount,
+            stage = evt.ToString(),
+            reason = reason.ToString(),
+            peer = peer.ToString(),
+            nextPeer = nextPeer.ToString(),
+            active,
+            sourceSequence = sourceSequence ?? attempt.SourceSequence,
+            attempt.Fenced,
+            attempt.Activated,
+            attempt.SourceLeft,
+            attempt.Cancelled
+        });
+    }
+
+    internal void CancelOwnedEditing(Guid intent, OwnedEditorReason reason = OwnedEditorReason.None)
     {
         _dispatcher.VerifyAccess();
         if (_editorAttempt is not { } attempt || attempt.Control.Intent != intent || attempt.Cancelled)
             return;
-        CancelEditorAttempt(sendControl: true);
+        CancelEditorAttempt(sendControl: true, reason);
         _session?.StopSession();
     }
 
-    private void CancelEditorAttempt(bool sendControl)
+    private void CancelEditorAttempt(bool sendControl, OwnedEditorReason reason = OwnedEditorReason.Retirement)
     {
         if (_editorAttempt is not { Cancelled: false } attempt)
             return;
         attempt.Cancelled = true;
+        TraceOwnedEditor(attempt.Control.Intent, OwnedEditorEvent.Cancelled, reason);
         // The old generation stays sealed through all late ACKs and captures.
         // Only the ordinary retire/new-run path can establish a fresh one.
         RevokeAcceptance();
@@ -198,7 +280,7 @@ internal sealed partial class PracticeHost
             if (remaining > 0)
                 await Task.Delay(TimeSpan.FromMilliseconds(remaining), cancellation);
             if (ReferenceEquals(_editorAttempt, attempt) && !attempt.Complete && !attempt.Cancelled)
-                CancelOwnedEditing(attempt.Control.Intent);
+                CancelOwnedEditing(attempt.Control.Intent, OwnedEditorReason.Deadline);
         }
         catch (OperationCanceledException) { }
     }

@@ -32,6 +32,18 @@ internal sealed partial class KeyboardHook
         public uint Data, Flags, Time;
         public nuint Extra;
     }
+    internal void QueueOwnedEditorTrace(object record)
+    {
+        if (string.IsNullOrWhiteSpace(_tracePath))
+            return;
+        if (Interlocked.Increment(ref _shortcutTraceCount) > 64)
+        {
+            Interlocked.Decrement(ref _shortcutTraceCount);
+            Interlocked.Increment(ref _shortcutTraceDropped);
+            return;
+        }
+        _shortcutTrace.Enqueue(record);
+    }
     internal void ConfigureOwnedEditorFocus(Func<TargetId, bool> focused) => _ownedEditorFocus = focused;
     internal long EditorInputSequence => Interlocked.Read(ref _editorInputSequence);
     internal long BeginOwnedEditorInput()
