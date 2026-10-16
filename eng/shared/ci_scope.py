@@ -137,20 +137,13 @@ def select():
                 paths = {path for path in touched if not neutral(path)}
                 if touched and not paths:
                     windows, linux = False, False
-                elif (
-                    paths
-                    and branch == "work/linux-usability"
-                    and all(path.startswith(LINUX_PATHS) for path in paths)
-                ):
+                elif paths and all(path.startswith(LINUX_PATHS) for path in paths):
                     windows = False
-                    practice = paths <= PRACTICE_PATHS
-                    qt = not practice and qt_only_branch()
-                    linux = not qt
-                elif (
-                    paths
-                    and branch == "work/windows-experience"
-                    and all(path.startswith(WINDOWS_PATHS) for path in paths)
-                ):
+                    if branch == "work/linux-usability":
+                        practice = paths <= PRACTICE_PATHS
+                        qt = not practice and qt_only_branch()
+                        linux = not qt
+                elif paths and all(path.startswith(WINDOWS_PATHS) for path in paths):
                     linux = False
         elif branch == "work/linux-settings" and settings_only_push(before):
             windows, linux, qt, settings = False, True, False, True

@@ -102,8 +102,11 @@ class ScopeTests(unittest.TestCase):
         for platform, branch, expected in (
             ("linux", "work/linux-usability", LINUX),
             ("windows", "work/windows-experience", WINDOWS),
+            ("windows", "work/linux-usability", WINDOWS),
+            ("linux", "work/windows-experience", LINUX),
         ):
-            with self.subTest(platform=platform):
+            with self.subTest(platform=platform, branch=branch):
+                self.reset(self.base)
                 before = self.commit(
                     {
                         "src/shared/old.py": "old",
@@ -132,6 +135,7 @@ class ScopeTests(unittest.TestCase):
             }
         )
         self.assertEqual(PRACTICE, self.select(before))
+        self.assertEqual(LINUX, self.select(before, "work/windows-experience"))
         for evidence in (
             {"CREATED": "true"},
             {"FORCED": "true"},
@@ -165,7 +169,7 @@ class ScopeTests(unittest.TestCase):
             with self.subTest(branch=branch):
                 self.assertEqual(SHARED_ONLY, self.select(self.base, branch))
 
-    def test_shared_unknown_workflow_and_opposite_platform_require_both(self):
+    def test_shared_unknown_and_workflow_require_both(self):
         for branch in ("work/linux-usability", "work/windows-experience"):
             for path in (
                 "src/shared/core.cs",
@@ -180,14 +184,6 @@ class ScopeTests(unittest.TestCase):
                     self.reset(self.base)
                     self.commit({path: "changed", "docs/notes.md": "docs"})
                     self.assertEqual(FULL, self.select(self.base, branch))
-        for path, branch in (
-            ("tests/windows/changed.cs", "work/linux-usability"),
-            ("tests/linux/changed.py", "work/windows-experience"),
-        ):
-            with self.subTest(path=path):
-                self.reset(self.base)
-                self.commit({path: "changed", "docs/notes.md": "docs"})
-                self.assertEqual(FULL, self.select(self.base, branch))
 
     def test_reverted_and_merged_changes_still_count(self):
         for path in ("src/shared/transient.cs", ".github/workflows/check.yml"):
@@ -244,7 +240,14 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(FULL, self.select(after))  # Empty push.
         self.commit({})
         self.assertEqual(FULL, self.select(after))  # Empty commit.
-        for branch in ("trunk", "windows-preview", "cachyos-preview", "other"):
+        for branch in (
+            "main",
+            "trunk",
+            "windows-preview",
+            "cachyos-preview",
+            "work/other",
+            "other",
+        ):
             self.assertEqual(FULL, self.select(self.base, branch))
         for event in ("pull_request", "workflow_dispatch"):
             self.assertEqual(FULL, self.select(self.base, EVENT_NAME=event))
@@ -256,6 +259,7 @@ class ScopeTests(unittest.TestCase):
         qt_file = "src/linux/native/qt6/adapter.cpp"
         self.commit({qt_file: "Qt"})
         self.assertEqual(QT, self.select(self.base))
+        self.assertEqual(LINUX, self.select(self.base, "work/windows-experience"))
         self.git("update-ref", "-d", "refs/replace/" + QT_BASELINE)
         self.assertEqual(LINUX, self.select(self.base))  # Missing pinned object.
         self.git("update-ref", "refs/replace/" + QT_BASELINE, self.base)
