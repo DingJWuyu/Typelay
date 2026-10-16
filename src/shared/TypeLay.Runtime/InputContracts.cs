@@ -31,10 +31,13 @@ public sealed record ShortcutLease(InputSnapshot Source, long ContentEpoch, long
 // must map its clock into the session loop's monotonic milliseconds before returning a capture.
 public sealed record InputContext(long UserEpoch, long ForegroundEpoch, long SourceUserEpoch,
     TargetId? BoundTarget, string[] Excluded, bool CaptureDirect, SessionShortcutConfiguration? SessionShortcuts = null, OwnedPracticeBinding? PracticeRead = null, OwnedPracticeReturnRequest? PracticeReturn = null);
+// FencedPracticeRead identifies only an old read superseded by that exact
+// owned source's foreground-age suspension. It is neither an observation nor
+// a retirement ACK and cannot renew freshness, a baseline or any authority.
 public sealed record InputCapture(InputSnapshot? Snapshot, FocusMember Focus = FocusMember.Other,
     string? Application = null, long UserEpoch = 0, long ForegroundEpoch = 0,
     SessionShortcutAcknowledgement? SessionShortcuts = null, OwnedSourceEvidence? OwnedSource = null,
-    bool ForegroundExpired = false);
+    bool ForegroundExpired = false, OwnedPracticeBinding? FencedPracticeRead = null);
 
 // Body-free evidence for an existing owned lesson only. ContextAdvanced implies
 // this read was refused and its original executor acknowledged revocation.

@@ -606,6 +606,7 @@ public sealed partial class SessionController : IDisposable
     {
         _capturing = true;
         long generation = _generation;
+        long configurationRevision = _configurationRevision;
         long windowEpoch = _hook.WindowEpoch;
         long contentEpoch = _hook.ContentEpoch;
         var request = Context();
@@ -641,13 +642,32 @@ public sealed partial class SessionController : IDisposable
             // Accepting it advances generation before an obsolete read can clear it.
             if (!_disposed)
                 DrainInputNotices();
+            // Only the exact old read displaced by this pending age fence may
+            // bypass null retirement. It still passes identity/generation checks
+            // below and never becomes a new source observation or authority.
+            bool fencedPracticeRead = !_disposed
+                && result is
+                {
+                    Snapshot: null, OwnedSource: null, ForegroundExpired: false, Focus: FocusMember.Other,
+                    SessionShortcuts: null, FencedPracticeRead: { } fenced
+                }
+                && request.PracticeRead is { } fencedBinding && ReferenceEquals(fencedBinding, _awaitingPractice)
+                && fenced == fencedBinding && _hook.PracticeForegroundSuspension == fencedBinding
+                && fencedBinding.NativeFocusRevision > 0 && fencedBinding.ContextGeneration > 0
+                && AutomaticPracticeProgress is { AwaitingFreshSource: true, EditingStarted: false } progress
+                && progress.RunId == fencedBinding.RunId && progress.CommandGeneration == fencedBinding.CommandGeneration
+                && configurationRevision == _configurationRevision && windowEpoch == _hook.WindowEpoch
+                && request.ForegroundEpoch == _hook.ForegroundEpoch
+                && fencedBinding.ConnectionId == _hook.ConnectionId && fencedBinding.CommandGeneration == _hook.CommandGeneration
+                && _settings.Value.Enabled && _settings.Value.Mode == WorkMode.Automatic && _broker.Available
+                && (_hook.Ready ? _hook.GetFocus(fencedBinding.Target) == FocusMember.Source : _hook.ForegroundExpired);
             // A native refusal remains unknown even if foreground age expired
             // while this awaiting read was in flight. Never relabel it as age.
             if (!_disposed && _awaitingPractice is { } awaiting && request.PracticeRead == awaiting with
             {
                 CommandGeneration = _hook.CommandGeneration
             }
-                && result.Snapshot is null && result.OwnedSource is null && !result.ForegroundExpired)
+                && result.Snapshot is null && result.OwnedSource is null && !result.ForegroundExpired && !fencedPracticeRead)
                 StopSession("practice-continuity-lost");
             CheckAutomaticPracticeIdentity();
             if (_disposed || generation != _generation)

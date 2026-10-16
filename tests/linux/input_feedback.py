@@ -275,7 +275,9 @@ class InputFeedbackTests(unittest.TestCase):
         retire_during_bind=False,
         age_gap=False,
         foreground_gap=False,
+        late_continuity=False,
     ):
+        self.clock.return_value = 1000
         self.peer = self.connect_peer("gtk3")
         original = self.description
 
@@ -310,7 +312,7 @@ class InputFeedbackTests(unittest.TestCase):
                 practiceRunId=binding["runId"], practiceConnectionId=binding["connectionId"]
             )
             self.native_frames(self.peer)
-            if foreground_gap:
+            if foreground_gap and not late_continuity:
                 self.clock.return_value = 1151
                 self.input.state()
                 self.assertIsNone(self.input.practice_authorization)
@@ -340,33 +342,75 @@ class InputFeedbackTests(unittest.TestCase):
                         self.fail("capture returned before the executor revoke acknowledgement")
                     await asyncio.sleep(0)
 
-            if not foreground_gap:
+            late_reply = None
+            if not foreground_gap or late_continuity:
                 describe = await asyncio.wait_for(request("describe"), 1)
                 self.peer.link.receive({"id": describe["id"], "data": description()})
                 capture = await asyncio.wait_for(request("capture"), 1)
-                self.peer.link.receive(
-                    {
-                        "id": capture["id"],
-                        "data": None,
-                        "captureContinuity": {
-                            "target": binding["target"]["value"],
-                            "nativeFocusRevision": 1,
-                            "contextGeneration": 7,
-                            "observedAtMs": self.clock.return_value,
-                        },
-                    }
-                )
+                reply = {
+                    "id": capture["id"],
+                    "data": None,
+                    "captureContinuity": {
+                        "target": binding["target"]["value"],
+                        "nativeFocusRevision": 1,
+                        "contextGeneration": 7,
+                        "observedAtMs": self.clock.return_value,
+                    },
+                }
+                if late_continuity:
+                    self.clock.return_value = 1151
+                    self.input.state()
+                    old_capture = operation
+                    operation = asyncio.create_task(
+                        self.input.request("suspendOwnedSource", binding)
+                    )
+                    late_reply = reply
+                else:
+                    self.peer.link.receive(reply)
             revoke = await asyncio.wait_for(request("revoke"), 1)
             self.assertFalse(operation.done())
+            if late_reply is not None:
+                if invalidation in ("target", "nativeFocusRevision", "contextGeneration"):
+                    late_reply["captureContinuity"][invalidation] = (
+                        "another-field" if invalidation == "target" else 9
+                    )
+                elif invalidation == "native-null":
+                    late_reply.pop("captureContinuity")
+                elif invalidation == "close":
+                    self.input.retire_practice(binding["runId"])
+                elif invalidation == "settings":
+                    self.input.notification("settings", {"enabled": True})
+                elif invalidation == "unavailable":
+                    self.input.niri._deliver(None)
+                elif invalidation == "window-roundtrip":
+                    self.input.window_epoch += 2
+                elif invalidation == "foreground-roundtrip":
+                    self.input.foreground_epoch += 2
+                if late_continuity == "acknowledged":
+                    self.peer.link.receive({"id": revoke["id"], "data": None})
+                    self.assertTrue(await asyncio.wait_for(operation, 1))
+                self.peer.link.receive(late_reply)
+                fenced = await asyncio.wait_for(old_capture, 1)
+                self.assertIsNone(self.input.bound_observation)
+                self.assertIsNone(self.input.practice_authorization)
+                if invalidation:
+                    self.assertIsNone(fenced)
+                    self.peer.link.receive({"id": revoke["id"], "data": None})
+                    await asyncio.wait_for(operation, 1)
+                    return
+                self.assertEqual(fenced, {"snapshot": None, "fencedPracticeRead": binding})
             if foreground_gap:
                 self.input.niri.observed_at = self.clock.return_value
                 self.input.state()
                 self.assertEqual(self.input.last_state["practiceForegroundSuspension"], binding)
                 self.assertFalse(self.input.prepare_practice(binding, lambda _: True))
-                self.assertFalse(self.input.practice_waiting(binding["runId"]))
-                self.assertIsNone(
-                    await self.input.practice_binding(self.peer.pid, binding["target"])
+                self.assertEqual(
+                    self.input.practice_waiting(binding["runId"]), late_continuity == "acknowledged"
                 )
+                if late_continuity != "acknowledged":
+                    self.assertIsNone(
+                        await self.input.practice_binding(self.peer.pid, binding["target"])
+                    )
                 self.assertEqual(self.native_frames(self.peer), [])
             self.input.notification("publish", publication)
             self.assertEqual(self.native_frames(self.peer), [])
@@ -386,9 +430,10 @@ class InputFeedbackTests(unittest.TestCase):
                 self.input.retire_practice(binding["runId"])
             elif invalidation == "disconnect":
                 self.input.lost(self.peer)
-            self.peer.link.receive(
-                {"id": revoke["id"], "data": False if invalidation == "ack" else None}
-            )
+            if late_continuity != "acknowledged":
+                self.peer.link.receive(
+                    {"id": revoke["id"], "data": False if invalidation == "ack" else None}
+                )
             result = await asyncio.wait_for(operation, 1)
             if invalidation:
                 if foreground_gap:
@@ -553,6 +598,29 @@ class InputFeedbackTests(unittest.TestCase):
             )
 
         asyncio.run(exercise())
+
+    def test_age_fence_keeps_late_refusal_separate_from_fresh_evidence(self):
+        self.owned_context_advance(foreground_gap=True, late_continuity="pending", resume=True)
+
+    def test_acknowledged_age_fence_still_discards_the_old_native_read(self):
+        self.owned_context_advance(foreground_gap=True, late_continuity="acknowledged", resume=True)
+
+    def test_age_fence_does_not_classify_unknown_changed_or_closed_late_reads(self):
+        for invalidation in (
+            "target",
+            "nativeFocusRevision",
+            "contextGeneration",
+            "native-null",
+            "close",
+            "settings",
+            "unavailable",
+            "window-roundtrip",
+            "foreground-roundtrip",
+        ):
+            with self.subTest(invalidation=invalidation):
+                self.owned_context_advance(
+                    invalidation, foreground_gap=True, late_continuity="pending"
+                )
 
     def test_active_foreground_expiry_requires_ack_even_when_freshness_recovers(self):
         self.owned_context_advance(foreground_gap=True, resume=True)

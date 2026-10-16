@@ -340,6 +340,9 @@ public sealed class AutomaticPracticeProgressTests
     [Theory]
     [InlineData("success")]
     [InlineData("ack-failed")]
+    [InlineData("ack-completed")]
+    [InlineData("mismatched-binding")]
+    [InlineData("native-null")]
     [InlineData("close-newrun")]
     [InlineData("unknown")]
     public void ActiveAgeSuspensionRetiresAuthorityBeforeAckAndCannotResumeALaterRun(string outcome)
@@ -351,6 +354,8 @@ public sealed class AutomaticPracticeProgressTests
         Assert.True(s.Controller.BindAutomaticPractice(binding));
         s.ReadyCandidate();
         CompleteAcceptance(s);
+        s.Service.PendingCapture = new();
+        s.Tick();
         var pending = s.Service.PendingSuspension = new();
         int captures = s.Service.Captures;
         s.Input.Ready = false;
@@ -383,13 +388,36 @@ public sealed class AutomaticPracticeProgressTests
             s.Tick();
             Assert.Null(s.Controller.AutomaticPracticeProgress);
         }
-        if (outcome == "success")
+        bool resumes = outcome is "success" or "ack-completed";
+        if (outcome == "ack-completed")
+        {
+            pending.SetResult(true);
+            s.Tick();
+            Assert.NotEqual(binding.CommandGeneration, s.Input.CommandGeneration);
+        }
+        s.CompleteCapture(new(null, FencedPracticeRead: outcome == "native-null" ? null : outcome == "mismatched-binding"
+            ? binding with
+            {
+                ContextGeneration = 9
+            } : binding));
+        Assert.Null(s.Input.Permit);
+        if (resumes)
+        {
+            Assert.True(s.Controller.AutomaticPracticeProgress!.AwaitingFreshSource);
+            Assert.False(s.Controller.BindAutomaticPractice(binding));
+            if (outcome == "success")
+            {
+                s.Tick();
+                Assert.Equal(captures, s.Service.Captures);
+            }
             s.Service.PendingCapture = new();
-        pending.SetResult(outcome != "ack-failed");
+        }
+        if (outcome != "ack-completed")
+            pending.SetResult(outcome != "ack-failed");
         s.Tick();
         if (outcome == "close-newrun")
             Assert.Equal(nextRun, s.Controller.AutomaticPracticeProgress!.RunId);
-        else if (outcome != "success")
+        else if (!resumes)
         {
             Assert.Null(s.Controller.AutomaticPracticeProgress);
             Assert.Null(s.Input.Permit);

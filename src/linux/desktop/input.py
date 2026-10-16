@@ -649,11 +649,16 @@ class Input:
         return True
 
     async def context_advanced(
-        self, authorization, proof, window_epoch, settings_generation, command_generation
+        self,
+        authorization,
+        proof,
+        window_epoch,
+        foreground_epoch,
+        settings_generation,
+        command_generation,
     ):
-        active = authorization is self.practice_authorization
         if (
-            (not active and authorization is not self.practice_continuity)
+            authorization is None
             or not proof
             or command_generation != self.shortcut_config.get("generation")
             or proof.get("target") != authorization["target"]["value"]
@@ -663,9 +668,54 @@ class Input:
                 or proof[key] <= 0
                 for key in ("nativeFocusRevision", "contextGeneration")
             )
-            or not 0 <= now_ms() - proof["observedAtMs"] <= 150
+            or type(proof.get("observedAtMs")) is not int
+            or not 0 < proof["observedAtMs"] <= now_ms()
             or window_epoch != self.window_epoch
+            or foreground_epoch != self.foreground_epoch
             or settings_generation != self.settings_generation
+        ):
+            return None
+        waiting = self.practice_continuity
+        if waiting is not None and waiting.get("foregroundSuspension") is authorization:
+            peer = authorization["peer"]
+            if (
+                (
+                    self.practice_retirement is authorization
+                    or (
+                        self.practice_retirement is None
+                        and self.practice_retirement_binding is authorization
+                        and self.practice_retirement_ack == authorization["runId"]
+                    )
+                )
+                and peer.connection_id == authorization["connectionId"]
+                and command_generation == authorization["commandGeneration"]
+                and self.practice_editor is None
+                and self.practice_return is None
+                and self.practice_waiting(
+                    authorization["runId"], acknowledged=False, require_fresh=False
+                )
+            ):
+                # This exact old request lost to its age fence. Its native proof
+                # may have aged in transit; it supplies no new observation or ACK.
+                return {
+                    "snapshot": None,
+                    "fencedPracticeRead": {
+                        key: authorization[key]
+                        for key in (
+                            "runId",
+                            "target",
+                            "connectionId",
+                            "commandGeneration",
+                            "nativeFocusRevision",
+                            "contextGeneration",
+                        )
+                    },
+                }
+            return None
+        active = authorization is self.practice_authorization
+        if (
+            (not active and authorization is not self.practice_continuity)
+            or not 0 <= now_ms() - proof["observedAtMs"] <= 150
             or self.focused_peer() is not authorization["peer"]
             or self.overlay_focused
             or not self.fresh()
@@ -1430,6 +1480,7 @@ class Input:
         if self.enabled is False:
             return self.captured("paused")
         window_epoch = self.window_epoch
+        foreground_epoch = self.foreground_epoch
         focus = "Overlay" if self.overlay_focused else "Source"
         if (
             focus == "Overlay"
@@ -1550,7 +1601,12 @@ class Input:
         if not native:
             if continuity:
                 resumed = await self.context_advanced(
-                    practice, continuity, window_epoch, settings_generation, command_generation
+                    practice,
+                    continuity,
+                    window_epoch,
+                    foreground_epoch,
+                    settings_generation,
+                    command_generation,
                 )
                 if resumed is not None:
                     return resumed
