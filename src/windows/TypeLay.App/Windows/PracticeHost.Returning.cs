@@ -94,8 +94,12 @@ internal sealed partial class PracticeHost
             return null;
         nint foreground = Native.GetForegroundWindow();
         var descriptor = pending.Editor.Control.Descriptor;
+        // Losing activation can briefly leave no foreground HWND. Only an
+        // ACKed return with the exact overlay departure may wait through that
+        // read-only gap; observed foreground invalidation remains permanent.
         return foreground == (nint)pending.Editor.Control.OverlayHwnd
-            || foreground == (nint)descriptor.RootHwnd && KeyboardHook.OwnedReturnFocusGap(descriptor)
+            || (foreground == (nint)descriptor.RootHwnd || foreground == 0 && pending.Fenced && pending.OverlayLeft)
+                && KeyboardHook.OwnedReturnFocusGap(descriptor)
             ? request : null;
     }
 
