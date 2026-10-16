@@ -1109,12 +1109,8 @@ def run(arguments):
                             try:
                                 baseline = None
                                 for label, mode, expected in (
-                                    ("展开", "instant-expand" if gtk4 else "animate-expand", 360),
-                                    (
-                                        "收起",
-                                        "instant-collapse" if gtk4 else "animate-collapse",
-                                        160,
-                                    ),
+                                    ("展开", "animate-expand", 360),
+                                    ("收起", "animate-collapse", 160),
                                     ("展开", "disabled-expand", 360),
                                     (
                                         "收起",
@@ -1206,16 +1202,10 @@ def run(arguments):
                                         actual["motionText"] == actual["candidate"]["text"] == draft
                                     )
 
-                                before, _ = activate(
-                                    "展开", "instant-hide" if gtk4 else "animate-hide"
-                                )
+                                before, _ = activate("展开", "animate-hide")
                                 wait_for(
                                     lambda: (frames := gtk_state().get("motionFrames", []))
-                                    and (
-                                        frames[-1].get("height", 0) == 360
-                                        if gtk4
-                                        else before["height"] < frames[-1].get("height", 0) < 360
-                                    ),
+                                    and before["height"] < frames[-1].get("height", 0) < 360,
                                     "GTK expand did not reach its expected state before exit",
                                     timeout=3,
                                 )
