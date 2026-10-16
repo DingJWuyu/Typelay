@@ -6,6 +6,72 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 [SupportedOSPlatform("windows")]
 internal static class WinEventStackProbe
 {
+    public const uint ArmRetirementMessage = 0x8052, FinishRetirementMessage = 0x8053;
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RetirementObservation
+    {
+        public uint HooksInstalled, HooksRemoved, TransactionCalls, MatchingCallbacks, RetireCalls;
+        public int RetireResult, InitialStart, InitialEnd, CallbackStart, CallbackEnd;
+        public uint MappingUnmapped, MappingClosed;
+    }
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate uint ArmRetirement(nint root, nint edit, ulong first, ulong second, nint control);
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate uint FinishRetirement(ref RetirementObservation observation);
+    private static ArmRetirement? _armRetirement;
+    private static FinishRetirement? _finishRetirement;
+    private static nint _ownedControl;
+    private static uint _armStatus;
+
+    public static void LoadRetirement(string testLibraryPath, string productionLibraryPath)
+    {
+        // OwnedPracticeField has already loaded and pinned this exact production
+        // DLL. Do not load a second instance with independent owned state.
+        nint production = N.GetModuleHandle(productionLibraryPath);
+        if (production == 0)
+            throw new InvalidOperationException("retirement-production-module");
+        _ownedControl = NativeLibrary.GetExport(production, "TypeLayOwnedEditControl");
+        // Keep callback code loaded until fixture process exit, even on cleanup failure.
+        nint probe = NativeLibrary.Load(testLibraryPath);
+        _armRetirement = Marshal.GetDelegateForFunctionPointer<ArmRetirement>(
+            NativeLibrary.GetExport(probe, "ArmOwnedRetirement"));
+        _finishRetirement = Marshal.GetDelegateForFunctionPointer<FinishRetirement>(
+            NativeLibrary.GetExport(probe, "FinishOwnedRetirement"));
+    }
+
+    public static uint Arm(nint root, nint edit, nuint first, nint second)
+    {
+        if (_armRetirement is null)
+            return 1;
+        _armStatus = _armRetirement(root, edit, first, unchecked((ulong)second), _ownedControl);
+        return _armStatus;
+    }
+
+    public static uint Finish()
+    {
+        if (_finishRetirement is null)
+            return 1;
+        var observation = new RetirementObservation();
+        uint cleanupStatus = _finishRetirement(ref observation);
+        Console.WriteLine(JsonSerializer.Serialize(new
+        {
+            armStatus = _armStatus,
+            cleanupStatus,
+            hooksInstalled = observation.HooksInstalled,
+            hooksRemoved = observation.HooksRemoved,
+            transactionCalls = observation.TransactionCalls,
+            matchingCallbacks = observation.MatchingCallbacks,
+            retireCalls = observation.RetireCalls,
+            retireResult = observation.RetireResult,
+            initialSelection = new[] { observation.InitialStart, observation.InitialEnd },
+            callbackSelection = new[] { observation.CallbackStart, observation.CallbackEnd },
+            mappingUnmapped = observation.MappingUnmapped,
+            mappingClosed = observation.MappingClosed
+        }));
+        Console.Out.Flush();
+        return cleanupStatus;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     private struct Observation
     {

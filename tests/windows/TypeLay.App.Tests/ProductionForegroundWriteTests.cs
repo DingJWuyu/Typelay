@@ -361,6 +361,124 @@ public sealed class ProductionForegroundWriteTests
         finally { release.Set(); }
     }
 
+    [Fact]
+    public async Task OwnedRetirementInsideSelectionCallbackRejectsThePendingWriteBeforeTextMutation()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "TypeLay.Retirement." + Guid.NewGuid().ToString("N"));
+        string stage = "build-test-dll";
+        bool completed = false, textUnchanged = false, focusUnchanged = false, lifetimeCleared = false;
+        uint? wireStatus = null, wireReason = null;
+        TextRange? finalSelection = null;
+        JsonElement? observation = null;
+        try
+        {
+            await BuildWinEventProbe(directory);
+            stage = "start-owned-fixture";
+            await using (var desktop = await Desktop.Start(owned: true,
+                retirementProbe: Path.Combine(directory, "TypeLay.WinEventProbe.dll")))
+            {
+                await desktop.Prepare(desktop.A, "pre old post", new(0, 0));
+                stage = "production-capture";
+                // Capture installs the production transaction hook first. No
+                // capture is allowed after the fixture puts its hook at the head.
+                var plan = Plan(await desktop.Capture(), new(4, 7));
+                using var transaction = new NativeTransaction(plan,
+                    WindowsInterruptClock.NowMs + Limits.WriteExecutionMaxAgeMs);
+                try
+                {
+                    stage = "arm-retirement";
+                    transaction.ArmRetirement(desktop.Root);
+                    stage = "send-real-wire";
+                    transaction.Send(desktop.A);
+                    wireStatus = transaction.Status;
+                    wireReason = transaction.Reason;
+                }
+                finally
+                {
+                    // Explicit cleanup is required even when arming or sending
+                    // failed. Killing the fixture alone is not a passing unhook.
+                    observation = await desktop.FinishRetirement();
+                }
+                stage = "observe-real-control";
+                textUnchanged = N.ReadText(desktop.A, Limits.MaxTextUnits) == "pre old post";
+                finalSelection = N.ReadSelection(desktop.A);
+                focusUnchanged = N.Focused() == (desktop.Root, desktop.A);
+                lifetimeCleared = N.GetProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2") == 0;
+                stage = "assert-retirement";
+                JsonElement result = observation.Value;
+                Assert.Equal(0, result.GetProperty("armStatus").GetInt32());
+                Assert.Equal(0, result.GetProperty("cleanupStatus").GetInt32());
+                Assert.Equal(2, result.GetProperty("hooksInstalled").GetInt32());
+                Assert.Equal(2, result.GetProperty("hooksRemoved").GetInt32());
+                Assert.Equal(1, result.GetProperty("transactionCalls").GetInt32());
+                Assert.Equal(1, result.GetProperty("matchingCallbacks").GetInt32());
+                Assert.Equal(1, result.GetProperty("retireCalls").GetInt32());
+                Assert.Equal(1, result.GetProperty("retireResult").GetInt32());
+                Assert.Equal(1, result.GetProperty("mappingUnmapped").GetInt32());
+                Assert.Equal(1, result.GetProperty("mappingClosed").GetInt32());
+                Assert.Equal(new[] { 0, 0 }, result.GetProperty("initialSelection").EnumerateArray().Select(value => value.GetInt32()));
+                Assert.Equal(new[] { 4, 7 }, result.GetProperty("callbackSelection").EnumerateArray().Select(value => value.GetInt32()));
+                transaction.AssertResult(2, Denial.SourceChanged);
+                Assert.True(textUnchanged);
+                // Owned retirement short-circuits production's post-SETSEL read;
+                // the wire's observed 0..0 is not the final control selection.
+                Assert.Equal(new TextRange(4, 7), finalSelection);
+                Assert.True(focusUnchanged);
+                Assert.True(lifetimeCleared);
+                desktop.AssertZeroSubmits();
+                stage = "stop-fixture";
+            }
+            stage = "delete-test-dll";
+            Directory.Delete(directory, true);
+            completed = true;
+        }
+        finally
+        {
+            string evidence = Path.Combine(Repository(), "artifacts/test-results/owned-retirement-reentry.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(evidence)!);
+            File.WriteAllText(evidence, JsonSerializer.Serialize(new
+            {
+                schemaVersion = 1,
+                result = completed ? "passed" : "error",
+                stage = completed ? "completed" : stage,
+                observation,
+                wireStatus,
+                wireReason,
+                textUnchanged,
+                finalSelection = finalSelection is { } selection ? new[] { selection.Start, selection.End } : null,
+                focusUnchanged,
+                lifetimeCleared
+            }, new JsonSerializerOptions { WriteIndented = true }) + "\n");
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    }
+
+    private static async Task BuildWinEventProbe(string directory)
+    {
+        var info = new ProcessStartInfo("python")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        info.ArgumentList.Add(Path.Combine(Repository(), "tests/windows/test_native_foreground_guards.py"));
+        info.ArgumentList.Add("--build-winevent-probe");
+        info.ArgumentList.Add(directory);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(30));
+        var process = Process.Start(info) ?? throw new InvalidOperationException("Probe build did not start.");
+        try
+        {
+            Task<string> output = process.StandardOutput.ReadToEndAsync(deadline.Token);
+            Task<string> error = process.StandardError.ReadToEndAsync(deadline.Token);
+            await process.WaitForExitAsync(deadline.Token);
+            Assert.True(process.ExitCode == 0, await output + await error);
+            Assert.True(File.Exists(Path.Combine(directory, "TypeLay.WinEventProbe.dll")));
+        }
+        finally { await Stop(process); }
+    }
+
     [Theory]
     [InlineData("TypeLay.NativeInput.Transaction.v1", 1u, 88, 49248)]
     [InlineData("TypeLay.NativeInput.Transaction.v2", 1u, 88, 49248)]
@@ -403,6 +521,7 @@ public sealed class ProductionForegroundWriteTests
             get;
         }
         public uint Status => _view.ReadUInt32(4);
+        public uint Reason => _view.ReadUInt32(8);
         public string ObservedText
         {
             get
@@ -457,6 +576,8 @@ public sealed class ProductionForegroundWriteTests
         }
 
         public void Send(nint field) => N.Send(field, _message, (nuint)_first, unchecked((nint)_second));
+        public void ArmRetirement(nint root) =>
+            Assert.Equal((nuint)0, N.Send(root, 0x8052, (nuint)_first, unchecked((nint)_second)));
         public void Queue(nint field) => Assert.True(SendNotifyMessageW(field, _message, (nuint)_first, unchecked((nint)_second)));
         public void AssertResult(uint status, Denial reason)
         {
@@ -496,7 +617,7 @@ public sealed class ProductionForegroundWriteTests
             _pipeToken = broker.StartInfo.Environment["TYPELAY_PIPE_TOKEN"]!;
             _isolatedDirectory = isolatedDirectory;
         }
-        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false)
+        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null)
         {
             var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(30));
@@ -505,7 +626,7 @@ public sealed class ProductionForegroundWriteTests
             string? isolatedDirectory = null;
             try
             {
-                fixture = await StockFixture.Start(deadline.Token, owned);
+                fixture = await StockFixture.Start(deadline.Token, owned, retirementProbe);
                 string directory = Path.Combine(Repository(), "src/windows/TypeLay.Broker/bin/Release/net10.0-windows");
                 if (withoutNativeDll)
                 {
@@ -543,6 +664,7 @@ public sealed class ProductionForegroundWriteTests
             }
         }
         public Task OwnedControl(string kind) => _fixture.OwnedControl(kind, Token);
+        public Task<JsonElement> FinishRetirement() => _fixture.FinishRetirement(Token);
         public nint Field(string name) => _fixture.Field(name);
         public Task Focus(nint field) => _fixture.Focus(field, Token);
         public async Task Prepare(nint field, string text, TextRange selection)
@@ -627,14 +749,20 @@ public sealed class ProductionForegroundWriteTests
         public nint Field(string name) => (nint)host.Fields.Single(value => value.Name == name).Hwnd;
         private Guid _connection, _run;
         private long _sequence = 1;
-        public static async Task<StockFixture> Start(CancellationToken token, bool owned = false)
+        public static async Task<StockFixture> Start(CancellationToken token, bool owned = false, string? retirementProbe = null)
         {
             Guid connection = Guid.NewGuid(), run = Guid.NewGuid();
             string assembly = Path.Combine(Repository(),
                 "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll");
-            var process = owned ? StartProcess(assembly, "--owned-controls", Path.Combine(Repository(),
+            string[] arguments = owned ? new[] { assembly, "--owned-controls", Path.Combine(Repository(),
                 "src/windows/TypeLay.Broker/bin/Release/net10.0-windows/TypeLay.NativeInput.dll"),
-                connection.ToString("N"), run.ToString("N")) : StartProcess(assembly, "--stock-controls");
+                connection.ToString("N"), run.ToString("N") } : new[] { assembly, "--stock-controls" };
+            if (retirementProbe is not null)
+            {
+                Assert.True(owned);
+                arguments = [.. arguments, retirementProbe];
+            }
+            var process = StartProcess(arguments);
             try
             {
                 string? line = await process.StandardOutput.ReadLineAsync(token);
@@ -664,6 +792,12 @@ public sealed class ProductionForegroundWriteTests
             {
                 Kind = kind == "begin" ? "started" : "retired"
             }, ack);
+        }
+        public async Task<JsonElement> FinishRetirement(CancellationToken token)
+        {
+            N.Send(Root, 0x8053);
+            string? line = await process.StandardOutput.ReadLineAsync(token);
+            return JsonSerializer.Deserialize<JsonElement>(line ?? "null");
         }
         public async Task Focus(nint field, CancellationToken token)
         {

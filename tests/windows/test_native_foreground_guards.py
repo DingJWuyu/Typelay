@@ -4,9 +4,108 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+
+def build_winevent_probe(work):
+    """Build before the fixture consumer runs, without a production dependency."""
+    root = Path(__file__).resolve().parents[2]
+    compiler, linker = shutil.which("clang"), shutil.which("lld-link")
+    if compiler is None or linker is None:
+        raise RuntimeError("The Windows native probe build requires LLVM clang and lld-link.")
+    work.mkdir(parents=True, exist_ok=True)
+    libraries = {
+        "kernel32": [
+            "GetCurrentThreadId",
+            "GetCurrentProcessId",
+            "OpenFileMappingW",
+            "MapViewOfFile",
+            "UnmapViewOfFile",
+            "CloseHandle",
+        ],
+        "user32": [
+            "GetWindowThreadProcessId",
+            "GetAncestor",
+            "GetForegroundWindow",
+            "GetFocus",
+            "IsWindowVisible",
+            "IsWindowUnicode",
+            "IsWindowEnabled",
+            "GetWindowLongPtrW",
+            "GetClassLongPtrW",
+            "GetClassNameW",
+            "GetClassInfoW",
+            "CallWindowProcW",
+            "SetWinEventHook",
+            "UnhookWinEvent",
+            "SetWindowsHookExW",
+            "CallNextHookEx",
+            "UnhookWindowsHookEx",
+            "RegisterWindowMessageW",
+            "GetPropW",
+        ],
+    }
+    for library, exports in libraries.items():
+        definition = work / f"{library}.def"
+        definition.write_text(
+            f"LIBRARY {library}.dll\nEXPORTS\n" + "\n".join(exports) + "\n",
+            encoding="utf-8",
+        )
+        run_checked(
+            [
+                linker,
+                "/lib",
+                "/machine:x64",
+                f"/def:{definition}",
+                f"/out:{work / (library + '.lib')}",
+            ]
+        )
+    obj, dll = work / "probe.obj", work / "TypeLay.WinEventProbe.dll"
+    run_checked(
+        [
+            compiler,
+            "--target=x86_64-pc-windows-msvc",
+            "-std=c11",
+            "-O2",
+            "-ffreestanding",
+            "-fno-builtin",
+            "-fno-stack-protector",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-c",
+            str(root / "tests/windows/native/winevent_stack_probe.c"),
+            "-o",
+            str(obj),
+        ]
+    )
+    run_checked(
+        [
+            linker,
+            "/dll",
+            "/machine:x64",
+            "/entry:DllMain",
+            "/nodefaultlib",
+            "/dynamicbase",
+            "/highentropyva",
+            "/nxcompat",
+            "/Brepro",
+            f"/implib:{work / 'probe.lib'}",
+            f"/out:{dll}",
+            str(obj),
+            *(str(work / (library + ".lib")) for library in libraries),
+        ]
+    )
+    return dll
+
+
+def run_checked(command):
+    result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        raise RuntimeError(result.stdout + result.stderr)
 
 
 class NativeForegroundGuardTests(unittest.TestCase):
@@ -17,81 +116,8 @@ class NativeForegroundGuardTests(unittest.TestCase):
         evidence.parent.mkdir(parents=True, exist_ok=True)
         record = {"schemaVersion": 1, "result": "error", "stage": "build-test-dll"}
         try:
-            compiler, linker = shutil.which("clang"), shutil.which("lld-link")
-            self.assertIsNotNone(compiler, "The Windows native build requires LLVM.")
-            self.assertIsNotNone(linker, "The Windows native build requires lld-link.")
             with tempfile.TemporaryDirectory(prefix="typelay-winevent-probe-") as directory:
-                work = Path(directory)
-                libraries = {
-                    "kernel32": ["GetCurrentThreadId", "GetCurrentProcessId"],
-                    "user32": [
-                        "GetWindowThreadProcessId",
-                        "GetAncestor",
-                        "GetForegroundWindow",
-                        "GetFocus",
-                        "IsWindowVisible",
-                        "IsWindowUnicode",
-                        "IsWindowEnabled",
-                        "GetWindowLongPtrW",
-                        "GetClassLongPtrW",
-                        "GetClassNameW",
-                        "GetClassInfoW",
-                        "CallWindowProcW",
-                        "SetWinEventHook",
-                        "UnhookWinEvent",
-                    ],
-                }
-                for library, exports in libraries.items():
-                    definition = work / f"{library}.def"
-                    definition.write_text(
-                        f"LIBRARY {library}.dll\nEXPORTS\n" + "\n".join(exports) + "\n",
-                        encoding="utf-8",
-                    )
-                    self.run_checked(
-                        [
-                            linker,
-                            "/lib",
-                            "/machine:x64",
-                            f"/def:{definition}",
-                            f"/out:{work / (library + '.lib')}",
-                        ]
-                    )
-                obj, dll = work / "probe.obj", work / "TypeLay.WinEventProbe.dll"
-                self.run_checked(
-                    [
-                        compiler,
-                        "--target=x86_64-pc-windows-msvc",
-                        "-std=c11",
-                        "-O2",
-                        "-ffreestanding",
-                        "-fno-builtin",
-                        "-fno-stack-protector",
-                        "-Wall",
-                        "-Wextra",
-                        "-Werror",
-                        "-c",
-                        str(root / "tests/windows/native/winevent_stack_probe.c"),
-                        "-o",
-                        str(obj),
-                    ]
-                )
-                self.run_checked(
-                    [
-                        linker,
-                        "/dll",
-                        "/machine:x64",
-                        "/entry:DllMain",
-                        "/nodefaultlib",
-                        "/dynamicbase",
-                        "/highentropyva",
-                        "/nxcompat",
-                        "/Brepro",
-                        f"/implib:{work / 'probe.lib'}",
-                        f"/out:{dll}",
-                        str(obj),
-                        *(str(work / (library + ".lib")) for library in libraries),
-                    ]
-                )
+                dll = build_winevent_probe(Path(directory))
                 record["stage"] = "run-fixture"
                 fixture = root / (
                     "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/"
@@ -152,10 +178,10 @@ class NativeForegroundGuardTests(unittest.TestCase):
                 definition = work / "kernel32.def"
                 definition.write_text("LIBRARY kernel32.dll\nEXPORTS\nExitProcess\n")
                 library, obj = work / "kernel32.lib", work / "guards.obj"
-                self.run_checked(
+                run_checked(
                     [linker, "/lib", "/machine:x64", f"/def:{definition}", f"/out:{library}"]
                 )
-                self.run_checked(
+                run_checked(
                     [
                         compiler,
                         "--target=x86_64-pc-windows-msvc",
@@ -167,7 +193,7 @@ class NativeForegroundGuardTests(unittest.TestCase):
                     ]
                 )
                 executable = work / "guards.exe"
-                self.run_checked(
+                run_checked(
                     [
                         linker,
                         "/machine:x64",
@@ -186,7 +212,7 @@ class NativeForegroundGuardTests(unittest.TestCase):
                 compiler = shutil.which("gcc") or shutil.which("clang")
                 self.assertIsNotNone(compiler, "A C compiler is required for the guard regression.")
                 executable = work / "guards"
-                self.run_checked(
+                run_checked(
                     [compiler, *flags, str(source), "-Wl,--gc-sections", "-o", str(executable)]
                 )
             result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=5)
@@ -203,10 +229,9 @@ class NativeForegroundGuardTests(unittest.TestCase):
                 f"Production post-selection guard failed: {cases.get(result.returncode, 'unexpected exit')}",
             )
 
-    def run_checked(self, command):
-        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
 
 if __name__ == "__main__":
-    unittest.main()
+    if len(sys.argv) == 3 and sys.argv[1] == "--build-winevent-probe":
+        build_winevent_probe(Path(sys.argv[2]).resolve())
+    else:
+        unittest.main()

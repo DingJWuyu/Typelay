@@ -21,11 +21,15 @@ internal static class Program
         if (args.Length == 2 && args[0] == "--winevent-stack-probe" && Path.IsPathFullyQualified(args[1]))
             return WinEventStackProbe.Run(args[1]);
         bool hookTest = args.Length == 1 && args[0] is "--hook-test" or "--hook-test-automation";
-        bool ownedControls = args.Length == 4 && args[0] == "--owned-controls"
+        bool ownedControls = (args.Length == 4 || args.Length == 5) && args[0] == "--owned-controls"
             && Path.IsPathFullyQualified(args[1]) && Guid.TryParse(args[2], out _ownedConnection)
-            && Guid.TryParse(args[3], out _ownedRun);
+            && Guid.TryParse(args[3], out _ownedRun)
+            && (args.Length == 4 || Path.IsPathFullyQualified(args[4]));
         if (ownedControls)
+        {
             _ownedPath = args[1];
+            _retirementProbePath = args.Length == 5 ? args[4] : null;
+        }
         bool stockControls = ownedControls || (args.Length == 1 && args[0] == "--stock-controls");
         if (args.Length != 0 && !hookTest && !stockControls)
             return 2;
@@ -33,6 +37,7 @@ internal static class Program
     }
 
     private static string? _ownedPath;
+    private static string? _retirementProbePath;
     private static Guid _ownedConnection, _ownedRun;
     private static long _ownedSequence = 1;
     private static OwnedPracticeField? _ownedField;
@@ -127,6 +132,8 @@ internal static class Program
         {
             _ownedField = new OwnedPracticeField(_replayField, _ownedPath);
             _ownedField.Begin();
+            if (_retirementProbePath is not null)
+                WinEventStackProbe.LoadRetirement(_retirementProbePath, _ownedPath);
             _ = Task.Run(ReadOwnedControls);
         }
         N.ShowWindow(_root, 5);
@@ -250,6 +257,10 @@ internal static class Program
         }
         if (message == N.FixtureSubmitCount)
             return (nint)_submits;
+        if (message == WinEventStackProbe.ArmRetirementMessage && _retirementProbePath is not null)
+            return (nint)WinEventStackProbe.Arm(_root, _replayField, wParam, lParam);
+        if (message == WinEventStackProbe.FinishRetirementMessage && _retirementProbePath is not null)
+            return (nint)WinEventStackProbe.Finish();
         if (message == N.FixtureBlockGui && _barrierEntered is not null && _barrierRelease is not null)
         {
             _barrierEntered.Set();
