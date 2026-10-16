@@ -3,6 +3,7 @@ using TypeLay.Windows;
 using TypeLay.Windows.Contracts;
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Automation;
@@ -27,6 +28,9 @@ internal sealed class OverlayWindow : Window, ISessionView
     private Key _acceptKey = Key.Tab, _exitKey = Key.Escape;
     private SessionShortcutMessages _shortcutMessages = SettingsDraftPresentation.SessionShortcuts(SessionShortcutBindings.Default);
     private SessionViewContext? _viewContext;
+    private PracticeHost? _ownedEditorHost;
+    private OwnedEditorControl? _ownedEditor;
+    private bool _ownedActivationRequested, _ownedRootActive, _ownedFocusAcquired;
     private SessionViewToken? _pressedExitToken;
     private bool _exitPressPending;
     private readonly Grid _surface;
@@ -190,6 +194,15 @@ internal sealed class OverlayWindow : Window, ISessionView
         _editor.IsKeyboardFocusWithinChanged += (_, _) => UpdateEditorAffordance();
         _editor.PreviewMouseDown += (_, e) =>
         {
+            // Only the original WM_MOUSEACTIVATE press can start an owned
+            // handoff. In particular, do not activate through this second route
+            // while its source GUI fence is still outstanding.
+            if (_ownedEditor is not null || _viewContext is { } ownedContext
+                && _ownedEditorHost?.IsOwnedEditorTarget(ownedContext.Token.Target) == true)
+            {
+                e.Handled = !_editing || !_ownedFocusAcquired;
+                return;
+            }
             if (!StartEdit())
             {
                 e.Handled = true;
@@ -200,6 +213,8 @@ internal sealed class OverlayWindow : Window, ISessionView
             Activate();
             _editor.Focus();
         };
+        AddHandler(Keyboard.GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OwnedKeyboardFocusGained), handledEventsToo: true);
+        AddHandler(Keyboard.LostKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OwnedKeyboardFocusLost), handledEventsToo: true);
         _editor.TextChanged += (_, _) => { if (_editing && _viewContext?.CanEdit == true && !_rendering) DraftChanged?.Invoke(_editor.Text); };
         _editor.GotKeyboardFocus += (_, _) =>
         {
@@ -329,7 +344,11 @@ internal sealed class OverlayWindow : Window, ISessionView
             HwndSource.FromHwnd(_hwnd)?.AddHook(WindowMessage);
             SetNoActivate(true);
         };
-        Closed += (_, _) => CancelHeightTransition();
+        Closed += (_, _) =>
+        {
+            InvalidateOwnedEditor();
+            CancelHeightTransition();
+        };
         new WindowInteropHelper(this).EnsureHandle();
     }
     private static Border Keycap(string value)
@@ -347,13 +366,53 @@ internal sealed class OverlayWindow : Window, ISessionView
         Key.ImeProcessed => input.ImeProcessedKey,
         _ => input.Key
     };
+    internal void ConfigureOwnedEditing(PracticeHost practice) => _ownedEditorHost = practice;
+
     private nint WindowMessage(nint hwnd, int msg, nint wp, nint lp, ref bool handled)
     {
-        if (msg == 0x21) // Register the editing transition before Windows changes foreground ownership.
+        if (msg == 0x0006 && _ownedEditor is { } attempt) // WM_ACTIVATE
         {
-            Native.GetCursorPos(out var cursor);
+            bool active = (wp.ToInt64() & 0xffff) != 0;
+            if (_ownedActivationRequested && !_ownedRootActive && !_ownedFocusAcquired
+                && active && lp == (nint)attempt.Descriptor.RootHwnd
+                && WindowsInterruptClock.NowMs <= attempt.ExpiresAtMs)
+                _ownedRootActive = true;
+            else
+                InvalidateOwnedEditor();
+        }
+        if (msg == 0x21) // Admit the intent before Windows changes foreground ownership.
+        {
+            bool ownedTarget = _ownedEditor is not null || _viewContext is { } context
+                && _ownedEditorHost?.IsOwnedEditorTarget(context.Token.Target) == true;
+            Native.Point cursor;
+            if (ownedTarget)
+            {
+                // Hit-test the queued initiating press, not a later hover. The
+                // host binds this same message position and time to its LL press.
+                uint position = GetMessagePos();
+                cursor = new()
+                {
+                    X = unchecked((short)position),
+                    Y = unchecked((short)(position >> 16))
+                };
+            }
+            else
+                Native.GetCursorPos(out cursor);
             var local = _editor.PointFromScreen(new(cursor.X, cursor.Y));
             bool inEditor = _editor.IsVisible && local.X >= 0 && local.Y >= 0 && local.X < _editor.ActualWidth && local.Y < _editor.ActualHeight;
+            if (ownedTarget)
+            {
+                // Eat this press rather than replaying it later. The source is
+                // still active until its exact GUI fence ACK has been checked.
+                if (inEditor && _ownedEditor is null && _pausedRevision is null
+                    && _viewContext is { CanEdit: true } displayed
+                    && ((lp.ToInt64() >> 16) & 0xffff) == 0x0201) // WM_LBUTTONDOWN only.
+                    _ownedEditor = _ownedEditorHost!.BeginOwnedEditing(displayed.Token, () =>
+                        BeginEditing?.Invoke(displayed.Token) == true && _viewContext is { CanEdit: true } admitted
+                            ? admitted.Token : null);
+                handled = true;
+                return 4; // MA_NOACTIVATEANDEAT, including a rejected or pending owned intent.
+            }
             if (inEditor && (_editing || StartEdit()))
             {
                 handled = true;
@@ -363,6 +422,88 @@ internal sealed class OverlayWindow : Window, ISessionView
             return 3;
         }
         return 0;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern uint GetMessagePos();
+
+    internal bool ActivateOwnedEditor(OwnedEditorControl control)
+    {
+        if (!_automationTest || _ownedEditor != control || _viewContext is not { CanEdit: true } context
+            || context.Token != control.AdmittedToken || _pausedRevision is not null || !IsVisible
+            || _ownedActivationRequested || control.OverlayHwnd != (long)_hwnd
+            || WindowsInterruptClock.NowMs > control.ExpiresAtMs)
+            return false;
+        _ownedActivationRequested = true;
+        _editing = true;
+        _editor.IsReadOnly = false;
+        _editor.IsUndoEnabled = true;
+        _editor.Focusable = true;
+        SetNoActivate(false);
+        // No await, DispatcherFrame, or mouse replay. Native activation and the
+        // actual WPF focus event must both describe this same local attempt.
+        bool activated = Activate();
+        if (activated && _ownedEditor == control && _ownedRootActive)
+            _editor.Focus();
+        bool focused = OwnsEditorFocus(control);
+        if (!focused)
+            InvalidateOwnedEditor();
+        UpdateEditorAffordance();
+        return focused;
+    }
+
+    internal bool OwnsEditorFocus(OwnedEditorControl control) => _ownedEditor == control
+        && _ownedRootActive && _ownedFocusAcquired && _editing && IsVisible
+        && _viewContext is { CanEdit: true } context && context.Token == control.AdmittedToken
+        && Native.GetForegroundWindow() == _hwnd && ReferenceEquals(Keyboard.FocusedElement, _editor);
+
+    private void OwnedKeyboardFocusGained(object sender, KeyboardFocusChangedEventArgs input)
+    {
+        if (_ownedEditor is not { } attempt)
+            return;
+        if (!_ownedActivationRequested || !_ownedRootActive)
+        {
+            InvalidateOwnedEditor();
+            return;
+        }
+        if (ReferenceEquals(input.NewFocus, _editor) && ReferenceEquals(Keyboard.FocusedElement, _editor)
+            && !_ownedFocusAcquired && WindowsInterruptClock.NowMs <= attempt.ExpiresAtMs)
+            _ownedFocusAcquired = true;
+        else if (_ownedFocusAcquired || !ReferenceEquals(input.NewFocus, this))
+            InvalidateOwnedEditor();
+    }
+
+    private void OwnedKeyboardFocusLost(object sender, KeyboardFocusChangedEventArgs input)
+    {
+        if (_ownedEditor is null)
+            return;
+        // WPF may pass through its Window after the armed root edge. Once the
+        // editor itself has focus, even a NULL or another local control ends it.
+        if (_ownedFocusAcquired || !_ownedRootActive || !ReferenceEquals(input.OldFocus, this)
+            || input.NewFocus is not null && !ReferenceEquals(input.NewFocus, _editor))
+            InvalidateOwnedEditor();
+    }
+
+    private void InvalidateOwnedEditor()
+    {
+        if (_ownedEditor is not { } attempt)
+            return;
+        CancelOwnedEditor(attempt.Intent);
+        _ownedEditorHost?.CancelOwnedEditing(attempt.Intent);
+    }
+
+    internal void CancelOwnedEditor(Guid intent)
+    {
+        if (_ownedEditor?.Intent != intent)
+            return;
+        _ownedEditor = null;
+        _ownedActivationRequested = _ownedRootActive = _ownedFocusAcquired = false;
+        _editing = _composing = _canEditPreview = false;
+        _editor.IsReadOnly = true;
+        _editor.IsUndoEnabled = false;
+        _editor.Focusable = false;
+        SetNoActivate(true);
+        UpdateEditorAffordance();
     }
     private bool StartEdit()
     {
@@ -407,6 +548,8 @@ internal sealed class OverlayWindow : Window, ISessionView
     }
     public void ResumeEditor()
     {
+        if (_ownedEditor is not null)
+            return; // Owned handoffs never reacquire focus after another intent.
         if (_editing && Native.GetForegroundWindow() == _hwnd)
         {
             Activate();
@@ -416,6 +559,9 @@ internal sealed class OverlayWindow : Window, ISessionView
     public void Render(Session session, UserSettings settings, bool permit, string? statusOverride = null, SessionViewContext? context = null)
     {
         _viewContext = context is not null && session.Current?.Target == context.Token.Target ? context : null;
+        if (_ownedEditor is { } attempt && (_viewContext is not { CanEdit: true } current
+            || current.Token != attempt.AdmittedToken || session.State != SessionState.EditingTranslation))
+            InvalidateOwnedEditor();
         ConfigureSessionShortcuts(_viewContext?.Bindings ?? SessionShortcutBindings.Default);
         var display = Presentation.From(session.State, permit, session.Preview.Length > 0, shortcuts: _viewContext?.Bindings);
         if (!display.Visible || session.Current is not { } source)
@@ -723,6 +869,7 @@ internal sealed class OverlayWindow : Window, ISessionView
     }
     private void ClearSessionContent()
     {
+        InvalidateOwnedEditor();
         CancelHeightTransition();
         _heightAnchor = null;
         _viewContext = null;

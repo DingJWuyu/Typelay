@@ -21,6 +21,7 @@ internal static class WindowsRuntime
     {
         var monitor = new KeyboardHook(automationTest, overlay.Handle);
         practice?.Initialize(settings, monitor, automationTest);
+        practice?.InitializeEditing(overlay);
         broker ??= new BrokerClient();
         support?.Bind(broker, monitor);
         var loop = new DispatcherSessionLoop();

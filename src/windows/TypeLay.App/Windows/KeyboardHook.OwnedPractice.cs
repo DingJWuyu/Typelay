@@ -19,6 +19,66 @@ internal sealed partial class KeyboardHook
     private OwnedSource? _ownedSource;
     private OwnedInstalled? _ownedInstalled;
     private long _ownedAttemptSequence;
+    private Func<TargetId, bool>? _ownedEditorFocus;
+    private long _editorInputSequence;
+    private sealed record EditorPress(long Sequence, uint Time, int X, int Y, bool Injected, bool Released);
+    private EditorPress? _editorPress;
+    private uint _lastEditorPressTime;
+    private bool _seenEditorPress;
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MouseData
+    {
+        public Native.Point Point;
+        public uint Data, Flags, Time;
+        public nuint Extra;
+    }
+    internal void ConfigureOwnedEditorFocus(Func<TargetId, bool> focused) => _ownedEditorFocus = focused;
+    internal long EditorInputSequence => Interlocked.Read(ref _editorInputSequence);
+    internal long BeginOwnedEditorInput()
+    {
+        var press = Volatile.Read(ref _editorPress);
+        uint position = GetMessagePos();
+        int x = unchecked((short)position), y = unchecked((short)(position >> 16));
+        // WM_MOUSEACTIVATE belongs to the queued original press, not whichever
+        // click happened most recently while the UI thread was busy.
+        return ShortcutsReady && press is not null && press.Sequence == EditorInputSequence
+            && press.Time == unchecked((uint)GetMessageTime()) && press.X == x && press.Y == y
+            && (!press.Injected || _allowInjectedInput) ? press.Sequence : 0;
+    }
+    private void ObserveEditorMouse(int message, nint dataPointer)
+    {
+        var data = Marshal.PtrToStructure<MouseData>(dataPointer);
+        bool injected = (data.Flags & 3) != 0;
+        var press = Volatile.Read(ref _editorPress);
+        if (message == 0x201)
+        {
+            long sequence = Interlocked.Increment(ref _editorInputSequence);
+            bool unambiguous = !_seenEditorPress || _lastEditorPressTime != data.Time;
+            _lastEditorPressTime = data.Time;
+            _seenEditorPress = true;
+            Interlocked.Exchange(ref _editorPress, unambiguous && _mouseButtons == 0 && !Modified
+                ? new(sequence, data.Time, data.Point.X, data.Point.Y, injected, false) : null);
+            return;
+        }
+        if (message == 0x202 && _mouseButtons == 1 && press is { Released: false }
+            && press.Sequence == EditorInputSequence && press.Injected == injected
+            && press.X == data.Point.X && press.Y == data.Point.Y
+            && unchecked(data.Time - press.Time) < 0x80000000u)
+        {
+            // Exactly this one release is harmless. A second down, a drag,
+            // any key/modifier or another release already changed the sequence.
+            Interlocked.Exchange(ref _editorPress, press with
+            {
+                Released = true
+            });
+            return;
+        }
+        if (message != 0x200 || _mouseButtons != 0
+            && (press is null || press.X != data.Point.X || press.Y != data.Point.Y))
+            Interlocked.Increment(ref _editorInputSequence);
+    }
+    [DllImport("user32.dll")] private static extern int GetMessageTime();
+    [DllImport("user32.dll")] private static extern uint GetMessagePos();
     public Guid ConnectionId => Volatile.Read(ref _ownedChannel)?.Connection ?? Guid.Empty;
     internal void ConfigureOwnedPractice(Func<TargetId, bool> ownsTarget, Action<InputLease, AcceptancePermit?> publish, Action revoke)
     {
@@ -32,7 +92,7 @@ internal sealed partial class KeyboardHook
         Interlocked.Exchange(ref _ownedSource, new(target, descriptor));
     internal void InstallOwnedPlan(long sequence, InputLease lease, AcceptancePermit permit, OwnedCaptureDescriptor descriptor)
     {
-        if (ConnectionId != lease.PracticeConnectionId || !OwnedFocus(descriptor)
+        if (_ownedEditorFocus?.Invoke(lease.Source.Target) == true || ConnectionId != lease.PracticeConnectionId || !OwnedFocus(descriptor)
             || lease.CommandGeneration != CommandGeneration || lease.UserEpoch != UserEpoch
             || lease.ForegroundEpoch != ForegroundEpoch || WindowsInterruptClock.NowMs > permit.ExpiresAtMs)
             return;

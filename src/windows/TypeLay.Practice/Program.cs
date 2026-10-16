@@ -35,6 +35,14 @@ internal static class Program
     private static OwnedMapping? _witnessMapping, _resultMapping;
     private static OwnedWitnessReader? _witness;
     private static OwnedAcceptancePlan? _plan;
+    private static OwnedEditorControl? _editorFence;
+    private static EditorHandoff _editorHandoff;
+    private static long _editorEventSequence;
+    private static string? _editorNotice;
+    private enum EditorHandoff
+    {
+        None, Armed, RootLeft, Left, Invalid
+    }
     private static AutomaticPracticeProgress? _automaticProgress;
     private static byte[]? _transaction;
     private static long _lastPlanSequence, _installWitnessFloor, _lastWitnessAcknowledged, _sourceReadyRevision;
@@ -144,7 +152,10 @@ internal static class Program
                         while (_inputCompletions?.TryDequeue(out var completion) == true)
                             WriteReply(completion);
                     inputBurst = 0;
-                    if (Native.MsgWaitForMultipleObjectsEx(0, 0, uint.MaxValue, 0x04ff, 4) == uint.MaxValue)
+                    uint wait = _editorFence is { } pendingEditor && _editorHandoff is EditorHandoff.Armed or EditorHandoff.RootLeft
+                        ? (uint)Math.Clamp(pendingEditor.ExpiresAtMs - WindowsInterruptClock.NowMs, 0, 500)
+                        : uint.MaxValue;
+                    if (Native.MsgWaitForMultipleObjectsEx(0, 0, wait, 0x04ff, 4) == uint.MaxValue)
                         return Fail();
                     ApplyControls();
                     continue;
@@ -342,6 +353,7 @@ internal static class Program
             // ACK happen at this outer boundary, never from the pipe reader.
             if (_closePending)
             {
+                InvalidateEditorHandoff();
                 _owned.Retire();
                 _retired = true;
                 ReleaseAcceptance();
@@ -395,8 +407,12 @@ internal static class Program
                 }
                 else if (message.Kind == "retire" && message.Run == _run && message.Sequence == _sequence + 1)
                 {
+                    InvalidateEditorHandoff();
                     _owned.Retire();
                     _retired = true;
+                    // Retirement is the terminal ACK for this generation. Do
+                    // not emit its queued editor notice under the next sequence.
+                    ClearEditorHandoff();
                     _sequence = message.Sequence;
                     _planActive = false;
                     if (_transaction is not null)
@@ -419,6 +435,14 @@ internal static class Program
                             break;
                         case "auto-progress" when _automatic:
                             _automaticProgress = message.AutomaticProgress;
+                            break;
+                        case "edit-fence" when _automatic:
+                            FenceEditor(message.Editing ?? throw new InvalidDataException("practice-editor-missing"));
+                            break;
+                        case "edit-cancel" when _automatic:
+                            if (_editorFence is null || message.Editing != _editorFence)
+                                throw new InvalidDataException("practice-editor-order");
+                            InvalidateEditorHandoff();
                             break;
                         case "install" when _automatic:
                             InstallPlan(message.Acceptance ?? throw new InvalidDataException("practice-install-missing"));
@@ -449,7 +473,19 @@ internal static class Program
                 _planActive = false;
                 Reply("restart");
             }
-            if (_automatic && !_retired && !_witnessFailed && SourceFocused())
+            if (_editorFence is { } editor && _editorHandoff is EditorHandoff.Armed or EditorHandoff.RootLeft
+                && WindowsInterruptClock.NowMs >= editor.ExpiresAtMs)
+                InvalidateEditorHandoff();
+            if (_editorNotice is { } editorNotice && _editorFence is { } fenced)
+            {
+                _editorNotice = null;
+                WriteReply(new(editorNotice, _connection, _run, _sequence,
+                    Editing: fenced with
+                    {
+                        SourceEventSequence = _editorEventSequence
+                    }));
+            }
+            if (_automatic && !_retired && !_witnessFailed && _editorFence is null && SourceFocused())
             {
                 long revision = _owned.FocusRevision;
                 if (revision > 0 && revision != _sourceReadyRevision)
@@ -492,9 +528,74 @@ internal static class Program
     private static bool SourceFocused() => _edit is not null && Native.GetFocus() == _edit.Handle
         && Native.GetForegroundWindow() == _window;
 
+    private static void FenceEditor(OwnedEditorControl control)
+    {
+        // This runs at the same outer GUI boundary as InstallPlan, never on the
+        // pipe reader. Fence only the old generation; keep this field's cookie,
+        // lifetime and any result mapping until its ordinary release ACK.
+        if (!_allowInjectedInput || _retired || _editorFence is not null || _witnessFailed
+            || control.SourceEventSequence != 0 || control.Descriptor != Descriptor()
+            || !SourceFocused() || _closePending || _restartPending
+            || WindowsInterruptClock.NowMs >= control.ExpiresAtMs)
+            throw new InvalidDataException("practice-editor-fence");
+        _planActive = false;
+        _editorFence = control;
+        _editorHandoff = EditorHandoff.Armed;
+        _editorNotice = null;
+        WriteReply(new("edit-fenced", _connection, _run, _sequence,
+            Editing: control with
+            {
+                SourceEventSequence = checked(++_editorEventSequence)
+            }));
+    }
+
+    private static void ObserveEditorRoot(nuint activation, nint peer)
+    {
+        if (_editorFence is not { } editor || _editorHandoff == EditorHandoff.Invalid)
+            return;
+        if (_editorHandoff == EditorHandoff.Armed && (activation & 0xffff) == 0
+            && peer == (nint)editor.OverlayHwnd && peer != 0
+            && WindowsInterruptClock.NowMs < editor.ExpiresAtMs)
+        {
+            _editorEventSequence = checked(_editorEventSequence + 1);
+            _editorHandoff = EditorHandoff.RootLeft;
+        }
+        else
+            InvalidateEditorHandoff();
+    }
+
+    private static void ObserveEditorField(int notification)
+    {
+        if (_editorFence is not { } editor || _editorHandoff == EditorHandoff.Invalid)
+            return;
+        // An early EN_KILLFOCUS cannot be saved and repaired by a later root
+        // edge. Only the exact root->one Edit loss path closes this side.
+        if (_editorHandoff == EditorHandoff.RootLeft && notification == 0x0200
+            && WindowsInterruptClock.NowMs < editor.ExpiresAtMs)
+        {
+            _editorEventSequence = checked(_editorEventSequence + 1);
+            _editorHandoff = EditorHandoff.Left;
+            _editorNotice = "edit-left";
+        }
+        else
+            InvalidateEditorHandoff();
+    }
+
+    private static void InvalidateEditorHandoff()
+    {
+        if (_editorFence is null || _editorHandoff == EditorHandoff.Invalid)
+            return;
+        _planActive = false;
+        _editorEventSequence = checked(_editorEventSequence + 1);
+        _editorHandoff = EditorHandoff.Invalid;
+        // Invalid wins over an unsent left edge. WndProc records only; stdio
+        // is emitted by ApplyControls after normal native dispatch unwinds.
+        _editorNotice = "edit-invalid";
+    }
+
     private static void InstallPlan(OwnedAcceptanceControl control)
     {
-        if (_witnessFailed || _witness is null || _witness.Poisoned || _plan is not null
+        if (_editorFence is not null || _witnessFailed || _witness is null || _witness.Poisoned || _plan is not null
             || control.PlanSequence <= _lastPlanSequence || control.PlanId == Guid.Empty
             || control.PlanBytes != OwnedPracticeAcceptanceProtocol.BodyBytes
             || control.ResultBytes != OwnedPracticeAcceptanceProtocol.BodyBytes)
@@ -541,8 +642,16 @@ internal static class Program
         _transaction = null;
     }
 
+    private static void ClearEditorHandoff()
+    {
+        _editorFence = null;
+        _editorHandoff = EditorHandoff.None;
+        _editorNotice = null;
+    }
+
     private static void ReleaseAcceptance()
     {
+        ClearEditorHandoff();
         ReleasePlan();
         CloseWitness();
     }
@@ -784,6 +893,7 @@ internal static class Program
 
     private static void RestartPractice()
     {
+        InvalidateEditorHandoff();
         _planActive = false;
         _restartPending = true;
         _sendRestart = true;
@@ -794,6 +904,7 @@ internal static class Program
 
     private static void ClosePractice()
     {
+        InvalidateEditorHandoff();
         _planActive = false;
         _owned?.Retire();
         _closePending = true;
@@ -995,6 +1106,7 @@ internal static class Program
                     return 0;
                 case 0x0006: // WM_ACTIVATE
                     InvalidateFocus();
+                    ObserveEditorRoot(wParam, lParam); // Before DefWindowProc can notify the stock Edit.
                     if ((wParam & 0xffff) != 0)
                         RefreshSettings();
                     break;
@@ -1032,6 +1144,7 @@ internal static class Program
                         && _edit is not null && lParam == _edit.Handle)
                     {
                         InvalidateFocus(); // Before layout or any other reentrant call.
+                        ObserveEditorField(notification);
                         if (notification == 0x0100)
                             EnsureVisible(_edit);
                     }

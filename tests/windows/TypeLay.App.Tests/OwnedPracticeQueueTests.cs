@@ -329,6 +329,60 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         scene.AssertOrdinary();
     });
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task EditorFenceWithoutAPlanKeepsTheLifetimeAndRejectsALateInstall(bool cancel) => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(true);
+        await scene.Start(true);
+        var overlay = new Window { ShowActivated = false, Width = 240, Height = 100 };
+        try
+        {
+            nint overlayHandle = new System.Windows.Interop.WindowInteropHelper(overlay).EnsureHandle();
+            var descriptor = scene.Descriptor;
+            var target = new WindowsTarget(descriptor.ProcessId, descriptor.ProcessStartUtcTicks,
+                descriptor.RootHwnd, descriptor.ControlHwnd, "win32-edit-transaction-v2", "controlled-owned-editor", Guid.NewGuid()).Id;
+            var displayed = new SessionViewToken(target, Guid.NewGuid(), 10);
+            var intent = new OwnedEditorControl(Guid.NewGuid(), descriptor, displayed, displayed with
+            {
+                Revision = 11
+            },
+                (long)overlayHandle, WindowsInterruptClock.NowMs + 500, 1);
+            Assert.Null(scene.Plan);
+            await scene.SendEditor("edit-fence", intent);
+            await scene.Wait(() => scene.Messages.Any(message => message.Kind == "edit-fenced" && message.Editing?.Intent == intent.Intent));
+            var fenced = Assert.Single(scene.Messages, message => message.Kind == "edit-fenced").Editing!;
+            Assert.Equal(intent, fenced with
+            {
+                SourceEventSequence = 0
+            });
+            Assert.True(fenced.SourceEventSequence > 0);
+            Assert.Equal(descriptor.NativeCookie, unchecked((ulong)(long)N.GetProp(scene.Field, "TypeLay.NativeInput.Lifetime.v2")));
+            Assert.Equal(descriptor.NativeFocusRevision, (long)N.GetProp(scene.Field, "TypeLay.OwnedFocusRevision.v1"));
+            Assert.Equal((scene.Root, scene.Field), N.Focused());
+            if (cancel)
+            {
+                await scene.SendEditor("edit-cancel", intent);
+                await scene.Wait(() => scene.Messages.Any(message => message.Kind == "edit-invalid" && message.Editing?.Intent == intent.Intent));
+                Assert.True(Assert.Single(scene.Messages, message => message.Kind == "edit-invalid").Editing!.SourceEventSequence > fenced.SourceEventSequence);
+                Assert.Equal(descriptor.NativeCookie, unchecked((ulong)(long)N.GetProp(scene.Field, "TypeLay.NativeInput.Lifetime.v2")));
+            }
+            Assert.True(N.IsWindowEnabled(GetDlgItem(scene.Root, 102)));
+            await scene.Install(expectAcknowledgement: false); // A fresh real plan, after the GUI fence/cancel ACK.
+            await scene.Wait(() => !N.IsWindowEnabled(GetDlgItem(scene.Root, 102)));
+            Assert.Equal(nint.Zero, N.GetProp(scene.Field, "TypeLay.NativeInput.Lifetime.v2"));
+            Assert.DoesNotContain(scene.Messages, message => message.Kind == "installed" && message.Acceptance?.PlanId == scene.InstallControl!.PlanId);
+            Assert.Equal(0, scene.Receipts);
+            Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+            Assert.Equal((scene.Root, scene.Field), N.Focused());
+        }
+        finally
+        {
+            overlay.Close();
+        }
+    });
+
     [Fact]
     public Task ANewPressAfterAnExternalReleaseDoesNotInheritTheOldConsumedDecision() => desktop.RunAsync(async () =>
     {
@@ -502,7 +556,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         private async Task FocusSource()
         {
             Assert.True(N.SetForegroundWindow(Root));
-            Assert.True(N.PostMessage(Root, 0x0007, 0, 0));
+            AutomationElement.FromHandle(Field).SetFocus();
             await Wait(() => N.Focused() == (Root, Field));
         }
         public async Task Focus()
@@ -512,7 +566,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 && Descriptor.BeginSequence == _sequence && (long)N.GetProp(Field, "TypeLay.OwnedFocusRevision.v1") == Descriptor.NativeFocusRevision);
             _hook.SetOwnedChannel(_connection, _writer!, Descriptor);
         }
-        public async Task Install()
+        public async Task Install(bool expectAcknowledgement = true)
         {
             long now = WindowsInterruptClock.NowMs;
             var target = new WindowsTarget(Descriptor.ProcessId, Descriptor.ProcessStartUtcTicks,
@@ -528,6 +582,8 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             _result = OwnedPracticeAcceptanceProtocol.CreateResult(_child.Process.Handle);
             InstallControl = new(write.Id, Plan.PlanSequence, _planMapping.RemoteHandle, _planMapping.Length, _result.RemoteHandle, _result.Length);
             await Send("install", InstallControl);
+            if (!expectAcknowledgement)
+                return;
             await Wait(() => Messages.Any(message => message.Kind == "installed" && message.Acceptance?.PlanId == write.Id));
             _hook.BindOwnedSource(target, Descriptor);
             _hook.InstallOwnedPlan(Plan.PlanSequence, lease, permit, Descriptor);
@@ -551,6 +607,8 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         }
         public Task Send(string kind, OwnedAcceptanceControl? control = null) => PracticeProgressPipe.WriteAsync(
             _child!.Process.StandardInput.BaseStream, new(kind, _connection, _run, _sequence, Acceptance: control), _deadline.Token);
+        public Task SendEditor(string kind, OwnedEditorControl control) => PracticeProgressPipe.WriteAsync(
+            _child!.Process.StandardInput.BaseStream, new(kind, _connection, _run, _sequence, Editing: control), _deadline.Token);
         public OwnedAcceptanceResult Result() => OwnedPracticeAcceptanceProtocol.ReadResult(_result!);
         public List<OwnedKeyWitness> Audit()
         {

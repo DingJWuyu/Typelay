@@ -80,7 +80,8 @@ internal sealed partial class KeyboardHook : IInputMonitor
         if (!WindowsTarget.TryDecode(target, out var native))
             return FocusMember.Other;
         if (_ownedSource is { } owned && target == owned.Target)
-            return OwnedFocus(owned.Descriptor) ? FocusMember.Source : FocusMember.Other;
+            return _ownedEditorFocus?.Invoke(target) == true ? FocusMember.Overlay
+                : OwnedFocus(owned.Descriptor) ? FocusMember.Source : FocusMember.Other;
         nint foreground = Native.GetForegroundWindow();
         return foreground == (nint)native.RootHwnd ? FocusMember.Source
             : foreground == _editorHwnd && _editorHwnd != 0 ? FocusMember.Overlay : FocusMember.Other;
@@ -280,6 +281,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     {
         if (code < 0)
             return Native.CallNextHookEx(_hook, code, wParam, lParam);
+        Interlocked.Increment(ref _editorInputSequence);
         var data = Marshal.PtrToStructure<Native.KeyData>(lParam);
         bool down = wParam == 0x100 || wParam == 0x104;
         bool injected = (data.Flags & 0x12) != 0;
@@ -444,6 +446,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
         if (code >= 0)
         {
             int message = (int)wParam;
+            ObserveEditorMouse(message, lParam);
             if (message is 0x201 or 0x204 or 0x207 or 0x20B)
                 _mouseButtons++;
             // A drag changes the selection even without a UIA focus event.

@@ -83,11 +83,11 @@ internal sealed partial class PracticeHost
             return false;
         }
     }
-    internal OwnedCaptureDescriptor? CaptureDescriptor => IsAutomatic && _nativeActive && _pending is null
+    internal OwnedCaptureDescriptor? CaptureDescriptor => !_editorSealed && IsAutomatic && _nativeActive && _pending is null
         && _descriptor is { } descriptor && DescriptorCurrent(descriptor) ? descriptor : null;
-    internal bool SourceReady(TargetId target) => IsAutomatic && _settings?.Value.AcceptShortcut == "Tab" && _target == target && _descriptor is { } descriptor
+    internal bool SourceReady(TargetId target) => !_editorSealed && IsAutomatic && _settings?.Value.AcceptShortcut == "Tab" && _target == target && _descriptor is { } descriptor
         && DescriptorCurrent(descriptor) && KeyboardHook.OwnedFocus(descriptor) && _witnessWriter is { Poisoned: false };
-    private bool DescriptorCurrent(OwnedCaptureDescriptor descriptor)
+    private bool DescriptorCurrent(OwnedCaptureDescriptor descriptor, bool checkFocusRevision = true)
     {
         if (_child is null || !descriptor.IsValid || descriptor.BeginSequence > _sequence)
             return false;
@@ -101,7 +101,7 @@ internal sealed partial class PracticeHost
                 && Native.GetWindowThreadProcessId(field, out uint fieldPid) == descriptor.ThreadId && fieldPid == process.Id
                 && Native.GetAncestor(field, 2) == root && GetDlgItem(root, 101) == field
                 && (ulong)(long)GetPropW(field, "TypeLay.NativeInput.Lifetime.v2") == descriptor.NativeCookie
-                && (long)GetPropW(field, "TypeLay.OwnedFocusRevision.v1") == descriptor.NativeFocusRevision;
+                && (!checkFocusRevision || (long)GetPropW(field, "TypeLay.OwnedFocusRevision.v1") == descriptor.NativeFocusRevision);
         }
         catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
@@ -110,6 +110,8 @@ internal sealed partial class PracticeHost
     }
     private void AcceptDescriptor(OwnedCaptureDescriptor descriptor)
     {
+        if (_editorSealed)
+            return; // No source-ready may replace the fixed editing basis.
         if (_descriptor is { } previous && _target is not null && descriptor != previous)
         {
             RetireRun(false);
@@ -123,7 +125,7 @@ internal sealed partial class PracticeHost
     }
     internal OwnedSourceEvidence? ObserveAutomaticTarget(InputSnapshot? snapshot, FocusMember focus, long startedAt)
     {
-        if (!IsAutomatic || !_nativeActive || _pending is not null || _session is null || _monitor is null
+        if (_editorSealed || !IsAutomatic || !_nativeActive || _pending is not null || _session is null || _monitor is null
             || _descriptor is not { } descriptor || !DescriptorCurrent(descriptor)
             || snapshot is null || focus != FocusMember.Source || startedAt < _runStartedAt
             || snapshot.ObservedAtMs < startedAt || snapshot.FocusEpoch != descriptor.NativeFocusRevision
@@ -158,6 +160,7 @@ internal sealed partial class PracticeHost
             return Task.FromResult(false);
         _retirement ??= new(TaskCreationOptions.RunContinuationsAsynchronously);
         var task = _retirement.Task;
+        CancelEditorAttempt(sendControl: true);
         _nativeActive = false;
         RevokeAcceptance();
         _monitor?.RevokeOwnedPlan();
@@ -307,6 +310,8 @@ internal sealed partial class PracticeHost
     }
     private bool HandleAcceptanceMessage(PracticeMessage message)
     {
+        if (HandleEditingMessage(message))
+            return true;
         if (message.Kind == "source-ready")
         {
             if (message.Acceptance?.Descriptor is not { } descriptor)
@@ -408,6 +413,7 @@ internal sealed partial class PracticeHost
     private void AbandonAcceptance()
     {
         _disconnecting = true;
+        CancelEditorAttempt(sendControl: false);
         _monitor?.ClearOwnedChannel();
         if (_witnessWriter?.Stop() == false)
             throw new InvalidOperationException("practice-hook-stop");

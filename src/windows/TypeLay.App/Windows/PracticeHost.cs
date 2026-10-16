@@ -171,6 +171,8 @@ internal sealed partial class PracticeHost : IDisposable
         _runId = Guid.NewGuid();
         _target = null;
         _descriptor = null;
+        _editorSealed = false;
+        _editorAttempt = null;
         if (_automatic)
         {
             if (_witnessMapping is not null)
@@ -187,6 +189,7 @@ internal sealed partial class PracticeHost : IDisposable
         if (_child is null || _runId == Guid.Empty)
             return;
         _restartAfterRetire |= restart;
+        CancelEditorAttempt(sendControl: true);
         bool active = _nativeActive;
         _nativeActive = false; // Stop new binding before invalidating shared state.
         _target = null;

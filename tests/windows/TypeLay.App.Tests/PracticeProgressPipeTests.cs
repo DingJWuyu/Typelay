@@ -50,6 +50,69 @@ public sealed class PracticeProgressPipeTests
     }
 
     [Fact]
+    public async Task EditorFenceCarriesTheTwoOriginalTokensAndMonotonicSourceEvidenceWithoutAPlan()
+    {
+        var descriptor = new OwnedCaptureDescriptor(120, 630000000000000000, 501, 502, 121, 41, 7, 1);
+        var target = new WindowsTarget(120, 630000000000000000, 501, 502,
+            "win32-edit-transaction-v2", "1.2.3", Guid.NewGuid()).Id;
+        var displayed = new SessionViewToken(target, Guid.NewGuid(), 10);
+        var intent = new OwnedEditorControl(Guid.NewGuid(), descriptor, displayed, displayed with
+        {
+            Revision = 11
+        }, 503, 500, 12);
+        Guid connection = Guid.NewGuid(), run = Guid.NewGuid();
+        PracticeMessage[] messages =
+        [
+            new("edit-fence", connection, run, 1, Editing: intent),
+            new("edit-fenced", connection, run, 1, Editing: intent with { SourceEventSequence = 7 }),
+            new("edit-left", connection, run, 1, Editing: intent with { SourceEventSequence = 9 }),
+            new("edit-cancel", connection, run, 1, Editing: intent),
+            new("edit-invalid", connection, run, 1, Editing: intent with { SourceEventSequence = 10 })
+        ];
+        using var stream = new MemoryStream();
+        foreach (var message in messages)
+        {
+            long start = stream.Position;
+            await PracticeProgressPipe.WriteAsync(stream, message, TestContext.Current.CancellationToken);
+            Assert.InRange(stream.Position - start, 5, 4100);
+        }
+        stream.Position = 0;
+        foreach (var message in messages)
+            Assert.Equal(message, await PracticeProgressPipe.ReadAsync(stream, TestContext.Current.CancellationToken));
+        Assert.Equal(stream.Length, stream.Position);
+    }
+
+    [Theory]
+    [InlineData("old-token")]
+    [InlineData("different-target")]
+    [InlineData("source-sequence")]
+    [InlineData("plan")]
+    public async Task InvalidEditorMetadataCannotBecomeAFence(string change)
+    {
+        var descriptor = new OwnedCaptureDescriptor(120, 630000000000000000, 501, 502, 121, 41, 7, 1);
+        var target = new WindowsTarget(120, 630000000000000000, 501, 502,
+            "win32-edit-transaction-v2", "1.2.3", Guid.NewGuid()).Id;
+        var displayed = new SessionViewToken(target, Guid.NewGuid(), 10);
+        var intent = new OwnedEditorControl(Guid.NewGuid(), descriptor, displayed, displayed with
+        {
+            Revision = 11
+        }, 503, 500, 12);
+        intent = change switch
+        {
+            "old-token" => intent with { AdmittedToken = displayed },
+            "different-target" => intent with { Descriptor = descriptor with { ControlHwnd = 504 } },
+            "source-sequence" => intent with { SourceEventSequence = 1 },
+            _ => intent
+        };
+        var message = new PracticeMessage("edit-fence", Guid.NewGuid(), Guid.NewGuid(), 1,
+            Acceptance: change == "plan" ? new() : null, Editing: intent);
+        using var stream = new MemoryStream();
+        await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(stream, message,
+            TestContext.Current.CancellationToken));
+        Assert.Equal(0, stream.Length);
+    }
+
+    [Fact]
     public async Task UnknownOwnedAcceptanceVersionCannotEnterTheControlPipe()
     {
         using var stream = new MemoryStream();
