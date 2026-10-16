@@ -1,19 +1,5 @@
 #include "gtk-overlay.h"
-#include <math.h>
 #include <string.h>
-
-typedef struct {
-    Target *target;
-    GtkWidget *top, *popover, *scroll, *editor;
-    GtkTextBuffer *buffer;
-    JsonObject *view;
-    char *generation;
-    GdkRectangle anchor;
-    GtkAllocation parent;
-    gint width, from, to;
-    gint64 revision, started;
-    guint tick;
-} HeightTransition;
 
 /* One source-bound popover per application, never another toplevel or an input grab.
  * This is deliberately in the GTK thread: niri does not publish tiled-window origins.
@@ -31,14 +17,7 @@ static struct {
     gint edit_offset;
     gint64 revision, expires;
     guint expiry_timer;
-    HeightTransition *height_transition;
 } overlay;
-
-static void cancel_height_transition(void) {
-    HeightTransition *transition = overlay.height_transition;
-    overlay.height_transition = NULL;
-    if (transition) gtk_widget_remove_tick_callback(transition->scroll, transition->tick);
-}
 
 static gboolean boolean(JsonObject *object, const char *key) {
     JsonNode *node = object ? json_object_get_member(object, key) : NULL;
@@ -165,7 +144,6 @@ static gboolean expired(gpointer data) {
     return G_SOURCE_CONTINUE;
 }
 void tl_overlay_hide(void) {
-    cancel_height_transition();
     /* Clear state before destroy: source destruction and GTK callbacks are reentrant. */
     if (overlay.focused) emit_boolean("focus", FALSE);
     if (overlay.popover) emit_boolean("visible", FALSE);
@@ -356,107 +334,6 @@ static void theme(const char *choice) {
 #endif
     g_free(css);
 }
-static gboolean animations_enabled(GtkWidget *widget) {
-    gboolean enabled = FALSE;
-    GtkSettings *settings = gtk_widget_get_settings(widget);
-    g_object_get(settings, "gtk-enable-animations", &enabled, NULL);
-    if (g_object_class_find_property(G_OBJECT_GET_CLASS(settings), "gtk-interface-reduced-motion")) {
-        /* GtkReducedMotion: NO_PREFERENCE = 0, REDUCE = 1 (since 4.22). */
-        gint reduced = 0;
-        g_object_get(settings, "gtk-interface-reduced-motion", &reduced, NULL);
-        enabled = enabled && reduced == 0;
-    }
-    return enabled;
-}
-static void free_height_transition(gpointer data) {
-    HeightTransition *transition = data;
-    if (overlay.height_transition == transition) overlay.height_transition = NULL;
-    g_object_unref(transition->buffer);
-    json_object_unref(transition->view);
-    g_free(transition->generation);
-    g_free(transition);
-}
-static gboolean height_identity_matches(const HeightTransition *transition) {
-    return overlay.target == transition->target && overlay.top == transition->top
-        && overlay.popover == transition->popover && overlay.scroll == transition->scroll
-        && overlay.text == transition->editor
-        && g_strcmp0(overlay.generation, transition->generation) == 0
-        && tl_configuration_current(transition->generation) && active()
-        && tl_now() <= overlay.expires && gtk_widget_get_mapped(overlay.scroll)
-        && gtk_widget_get_visible(overlay.popover)
-        && gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text)) == transition->buffer;
-}
-static gboolean height_geometry_matches(const HeightTransition *transition) {
-    GtkAllocation parent;
-    GdkRectangle anchor;
-    gint width = -1;
-    gtk_widget_get_allocation(overlay.top, &parent);
-    gtk_widget_get_size_request(overlay.card, &width, NULL);
-    return width == transition->width && gdk_rectangle_equal(&parent, &transition->parent)
-        && gtk_popover_get_pointing_to(GTK_POPOVER(overlay.popover), &anchor)
-        && gdk_rectangle_equal(&anchor, &transition->anchor);
-}
-static gboolean advance_height(GtkWidget *widget, GdkFrameClock *clock, gpointer data) {
-    HeightTransition *transition = data;
-    if (overlay.height_transition != transition) return G_SOURCE_REMOVE;
-    if (overlay.view != transition->view || overlay.revision != transition->revision
-        || !height_identity_matches(transition)) {
-        overlay.height_transition = NULL;
-        return G_SOURCE_REMOVE;
-    }
-    gint64 now = gdk_frame_clock_get_frame_time(clock);
-    if (!transition->started) transition->started = now;
-    /* A still-current body lands immediately if its layout changed. Invalid
-       identities above must never receive this final setter. Match WPF's
-       existing height motion otherwise: 280 ms, ease-out cubic. */
-    double progress = height_geometry_matches(transition) && animations_enabled(widget)
-        ? CLAMP((double)(now - transition->started) / 280000.0, 0.0, 1.0) : 1.0;
-    double remaining = 1.0 - progress;
-    double eased = 1.0 - remaining * remaining * remaining;
-    gint height = (gint)lround(transition->from + (transition->to - transition->from) * eased);
-    gboolean more = progress < 1.0;
-    if (!more) overlay.height_transition = NULL;
-    /* This setter may synchronously hide or replace the view. Do not access
-       transition afterwards: cancellation can release the callback data. */
-    gtk_widget_set_size_request(widget, -1, height);
-    return more;
-}
-static void body_height(gint height, gboolean animate) {
-    HeightTransition *transition = overlay.height_transition;
-    if (animate && transition && transition->to == height
-        && height_identity_matches(transition) && height_geometry_matches(transition)
-        && animations_enabled(overlay.scroll)) {
-        /* An unchanged render adopts its new identity without restarting time. */
-        json_object_unref(transition->view);
-        transition->view = json_object_ref(overlay.view);
-        transition->revision = overlay.revision;
-        return;
-    }
-    cancel_height_transition();
-    gint from = gtk_widget_get_height(overlay.scroll);
-    if (!animate || !animations_enabled(overlay.scroll) || from <= 0 || from == height) {
-        gtk_widget_set_size_request(overlay.scroll, -1, height);
-        return;
-    }
-    transition = g_new0(HeightTransition, 1);
-    transition->target = overlay.target;
-    transition->top = overlay.top;
-    transition->popover = overlay.popover;
-    transition->scroll = overlay.scroll;
-    transition->editor = overlay.text;
-    transition->buffer = g_object_ref(gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text)));
-    transition->view = json_object_ref(overlay.view);
-    transition->generation = g_strdup(overlay.generation);
-    transition->revision = overlay.revision;
-    transition->from = from;
-    transition->to = height;
-    gtk_widget_get_allocation(overlay.top, &transition->parent);
-    gtk_widget_get_size_request(overlay.card, &transition->width, NULL);
-    gtk_popover_get_pointing_to(GTK_POPOVER(overlay.popover), &transition->anchor);
-    overlay.height_transition = transition;
-    transition->tick = gtk_widget_add_tick_callback(overlay.scroll, advance_height, transition, free_height_transition);
-    gtk_widget_set_size_request(overlay.scroll, -1, from);
-}
 static void create(Target *target) {
     overlay.target = target;
     overlay.top = GTK_WIDGET(gtk_widget_get_root(target->widget));
@@ -605,16 +482,7 @@ static gboolean render(Target *target, JsonObject *data) {
     JsonObject *geometry = tl_geometry(target);
     if (!geometry) return pause_render_result(is_paused, "geometry", request_revision, FALSE);
     if (!tl_configuration_current(generation)) { json_object_unref(geometry); return FALSE; }
-    GtkWidget *old_popover = overlay.popover, *old_editor = overlay.text, *old_scroll = overlay.scroll;
-    GtkTextBuffer *old_buffer = old_editor ? gtk_text_view_get_buffer(GTK_TEXT_VIEW(old_editor)) : NULL;
-    gint old_width = -1;
-    GtkAllocation old_parent, current_parent;
-    gtk_widget_get_allocation(top, &old_parent);
-    if (overlay.card) gtk_widget_get_size_request(overlay.card, &old_width, NULL);
-    gboolean same_view = overlay.target == target && overlay.top == top && overlay.view
-        && g_strcmp0(overlay.generation, generation) == 0 && json_object_equal(overlay.view, value);
-    gboolean expansion = same_view && tl_integer(data, "visualExpansionFrom", -1) == overlay.revision
-        && overlay.revision < G_MAXINT64 && tl_integer(data, "revision", -1) == overlay.revision + 1;
+    GtkWidget *old_popover = overlay.popover, *old_editor = overlay.text;
     if (overlay.target != target || overlay.top != top) { tl_overlay_hide(); create(target); }
     g_free(overlay.generation);
     overlay.generation = g_strdup(generation);
@@ -680,6 +548,8 @@ static gboolean render(Target *target, JsonObject *data) {
     gint height;
     pango_layout_get_pixel_size(layout, NULL, &height); g_object_unref(layout);
     height = CLAMP(height + 24, 54, overlay.expanded ? 360 : 160);
+    /* Use immediate sizing pending investigation of expand-time editor focus loss. */
+    gtk_widget_set_size_request(overlay.scroll, -1, height);
     gtk_widget_set_visible(overlay.scroll, !capsule);
     gtk_widget_set_visible(overlay.footer, !capsule);
     gtk_widget_set_visible(overlay.actions, !capsule);
@@ -700,25 +570,6 @@ static gboolean render(Target *target, JsonObject *data) {
         .y = (gint)tl_integer(bounds, "y", 0) - (gint)origin.y,
         .width = 1, .height = (gint)tl_integer(bounds, "height", 1)
     };
-    gtk_widget_get_allocation(top, &current_parent);
-    GdkRectangle previous_anchor;
-    gboolean same_surface = overlay.popover == old_popover && overlay.text == old_editor
-        && overlay.scroll == old_scroll && gtk_widget_get_mapped(overlay.scroll)
-        && gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text)) == old_buffer;
-    gboolean same_anchor = gtk_popover_get_pointing_to(GTK_POPOVER(overlay.popover), &previous_anchor)
-        && gdk_rectangle_equal(&anchor, &previous_anchor);
-    JsonObject *sized_view = json_object_ref(overlay.view);
-    body_height(height, !capsule && (editable_preview || editing)
-        && same_view && same_surface && same_anchor && old_width == width
-        && gdk_rectangle_equal(&old_parent, &current_parent)
-        && (expansion || (overlay.height_transition && overlay.height_transition->to == height
-            && height_identity_matches(overlay.height_transition)
-            && height_geometry_matches(overlay.height_transition))));
-    gboolean size_retained = overlay.view == sized_view && overlay.target == target && !target->dead
-        && overlay.popover && overlay.text && tl_configuration_current(generation)
-        && g_strcmp0(overlay.generation, generation) == 0;
-    json_object_unref(sized_view);
-    if (!size_retained) { json_object_unref(geometry); return FALSE; }
     gtk_popover_set_pointing_to(GTK_POPOVER(overlay.popover), &anchor);
     json_object_unref(geometry);
     gtk_popover_popup(GTK_POPOVER(overlay.popover));
