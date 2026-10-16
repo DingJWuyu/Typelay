@@ -32,7 +32,7 @@ internal static partial class ContinuousTranslationCheck
         bool settingsPreserved = false, tutorialIncomplete = false;
         int injectedTabPresses = 0;
         string? feedbackCode = null;
-        object? previewFocusFailure = null;
+        object? previewFocusFailure = null, rejectedAcceptance = null;
         try
         {
             await UntilAsync(() => { Require(model.Ready, "owned-model-unavailable"); return !model.Busy; }, cancellation);
@@ -178,6 +178,17 @@ internal static partial class ContinuousTranslationCheck
             {
                 Require(feedbackCode is null, "owned-accept-feedback");
                 Require(N.Focused() == (root, field), "owned-first-tab-passed-or-focus-lost");
+                if (monitor.Completed.Count == 0 && host.RejectedAcceptance(progress.RunId) is { } rejected)
+                {
+                    rejectedAcceptance = new
+                    {
+                        retirementReason = OwnedRetirementReason.RejectedReceipt.ToString(),
+                        status = rejected.Status.ToString(),
+                        reason = rejected.Reason.ToString(),
+                        acceptedAtMs = 0
+                    };
+                    throw new CheckFailure("owned-accept-rejected-before-mutation");
+                }
                 return monitor.Completed.Count != 0;
             }, cancellation);
             acceptedMs = elapsed.ElapsedMilliseconds;
@@ -262,6 +273,7 @@ internal static partial class ContinuousTranslationCheck
                 acceptedMs,
                 feedbackCode,
                 previewFocusFailure,
+                rejectedAcceptance,
                 sourceUnchanged,
                 sourceReady,
                 editorReady,

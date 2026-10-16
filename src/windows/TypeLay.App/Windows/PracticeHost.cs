@@ -11,6 +11,11 @@ using TypeLay.Windows.Contracts;
 
 namespace TypeLay.App;
 
+internal enum OwnedRetirementReason
+{
+    DescriptorChanged, TargetChanged, WitnessFailed, RejectedReceipt, Restart, BeginRejected, ProgressEnded
+}
+
 // Owns the independent ordinary input window, not a translation/permission path.
 internal sealed partial class PracticeHost : IDisposable
 {
@@ -27,6 +32,7 @@ internal sealed partial class PracticeHost : IDisposable
     private Guid _runId;
     private TargetId? _target;
     private long _runStartedAt;
+    private int _retirementTraceCount;
     private bool _disposed;
     public PracticeHost(Func<ProcessStartInfo, IChildProcess>? start = null) => _start = start ?? (info => new ChildProcess(info));
     public event Action? Failed;
@@ -183,11 +189,30 @@ internal sealed partial class PracticeHost : IDisposable
         SendControl(child, _automatic ? "begin-auto" : "begin");
     }
 
-    private void RetireRun(bool restart)
+    private void RetireRun(bool restart, OwnedRetirementReason reason,
+        WriteStatus? receiptStatus = null, Denial? receiptReason = null, long? acceptedAtMs = null)
     {
         _dispatcher.VerifyAccess();
         if (_child is null || _runId == Guid.Empty)
             return;
+        if (_retirementTraceCount < 16)
+        {
+            _monitor?.QueueOwnedEditorTrace(new
+            {
+                atMs = WindowsInterruptClock.NowMs,
+                operation = "owned-practice-retire",
+                order = ++_retirementTraceCount,
+                connection = _connection,
+                run = _runId,
+                sequence = _sequence,
+                reason = reason.ToString(),
+                planSequence = _acceptance?.Plan.PlanSequence,
+                planId = _acceptance?.Plan.Permit.Plan.Id,
+                receiptStatus = receiptStatus?.ToString(),
+                receiptReason = receiptReason?.ToString(),
+                acceptedAtMs
+            });
+        }
         _restartAfterRetire |= restart;
         CancelEditorAttempt(sendControl: true);
         bool active = _nativeActive;
@@ -241,7 +266,7 @@ internal sealed partial class PracticeHost : IDisposable
         if (progress is null || (progress.Target is { } target && !Owns(target)))
         {
             if (_nativeActive)
-                RetireRun(false);
+                RetireRun(false, OwnedRetirementReason.ProgressEnded);
             return;
         }
         if (_nativeActive && _pending is null)
@@ -307,7 +332,7 @@ internal sealed partial class PracticeHost : IDisposable
                 }
                 if (message.Kind == "restart" && _pending is null)
                 {
-                    RetireRun(true);
+                    RetireRun(true, OwnedRetirementReason.Restart);
                     continue;
                 }
                 if (_pending is not { } pending || message.Kind != (pending.Kind is "begin" or "begin-auto" ? "started" : "retired"))
@@ -322,10 +347,10 @@ internal sealed partial class PracticeHost : IDisposable
                         if (message.Acceptance?.Descriptor is { } descriptor)
                             AcceptDescriptor(descriptor);
                         if (!_session!.BeginAutomaticPractice(_runId))
-                            RetireRun(false);
+                            RetireRun(false, OwnedRetirementReason.BeginRejected);
                     }
                     else if (!_session!.BeginOnDemandPractice(_runId))
-                        RetireRun(false);
+                        RetireRun(false, OwnedRetirementReason.BeginRejected);
                 }
                 else
                 {

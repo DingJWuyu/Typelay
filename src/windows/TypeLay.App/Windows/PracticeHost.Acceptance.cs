@@ -47,6 +47,11 @@ internal sealed partial class PracticeHost
         }
     }
     private PendingPlan? _acceptance;
+    private (Guid Run, WriteStatus Status, Denial Reason)? _rejectedAcceptance;
+    // Only a validated zero-acceptance receipt establishes this fact. Ending a
+    // run alone cannot rule out an already-executed write awaiting its receipt.
+    internal (WriteStatus Status, Denial Reason)? RejectedAcceptance(Guid run) =>
+        _rejectedAcceptance is { } rejected && rejected.Run == run ? (rejected.Status, rejected.Reason) : null;
     private (InputLease Lease, AcceptancePermit Permit, long ReplacesPlanSequence, long ContentEpoch)? _nextAcceptance;
     public bool IsAutomatic => _automatic && _runId != Guid.Empty;
     internal void Initialize(SettingsStore settings, KeyboardHook monitor, bool allowInjectedInput)
@@ -120,7 +125,7 @@ internal sealed partial class PracticeHost
             return; // No source-ready may replace the fixed editing basis.
         if (_descriptor is { } previous && _target is not null && descriptor != previous)
         {
-            RetireRun(false);
+            RetireRun(false, OwnedRetirementReason.DescriptorChanged);
             return;
         }
         if (!DescriptorCurrent(descriptor) || descriptor.BeginSequence != _sequence
@@ -139,7 +144,7 @@ internal sealed partial class PracticeHost
             return null;
         if (_target is { } previous && previous != snapshot.Target)
         {
-            RetireRun(false);
+            RetireRun(false, OwnedRetirementReason.TargetChanged);
             return null;
         }
         var binding = new OwnedPracticeBinding(_runId, snapshot.Target, _connection, _monitor.CommandGeneration,
@@ -391,7 +396,7 @@ internal sealed partial class PracticeHost
         if (message.Kind == "witness-failed")
         {
             _witnessWriter?.Poison();
-            RetireRun(false);
+            RetireRun(false, OwnedRetirementReason.WitnessFailed);
             return true;
         }
         if (message.Kind == "witness-consumed")
@@ -443,7 +448,11 @@ internal sealed partial class PracticeHost
                 _monitor?.CompleteOwnedAcceptance(current.Lease, current.Plan.Permit, result);
             RevokeAcceptance();
             if (result.AcceptedAtMs == 0)
-                RetireRun(false);
+            {
+                _rejectedAcceptance = (result.Run, result.Receipt.Status, result.Receipt.Reason);
+                RetireRun(false, OwnedRetirementReason.RejectedReceipt,
+                    result.Receipt.Status, result.Receipt.Reason, result.AcceptedAtMs);
+            }
         }
         else if (message.Kind == "revoked-plan" && current.State == "revoke-plan")
         {
