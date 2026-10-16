@@ -223,6 +223,9 @@ class Practice:
         self.replace_step.set_text("")
         self.status.set_text("正在准备本次练习，请稍候再按快捷键。")
         self.progress.set_text("")
+        # Choose the source within this user action, even before top-level
+        # activation arrives. A later Host reply must preserve newer focus.
+        self.source.grab_focus_without_selecting()
         self.poll()
 
     def request_settings(self):
@@ -295,8 +298,6 @@ class Practice:
             self.pending_start = None
             self.lesson_choice.set_sensitive(True)
             if result is True:
-                if self.window.is_active():
-                    self.source.grab_focus_without_selecting()
                 self.status.set_text("等待确认本次练习框连接，请稍候再按快捷键。")
                 self.progress.set_text("")
             else:

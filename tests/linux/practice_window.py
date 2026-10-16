@@ -121,7 +121,9 @@ def run(presentation):
 
             def restart(previous):
                 stale = pending("practiceStatus")
+                lesson.reset_button.grab_focus()
                 lesson.reset_button.clicked()
+                assert lesson.window.get_focus() is lesson.source
                 cleared()
                 reply(stale, previous)
                 begin = pending("startAutomaticPractice")
@@ -146,6 +148,7 @@ def run(presentation):
                     until(lambda: lesson.start.get_sensitive())
                     lesson.source.set_text(source)
                     lesson.source.select_region(2, 7)
+                    lesson.start.grab_focus()
                     lesson.start.clicked()
                     until(
                         lambda: lesson.confirmation is not None and lesson.confirmation.is_active()
@@ -155,16 +158,30 @@ def run(presentation):
                     assert lesson.confirmation is None
                     assert lesson.pending_start is None
                     unchanged()
+                    lesson.start.grab_focus()
                     lesson.start.clicked()
                     until(
                         lambda: lesson.confirmation is not None and lesson.confirmation.is_active()
                     )
                     lesson.confirmation.response(Gtk.ResponseType.OK)
+                    # The confirmation chooses the source before any Host reply
+                    # or later top-level activation notification can arrive.
+                    assert lesson.window.get_focus() is lesson.source
+                    cleared()
                     begin = pending("startAutomaticPractice")
-                    until(lesson.window.is_active)
+                    until(lambda: lesson.window.is_active() and lesson.source.has_focus())
                     unchanged()
-                    reply(begin, True)
-                    until(lesson.source.has_focus)
+                    lesson.close_button.grab_focus()
+                    assert lesson.close_button.has_focus()
+                    lesson.start.clicked()
+                    assert lesson.close_button.has_focus(), "pending Begin accepted a second action"
+                    dispatch(begin, True)
+                    assert lesson.close_button.has_focus(), (
+                        "late Begin stole the newer widget focus"
+                    )
+                    assert "等待确认" in lesson.status.get_text()
+                    assert not lesson.complete.get_sensitive()
+                    unchanged()
                     old = str(uuid.uuid4())
                     reply(pending("practiceStatus"), state(old, completed=True))
                     until(lambda: lesson.complete.get_sensitive())
@@ -215,16 +232,38 @@ def run(presentation):
                     assert not lesson.complete.get_sensitive()
 
                     # A second restart before any preview clears the first receipt.
-                    reply(restart(state(new)), True)
+                    begin = restart(state(new))
+                    other = Gtk.Window(
+                        title="Practice reply focus control", transient_for=lesson.window
+                    )
+                    other_source = Gtk.Entry()
+                    other.add(other_source)
+                    try:
+                        other.show_all()
+                        other_source.grab_focus()
+                        until(lambda: other.is_active() and other_source.has_focus())
+                        dispatch(begin, True)
+                        assert other.is_active() and other_source.has_focus()
+                        assert not lesson.window.is_active(), "late Begin activated the old window"
+                        unchanged()
+                    finally:
+                        other.destroy()
+                    until(lesson.window.is_active)
                     previous = str(uuid.uuid4())
                     reply(pending("practiceStatus"), state(previous))
                     until(lambda: lesson.progress.get_text() == reset_notice)
                     assert not lesson.status.get_text()
                     unchanged()
 
-                    reply(restart(state(previous)), False)
+                    begin = restart(state(previous))
+                    lesson.close_button.grab_focus()
+                    dispatch(begin, False)
+                    assert lesson.close_button.has_focus()
                     refresh = pending("practiceStatus")
                     assert "未能开始" in lesson.status.get_text()
+                    assert not lesson.complete.get_sensitive()
+                    assert "尚未开始" in lesson.progress.get_text()
+                    unchanged()
                     refreshed = state()
                     refreshed["presentation"]["sampleText"] = "新的原文示例"
                     reply(refresh, refreshed)
