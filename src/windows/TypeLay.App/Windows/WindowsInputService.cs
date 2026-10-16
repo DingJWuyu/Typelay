@@ -27,20 +27,34 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
         {
             long startedAt = WindowsInterruptClock.NowMs;
             long checkGeneration = support?.CheckGeneration ?? 0;
-            var result = await broker.CallAsync(Request("capture", context));
+            bool owned = practice?.CapturesAutomaticForeground == true;
+            var descriptor = owned ? practice!.CaptureDescriptor : null;
+            if (owned && descriptor is null)
+                return new(null);
+            var request = Request(owned ? "capture-owned" : "capture", context);
+            if (owned)
+                request = request with
+                {
+                    OwnedCapture = descriptor,
+                    CaptureDirect = false
+                };
+            var result = await broker.CallAsync(request);
+            var evidence = owned ? practice!.ObserveAutomaticTarget(result.Snapshot, result.Focus, startedAt) : null;
             // The local hook and WPF editor apply the same process-local configuration.
             // A stale capture cannot acknowledge a replacement configuration.
             var acknowledgement = result.Snapshot is { } source && context.SessionShortcuts is { } configuration
                 && monitor?.HasSessionConfiguration(configuration) == true
                 ? new SessionShortcutAcknowledgement(source.Target, configuration.Generation, configuration.Bindings,
-                    monitor.CanInterceptAcceptance, monitor.CanInterceptAcceptance) : null;
+                    owned ? practice!.SourceReady(source.Target) : monitor.CanInterceptAcceptance,
+                    !owned && monitor.CanInterceptAcceptance) : null;
             var capture = new InputCapture(result.Snapshot, result.Focus, result.Application,
-                result.UserEpoch, result.ForegroundEpoch, acknowledgement);
+                result.UserEpoch, result.ForegroundEpoch, acknowledgement, evidence);
             support?.Observe(capture, broker.Available && monitor?.Ready == true,
                 monitor?.CanInterceptAcceptance == true, startedAt, checkGeneration);
             // Metadata reaches the owned practice before Runtime publishes the shortcut lease.
-            practice?.ObserveTarget(capture.Snapshot?.Target, capture.Focus,
-                capture.Snapshot?.ObservedAtMs ?? 0, startedAt);
+            if (!owned)
+                practice?.ObserveTarget(capture.Snapshot?.Target, capture.Focus,
+                    capture.Snapshot?.ObservedAtMs ?? 0, startedAt);
             return capture;
         }
         catch { support?.Disconnected(); throw; }

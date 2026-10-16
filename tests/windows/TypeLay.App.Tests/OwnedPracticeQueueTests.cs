@@ -1,0 +1,372 @@
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using TypeLay.App;
+using TypeLay.Core;
+using TypeLay.Runtime;
+using TypeLay.Windows;
+using TypeLay.Windows.Contracts;
+using N = TypeLay.Platform.Windows.NativeMethods;
+using Xunit;
+
+namespace TypeLay.App.Tests;
+
+// Production Practice, inherited pipe, anonymous mappings, LL hook and GUI queue.
+// Controlled plans isolate consumption; real model first-Tab lives in DesktopFixture.
+[Collection("Desktop")]
+public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
+{
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public Task DefaultHookOrChildRejectsInjectedTab(bool hookAutomation, bool childAutomation) => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(hookAutomation);
+        await scene.Start(childAutomation);
+        await scene.Install();
+        scene.Key(9, true);
+        scene.Key(9, false);
+        await scene.Wait(() => scene.Receipts == 1 && N.Focused().Control != scene.Field);
+        var result = scene.Result();
+        Assert.Equal(WriteStatus.RejectedBeforeMutation, result.Receipt.Status);
+        Assert.Equal(0, result.AcceptedAtMs);
+        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        await scene.WaitConsumed(2);
+        Assert.All(scene.Audit(), edge => Assert.True(edge.Injected));
+        Assert.Equal(hookAutomation, scene.Audit()[0].Eligible);
+    });
+
+    [Fact]
+    public Task APressBeforeInstallationCannotBecomeAcceptanceWhenHeldOrRepeated() => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(true);
+        await scene.Start(true);
+        scene.Key(9, true); // No plan exists: the original Tab must move focus.
+        await scene.Wait(() => N.Focused().Control != scene.Field);
+        await scene.WaitConsumed(1);
+        long firstRevision = scene.Descriptor.NativeFocusRevision;
+        await scene.Focus(); // Same HWND A -> B -> A has a new monotonic revision.
+        Assert.True(scene.Descriptor.NativeFocusRevision > firstRevision);
+        await scene.Install();
+        scene.Key(9, true);
+        scene.Key(9, false);
+        await scene.WaitConsumed(3);
+        Assert.Equal(0, scene.Receipts);
+        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        var edges = scene.Audit();
+        Assert.Equal(0, edges[0].PlanSequence);
+        Assert.False(edges[0].Eligible);
+        Assert.True(edges[1].Repeated);
+        Assert.False(edges[1].Eligible);
+    });
+
+    [Fact]
+    public Task OneAcceptedPressExecutesOnceAndItsRepeatCannotReuseThePlan() => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(true);
+        await scene.Start(true);
+        // Real Shift input tests LL left/right modifier vs GUI generic-VK pairing.
+        scene.Key(0x10, true);
+        scene.Key(0x10, false);
+        await scene.WaitConsumed(2);
+        await scene.Install();
+        scene.Key(9, true);
+        await scene.Wait(() => scene.Receipts == 1);
+        scene.Key(9, true);
+        scene.Key(9, false);
+        await scene.WaitConsumed(5);
+        Assert.Equal(1, scene.Receipts);
+        var result = scene.Result();
+        Assert.Equal(WriteStatus.Verified, result.Receipt.Status);
+        Assert.True(result.AcceptedAtMs > 0);
+        Assert.Equal(scene.Plan!.Permit.Plan.Id, result.PlanId);
+        Assert.Equal(3, result.WitnessSequence);
+        Assert.Equal(QueueScene.Replacement, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        Assert.Equal((scene.Root, scene.Field), N.Focused());
+        Assert.Equal(new TextRange(QueueScene.Replacement.Length, QueueScene.Replacement.Length), N.ReadSelection(scene.Field));
+        Assert.True(scene.Audit()[3].Repeated);
+        Assert.DoesNotContain(scene.Messages, message => message.Kind == "witness-failed");
+        Assert.NotEqual((nuint)0, N.Send(scene.Field, 0x00C7));
+        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+    });
+
+    [Fact]
+    public Task RetirementAcknowledgementPreventsTheOldPlanOrALateInstallFromExecuting() => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(true);
+        await scene.Start(true);
+        await scene.Install();
+        await scene.Retire(release: false);
+        scene.Key(9, true);
+        scene.Key(9, false);
+        await scene.Wait(() => N.Focused().Control != scene.Field);
+        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        Assert.Equal(0, scene.Receipts);
+        Assert.Equal(nint.Zero, N.GetProp(scene.Field, "TypeLay.NativeInput.Lifetime.v2"));
+        Assert.True(N.IsWindowEnabled(GetDlgItem(scene.Root, 102)));
+        await scene.Send("install", scene.InstallControl); // Retired child rejects before reopening handles.
+        await scene.Wait(() => !N.IsWindowEnabled(GetDlgItem(scene.Root, 102)));
+        Assert.Equal(0, scene.Receipts);
+        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+    });
+
+    [Fact]
+    public Task ANewPressAfterAnExternalReleaseDoesNotInheritTheOldConsumedDecision() => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(true);
+        await scene.Start(true);
+        await scene.Install();
+        scene.Key(9, true);
+        await scene.Wait(() => scene.Receipts == 1);
+        Assert.Equal(WriteStatus.Verified, scene.Result().Receipt.Status);
+        var input = new TextBox();
+        var other = new Window { Content = input, Width = 320, Height = 140, Title = "TypeLay external release" };
+        int releases = 0;
+        input.PreviewKeyUp += (_, args) => { if (args.Key == Key.Tab) releases++; };
+        other.Show();
+        other.Activate();
+        input.Focus();
+        await scene.Wait(() => input.IsKeyboardFocused);
+        scene.Key(9, false);
+        await scene.Wait(() => releases == 1);
+        await scene.Retire(release: true);
+        await scene.Begin(true);
+        await scene.Focus();
+        scene.Key(9, true); // New run has no plan: first down passes to Restart.
+        await scene.Wait(() => N.Focused().Control == GetDlgItem(scene.Root, 102));
+        scene.Key(9, true); // Its repeat also passes to Close, not the old consumed press.
+        await scene.Wait(() => N.Focused().Control == GetDlgItem(scene.Root, 2));
+        scene.Key(9, false);
+        await scene.WaitConsumed(3);
+        Assert.Equal(1, scene.Receipts);
+        Assert.Equal(QueueScene.Replacement, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        Assert.DoesNotContain(scene.Messages, message => message.Kind == "witness-failed");
+        // FIFO acknowledges release consumption, not a nonexistent GUI keyup counter.
+    });
+
+    private sealed class QueueScene : IAsyncDisposable
+    {
+        public const string Replacement = "Controlled owned acceptance result";
+        private readonly string _directory = Path.Combine(Path.GetTempPath(), "typelay-owned-queue-" + Guid.NewGuid().ToString("N"));
+        private readonly CancellationTokenSource _deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        private readonly KeyboardHook _hook;
+        private readonly Guid _connection = Guid.NewGuid();
+        private Guid _run;
+        private long _sequence, _planSequence, _consumed;
+        private ChildProcess? _child;
+        private OwnedMapping? _witness, _planMapping, _result;
+        private OwnedWitnessWriter? _writer;
+        private Task? _pump;
+        private Exception? _pipeError;
+        private readonly HashSet<ushort> _pressed = [];
+        public nint Root
+        {
+            get; private set;
+        }
+        public nint Field => GetDlgItem(Root, 101);
+        public string Original { get; private set; } = "";
+        public OwnedCaptureDescriptor Descriptor { get; private set; } = null!;
+        public OwnedAcceptancePlan? Plan
+        {
+            get; private set;
+        }
+        public OwnedAcceptanceControl? InstallControl
+        {
+            get; private set;
+        }
+        public List<PracticeMessage> Messages { get; } = [];
+        public int Receipts => Messages.Count(message => message.Kind == "receipt");
+        public QueueScene(bool automation)
+        {
+            _hook = new(allowInjectedInput: automation);
+            _deadline.CancelAfter(TimeSpan.FromSeconds(25));
+        }
+        public async Task Start(bool automation)
+        {
+            var settings = WindowsRuntime.CreateSettings(Path.Combine(_directory, "settings.json"));
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.Automatic,
+                ExperimentalWriteback = false
+            });
+            var start = AppPaths.Child("TypeLay.Practice");
+            foreach (string argument in new[] { "--settings", Path.Combine(_directory, "settings.json"), "--progress", _connection.ToString("N") })
+                start.ArgumentList.Add(argument);
+            _child = new(start);
+            _pump = Pump();
+            await Wait(() => { _child.Process.Refresh(); Root = _child.Process.MainWindowHandle; return Root != 0 && Field != 0 && _hook.Ready; });
+            Assert.All(new[] { 9, 0x10, 0x11, 0x12, 0x5B, 0x5C }, key => Assert.False(Native.GetAsyncKeyState(key) < 0));
+            await Begin(automation);
+            await Focus();
+            Original = N.ReadText(Field, Limits.MaxTextUnits);
+            Assert.Equal(N.ReadSelection(Field).Start, N.ReadSelection(Field).End);
+        }
+        public async Task Begin(bool automation)
+        {
+            _run = Guid.NewGuid();
+            _sequence++;
+            _consumed = 0;
+            _witness?.Dispose();
+            _witness = OwnedPracticeAcceptanceProtocol.CreateWitness(_child!.Process.Handle);
+            _writer = new(_witness);
+            await Send("begin-auto", new(WitnessHandle: _witness.RemoteHandle, WitnessBytes: _witness.Length, AllowInjectedInput: automation));
+            await Wait(() => Messages.Any(message => message.Kind == "started" && message.Run == _run));
+        }
+        public async Task Focus()
+        {
+            Assert.True(N.SetForegroundWindow(Root));
+            Assert.True(N.PostMessage(Root, 0x0007, 0, 0));
+            await Wait(() => N.Focused() == (Root, Field) && Descriptor is not null
+                && Descriptor.BeginSequence == _sequence && (long)N.GetProp(Field, "TypeLay.OwnedFocusRevision.v1") == Descriptor.NativeFocusRevision);
+            _hook.SetOwnedChannel(_connection, _writer!, Descriptor);
+        }
+        public async Task Install()
+        {
+            long now = WindowsInterruptClock.NowMs;
+            var target = new WindowsTarget(Descriptor.ProcessId, Descriptor.ProcessStartUtcTicks,
+                Descriptor.RootHwnd, Descriptor.ControlHwnd, "win32-edit-transaction-v2", "controlled-owned-plan", Guid.NewGuid());
+            var snapshot = new InputSnapshot(target, N.ReadText(Field, Limits.MaxTextUnits), N.ReadSelection(Field), new(10, 20, 300, 40), false,
+                FieldAccess.Supported, ImeState.Clear, now, _hook.UserEpoch, Descriptor.NativeFocusRevision, WriteSupported: true);
+            var write = new WritePlan(Guid.NewGuid(), Guid.NewGuid(), 1, snapshot, null, Replacement, Replacement, Replacement.Length);
+            var permit = new AcceptancePermit(write, snapshot.InputEpoch, snapshot.FocusEpoch, now, now + Limits.PermitMaxAgeMs);
+            var lease = new InputLease(snapshot, _hook.UserEpoch, _hook.ForegroundEpoch, true, _hook.CommandGeneration, 1, _run, _connection);
+            Plan = new(_connection, _run, ++_planSequence, Descriptor, permit, lease.UserEpoch, lease.ForegroundEpoch,
+                lease.CommandGeneration, lease.SessionRevision, _writer!.Sequence);
+            _planMapping = OwnedPracticeAcceptanceProtocol.CreatePlan(_child!.Process.Handle, Plan);
+            _result = OwnedPracticeAcceptanceProtocol.CreateResult(_child.Process.Handle);
+            InstallControl = new(write.Id, Plan.PlanSequence, _planMapping.RemoteHandle, _planMapping.Length, _result.RemoteHandle, _result.Length);
+            await Send("install", InstallControl);
+            await Wait(() => Messages.Any(message => message.Kind == "installed" && message.Acceptance?.PlanId == write.Id));
+            _hook.BindOwnedSource(target, Descriptor);
+            _hook.InstallOwnedPlan(Plan.PlanSequence, lease, permit, Descriptor);
+            Assert.True(WindowsInterruptClock.NowMs <= permit.ExpiresAtMs, "Installation exceeded the real 100 ms authorization budget.");
+        }
+        public async Task Retire(bool release)
+        {
+            _hook.ClearOwnedChannel();
+            _sequence++;
+            await Send("retire");
+            await Wait(() => Messages.Any(message => message.Kind == "retired" && message.Sequence == _sequence));
+            if (!release)
+                return;
+            await Send("release-plan", new(Plan!.Permit.Plan.Id, Plan.PlanSequence));
+            await Wait(() => Messages.Any(message => message.Kind == "released-plan" && message.Acceptance?.PlanId == Plan.Permit.Plan.Id));
+            _planMapping?.Dispose();
+            _planMapping = null;
+            _result?.Dispose();
+            _result = null;
+            Plan = null;
+        }
+        public Task Send(string kind, OwnedAcceptanceControl? control = null) => PracticeProgressPipe.WriteAsync(
+            _child!.Process.StandardInput.BaseStream, new(kind, _connection, _run, _sequence, Acceptance: control), _deadline.Token);
+        public OwnedAcceptanceResult Result() => OwnedPracticeAcceptanceProtocol.ReadResult(_result!);
+        public List<OwnedKeyWitness> Audit()
+        {
+            var reader = new OwnedWitnessReader(_witness!);
+            var result = new List<OwnedKeyWitness>();
+            while (reader.TryRead(out var edge))
+                result.Add(edge);
+            return result;
+        }
+        public Task WaitConsumed(long count) => Wait(() => _consumed >= count);
+        public async Task Wait(Func<bool> condition)
+        {
+            while (!condition())
+            {
+                Assert.Null(_pipeError);
+                Assert.False(_child!.Process.HasExited);
+                await Task.Delay(1, _deadline.Token);
+            }
+        }
+        public void Key(ushort key, bool down)
+        {
+            Assert.Equal(1u, SendInput(1, [new KeyInput { Type = 1, Key = key, Flags = down ? 0u : 2u }], Marshal.SizeOf<KeyInput>()));
+            if (down)
+                _pressed.Add(key);
+            else
+                _pressed.Remove(key);
+        }
+        private async Task Pump()
+        {
+            try
+            {
+                while (true)
+                {
+                    var message = await PracticeProgressPipe.ReadAsync(_child!.Process.StandardOutput.BaseStream, _deadline.Token);
+                    Assert.Equal(_connection, message.Connection);
+                    Messages.Add(message);
+                    if (message.Run == _run && message.Kind == "source-ready")
+                        Descriptor = message.Acceptance!.Descriptor!;
+                    if (message.Run == _run && message.Kind == "witness-consumed")
+                    {
+                        _consumed = message.Acceptance!.WitnessSequence;
+                        _writer!.Acknowledge(_consumed);
+                    }
+                }
+            }
+            catch (Exception error)
+            {
+                _pipeError = error;
+            }
+        }
+        public async ValueTask DisposeAsync()
+        {
+            try
+            {
+                foreach (ushort key in _pressed.ToArray())
+                    Key(key, false);
+            }
+            finally
+            {
+                _hook.Dispose();
+                try
+                {
+                    if (_child is not null && !_child.Process.HasExited)
+                    {
+                        using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                        if (Root != 0 && N.PostMessage(Root, 0x0010, 0, 0))
+                        {
+                            try
+                            {
+                                await _child.Process.WaitForExitAsync(cleanup.Token);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                using var forced = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                                await _child.TerminateAndWaitAsync(forced.Token);
+                                throw;
+                            }
+                        }
+                        else
+                            await _child.TerminateAndWaitAsync(cleanup.Token);
+                    }
+                }
+                finally
+                {
+                    _child?.Dispose();
+                    _deadline.Cancel();
+                    if (_pump is not null)
+                        await _pump;
+                    _witness?.Dispose();
+                    _planMapping?.Dispose();
+                    _result?.Dispose();
+                    _deadline.Dispose();
+                    if (Directory.Exists(_directory))
+                        Directory.Delete(_directory, true);
+                }
+            }
+        }
+    }
+    [StructLayout(LayoutKind.Explicit, Size = 40)]
+    private struct KeyInput
+    {
+        [FieldOffset(0)] public uint Type;
+        [FieldOffset(8)] public ushort Key;
+        [FieldOffset(12)] public uint Flags;
+    }
+    [DllImport("user32.dll")] private static extern nint GetDlgItem(nint window, int id);
+    [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint count, KeyInput[] inputs, int size);
+}

@@ -20,8 +20,9 @@ internal sealed class NativeEditTransactions : IDisposable
     private readonly Dictionary<long, Binding> _bindings = new();
     private readonly Dictionary<uint, nint> _hooks = new();
     private nint _library, _procedure;
-    private uint _message;
-    private sealed record Binding(WindowsTarget Original, WindowsTarget Target, ulong Cookie, uint Thread, long TouchedAt, bool Initialized = false);
+    private uint _message, _ownedCaptureMessage;
+    private sealed record Binding(WindowsTarget Original, WindowsTarget Target, ulong Cookie, uint Thread, long TouchedAt,
+        bool Initialized = false, OwnedCaptureDescriptor? Owned = null);
     private sealed record Result(uint Status, Denial Reason, string Text, TextRange Selection, bool Multiline, ImeState Ime);
 
     public InputSnapshot? Capture(WindowsTarget identity, RectPx bounds, long inputEpoch, long focusEpoch)
@@ -49,6 +50,71 @@ internal sealed class NativeEditTransactions : IDisposable
             WriteSupported: true, DirectWriteSupported: true);
     }
 
+    public InputSnapshot? CaptureOwned(WindowsTarget identity, OwnedCaptureDescriptor owned, RectPx bounds,
+        long inputEpoch)
+    {
+        if (!MatchesOwned(identity, owned) || !IsCurrentOwned(owned))
+            return null;
+        Prune();
+        var binding = Bind(identity, owned);
+        if (binding is null)
+            return null;
+        if (!IsCurrentOwned(owned))
+        {
+            Release(binding);
+            return null;
+        }
+        // Owned registration belongs to the host. Never install or renew its
+        // cookie through the ordinary op1 capture path.
+        var result = Invoke(binding, 6);
+        if (result.Reason == Denial.TargetChanged || !IsCurrentOwned(owned))
+        {
+            Release(binding);
+            return null;
+        }
+        if (result.Status != 1 || result.Ime != ImeState.Clear || !result.Selection.IsValid(result.Text))
+            return null;
+        return new(binding.Target, result.Text, result.Selection, bounds, result.Multiline,
+            FieldAccess.Supported, result.Ime, WindowsInterruptClock.NowMs, inputEpoch, owned.NativeFocusRevision,
+            WriteSupported: true, DirectWriteSupported: false);
+    }
+
+    // Read-only process/window checks precede both hook installation and the
+    // native body read. Dedicated owned op6 repeats lifetime, focus revision and
+    // control qualification in the target's GUI thread; it grants no write.
+    public static bool IsCurrentOwned(OwnedCaptureDescriptor owned)
+    {
+        if (owned.ProcessId <= 0 || owned.ProcessStartUtcTicks <= 0 || owned.RootHwnd == 0
+            || owned.ControlHwnd == 0 || owned.ThreadId == 0 || owned.NativeCookie == 0
+            || owned.NativeFocusRevision <= 0 || owned.BeginSequence <= 0)
+            return false;
+        nint root = (nint)owned.RootHwnd, control = (nint)owned.ControlHwnd;
+        if (GetAncestor(root, 2) != root || GetAncestor(control, 2) != root
+            || GetWindowThreadProcessId(control, out uint pid) != owned.ThreadId || pid != owned.ProcessId
+            || GetWindowThreadProcessId(root, out uint rootPid) == 0 || rootPid != owned.ProcessId
+            || GetForegroundWindow() != root
+            || unchecked((ulong)(long)GetPropW(control, "TypeLay.NativeInput.Lifetime.v2")) != owned.NativeCookie
+            || (long)GetPropW(control, "TypeLay.OwnedFocusRevision.v1") != owned.NativeFocusRevision)
+            return false;
+        var gui = new GuiThreadInfo { Size = (uint)Marshal.SizeOf<GuiThreadInfo>() };
+        if (!GetGUIThreadInfo(owned.ThreadId, ref gui) || gui.Focus != control)
+            return false;
+        try
+        {
+            using var process = Process.GetProcessById(owned.ProcessId);
+            return process.StartTime.ToUniversalTime().Ticks == owned.ProcessStartUtcTicks;
+        }
+        catch (Exception error) when (error is ArgumentException or InvalidOperationException
+            or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    }
+
+    private static bool MatchesOwned(WindowsTarget identity, OwnedCaptureDescriptor owned) =>
+        identity.ProcessId == owned.ProcessId && identity.ProcessStartUtcTicks == owned.ProcessStartUtcTicks
+        && identity.RootHwnd == owned.RootHwnd && identity.ControlHwnd == owned.ControlHwnd;
+
     public WriteReceipt Write(WritePlan plan) => Write(plan, 2, 0);
 
     // This is the original acceptance deadline, not a fresh native dispatch budget.
@@ -67,6 +133,10 @@ internal sealed class NativeEditTransactions : IDisposable
         if (!_bindings.TryGetValue(plan.Expected.Target.AsWindows().ControlHwnd, out var binding)
             || binding.Target != plan.Expected.Target)
             return new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged);
+        // Owned acceptance is decided synchronously by its host. A captured
+        // owned binding cannot become a general Broker foreground/F10 write.
+        if (binding.Owned is not null)
+            return new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported);
         using var process = Process.GetProcessById(binding.Target.ProcessId);
         if (process.StartTime.ToUniversalTime().Ticks != binding.Target.ProcessStartUtcTicks)
             return new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged);
@@ -84,13 +154,17 @@ internal sealed class NativeEditTransactions : IDisposable
         });
     }
 
-    private Binding? Bind(WindowsTarget identity)
+    private Binding? Bind(WindowsTarget identity, OwnedCaptureDescriptor? owned = null)
     {
-        if (!Environment.Is64BitProcess || identity.ControlHwnd == 0)
+        if (!Environment.Is64BitProcess || identity.ControlHwnd == 0
+            || (owned is not null && (!MatchesOwned(identity, owned) || !IsCurrentOwned(owned))))
             return null;
         if (_bindings.TryGetValue(identity.ControlHwnd, out var existing))
         {
-            if (existing.Original with
+            // A normal capture cannot reuse or retire an owned registration.
+            if (owned is null && existing.Owned is not null)
+                return null;
+            if (existing.Owned == owned && existing.Original with
             {
                 Lifetime = identity.Lifetime
             } == identity)
@@ -142,6 +216,26 @@ internal sealed class NativeEditTransactions : IDisposable
         }
         if (_message == 0)
             return null;
+        if (owned is not null && _ownedCaptureMessage == 0)
+        {
+            // The old v2 handler reads before rejecting an unknown operation.
+            // Owned capture therefore requires its own capability and message;
+            // never send op6 through the ordinary v2 registration.
+            if (!NativeLibrary.TryGetExport(_library, "TypeLayOwnedCaptureVersion", out nint version)
+                || Marshal.GetDelegateForFunctionPointer<ReadProtocolVersion>(version)() != 1)
+                return null;
+            _ownedCaptureMessage = RegisterWindowMessageW("TypeLay.NativeInput.OwnedCapture.v1");
+            if (_ownedCaptureMessage == 0)
+                return null;
+        }
+        ulong cookie = unchecked((ulong)(long)GetPropW((nint)identity.ControlHwnd, "TypeLay.NativeInput.Lifetime.v2"));
+        if (owned is not null)
+        {
+            if (cookie != owned.NativeCookie || !IsCurrentOwned(owned))
+                return null;
+        }
+        else if (cookie == 0)
+            cookie = BitConverter.ToUInt64(RandomNumberGenerator.GetBytes(8)) | 1;
         if (!_hooks.ContainsKey(thread))
         {
             nint hook = SetWindowsHookExW(4, _procedure, _library, thread);
@@ -149,9 +243,6 @@ internal sealed class NativeEditTransactions : IDisposable
                 return null;
             _hooks.Add(thread, hook);
         }
-        ulong cookie = unchecked((ulong)(long)GetPropW((nint)identity.ControlHwnd, "TypeLay.NativeInput.Lifetime.v2"));
-        if (cookie == 0)
-            cookie = BitConverter.ToUInt64(RandomNumberGenerator.GetBytes(8)) | 1;
         // Every new binding gets a distinct identity, including after broker
         // restart, expiry or an interrupted initial capture.
         var target = identity with
@@ -159,13 +250,19 @@ internal sealed class NativeEditTransactions : IDisposable
             Provider = Provider,
             Lifetime = Guid.NewGuid()
         };
-        var binding = new Binding(identity, target, cookie, thread, WindowsInterruptClock.NowMs);
+        var binding = new Binding(identity, target, cookie, thread, WindowsInterruptClock.NowMs,
+            Initialized: owned is not null, Owned: owned);
         _bindings.Add(identity.ControlHwnd, binding);
         return binding;
     }
 
     private Result Invoke(Binding binding, uint operation, WritePlan? plan = null, long expiresAtMs = 0)
     {
+        uint message = operation == 6 ? _ownedCaptureMessage : _message;
+        if (message == 0 || (operation == 6 && binding.Owned is null))
+            return new(2, Denial.Unsupported, "", new(0, 0), false, ImeState.Unknown);
+        if (binding.Owned is { } owned && (operation != 6 || !IsCurrentOwned(owned)))
+            return new(2, Denial.TargetChanged, "", new(0, 0), false, ImeState.Unknown);
         byte[] nonce = RandomNumberGenerator.GetBytes(16);
         ulong first = BitConverter.ToUInt64(nonce, 0), second = BitConverter.ToUInt64(nonce, 8);
         string name = $"Local\\TypeLay.Input.{first:x16}{second:x16}";
@@ -187,6 +284,13 @@ internal sealed class NativeEditTransactions : IDisposable
             view.Write(92, plan.Expected.Selection.Value.End);
             view.Write(96, expiresAtMs);
         }
+        else if (operation == 6)
+        {
+            // On the dedicated owned-capture message this slot is a revision,
+            // not an authorization deadline from the foreground write contract.
+            long expectedFocusRevision = binding.Owned!.NativeFocusRevision;
+            view.Write(96, expectedFocusRevision);
+        }
         if (plan is not null)
         {
             view.Write(56, plan.Expected.Text.Length);
@@ -196,8 +300,10 @@ internal sealed class NativeEditTransactions : IDisposable
             WriteText(view, HeaderSize, plan.Expected.Text);
             WriteText(view, HeaderSize + BufferBytes, plan.Replacement);
         }
+        if (binding.Owned is { } current && !IsCurrentOwned(current))
+            return new(2, Denial.TargetChanged, "", new(0, 0), false, ImeState.Unknown);
         // A timeout after dispatch is an unknown write outcome, never a safe retry.
-        nint sent = SendMessageTimeoutW((nint)binding.Target.ControlHwnd, _message, (nuint)first,
+        nint sent = SendMessageTimeoutW((nint)binding.Target.ControlHwnd, message, (nuint)first,
             unchecked((nint)second), 2 | 0x20, 700, out _);
         if (sent == 0)
             return new(0, Denial.PlatformFailure, "", new(0, 0), false, ImeState.Unknown);
@@ -237,7 +343,10 @@ internal sealed class NativeEditTransactions : IDisposable
     {
         try
         {
-            Invoke(binding, 3);
+            // Owned lifetime retirement belongs to the host's ordered control
+            // channel. Releasing this Broker binding only detaches its hook.
+            if (binding.Owned is null)
+                Invoke(binding, 3);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         _bindings.Remove(binding.Target.ControlHwnd);
@@ -256,6 +365,18 @@ internal sealed class NativeEditTransactions : IDisposable
             NativeLibrary.Free(_library);
         _library = 0;
     }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GuiThreadInfo
+    {
+        public uint Size, Flags;
+        public nint Active, Focus, Capture, MenuOwner, MoveSize, Caret;
+        public int Left, Top, Right, Bottom;
+    }
+    [DllImport("user32.dll")] private static extern nint GetAncestor(nint hwnd, uint flags);
+    [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetGUIThreadInfo(uint thread, ref GuiThreadInfo info);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern nint GetPropW(nint hwnd, string name);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassNameW(nint hwnd, StringBuilder name, int count);
     [DllImport("kernel32.dll")] private static extern bool IsWow64Process2(nint process, out ushort processMachine, out ushort nativeMachine);

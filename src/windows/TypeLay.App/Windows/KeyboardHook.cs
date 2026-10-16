@@ -7,7 +7,7 @@ using TypeLay.Core;
 namespace TypeLay.App;
 
 internal sealed record ShortcutConfiguration(Guid Generation, RegisteredShortcut[] Bindings);
-internal sealed class KeyboardHook : IInputMonitor
+internal sealed partial class KeyboardHook : IInputMonitor
 {
     private readonly AcceptanceGate _gate;
     private readonly OnDemandHotkeys _hotkeys;
@@ -58,6 +58,7 @@ internal sealed class KeyboardHook : IInputMonitor
             _ => 0x6Fu + uint.Parse(value.AsSpan(1), System.Globalization.CultureInfo.InvariantCulture)
         };
         _gate.Revoke();
+        _ownedGate.Revoke();
         Interlocked.Exchange(ref _lease, null);
         Interlocked.Exchange(ref _sessionKeys, new(Key(bindings.Accept), Key(bindings.Exit), bindings));
         // Outstanding consumed key releases remain owned by their original press.
@@ -78,6 +79,8 @@ internal sealed class KeyboardHook : IInputMonitor
     {
         if (!WindowsTarget.TryDecode(target, out var native))
             return FocusMember.Other;
+        if (_ownedSource is { } owned && target == owned.Target)
+            return OwnedFocus(owned.Descriptor) ? FocusMember.Source : FocusMember.Other;
         nint foreground = Native.GetForegroundWindow();
         return foreground == (nint)native.RootHwnd ? FocusMember.Source
             : foreground == _editorHwnd && _editorHwnd != 0 ? FocusMember.Overlay : FocusMember.Other;
@@ -89,6 +92,7 @@ internal sealed class KeyboardHook : IInputMonitor
         _hotkeys = new OnDemandHotkeys(editorHwnd);
         _allowInjectedInput = allowInjectedInput;
         _gate = new(allowInjectedInput);
+        _ownedGate = new(allowInjectedInput);
         _callback = OnKey;
         _mouseCallback = OnMouse;
         _focusCallback = (_, ev, _, _, _, _, _) =>
@@ -97,6 +101,7 @@ internal sealed class KeyboardHook : IInputMonitor
                 Interlocked.Increment(ref _windowEpoch);
             Interlocked.Increment(ref _foregroundEpoch);
             _gate.Revoke();
+            _ownedGate.Revoke();
         };
         _thread = new Thread(Run) { IsBackground = true, Name = "TypeLay.Input" };
         _thread.Start();
@@ -109,6 +114,12 @@ internal sealed class KeyboardHook : IInputMonitor
             return;
         }
         Interlocked.Exchange(ref _lease, new(lease, (nint)target.RootHwnd));
+        if (_ownedPracticeTarget?.Invoke(lease.Source.Target) == true)
+        {
+            _gate.Revoke();
+            _publishOwned?.Invoke(lease, permit);
+            return;
+        }
         if (permit is not null)
             _gate.Publish(permit);
         else
@@ -136,6 +147,7 @@ internal sealed class KeyboardHook : IInputMonitor
     {
         _gate.Revoke();
         Interlocked.Exchange(ref _lease, null);
+        _revokeOwned?.Invoke();
         if (Interlocked.Exchange(ref _shortcutLease, null) is { } old)
             QueueShortcutTrace("revoke", "revoked", old.Observation, leaseCommandGeneration: old.DiagnosticGeneration);
     }
@@ -286,6 +298,8 @@ internal sealed class KeyboardHook : IInputMonitor
             && now >= lease.Source.ObservedAtMs && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
         bool source = fresh && Native.GetForegroundWindow() == (nint)binding!.RootHwnd;
         var sessionKeys = Volatile.Read(ref _sessionKeys);
+        if (ObserveOwnedKey(data, down, repeated, injected, now, sessionKeys.Accept))
+            return Native.CallNextHookEx(_hook, code, wParam, lParam);
         var decision = _gate.ProcessAcceptanceKey(new(data.Key, down, repeated, data.Key == sessionKeys.Accept),
             new(lease?.Source.Target, source, lease?.Source.Ime ?? ImeState.Unknown,
                 Modified, injected, fresh, lease?.Source.InputEpoch ?? -1, lease?.Source.FocusEpoch ?? -1, now));

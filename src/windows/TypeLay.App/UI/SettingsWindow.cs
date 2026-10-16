@@ -49,6 +49,10 @@ internal sealed class SettingsWindow : Window
     private Border? _preparationCard;
     private StackPanel? _preparationSecondary, _preparationDiagnostics;
     private readonly List<Button> _connectionChecks = [];
+    public Func<AutomaticPracticeProgress?>? AutomaticPracticeProgress
+    {
+        get; set;
+    }
     public Func<OnDemandPracticeProgress?>? PracticeProgress
     {
         get; set;
@@ -58,11 +62,15 @@ internal sealed class SettingsWindow : Window
         if (_practiceStatus is not null)
         {
             var progress = PracticeProgress?.Invoke();
-            _practiceStatus.Text = progress is null ? "" : OnDemandPracticePresentation.Create(_settings.Value, progress).ProgressNotice;
-            _practiceStatus.Visibility = progress is null ? Visibility.Collapsed : Visibility.Visible;
+            var automatic = AutomaticPracticeProgress?.Invoke();
+            _practiceStatus.Text = automatic is not null ? FirstAcceptanceView().ProgressNotice
+                : progress is null ? "" : OnDemandPracticePresentation.Create(_settings.Value, progress).ProgressNotice;
+            _practiceStatus.Visibility = progress is null && automatic is null ? Visibility.Collapsed : Visibility.Visible;
         }
     }
     public Action? SessionMustEnd;
+    public Func<UserSettings, Task<bool>>? PrepareSettingsChange;
+    private bool _savingSettings;
     public SettingsWindow(SettingsStore settings, ModelClient model, Action openPractice, WindowsApplicationSupport? support = null,
         Func<ModelInstaller>? createInstaller = null)
     {
@@ -364,10 +372,27 @@ internal sealed class SettingsWindow : Window
         _content.Children.Add(box);
         return body;
     }
-    private bool Save(UserSettings value)
+    private async Task<bool> SaveAsync(UserSettings value)
     {
+        if (_savingSettings)
+            return false;
+        var expected = _settings.Value;
+        _savingSettings = true;
+        _content.IsEnabled = false;
         try
         {
+            if (_settings.HasChanges(value) && PrepareSettingsChange is not null && !await PrepareSettingsChange(value))
+            {
+                _settingsError = "练习窗口尚未确认停止，设置未保存。请关闭练习窗口后再试。";
+                Refresh();
+                return false;
+            }
+            if (!ReferenceEquals(expected, _settings.Value))
+            {
+                _settingsError = "设置已更新，请检查当前值后重试。";
+                Refresh();
+                return false;
+            }
             _settingsError = null;
             _settings.Update(value);
             return true;
@@ -382,12 +407,17 @@ internal sealed class SettingsWindow : Window
             _settingsError = "请检查当前用户目录与组织策略。";
             Refresh();
         }
+        finally
+        {
+            _savingSettings = false;
+            _content.IsEnabled = true;
+        }
         return false;
     }
     private void General()
     {
         Heading("常规");
-        Row("启用 TypeLay", "", UiTheme.Toggle("启用 TypeLay", () => _settings.Value.Enabled, enabled => Save(_settings.Value with { Enabled = enabled })));
+        Row("启用 TypeLay", "", UiTheme.Toggle("启用 TypeLay", () => _settings.Value.Enabled, async enabled => await SaveAsync(_settings.Value with { Enabled = enabled })));
         var modes = new ComboBox
         {
             MinWidth = 155,
@@ -395,7 +425,7 @@ internal sealed class SettingsWindow : Window
             SelectedIndex = _settings.Value.Mode == WorkMode.OnDemand ? 1 : 0
         };
         AutomationProperties.SetName(modes, "工作模式");
-        modes.SelectionChanged += (_, _) => Save(_settings.Value with { Mode = modes.SelectedIndex == 1 ? WorkMode.OnDemand : WorkMode.Automatic });
+        modes.SelectionChanged += async (_, _) => await SaveAsync(_settings.Value with { Mode = modes.SelectedIndex == 1 ? WorkMode.OnDemand : WorkMode.Automatic });
         Row("工作模式", "", modes);
         var guidance = SettingsGuidancePresentation.Create(_settings.Value, exclusionsNeedSave: false);
         // Reuse the saved-mode explanation; the full shortcut and safety details
@@ -435,7 +465,7 @@ internal sealed class SettingsWindow : Window
             };
             choice.SetResourceReference(StyleProperty, "SettingsThemeChoice");
             AutomationProperties.SetName(choice, label);
-            choice.Checked += (_, _) => Save(_settings.Value with { Theme = value });
+            choice.Checked += async (_, _) => await SaveAsync(_settings.Value with { Theme = value });
             _themeChoices.Add(choice);
             themes.Children.Add(choice);
         }
@@ -443,12 +473,12 @@ internal sealed class SettingsWindow : Window
         Rule();
         if (PreparationView().PrimaryAction.Id != TranslationPreparationAction.NextStep)
             InstallCard(compact: true);
-        Row("登录 Windows 后自动启动", "开启后依赖当前程序所在目录，请勿移动。", UiTheme.Toggle("登录 Windows 后自动启动", () => _settings.Value.Startup, startup => Save(_settings.Value with { Startup = startup })));
-        Row("开发版实验：允许 Tab 写回", "默认关闭。跨进程非原子写回尚未完成实机安全验收；仅使用已备份的测试文本。", UiTheme.Toggle("开发版实验：允许 Tab 写回", () => _settings.Value.ExperimentalWriteback, enabled =>
+        Row("登录 Windows 后自动启动", "开启后依赖当前程序所在目录，请勿移动。", UiTheme.Toggle("登录 Windows 后自动启动", () => _settings.Value.Startup, async startup => await SaveAsync(_settings.Value with { Startup = startup })));
+        Row("开发版实验：允许 Tab 写回", "默认关闭。跨进程非原子写回尚未完成实机安全验收；仅使用已备份的测试文本。", UiTheme.Toggle("开发版实验：允许 Tab 写回", () => _settings.Value.ExperimentalWriteback, async enabled =>
         {
             if (!enabled)
             {
-                Save(_settings.Value with
+                await SaveAsync(_settings.Value with
                 {
                     ExperimentalWriteback = false
                 });
@@ -456,13 +486,15 @@ internal sealed class SettingsWindow : Window
             }
             var answer = MessageBox.Show(this, "此构建未完成 Windows 实机与真实输入法验收。\n\nUIA 校验与写回之间仍有竞态：极端情况下可能覆盖最新原文，或拒写后消耗一次 Tab。该开关仅用于受控测试，不代表安全验收通过。\n\n请只用已备份的测试文本。是否允许实验性 Tab 写回？", "TypeLay · 实验性写回", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No);
             if (answer == MessageBoxResult.Yes)
-                Save(_settings.Value with
+                await SaveAsync(_settings.Value with
                 {
                     ExperimentalWriteback = true
                 });
         }));
         Rule();
-        Row("第一次使用？", "", UiTheme.Button(OnDemandPracticePresentation.Create(_settings.Value).StartLabel, StartPractice));
+        Row("第一次使用？", _settings.Value.AcceptShortcut == "Tab" ? ""
+            : "自动接受练习目前只支持无修饰 Tab。你的快捷键保持不变，仍可进行按需翻译练习。",
+            UiTheme.Button(PracticeEntryView().StartLabel, StartPractice));
         _practiceStatus = UiTheme.Text("", 12, true);
         _content.Children.Add(_practiceStatus);
         RefreshPracticeProgress();
@@ -510,7 +542,7 @@ internal sealed class SettingsWindow : Window
         backdrop.Children.Add(overlay);
         return new Border { Child = backdrop, CornerRadius = new(5), ClipToBounds = true };
     }
-    public void StartPractice()
+    public async void StartPractice()
     {
         if (_closeDialog is not null)
         {
@@ -522,7 +554,8 @@ internal sealed class SettingsWindow : Window
             ShowPage("apps");
             return;
         }
-        var view = OnDemandPracticePresentation.Create(_settings.Value);
+        bool automatic = _settings.Value.AcceptShortcut == "Tab";
+        var view = PracticeEntryView();
         if (!_settings.Value.Enabled || view.LanguageNeedsChange)
         {
             ShowPage(!_settings.Value.Enabled ? "general" : "language");
@@ -533,11 +566,12 @@ internal sealed class SettingsWindow : Window
         // The modal may have processed other settings/model callbacks. Keep their
         // latest values and never restore an earlier snapshot on practice close.
         if (!_model.Ready || !_settings.Value.Enabled
-            || OnDemandPracticePresentation.Create(_settings.Value).LanguageNeedsChange)
+            || PracticeEntryView().LanguageNeedsChange || automatic != (_settings.Value.AcceptShortcut == "Tab"))
             return;
-        if (_settings.Value.Mode != WorkMode.OnDemand && !Save(_settings.Value with
+        WorkMode mode = automatic ? WorkMode.Automatic : WorkMode.OnDemand;
+        if (_settings.Value.Mode != mode && !await SaveAsync(_settings.Value with
         {
-            Mode = WorkMode.OnDemand
+            Mode = mode
         }))
         {
             ShowPage("general"); // The tray entry may have started with settings hidden.
@@ -554,6 +588,20 @@ internal sealed class SettingsWindow : Window
             MessageBox.Show(this, view.LaunchFailedMessage,
                 view.Title, MessageBoxButton.OK, MessageBoxImage.Information);
         }
+    }
+    private OnDemandPracticeView PracticeEntryView() => _settings.Value.AcceptShortcut == "Tab"
+        ? FirstAcceptanceView() : OnDemandPracticePresentation.Create(_settings.Value);
+    private OnDemandPracticeView FirstAcceptanceView()
+    {
+        var progress = AutomaticPracticeProgress?.Invoke();
+        var view = AutomaticPracticePresentation.Create(_settings.Value, progress);
+        return new("自动接受练习", "练习自动预览与第一次接受。", view.SampleText, view.InputLabel,
+            view.PreviewStep, "本阶段仅验证第一次接受，不包含人工编辑和回源。", view.CapabilityNote,
+            _settings.Value.Mode == WorkMode.Automatic ? "开始自动接受练习" : "切换为自动模式并开始练习",
+            view.ConfirmationText, view.CancelLabel, view.CloseLabel, view.CurrentStateNotice,
+            view.LanguageNeedsChange, view.LaunchFailedMessage,
+            progress?.AcceptanceCompleted == true ? "已验证第一次接受。本阶段不包含人工编辑和回源。" : view.ProgressNotice, view.RestartLabel,
+            false, false, false);
     }
     private bool ConfirmPractice(OnDemandPracticeView view)
     {
@@ -591,9 +639,9 @@ internal sealed class SettingsWindow : Window
     private void Languages()
     {
         Heading("语言", "Auto 只用于源语言，目标语言始终明确指定。");
-        Row("源语言", "Auto 使用本地语言检测。当前已安装模型仅覆盖中文与英文。", LanguageCombo(true, _settings.Value, value => Save(value)));
-        Row("目标语言", "选择希望写回的语言。", LanguageCombo(false, _settings.Value, value => Save(value)));
-        var swap = UiTheme.Button("交换", () => Save(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
+        Row("源语言", "Auto 使用本地语言检测。当前已安装模型仅覆盖中文与英文。", LanguageCombo(true, _settings.Value, async value => await SaveAsync(value)));
+        Row("目标语言", "选择希望写回的语言。", LanguageCombo(false, _settings.Value, async value => await SaveAsync(value)));
+        var swap = UiTheme.Button("交换", async () => await SaveAsync(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
         swap.IsEnabled = _settings.Value.Source != "auto";
         Row("交换语言", "只改变语言配置，不修改当前原文或译文。", swap);
         Rule();
@@ -653,7 +701,7 @@ internal sealed class SettingsWindow : Window
         direct.TextChanged += (_, _) => ShortcutDraftChanged();
         Row("唤醒翻译 UI", "为当前输入框开启持续翻译；离开后结束。", wake);
         Row("直接翻译并替换", "一次性操作，绑定原输入框，不显示预览、不自动发送。", direct);
-        var save = UiTheme.Button(_draftMessages.SaveLabel, () =>
+        var save = UiTheme.Button(_draftMessages.SaveLabel, async () =>
         {
             var submitted = new ShortcutSettingsDraft(wake.Text, direct.Text,
                 accept.SelectedItem as string ?? "", exit.SelectedItem as string ?? "");
@@ -664,7 +712,7 @@ internal sealed class SettingsWindow : Window
                 RefreshShortcuts();
                 return;
             }
-            if (Save(latest!))
+            if (await SaveAsync(latest!))
             {
                 _shortcutDraft = null;
                 _shortcutFeedback = _draftMessages.SavedMessage;
@@ -784,12 +832,12 @@ internal sealed class SettingsWindow : Window
         if (_settings.Value.Excluded.Length == 0)
             Note("当前没有排除任何应用", "排除后，该应用的所有输入框均不显示 TypeLay 界面。");
         foreach (string app in _settings.Value.Excluded)
-            Row(app + ".exe", "所有该进程名窗口均排除。", UiTheme.Button("移除", () => Save(_settings.Value with { ExcludedApplications = _settings.Value.Excluded.Where(a => a != app).ToArray() })));
-        var add = UiTheme.Button("添加应用…", () =>
+            Row(app + ".exe", "所有该进程名窗口均排除。", UiTheme.Button("移除", async () => await SaveAsync(_settings.Value with { ExcludedApplications = _settings.Value.Excluded.Where(a => a != app).ToArray() })));
+        var add = UiTheme.Button("添加应用…", async () =>
         {
             var dialog = new OpenFileDialog { Filter = "Windows 应用 (*.exe)|*.exe", CheckFileExists = true };
             if (dialog.ShowDialog(this) == true)
-                Save(_settings.Value with
+                await SaveAsync(_settings.Value with
                 {
                     ExcludedApplications = _settings.Value.Excluded.Append(Path.GetFileNameWithoutExtension(dialog.FileName).ToLowerInvariant()).Distinct().Take(256).ToArray()
                 });
@@ -1054,11 +1102,11 @@ internal sealed class SettingsWindow : Window
             await _model.StartAsync();
             if (_model.Ready)
             {
-                Save(_settings.Value with
+                await SaveAsync(_settings.Value with
                 {
                     OnboardingComplete = true
                 });
-                _setupStatus = "本地翻译已就绪。可打开“" + OnDemandPracticePresentation.Create(_settings.Value).Title + "”。";
+                _setupStatus = "本地翻译已就绪。可打开“" + PracticeEntryView().Title + "”。";
             }
             else
                 SetupFailed(SetupFailureCategory.Runtime, "ModelStart");

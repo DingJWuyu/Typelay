@@ -146,9 +146,11 @@ public sealed partial class SessionController : IDisposable
     }
     public SessionController(SettingsStore settings, ITranslationService model, ISessionView overlay,
         IInputMonitor input, IInputService broker, ISessionLoop loop,
-        Func<OwnedPracticeBinding, Task<bool>>? retireOwnedPractice = null)
+        Func<OwnedPracticeBinding, Task<bool>>? retireOwnedPractice = null,
+        Func<OwnedPracticeBinding, Task<bool>>? confirmRetiredOwnedPractice = null)
     {
         _retireOwnedPractice = retireOwnedPractice;
+        _confirmRetiredOwnedPractice = confirmRetiredOwnedPractice;
         _broker = broker;
         _settings = settings;
         _model = model;

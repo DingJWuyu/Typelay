@@ -222,6 +222,13 @@ class NativeForegroundGuardTests(unittest.TestCase):
                 3: "selection",
                 4: "deadline",
                 5: "owned lifetime retirement",
+                6: "owned preflight leaves the original key and field untouched",
+                7: "owned acceptance executes once",
+                8: "accepted owned focus round trip retains the real rejection",
+                9: "failed focus mirror permanently retires owned authority",
+                10: "unknown wire operation cannot read the source",
+                11: "owned capture requires the exact focus revision before reading",
+                12: "automatic lifetime cannot use ordinary v2 write routes",
             }
             self.assertEqual(
                 result.returncode,

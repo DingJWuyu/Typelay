@@ -13,6 +13,49 @@ namespace TypeLay.App.Tests;
 public sealed class PracticeProgressPipeTests
 {
     [Fact]
+    public async Task OwnedAcceptanceControlFramesRetainTheirExactPlanWitnessAndFieldIdentity()
+    {
+        var connection = Guid.NewGuid();
+        var run = Guid.NewGuid();
+        var plan = Guid.NewGuid();
+        var descriptor = new OwnedCaptureDescriptor(120, 630000000000000000, 501, 502, 121, 41, 7, 1);
+        PracticeMessage[] messages =
+        [
+            new("begin-auto", connection, run, 1, Acceptance: new(WitnessHandle: 601,
+                WitnessBytes: OwnedPracticeAcceptanceProtocol.WitnessBytes)),
+            new("source-ready", connection, run, 1, Acceptance: new(Descriptor: descriptor)),
+            new("install", connection, run, 2, Acceptance: new(plan, 1, 602,
+                OwnedPracticeAcceptanceProtocol.BodyBytes, 603, OwnedPracticeAcceptanceProtocol.BodyBytes)),
+            new("installed", connection, run, 2, Acceptance: new(plan, 1, WitnessSequence: 19)),
+            new("receipt", connection, run, 2, Acceptance: new(plan, 1, WitnessSequence: 20)),
+            new("witness-consumed", connection, run, 2, Acceptance: new(WitnessSequence: 21)),
+            new("revoke-plan", connection, run, 3, Acceptance: new(plan, 1)),
+            new("revoked-plan", connection, run, 3, Acceptance: new(plan, 1)),
+            new("release-plan", connection, run, 4, Acceptance: new(plan, 1)),
+            new("released-plan", connection, run, 4, Acceptance: new(plan, 1))
+        ];
+        using var stream = new MemoryStream();
+        foreach (var message in messages)
+            await PracticeProgressPipe.WriteAsync(stream, message, TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        foreach (var message in messages)
+            Assert.Equal(message, await PracticeProgressPipe.ReadAsync(stream, TestContext.Current.CancellationToken));
+        Assert.Equal(stream.Length, stream.Position);
+        // This verifies framing only. GUI FIFO consumption and physical input
+        // ownership require the separate actual consumer/desktop cases.
+    }
+
+    [Fact]
+    public async Task UnknownOwnedAcceptanceVersionCannotEnterTheControlPipe()
+    {
+        using var stream = new MemoryStream();
+        await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(stream,
+            new("begin-auto", Guid.NewGuid(), Guid.NewGuid(), 1, Acceptance: new(Version: 0)),
+            TestContext.Current.CancellationToken));
+        Assert.Equal(0, stream.Length);
+    }
+
+    [Fact]
     public async Task ProgressAndResetRetainTheirExactRunAndCommandMetadata()
     {
         var target = new WindowsTarget(120, 630000000000000000, 501, 502,

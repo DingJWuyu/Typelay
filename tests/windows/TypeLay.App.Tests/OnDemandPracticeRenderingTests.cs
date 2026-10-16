@@ -130,7 +130,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                 window.ShowPage();
                 window.UpdateLayout();
                 var start = Descendants(window).OfType<Button>().Single(button =>
-                    Equals(button.Content, OnDemandPracticePresentation.Create(settings.Value).StartLabel));
+                    Equals(button.Content, "开始自动接受练习"));
                 start.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 window.UpdateLayout();
                 Assert.Equal(0, launches);
@@ -149,6 +149,117 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             }
         });
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task RetiredAutomaticPracticeDoesNotReserveUnrelatedInputWindows(bool disconnect) => desktop.RunAsync(async () =>
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(25));
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-practice-route-" + Guid.NewGuid().ToString("N"));
+        string path = Path.Combine(directory, "settings.json");
+        ChildProcess? owned = null, ordinary = null;
+        var overlay = new OverlayWindow(automationTest: true);
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(path);
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.Automatic
+            });
+            using var model = WindowsRuntime.CreateModel(); // Capture and retirement need no inference.
+            using var host = new PracticeHost(info => owned = new ChildProcess(info));
+            using var other = new PracticeHost(info => ordinary = new ChildProcess(info));
+            using var broker = new BrokerClient();
+            using var controller = WindowsRuntime.CreateSession(settings, model, overlay,
+                automationTest: true, broker: broker, practice: host);
+            host.Bind(controller);
+            await controller.StartAsync().WaitAsync(deadline.Token);
+            var input = new WindowsInputService(broker, 0, practice: host);
+            var context = new InputContext(0, 0, 0, null, [], false);
+            other.Open(path); // No progress connection or owned-native registration.
+            nint otherRoot = await Window(ordinary!);
+            host.Open(path);
+            nint ownedRoot = await Window(owned!);
+            await Focus(ownedRoot);
+            await Until(() => controller.AutomaticPracticeProgress?.Target is not null);
+
+            var next = settings.Value with
+            {
+                Mode = WorkMode.OnDemand
+            };
+            if (disconnect)
+                owned!.Process.StandardInput.Close(); // A real lost control pipe is not a retirement ACK.
+            Task<bool> retirement = controller.PrepareSettingsChangeAsync(next);
+            Assert.Null((await input.CaptureAsync(context)).Snapshot); // Request alone grants no fallback.
+            Assert.Equal(!disconnect, await retirement.WaitAsync(deadline.Token));
+            if (disconnect)
+            {
+                Assert.False(owned!.Process.HasExited);
+                Assert.False(await controller.PrepareSettingsChangeAsync(next));
+                Assert.Equal(WorkMode.Automatic, settings.Value.Mode);
+                Assert.Null((await input.CaptureAsync(context)).Snapshot);
+                Assert.True(N.PostMessage(ownedRoot, 0x0010, 0, 0));
+                await owned.Process.WaitForExitAsync(deadline.Token);
+                Assert.True(await controller.PrepareSettingsChangeAsync(next));
+                Assert.Null(controller.AutomaticPracticeProgress);
+            }
+            settings.Update(next);
+            Assert.Equal(!disconnect, host.IsAutomatic); // A normal ACK retains identity for restart.
+
+            await Focus(otherRoot);
+            InputSnapshot? captured = null;
+            while (captured is null)
+            {
+                captured = (await input.CaptureAsync(context).WaitAsync(deadline.Token)).Snapshot;
+                if (captured is null)
+                    await Task.Delay(15, deadline.Token);
+            }
+            Assert.True(WindowsTarget.TryDecode(captured.Target, out var target));
+            Assert.Equal(ordinary!.Process.Id, target.ProcessId);
+            Assert.Equal((long)otherRoot, target.RootHwnd);
+            Assert.Equal((long)GetDlgItem(otherRoot, 101), target.ControlHwnd);
+            Assert.NotEmpty(captured.Text);
+
+            if (!disconnect)
+            {
+                await Focus(ownedRoot);
+                Assert.Null((await input.CaptureAsync(context)).Snapshot); // Old owned root stays reserved until exit.
+            }
+            Assert.Null(controller.AutomaticPracticeProgress);
+
+            async Task<nint> Window(ChildProcess child)
+            {
+                nint root = 0;
+                await Until(() =>
+                {
+                    Assert.False(child.Process.HasExited);
+                    child.Process.Refresh();
+                    root = child.Process.MainWindowHandle;
+                    return root != 0 && GetDlgItem(root, 101) != 0;
+                });
+                return root;
+            }
+            async Task Focus(nint root)
+            {
+                Assert.True(N.SetForegroundWindow(root));
+                Assert.True(N.PostMessage(root, 0x0007, 0, 0));
+                await Until(() => N.Focused() == (root, GetDlgItem(root, 101)));
+            }
+            async Task Until(Func<bool> condition)
+            {
+                while (!condition())
+                    await Task.Delay(15, deadline.Token);
+            }
+        }
+        finally
+        {
+            overlay.Close();
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    });
 
     [Fact]
     public Task CurrentPracticeBindsOnlyItsOwnedNativeFieldAndRequiresExplicitRestart() => desktop.RunAsync(async () =>

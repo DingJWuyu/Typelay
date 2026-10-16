@@ -70,16 +70,29 @@ internal static class Program
                 () => practiceHost.Open(Path.Combine(AppPaths.Data, "settings.json")), support)
             {
                 SessionMustEnd = session.StopSession,
+                PrepareSettingsChange = session.PrepareSettingsChangeAsync,
                 ShortcutStatus = () => session.ShortcutStatus,
-                PracticeProgress = () => session.PracticeProgress
+                PracticeProgress = () => session.PracticeProgress,
+                AutomaticPracticeProgress = () => session.AutomaticPracticeProgress
             };
             session.PracticeProgressChanged += _ => window.RefreshPracticeProgress();
+            session.AutomaticPracticeProgressChanged += _ => window.RefreshPracticeProgress();
             window.RefreshPracticeProgress();
             settingsWindow = window;
-            void Quit()
+            bool quitting = false;
+            async void Quit()
             {
-                if (window.RequestClose())
-                    app.Shutdown();
+                if (quitting || !window.RequestClose())
+                    return;
+                quitting = true;
+                try
+                {
+                    if (await session.RetireAutomaticPracticeAsync())
+                        app.Shutdown();
+                    else
+                        tray?.ShowBalloonTip(5000, "TypeLay", "练习尚未确认停止，请关闭练习窗口后再退出。", Forms.ToolTipIcon.Warning);
+                }
+                finally { quitting = false; }
             }
             overlay.LanguageRequested = () => window.ShowPage("language");
             var quick = new QuickPanel(settings, model, session, () => window.ShowPage(), Quit);
@@ -150,9 +163,9 @@ internal static class Program
     internal static Forms.ToolStripMenuItem CreateToggleMenuItem(SettingsStore settings, QuickPanel quick, Action showSaveError)
     {
         var toggle = new Forms.ToolStripMenuItem(settings.Value.Enabled ? "暂停 TypeLay" : "启用 TypeLay");
-        toggle.Click += (_, _) => quick.Dispatcher.Invoke(() =>
+        toggle.Click += (_, _) => quick.Dispatcher.Invoke(async () =>
         {
-            if (!quick.SetEnabled(!settings.Value.Enabled))
+            if (!await quick.SetEnabledAsync(!settings.Value.Enabled))
                 showSaveError();
         });
         return toggle;

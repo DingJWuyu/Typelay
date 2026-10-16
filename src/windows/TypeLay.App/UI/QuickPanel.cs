@@ -19,7 +19,7 @@ internal sealed class QuickPanel : Window
     private readonly Action _showSettings, _quit;
     private readonly StackPanel _body = new();
     private readonly List<RadioButton> _modeChoices = [];
-    private bool _saveFailed;
+    private bool _saveFailed, _saving;
     public QuickPanel(SettingsStore settings, ModelClient model, SessionController session, Action showSettings, Action quit)
     {
         _settings = settings;
@@ -74,11 +74,22 @@ internal sealed class QuickPanel : Window
         Native.SetWindowPos(handle, (nint)(-1), x, y, width, height, 0x0040);
         Activate();
     }
-    public bool SetEnabled(bool enabled) => Save(_settings.Value with { Enabled = enabled });
-    private bool Save(UserSettings value)
+    public Task<bool> SetEnabledAsync(bool enabled) => SaveAsync(_settings.Value with { Enabled = enabled });
+    private async Task<bool> SaveAsync(UserSettings value)
     {
+        if (_saving)
+            return false;
+        _saving = true;
+        _body.IsEnabled = false;
+        var expected = _settings.Value;
         try
         {
+            if (!await _session.PrepareSettingsChangeAsync(value) || !ReferenceEquals(expected, _settings.Value))
+            {
+                _saveFailed = true;
+                Refresh();
+                return false;
+            }
             _settings.Update(value);
         }
         catch (SettingsPersistenceException)
@@ -86,6 +97,11 @@ internal sealed class QuickPanel : Window
             _saveFailed = true;
             Refresh();
             return false;
+        }
+        finally
+        {
+            _saving = false;
+            _body.IsEnabled = true;
         }
         // A confirmed write of the same settings does not publish Changed.
         _saveFailed = false;
@@ -128,7 +144,7 @@ internal sealed class QuickPanel : Window
         title.Children.Add(sub);
         Grid.SetColumn(title, 1);
         header.Children.Add(title);
-        var toggle = UiTheme.Toggle("启用 TypeLay", () => _settings.Value.Enabled, enabled => SetEnabled(enabled));
+        var toggle = UiTheme.Toggle("启用 TypeLay", () => _settings.Value.Enabled, async enabled => await SetEnabledAsync(enabled));
         Grid.SetColumn(toggle, 2);
         header.Children.Add(toggle);
         var headBorder = UiTheme.Border(header, 0);
@@ -164,7 +180,7 @@ internal sealed class QuickPanel : Window
             };
             choice.SetResourceReference(StyleProperty, "QuickPanelModeChoice");
             AutomationProperties.SetName(choice, text);
-            choice.Checked += (_, _) => Save(_settings.Value with { Mode = mode });
+            choice.Checked += async (_, _) => await SaveAsync(_settings.Value with { Mode = mode });
             _modeChoices.Add(choice);
             choices.Children.Add(choice);
         }
@@ -182,17 +198,17 @@ internal sealed class QuickPanel : Window
         });
         row.ColumnDefinitions.Add(new());
         var source = SettingsWindow.LanguageCombo(true, _settings.Value,
-            value => Save(_settings.Value with { Source = value.Source }));
+            async value => await SaveAsync(_settings.Value with { Source = value.Source }));
         source.MinWidth = 0;
         row.Children.Add(source);
-        var swap = UiTheme.Button("⇄", () => Save(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
+        var swap = UiTheme.Button("⇄", async () => await SaveAsync(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
         swap.IsEnabled = _settings.Value.Source != "auto";
         swap.BorderThickness = new(0);
         swap.Padding = new(0);
         Grid.SetColumn(swap, 1);
         row.Children.Add(swap);
         var target = SettingsWindow.LanguageCombo(false, _settings.Value,
-            value => Save(_settings.Value with { Target = value.Target }));
+            async value => await SaveAsync(_settings.Value with { Target = value.Target }));
         target.MinWidth = 0;
         Grid.SetColumn(target, 2);
         row.Children.Add(target);

@@ -1,4 +1,8 @@
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Runtime.InteropServices;
 using System.Security;
 using System.Text.Json;
@@ -6,6 +10,7 @@ using Microsoft.Win32;
 using TypeLay.Core;
 using TypeLay.Runtime;
 using TypeLay.Windows;
+using TypeLay.Windows.Contracts;
 
 namespace TypeLay.Practice;
 
@@ -21,12 +26,22 @@ internal static class Program
     private static readonly Native.WindowProc Procedure = WindowProc;
     private static readonly List<Control> Controls = [];
     private static nint _window, _instance, _bodyFont, _titleFont, _backgroundBrush;
-    private static Control? _title, _notice, _inputLabel, _edit, _preview, _replace, _progressNotice, _restart, _close;
+    private static Control? _title, _summary, _capability, _notice, _inputLabel, _edit, _preview, _replace, _progressNotice, _restart, _close;
     private static OnDemandPracticeProgress? _progress;
     private static readonly ConcurrentQueue<PracticeMessage> PendingControls = new();
     private static int _pendingCount, _disconnected;
     private static OwnedPracticeField? _owned;
     private static Guid _connection, _run;
+    private static OwnedMapping? _witnessMapping, _resultMapping;
+    private static OwnedWitnessReader? _witness;
+    private static OwnedAcceptancePlan? _plan;
+    private static AutomaticPracticeProgress? _automaticProgress;
+    private static byte[]? _transaction;
+    private static long _lastPlanSequence, _installWitnessFloor, _lastWitnessAcknowledged, _sourceReadyRevision;
+    private static bool _automatic, _allowInjectedInput, _planActive, _planReported, _witnessFailed;
+    private static bool _tabHeld, _tabConsumed, _tabExtended;
+    private static uint _tabScanCode;
+    private static readonly long ProcessStartUtcTicks = Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks;
     private static long _sequence;
     private static bool _retired = true, _closePending, _sendRestart;
     private static bool _progressConnected, _restartPending;
@@ -74,7 +89,7 @@ internal static class Program
                 return Fail();
 
             _title = Add("Static", presentation.Title);
-            Add("Static", presentation.Summary);
+            _summary = Add("Static", presentation.Summary);
             _notice = Add("Static", presentation.CurrentStateNotice);
             // A stock STATIC immediately precedes its stock Edit in the child
             // order, giving the system accessibility provider a field label.
@@ -86,7 +101,7 @@ internal static class Program
             _preview = Add("Static", presentation.PreviewStep, id: PreviewId);
             _replace = Add("Static", presentation.ReplaceStep, id: ReplaceId);
             _progressNotice = Add("Static", presentation.ProgressNotice, id: ProgressId);
-            Add("Static", presentation.CapabilityNote);
+            _capability = Add("Static", presentation.CapabilityNote);
             _restart = Add("Button", presentation.RestartLabel, 0x00010000 | 0x4000, RestartId);
             Native.EnableWindow(_restart.Handle, false);
             _close = Add("Button", presentation.CloseLabel, 0x00010000 | 0x4000, CloseId);
@@ -100,23 +115,43 @@ internal static class Program
             if (_connection != Guid.Empty)
                 _ = Task.Run(ReadProgressAsync);
             Native.ShowWindow(_window, 1);
+            int inputBurst = 0;
             while (true)
             {
-                int result = Native.GetMessageW(out var message, 0, 0, 0);
-                if (result == 0)
-                    return _exitCode;
-                if (result < 0)
-                    return Fail();
-                // GetMessage may dispatch sent messages or run a nested pump.
-                // Retirement is acknowledged only after that stack has unwound.
                 ApplyControls();
+                // The queue class, rather than WM_KEYDOWN's numeric ID, is the
+                // provenance. Posted/fallback messages can never authorize a write.
+                bool inputQueue = inputBurst < 8;
+                bool available = Native.PeekMessageW(out var message, 0, 0, 0,
+                    inputQueue ? 0x04070001u : 0x00f80001u); // PM_REMOVE | PM_QS_INPUT.
+                ApplyControls(); // PeekMessage may synchronously dispatch sent messages.
+                if (!available && inputQueue)
+                {
+                    inputQueue = false;
+                    available = Native.PeekMessageW(out message, 0, 0, 0, 0x00f80001u);
+                    ApplyControls();
+                }
+                if (!available)
+                {
+                    inputBurst = 0;
+                    if (Native.MsgWaitForMultipleObjectsEx(0, 0, uint.MaxValue, 0x04ff, 4) == uint.MaxValue)
+                        return Fail();
+                    ApplyControls();
+                    continue;
+                }
+                inputBurst = inputQueue ? inputBurst + 1 : 0;
+                if (message.Id == 0x0012) // WM_QUIT.
+                    return _exitCode;
                 if (_window == 0)
+                    continue;
+                if (ProcessInput(ref message, inputQueue))
                     continue;
                 if (!Native.IsDialogMessageW(_window, ref message))
                 {
                     Native.TranslateMessage(ref message);
                     Native.DispatchMessageW(ref message);
                 }
+                ApplyControls();
             }
         }
         catch
@@ -127,6 +162,7 @@ internal static class Program
         }
         finally
         {
+            ReleaseAcceptance();
             if (_window != 0)
                 Native.DestroyWindow(_window);
             if (_bodyFont != 0)
@@ -211,10 +247,32 @@ internal static class Program
         else
         {
             _theme = settings!.Theme;
-            var view = OnDemandPracticePresentation.Create(settings!, _progress);
-            changed = SetText(_notice, view.CurrentStateNotice)
-                | SetText(_preview, view.PreviewStep) | SetText(_replace, view.ReplaceStep)
-                | SetText(_progressNotice, view.ProgressNotice);
+            if (_automatic)
+            {
+                var view = AutomaticPracticePresentation.Create(settings!, _automaticProgress);
+                string progress = _automaticProgress?.AcceptanceCompleted == true
+                    ? "第一次接受已验证"
+                    : _automaticProgress?.PreviewCompleted == true
+                        ? $"已生成预览。请在练习输入框按 {settings.AcceptShortcut} 接受。"
+                        : _automaticProgress?.Target is not null ? "已识别练习输入框，等待自动生成预览。"
+                        : "请点击练习输入框，等待原生连接确认。";
+                changed = SetText(_title!, "自动接受练习")
+                    | SetText(_summary!, "输入一句话，查看译文后按 Tab 接受。")
+                    | SetText(_notice, view.CurrentStateNotice) | SetText(_preview, "自动预览")
+                    | SetText(_replace, "Tab 接受")
+                    | SetText(_capability!, "编辑练习尚未开放")
+                    | SetText(_progressNotice, progress);
+                Native.SetWindowTextW(_window, "自动接受练习");
+            }
+            else
+            {
+                var view = OnDemandPracticePresentation.Create(settings!, _progress);
+                changed = SetText(_title!, view.Title) | SetText(_summary!, view.Summary)
+                    | SetText(_capability!, view.CapabilityNote) | SetText(_notice, view.CurrentStateNotice)
+                    | SetText(_preview, view.PreviewStep) | SetText(_replace, view.ReplaceStep)
+                    | SetText(_progressNotice, view.ProgressNotice);
+                Native.SetWindowTextW(_window, view.Title);
+            }
         }
         // The source field is intentionally never read or reset by refresh.
         if (changed)
@@ -246,7 +304,7 @@ internal static class Program
 
     private static void ApplyControls()
     {
-        if (!_closePending && !_sendRestart && PendingControls.IsEmpty && Volatile.Read(ref _disconnected) != 1)
+        if (_window == 0)
             return;
         if (_owned is null)
         {
@@ -254,98 +312,450 @@ internal static class Program
                 Native.DestroyWindow(_window);
             return;
         }
+        bool changed = false;
         try
         {
-            if (Volatile.Read(ref _disconnected) != 0)
-            {
-                _owned.Retire();
-                _retired = true;
-                _progressConnected = false;
-                _progress = null;
-                _sendRestart = false;
-                Interlocked.Exchange(ref _disconnected, 2);
-                while (PendingControls.TryDequeue(out _))
-                {
-                }
-            }
-            else
-            {
-                while (PendingControls.TryDequeue(out var message))
-                {
-                    Interlocked.Decrement(ref _pendingCount);
-                    if (Volatile.Read(ref _disconnected) != 0)
-                        throw new IOException("practice-control-disconnected");
-                    if (message.Connection != _connection)
-                        throw new InvalidDataException("practice-control-connection");
-                    if (message.Kind == "begin" && _retired && message.Run != _run && message.Sequence == _sequence + 1)
-                    {
-                        _owned.Begin();
-                        _run = message.Run;
-                        _sequence = message.Sequence;
-                        _retired = false;
-                        _progressConnected = true;
-                        _restartPending = false;
-                        _progress = null;
-                        Reply("started");
-                    }
-                    else if (message.Kind == "retire" && message.Run == _run && message.Sequence == _sequence + 1)
-                    {
-                        _owned.Retire();
-                        _retired = true;
-                        _sequence = message.Sequence;
-                        _progress = null;
-                        Reply("retired");
-                    }
-                    else if (message.Kind == "progress" && !_retired && message.Run == _run && message.Sequence == _sequence)
-                        _progress = message.Progress;
-                    else
-                        throw new InvalidDataException("practice-control-order");
-                }
-                if (Volatile.Read(ref _disconnected) != 0)
-                    throw new IOException("practice-control-disconnected");
-                if (_sendRestart)
-                {
-                    _sendRestart = false;
-                    Reply("restart");
-                }
-            }
+            // Closing always wins over queued Begin/Install. Retirement and its
+            // ACK happen at this outer boundary, never from the pipe reader.
             if (_closePending)
             {
                 _owned.Retire();
                 _retired = true;
+                ReleaseAcceptance();
                 if (_progressConnected && _sequence != 0)
                     Reply("closed");
                 Native.DestroyWindow(_window);
                 return;
             }
+            if (Volatile.Read(ref _disconnected) == 1)
+                throw new IOException("practice-control-disconnected");
+            if (Volatile.Read(ref _disconnected) == 2)
+                return;
+            // The reader bounds queued controls to 16. Snapshot the bound so a
+            // continuing producer cannot starve input or closing indefinitely.
+            int count = Math.Min(16, Volatile.Read(ref _pendingCount));
+            for (int index = 0; index < count && PendingControls.TryDequeue(out var message); index++)
+            {
+                Interlocked.Decrement(ref _pendingCount);
+                if (Volatile.Read(ref _disconnected) != 0 || message.Connection != _connection)
+                    throw new InvalidDataException("practice-control-connection");
+                changed = true;
+                if (message.Kind is "begin" or "begin-auto" && _retired
+                    && message.Run != _run && message.Sequence == _sequence + 1 && _plan is null)
+                {
+                    ReleaseAcceptance();
+                    _owned.Begin(message.Kind == "begin-auto");
+                    _run = message.Run;
+                    _sequence = message.Sequence;
+                    _retired = false;
+                    _progressConnected = true;
+                    _restartPending = false;
+                    _progress = null;
+                    _automaticProgress = null;
+                    _automatic = message.Kind == "begin-auto";
+                    _installWitnessFloor = _lastWitnessAcknowledged = _sourceReadyRevision = 0;
+                    _witnessFailed = false;
+                    _allowInjectedInput = false;
+                    if (_automatic)
+                    {
+                        var acceptance = message.Acceptance ?? throw new InvalidDataException("practice-witness-missing");
+                        if (acceptance.WitnessBytes != OwnedPracticeAcceptanceProtocol.WitnessBytes)
+                            throw new InvalidDataException("practice-witness-size");
+                        _witnessMapping = OwnedMapping.Open(acceptance.WitnessHandle, acceptance.WitnessBytes, false);
+                        _witness = new(_witnessMapping);
+                        _allowInjectedInput = acceptance.AllowInjectedInput;
+                    }
+                    Reply("started", _automatic ? new(Descriptor: Descriptor()) : null);
+                }
+                else if (message.Kind == "retire" && message.Run == _run && message.Sequence == _sequence + 1)
+                {
+                    _owned.Retire();
+                    _retired = true;
+                    _sequence = message.Sequence;
+                    _planActive = false;
+                    if (_transaction is not null)
+                        CryptographicOperations.ZeroMemory(_transaction);
+                    _transaction = null;
+                    CloseWitness();
+                    // Keep the result until exact release-plan ACK. Only the
+                    // prior press decision survives; no authority or old mapping does.
+                    _progress = null;
+                    _automaticProgress = null;
+                    Reply("retired");
+                }
+                else if (message.Run == _run && message.Sequence == _sequence
+                    && (!_retired || message.Kind is "revoke-plan" or "release-plan"))
+                {
+                    switch (message.Kind)
+                    {
+                        case "progress" when !_automatic:
+                            _progress = message.Progress;
+                            break;
+                        case "auto-progress" when _automatic:
+                            _automaticProgress = message.AutomaticProgress;
+                            break;
+                        case "install" when _automatic:
+                            InstallPlan(message.Acceptance ?? throw new InvalidDataException("practice-install-missing"));
+                            break;
+                        case "revoke-plan" when _automatic:
+                            RequirePlan(message.Acceptance);
+                            _planActive = false;
+                            Reply("revoked-plan", PlanControl());
+                            break;
+                        case "release-plan" when _automatic:
+                            RequirePlan(message.Acceptance);
+                            var released = PlanControl();
+                            ReleasePlan();
+                            Reply("released-plan", released);
+                            break;
+                        default:
+                            throw new InvalidDataException("practice-control-order");
+                    }
+                }
+                else
+                    throw new InvalidDataException("practice-control-order");
+            }
+            if (Volatile.Read(ref _disconnected) != 0)
+                throw new IOException("practice-control-disconnected");
+            if (_sendRestart)
+            {
+                _sendRestart = false;
+                _planActive = false;
+                Reply("restart");
+            }
+            if (_automatic && !_retired && !_witnessFailed && SourceFocused())
+            {
+                long revision = _owned.FocusRevision;
+                if (revision > 0 && revision != _sourceReadyRevision)
+                {
+                    _sourceReadyRevision = revision;
+                    Reply("source-ready", new(Descriptor: Descriptor()));
+                }
+            }
+            if (_witness is not null && _witness.Consumed != _lastWitnessAcknowledged)
+            {
+                _lastWitnessAcknowledged = _witness.Consumed;
+                Reply("witness-consumed", new(WitnessSequence: _lastWitnessAcknowledged));
+            }
         }
-        catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException)
+        catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException
+            or ArgumentException or OverflowException)
         {
             _owned.Retire();
             _retired = true;
+            ReleaseAcceptance();
             Interlocked.Exchange(ref _disconnected, 2);
             _sendRestart = false;
             _progressConnected = false;
             _progress = null;
-            if (_closePending)
-                Native.DestroyWindow(_window);
+            _automaticProgress = null;
+            changed = true;
         }
-        if (_restart is not null)
-            Native.EnableWindow(_restart.Handle, _progressConnected && !_restartPending);
-        RefreshSettings();
+        if (changed)
+        {
+            if (_restart is not null)
+                Native.EnableWindow(_restart.Handle, _progressConnected && !_restartPending);
+            RefreshSettings();
+        }
     }
 
-    private static void Reply(string kind)
+    private static OwnedCaptureDescriptor Descriptor() => new(Environment.ProcessId, ProcessStartUtcTicks,
+        (long)_window, (long)_edit!.Handle, Native.GetCurrentThreadId(), _owned!.Cookie,
+        _owned.FocusRevision, _sequence);
+
+    private static bool SourceFocused() => _edit is not null && Native.GetFocus() == _edit.Handle
+        && Native.GetForegroundWindow() == _window;
+
+    private static void InstallPlan(OwnedAcceptanceControl control)
     {
-        // This small private control exchange is bounded and deliberately does
-        // not pump GUI messages. An ACK cannot overtake an executing transaction.
+        if (_witnessFailed || _witness is null || _witness.Poisoned || _plan is not null
+            || control.PlanSequence <= _lastPlanSequence || control.PlanId == Guid.Empty
+            || control.PlanBytes != OwnedPracticeAcceptanceProtocol.BodyBytes
+            || control.ResultBytes != OwnedPracticeAcceptanceProtocol.BodyBytes)
+            throw new InvalidDataException("practice-install-order");
+        using var mapping = OwnedMapping.Open(control.PlanHandle, control.PlanBytes, false);
+        var plan = OwnedPracticeAcceptanceProtocol.ReadPlan(mapping); // Copy before granting anything.
+        _resultMapping = OwnedMapping.Open(control.ResultHandle, control.ResultBytes, true);
+        if (plan.Connection != _connection || plan.Run != _run || plan.PlanSequence != control.PlanSequence
+            || plan.Permit.Plan.Id != control.PlanId || plan.Descriptor != Descriptor()
+            || !SourceFocused() || plan.InstallWitnessSequence > _witness.Sequence
+            || !WindowsTarget.TryDecode(plan.Permit.Plan.Expected.Target, out var target)
+            || target.ProcessId != Environment.ProcessId || target.ProcessStartUtcTicks != ProcessStartUtcTicks
+            || target.RootHwnd != (long)_window || target.ControlHwnd != (long)_edit!.Handle
+            || target.Provider != "win32-edit-transaction-v2" || target.Lifetime == Guid.Empty
+            || WriteSafety.Validate(plan.Permit.Plan, plan.Permit.Plan.Expected, WindowsInterruptClock.NowMs) != Denial.None)
+            throw new InvalidDataException("practice-install-identity");
+        _plan = plan;
+        _lastPlanSequence = plan.PlanSequence;
+        _installWitnessFloor = _witness.Sequence;
+        _transaction = CreateTransaction(plan);
+        _planReported = false;
+        _planActive = true;
+        Reply("installed", PlanControl());
+    }
+
+    private static void RequirePlan(OwnedAcceptanceControl? control)
+    {
+        if (_plan is null || control is null || control.PlanSequence != _plan.PlanSequence
+            || control.PlanId != _plan.Permit.Plan.Id)
+            throw new InvalidDataException("practice-plan-order");
+    }
+
+    private static OwnedAcceptanceControl PlanControl(long witness = 0) => new(
+        PlanId: _plan!.Permit.Plan.Id, PlanSequence: _plan.PlanSequence, WitnessSequence: witness);
+
+    private static void ReleasePlan()
+    {
+        _planActive = false;
+        _plan = null;
+        _resultMapping?.Dispose();
+        _resultMapping = null;
+        if (_transaction is not null)
+            CryptographicOperations.ZeroMemory(_transaction);
+        _transaction = null;
+    }
+
+    private static void ReleaseAcceptance()
+    {
+        ReleasePlan();
+        CloseWitness();
+    }
+
+    private static void CloseWitness()
+    {
+        _witness = null;
+        _witnessMapping?.Dispose();
+        _witnessMapping = null;
+    }
+
+    private static void Reply(string kind, OwnedAcceptanceControl? acceptance = null)
+    {
+        // Bounded stdio never pumps GUI messages. ACK cannot overtake execution.
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         PracticeProgressPipe.WriteAsync(Console.OpenStandardOutput(),
-            new(kind, _connection, _run, _sequence), deadline.Token).GetAwaiter().GetResult();
+            new(kind, _connection, _run, _sequence, Acceptance: acceptance), deadline.Token).GetAwaiter().GetResult();
+    }
+
+    private static void InvalidateFocus()
+    {
+        _planActive = false;
+        if (_owned is not null && _owned.AdvanceFocusRevision() == 0)
+            Interlocked.Exchange(ref _disconnected, 1);
+    }
+
+    private static bool ProcessInput(ref Native.Message message, bool inputQueue)
+    {
+        bool down = message.Id is 0x0100 or 0x0104;
+        if (!down && message.Id is not (0x0101 or 0x0105))
+            return false;
+        if (!_automatic || _witnessFailed)
+            return false;
+        if (_witness is null)
+            return inputQueue && PairRetiredPress(ref message, down);
+        if (!inputQueue)
+        {
+            // Neither posted messages nor a fallback retrieval can establish
+            // physical ownership or consume an outstanding physical key release.
+            _planActive = false;
+            return false;
+        }
+        bool accepted = false;
+        try
+        {
+            if (!_witness.TryRead(out var witness))
+            {
+                if (_tabHeld)
+                    return PairRetiredPress(ref message, down);
+                if (_plan is not null)
+                    FailWitness();
+                return false;
+            }
+            ulong bits = unchecked((ulong)(long)message.LParam);
+            bool extended = (bits & (1UL << 24)) != 0;
+            bool repeated = down && (bits & (1UL << 30)) != 0;
+            // LL input distinguishes left/right modifiers; WM_KEY* uses the
+            // generic modifier VK. Scan code and extended bit still identify the
+            // exact physical key; this does not relax their FIFO comparison.
+            uint messageKey = witness.VirtualKey switch
+            {
+                0xa0 or 0xa1 => 0x10,
+                0xa2 or 0xa3 => 0x11,
+                0xa4 or 0xa5 => 0x12,
+                _ => witness.VirtualKey
+            };
+            bool tupleMatches = messageKey == (uint)message.WParam
+                && witness.MessageTime == message.Time && witness.ScanCode == ((bits >> 16) & 0xff)
+                && ((witness.NativeFlags & 1) != 0) == extended
+                && ((witness.NativeFlags & 0x80) == 0) == down && witness.Down == down
+                && (!down || witness.Repeated == repeated) && (bits & 0xffff) == 1
+                && witness.Injected == ((witness.NativeFlags & 0x12) != 0);
+            if (!tupleMatches)
+            {
+                FailWitness();
+                return false;
+            }
+            if (message.WParam != 9)
+            {
+                _planActive = false;
+                return false;
+            }
+            if (!down)
+            {
+                bool consume = _tabHeld && _tabConsumed && witness.ScanCode == _tabScanCode
+                    && extended == _tabExtended;
+                _tabHeld = _tabConsumed = false;
+                return consume;
+            }
+            if (_tabHeld)
+            {
+                if (repeated && witness.ScanCode == _tabScanCode && extended == _tabExtended)
+                    return _tabConsumed;
+                // A release may have reached another window. A fresh down is
+                // a new press; it must not inherit the old consume decision.
+                _tabHeld = _tabConsumed = false;
+                if (repeated)
+                {
+                    _planActive = false;
+                    return false;
+                }
+            }
+            _tabHeld = true;
+            _tabConsumed = false;
+            _tabScanCode = witness.ScanCode;
+            _tabExtended = extended;
+            var plan = _plan;
+            if (_retired || plan is null || !_planActive || _planReported || _transaction is null || _resultMapping is null)
+                return false;
+            _planActive = false; // One attempt; rejection must not be resurrected by a repeat.
+            long now = WindowsInterruptClock.NowMs;
+            bool qualified = !repeated && witness.Eligible && !witness.Modified
+                && (!witness.Injected || _allowInjectedInput)
+                && message.Id == 0x0100 && message.Window == _edit!.Handle
+                && (bits & (1UL << 29)) == 0 && !ModifiersDown()
+                && witness.Sequence > _installWitnessFloor && witness.Sequence > plan.InstallWitnessSequence
+                && witness.PlanSequence == plan.PlanSequence
+                && witness.NativeFocusRevision == plan.Descriptor.NativeFocusRevision
+                && _owned!.FocusRevision == plan.Descriptor.NativeFocusRevision
+                && witness.UserEpoch == plan.UserEpoch && witness.ForegroundEpoch == plan.ForegroundEpoch
+                && witness.ObservedAtMs >= plan.Permit.ObservedAtMs && witness.ObservedAtMs <= plan.Permit.ExpiresAtMs
+                && now >= witness.ObservedAtMs && now <= plan.Permit.ExpiresAtMs
+                && SourceFocused() && Volatile.Read(ref _disconnected) == 0
+                && !_closePending && !_sendRestart && PendingControls.IsEmpty;
+            WriteReceipt receipt;
+            if (!qualified)
+                receipt = new(WriteStatus.RejectedBeforeMutation, Denial.EpochChanged);
+            else
+            {
+                BinaryPrimitives.WriteUInt64LittleEndian(_transaction.AsSpan(48), Native.GetTickCount64() + 500);
+                accepted = _owned!.TryExecute(_transaction, plan.Descriptor.NativeFocusRevision);
+                receipt = ReadReceipt(plan, _transaction);
+            }
+            _tabConsumed = accepted;
+            _planReported = true;
+            var result = new OwnedAcceptanceResult(_connection, _run, plan.PlanSequence, plan.Permit.Plan.Id,
+                witness.Sequence, accepted ? witness.ObservedAtMs : 0, receipt);
+            OwnedPracticeAcceptanceProtocol.WriteResult(_resultMapping, result);
+            Reply("receipt", PlanControl(witness.Sequence));
+            return accepted;
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException
+            or ArgumentException or OverflowException)
+        {
+            _planActive = false;
+            Interlocked.Exchange(ref _disconnected, 1);
+            // If native crossed its acceptance point, failure to return a receipt
+            // is unknown to the parent. Passing the original Tab would be a second
+            // action; keep that press consumed and never attempt another write.
+            _tabConsumed = accepted;
+            return accepted;
+        }
+    }
+
+    private static bool PairRetiredPress(ref Native.Message message, bool down)
+    {
+        if (!_tabHeld || message.WParam != 9)
+            return false;
+        ulong bits = unchecked((ulong)(long)message.LParam);
+        if (((bits >> 16) & 0xff) != _tabScanCode || ((bits & (1UL << 24)) != 0) != _tabExtended)
+            return false;
+        bool consume = _tabConsumed;
+        if (!down)
+            _tabHeld = _tabConsumed = false;
+        else if ((bits & (1UL << 30)) == 0)
+        {
+            // A new press cannot inherit a missing release or the old decision.
+            _tabHeld = _tabConsumed = false;
+            return false;
+        }
+        return consume;
+    }
+
+    private static bool ModifiersDown() => (Native.GetKeyState(0x10) & 0x8000) != 0
+        || (Native.GetKeyState(0x11) & 0x8000) != 0 || (Native.GetKeyState(0x12) & 0x8000) != 0
+        || (Native.GetKeyState(0x5b) & 0x8000) != 0 || (Native.GetKeyState(0x5c) & 0x8000) != 0;
+
+    private static void FailWitness()
+    {
+        _witnessFailed = true;
+        _planActive = false;
+        _tabHeld = _tabConsumed = false;
+        Reply("witness-failed");
+    }
+
+    private static byte[] CreateTransaction(OwnedAcceptancePlan installed)
+    {
+        var plan = installed.Permit.Plan;
+        var expected = plan.Expected;
+        var descriptor = installed.Descriptor;
+        byte[] bytes = new byte[49264];
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes, 2);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(12), 5);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(16), (uint)descriptor.ProcessId);
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(20), descriptor.ThreadId);
+        BinaryPrimitives.WriteInt64LittleEndian(bytes.AsSpan(24), descriptor.ControlHwnd);
+        BinaryPrimitives.WriteInt64LittleEndian(bytes.AsSpan(32), descriptor.RootHwnd);
+        BinaryPrimitives.WriteUInt64LittleEndian(bytes.AsSpan(40), descriptor.NativeCookie);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(56), expected.Text.Length);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(60), plan.Scope?.Start ?? 0);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(64), plan.Scope?.End ?? expected.Text.Length);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(68), plan.Replacement.Length);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(88), expected.Selection!.Value.Start);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(92), expected.Selection.Value.End);
+        BinaryPrimitives.WriteInt64LittleEndian(bytes.AsSpan(96), installed.Permit.ExpiresAtMs);
+        Encoding.Unicode.GetBytes(expected.Text, bytes.AsSpan(104));
+        Encoding.Unicode.GetBytes(plan.Replacement, bytes.AsSpan(104 + 16386));
+        return bytes;
+    }
+
+    private static WriteReceipt ReadReceipt(OwnedAcceptancePlan installed, byte[] bytes)
+    {
+        uint status = BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(4));
+        var reason = (Denial)BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(8));
+        if (status == 2)
+            return new(WriteStatus.RejectedBeforeMutation, Enum.IsDefined(reason) ? reason : Denial.PlatformFailure);
+        int length = BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(56));
+        int start = BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(72));
+        int end = BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(76));
+        var ime = (ImeState)BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(84));
+        var plan = installed.Permit.Plan;
+        if (status != 1 || length < 0 || length > Limits.MaxTextUnits || ime != ImeState.Clear
+            || start != plan.Caret || end != plan.Caret)
+            return new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
+        string text = Encoding.Unicode.GetString(bytes, 104 + 32772, length * 2);
+        if (text != plan.ResultText)
+            return new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
+        return new(WriteStatus.Verified, Denial.None, plan.Expected with
+        {
+            Text = text,
+            Selection = new(start, end),
+            Ime = ime,
+            ObservedAtMs = WindowsInterruptClock.NowMs
+        });
     }
 
     private static void RestartPractice()
     {
+        _planActive = false;
         _restartPending = true;
         _sendRestart = true;
         _progress = null;
@@ -355,6 +765,8 @@ internal static class Program
 
     private static void ClosePractice()
     {
+        _planActive = false;
+        _owned?.Retire();
         _closePending = true;
         Native.PostMessageW(_window, ProgressMessage, 0, 0);
     }
@@ -553,6 +965,7 @@ internal static class Program
                     Layout();
                     return 0;
                 case 0x0006: // WM_ACTIVATE
+                    InvalidateFocus();
                     if ((wParam & 0xffff) != 0)
                         RefreshSettings();
                     break;
@@ -586,8 +999,13 @@ internal static class Program
                         ClosePractice();
                     else if (id == RestartId && notification == 0 && _progressConnected && !_restartPending)
                         RestartPractice();
-                    else if (id == EditId && notification == 0x0100 && _edit is not null)
-                        EnsureVisible(_edit);
+                    else if (id == EditId && notification is 0x0100 or 0x0200
+                        && _edit is not null && lParam == _edit.Handle)
+                    {
+                        InvalidateFocus(); // Before layout or any other reentrant call.
+                        if (notification == 0x0100)
+                            EnsureVisible(_edit);
+                    }
                     else if (notification == 6 && id is CloseId or RestartId)
                         EnsureVisible(id == CloseId ? _close! : _restart!);
                     return 0;
@@ -720,7 +1138,13 @@ internal static class Program
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern nint CreateWindowExW(uint exStyle, string className, string text, uint style, int x, int y, int width, int height, nint parent, nint menu, nint instance, nint parameter);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern nint DefWindowProcW(nint window, uint message, nuint wParam, nint lParam);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern nint LoadCursorW(nint instance, nint resource);
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern int GetMessageW(out Message message, nint window, uint minimum, uint maximum);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool PeekMessageW(out Message message, nint window, uint minimum, uint maximum, uint remove);
+        [DllImport("user32.dll")] internal static extern uint MsgWaitForMultipleObjectsEx(uint count, nint handles, uint milliseconds, uint wakeMask, uint flags);
+        [DllImport("user32.dll")] internal static extern nint GetFocus();
+        [DllImport("user32.dll")] internal static extern short GetKeyState(int virtualKey);
+        [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
+        [DllImport("kernel32.dll")] internal static extern uint GetCurrentThreadId();
+        [DllImport("kernel32.dll")] internal static extern ulong GetTickCount64();
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool IsDialogMessageW(nint window, ref Message message);
         [DllImport("user32.dll")] internal static extern bool TranslateMessage(ref Message message);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern nint DispatchMessageW(ref Message message);

@@ -12,7 +12,7 @@ using TypeLay.Windows.Contracts;
 namespace TypeLay.App;
 
 // Owns the independent ordinary input window, not a translation/permission path.
-internal sealed class PracticeHost : IDisposable
+internal sealed partial class PracticeHost : IDisposable
 {
     private IChildProcess? _child;
     private readonly Dispatcher _dispatcher = Dispatcher.CurrentDispatcher;
@@ -39,6 +39,7 @@ internal sealed class PracticeHost : IDisposable
             throw new InvalidOperationException("practice-already-bound");
         _session = session;
         session.PracticeProgressChanged += ProgressChanged;
+        session.AutomaticPracticeProgressChanged += AutomaticProgressChanged;
     }
 
     public void Open(string settingsPath)
@@ -59,6 +60,7 @@ internal sealed class PracticeHost : IDisposable
         }
         Retire();
         _child?.Dispose();
+        ReleaseAbandonedMappings();
         _child = null;
         var start = AppPaths.Child("TypeLay.Practice");
         start.ArgumentList.Add("--settings");
@@ -69,6 +71,9 @@ internal sealed class PracticeHost : IDisposable
             start.ArgumentList.Add("--progress");
             start.ArgumentList.Add(_connection.ToString("N"));
         }
+        _automatic = _settings?.Value.Mode == WorkMode.Automatic;
+        if (_automatic && _settings?.Value.AcceptShortcut != "Tab")
+            throw new InvalidOperationException("practice-tab-binding-required");
         var child = _start(start);
         _child = child;
         child.Process.Exited += (_, _) =>
@@ -77,9 +82,12 @@ internal sealed class PracticeHost : IDisposable
                 return;
             _dispatcher.BeginInvoke(new Action(() =>
             {
+                if (_retirementEvidence is { } evidence && ReferenceEquals(evidence.Child, child))
+                    evidence.Confirmed = true; // This exact Process raised Exited.
                 // A new practice or shutdown can overtake an exit notification.
                 if (_disposed || !ReferenceEquals(_child, child))
                     return;
+                _closedConfirmed = true;
                 Retire();
                 try
                 {
@@ -158,9 +166,19 @@ internal sealed class PracticeHost : IDisposable
             || _nativeActive || _pending is not null)
             return;
         _session.StopSession();
+        _disconnecting = false;
+        _closedConfirmed = false;
         _runId = Guid.NewGuid();
         _target = null;
-        SendControl(child, "begin");
+        _descriptor = null;
+        if (_automatic)
+        {
+            if (_witnessMapping is not null)
+                throw new InvalidOperationException("practice-witness-not-released");
+            _witnessMapping = OwnedPracticeAcceptanceProtocol.CreateWitness(child.Process.Handle);
+            _witnessWriter = new(_witnessMapping);
+        }
+        SendControl(child, _automatic ? "begin-auto" : "begin");
     }
 
     private void RetireRun(bool restart)
@@ -172,13 +190,17 @@ internal sealed class PracticeHost : IDisposable
         bool active = _nativeActive;
         _nativeActive = false; // Stop new binding before invalidating shared state.
         _target = null;
-        _session?.EndOnDemandPractice(_runId);
+        RevokeAcceptance();
+        if (_automatic)
+            _session?.EndAutomaticPractice(_runId);
+        else
+            _session?.EndOnDemandPractice(_runId);
         _session?.StopSession();
         if (_pending is not null)
             return;
         if (active)
             SendControl(_child, "retire");
-        else if (_restartAfterRetire)
+        else if (_restartAfterRetire && _acceptance is null)
         {
             _restartAfterRetire = false;
             BeginRun(_child); // The previous matched ACK already proved retirement.
@@ -187,7 +209,9 @@ internal sealed class PracticeHost : IDisposable
 
     private void SendControl(IChildProcess child, string kind)
     {
-        var message = new PracticeMessage(kind, _connection, _runId, checked(++_sequence));
+        var message = new PracticeMessage(kind, _connection, _runId, checked(++_sequence),
+            Acceptance: kind == "begin-auto" ? new(WitnessHandle: _witnessMapping!.RemoteHandle,
+                WitnessBytes: _witnessMapping.Length, AllowInjectedInput: _allowInjectedInput) : null);
         _pending = message;
         var cancellation = _communication!.Token;
         Enqueue(message);
@@ -198,7 +222,7 @@ internal sealed class PracticeHost : IDisposable
     {
         try
         {
-            await Task.Delay(TimeSpan.FromSeconds(message.Kind == "begin" ? 5 : 2), cancellation);
+            await Task.Delay(TimeSpan.FromSeconds(message.Kind is "begin" or "begin-auto" ? 5 : 2), cancellation);
             if (ReferenceEquals(_pending, message))
                 CommunicationFailed(child, cancellation);
         }
@@ -265,10 +289,15 @@ internal sealed class PracticeHost : IDisposable
                     _restartAfterRetire = true;
                     continue;
                 }
+                bool crossedRetirement = _pending is { Kind: "retire" } && message.Sequence == _sequence - 1;
+                if (_automatic && (message.Sequence == _sequence || crossedRetirement) && HandleAcceptanceMessage(message))
+                    continue;
                 if (message.Sequence != _sequence)
                     throw new InvalidDataException("practice-ack-sequence");
                 if (message.Kind == "closed")
                 {
+                    _closedConfirmed = true; // Native retirement and view closure precede this ACK.
+                    ConfirmNativeRetirement();
                     _session?.StopSession();
                     Retire();
                     return;
@@ -278,17 +307,32 @@ internal sealed class PracticeHost : IDisposable
                     RetireRun(true);
                     continue;
                 }
-                if (_pending is not { } pending || message.Kind != (pending.Kind == "begin" ? "started" : "retired"))
+                if (_pending is not { } pending || message.Kind != (pending.Kind is "begin" or "begin-auto" ? "started" : "retired"))
                     throw new InvalidDataException("practice-ack-order");
                 _pending = null;
-                if (pending.Kind == "begin")
+                if (pending.Kind is "begin" or "begin-auto")
                 {
                     _nativeActive = true;
                     _runStartedAt = WindowsInterruptClock.NowMs;
-                    if (!_session!.BeginOnDemandPractice(_runId))
+                    if (_automatic)
+                    {
+                        if (message.Acceptance?.Descriptor is { } descriptor)
+                            AcceptDescriptor(descriptor);
+                        if (!_session!.BeginAutomaticPractice(_runId))
+                            RetireRun(false);
+                    }
+                    else if (!_session!.BeginOnDemandPractice(_runId))
                         RetireRun(false);
                 }
-                else if (_restartAfterRetire)
+                else
+                {
+                    if (_automatic)
+                        ReleaseRetiredWitness();
+                    ConfirmNativeRetirement();
+                    _retirement?.TrySetResult(true);
+                    _retirement = null;
+                }
+                if (pending.Kind == "retire" && _restartAfterRetire && _acceptance is null)
                 {
                     _restartAfterRetire = false;
                     BeginRun(child);
@@ -322,9 +366,13 @@ internal sealed class PracticeHost : IDisposable
     private void Retire()
     {
         _nativeActive = false;
+        AbandonAcceptance();
         _pending = null;
         _restartAfterRetire = false;
-        _session?.EndOnDemandPractice(_runId);
+        if (_automatic)
+            _session?.EndAutomaticPractice(_runId);
+        else
+            _session?.EndOnDemandPractice(_runId);
         _runId = Guid.Empty;
         _sequence = 0;
         _connection = Guid.Empty;
@@ -344,9 +392,13 @@ internal sealed class PracticeHost : IDisposable
         _disposed = true;
         Retire();
         if (_session is not null)
+        {
             _session.PracticeProgressChanged -= ProgressChanged;
+            _session.AutomaticPracticeProgressChanged -= AutomaticProgressChanged;
+        }
         _child?.Dispose();
         _child = null;
+        ReleaseAbandonedMappings();
     }
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

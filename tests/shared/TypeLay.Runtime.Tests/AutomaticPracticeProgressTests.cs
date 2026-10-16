@@ -690,6 +690,63 @@ public sealed class AutomaticPracticeProgressTests
     }
 
     [Fact]
+    public async Task ExplicitRetryOnlyConfirmsTheSameFailedBindingWithoutRestoringAuthority()
+    {
+        int retirements = 0;
+        bool terminated = false;
+        var confirmations = new List<OwnedPracticeBinding>();
+        using var s = new SessionScenario(
+            retireOwnedPractice: _ => { retirements++; return Task.FromResult(false); },
+            confirmRetiredOwnedPractice: binding => { confirmations.Add(binding); return Task.FromResult(terminated); });
+        var binding = Bind(s);
+        s.ReadyCandidate();
+        Assert.False(await s.Controller.EndAutomaticPracticeAsync(binding.RunId));
+        s.Tick();
+        Assert.Empty(confirmations); // No timer or tick retries termination.
+        Assert.False(await s.Controller.RetireAutomaticPracticeAsync());
+        Assert.Same(binding, Assert.Single(confirmations));
+        Assert.False(s.Controller.BeginAutomaticPractice(Guid.NewGuid()));
+        terminated = true;
+        Assert.True(await s.Controller.RetireAutomaticPracticeAsync());
+        Assert.Equal(1, retirements); // The retry never issues retirement again.
+        Assert.Equal(2, confirmations.Count);
+        Assert.All(confirmations, item => Assert.Same(binding, item));
+        Assert.Null(s.Controller.AutomaticPracticeProgress);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.Settings.Value.OnboardingComplete);
+        Assert.True(s.Controller.BeginAutomaticPractice(Guid.NewGuid()));
+        var newProgress = s.Controller.AutomaticPracticeProgress;
+        Assert.True(await s.Controller.EndAutomaticPracticeAsync(binding.RunId)); // Read the old confirmed result only.
+        Assert.Same(newProgress, s.Controller.AutomaticPracticeProgress);
+        Assert.False(await s.Controller.EndAutomaticPracticeAsync(Guid.NewGuid()));
+        Assert.Equal(2, confirmations.Count);
+    }
+
+    [Fact]
+    public async Task PendingTerminationConfirmationCannotBeReusedForAnotherRun()
+    {
+        var confirmation = new TaskCompletionSource<bool>();
+        int confirmations = 0;
+        using var s = new SessionScenario(retireOwnedPractice: _ => Task.FromResult(false),
+            confirmRetiredOwnedPractice: _ => { confirmations++; return confirmation.Task; });
+        var binding = Bind(s);
+        Assert.False(await s.Controller.EndAutomaticPracticeAsync(binding.RunId));
+        var retry = s.Controller.RetireAutomaticPracticeAsync();
+        var join = s.Controller.RetireAutomaticPracticeAsync();
+        Assert.Equal(1, confirmations);
+        Assert.False(retry.IsCompleted);
+        Assert.False(s.Controller.BeginAutomaticPractice(Guid.NewGuid()));
+        Assert.False(await s.Controller.EndAutomaticPracticeAsync(Guid.NewGuid()));
+        confirmation.SetResult(true);
+        s.Tick();
+        Assert.True(await retry);
+        Assert.True(await join);
+        Assert.Null(s.Input.Permit);
+        Assert.Null(s.Controller.AutomaticPracticeProgress);
+        Assert.True(s.Controller.BeginAutomaticPractice(Guid.NewGuid()));
+    }
+
+    [Fact]
     public async Task SavingIdenticalSettingsKeepsTheRunAndNeverRequestsRetirement()
     {
         int retirements = 0;

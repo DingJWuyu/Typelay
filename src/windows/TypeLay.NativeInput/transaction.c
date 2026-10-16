@@ -64,11 +64,13 @@ _Static_assert(sizeof(Transaction) == 49264, "Protocol mapping length");
 
 typedef struct { LPARAM lparam; WPARAM wparam; uint32_t message; HANDLE hwnd; } CallMessage;
 static const WCHAR property[] = L"TypeLay.NativeInput.Lifetime.v2";
+static const WCHAR focus_property[] = L"TypeLay.OwnedFocusRevision.v1";
 // Only the independent practice process opts in. Its GUI thread retains this
 // record through retirement and until process exit; a wire capture/release may
 // never create, remove or rotate it. The process pins this DLL for that lifetime.
-static struct { HANDLE hwnd; uint32_t thread; uint64_t cookie; int retired; } owned;
+static struct { HANDLE hwnd; uint32_t thread; uint64_t cookie, focus_revision; int retired, automatic; } owned;
 static const WCHAR message_name[] = L"TypeLay.NativeInput.Transaction.v2";
+static const WCHAR owned_capture_message_name[] = L"TypeLay.NativeInput.OwnedCapture.v1";
 
 __declspec(dllexport) uint32_t TypeLayNativeProtocolVersion(void) { return VERSION; }
 
@@ -144,7 +146,7 @@ static WNDPROC qualify(Transaction *tx) {
     tx->multiline = (style & 4) != 0;
     return proc;
 }
-__declspec(dllexport) uint32_t TypeLayOwnedEditVersion(void) { return 1; }
+__declspec(dllexport) uint32_t TypeLayOwnedEditVersion(void) { return 2; }
 __declspec(dllexport) int TypeLayOwnedEditControl(HANDLE hwnd, uint32_t operation, uint64_t seed) {
     uint32_t pid = 0;
     uint32_t thread = GetCurrentThreadId();
@@ -158,14 +160,22 @@ __declspec(dllexport) int TypeLayOwnedEditControl(HANDLE hwnd, uint32_t operatio
             || !GetClassInfoW(0, (const WCHAR *)L"Edit", &stock) || !stock.procedure
             || GetWindowLongPtrW(hwnd, -4) != (intptr_t)stock.procedure
             || GetClassLongPtrW(hwnd, -24) != (intptr_t)stock.procedure) return 0;
-        owned.hwnd = hwnd; owned.thread = thread; owned.cookie = seed; owned.retired = 1;
+        owned.hwnd = hwnd; owned.thread = thread; owned.cookie = seed;
+        owned.focus_revision = 1; owned.retired = 1;
         RemovePropW(hwnd, property);
+        if (!SetPropW(hwnd, focus_property, (HANDLE)(uintptr_t)owned.focus_revision)) {
+            owned.focus_revision = 0;
+            return 0;
+        }
         return 1;
     }
     if (owned.hwnd != hwnd || owned.thread != thread || seed) return 0;
-    if (operation == 2) { // Only an ordered private Begin may mint a new lifetime.
-        if (!owned.retired || owned.cookie == UINT64_MAX) return 0;
+    if (operation == 2 || operation == 4) { // BeginOnDemand / BeginAutomatic mint a new lifetime.
+        if (!owned.retired || !owned.focus_revision || owned.cookie == UINT64_MAX) return 0;
         owned.cookie++;
+        // The route restriction belongs to this entire cookie lifetime, not to
+        // a currently installed managed plan. Revocation cannot reopen v2 writes.
+        owned.automatic = operation == 4;
         if (!SetPropW(hwnd, property, (HANDLE)(uintptr_t)owned.cookie)) return 0;
         owned.retired = 0;
         return 1;
@@ -182,6 +192,27 @@ static int owned_current(const Transaction *tx) {
         || (!owned.retired && owned.thread == GetCurrentThreadId() && tx->thread == owned.thread
             && tx->cookie == owned.cookie);
 }
+// The stock Edit sends focus notifications synchronously to its parent. Only
+// that registered GUI thread may advance this revision, before it does anything
+// that could reenter. A round trip to another child cannot restore old authority.
+__declspec(dllexport) uint64_t TypeLayOwnedFocusRevision(HANDLE hwnd, uint32_t operation) {
+    if (!owned.hwnd || owned.hwnd != hwnd || owned.thread != GetCurrentThreadId()) return 0;
+    if (operation == 0) return owned.focus_revision;
+    if (operation != 1) return 0;
+    if (owned.focus_revision && owned.focus_revision < INT64_MAX) {
+        ++owned.focus_revision;
+        if (SetPropW(hwnd, focus_property, (HANDLE)(uintptr_t)owned.focus_revision))
+            return owned.focus_revision;
+    }
+    owned.focus_revision = 0;
+    owned.retired = 1;
+    RemovePropW(hwnd, property);
+    RemovePropW(hwnd, focus_property);
+    return 0;
+}
+static int owned_focus_current(uint64_t expected) {
+    return !expected || (owned.focus_revision == expected && !owned.retired);
+}
 static int read_text(Transaction *tx, WNDPROC proc) {
     HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd;
     LRESULT length = CallWindowProcW(proc, hwnd, 0x0e, 0, 0);
@@ -191,11 +222,12 @@ static int read_text(Transaction *tx, WNDPROC proc) {
     CallWindowProcW(proc, hwnd, 0xb0, (WPARAM)&tx->selection_start, (LPARAM)&tx->selection_end);
     return (int)read + 1;
 }
-static void execute(Transaction *tx) {
+static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accepted) {
     tx->status = 2; tx->reason = 6; // RejectedBeforeMutation / Unsupported.
     if (tx->version != VERSION || !tx->cookie || GetTickCount64() > tx->deadline) return;
     HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd;
     if (!owned_current(tx)) { tx->reason = 2; return; }
+    if (!owned_focus_current(focus_revision)) { tx->reason = 10; return; }
     if (tx->op == 3) {
         if (owned.hwnd == hwnd) { tx->status = 1; tx->reason = 0; return; }
         if ((uint64_t)(uintptr_t)GetPropW(hwnd, property) == tx->cookie) RemovePropW(hwnd, property);
@@ -203,8 +235,8 @@ static void execute(Transaction *tx) {
     }
     WNDPROC proc = qualify(tx);
     if (!proc) return;
-    const int foreground = tx->op == 5;
-    if (foreground && !authorization_current(tx)) { tx->reason = 14; return; }
+    const int foreground = tx->op == 5 || tx->op == 6;
+    if (tx->op == 5 && !authorization_current(tx)) { tx->reason = 14; return; }
     if (foreground && !foreground_source(tx)) { tx->reason = 10; return; }
     uint64_t cookie = (uint64_t)(uintptr_t)GetPropW(hwnd, property);
     if (tx->op == 1 && !cookie) {
@@ -214,9 +246,14 @@ static void execute(Transaction *tx) {
     if (cookie != tx->cookie) { tx->reason = 2; return; }
     tx->ime = ime(hwnd);
     if (tx->ime != 1) { tx->reason = 9; return; }
+    if (tx->op == 6 && (!owned_current(tx) || !owned_focus_current(focus_revision)
+        || !foreground_source(tx))) { tx->reason = 10; return; }
     int observed = read_text(tx, proc) - 1;
     if (observed < 0) { tx->reason = 16; return; }
-    if (tx->op == 1 || tx->op == 4) {
+    if (tx->op == 1 || tx->op == 4 || tx->op == 6) {
+        if (tx->op == 6 && (!owned_current(tx) || !owned_focus_current(focus_revision)
+            || !foreground_source(tx) || ime(hwnd) != 1
+            || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie)) { tx->reason = 10; return; }
         tx->length = observed;
         tx->status = 1; tx->reason = 0; return;
     }
@@ -243,23 +280,30 @@ static void execute(Transaction *tx) {
     // invocation, not in a remote read/SetValue race. No focus-changing APIs are called.
     if (GetTickCount64() > tx->deadline) { tx->reason = 14; return; }
     if (foreground && !foreground_source(tx)) { tx->reason = 10; return; }
-    if (foreground && !authorization_current(tx)) { tx->reason = 14; return; }
+    if (tx->op == 5 && !authorization_current(tx)) { tx->reason = 14; return; }
+    if (!owned_focus_current(focus_revision)) { tx->reason = 10; return; }
+    // This is the only owned acceptance point. Everything above is a read-only
+    // preflight. The caller has removed its single-use local plan; only a true
+    // return may consume the original queue message, even if selection callbacks
+    // subsequently reject execution. Never synthesize a replacement Tab.
+    if (accepted) *accepted = 1;
     CallWindowProcW(proc, hwnd, 0xb1, (WPARAM)tx->start, (LPARAM)tx->end);
     // Selection changes may cause synchronous accessibility callbacks. Refuse if
     // any callback changed the source, lifetime, class or composition state.
-    if (!owned_current(tx) || !qualify(tx) || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie
+    if (!owned_focus_current(focus_revision) || !owned_current(tx) || !qualify(tx) || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie
         || ime(hwnd) != 1 || read_text(tx, proc) - 1 != tx->length
         || !equal(tx->observed, tx->expected, tx->length)
         || tx->selection_start != tx->start || tx->selection_end != tx->end
         || GetTickCount64() > tx->deadline) { tx->reason = 3; return; }
     if (foreground && !foreground_source(tx)) { tx->reason = 10; return; }
-    if (foreground && !authorization_current(tx)) { tx->reason = 14; return; }
+    if (tx->op == 5 && !authorization_current(tx)) { tx->reason = 14; return; }
+    if (!owned_focus_current(focus_revision)) { tx->reason = 10; return; }
     tx->status = 3; tx->reason = 20; // Unknown once mutation starts; never retry.
     CallWindowProcW(proc, hwnd, 0xc2, 1, (LPARAM)tx->replacement); // EM_REPLACESEL, undo enabled.
-    if (!owned_current(tx) || !qualify(tx) || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie) return;
-    if (foreground && (!foreground_source(tx) || ime(hwnd) != 1)) return;
+    if (!owned_focus_current(focus_revision) || !owned_current(tx) || !qualify(tx) || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie) return;
+    if (!owned_focus_current(focus_revision) || (foreground && (!foreground_source(tx) || ime(hwnd) != 1))) return;
     int after = read_text(tx, proc) - 1;
-    if (foreground && (!foreground_source(tx) || ime(hwnd) != 1)) return;
+    if (!owned_focus_current(focus_revision) || (foreground && (!foreground_source(tx) || ime(hwnd) != 1))) return;
     int caret = tx->start + tx->replacement_length;
     int total = tx->length - (tx->end - tx->start) + tx->replacement_length;
     if (after != total || tx->selection_start != caret || tx->selection_end != caret
@@ -268,6 +312,46 @@ static void execute(Transaction *tx) {
         || !equal(tx->observed + caret, tx->expected + tx->end, tx->length - tx->end)) return;
     tx->length = after; tx->status = 1; tx->reason = 0;
 }
+static void execute(Transaction *tx) {
+    // An unknown operation must never fall through to a source text read.
+    if (tx->op < 1 || tx->op > 5) { tx->status = 2; tx->reason = 6; return; }
+    if (owned.hwnd == (HANDLE)(uintptr_t)tx->hwnd && owned.automatic
+        && (tx->op == 2 || tx->op == 5)) { tx->status = 2; tx->reason = 6; return; }
+    execute_guarded(tx, 0, 0);
+}
+
+__declspec(dllexport) uint32_t TypeLayOwnedCaptureVersion(void) { return 1; }
+static void execute_owned_capture(Transaction *tx) {
+    // This independent message uses offset 96 as ExpectedFocusRevision, never
+    // an authorization deadline. The old v2 route does not recognize op6.
+    uint64_t revision = (uint64_t)tx->authorization_deadline_ms;
+    if (tx->op != 6 || tx->authorization_deadline_ms <= 0 || !owned.hwnd
+        || owned.hwnd != (HANDLE)(uintptr_t)tx->hwnd || owned.thread != GetCurrentThreadId()
+        || tx->thread != owned.thread || tx->pid != GetCurrentProcessId()
+        || owned.retired || !owned.automatic || tx->cookie != owned.cookie || !owned_focus_current(revision)) {
+        tx->status = 2; tx->reason = 2; return;
+    }
+    execute_guarded(tx, revision, 0);
+}
+
+// Local-only entry: the independent practice GUI owns this private buffer. The
+// remote v2 wire cannot opt into it or select another process, field or operation.
+// Return 0 means preflight refusal with no selection/text change; return 1 means
+// accepted and tx.status is the real execution result (including unknown).
+__declspec(dllexport) int TypeLayOwnedEditTryExecute(Transaction *tx, uint32_t bytes,
+    uint64_t expected_focus_revision) {
+    if (!tx || bytes != sizeof(Transaction)) return 0;
+    if (tx->status || tx->op != 5 || !expected_focus_revision
+        || !owned.hwnd || owned.hwnd != (HANDLE)(uintptr_t)tx->hwnd
+        || owned.thread != GetCurrentThreadId() || tx->thread != owned.thread
+        || tx->pid != GetCurrentProcessId() || owned.retired || !owned.automatic || tx->cookie != owned.cookie) {
+        tx->status = 2; tx->reason = 2;
+        return 0;
+    }
+    int accepted = 0;
+    execute_guarded(tx, expected_focus_revision, &accepted);
+    return accepted;
+}
 __declspec(dllexport) LRESULT TypeLayCallWndProc(int code, WPARAM wp, LPARAM lp) {
     if (code >= 0) {
         const CallMessage *msg = (const CallMessage *)lp;
@@ -275,9 +359,11 @@ __declspec(dllexport) LRESULT TypeLayCallWndProc(int code, WPARAM wp, LPARAM lp)
             if (msg->hwnd == owned.hwnd) owned.retired = 1;
             RemovePropW(msg->hwnd, property);
         }
-        static uint32_t message;
+        static uint32_t message, owned_capture_message;
         if (!message) message = RegisterWindowMessageW(message_name);
-        if (message && msg->message == message) {
+        if (!owned_capture_message) owned_capture_message = RegisterWindowMessageW(owned_capture_message_name);
+        int capture = owned_capture_message && msg->message == owned_capture_message;
+        if ((message && msg->message == message) || capture) {
             WCHAR name[80];
             const WCHAR prefix[] = L"Local\\TypeLay.Input.";
             int i = 0;
@@ -296,7 +382,8 @@ __declspec(dllexport) LRESULT TypeLayCallWndProc(int code, WPARAM wp, LPARAM lp)
                     if (tx) {
                         copy(tx, shared, sizeof(Transaction));
                         if (tx->status == 0 && tx->hwnd == (uint64_t)(uintptr_t)msg->hwnd) {
-                            execute(tx);
+                            if (capture) execute_owned_capture(tx);
+                            else execute(tx);
                             copy(shared, tx, sizeof(Transaction));
                         }
                         wipe(tx, sizeof(Transaction));

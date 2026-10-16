@@ -33,7 +33,8 @@ internal sealed class SessionScenario : IDisposable
 
     public SessionScenario(WorkMode mode = WorkMode.Automatic, bool experimental = false,
         bool initiallyAvailable = false, bool inputReady = true, bool start = true, Action<bool>? setStartup = null,
-        Func<OwnedPracticeBinding, Task<bool>>? retireOwnedPractice = null)
+        Func<OwnedPracticeBinding, Task<bool>>? retireOwnedPractice = null,
+        Func<OwnedPracticeBinding, Task<bool>>? confirmRetiredOwnedPractice = null)
     {
         SynchronizationContext.SetSynchronizationContext(_context);
         Source = new(new("controlled", "field-a", Guid.NewGuid()), "hello", new(5, 5),
@@ -51,7 +52,8 @@ internal sealed class SessionScenario : IDisposable
             Mode = mode,
             ExperimentalWriteback = experimental
         });
-        Controller = new(Settings, Model, View, Input, Service, Loop, retireOwnedPractice ?? (_ => Task.FromResult(true)));
+        Controller = new(Settings, Model, View, Input, Service, Loop, retireOwnedPractice ?? (_ => Task.FromResult(true)),
+            confirmRetiredOwnedPractice);
         if (start)
             Controller.StartAsync().GetAwaiter().GetResult();
     }

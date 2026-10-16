@@ -20,13 +20,16 @@ internal static class WindowsRuntime
         PracticeHost? practice = null)
     {
         var monitor = new KeyboardHook(automationTest, overlay.Handle);
+        practice?.Initialize(settings, monitor, automationTest);
         broker ??= new BrokerClient();
         support?.Bind(broker, monitor);
         var loop = new DispatcherSessionLoop();
         if (support is not null)
             loop.Tick += support.Poll;
         return new(settings, model, overlay, monitor,
-            new WindowsInputService(broker, overlay.Handle, support, monitor, practice), loop);
+            new WindowsInputService(broker, overlay.Handle, support, monitor, practice), loop,
+            practice is null ? null : practice.RetireAutomaticAsync,
+            practice is null ? null : practice.ConfirmRetiredAutomaticAsync);
     }
 
     private static void SetStartup(bool enabled)

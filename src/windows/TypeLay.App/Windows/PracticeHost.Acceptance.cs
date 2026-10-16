@@ -1,0 +1,444 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using TypeLay.Core;
+using TypeLay.Runtime;
+using TypeLay.Windows;
+using TypeLay.Windows.Contracts;
+
+namespace TypeLay.App;
+
+internal sealed partial class PracticeHost
+{
+    private SettingsStore? _settings;
+    private KeyboardHook? _monitor;
+    private bool _automatic, _allowInjectedInput, _disconnecting, _closedConfirmed;
+    private OwnedCaptureDescriptor? _descriptor;
+    private OwnedMapping? _witnessMapping;
+    private OwnedWitnessWriter? _witnessWriter;
+    private long _planSequence, _lastWitnessSequence;
+    private TaskCompletionSource<bool>? _retirement;
+    private sealed class RetirementEvidence(OwnedPracticeBinding binding, IChildProcess child)
+    {
+        public OwnedPracticeBinding Binding { get; } = binding;
+        public IChildProcess Child { get; } = child;
+        public bool Confirmed
+        {
+            get; set;
+        }
+    }
+    private RetirementEvidence? _retirementEvidence;
+    private readonly List<OwnedMapping> _abandoned = [];
+    private sealed class PendingPlan(OwnedAcceptancePlan plan, InputLease lease, OwnedMapping input, OwnedMapping result)
+    {
+        public OwnedAcceptancePlan Plan { get; } = plan;
+        public InputLease Lease { get; } = lease;
+        public OwnedMapping Input { get; } = input;
+        public OwnedMapping Result { get; } = result;
+        public string State { get; set; } = "install";
+        public bool Received
+        {
+            get; set;
+        }
+    }
+    private PendingPlan? _acceptance;
+    private (InputLease Lease, AcceptancePermit Permit)? _nextAcceptance;
+    public bool IsAutomatic => _automatic && _runId != Guid.Empty;
+    internal void Initialize(SettingsStore settings, KeyboardHook monitor, bool allowInjectedInput)
+    {
+        _settings = settings;
+        _monitor = monitor;
+        _allowInjectedInput = allowInjectedInput;
+        monitor.ConfigureOwnedPractice(OwnsAutomaticTarget, PublishAcceptance, RevokeAcceptance);
+    }
+    // Run identity survives retirement for late ACKs and explicit restart. Its
+    // capture reservation is instead tied to this exact child: the old owned
+    // root remains fail-closed until exit, without reserving unrelated windows.
+    internal bool CapturesAutomaticForeground => AutomaticRoot(Native.GetForegroundWindow());
+    private bool AutomaticRoot(nint root)
+    {
+        if (!_automatic || _child is null || root == 0)
+            return false;
+        try
+        {
+            var process = _child.Process;
+            return !process.HasExited && Native.GetAncestor(root, 2) == root
+                && Native.GetWindowThreadProcessId(root, out uint pid) != 0 && pid == process.Id;
+        }
+        catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    }
+    private bool OwnsAutomaticTarget(TargetId target)
+    {
+        if (!WindowsTarget.TryDecode(target, out var native) || !AutomaticRoot((nint)native.RootHwnd))
+            return false;
+        try
+        {
+            return _child!.Process.Id == native.ProcessId
+                && _child.Process.StartTime.ToUniversalTime().Ticks == native.ProcessStartUtcTicks;
+        }
+        catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    }
+    internal OwnedCaptureDescriptor? CaptureDescriptor => IsAutomatic && _nativeActive && _pending is null
+        && _descriptor is { } descriptor && DescriptorCurrent(descriptor) ? descriptor : null;
+    internal bool SourceReady(TargetId target) => IsAutomatic && _settings?.Value.AcceptShortcut == "Tab" && _target == target && _descriptor is { } descriptor
+        && DescriptorCurrent(descriptor) && KeyboardHook.OwnedFocus(descriptor) && _witnessWriter is { Poisoned: false };
+    private bool DescriptorCurrent(OwnedCaptureDescriptor descriptor)
+    {
+        if (_child is null || !descriptor.IsValid || descriptor.BeginSequence > _sequence)
+            return false;
+        try
+        {
+            var process = _child.Process;
+            nint root = (nint)descriptor.RootHwnd, field = (nint)descriptor.ControlHwnd;
+            return !process.HasExited && process.Id == descriptor.ProcessId
+                && process.StartTime.ToUniversalTime().Ticks == descriptor.ProcessStartUtcTicks
+                && Native.GetWindowThreadProcessId(root, out uint rootPid) == descriptor.ThreadId && rootPid == process.Id
+                && Native.GetWindowThreadProcessId(field, out uint fieldPid) == descriptor.ThreadId && fieldPid == process.Id
+                && Native.GetAncestor(field, 2) == root && GetDlgItem(root, 101) == field
+                && (ulong)(long)GetPropW(field, "TypeLay.NativeInput.Lifetime.v2") == descriptor.NativeCookie
+                && (long)GetPropW(field, "TypeLay.OwnedFocusRevision.v1") == descriptor.NativeFocusRevision;
+        }
+        catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
+    }
+    private void AcceptDescriptor(OwnedCaptureDescriptor descriptor)
+    {
+        if (_descriptor is { } previous && _target is not null && descriptor != previous)
+        {
+            RetireRun(false);
+            return;
+        }
+        if (!DescriptorCurrent(descriptor) || descriptor.BeginSequence != _sequence
+            || _witnessWriter is null || _monitor is null)
+            return;
+        _descriptor = descriptor;
+        _monitor.SetOwnedChannel(_connection, _witnessWriter, descriptor);
+    }
+    internal OwnedSourceEvidence? ObserveAutomaticTarget(InputSnapshot? snapshot, FocusMember focus, long startedAt)
+    {
+        if (!IsAutomatic || !_nativeActive || _pending is not null || _session is null || _monitor is null
+            || _descriptor is not { } descriptor || !DescriptorCurrent(descriptor)
+            || snapshot is null || focus != FocusMember.Source || startedAt < _runStartedAt
+            || snapshot.ObservedAtMs < startedAt || snapshot.FocusEpoch != descriptor.NativeFocusRevision
+            || !Owns(snapshot.Target) || !KeyboardHook.OwnedFocus(descriptor))
+            return null;
+        if (_target is { } previous && previous != snapshot.Target)
+        {
+            RetireRun(false);
+            return null;
+        }
+        var binding = new OwnedPracticeBinding(_runId, snapshot.Target, _connection, _monitor.CommandGeneration,
+            descriptor.NativeFocusRevision, descriptor.BeginSequence);
+        _monitor.BindOwnedSource(snapshot.Target, descriptor);
+        if (_target is null && !_session.BindAutomaticPractice(binding))
+            return null;
+        _target = snapshot.Target;
+        return new(binding, snapshot.ObservedAtMs, false);
+    }
+    internal Task<bool> RetireAutomaticAsync(OwnedPracticeBinding binding)
+    {
+        _dispatcher.VerifyAccess();
+        if (!IsAutomatic || binding.RunId != _runId || binding.ConnectionId != _connection)
+            return Task.FromResult(false);
+        if (_child is not null && _retirementEvidence?.Binding != binding)
+            _retirementEvidence = new(binding, _child);
+        if (_closedConfirmed)
+        {
+            ConfirmNativeRetirement();
+            return Task.FromResult(true);
+        }
+        if (_disconnecting)
+            return Task.FromResult(false);
+        _retirement ??= new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var task = _retirement.Task;
+        _nativeActive = false;
+        RevokeAcceptance();
+        _monitor?.RevokeOwnedPlan();
+        if (_pending is null && _child is not null)
+            SendControl(_child, "retire");
+        return task;
+    }
+    // An explicit user retry only asks for termination evidence for the exact
+    // failed binding. It never sends a control, resurrects a run or republishes.
+    internal Task<bool> ConfirmRetiredAutomaticAsync(OwnedPracticeBinding binding)
+    {
+        _dispatcher.VerifyAccess();
+        if (_retirementEvidence is not { } evidence || evidence.Binding != binding)
+            return Task.FromResult(false);
+        if (!evidence.Confirmed)
+        {
+            try
+            {
+                evidence.Confirmed = evidence.Child.Process.HasExited;
+            }
+            catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception)
+            {
+            }
+        }
+        return Task.FromResult(evidence.Confirmed);
+    }
+    private void ConfirmNativeRetirement()
+    {
+        if (_retirementEvidence is { } evidence && ReferenceEquals(evidence.Child, _child)
+            && evidence.Binding.RunId == _runId && evidence.Binding.ConnectionId == _connection)
+            evidence.Confirmed = true;
+    }
+    private void AutomaticProgressChanged(AutomaticPracticeProgress? progress)
+    {
+        if (!IsAutomatic || _child is null || _disposed || progress is null || progress.RunId != _runId)
+            return;
+        if (_nativeActive && _pending is null)
+            Enqueue(new("auto-progress", _connection, _runId, _sequence, AutomaticProgress: progress));
+    }
+    internal void PublishAcceptance(InputLease lease, AcceptancePermit? permit)
+    {
+        _dispatcher.VerifyAccess();
+        if (permit is null || !SourceReady(lease.Source.Target) || lease.PracticeRunId != _runId
+            || lease.PracticeConnectionId != _connection || _monitor is null
+            || lease.CommandGeneration != _monitor.CommandGeneration)
+        {
+            RevokeAcceptance();
+            return;
+        }
+        // Keep the exact already-issued short-lived plan while its basis agrees.
+        // Replacing it on every capture would never leave time for its install ACK.
+        if (_acceptance is { State: "install" or "installed" } current && !current.Received
+            && current.Plan.Permit.ExpiresAtMs - WindowsInterruptClock.NowMs > 25
+            && current.Plan.Permit.Plan.SessionId == permit.Plan.SessionId
+            && current.Plan.Permit.Plan.Revision == permit.Plan.Revision
+            && current.Plan.Permit.Plan.Expected.InputEpoch == permit.Plan.Expected.InputEpoch
+            && current.Plan.Permit.Plan.Expected.FocusEpoch == permit.Plan.Expected.FocusEpoch
+            && current.Plan.Permit.Plan.Expected.Text == permit.Plan.Expected.Text
+            && current.Plan.Permit.Plan.Expected.Selection == permit.Plan.Expected.Selection
+            && current.Plan.Permit.Plan.Replacement == permit.Plan.Replacement)
+            return;
+        _nextAcceptance = (lease, permit);
+        if (_acceptance is null)
+            InstallNextAcceptance();
+        else if (_acceptance.State is "install" or "installed")
+            RevokeCurrentAcceptance();
+    }
+    internal void RevokeAcceptance()
+    {
+        _nextAcceptance = null;
+        _monitor?.RevokeOwnedPlan();
+        if (_acceptance is { State: "install" or "installed" })
+            RevokeCurrentAcceptance();
+    }
+    private void RevokeCurrentAcceptance()
+    {
+        _monitor?.RevokeOwnedPlan();
+        if (_acceptance is not { } current)
+            return;
+        current.State = "revoke-plan";
+        SendPlanControl("revoke-plan", current);
+    }
+    private void InstallNextAcceptance()
+    {
+        var desired = _nextAcceptance;
+        _nextAcceptance = null;
+        if (desired is not { } next || _acceptance is not null || _descriptor is not { } descriptor
+            || _child is null || !SourceReady(next.Lease.Source.Target) || _witnessWriter is null
+            || WindowsInterruptClock.NowMs > next.Permit.ExpiresAtMs)
+            return;
+        var plan = new OwnedAcceptancePlan(_connection, _runId, checked(++_planSequence), descriptor,
+            next.Permit, next.Lease.UserEpoch, next.Lease.ForegroundEpoch, next.Lease.CommandGeneration,
+            next.Lease.SessionRevision, _witnessWriter.Sequence);
+        OwnedMapping? input = null, result = null;
+        try
+        {
+            input = OwnedPracticeAcceptanceProtocol.CreatePlan(_child.Process.Handle, plan);
+            result = OwnedPracticeAcceptanceProtocol.CreateResult(_child.Process.Handle);
+            var current = new PendingPlan(plan, next.Lease, input, result);
+            _acceptance = current;
+            SendPlanControl("install", current);
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or ArgumentException)
+        {
+            if (input is not null)
+            {
+                input.CloseUndeliveredRemote(_child.Process.Handle);
+                input.Clear();
+                input.Dispose();
+            }
+            if (result is not null)
+            {
+                result.CloseUndeliveredRemote(_child.Process.Handle);
+                result.Clear();
+                result.Dispose();
+            }
+            CommunicationFailed(_child, _communication!.Token);
+        }
+    }
+    private void SendPlanControl(string kind, PendingPlan current)
+    {
+        if (_communication is not { } communication)
+            return;
+        var cancellation = communication.Token;
+        var control = new OwnedAcceptanceControl(current.Plan.Permit.Plan.Id, current.Plan.PlanSequence,
+            PlanHandle: kind == "install" ? current.Input.RemoteHandle : 0,
+            PlanBytes: kind == "install" ? current.Input.Length : 0,
+            ResultHandle: kind == "install" ? current.Result.RemoteHandle : 0,
+            ResultBytes: kind == "install" ? current.Result.Length : 0);
+        Enqueue(new(kind, _connection, _runId, _sequence, Acceptance: control));
+        _ = CheckPlanAcknowledgementAsync(current, kind, cancellation);
+    }
+    private async Task CheckPlanAcknowledgementAsync(PendingPlan current, string kind, CancellationToken cancellation)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2), cancellation);
+            if (ReferenceEquals(_acceptance, current) && current.State == kind && _child is not null)
+                CommunicationFailed(_child, cancellation);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+    private bool HandleAcceptanceMessage(PracticeMessage message)
+    {
+        if (message.Kind == "source-ready")
+        {
+            if (message.Acceptance?.Descriptor is not { } descriptor)
+                throw new InvalidDataException("practice-source-descriptor");
+            AcceptDescriptor(descriptor);
+            return true;
+        }
+        if (message.Kind == "witness-failed")
+        {
+            _witnessWriter?.Poison();
+            RetireRun(false);
+            return true;
+        }
+        if (message.Kind == "witness-consumed")
+        {
+            if (message.Acceptance is not { } acknowledgement || _witnessWriter is null)
+                throw new InvalidDataException("practice-witness-ack");
+            _witnessWriter.Acknowledge(acknowledgement.WitnessSequence);
+            return true;
+        }
+        if (message.Kind is not ("installed" or "revoked-plan" or "released-plan" or "receipt"))
+            return false;
+        if (message.Acceptance is not { } control || _acceptance is not { } current
+            || control.PlanId != current.Plan.Permit.Plan.Id || control.PlanSequence != current.Plan.PlanSequence)
+            throw new InvalidDataException("practice-plan-ack-identity");
+        if (message.Kind == "installed")
+        {
+            if (current.State == "install")
+            {
+                current.State = "installed";
+                if (SourceReady(current.Lease.Source.Target))
+                    _monitor?.InstallOwnedPlan(current.Plan.PlanSequence, current.Lease, current.Plan.Permit, current.Plan.Descriptor);
+                else
+                    RevokeCurrentAcceptance();
+            }
+            else if (current.State != "revoke-plan")
+                throw new InvalidDataException("practice-plan-ack-order");
+        }
+        else if (message.Kind == "receipt")
+        {
+            if (current.Received)
+                throw new InvalidDataException("practice-plan-duplicate-receipt");
+            var result = OwnedPracticeAcceptanceProtocol.ReadResult(current.Result);
+            if (result.Connection != _connection || result.Run != _runId || result.PlanSequence != current.Plan.PlanSequence
+                || result.PlanId != current.Plan.Permit.Plan.Id || result.WitnessSequence != control.WitnessSequence
+                || result.WitnessSequence <= current.Plan.InstallWitnessSequence || result.WitnessSequence > (_witnessWriter?.Sequence ?? _lastWitnessSequence)
+                || !Enum.IsDefined(result.Receipt.Status) || !Enum.IsDefined(result.Receipt.Reason)
+                || result.AcceptedAtMs < 0 || result.AcceptedAtMs > current.Plan.Permit.ExpiresAtMs
+                || result.AcceptedAtMs > 0 && result.AcceptedAtMs < current.Plan.Permit.ObservedAtMs
+                || result.AcceptedAtMs == 0 && result.Receipt.Status != WriteStatus.RejectedBeforeMutation)
+                throw new InvalidDataException("practice-receipt-identity");
+            current.Received = true;
+            if (result.AcceptedAtMs > 0)
+                _monitor?.CompleteOwnedAcceptance(current.Lease, current.Plan.Permit, result);
+            RevokeAcceptance();
+            if (result.AcceptedAtMs == 0)
+                RetireRun(false);
+        }
+        else if (message.Kind == "revoked-plan" && current.State == "revoke-plan")
+        {
+            current.State = "release-plan";
+            SendPlanControl("release-plan", current);
+        }
+        else if (message.Kind == "released-plan" && current.State == "release-plan")
+        {
+            current.Input.Clear();
+            current.Result.Clear();
+            current.Input.Dispose();
+            current.Result.Dispose();
+            _acceptance = null;
+            if (_restartAfterRetire && !_nativeActive && _pending is null && _child is not null)
+            {
+                _restartAfterRetire = false;
+                BeginRun(_child);
+            }
+            else
+                InstallNextAcceptance();
+        }
+        else
+            throw new InvalidDataException("practice-plan-ack-order");
+        return true;
+    }
+    private void ReleaseRetiredWitness()
+    {
+        // The matching retirement ACK proves that the child closed this view.
+        // Only the UI thread waits for an already-entered bounded LL callback.
+        _monitor?.ClearOwnedChannel();
+        if (_witnessWriter?.Stop() == false)
+            throw new InvalidOperationException("practice-hook-stop");
+        _lastWitnessSequence = _witnessWriter?.Sequence ?? _lastWitnessSequence;
+        _witnessMapping?.Clear();
+        _witnessMapping?.Dispose();
+        _witnessMapping = null;
+        _witnessWriter = null;
+    }
+    private void AbandonAcceptance()
+    {
+        _disconnecting = true;
+        _monitor?.ClearOwnedChannel();
+        if (_witnessWriter?.Stop() == false)
+            throw new InvalidOperationException("practice-hook-stop");
+        _nextAcceptance = null;
+        if (_acceptance is { } current)
+        {
+            if (!current.Received && _witnessWriter is not null
+                && _witnessWriter.TryGetAcceptance(current.Plan.PlanSequence, out long witnessSequence, out long acceptedAt))
+            {
+                // A disconnected receiver might already have crossed its local
+                // acceptance line. Report unknown once; never repeat this plan.
+                _monitor?.CompleteOwnedAcceptance(current.Lease, current.Plan.Permit,
+                    new(_connection, _runId, current.Plan.PlanSequence, current.Plan.Permit.Plan.Id,
+                        witnessSequence, acceptedAt, new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome)));
+            }
+            _abandoned.Add(current.Input);
+            _abandoned.Add(current.Result);
+            _acceptance = null;
+        }
+        if (_witnessMapping is { } witness)
+            _abandoned.Add(witness);
+        _witnessMapping = null;
+        _witnessWriter = null;
+        _descriptor = null;
+        _retirement?.TrySetResult(_closedConfirmed);
+        _retirement = null;
+    }
+    private void ReleaseAbandonedMappings()
+    {
+        // Child disposal can request termination without waiting for process exit.
+        // Drop only our references: never clear an unacknowledged remote view
+        // while its GUI might still be executing, and never reuse this mapping.
+        foreach (var mapping in _abandoned)
+        {
+            mapping.Dispose();
+        }
+        _abandoned.Clear();
+    }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern nint GetPropW(nint hwnd, string name);
+}

@@ -19,6 +19,57 @@ namespace TypeLay.App.Tests;
 public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
 {
     [Fact]
+    public async Task DefaultHookPassesInjectedTabWithoutIssuingAcceptance()
+    {
+        await desktop.RunAsync(async () =>
+        {
+            const string original = "Injected Tab stays ordinary input";
+            var input = new TextBox { Text = original, AcceptsTab = true, AcceptsReturn = true };
+            var source = new Window { Content = input, Width = 420, Height = 160, Title = "TypeLay injected acceptance refusal" };
+            source.Show();
+            source.Activate();
+            input.Focus();
+            input.CaretIndex = original.Length;
+            nint hwnd = new WindowInteropHelper(source).Handle;
+            int down = 0, up = 0;
+            input.PreviewKeyDown += (_, args) => { if (args.Key == Key.Tab) down++; };
+            input.PreviewKeyUp += (_, args) => { if (args.Key == Key.Tab) up++; };
+            using var hook = new KeyboardHook(); // The production default, without the automation constructor opt-in.
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            deadline.CancelAfter(TimeSpan.FromSeconds(10));
+            bool pressed = false;
+            try
+            {
+                await Until(() => hook.Ready && Native.GetForegroundWindow() == hwnd && input.IsKeyboardFocused, deadline.Token);
+                Assert.All(new[] { 9, 0x10, 0x11, 0x12, 0x5B, 0x5C }, key => Assert.False(Native.GetAsyncKeyState(key) < 0));
+                using var process = Process.GetCurrentProcess();
+                long now = WindowsInterruptClock.NowMs;
+                var snapshot = new InputSnapshot(new WindowsTarget(process.Id, process.StartTime.ToUniversalTime().Ticks,
+                    (long)hwnd, (long)hwnd, "controlled-hook", "owned-source", Guid.NewGuid()),
+                    original, new(original.Length, original.Length), new(10, 20, 300, 40), false,
+                    FieldAccess.Supported, ImeState.Clear, now, 1, 1, WriteSupported: true);
+                var plan = new WritePlan(Guid.NewGuid(), Guid.NewGuid(), 1, snapshot, null, "Result", "Result", 6);
+                hook.Publish(new(snapshot, hook.UserEpoch, hook.ForegroundEpoch, true, hook.CommandGeneration, 23),
+                    new(plan, 1, 1, now, now + Limits.PermitMaxAgeMs));
+                Assert.Equal(1u, SendInput(1, [new KeyboardInput { Type = 1, Key = 9 }], Marshal.SizeOf<KeyboardInput>()));
+                pressed = true;
+                Assert.Equal(1u, SendInput(1, [new KeyboardInput { Type = 1, Key = 9, Flags = 2 }], Marshal.SizeOf<KeyboardInput>()));
+                pressed = false;
+                await Until(() => up == 1, deadline.Token);
+                Assert.Equal(1, down);
+                Assert.Equal(original + "\t", input.Text);
+                Assert.True(input.IsKeyboardFocused);
+                Assert.False(hook.TryRead(out _));
+            }
+            finally
+            {
+                if (pressed)
+                    Assert.Equal(1u, SendInput(1, [new KeyboardInput { Type = 1, Key = 9, Flags = 2 }], Marshal.SizeOf<KeyboardInput>()));
+            }
+        });
+    }
+
+    [Fact]
     public async Task RebindingPreservesTheConsumedReleaseAndRequiresANewPress()
     {
         await desktop.RunAsync(async () =>

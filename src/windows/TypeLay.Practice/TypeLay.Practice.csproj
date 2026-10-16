@@ -7,9 +7,12 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="../shared/WindowsInterruptClock.cs" Link="Windows/WindowsInterruptClock.cs" />
     <Compile Include="../shared/OwnedPracticeField.cs" Link="Windows/OwnedPracticeField.cs" />
+    <Compile Include="../shared/OwnedPracticeAcceptanceProtocol.cs" Link="Windows/OwnedPracticeAcceptanceProtocol.cs" />
     <Compile Include="../shared/PracticeProgressPipe.cs" Link="Windows/PracticeProgressPipe.cs" />
     <ProjectReference Include="../TypeLay.Broker/TypeLay.Broker.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="../TypeLay.Windows.Contracts/TypeLay.Windows.Contracts.csproj" />
     <ProjectReference Include="../../shared/TypeLay.Runtime/TypeLay.Runtime.csproj" />
   </ItemGroup>
   <ItemGroup Condition="'$(OS)' == 'Windows_NT'">

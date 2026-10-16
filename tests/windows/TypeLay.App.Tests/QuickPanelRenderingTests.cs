@@ -207,9 +207,9 @@ public sealed class QuickPanelRenderingTests(WpfDesktopFixture desktop)
         int changes = 0;
         fixture.Settings.Changed += () => changes++;
         using (var blocked = new FileStream(fixture.Path + ".tmp", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
-            Assert.False(fixture.Panel.SetEnabled(false));
+            Assert.False(fixture.Panel.SetEnabledAsync(false).GetAwaiter().GetResult());
         AssertSaveError(fixture.Panel);
-        Assert.True(fixture.Panel.SetEnabled(true));
+        Assert.True(fixture.Panel.SetEnabledAsync(true).GetAwaiter().GetResult());
         Assert.Equal(0, changes);
         Assert.True(new SettingsStore(fixture.Path).Value.Enabled);
         AssertNoSaveError(fixture.Panel);

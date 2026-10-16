@@ -8,7 +8,8 @@ namespace TypeLay.Windows;
 // Private inherited stdio. Control and acknowledgements are reliable, bound to
 // this one child connection, run and nonzero sequence. No source text travels here.
 internal sealed record PracticeMessage(string Kind, Guid Connection, Guid Run, long Sequence,
-    OnDemandPracticeProgress? Progress = null);
+    OnDemandPracticeProgress? Progress = null, OwnedAcceptanceControl? Acceptance = null,
+    AutomaticPracticeProgress? AutomaticProgress = null);
 
 internal static class PracticeProgressPipe
 {
@@ -50,8 +51,13 @@ internal static class PracticeProgressPipe
     private static void Validate(PracticeMessage message)
     {
         if (message.Connection == Guid.Empty || message.Run == Guid.Empty || message.Sequence <= 0
-            || message.Kind is not ("begin" or "retire" or "started" or "retired" or "restart" or "closed" or "progress")
+            || message.Kind is not ("begin" or "retire" or "started" or "retired" or "restart" or "closed" or "progress"
+                or "begin-auto" or "source-ready" or "install" or "installed" or "revoke-plan" or "revoked-plan"
+                or "release-plan" or "released-plan" or "receipt" or "witness-consumed" or "witness-failed" or "auto-progress")
             || (message.Kind == "progress" ? message.Progress?.RunId != message.Run : message.Progress is not null))
             throw new InvalidDataException("practice-progress-message");
+        if (message.Acceptance is { Version: not OwnedPracticeAcceptanceProtocol.Version }
+            || (message.Kind == "auto-progress" ? message.AutomaticProgress?.RunId != message.Run : message.AutomaticProgress is not null))
+            throw new InvalidDataException("practice-progress-acceptance");
     }
 }

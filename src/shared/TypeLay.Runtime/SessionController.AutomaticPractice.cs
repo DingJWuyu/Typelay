@@ -11,6 +11,8 @@ public sealed partial class SessionController
     private long _awaitingPracticeWindowEpoch;
     private bool _awaitingForegroundExpired;
     private readonly Func<OwnedPracticeBinding, Task<bool>>? _retireOwnedPractice;
+    private readonly Func<OwnedPracticeBinding, Task<bool>>? _confirmRetiredOwnedPractice;
+    private OwnedPracticeBinding? _automaticRetirementBinding;
     private Task<bool>? _automaticRetirement;
     private bool _automaticRetirementUnconfirmed;
     private TargetId? _retiredAutomaticTarget;
@@ -55,6 +57,7 @@ public sealed partial class SessionController
             EndOnDemandPractice(previous.RunId);
         RotatePracticeConfiguration();
         _pendingPracticeCompletion = null;
+        _automaticRetirementBinding = null;
         AutomaticPracticeProgress = new(runId, null, null, _hook.CommandGeneration, ++_automaticProgressRevision);
         AutomaticPracticeProgressChanged?.Invoke(AutomaticPracticeProgress);
         return true;
@@ -215,11 +218,35 @@ public sealed partial class SessionController
     }
     public async Task<bool> RetireAutomaticPracticeAsync()
     {
+        var previous = _automaticRetirement;
         if (AutomaticPracticeProgress is { } progress)
             EndAutomaticPractice(progress.RunId);
         else if (_pendingPracticeCompletion is { } pending)
             EndAutomaticPractice(pending.RunId);
+        // Only another explicit caller may retry a completed failure. Hosts
+        // without a read-only confirmation port preserve their existing result.
+        if (!_disposed && ReferenceEquals(previous, _automaticRetirement)
+            && _automaticRetirement is { IsCompleted: true } && _automaticRetirementUnconfirmed
+            && _automaticRetirementBinding is { } binding && _confirmRetiredOwnedPractice is not null)
+            _automaticRetirement = ConfirmRetiredAutomaticPractice(binding);
         return _automaticRetirement is null ? !_automaticRetirementUnconfirmed : await _automaticRetirement;
+    }
+
+    private async Task<bool> ConfirmRetiredAutomaticPractice(OwnedPracticeBinding binding)
+    {
+        bool confirmed = false;
+        try
+        {
+            confirmed = await _confirmRetiredOwnedPractice!(binding);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+        }
+        if (_disposed || !ReferenceEquals(_automaticRetirementBinding, binding)
+            || _lastRetiredAutomaticRun != binding.RunId || AutomaticPracticeProgress is not null)
+            return false;
+        _automaticRetirementUnconfirmed = !confirmed;
+        return confirmed;
     }
 
     private async Task<bool> ConfirmAutomaticRetirement(OwnedPracticeBinding binding)
@@ -229,7 +256,11 @@ public sealed partial class SessionController
         {
             confirmed = _retireOwnedPractice is not null && await _retireOwnedPractice(binding);
         }
-        catch (Exception ex) when (ex is not OutOfMemoryException) { }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+        }
+        if (!ReferenceEquals(_automaticRetirementBinding, binding))
+            return false;
         _automaticRetirementUnconfirmed = !confirmed;
         return confirmed;
     }
@@ -259,7 +290,10 @@ public sealed partial class SessionController
         if (rotateConfiguration)
             RotatePracticeConfiguration();
         if (binding is not null)
+        {
+            _automaticRetirementBinding = binding;
             _automaticRetirement = ConfirmAutomaticRetirement(binding);
+        }
         AutomaticPracticeProgressChanged?.Invoke(null);
     }
 

@@ -17,6 +17,7 @@ internal sealed class UiaInputProvider : IDisposable
     private readonly CacheRequest _metadataCache = MetadataCache();
     private AutomationElement? _element;
     private InputSnapshot? _previous;
+    private OwnedCaptureDescriptor? _ownedCapture;
     private long _inputEpoch, _focusEpoch, _lastSourceUserEpoch = -1;
     private TargetId? _anchorTarget;
     private RectPx _anchorFieldBounds, _anchorBounds;
@@ -101,10 +102,39 @@ internal sealed class UiaInputProvider : IDisposable
 
     public (InputSnapshot?, FocusMember) Capture(BrokerRequest request)
     {
+        // Owned observations cannot cross into the ordinary capture/write path.
+        if (request.Op is not ("capture" or "write") || request.OwnedCapture is not null)
+        {
+            Clear();
+            return (null, FocusMember.Other);
+        }
+        if (_ownedCapture is not null)
+            Clear();
+        return CaptureCore(request, null);
+    }
+
+    public (InputSnapshot?, FocusMember) CaptureOwned(BrokerRequest request)
+    {
+        if (request.Op != "capture-owned" || request.CaptureDirect || request.OwnedCapture is not { } owned
+            || !NativeEditTransactions.IsCurrentOwned(owned))
+        {
+            Clear();
+            return (null, FocusMember.Other);
+        }
+        return CaptureCore(request, owned);
+    }
+
+    private (InputSnapshot?, FocusMember) CaptureCore(BrokerRequest request, OwnedCaptureDescriptor? owned)
+    {
         using var trace = CaptureTrace.Start();
         (InputSnapshot?, FocusMember) Reject(string reason)
         {
             trace?.Result(reason);
+            if (owned is not null)
+            {
+                Clear();
+                return (null, FocusMember.Other);
+            }
             return Unavailable(request);
         }
         trace?.Stage("foreground");
@@ -127,6 +157,15 @@ internal sealed class UiaInputProvider : IDisposable
         if (_native.BindFocused() != token)
             return Reject("focused-identity-changed");
         var info = element.Cached;
+        if (owned is not null && (info.ProcessId != owned.ProcessId
+            || info.NativeWindowHandle != owned.ControlHwnd || (long)foreground != owned.RootHwnd
+            || !NativeEditTransactions.IsCurrentOwned(owned)))
+            return Reject("owned-identity-changed");
+        if (owned is not null
+            && (element.GetCachedPropertyValue(AutomationElement.IsPasswordProperty, true) is not false
+                || element.GetCachedPropertyValue(AutomationElement.IsEnabledProperty, true) is not true
+                || element.GetCachedPropertyValue(AutomationElement.IsOffscreenProperty, true) is not false))
+            return Reject("owned-field-metadata-missing");
         bool comboBox = info.ControlType == ControlType.ComboBox;
         if (info.ControlType != ControlType.Edit && info.ControlType != ControlType.Document && !comboBox)
             return Reject("not-edit-control");
@@ -143,6 +182,8 @@ internal sealed class UiaInputProvider : IDisposable
             || app is "typelay.app" or "typelay.broker")
             return Reject("excluded-application");
         long start = process.StartTime.ToUniversalTime().Ticks;
+        if (owned is not null && start != owned.ProcessStartUtcTicks)
+            return Reject("owned-process-changed");
         if (_quarantine.Contains((info.ProcessId, start, token)))
             return Reject("quarantined-target");
         nint root = foreground;
@@ -203,6 +244,31 @@ internal sealed class UiaInputProvider : IDisposable
         var id = new WindowsTarget(info.ProcessId, start, (long)root, info.NativeWindowHandle,
             value is null ? "uia-text-preview-v2" : "uia-value-text-v2", token, new Guid(idBytes.AsSpan(0, 16)));
         trace?.Stage("native-capture");
+        if (owned is not null)
+        {
+            // The descriptor only selects this exact field. A failed native
+            // qualification must never fall through to UIA body reads or writes.
+            if (comboBox || !StillFocused(root, token) || !NativeEditTransactions.IsCurrentOwned(owned)
+                || _edits.CaptureOwned(id, owned, bounds, _inputEpoch) is not { } captured)
+                return Reject("owned-native-unavailable");
+            if (!StillFocused(root, token) || !NativeEditTransactions.IsCurrentOwned(owned))
+                return Reject("owned-focus-changed");
+            if (_previous?.Target != captured.Target || _previous.Text != captured.Text
+                || _lastSourceUserEpoch != request.SourceUserEpoch)
+                _inputEpoch++;
+            _lastSourceUserEpoch = request.SourceUserEpoch;
+            _lastFocus = FocusMember.Source;
+            _element = element;
+            _application = app;
+            _ownedCapture = owned;
+            _previous = captured with
+            {
+                InputEpoch = _inputEpoch,
+                FocusEpoch = owned.NativeFocusRevision
+            };
+            trace?.Result("observed-owned-native");
+            return (_previous, FocusMember.Source);
+        }
         if (!comboBox && request.CaptureDirect && _edits.Capture(id, bounds, _inputEpoch, _focusEpoch) is { } direct)
         {
             trace?.Stage("focus-recheck");
@@ -320,6 +386,9 @@ internal sealed class UiaInputProvider : IDisposable
             return new(WriteStatus.RejectedBeforeMutation, Denial.StaleObservation);
         if (!WindowsTarget.TryDecode(plan.Expected.Target, out var target))
             return new(WriteStatus.RejectedBeforeMutation, Denial.TargetChanged);
+        if (request.OwnedCapture is not null || (target.Provider == NativeEditTransactions.Provider
+            && !plan.Expected.DirectWriteSupported))
+            return new(WriteStatus.RejectedBeforeMutation, Denial.Unsupported);
         bool mutation = false;
         try
         {
@@ -473,6 +542,7 @@ internal sealed class UiaInputProvider : IDisposable
         if (expected is { } id && _previous?.Target != id)
             return;
         _previous = null;
+        _ownedCapture = null;
         _element = null;
         _application = null;
         _lastFocus = FocusMember.Other;
