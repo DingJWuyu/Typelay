@@ -863,7 +863,12 @@ internal static partial class Program
             active: activation != 0);
         if (_returnState == SourceReturnState.Invalid)
             return;
-        if (!_returnAppActive && activation != 0 && peerThread == (nint)_editorOverlayThread && _editorOverlayThread != 0
+        // A local exact-Edit mouse intent can receive APP without a peer thread.
+        // Zero proves no peer identity; the host still requires the same LL/WMA
+        // intent, the overlay's exact departure, and both local focus paths.
+        if (!_returnAppActive && activation != 0
+            && (peerThread == (nint)_editorOverlayThread || _returnKind == OwnedReturnKind.Mouse && peerThread == 0)
+            && _editorOverlayThread != 0
             && Native.GetWindowThreadProcessId((nint)editor.OverlayHwnd, out uint process) == _editorOverlayThread
             && process == _editorOverlayProcess && WindowsInterruptClock.NowMs < _returnExpiresAt)
         {
