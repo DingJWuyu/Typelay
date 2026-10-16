@@ -14,7 +14,7 @@ using TypeLay.Windows.Contracts;
 
 namespace TypeLay.Practice;
 
-internal static class Program
+internal static partial class Program
 {
     private const string WindowClassName = "TypeLayPracticeWindow";
     private const string SettingsUnavailable = "无法读取当前设置。请回到 TypeLay 设置检查后再练习。";
@@ -41,12 +41,25 @@ internal static class Program
     private static uint _editorOverlayThread, _editorOverlayProcess;
     private static long _editorEventSequence;
     private static string? _editorNotice;
+    private enum SourceReturnState
+    {
+        None, Armed, RootActive, FieldFocused, Returned, Invalid
+    }
+    private static SourceReturnState _returnState;
+    private static OwnedReturnControl? _returnControl;
+    private static OwnedReturnMouse? _mouseReturnNotice;
+    private static OwnedReturnKind _returnKind;
+    private static bool _returnAppActive, _returnResumed;
+    private static long _returnBaseline, _returnExpiresAt, _returnFocusRevision;
+    private static string? _returnNotice;
+    private static (OwnedReturnControl Control, OwnedCaptureDescriptor Descriptor)? _returnedSeal;
     private static readonly string? EditorTracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
     private static readonly List<EditorTrace> EditorTraces = [];
     private static int _editorTraceCount;
     private enum EditorEvent
     {
-        Fenced, FenceRejected, App, Root, FocusGained, FocusLost, Left, Invalid
+        Fenced, FenceRejected, App, Root, FocusGained, FocusLost, Left, Invalid,
+        ReturnMouse, ReturnFenced, ReturnApp, ReturnRoot, ReturnFocus, Returned, ReturnInvalid
     }
     private enum EditorReason
     {
@@ -134,6 +147,7 @@ internal static class Program
             _capability = Add("Static", presentation.CapabilityNote);
             _restart = Add("Button", presentation.RestartLabel, 0x00010000 | 0x4000, RestartId);
             Native.EnableWindow(_restart.Handle, false);
+            InitializeCompletionControl();
             _close = Add("Button", presentation.CloseLabel, 0x00010000 | 0x4000, CloseId);
             RefreshTheme();
             SetFonts();
@@ -171,7 +185,9 @@ internal static class Program
                         while (_inputCompletions?.TryDequeue(out var completion) == true)
                             WriteReply(completion);
                     inputBurst = 0;
-                    uint wait = _editorFence is { } pendingEditor && _editorHandoff is EditorHandoff.Armed or EditorHandoff.RootLeft or EditorHandoff.FieldLeft
+                    uint wait = _returnState is SourceReturnState.Armed or SourceReturnState.RootActive or SourceReturnState.FieldFocused
+                        ? (uint)Math.Clamp(_returnExpiresAt - WindowsInterruptClock.NowMs, 0, 500)
+                        : _editorFence is { } pendingEditor && _editorHandoff is EditorHandoff.Armed or EditorHandoff.RootLeft or EditorHandoff.FieldLeft
                         ? (uint)Math.Clamp(pendingEditor.ExpiresAtMs - WindowsInterruptClock.NowMs, 0, 500)
                         : uint.MaxValue;
                     if (Native.MsgWaitForMultipleObjectsEx(0, 0, wait, 0x04ff, 4) == uint.MaxValue)
@@ -303,7 +319,8 @@ internal static class Program
             if (_automatic)
             {
                 var view = AutomaticPracticePresentation.Create(settings!, _automaticProgress);
-                string progress = _automaticProgress?.AcceptanceCompleted == true
+                string progress = _automaticProgress?.Completed == true ? view.ProgressNotice
+                    : _automaticProgress?.AcceptanceCompleted == true
                     ? "第一次接受已验证"
                     : _automaticProgress?.PreviewCompleted == true
                         ? "已生成预览。"
@@ -314,7 +331,7 @@ internal static class Program
                     | SetText(_notice, view.CurrentStateNotice) | SetText(_preview, "自动预览")
                     | SetText(_replace, "Tab 接受")
                     | SetText(_capability!, "编辑练习尚未开放")
-                    | SetText(_progressNotice, progress);
+                    | SetText(_progressNotice, CompletionProgressNotice(progress));
                 Native.SetWindowTextW(_window, "自动接受练习");
             }
             else
@@ -372,6 +389,7 @@ internal static class Program
             // ACK happen at this outer boundary, never from the pipe reader.
             if (_closePending)
             {
+                ResetCompletion();
                 InvalidateEditorHandoff(EditorReason.Close);
                 _owned.Retire();
                 _retired = true;
@@ -394,9 +412,12 @@ internal static class Program
                 if (Volatile.Read(ref _disconnected) != 0 || message.Connection != _connection)
                     throw new InvalidDataException("practice-control-connection");
                 changed = true;
+                if (HandleCompletionControl(message))
+                    continue;
                 if (message.Kind is "begin" or "begin-auto" && _retired
                     && message.Run != _run && message.Sequence == _sequence + 1 && _plan is null)
                 {
+                    ResetCompletion();
                     ReleaseAcceptance();
                     _owned.Begin(message.Kind == "begin-auto");
                     _run = message.Run;
@@ -426,6 +447,7 @@ internal static class Program
                 }
                 else if (message.Kind == "retire" && message.Run == _run && message.Sequence == _sequence + 1)
                 {
+                    PrepareCompletionRetirement(message);
                     InvalidateEditorHandoff(EditorReason.Retire);
                     _owned.Retire();
                     _retired = true;
@@ -462,6 +484,31 @@ internal static class Program
                             if (_editorFence is null || message.Editing != _editorFence)
                                 throw new InvalidDataException("practice-editor-order");
                             InvalidateEditorHandoff(EditorReason.Cancel);
+                            break;
+                        case "return-fence" when _automatic:
+                            FenceSourceReturn(message.Returning ?? throw new InvalidDataException("practice-return-missing"),
+                                message.Acceptance ?? throw new InvalidDataException("practice-return-witness"));
+                            break;
+                        case "return-resume" when _automatic:
+                            ResumeSourceReturn(message.Returning ?? throw new InvalidDataException("practice-return-missing"));
+                            break;
+                        case "return-cancel" when _automatic:
+                            if (message.Returning is not { } cancelledReturn)
+                                throw new InvalidDataException("practice-return-order");
+                            if (_returnControl is null && _returnedSeal is { } returnedSeal && cancelledReturn == returnedSeal.Control)
+                            {
+                                // Return is only a focus result. Until fresh Core
+                                // validation/rebinding finishes, cancellation still
+                                // permanently fences this exact replacement reader.
+                                _returnControl = cancelledReturn;
+                                _returnState = SourceReturnState.Returned;
+                                _returnedSeal = null;
+                                _witnessFailed = true;
+                                CloseWitness();
+                            }
+                            if (_returnControl != cancelledReturn)
+                                throw new InvalidDataException("practice-return-order");
+                            InvalidateSourceReturn(EditorReason.Cancel);
                             break;
                         case "install" when _automatic:
                             InstallPlan(message.Acceptance ?? throw new InvalidDataException("practice-install-missing"));
@@ -504,6 +551,31 @@ internal static class Program
                         SourceEventSequence = _editorEventSequence
                     }));
             }
+            if (_mouseReturnNotice is { } mouseReturn)
+            {
+                _mouseReturnNotice = null;
+                WriteReply(new("mouse-intent", _connection, _run, _sequence, MouseReturn: mouseReturn));
+            }
+            if (_returnState is SourceReturnState.Armed or SourceReturnState.RootActive or SourceReturnState.FieldFocused
+                && WindowsInterruptClock.NowMs >= _returnExpiresAt)
+                InvalidateSourceReturn(EditorReason.Deadline);
+            CompleteSourceReturn();
+            if (_returnNotice is { } returnNotice && _returnControl is { } returned)
+            {
+                _returnNotice = null;
+                var descriptor = returnNotice == "source-returned" ? Descriptor() : null;
+                WriteReply(new(returnNotice, _connection, _run, _sequence, Returning: returned with
+                {
+                    SourceEventSequence = _editorEventSequence,
+                    Descriptor = descriptor
+                }));
+                if (descriptor is not null)
+                {
+                    ClearEditorHandoff();
+                    _returnedSeal = (returned, descriptor);
+                    _sourceReadyRevision = descriptor.NativeFocusRevision;
+                }
+            }
             if (_automatic && !_retired && !_witnessFailed && _editorFence is null && SourceFocused())
             {
                 long revision = _owned.FocusRevision;
@@ -513,6 +585,7 @@ internal static class Program
                     Reply("source-ready", new(Descriptor: Descriptor()));
                 }
             }
+            FlushCompletionRequest();
             if (_witness is not null && _witness.Consumed != _lastWitnessAcknowledged)
             {
                 _lastWitnessAcknowledged = _witness.Consumed;
@@ -522,6 +595,7 @@ internal static class Program
         catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException
             or ArgumentException or OverflowException)
         {
+            ResetCompletion();
             _owned.Retire();
             _retired = true;
             ReleaseAcceptance();
@@ -587,6 +661,11 @@ internal static class Program
 
     private static void ObserveEditorApp(nuint activation, nint peerThread)
     {
+        if (_returnState != SourceReturnState.None)
+        {
+            ObserveReturnApp(activation, peerThread);
+            return;
+        }
         if (_editorFence is not { } editor)
             return;
         QueueEditorTrace(editor.Intent, EditorEvent.App,
@@ -611,6 +690,11 @@ internal static class Program
 
     private static void ObserveEditorRoot(nuint activation, nint peer)
     {
+        if (_returnState != SourceReturnState.None)
+        {
+            ObserveReturnRoot(activation, peer);
+            return;
+        }
         if (_editorFence is not { } editor)
             return;
         QueueEditorTrace(editor.Intent, EditorEvent.Root,
@@ -631,6 +715,11 @@ internal static class Program
 
     private static void ObserveEditorField(int notification)
     {
+        if (_returnState != SourceReturnState.None)
+        {
+            ObserveReturnField(notification);
+            return;
+        }
         if (_editorFence is not { } editor)
             return;
         QueueEditorTrace(editor.Intent, notification == 0x0200 ? EditorEvent.FocusLost : EditorEvent.FocusGained);
@@ -660,6 +749,11 @@ internal static class Program
 
     private static void InvalidateEditorHandoff(EditorReason reason)
     {
+        if (_returnState != SourceReturnState.None)
+        {
+            InvalidateSourceReturn(reason);
+            return;
+        }
         if (_editorFence is null || _editorHandoff == EditorHandoff.Invalid)
             return;
         _planActive = false;
@@ -669,6 +763,182 @@ internal static class Program
         // is emitted by ApplyControls after normal native dispatch unwinds.
         _editorNotice = "edit-invalid";
         QueueEditorTrace(_editorFence.Intent, EditorEvent.Invalid, reason);
+    }
+
+    private static void ArmSourceReturn(OwnedReturnKind kind, long expiresAt)
+    {
+        _returnKind = kind;
+        _returnState = SourceReturnState.Armed;
+        _returnBaseline = checked(++_editorEventSequence);
+        _returnExpiresAt = expiresAt;
+        _returnFocusRevision = _owned!.FocusRevision;
+        _returnAppActive = _returnResumed = false;
+    }
+
+    private static void ObserveReturnMouse(nuint root, nint parameters)
+    {
+        if (_editorFence is not { } editor || _editorHandoff != EditorHandoff.Left
+            || _returnState != SourceReturnState.None || _retired || _closePending || _restartPending
+            || root != (nuint)_window || (parameters.ToInt64() & 0xffff) != 1
+            || ((parameters.ToInt64() >> 16) & 0xffff) != 0x0201)
+            return;
+        uint position = Native.GetMessagePos();
+        var point = new Native.Point { X = unchecked((short)position), Y = unchecked((short)(position >> 16)) };
+        if (_edit is null || Native.WindowFromPoint(point) != _edit.Handle)
+            return;
+        // A local candidate grants no authority. Let the original press, drag
+        // and release reach the stock Edit; the host independently checks LL input.
+        ArmSourceReturn(OwnedReturnKind.Mouse, WindowsInterruptClock.NowMs + 500);
+        _mouseReturnNotice = new(editor.Intent, _returnBaseline, point.X, point.Y);
+        QueueEditorTrace(editor.Intent, EditorEvent.ReturnMouse);
+    }
+
+    private static void FenceSourceReturn(OwnedReturnControl control, OwnedAcceptanceControl acceptance)
+    {
+        bool handedOff = false;
+        try
+        {
+            if (_editorFence is not { } editor || _editorHandoff != EditorHandoff.Left
+                || _returnControl is not null || _retired || _closePending || _restartPending || _plan is not null
+                || control.EditorIntent != editor.Intent || control.SourceEventSequence != 0 || control.Descriptor is not null
+                || control.ReturningToken.Target != editor.AdmittedToken.Target
+                || control.ReturningToken.CommandGeneration != editor.AdmittedToken.CommandGeneration
+                || control.ReturningToken.Revision != editor.AdmittedToken.Revision + 1
+                || acceptance.WitnessBytes != OwnedPracticeAcceptanceProtocol.WitnessBytes)
+                throw new InvalidDataException("practice-return-fence");
+            if (control.Kind == OwnedReturnKind.Tab && _returnState == SourceReturnState.None)
+                ArmSourceReturn(control.Kind, control.ExpiresAtMs);
+            else if (_returnState == SourceReturnState.None || control.Kind != _returnKind)
+                throw new InvalidDataException("practice-return-intent");
+            _returnControl = control;
+            _returnExpiresAt = Math.Min(_returnExpiresAt, control.ExpiresAtMs);
+            if (_returnState == SourceReturnState.Invalid || WindowsInterruptClock.NowMs >= _returnExpiresAt)
+            {
+                InvalidateSourceReturn(EditorReason.Deadline);
+                _returnNotice = "return-invalid";
+                return;
+            }
+            // The replacement is still blank and detached from the host hook.
+            // This single GUI ACK proves the old reader is closed and the new
+            // reader exists before any input can be published to its ring.
+            ReleasePlan();
+            CloseWitness();
+            handedOff = true; // Open owns closure, including a failed MapViewOfFile.
+            _witnessMapping = OwnedMapping.Open(acceptance.WitnessHandle, acceptance.WitnessBytes, false);
+            _witness = new(_witnessMapping);
+            _witnessFailed = false;
+            _lastWitnessAcknowledged = _installWitnessFloor = 0;
+            WriteReply(new("return-fenced", _connection, _run, _sequence,
+                Returning: control with
+                {
+                    SourceEventSequence = _returnBaseline
+                }));
+            QueueEditorTrace(editor.Intent, EditorEvent.ReturnFenced);
+        }
+        finally
+        {
+            if (!handedOff && acceptance.WitnessHandle != 0)
+                Native.CloseHandle((nint)acceptance.WitnessHandle);
+        }
+    }
+
+    private static void ResumeSourceReturn(OwnedReturnControl control)
+    {
+        if (_returnControl != control || _returnState is SourceReturnState.None or SourceReturnState.Invalid or SourceReturnState.Returned
+            || _returnResumed || _witness is null || _witnessMapping is null || _witness.Poisoned || _witnessFailed
+            || WindowsInterruptClock.NowMs >= _returnExpiresAt)
+            throw new InvalidDataException("practice-return-resume");
+        _returnResumed = true;
+        if (control.Kind == OwnedReturnKind.Tab)
+        {
+            if (Native.GetForegroundWindow() != _window || _edit is null)
+                InvalidateSourceReturn(EditorReason.Root);
+            else
+                Native.SetFocus(_edit.Handle);
+        }
+    }
+
+    private static void ObserveReturnApp(nuint activation, nint peerThread)
+    {
+        if (_editorFence is not { } editor)
+            return;
+        QueueEditorTrace(editor.Intent, EditorEvent.ReturnApp,
+            peer: peerThread == 0 ? EditorPeer.None : peerThread == (nint)_editorOverlayThread ? EditorPeer.OverlayThread : EditorPeer.Other,
+            active: activation != 0);
+        if (_returnState == SourceReturnState.Invalid)
+            return;
+        if (!_returnAppActive && activation != 0 && peerThread == (nint)_editorOverlayThread && _editorOverlayThread != 0
+            && Native.GetWindowThreadProcessId((nint)editor.OverlayHwnd, out uint process) == _editorOverlayThread
+            && process == _editorOverlayProcess && WindowsInterruptClock.NowMs < _returnExpiresAt)
+        {
+            _returnAppActive = true;
+            _editorEventSequence = checked(_editorEventSequence + 1);
+        }
+        else
+            InvalidateSourceReturn(EditorReason.App);
+    }
+
+    private static void ObserveReturnRoot(nuint activation, nint peer)
+    {
+        if (_editorFence is not { } editor)
+            return;
+        QueueEditorTrace(editor.Intent, EditorEvent.ReturnRoot,
+            peer: peer == 0 ? EditorPeer.None : peer == (nint)editor.OverlayHwnd ? EditorPeer.Overlay : EditorPeer.Other,
+            active: (activation & 0xffff) != 0);
+        if (_returnState == SourceReturnState.Invalid)
+            return;
+        if (_returnState == SourceReturnState.Armed && (activation & 0xffff) != 0
+            && (peer == 0 || peer == (nint)editor.OverlayHwnd) && WindowsInterruptClock.NowMs < _returnExpiresAt)
+        {
+            _returnState = SourceReturnState.RootActive;
+            _editorEventSequence = checked(_editorEventSequence + 1);
+        }
+        else
+            InvalidateSourceReturn(EditorReason.Root);
+    }
+
+    private static void ObserveReturnField(int notification)
+    {
+        if (_editorFence is not { } editor)
+            return;
+        QueueEditorTrace(editor.Intent, EditorEvent.ReturnFocus);
+        if (_returnState == SourceReturnState.Invalid)
+            return;
+        if (_returnState == SourceReturnState.RootActive && notification == 0x0100
+            && WindowsInterruptClock.NowMs < _returnExpiresAt)
+        {
+            _returnState = SourceReturnState.FieldFocused;
+            _editorEventSequence = checked(_editorEventSequence + 1);
+        }
+        else
+            InvalidateSourceReturn(EditorReason.Field);
+    }
+
+    private static void CompleteSourceReturn()
+    {
+        if (_returnState != SourceReturnState.FieldFocused || !_returnAppActive || !_returnResumed || _returnControl is null)
+            return;
+        if (_editorEventSequence != _returnBaseline + 3 || _owned!.FocusRevision <= _returnFocusRevision
+            || !SourceFocused() || WindowsInterruptClock.NowMs >= _returnExpiresAt || _witness is null || _witness.Poisoned)
+        {
+            InvalidateSourceReturn(EditorReason.Field);
+            return;
+        }
+        _returnState = SourceReturnState.Returned;
+        _returnNotice = "source-returned";
+        QueueEditorTrace(_returnControl.EditorIntent, EditorEvent.Returned);
+    }
+
+    private static void InvalidateSourceReturn(EditorReason reason)
+    {
+        if (_returnState is SourceReturnState.None or SourceReturnState.Invalid)
+            return;
+        _planActive = false;
+        _returnState = SourceReturnState.Invalid;
+        _editorEventSequence = checked(_editorEventSequence + 1);
+        _returnNotice = "return-invalid";
+        if (_editorFence is { } editor)
+            QueueEditorTrace(editor.Intent, EditorEvent.ReturnInvalid, reason);
     }
 
     private static void QueueEditorTrace(Guid intent, EditorEvent kind, EditorReason reason = EditorReason.None,
@@ -721,6 +991,9 @@ internal static class Program
         _resultMapping = OwnedMapping.Open(control.ResultHandle, control.ResultBytes, true);
         if (plan.Connection != _connection || plan.Run != _run || plan.PlanSequence != control.PlanSequence
             || plan.Permit.Plan.Id != control.PlanId || plan.Descriptor != Descriptor()
+            || _returnedSeal is { } returned && (plan.Descriptor != returned.Descriptor
+                || plan.CommandGeneration == returned.Control.ReturningToken.CommandGeneration
+                || plan.SessionRevision <= returned.Control.ReturningToken.Revision)
             || !SourceFocused() || plan.InstallWitnessSequence > _witness.Sequence
             || !WindowsTarget.TryDecode(plan.Permit.Plan.Expected.Target, out var target)
             || target.ProcessId != Environment.ProcessId || target.ProcessStartUtcTicks != ProcessStartUtcTicks
@@ -765,6 +1038,13 @@ internal static class Program
         _editorAppLeft = false;
         _editorOverlayThread = _editorOverlayProcess = 0;
         _editorNotice = null;
+        _returnState = SourceReturnState.None;
+        _returnControl = null;
+        _mouseReturnNotice = null;
+        _returnNotice = null;
+        _returnAppActive = _returnResumed = false;
+        _returnBaseline = _returnExpiresAt = _returnFocusRevision = 0;
+        _returnedSeal = null;
     }
 
     private static void ReleaseAcceptance()
@@ -1011,6 +1291,7 @@ internal static class Program
 
     private static void RestartPractice()
     {
+        ResetCompletion();
         InvalidateEditorHandoff(EditorReason.Restart);
         _planActive = false;
         _restartPending = true;
@@ -1022,6 +1303,7 @@ internal static class Program
 
     private static void ClosePractice()
     {
+        ResetCompletion();
         InvalidateEditorHandoff(EditorReason.Close);
         _planActive = false;
         _owned?.Retire();
@@ -1148,6 +1430,8 @@ internal static class Program
                 int height;
                 if (control == _edit)
                     height = Scale(128);
+                else if (control == _finish)
+                    height = CompletionControlVisible ? Scale(36) : 0;
                 else if (control == _close || control == _restart)
                     height = Scale(36);
                 else if (control.Text.Length == 0)
@@ -1159,7 +1443,7 @@ internal static class Program
                     Native.DrawTextW(dc, control.Text, -1, ref measure, 0x0010 | 0x0400 | 0x0800 | 0x2000);
                     height = measure.Bottom + Scale(4);
                 }
-                control.Bounds = new(margin, y, control == _close || control == _restart ? Scale(144) : width, height);
+                control.Bounds = new(margin, y, control == _close || control == _restart || control == _finish ? Scale(144) : width, height);
                 if (height != 0)
                     y += height + Scale(control == _inputLabel ? 6 : 12);
             }
@@ -1222,6 +1506,9 @@ internal static class Program
                 case 0x0005: // WM_SIZE
                     Layout();
                     return 0;
+                case 0x0021: // WM_MOUSEACTIVATE: retain ordinary stock Edit mouse processing.
+                    ObserveReturnMouse(wParam, lParam);
+                    break;
                 case 0x0006: // WM_ACTIVATE
                     InvalidateFocus();
                     ObserveEditorRoot(wParam, lParam); // Before DefWindowProc can notify the stock Edit.
@@ -1261,6 +1548,8 @@ internal static class Program
                         ClosePractice();
                     else if (id == RestartId && notification == 0 && _progressConnected && !_restartPending)
                         RestartPractice();
+                    else if (id == FinishId && notification == 0)
+                        QueueFinish();
                     else if (id == EditId && notification is 0x0100 or 0x0200
                         && _edit is not null && lParam == _edit.Handle)
                     {
@@ -1269,8 +1558,8 @@ internal static class Program
                         if (notification == 0x0100)
                             EnsureVisible(_edit);
                     }
-                    else if (notification == 6 && id is CloseId or RestartId)
-                        EnsureVisible(id == CloseId ? _close! : _restart!);
+                    else if (notification == 6 && id is CloseId or RestartId or FinishId)
+                        EnsureVisible(id == CloseId ? _close! : id == RestartId ? _restart! : _finish!);
                     return 0;
                 case 0x0113: // WM_TIMER
                     if (wParam == 1)
@@ -1404,10 +1693,13 @@ internal static class Program
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool PeekMessageW(out Message message, nint window, uint minimum, uint maximum, uint remove);
         [DllImport("user32.dll")] internal static extern uint MsgWaitForMultipleObjectsEx(uint count, nint handles, uint milliseconds, uint wakeMask, uint flags);
         [DllImport("user32.dll")] internal static extern nint GetFocus();
+        [DllImport("user32.dll")] internal static extern uint GetMessagePos();
+        [DllImport("user32.dll")] internal static extern nint WindowFromPoint(Point point);
         [DllImport("user32.dll")] internal static extern short GetKeyState(int virtualKey);
         [DllImport("user32.dll")] internal static extern nint GetForegroundWindow();
         [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(nint window, out uint process);
         [DllImport("kernel32.dll")] internal static extern uint GetCurrentThreadId();
+        [DllImport("kernel32.dll")] internal static extern bool CloseHandle(nint handle);
         [DllImport("kernel32.dll")] internal static extern ulong GetTickCount64();
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool IsDialogMessageW(nint window, ref Message message);
         [DllImport("user32.dll")] internal static extern bool TranslateMessage(ref Message message);

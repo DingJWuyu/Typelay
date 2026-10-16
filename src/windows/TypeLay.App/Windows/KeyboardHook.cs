@@ -81,7 +81,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             return FocusMember.Other;
         if (_ownedSource is { } owned && target == owned.Target)
             return _ownedEditorFocus?.Invoke(target) == true ? FocusMember.Overlay
-                : OwnedFocus(owned.Descriptor) ? FocusMember.Source : FocusMember.Other;
+                : _ownedReturnFocus?.Invoke(target) == true || OwnedFocus(owned.Descriptor) ? FocusMember.Source : FocusMember.Other;
         nint foreground = Native.GetForegroundWindow();
         return foreground == (nint)native.RootHwnd ? FocusMember.Source
             : foreground == _editorHwnd && _editorHwnd != 0 ? FocusMember.Overlay : FocusMember.Other;
@@ -298,6 +298,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
         var binding = Volatile.Read(ref _lease);
         var lease = binding?.Observation;
         long now = WindowsInterruptClock.NowMs;
+        ObserveReturnKey(data, down, repeated, injected, now);
         bool fresh = _sessionEnabled && lease is not null && lease.CommandGeneration == CommandGeneration && lease.UserEpoch == UserEpoch && lease.ForegroundEpoch == ForegroundEpoch
             && now >= lease.Source.ObservedAtMs && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
         bool source = fresh && Native.GetForegroundWindow() == (nint)binding!.RootHwnd;

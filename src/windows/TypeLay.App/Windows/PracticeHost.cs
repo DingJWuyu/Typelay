@@ -44,6 +44,7 @@ internal sealed partial class PracticeHost : IDisposable
         if (_session is not null || _child is not null)
             throw new InvalidOperationException("practice-already-bound");
         _session = session;
+        BindCompletion(session);
         session.PracticeProgressChanged += ProgressChanged;
         session.AutomaticPracticeProgressChanged += AutomaticProgressChanged;
     }
@@ -171,6 +172,7 @@ internal sealed partial class PracticeHost : IDisposable
         if (_disposed || !ReferenceEquals(_child, child) || child.Process.HasExited || _session is null
             || _nativeActive || _pending is not null)
             return;
+        ResetCompletion();
         _session.StopSession();
         _disconnecting = false;
         _closedConfirmed = false;
@@ -179,6 +181,8 @@ internal sealed partial class PracticeHost : IDisposable
         _descriptor = null;
         _editorSealed = false;
         _editorAttempt = null;
+        _returnAttempt = null;
+        _lastOwnedBinding = null;
         if (_automatic)
         {
             if (_witnessMapping is not null)
@@ -213,6 +217,7 @@ internal sealed partial class PracticeHost : IDisposable
                 acceptedAtMs
             });
         }
+        ResetCompletion();
         _restartAfterRetire |= restart;
         CancelEditorAttempt(sendControl: true);
         bool active = _nativeActive;
@@ -239,7 +244,8 @@ internal sealed partial class PracticeHost : IDisposable
     {
         var message = new PracticeMessage(kind, _connection, _runId, checked(++_sequence),
             Acceptance: kind == "begin-auto" ? new(WitnessHandle: _witnessMapping!.RemoteHandle,
-                WitnessBytes: _witnessMapping.Length, AllowInjectedInput: _allowInjectedInput) : null);
+                WitnessBytes: _witnessMapping.Length, AllowInjectedInput: _allowInjectedInput) : null,
+            Completion: kind == "retire" ? CompletionForRetirement() : null);
         _pending = message;
         var cancellation = _communication!.Token;
         Enqueue(message);
@@ -322,6 +328,8 @@ internal sealed partial class PracticeHost : IDisposable
                     continue;
                 if (message.Sequence != _sequence)
                     throw new InvalidDataException("practice-ack-sequence");
+                if (await HandleFinishMessageAsync(message))
+                    continue;
                 if (message.Kind == "closed")
                 {
                     _closedConfirmed = true; // Native retirement and view closure precede this ACK.
@@ -357,6 +365,7 @@ internal sealed partial class PracticeHost : IDisposable
                     if (_automatic)
                         ReleaseRetiredWitness();
                     ConfirmNativeRetirement();
+                    CompletionRetired(pending);
                     _retirement?.TrySetResult(true);
                     _retirement = null;
                 }
@@ -395,6 +404,7 @@ internal sealed partial class PracticeHost : IDisposable
 
     private void Retire()
     {
+        ResetCompletion();
         _nativeActive = false;
         AbandonAcceptance();
         _pending = null;
@@ -420,6 +430,7 @@ internal sealed partial class PracticeHost : IDisposable
         if (_disposed)
             return;
         _disposed = true;
+        UnbindCompletion();
         Retire();
         if (_session is not null)
         {

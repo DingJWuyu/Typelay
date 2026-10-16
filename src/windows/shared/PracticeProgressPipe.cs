@@ -11,13 +11,26 @@ namespace TypeLay.Windows;
 internal sealed record PracticeMessage(string Kind, Guid Connection, Guid Run, long Sequence,
     OnDemandPracticeProgress? Progress = null, OwnedAcceptanceControl? Acceptance = null,
     AutomaticPracticeProgress? AutomaticProgress = null, PracticeInputCompletion? InputCompletion = null,
-    OwnedEditorControl? Editing = null);
+    OwnedEditorControl? Editing = null, OwnedReturnControl? Returning = null,
+    OwnedReturnMouse? MouseReturn = null, OwnedPracticeCompletion? Completion = null);
 
 // Fixed metadata for one source-to-editor attempt. No draft/source body or write
 // permit crosses this pipe. Only the source GUI advances SourceEventSequence.
 internal sealed record OwnedEditorControl(Guid Intent, OwnedCaptureDescriptor Descriptor,
     SessionViewToken DisplayedToken, SessionViewToken AdmittedToken, long OverlayHwnd,
     long ExpiresAtMs, long InputSequence, long SourceEventSequence = 0);
+
+internal enum OwnedReturnKind
+{
+    Tab, Mouse
+}
+
+// One return attempt carries only identities. Its new witness is not a permit.
+internal sealed record OwnedReturnControl(Guid Intent, Guid EditorIntent, OwnedReturnKind Kind,
+    SessionViewToken ReturningToken, long ExpiresAtMs, long InputSequence,
+    long SourceEventSequence = 0, OwnedCaptureDescriptor? Descriptor = null);
+internal sealed record OwnedReturnMouse(Guid EditorIntent, long SourceEventSequence, int X, int Y);
+internal sealed record OwnedPracticeCompletion(OwnedPracticeBinding Binding, long FinalProgressRevision);
 
 // Explicit queue-fixture observation only. This is a completed GUI dispatch,
 // not a low-level witness or authority to accept input.
@@ -66,6 +79,9 @@ internal static class PracticeProgressPipe
             || message.Kind is not ("begin" or "retire" or "started" or "retired" or "restart" or "closed" or "progress"
                 or "begin-auto" or "source-ready" or "install" or "installed" or "revoke-plan" or "revoked-plan"
                 or "release-plan" or "released-plan" or "receipt" or "witness-consumed" or "witness-failed" or "auto-progress"
+                or "return-fence" or "return-fenced" or "return-resume" or "source-returned"
+                or "return-invalid" or "return-cancel" or "mouse-intent"
+                or "finish" or "finish-saved" or "finish-retry" or "finish-denied" or "completion-clear"
                 or "test-tab-dispatched" or "edit-fence" or "edit-fenced" or "edit-left" or "edit-invalid" or "edit-cancel")
             || (message.Kind == "progress" ? message.Progress?.RunId != message.Run : message.Progress is not null))
             throw new InvalidDataException("practice-progress-message");
@@ -96,6 +112,51 @@ internal static class PracticeProgressPipe
         }
         else if (message.Editing is not null)
             throw new InvalidDataException("practice-editor-control");
+        bool returning = message.Kind is "return-fence" or "return-fenced" or "return-resume"
+            or "source-returned" or "return-invalid" or "return-cancel";
+        if (returning)
+        {
+            if (message.Returning is not { } returned || returned.Intent == Guid.Empty || returned.EditorIntent == Guid.Empty
+                || !Enum.IsDefined(returned.Kind) || returned.ReturningToken is not { } token
+                || token.CommandGeneration == Guid.Empty || token.Revision < 0 || token.Target.Lifetime == Guid.Empty
+                || !WindowsTarget.TryDecode(token.Target, out _)
+                || returned.ExpiresAtMs <= 0 || returned.InputSequence <= 0
+                || (message.Kind is "return-fence" or "return-resume" or "return-cancel"
+                    ? returned.SourceEventSequence != 0 : returned.SourceEventSequence <= 0)
+                || (message.Kind == "source-returned" ? returned.Descriptor is not { IsValid: true } : returned.Descriptor is not null)
+                || (message.Kind == "return-fence" ? message.Acceptance is not
+                {
+                    WitnessHandle: not 0,
+                    WitnessBytes: OwnedPracticeAcceptanceProtocol.WitnessBytes
+                }
+                    || message.Acceptance with
+                    {
+                        WitnessHandle = 0,
+                        WitnessBytes = 0
+                    } != new OwnedAcceptanceControl()
+                    : message.Acceptance is not null)
+                || message.Editing is not null || message.MouseReturn is not null || message.Progress is not null
+                || message.AutomaticProgress is not null || message.InputCompletion is not null || message.Completion is not null)
+                throw new InvalidDataException("practice-return-control");
+        }
+        else if (message.Returning is not null)
+            throw new InvalidDataException("practice-return-control");
+        if (message.Kind == "mouse-intent"
+            ? message.MouseReturn is not { EditorIntent: var editor, SourceEventSequence: > 0 } || editor == Guid.Empty
+                || message.Acceptance is not null || message.Editing is not null || message.Completion is not null
+            : message.MouseReturn is not null)
+            throw new InvalidDataException("practice-return-mouse");
+        bool completion = message.Kind is "finish" or "finish-saved" or "finish-retry" or "finish-denied" or "completion-clear";
+        if (completion && message.Completion is null || message.Completion is not null && !completion && message.Kind != "retire")
+            throw new InvalidDataException("practice-completion-kind");
+        if (message.Completion is { } completed
+            && (completed.Binding is not { } binding || binding.RunId != message.Run || binding.ConnectionId != message.Connection
+                || completed.Binding.CommandGeneration == Guid.Empty || completed.Binding.NativeFocusRevision <= 0
+                || completed.Binding.ContextGeneration <= 0 || completed.Binding.Target.Lifetime == Guid.Empty
+                || !WindowsTarget.TryDecode(completed.Binding.Target, out _)
+                || completed.FinalProgressRevision <= 0 || message.Acceptance is not null
+                || message.Progress is not null || message.AutomaticProgress is not null || message.InputCompletion is not null))
+            throw new InvalidDataException("practice-completion-identity");
         if (message.Acceptance?.ObserveInputCompletion == true && message.Kind is not ("begin" or "begin-auto"))
             throw new InvalidDataException("practice-input-observation");
     }

@@ -153,6 +153,7 @@ internal sealed partial class PracticeHost
         if (_target is null && !_session.BindAutomaticPractice(binding))
             return null;
         _target = snapshot.Target;
+        _lastOwnedBinding = binding;
         return new(binding, snapshot.ObservedAtMs, false);
     }
     internal Task<bool> RetireAutomaticAsync(OwnedPracticeBinding binding)
@@ -206,6 +207,8 @@ internal sealed partial class PracticeHost
     }
     private void AutomaticProgressChanged(AutomaticPracticeProgress? progress)
     {
+        if (HandleCompletionProgress(progress))
+            return;
         if (!IsAutomatic || _child is null || _disposed || progress is null || progress.RunId != _runId)
             return;
         if (_nativeActive && _pending is null)
@@ -292,6 +295,7 @@ internal sealed partial class PracticeHost
     internal void PollAcceptance()
     {
         _dispatcher.VerifyAccess();
+        PollOwnedReturn();
         if (_acceptance is not { } current)
         {
             if (_nextAcceptance is { ReplacesPlanSequence: > 0 })
@@ -433,7 +437,7 @@ internal sealed partial class PracticeHost
     }
     private bool HandleAcceptanceMessage(PracticeMessage message)
     {
-        if (HandleEditingMessage(message))
+        if (HandleReturnMessage(message) || HandleEditingMessage(message))
             return true;
         if (message.Kind == "source-ready")
         {
@@ -538,6 +542,7 @@ internal sealed partial class PracticeHost
     }
     private void ReleaseRetiredWitness()
     {
+        ReleaseReturnMapping(confirmed: true);
         // The matching retirement ACK proves that the child closed this view.
         // Only the UI thread waits for an already-entered bounded LL callback.
         _monitor?.ClearOwnedChannel();
@@ -553,6 +558,7 @@ internal sealed partial class PracticeHost
     {
         _disconnecting = true;
         CancelEditorAttempt(sendControl: false);
+        ReleaseReturnMapping(confirmed: false);
         _monitor?.ClearOwnedChannel();
         if (_witnessWriter?.Stop() == false)
             throw new InvalidOperationException("practice-hook-stop");

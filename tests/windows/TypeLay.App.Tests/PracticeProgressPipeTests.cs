@@ -82,6 +82,72 @@ public sealed class PracticeProgressPipeTests
         Assert.Equal(stream.Length, stream.Position);
     }
 
+    [Fact]
+    public async Task ReturnAndCompletionFramesRemainBoundedAndRejectMixedAuthority()
+    {
+        var descriptor = new OwnedCaptureDescriptor(120, 630000000000000000, 501, 502, 121, 41, 11, 1);
+        var target = new WindowsTarget(120, 630000000000000000, 501, 502,
+            "win32-edit-transaction-v2", "1.2.3", Guid.NewGuid()).Id;
+        Guid connection = Guid.NewGuid(), run = Guid.NewGuid(), generation = Guid.NewGuid();
+        var token = new SessionViewToken(target, generation, 12);
+        var returned = new OwnedReturnControl(Guid.NewGuid(), Guid.NewGuid(), OwnedReturnKind.Mouse, token, 900, 21);
+        var mouse = new OwnedReturnMouse(returned.EditorIntent, 7, 100, 200);
+        var completed = new OwnedPracticeCompletion(new(run, target, connection, generation, 11, 1), 30);
+        PracticeMessage[] messages =
+        [
+            new("mouse-intent", connection, run, 1, MouseReturn: mouse),
+            new("return-fence", connection, run, 1, Returning: returned,
+                Acceptance: new(WitnessHandle: 601, WitnessBytes: OwnedPracticeAcceptanceProtocol.WitnessBytes)),
+            new("return-fenced", connection, run, 1, Returning: returned with { SourceEventSequence = 7 }),
+            new("return-resume", connection, run, 1, Returning: returned),
+            new("source-returned", connection, run, 1, Returning: returned with { SourceEventSequence = 10, Descriptor = descriptor }),
+            new("return-invalid", connection, run, 1, Returning: returned with { SourceEventSequence = 7 }),
+            new("return-cancel", connection, run, 1, Returning: returned),
+            new("retire", connection, run, 2, Completion: completed),
+            new("finish", connection, run, 2, Completion: completed),
+            new("finish-saved", connection, run, 2, Completion: completed),
+            new("finish-retry", connection, run, 2, Completion: completed),
+            new("finish-denied", connection, run, 2, Completion: completed),
+            new("completion-clear", connection, run, 2, Completion: completed)
+        ];
+        foreach (var message in messages)
+        {
+            using var stream = new MemoryStream();
+            await PracticeProgressPipe.WriteAsync(stream, message, TestContext.Current.CancellationToken);
+            Assert.InRange(stream.Length, 5, 4100);
+            stream.Position = 0;
+            Assert.Equal(message, await PracticeProgressPipe.ReadAsync(stream, TestContext.Current.CancellationToken));
+            var mixed = message.Returning is not null || message.MouseReturn is not null
+                ? message with
+                {
+                    Completion = completed
+                } : message with
+                {
+                    Returning = returned
+                };
+            using var rejected = new MemoryStream();
+            await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(rejected, mixed,
+                TestContext.Current.CancellationToken));
+            Assert.Equal(0, rejected.Length);
+        }
+        PracticeMessage[] invalid =
+        [
+            messages[1] with { Returning = returned with { InputSequence = 0 } },
+            messages[1] with { Returning = returned with { SourceEventSequence = 7 } },
+            messages[1] with { Acceptance = messages[1].Acceptance! with { PlanId = Guid.NewGuid() } },
+            messages[4] with { Returning = returned with { SourceEventSequence = 10 } },
+            messages[7] with { Completion = completed with { Binding = null! } },
+            messages[7] with { Completion = completed with { Binding = completed.Binding with { RunId = Guid.NewGuid() } } }
+        ];
+        foreach (var message in invalid)
+        {
+            using var stream = new MemoryStream();
+            await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(stream, message,
+                TestContext.Current.CancellationToken));
+            Assert.Equal(0, stream.Length);
+        }
+    }
+
     [Theory]
     [InlineData("old-token")]
     [InlineData("different-target")]

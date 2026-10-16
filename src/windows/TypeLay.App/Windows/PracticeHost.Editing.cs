@@ -70,7 +70,7 @@ internal sealed partial class PracticeHost
     {
         _editorOverlay = overlay;
         overlay.ConfigureOwnedEditing(this);
-        _monitor!.ConfigureOwnedEditorFocus(OwnsEditorFocus);
+        _monitor!.ConfigureOwnedEditorFocus(OwnsEditorFocus, OwnsReturnedFocus);
     }
 
     internal bool IsOwnedEditorTarget(TargetId target) => OwnsAutomaticTarget(target);
@@ -78,8 +78,9 @@ internal sealed partial class PracticeHost
     // The first slice is available only through the existing explicit software
     // automation constructor. Production cannot advertise a partial edit flow.
     internal bool EditorReady(TargetId target) => _allowInjectedInput && _editorOverlay is not null && SourceReady(target);
-    internal bool SuppressOwnedCapture(InputContext context) => _editorSealed
+    internal bool SuppressOwnedWrite(InputContext context) => _editorSealed
         && (context.BoundTarget is { } target && OwnsAutomaticTarget(target) || CapturesAutomaticForeground);
+    internal bool SuppressOwnedCapture(InputContext context) => SuppressOwnedWrite(context) && ReturnDescriptor(context) is null;
 
     internal void TraceOwnedEditorAdmission(OwnedEditorAdmissionReason reason, object? detail = null)
     {
@@ -341,6 +342,8 @@ internal sealed partial class PracticeHost
     {
         if (_editorAttempt is not { Cancelled: false } attempt)
             return;
+        bool returning = _returnAttempt is { FenceSent: true } returned && ReferenceEquals(returned.Editor, attempt);
+        CancelOwnedReturn(attempt, sendControl);
         attempt.Cancelled = true;
         _monitor?.EndOwnedEditorForeground(attempt.Control.Intent);
         TraceOwnedEditor(attempt.Control.Intent, OwnedEditorEvent.Cancelled, reason);
@@ -348,7 +351,7 @@ internal sealed partial class PracticeHost
         // Only the ordinary retire/new-run path can establish a fresh one.
         RevokeAcceptance();
         _editorOverlay?.CancelOwnedEditor(attempt.Control.Intent);
-        if (sendControl && _communication is not null && ReferenceEquals(_child, attempt.Child)
+        if (sendControl && !returning && _communication is not null && ReferenceEquals(_child, attempt.Child)
             && _connection == attempt.Connection && _runId == attempt.Run && _sequence == attempt.Sequence)
             Enqueue(new("edit-cancel", attempt.Connection, attempt.Run, attempt.Sequence, Editing: attempt.Control));
     }

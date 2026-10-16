@@ -31,6 +31,9 @@ internal sealed class OverlayWindow : Window, ISessionView
     private PracticeHost? _ownedEditorHost;
     private OwnedEditorControl? _ownedEditor;
     private bool _ownedActivationRequested, _ownedAppActive, _ownedRootActive, _ownedFocusAcquired;
+    private bool _ownedReturning, _ownedReturnInvoking, _ownedReturnAppLeft, _ownedReturnRootLeft, _ownedReturnFocusLost, _ownedReturnReported;
+    private SessionViewToken? _ownedReturningToken;
+    private TargetId? _returnedDraftTarget;
     private SessionViewToken? _pressedExitToken;
     private bool _exitPressPending;
     private readonly Grid _surface;
@@ -244,7 +247,10 @@ internal sealed class OverlayWindow : Window, ISessionView
             {
                 _consumedShortcutKeys.Add(key);
                 e.Handled = true;
-                ReturnRequested?.Invoke(context.Token);
+                if (_ownedEditor is { } owned)
+                    RequestOwnedReturn(owned, OwnedReturnKind.Tab);
+                else
+                    ReturnRequested?.Invoke(context.Token);
             }
             else if (key == _exitKey && _editing)
             {
@@ -377,6 +383,21 @@ internal sealed class OverlayWindow : Window, ISessionView
             _ownedEditorHost?.TraceOwnedEditor(appAttempt.Intent, OwnedEditorEvent.UiApp,
                 peer: lp == 0 ? OwnedEditorPeer.None : sourceThread ? OwnedEditorPeer.SourceThread : OwnedEditorPeer.Other,
                 active: active);
+            if (!_ownedReturning && _ownedFocusAcquired && !active && sourceThread)
+                RequestOwnedReturn(appAttempt, OwnedReturnKind.Mouse);
+            if (_ownedEditor != appAttempt)
+                return 0;
+            if (_ownedReturning)
+            {
+                if (!_ownedReturnAppLeft && !active && sourceThread)
+                {
+                    _ownedReturnAppLeft = true;
+                    ConfirmOwnedReturnLeft();
+                }
+                else
+                    InvalidateOwnedEditor(OwnedEditorReason.UiApp);
+                return 0;
+            }
             // APP identifies the peer GUI thread, independently of the local
             // root->editor focus path. Either side may arrive first.
             if (_ownedActivationRequested && !_ownedAppActive && active && sourceThread
@@ -395,6 +416,22 @@ internal sealed class OverlayWindow : Window, ISessionView
                 peer: lp == 0 ? OwnedEditorPeer.None : lp == (nint)attempt.Descriptor.RootHwnd
                     ? OwnedEditorPeer.SourceRoot : lp == _hwnd ? OwnedEditorPeer.OverlayRoot : OwnedEditorPeer.Other,
                 active: active);
+            if (!_ownedReturning && _ownedFocusAcquired && !active && (lp == 0 || lp == (nint)attempt.Descriptor.RootHwnd))
+                RequestOwnedReturn(attempt, OwnedReturnKind.Mouse);
+            if (_ownedEditor != attempt)
+                return 0;
+            if (_ownedReturning)
+            {
+                if (!_ownedReturnRootLeft && !_ownedReturnFocusLost && !active
+                    && (lp == 0 || lp == (nint)attempt.Descriptor.RootHwnd))
+                {
+                    _ownedReturnRootLeft = true;
+                    ConfirmOwnedReturnLeft();
+                }
+                else
+                    InvalidateOwnedEditor(OwnedEditorReason.UiRoot);
+                return 0;
+            }
             if (_ownedActivationRequested && !_ownedRootActive && !_ownedFocusAcquired
                 && active && (lp == 0 || lp == (nint)attempt.Descriptor.RootHwnd)
                 && WindowsInterruptClock.NowMs <= attempt.ExpiresAtMs)
@@ -519,8 +556,8 @@ internal sealed class OverlayWindow : Window, ISessionView
     }
 
     internal bool OwnsEditorFocus(OwnedEditorControl control) => _ownedEditor == control
-        && _ownedRootActive && _ownedFocusAcquired && _editing && IsVisible
-        && _viewContext is { CanEdit: true } context && context.Token == control.AdmittedToken
+        && _ownedRootActive && _ownedFocusAcquired && (_editing || _ownedReturning && !_ownedReturnFocusLost) && IsVisible
+        && _viewContext is { CanEdit: true } context && context.Token == (_ownedReturningToken ?? control.AdmittedToken)
         && Native.GetForegroundWindow() == _hwnd && ReferenceEquals(Keyboard.FocusedElement, _editor);
 
     private void OwnedKeyboardFocusGained(object sender, KeyboardFocusChangedEventArgs input)
@@ -529,7 +566,7 @@ internal sealed class OverlayWindow : Window, ISessionView
             return;
         _ownedEditorHost?.TraceOwnedEditor(attempt.Intent, OwnedEditorEvent.UiFocusGained,
             peer: EditorFocusPeer(input.OldFocus), nextPeer: EditorFocusPeer(input.NewFocus));
-        if (!_ownedActivationRequested || !_ownedRootActive)
+        if (_ownedReturning || !_ownedActivationRequested || !_ownedRootActive)
         {
             InvalidateOwnedEditor(OwnedEditorReason.UiFocusGained);
             return;
@@ -547,11 +584,72 @@ internal sealed class OverlayWindow : Window, ISessionView
             return;
         _ownedEditorHost?.TraceOwnedEditor(attempt.Intent, OwnedEditorEvent.UiFocusLost,
             peer: EditorFocusPeer(input.OldFocus), nextPeer: EditorFocusPeer(input.NewFocus));
+        if (_ownedReturning)
+        {
+            // An early loss cannot be repaired by a later root edge, and a
+            // transfer to another local control is never a source return.
+            if (_ownedReturnRootLeft && !_ownedReturnFocusLost
+                && ReferenceEquals(input.OldFocus, _editor) && input.NewFocus is null)
+            {
+                _ownedReturnFocusLost = true;
+                ConfirmOwnedReturnLeft();
+            }
+            else
+                InvalidateOwnedEditor(OwnedEditorReason.UiFocusLost);
+            return;
+        }
         // WPF may pass through its Window after the armed root edge. Once the
         // editor itself has focus, even a NULL or another local control ends it.
         if (_ownedFocusAcquired || !_ownedRootActive || !ReferenceEquals(input.OldFocus, this)
             || input.NewFocus is not null && !ReferenceEquals(input.NewFocus, _editor))
             InvalidateOwnedEditor(OwnedEditorReason.UiFocusLost);
+    }
+
+    internal bool RequestOwnedReturn(OwnedEditorControl control, OwnedReturnKind kind)
+    {
+        if (_ownedEditor != control || _ownedReturning || !_ownedFocusAcquired || !_editing || _composing
+            || _viewContext is not { CanEdit: true } context || context.Token != control.AdmittedToken
+            || kind == OwnedReturnKind.Tab && !OwnsEditorFocus(control)
+            || _ownedEditorHost?.BeginOwnedReturn(context.Token, kind) != true)
+        {
+            InvalidateOwnedEditor(OwnedEditorReason.UiRender);
+            return false;
+        }
+        _ownedReturning = true;
+        _editing = false;
+        _editor.IsReadOnly = true;
+        // Keep the real focus until Windows delivers its departure. Clearing
+        // Focusable here would manufacture the very loss being acknowledged.
+        _ownedReturnInvoking = true;
+        try
+        {
+            ReturnRequested?.Invoke(context.Token);
+        }
+        finally { _ownedReturnInvoking = false; }
+        if (_ownedEditor != control || _ownedReturningToken is null)
+        {
+            InvalidateOwnedEditor(OwnedEditorReason.UiRender);
+            return false;
+        }
+        UpdateEditorAffordance();
+        return true;
+    }
+
+    private void ConfirmOwnedReturnLeft()
+    {
+        if (_ownedEditor is not { } editor || !_ownedReturning || _ownedReturningToken is not { } token
+            || _ownedReturnReported || !_ownedReturnAppLeft || !_ownedReturnRootLeft || !_ownedReturnFocusLost)
+            return;
+        _ownedReturnReported = true;
+        _ownedEditorHost?.ConfirmOwnedReturnLeft(editor.Intent, token);
+    }
+
+    internal void CompleteOwnedReturn(Guid editorIntent, SessionViewToken returningToken)
+    {
+        if (_ownedEditor?.Intent != editorIntent || _ownedReturningToken != returningToken || !_ownedReturnReported)
+            return;
+        CancelOwnedEditor(editorIntent); // Local UI cleanup only; never cancels the host's successful return.
+        _returnedDraftTarget = returningToken.Target;
     }
 
     private OwnedEditorPeer EditorFocusPeer(IInputElement? focus) => focus is null ? OwnedEditorPeer.None
@@ -572,6 +670,9 @@ internal sealed class OverlayWindow : Window, ISessionView
             return;
         _ownedEditor = null;
         _ownedActivationRequested = _ownedAppActive = _ownedRootActive = _ownedFocusAcquired = false;
+        _ownedReturning = _ownedReturnInvoking = _ownedReturnAppLeft = _ownedReturnRootLeft = _ownedReturnFocusLost = _ownedReturnReported = false;
+        _ownedReturningToken = null;
+        _returnedDraftTarget = null;
         _editing = _composing = _canEditPreview = false;
         _editor.IsReadOnly = true;
         _editor.IsUndoEnabled = false;
@@ -633,9 +734,28 @@ internal sealed class OverlayWindow : Window, ISessionView
     public void Render(Session session, UserSettings settings, bool permit, string? statusOverride = null, SessionViewContext? context = null)
     {
         _viewContext = context is not null && session.Current?.Target == context.Token.Target ? context : null;
-        if (_ownedEditor is { } attempt && (_viewContext is not { CanEdit: true } current
-            || current.Token != attempt.AdmittedToken || session.State != SessionState.EditingTranslation))
-            InvalidateOwnedEditor(OwnedEditorReason.UiRender);
+        if (_ownedEditor is { } attempt)
+        {
+            if (_ownedReturning)
+            {
+                if (_ownedReturnInvoking && _ownedReturningToken is null
+                    && _viewContext is { CanEdit: true } returning && session.State == SessionState.ReturningToSource
+                    && returning.Token.Target == attempt.AdmittedToken.Target
+                    && returning.Token.CommandGeneration == attempt.AdmittedToken.CommandGeneration
+                    && returning.Token.Revision == attempt.AdmittedToken.Revision + 1)
+                {
+                    _ownedReturningToken = returning.Token;
+                    _ownedEditorHost?.AdmitOwnedReturnToken(attempt.Intent, returning.Token);
+                }
+                else if (_viewContext?.Token != _ownedReturningToken || session.State != SessionState.ReturningToSource)
+                    InvalidateOwnedEditor(OwnedEditorReason.UiRender);
+            }
+            else if (_viewContext is not { CanEdit: true } current
+                || current.Token != attempt.AdmittedToken || session.State != SessionState.EditingTranslation)
+                InvalidateOwnedEditor(OwnedEditorReason.UiRender);
+        }
+        if (_returnedDraftTarget is { } returned && (session.Current?.Target != returned || session.State != SessionState.ReturningToSource))
+            _returnedDraftTarget = null;
         ConfigureSessionShortcuts(_viewContext?.Bindings ?? SessionShortcutBindings.Default);
         var display = Presentation.From(session.State, permit, session.Preview.Length > 0, shortcuts: _viewContext?.Bindings);
         if (!display.Visible || session.Current is not { } source)
@@ -690,7 +810,14 @@ internal sealed class OverlayWindow : Window, ISessionView
             _tabHint.Text = shortcutHint[(_shortcutMessages.AcceptKey.Length + 1)..];
             _escapeKeycap.Visibility = source.Ime == ImeState.Clear ? Visibility.Visible : Visibility.Collapsed;
             _escapeLabel.Text = source.Ime == ImeState.Clear ? _shortcutMessages.ExitLabel : "隐藏当前翻译";
-            if (!display.EditorOwnsText || _viewContext?.CanEdit != true)
+            bool preserveReturnedDraft = session.State == SessionState.ReturningToSource
+                && (_ownedReturning || _returnedDraftTarget == source.Target);
+            if (preserveReturnedDraft)
+            {
+                _editing = false;
+                _editor.IsReadOnly = true;
+            }
+            else if (!display.EditorOwnsText || _viewContext?.CanEdit != true)
             {
                 _editing = false;
                 _composing = false;

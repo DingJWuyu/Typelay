@@ -30,7 +30,8 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
             long startedAt = WindowsInterruptClock.NowMs;
             long checkGeneration = support?.CheckGeneration ?? 0;
             bool owned = practice?.CapturesAutomaticForeground == true;
-            var descriptor = owned ? practice!.CaptureDescriptor : null;
+            var returnedDescriptor = owned ? practice!.ReturnDescriptor(context) : null;
+            var descriptor = owned ? returnedDescriptor ?? practice!.CaptureDescriptor : null;
             if (owned && descriptor is null)
                 return new(null);
             var request = Request(owned ? "capture-owned" : "capture", context);
@@ -43,13 +44,15 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
             var result = await broker.CallAsync(request);
             if (practice?.SuppressOwnedCapture(context) == true)
                 return new(null); // An in-flight pre-admission read cannot publish a new basis.
-            var evidence = owned ? practice!.ObserveAutomaticTarget(result.Snapshot, result.Focus, startedAt) : null;
+            var evidence = owned ? returnedDescriptor is not null
+                ? practice!.ObserveReturnCapture(context, result.Snapshot, result.Focus, startedAt)
+                : practice!.ObserveAutomaticTarget(result.Snapshot, result.Focus, startedAt) : null;
             // The local hook and WPF editor apply the same process-local configuration.
             // A stale capture cannot acknowledge a replacement configuration.
             var acknowledgement = result.Snapshot is { } source && context.SessionShortcuts is { } configuration
                 && monitor?.HasSessionConfiguration(configuration) == true
                 ? new SessionShortcutAcknowledgement(source.Target, configuration.Generation, configuration.Bindings,
-                    owned ? practice!.SourceReady(source.Target) : monitor.CanInterceptAcceptance,
+                    owned ? returnedDescriptor is not null && evidence is not null || practice!.SourceReady(source.Target) : monitor.CanInterceptAcceptance,
                     owned ? practice!.EditorReady(source.Target) : monitor.CanInterceptAcceptance) : null;
             var capture = new InputCapture(result.Snapshot, result.Focus, result.Application,
                 result.UserEpoch, result.ForegroundEpoch, acknowledgement, evidence);
@@ -75,7 +78,7 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
     public async Task<InputReturn> ReturnToSourceAsync(InputContext context)
     {
         if (context.BoundTarget is { } owned && practice?.IsOwnedEditorTarget(owned) == true)
-            return new(false); // The first slice has no owned return proof.
+            return await practice.ReturnOwnedAsync(context);
         if (!SessionConfigurationCurrent(context) || context.BoundTarget is not { } id || !WindowsTarget.TryDecode(id, out var target))
             return new(false);
         if (broker.ProcessId != 0)
@@ -89,7 +92,7 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
         && monitor?.HasSessionConfiguration(configuration) == true;
     public async Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs)
     {
-        if (practice?.SuppressOwnedCapture(context) == true || !SessionConfigurationCurrent(context))
+        if (practice?.SuppressOwnedWrite(context) == true || !SessionConfigurationCurrent(context))
             return new(WriteStatus.RejectedBeforeMutation, Denial.EpochChanged);
         var result = await broker.CallAsync(Request("write", context) with
         {

@@ -42,6 +42,12 @@ internal static partial class ContinuousTranslationCheck
         var setup = new SceneResult { Outcome = "running", Stage = "prepare-model" };
         var ownedFirstTab = new SceneResult();
         var ownedEditorHandoff = new SceneResult();
+        var ownedTabReturn = new SceneResult();
+        var ownedMouseReturn = new SceneResult();
+        var ownedEditedAcceptance = new SceneResult();
+        var ownedFinish = new SceneResult();
+        bool OwnedCleanupFailed() => new[] { ownedFirstTab, ownedEditorHandoff, ownedTabReturn, ownedMouseReturn,
+            ownedEditedAcceptance, ownedFinish }.Any(scene => scene.CleanupErrors.Count != 0);
         var continuous = new SceneResult();
         var direct = new SceneResult();
         var practice = new SceneResult();
@@ -70,32 +76,32 @@ internal static partial class ContinuousTranslationCheck
             // does not buy a fresh deadline, model installation or worker restart.
             using var desktop = CancellationTokenSource.CreateLinkedTokenSource(all.Token);
             desktop.CancelAfter(TimeSpan.FromSeconds(90));
-            (ownedFirstTab, ownedEditorHandoff) = await VerifyOwnedFirstTabAsync(directory, model, desktop.Token);
-            if (ownedFirstTab.CleanupErrors.Count != 0 || ownedEditorHandoff.CleanupErrors.Count != 0)
+            (ownedFirstTab, ownedEditorHandoff, ownedTabReturn, ownedMouseReturn, ownedEditedAcceptance, ownedFinish) = await VerifyOwnedFirstTabAsync(directory, model, desktop.Token);
+            if (OwnedCleanupFailed())
                 continuous = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
             else if (desktop.IsCancellationRequested)
                 continuous = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
             else
                 continuous = await VerifyContinuousAsync(directory, nativeFixture, model, desktop.Token);
-            if (ownedFirstTab.CleanupErrors.Count != 0 || ownedEditorHandoff.CleanupErrors.Count != 0 || continuous.CleanupErrors.Count != 0)
+            if (OwnedCleanupFailed() || continuous.CleanupErrors.Count != 0)
                 direct = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
             else if (desktop.IsCancellationRequested)
                 direct = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
             else
                 direct = await VerifyDirectAsync(directory, nativeFixture, model, desktop.Token);
-            if (ownedFirstTab.CleanupErrors.Count != 0 || ownedEditorHandoff.CleanupErrors.Count != 0 || continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0)
+            if (OwnedCleanupFailed() || continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0)
                 practice = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
             else if (desktop.IsCancellationRequested)
                 practice = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
             else
                 practice = await VerifyPracticeAsync(directory, model, desktop.Token);
-            if (ownedFirstTab.CleanupErrors.Count != 0 || ownedEditorHandoff.CleanupErrors.Count != 0 || continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0 || practice.CleanupErrors.Count != 0)
+            if (OwnedCleanupFailed() || continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0 || practice.CleanupErrors.Count != 0)
                 coldPage = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
             else if (desktop.IsCancellationRequested)
                 coldPage = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
             else
                 coldPage = await VerifyColdPageAsync(directory, model, desktop.Token);
-            if (ownedFirstTab.CleanupErrors.Count != 0 || ownedEditorHandoff.CleanupErrors.Count != 0 || continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0 || practice.CleanupErrors.Count != 0
+            if (OwnedCleanupFailed() || continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0 || practice.CleanupErrors.Count != 0
                 || coldPage.CleanupErrors.Count != 0)
                 newTab = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
             else if (desktop.IsCancellationRequested)
@@ -118,9 +124,11 @@ internal static partial class ContinuousTranslationCheck
             Cleanup("model", () => model?.Dispose(), cleanupErrors);
         }
         bool passed = setup.Outcome == "ready" && ownedFirstTab.Outcome == "verified" && ownedEditorHandoff.Outcome == "verified"
+            && ownedTabReturn.Outcome == "verified" && ownedMouseReturn.Outcome == "verified"
+            && ownedEditedAcceptance.Outcome == "verified" && ownedFinish.Outcome == "verified"
             && continuous.Outcome == "passed" && direct.Outcome == "verified"
             && practice.Outcome == "verified" && coldPage.Outcome == "passed" && newTab.Outcome == "passed" && cleanupErrors.Count == 0;
-        var firstFailure = new[] { setup, ownedFirstTab, ownedEditorHandoff, continuous, direct, practice, coldPage, newTab }.FirstOrDefault(result => result.Failure != "none");
+        var firstFailure = new[] { setup, ownedFirstTab, ownedEditorHandoff, ownedTabReturn, ownedMouseReturn, ownedEditedAcceptance, ownedFinish, continuous, direct, practice, coldPage, newTab }.FirstOrDefault(result => result.Failure != "none");
         string failure = firstFailure?.Failure ?? (cleanupErrors.Count == 0 ? "none" : "cleanup-failed");
         string stage = passed ? "complete" : firstFailure?.Stage ?? "cleanup";
         await File.WriteAllTextAsync(Path.Combine(directory, "result.json"), JsonSerializer.Serialize(new
@@ -135,6 +143,10 @@ internal static partial class ContinuousTranslationCheck
             modelSetup = setup,
             ownedAutomaticFirstTab = ownedFirstTab,
             ownedEditorHandoff,
+            ownedTabReturn,
+            ownedMouseReturn,
+            ownedEditedAcceptance,
+            ownedFinish,
             continuousPreview = continuous,
             directTranslation = direct,
             onDemandPractice = practice,

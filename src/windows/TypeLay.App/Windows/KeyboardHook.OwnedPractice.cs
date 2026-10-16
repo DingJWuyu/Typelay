@@ -28,6 +28,44 @@ internal sealed partial class KeyboardHook
     private OwnedInstalled? _ownedInstalled;
     private long _ownedAttemptSequence;
     private Func<TargetId, bool>? _ownedEditorFocus;
+    private Func<TargetId, bool>? _ownedReturnFocus;
+    internal sealed record ReturnInput(Guid EditorIntent, OwnedReturnKind Kind, long Sequence,
+        long ReceivedAtMs, int X, int Y, bool Injected, bool Released)
+    {
+        public long ExpiresAtMs => checked(ReceivedAtMs + 500);
+    }
+    private ReturnInput? _returnInput;
+    internal bool BeginOwnedReturnInput(OwnedReturnKind kind, OwnedCaptureDescriptor descriptor, out ReturnInput? input)
+    {
+        input = Volatile.Read(ref _returnInput);
+        long now = WindowsInterruptClock.NowMs;
+        return ShortcutsReady && input is not null && input.Kind == kind
+            && OwnedEditorForegroundCurrent(input.EditorIntent) && (!input.Injected || _allowInjectedInput)
+            && now >= input.ReceivedAtMs && now < input.ExpiresAtMs
+            && (kind != OwnedReturnKind.Mouse || WindowFromPoint(new Native.Point { X = input.X, Y = input.Y })
+                == (nint)descriptor.ControlHwnd);
+    }
+    internal bool OwnedReturnInputCurrent(ReturnInput input) => Volatile.Read(ref _returnInput) is { } current
+        && current.EditorIntent == input.EditorIntent && current.Sequence == input.Sequence && current.Kind == input.Kind
+        && WindowsInterruptClock.NowMs >= input.ReceivedAtMs && WindowsInterruptClock.NowMs < input.ExpiresAtMs;
+    private void ObserveReturnKey(Native.KeyData data, bool down, bool repeated, bool injected, long now)
+    {
+        var current = Volatile.Read(ref _returnInput);
+        if (!down && data.Key == 9 && current is { Kind: OwnedReturnKind.Tab, Released: false }
+            && current.Injected == injected)
+        {
+            Interlocked.Exchange(ref _returnInput, current with
+            {
+                Released = true
+            });
+            return;
+        }
+        Interlocked.Exchange(ref _returnInput, down && data.Key == 9 && !repeated && !Modified
+            && Volatile.Read(ref _editorForeground) is { Invalid: 0 } editor
+            ? new(editor.Intent, OwnedReturnKind.Tab, EditorInputSequence, now, 0, 0, injected, false) : null);
+    }
+    [DllImport("user32.dll")] private static extern nint WindowFromPoint(Native.Point point);
+
     private sealed class EditorForeground(Guid intent, nint source, nint overlay, Action<Guid> cancel)
     {
         public Guid Intent { get; } = intent;
@@ -79,7 +117,11 @@ internal sealed partial class KeyboardHook
         }
         _shortcutTrace.Enqueue(record);
     }
-    internal void ConfigureOwnedEditorFocus(Func<TargetId, bool> focused) => _ownedEditorFocus = focused;
+    internal void ConfigureOwnedEditorFocus(Func<TargetId, bool> focused, Func<TargetId, bool>? returned = null)
+    {
+        _ownedEditorFocus = focused;
+        _ownedReturnFocus = returned;
+    }
     internal long EditorInputSequence => Interlocked.Read(ref _editorInputSequence);
     internal long BeginOwnedEditorInput(out long expiresAtMs, out OwnedEditorAdmissionReason reason, out object? detail)
     {
@@ -139,8 +181,22 @@ internal sealed partial class KeyboardHook
             _seenEditorPress = true;
             Interlocked.Exchange(ref _editorPress, unambiguous && _mouseButtons == 0 && !Modified
                 ? new(sequence, data.Time, receivedAtMs, data.Point.X, data.Point.Y, injected, false) : null);
+            Interlocked.Exchange(ref _returnInput, unambiguous && _mouseButtons == 0 && !Modified
+                && Volatile.Read(ref _editorForeground) is { Invalid: 0 } editor
+                ? new(editor.Intent, OwnedReturnKind.Mouse, sequence, receivedAtMs, data.Point.X, data.Point.Y, injected, false) : null);
             return;
         }
+        // Natural return clicks keep their original stock-Edit drag/release.
+        // This separate intent never changes the stricter entry-click grammar.
+        var returning = Volatile.Read(ref _returnInput);
+        if (message == 0x202 && _mouseButtons == 1 && returning is { Kind: OwnedReturnKind.Mouse, Released: false }
+            && returning.Injected == injected)
+            Interlocked.Exchange(ref _returnInput, returning with
+            {
+                Released = true
+            });
+        else if (message != 0x200)
+            Interlocked.Exchange(ref _returnInput, null);
         if (message == 0x202 && _mouseButtons == 1 && press is { Released: false }
             && press.Sequence == EditorInputSequence && press.Injected == injected
             && press.X == data.Point.X && press.Y == data.Point.Y
@@ -266,7 +322,14 @@ internal sealed partial class KeyboardHook
             return false;
         }
         if (!channel.Writer.TryEnter())
+        {
+            // Revocation stops witness publication, not physical key pairing.
+            // In particular the first return Tab's release may reach the source
+            // while the replacement reader is still being installed.
+            _ownedGate.ProcessAcceptanceKey(new(data.Key, down, repeated, data.Key == acceptanceKey),
+                new(null, false, ImeState.Unknown, Modified, injected, false, -1, -1, now));
             return true;
+        }
         try
         {
             var installed = Volatile.Read(ref _ownedInstalled);
@@ -296,6 +359,14 @@ internal sealed partial class KeyboardHook
             return true;
         }
         finally { channel.Writer.Exit(); }
+    }
+    internal static long CurrentOwnedFocusRevision(OwnedCaptureDescriptor descriptor)
+    {
+        long revision = (long)GetPropW((nint)descriptor.ControlHwnd, "TypeLay.OwnedFocusRevision.v1");
+        return revision > 0 && OwnedFocus(descriptor with
+        {
+            NativeFocusRevision = revision
+        }) ? revision : 0;
     }
     internal static bool OwnedFocus(OwnedCaptureDescriptor descriptor)
     {

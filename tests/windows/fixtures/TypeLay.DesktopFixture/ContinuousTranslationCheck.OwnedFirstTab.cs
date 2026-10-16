@@ -14,11 +14,18 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 
 internal static partial class ContinuousTranslationCheck
 {
-    private static async Task<(SceneResult FirstTab, SceneResult EditorHandoff)> VerifyOwnedFirstTabAsync(string directory, ModelClient model,
+    private static async Task<(SceneResult FirstTab, SceneResult EditorHandoff, SceneResult TabReturn,
+        SceneResult MouseReturn, SceneResult EditedAcceptance, SceneResult Finish)> VerifyOwnedFirstTabAsync(string directory, ModelClient model,
         CancellationToken cancellation)
     {
         var result = new SceneResult { Outcome = "running", Stage = "owned-start" };
         var editorHandoff = new SceneResult();
+        var tabReturn = new SceneResult();
+        var mouseReturn = new SceneResult();
+        var editedAcceptance = new SceneResult();
+        var finish = new SceneResult();
+        SceneResult activeResult = result;
+        int firstCompletedReceipts = 0;
         var elapsed = Stopwatch.StartNew();
         long? firstPreviewMs = null, acceptanceReadyMs = null, acceptedMs = null;
         ChildProcess? child = null;
@@ -53,7 +60,7 @@ internal static partial class ContinuousTranslationCheck
             // The same production objects and composition as WindowsRuntime;
             // the two decorators only retain returned facts at public ports.
             var loop = new AcceptanceLoop();
-            controller = new(settings, model, overlay, monitor, input, loop, host.RetireAutomaticAsync);
+            controller = new(settings, model, overlay, monitor, input, loop, host.RetireAutomaticAsync, host.ConfirmRetiredAutomaticAsync);
             loop.Tick += host.PollAcceptance;
             host.Bind(controller);
             controller.OperationFeedback += value => feedbackCode ??= value.Code;
@@ -234,23 +241,47 @@ internal static partial class ContinuousTranslationCheck
             // editor slice fails. Both still contribute to the overall result.
             result.Outcome = "verified";
             result.Stage = "complete";
+            firstCompletedReceipts = monitor.Completed.Count;
             editorHandoff = await VerifyOwnedEditorHandoffAsync(root, field, host, overlay, editor, controller,
                 monitor, input, settings, cancellation);
+            activeResult = editorHandoff;
             if (editorHandoff.Outcome == "verified")
-                editorHandoff.Stage = "owned-editor-close";
-            Require(N.PostMessage(root, 0x0010, 0, 0), "owned-close-request");
-            await child!.Process.WaitForExitAsync().WaitAsync(cancellation);
-            Require(child.Process.ExitCode == 0, "owned-close-failed");
-            if (editorHandoff.Outcome == "verified")
-                editorHandoff.Stage = "complete";
+            {
+                tabReturn = await VerifyOwnedReturnAsync(OwnedReturnKind.Tab, root, field, host, overlay, editor,
+                    controller, monitor, input, settings, cancellation);
+                activeResult = tabReturn;
+            }
+            if (tabReturn.Outcome == "verified")
+            {
+                mouseReturn = await VerifyOwnedReturnAsync(OwnedReturnKind.Mouse, root, field, host, overlay, editor,
+                    controller, monitor, input, settings, cancellation);
+                activeResult = mouseReturn;
+            }
+            if (mouseReturn.Outcome == "verified")
+            {
+                editedAcceptance = await VerifyOwnedEditedAcceptanceAsync(root, field, overlay, editor,
+                    controller, monitor, input, settings, cancellation);
+                activeResult = editedAcceptance;
+            }
+            if (editedAcceptance.Outcome == "verified")
+            {
+                finish = await VerifyOwnedFinishAsync(root, child!, controller, settings, path, cancellation);
+                activeResult = finish;
+            }
+            if (!child!.Process.HasExited)
+            {
+                Require(N.PostMessage(root, 0x0010, 0, 0), "owned-close-request");
+                await child.Process.WaitForExitAsync().WaitAsync(cancellation);
+                Require(child.Process.ExitCode == 0, "owned-close-failed");
+            }
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
-            RecordFailure(result.Outcome == "verified" ? editorHandoff : result, error);
+            RecordFailure(activeResult, error);
         }
         finally
         {
-            var cleanupResult = editorHandoff.Outcome == "not-run" ? result : editorHandoff;
+            var cleanupResult = activeResult;
             Cleanup("owned-controller", () => controller?.Dispose(), cleanupResult.CleanupErrors);
             Cleanup("owned-overlay", () => overlay?.Close(), cleanupResult.CleanupErrors);
             await CleanupSourceAsync(child, cleanupResult.CleanupErrors, cancellation);
@@ -284,13 +315,13 @@ internal static partial class ContinuousTranslationCheck
                 referenceMatched,
                 settingsPreserved,
                 tutorialIncomplete,
-                completedReceipts = monitor?.Completed.Count ?? 0,
+                completedReceipts = firstCompletedReceipts != 0 ? firstCompletedReceipts : monitor?.Completed.Count ?? 0,
                 remoteForegroundWrites = input?.ForegroundWrites ?? 0,
                 directWrites = input?.DirectWrites ?? 0
             };
         }
         Console.WriteLine($"Owned automatic first Tab: {result.Outcome}; stage={result.Stage}; code={result.Failure}.");
-        return (result, editorHandoff);
+        return (result, editorHandoff, tabReturn, mouseReturn, editedAcceptance, finish);
     }
 
     private static async Task<SceneResult> VerifyOwnedEditorHandoffAsync(nint root, nint field,
@@ -375,6 +406,208 @@ internal static partial class ContinuousTranslationCheck
         };
         CompleteCleanup(result);
         return result;
+    }
+
+    private static bool OwnedAcceptanceVisible(OverlayWindow overlay) => Descendants(overlay).OfType<TextBlock>()
+        .Any(hint => hint.IsVisible && hint.Text == "接受译文" && hint.Parent is StackPanel row
+            && Descendants(row).OfType<TextBlock>().Any(key => key.IsVisible && key.Text == "Tab"));
+
+    private static async Task<SceneResult> VerifyOwnedReturnAsync(OwnedReturnKind kind, nint root, nint field,
+        PracticeHost host, OverlayWindow overlay, TextBox editor, SessionController controller, AcceptanceMonitor monitor,
+        AcceptanceInput input, SettingsStore settings, CancellationToken cancellation)
+    {
+        string prefix = kind == OwnedReturnKind.Tab ? "owned-tab-return" : "owned-mouse-return";
+        var result = new SceneResult { Outcome = "running", Stage = prefix };
+        bool reenteredDraft = kind == OwnedReturnKind.Tab, sourceUnchanged = false, zeroWrites = false;
+        bool draftRetained = false, exactReturn = false, freshBinding = false, naturalCaret = false, sourceFocus = false;
+        try
+        {
+            var progress = controller.AutomaticPracticeProgress!;
+            var target = progress.Target ?? throw new CheckFailure("owned-return-target-missing");
+            string source = N.ReadText(field, Limits.MaxTextUnits);
+            var beforeSelection = N.ReadSelection(field);
+            string draft = editor.Text;
+            if (kind == OwnedReturnKind.Mouse)
+            {
+                Require(N.Focused() == (root, field) && editor.IsReadOnly, "owned-mouse-return-initial-focus");
+                result.Stage = "owned-mouse-return-reenter-draft";
+                var editorPoint = editor.PointToScreen(new Point(editor.ActualWidth / 2, Math.Min(20, editor.ActualHeight / 2)));
+                Require(SetOwnedCursorPos((int)Math.Round(editorPoint.X), (int)Math.Round(editorPoint.Y)), "owned-return-editor-pointer");
+                SendOwnedClick(result.CleanupErrors);
+                await UntilAsync(() => host.EditorHandoffComplete(target) && ReferenceEquals(Keyboard.FocusedElement, editor)
+                    && !editor.IsReadOnly, cancellation);
+                reenteredDraft = editor.Text == draft;
+                Require(reenteredDraft, "owned-return-reentry-overwrote-draft");
+                SendOwnedLetter(0x42, result.CleanupErrors);
+                await UntilAsync(() => editor.Text != draft && controller.AutomaticPracticeProgress?.DraftChanged == true, cancellation);
+                draft = editor.Text;
+            }
+            progress = controller.AutomaticPracticeProgress!;
+            int returnCount = input.Returns.Count;
+            result.Stage = prefix + "-input";
+            if (kind == OwnedReturnKind.Tab)
+                SendOwnedTab(result.CleanupErrors);
+            else
+            {
+                Require(N.GetWindowRect(field, out var bounds), "owned-source-mouse-bounds");
+                Require(SetOwnedCursorPos(bounds.Left + 6, bounds.Top + 8), "owned-source-mouse-pointer");
+                SendOwnedClick(result.CleanupErrors); // Original down/up must reach the stock Edit.
+            }
+            await UntilAsync(() => N.Focused() == (root, field) && editor.IsReadOnly
+                && controller.AutomaticPracticeProgress is { ReturnedToSource: true } returned
+                && returned.CommandGeneration != progress.CommandGeneration && OwnedAcceptanceVisible(overlay), cancellation);
+            sourceFocus = N.Focused() == (root, field);
+            sourceUnchanged = N.ReadText(field, Limits.MaxTextUnits) == source;
+            var afterSelection = N.ReadSelection(field);
+            naturalCaret = kind == OwnedReturnKind.Mouse
+                ? afterSelection.Start == afterSelection.End && afterSelection != beforeSelection
+                : afterSelection == beforeSelection;
+            draftRetained = editor.Text == draft;
+            zeroWrites = monitor.Completed.Count == 1 && input.ForegroundWrites == 0 && input.DirectWrites == 0;
+            var last = input.Returns.LastOrDefault();
+            exactReturn = input.Returns.Count == returnCount + 1 && last.Request?.PracticeReturn is { } request
+                && request.Binding.RunId == progress.RunId && request.Binding.Target == target
+                && request.Binding.CommandGeneration == progress.CommandGeneration
+                && last.Result is { Returned: true, Practice: { } evidence } && evidence.Binding == request.Binding
+                && evidence.Token == request.Token && evidence.NativeFocusRevision > request.Binding.NativeFocusRevision;
+            freshBinding = input.LastCapture is
+            {
+                Focus: FocusMember.Source, OwnedSource: { ContextAdvanced: false } fresh,
+                SessionShortcuts: { SourceReady: true } ack, Snapshot: { } snapshot
+            }
+                && fresh.Binding.RunId == progress.RunId && fresh.Binding.Target == target
+                && fresh.Binding.CommandGeneration != progress.CommandGeneration
+                && ack.Target == target && ack.Generation == fresh.Binding.CommandGeneration
+                && snapshot.FocusEpoch == fresh.Binding.NativeFocusRevision;
+            Require(sourceFocus && sourceUnchanged && naturalCaret && draftRetained && zeroWrites && exactReturn && freshBinding,
+                prefix + "-proof");
+            Require(!settings.Value.ExperimentalWriteback && !settings.Value.OnboardingComplete
+                && controller.AutomaticPracticeProgress is { Completed: false, EditedAcceptanceCompleted: false },
+                prefix + "-premature-completion");
+            result.Outcome = "verified";
+            result.Stage = "complete";
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { RecordFailure(result, error, prefix + "-deadline"); }
+        result.Facts = new
+        {
+            inputKind = "software-input",
+            kind = kind.ToString(),
+            productionEditingEnabled = false,
+            reenteredDraft,
+            sourceFocus,
+            sourceUnchanged,
+            naturalCaret,
+            draftRetained,
+            zeroWrites,
+            exactReturn,
+            freshBinding
+        };
+        CompleteCleanup(result);
+        return result;
+    }
+
+    private static async Task<SceneResult> VerifyOwnedEditedAcceptanceAsync(nint root, nint field,
+        OverlayWindow overlay, TextBox editor, SessionController controller, AcceptanceMonitor monitor,
+        AcceptanceInput input, SettingsStore settings, CancellationToken cancellation)
+    {
+        var result = new SceneResult { Outcome = "running", Stage = "owned-edited-second-tab" };
+        bool exactReceipt = false, manualDraftWritten = false, caretVerified = false, sourceFocus = false, retiredCompletion = false;
+        try
+        {
+            var progress = controller.AutomaticPracticeProgress!;
+            string draft = editor.Text, source = N.ReadText(field, Limits.MaxTextUnits);
+            var selection = N.ReadSelection(field);
+            Require(progress.ReturnedToSource && progress.DraftChanged && OwnedAcceptanceVisible(overlay)
+                && N.Focused() == (root, field) && monitor.Completed.Count == 1, "owned-edited-not-ready");
+            SendOwnedTab(result.CleanupErrors);
+            await UntilAsync(() => monitor.Completed.Count == 2, cancellation);
+            var notice = monitor.Completed[1];
+            var permit = notice.Permit!;
+            var plan = permit.Plan;
+            var receipt = notice.CompletedReceipt!;
+            exactReceipt = monitor.Issued(permit) && plan.Id != monitor.Completed[0].Permit!.Plan.Id
+                && notice.PracticeRunId == progress.RunId && notice.PracticeConnectionId == progress.ConnectionId
+                && notice.CommandGeneration == progress.CommandGeneration && plan.Expected.Target == progress.Target
+                && plan.Expected.Text == source && plan.Expected.Selection == selection && plan.ResultText == draft
+                && notice.AcceptedAtMs >= permit.ObservedAtMs && notice.AcceptedAtMs <= permit.ExpiresAtMs
+                && receipt.Status == WriteStatus.Verified && receipt.Reason == Denial.None
+                && receipt.VerifiedSnapshot is { } after && after.Target == plan.Expected.Target
+                && after.Text == draft && after.Selection == new TextRange(plan.Caret, plan.Caret);
+            manualDraftWritten = N.ReadText(field, Limits.MaxTextUnits) == draft;
+            caretVerified = N.ReadSelection(field) == new TextRange(plan.Caret, plan.Caret);
+            sourceFocus = N.Focused() == (root, field);
+            Require(exactReceipt && manualDraftWritten && caretVerified && sourceFocus
+                && input.ForegroundWrites == 0 && input.DirectWrites == 0, "owned-edited-receipt");
+            await UntilAsync(() => controller.AutomaticPracticeProgress is { Completed: true }, cancellation);
+            retiredCompletion = controller.AutomaticPracticeProgress is { Completed: true };
+            Require(retiredCompletion && !settings.Value.OnboardingComplete && !settings.Value.ExperimentalWriteback,
+                "owned-edited-completion-or-settings");
+            result.Outcome = "verified";
+            result.Stage = "complete";
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { RecordFailure(result, error, "owned-edited-acceptance-deadline"); }
+        result.Facts = new
+        {
+            inputKind = "software-input",
+            exactReceipt,
+            manualDraftWritten,
+            caretVerified,
+            sourceFocus,
+            retiredCompletion
+        };
+        CompleteCleanup(result);
+        return result;
+    }
+
+    private static async Task<SceneResult> VerifyOwnedFinishAsync(nint root, ChildProcess child, SessionController controller,
+        SettingsStore settings, string settingsPath, CancellationToken cancellation)
+    {
+        var result = new SceneResult { Outcome = "running", Stage = "owned-finish-visible" };
+        bool completedBeforeClick = false, saved = false, closed = false, persistedRead = false;
+        try
+        {
+            nint button = GetDlgItem(root, 106);
+            await UntilAsync(() => button != 0 && N.IsWindowVisible(button) && N.IsWindowEnabled(button)
+                && N.GetWindowRect(button, out var bounds) && bounds.Right > bounds.Left && bounds.Bottom > bounds.Top, cancellation);
+            completedBeforeClick = controller.AutomaticPracticeProgress is { Completed: true }
+                && !settings.Value.OnboardingComplete;
+            Require(completedBeforeClick, "owned-finish-premature");
+            // Native button focus scrolls it through the normal BN_SETFOCUS path.
+            Require(N.PostMessage(root, 0x0028, (nuint)button, 1), "owned-finish-button-focus");
+            await UntilAsync(() => N.Focused() == (root, button), cancellation);
+            Require(N.GetWindowRect(button, out var rect), "owned-finish-button-bounds");
+            Require(SetOwnedCursorPos((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2), "owned-finish-pointer");
+            result.Stage = "owned-finish-click-save";
+            SendOwnedClick(result.CleanupErrors);
+            await child.Process.WaitForExitAsync().WaitAsync(cancellation);
+            closed = child.Process.ExitCode == 0;
+            saved = settings.Value.OnboardingComplete;
+            var persisted = WindowsRuntime.CreateSettings(settingsPath).Value;
+            persistedRead = persisted.OnboardingComplete && !persisted.ExperimentalWriteback;
+            Require(closed && saved && persistedRead, "owned-finish-save-or-close");
+            result.Outcome = "verified";
+            result.Stage = "complete";
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { RecordFailure(result, error, "owned-finish-deadline"); }
+        result.Facts = new
+        {
+            inputKind = "software-input",
+            completedBeforeClick,
+            saved,
+            closed,
+            persistedRead
+        };
+        CompleteCleanup(result);
+        return result;
+    }
+
+    private static void SendOwnedLetter(ushort key, List<CleanupError> errors)
+    {
+        KeyboardInput[] change = [new() { Type = 1, Key = key }, new() { Type = 1, Key = key, Flags = 2 }];
+        uint inserted = SendInput(2, change, Marshal.SizeOf<KeyboardInput>());
+        if (inserted == 1 && SendInput(1, [change[1]], Marshal.SizeOf<KeyboardInput>()) != 1)
+            errors.Add(new("owned-editor-key", "key-release-incomplete", "Win32", Marshal.GetLastWin32Error()));
+        Require(inserted == 2, "owned-editor-key-injection");
     }
 
     [StructLayout(LayoutKind.Explicit, Size = 40)]
@@ -483,7 +716,13 @@ internal static partial class ContinuousTranslationCheck
         public Task StartAsync() => inner.StartAsync();
         public async Task<InputCapture> CaptureAsync(InputContext context) => LastCapture = await inner.CaptureAsync(context);
         public Task<PauseObservation> ObservePauseAsync(InputContext context) => inner.ObservePauseAsync(context);
-        public Task<InputReturn> ReturnToSourceAsync(InputContext context) => inner.ReturnToSourceAsync(context);
+        public List<(InputContext? Request, InputReturn? Result)> Returns { get; } = [];
+        public async Task<InputReturn> ReturnToSourceAsync(InputContext context)
+        {
+            var result = await inner.ReturnToSourceAsync(context);
+            Returns.Add((context, result));
+            return result;
+        }
         public Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs)
         {
             ForegroundWrites++;
