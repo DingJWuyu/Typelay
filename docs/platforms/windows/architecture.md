@@ -48,7 +48,7 @@ WPF 暂停视图清除文本及撤销状态，只显示共享呈现定义中的�
 
 按需练习沿用当前配置的 F9/F10、正式模型和 Broker。自动首接受候选仅支持现配置为无修饰 Tab 的自有 stock Edit，使用独立受管进程的本次授权；其它接受键不被改写，按需入口保留。全局 `ExperimentalWriteback` 和第三方 B-01 门保持原状。该首接受曾通过真实 Windows 软件输入链验证，保留精确回执、焦点、光标和 Undo；不开放编辑回源、不保存完整教程完成状态。练习进度只记录已生成预览；浮层接受提示另核本次精确计划的安装 ACK 与原有效期，撤权、尝试接受或会话变化立即取消提示，呈现查询本身不授予权限。
 
-**精确捕获：**`capture-owned` 绑定 PID/启动时间、根/控件 HWND、线程、cookie、run 代次和 native FocusRevision，在读取正文及安装 hook 前核验。宿主每轮从精确控件 HWND 重新取得 UIA 元数据和 runtime-id，保留字段策略、应用排除和原目标隔离；不再以全局 UIA 焦点查询发现此自有字段。独立 `TypeLay.NativeInput.OwnedCapture.v2` 消息使用 owned 专属 op6，旧 owned 组件与通用 Transaction.v2 hook 不接收；op6 的专属焦点版本字段不是写入截止时间。原生在正文读取前后核对资格、IME、焦点版本及直接子控件的当前可见几何；UIA 边界仅用于显示，不替代身份。这一专路不改变第三方捕获或许可期限，耗时与单次接受的改善仍须实际验证。精确 Edit 的 EN_SETFOCUS/EN_KILLFOCUS 与顶层 WM_ACTIVATE 在其它操作前推进单调 native FocusRevision 并撤权；Begin/Retire 不重置计数。捕获、安装、键见证和执行固定同一版本，最终回到相同 HWND 不能恢复旧授权。
+**精确捕获：**`capture-owned` 绑定 PID/启动时间、根/控件 HWND、线程、cookie、run 代次和 native FocusRevision，在读取正文及安装 hook 前核验。宿主每轮从精确控件 HWND 重新取得 UIA 元数据和 runtime-id，保留字段策略、应用排除和原目标隔离；不再以全局 UIA 焦点查询发现此自有字段。独立 `TypeLay.NativeInput.OwnedCapture.v2` 消息使用 owned 专属 op6，旧 owned 组件与通用 Transaction.v2 hook 不接收；op6 的专属焦点版本字段不是写入截止时间。原生在正文读取前后核对资格、IME、焦点版本及直接子控件的当前可见几何；UIA 边界仅用于显示，不替代身份。这一专路不改变第三方捕获或许可期限，该专路已通过受控 Windows 的真实模型首 Tab，物理设备与长期稳定性仍待验证。精确 Edit 的 EN_SETFOCUS/EN_KILLFOCUS 与顶层 WM_ACTIVATE 在其它操作前推进单调 native FocusRevision 并撤权；Begin/Retire 不重置计数。捕获、安装、键见证和执行固定同一版本，最终回到相同 HWND 不能恢复旧授权。
 
 **键与执行：**该自有自动接受路径的 LL Hook 不吞原 Tab，只发布有界 FIFO 事件见证；真实消息仍到自有 GUI 队列，在 IsDialogMessage 前与一次许可共同裁决。安装前事件不追认，丢序、歧义和 overflow 撤权。native TryExecute 的无副作用前置门全部通过后才标记 accepted 并调用 SETSEL；GUI 只消费 accepted 的原键。前置失败沿原消息路径放行；接受后失败按实际拒绝或 Unknown 回执处理，不补发 Tab。正文、选区、IME、身份和原期限仍在 SETSEL 后再次核验。
 
