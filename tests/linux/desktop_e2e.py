@@ -948,9 +948,22 @@ def run(arguments):
                             "cooperative GTK source did not receive a real model candidate",
                         )
                         assert gtk_state()["first"] == original
-                        wait_for(
-                            lambda: (gtk_state().get("candidate") or {}).get("text"),
+                        preview = wait_for(
+                            lambda: value
+                            if (value := gtk_state()).get("fullscreen")
+                            and (value.get("candidate") or {}).get("text")
+                            else None,
                             "GTK preview did not expose its actual candidate before visual evidence",
+                        )
+                        candidate = preview["candidate"]
+                        assert candidate["editablePreview"]
+                        scale = preview["scale"]
+                        x = int((candidate["x"] + candidate["width"] / 2) * scale)
+                        y = int((candidate["y"] + candidate["height"] / 2) * scale)
+                        subprocess.run(
+                            ["xdotool", "mousemove", "--window", nested[0], str(x), str(y)],
+                            check=True,
+                            timeout=3,
                         )
                         subprocess.run(
                             ["grim", str(arguments.output / "gtk-cooperative.png")],
@@ -1335,12 +1348,15 @@ def run(arguments):
                             )
                             key("ctrl+a")
                             typed(draft)
-                            wait_for(
-                                lambda: (gtk_state().get("candidate") or {}).get("text") == draft
-                                and gtk_state().get("focusedImeClear"),
+                            edited = wait_for(
+                                lambda: value
+                                if (value := gtk_state()).get("focusedImeClear")
+                                and (value.get("candidate") or {}).get("text") == draft
+                                else None,
                                 "real GTK editor did not retain the typed draft",
                             )
-                            assert gtk_state()["first"] == editing_source
+                            assert not edited["candidate"]["editablePreview"]
+                            assert edited["first"] == editing_source
                             if motion:
                                 check_overlay_motion(draft)
                                 assert gtk_state()["first"] == editing_source

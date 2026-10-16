@@ -323,9 +323,10 @@ static void theme(const char *choice) {
         "#typelay-overlay #typelay-actions button { font-size: 11px; }"
         "#typelay-overlay #typelay-candidate, #typelay-overlay #typelay-candidate text { background: %s; color: %s; font-size: 15px; }"
         "#typelay-overlay #typelay-candidate { border: 1px solid transparent; border-radius: 7px; outline: none; box-shadow: none; }"
+        "#typelay-overlay #typelay-candidate.editable-preview:hover { border-color: %s; }"
         "#typelay-overlay #typelay-candidate:focus { border-color: %s; }"
         "#typelay-overlay #typelay-header .pending { color: %s; }",
-        bg, fg, border, muted, line, muted, muted, hover, fg, bg, fg, accent,
+        bg, fg, border, muted, line, muted, muted, hover, fg, bg, fg, line, accent,
         dark ? "#f2bb8d" : "#99511f");
 #if GTK_CHECK_VERSION(4, 12, 0)
     gtk_css_provider_load_from_string(overlay.css, css);
@@ -531,6 +532,8 @@ static gboolean render(Target *target, JsonObject *data) {
     gboolean editable_preview = boolean(value, "editable") && tl_view_context_matches(target, value)
         && boolean(tl_object(value, "viewContext"), "canEdit")
         && (g_strcmp0(state, "ValidTranslation") == 0 || g_strcmp0(state, "EditedTranslationPending") == 0);
+    if (editable_preview) gtk_widget_add_css_class(overlay.text, "editable-preview");
+    else gtk_widget_remove_css_class(overlay.text, "editable-preview");
     gtk_widget_set_tooltip_text(overlay.text, editable_preview ? "点击译文编辑" : NULL);
     theme(text_or_empty(data, "theme"));
     gboolean capsule = is_paused || g_strcmp0(tl_string(value, "state"), "IdleCapsule") == 0;
