@@ -3,6 +3,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
@@ -583,11 +584,19 @@ internal static partial class ContinuousTranslationCheck
             completedBeforeClick = controller.AutomaticPracticeProgress is { Completed: true }
                 && !settings.Value.OnboardingComplete;
             Require(completedBeforeClick, "owned-finish-premature");
-            // Native button focus scrolls it through the normal BN_SETFOCUS path.
-            Require(N.PostMessage(root, 0x0028, (nuint)button, 1), "owned-finish-button-focus");
+            result.Stage = "owned-finish-focus";
+            // This ordinary window has no dialog procedure for WM_NEXTDLGCTL.
+            // Stock button focus scrolls it through the normal BN_SETFOCUS path.
+            AutomationElement.FromHandle(button).SetFocus();
             await UntilAsync(() => N.Focused() == (root, button), cancellation);
+            result.Stage = "owned-finish-click-target";
             Require(N.GetWindowRect(button, out var rect), "owned-finish-button-bounds");
-            Require(SetOwnedCursorPos((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2), "owned-finish-pointer");
+            var origin = new N.Point();
+            Require(GetOwnedClientRect(root, out var client) && OwnedClientToScreen(root, ref origin), "owned-finish-client-bounds");
+            int x = (rect.Left + rect.Right) / 2, y = (rect.Top + rect.Bottom) / 2;
+            Require(x >= origin.X + client.Left && x < origin.X + client.Right
+                && y >= origin.Y + client.Top && y < origin.Y + client.Bottom, "owned-finish-button-clipped");
+            Require(SetOwnedCursorPos(x, y), "owned-finish-pointer");
             result.Stage = "owned-finish-click-save";
             SendOwnedClick(result.CleanupErrors);
             await child.Process.WaitForExitAsync().WaitAsync(cancellation);
@@ -629,6 +638,10 @@ internal static partial class ContinuousTranslationCheck
     }
     [DllImport("user32.dll", EntryPoint = "SetCursorPos")]
     private static extern bool SetOwnedCursorPos(int x, int y);
+    [DllImport("user32.dll", EntryPoint = "GetClientRect")]
+    private static extern bool GetOwnedClientRect(nint window, out N.Rect bounds);
+    [DllImport("user32.dll", EntryPoint = "ClientToScreen")]
+    private static extern bool OwnedClientToScreen(nint window, ref N.Point point);
     [DllImport("user32.dll", EntryPoint = "SendInput", SetLastError = true)]
     private static extern uint SendOwnedMouse(uint count, OwnedMouseInput[] input, int size);
 
