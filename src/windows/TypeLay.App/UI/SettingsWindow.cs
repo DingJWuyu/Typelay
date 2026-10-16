@@ -942,7 +942,7 @@ internal sealed class SettingsWindow : Window
         if (exclusions.Count == 0)
             Note("当前没有排除任何应用", "排除后，该应用的所有输入框均不显示 TypeLay 界面。");
         foreach (string app in exclusions)
-            Row(app + ".exe", "所有该进程名窗口均排除。", UiTheme.Button("移除", () =>
+            Row(app + ".exe", "", UiTheme.Button("移除", () =>
                 SetExclusionDraft(exclusionBaseline, exclusions.Where(value => !StringComparer.OrdinalIgnoreCase.Equals(value, app)))));
         var add = UiTheme.Button("添加应用…", () =>
         {
@@ -952,8 +952,6 @@ internal sealed class SettingsWindow : Window
         add.HorizontalAlignment = HorizontalAlignment.Left;
         add.Margin = new(0, 12, 0, 0);
         _content.Children.Add(add);
-        Rule();
-        Note("按控件能力提供功能", "普通文本框按当前工作模式启动翻译；仅提供文本读取能力的编辑器可预览译文。密码、敏感字段、代码和终端保持安静；未知输入法状态不接受写回。");
     }
     private FrameworkElement SupportRow(ApplicationSupportRow row, ApplicationSupportView view)
     {
@@ -986,14 +984,16 @@ internal sealed class SettingsWindow : Window
         label.Children.Add(UiTheme.Text(row.StatusText, 12, true));
         header.Children.Add(label);
         body.Children.Add(header);
-        var reason = UiTheme.Text(row.ReasonText, 12, true);
+        var reason = UiTheme.Text(row.SummaryText, 12, true);
         reason.Margin = new(0, 8, 0, 0);
         if (row.Reason != ApplicationSupportReason.Paused)
             body.Children.Add(reason);
         detailsBody.Children.Add(UiTheme.Text(row.Description, 12, true));
+        detailsBody.Children.Add(UiTheme.Text(row.ReasonText, 12, true));
         detailsBody.Children.Add(UiTheme.Text(row.Guidance, 12, true));
-        detailsBody.Children.Add(UiTheme.Text(row.CapabilitySummary, 12, true));
+        detailsBody.Children.Add(UiTheme.Text(row.CapabilityText, 12, true));
         detailsBody.Children.Add(UiTheme.Text(view.CapabilityNote, 12, true));
+        detailsBody.Children.Add(UiTheme.Text("普通文本框按当前工作模式启动翻译；仅提供文本读取能力的编辑器可预览译文。密码、敏感字段、代码和终端保持安静；未知输入法状态不接受写回。", 12, true));
         if (row.CheckedAt is { } checkedAt)
             detailsBody.Children.Add(UiTheme.Text(checkedAt.ToLocalTime().ToString("g"), 12, true));
         if (row.Details is { Length: > 0 } extra)

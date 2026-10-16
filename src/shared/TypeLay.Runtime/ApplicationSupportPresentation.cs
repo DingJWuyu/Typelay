@@ -110,12 +110,20 @@ public static class ApplicationSupportPresentation
         var actions = (fact.SupportedActions ?? []).Distinct().Where(action => Allowed(fact, action))
             .Order().Select(ActionView).ToArray();
         var primary = PrimaryAction(fact.State, actions);
+        string capabilitySummary = CapabilitySummary(entry, capabilities);
         return new(entry.Id, entry.Title, entry.Description, fact.State, StatusText(fact.State),
             fact.Reason, ReasonText(fact.Reason), capabilities, capabilityText, actions,
-            fact.Details, fact.CheckedAt, Guidance(fact.State), CapabilitySummary(entry, capabilities),
+            fact.Details, fact.CheckedAt, Guidance(fact.State), capabilitySummary,
             primary, actions.Where(action => action != primary).ToArray(),
-            entry.Id != "desktop-text" && fact.ApplicationDetected == false && fact.State != ApplicationSupportState.Connected);
+            entry.Id != "desktop-text" && fact.ApplicationDetected == false && fact.State != ApplicationSupportState.Connected,
+            PrimarySummary(fact, capabilitySummary));
     }
+
+    private static string PrimarySummary(ApplicationSupportFact fact, string capabilitySummary) =>
+        fact.State is ApplicationSupportState.Connected or ApplicationSupportState.BuiltInAvailable
+        && fact.Reason is ApplicationSupportReason.None or ApplicationSupportReason.LimitedFields
+            or ApplicationSupportReason.PreviewOnly or ApplicationSupportReason.NoDirectWrite
+            ? capabilitySummary : ReasonText(fact.Reason);
 
     private static string CapabilitySummary(Entry entry, ApplicationSupportCapabilities capabilities)
     {

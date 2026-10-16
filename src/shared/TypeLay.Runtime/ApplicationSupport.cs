@@ -83,7 +83,8 @@ public sealed record ApplicationSupportRow(
     string CapabilitySummary,
     ApplicationSupportActionView? PrimaryAction,
     ApplicationSupportActionView[] SecondaryActions,
-    bool ShowInMore);
+    bool ShowInMore,
+    string SummaryText);
 
 public sealed record ApplicationSupportLabels(
     string Confirm, string Cancel, string ChooseComponent, string OpenFolder, string CheckAgain, string Details,

@@ -372,6 +372,28 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(settings_file.stat().st_mtime_ns, before)
         self.assertEqual(self.events, [])
 
+    async def test_support_summary_crosses_the_host_pipe_without_losing_failure_reason(self):
+        fact = {
+            "id": "desktop-text",
+            "state": "Connected",
+            "reason": "PreviewOnly",
+            "capabilities": {"preview": True, "tabAccept": True, "directReplace": True},
+        }
+        view = await self.ask("applicationSupport", {"facts": [fact]})
+        row = view["rows"][0]
+        self.assertEqual(row["summaryText"], "目前仅确认预览译文，尚未确认替换能力。")
+        self.assertEqual(row["reasonText"], "目前仅确认显示译文；Tab 接受和直接替换尚不可用。")
+        self.assertFalse(row["capabilities"]["tabAccept"])
+        self.assertFalse(row["capabilities"]["directReplace"])
+
+        view = await self.ask(
+            "applicationSupport", {"facts": [{**fact, "state": "Error", "reason": "ActionFailed"}]}
+        )
+        self.assertEqual(
+            view["rows"][0]["summaryText"],
+            "操作未完成。请查看详情，处理原因后再试；未将这次操作标为成功。",
+        )
+
     async def test_preparation_uses_real_installation_facts_and_current_phase(self):
         missing = await self.ask("translationPreparation", {"phase": "Idle"})
         self.assertIsInstance(missing, dict)

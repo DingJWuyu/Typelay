@@ -273,6 +273,7 @@ class ApplicationSupportPane:
         self.description = self.note("", detail_box)
         self.capabilities = self.note("", detail_box)
         self.capability_note = self.note("", detail_box)
+        self.note("密码、敏感字段及无法确认输入法状态的控件不会读取或替换。", detail_box)
         self.guidance = self.note("", detail_box)
         self.shortcut_status = self.note("", detail_box)
         self.shortcut_status.set_no_show_all(True)
@@ -410,12 +411,7 @@ class ApplicationSupportPane:
             return
         self.state.set_text(row["statusText"])
         connected = row["state"] in ("Connected", "BuiltInAvailable")
-        self.reason.set_text(
-            row["capabilitySummary"]
-            if connected
-            and row["reason"] in ("None", "LimitedFields", "PreviewOnly", "NoDirectWrite")
-            else row["reasonText"]
-        )
+        self.reason.set_text(row["summaryText"])
         self.description.set_text(row["description"])
         self.capabilities.set_text(row["capabilityText"])
         self.capability_note.set_text(self.value["capabilityNote"])
@@ -1184,12 +1180,6 @@ class Settings:
         advanced_exclusions.get_accessible().set_name("高级编辑排除应用")
         advanced_exclusions.add(exclusions)
         exclusions_grid.attach(advanced_exclusions, 0, 2, 2, 1)
-        note = Gtk.Label(
-            label="密码、敏感字段及无法确认输入法状态的控件不会读取或替换。",
-            xalign=0,
-        )
-        note.set_line_wrap(True)
-        exclusions_grid.attach(note, 0, 3, 2, 1)
         self.shortcut_scope = Gtk.Label(xalign=0)
         self.shortcut_scope.set_line_wrap(True)
         self.shortcut_scope.set_max_width_chars(48)

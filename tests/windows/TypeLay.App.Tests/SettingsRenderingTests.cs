@@ -692,6 +692,20 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
             Assert.Equal(new[] { "old", "retained" }, WindowsRuntime.CreateSettings(path).Value.Excluded);
             Assert.DoesNotContain(Descendants(window).OfType<TextBlock>(), text => text.Text == "old.exe");
             Assert.Single(Descendants(window).OfType<TextBlock>(), text => text.Text == "added.exe");
+            Assert.DoesNotContain(Descendants(window).OfType<TextBlock>(), text =>
+                text.IsVisible && (text.Text == "所有该进程名窗口均排除。"
+                    || text.Text.Contains("未知输入法状态不接受写回", StringComparison.Ordinal)));
+            var details = Descendants(window).OfType<Expander>()
+                .First(expander => Equals(expander.Header, "查看详情"));
+            details.IsExpanded = true;
+            window.UpdateLayout();
+            Assert.Contains(Descendants(details).OfType<TextBlock>(), text =>
+                text.IsVisible && text.Text.Contains("未知输入法状态不接受写回", StringComparison.Ordinal));
+            Assert.Contains(Descendants(details).OfType<TextBlock>(), text =>
+                text.IsVisible && text.Text.Contains("显示译文：未确认", StringComparison.Ordinal)
+                    && text.Text.Contains("Tab 接受译文：未确认", StringComparison.Ordinal)
+                    && text.Text.Contains("直接翻译并替换：未确认", StringComparison.Ordinal));
+            details.IsExpanded = false;
             Descendants(window).OfType<ScrollViewer>().First().ScrollToBottom();
             window.UpdateLayout();
             Render(window, "settings-applications-draft-footer.png");

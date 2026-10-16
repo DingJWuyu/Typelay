@@ -1,9 +1,38 @@
+using System.Text.Json;
 using Xunit;
 
 namespace TypeLay.Runtime.Tests;
 
 public sealed class ApplicationSupportPresentationTests
 {
+    [Theory]
+    [InlineData(ApplicationSupportState.Connected, ApplicationSupportReason.None,
+        "已确认预览、Tab 接受和直接替换。")]
+    [InlineData(ApplicationSupportState.Connected, ApplicationSupportReason.LimitedFields,
+        "已确认预览、Tab 接受和直接替换。")]
+    [InlineData(ApplicationSupportState.BuiltInAvailable, ApplicationSupportReason.NoDirectWrite,
+        "已确认预览和 Tab 接受，尚未确认直接替换。")]
+    [InlineData(ApplicationSupportState.Connected, ApplicationSupportReason.PreviewOnly,
+        "目前仅确认预览译文，尚未确认替换能力。")]
+    [InlineData(ApplicationSupportState.Connected, ApplicationSupportReason.Unknown,
+        "还没有可靠的检查结果。请选择目标应用并检查连接。")]
+    [InlineData(ApplicationSupportState.Error, ApplicationSupportReason.ActionFailed,
+        "操作未完成。请查看详情，处理原因后再试；未将这次操作标为成功。")]
+    [InlineData(ApplicationSupportState.AwaitingApproval, ApplicationSupportReason.AwaitingApproval,
+        "请在应用或浏览器中完成扩展及权限批准，然后重新检查。")]
+    [InlineData(ApplicationSupportState.RestartRequired, ApplicationSupportReason.RestartRequired,
+        "接入配置已更新。请保存工作并重新打开应用，然后检查连接。")]
+    public void HostsReceiveAnActionableSummaryWithoutHidingUnknownOrBlockedStates(
+        ApplicationSupportState state, ApplicationSupportReason reason, string expected)
+    {
+        var row = ApplicationSupportPresentation.Create([
+            new("desktop-text", state, reason, new(true, true, true))
+        ]).Rows[0];
+
+        var wire = JsonSerializer.SerializeToElement(row, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        Assert.Equal(expected, wire.GetProperty("summaryText").GetString());
+    }
+
     [Fact]
     public void MissingTranslationOffersPreparationWithoutClaimingAnApplicationConnection()
     {
