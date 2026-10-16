@@ -53,6 +53,41 @@ internal sealed class ChildProcess : IChildProcess
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException) { }
     }
+    // The browser fixture needs job-wide completion before deleting its profile.
+    // Existing production callers retain the synchronous Dispose path below.
+    internal async Task TerminateAndWaitAsync(CancellationToken cancellationToken)
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            throw new InvalidOperationException("child-job-unavailable");
+        try
+        {
+            if (_job == 0)
+                throw new InvalidOperationException("child-job-unavailable");
+            if (!TerminateJobObject(_job, 2))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "child-job-terminate");
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!QueryInformationJobObject(_job, 1, out JobAccounting accounting,
+                    (uint)Marshal.SizeOf<JobAccounting>(), 0))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "child-job-query");
+                if (accounting.ActiveProcesses == 0)
+                    break;
+                await Task.Delay(10, cancellationToken);
+            }
+            // Job accounting can reach zero before the root process is signaled.
+            await Process.WaitForExitAsync(cancellationToken);
+        }
+        finally
+        {
+            if (_job != 0)
+            {
+                Native.CloseHandle(_job);
+                _job = 0;
+            }
+            Process.Dispose();
+        }
+    }
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -85,7 +120,16 @@ internal sealed class ChildProcess : IChildProcess
     {
         public BasicLimits Basic; public IoCounters Io; public nuint ProcessMemory, JobMemory, PeakProcessMemory, PeakJobMemory;
     }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JobAccounting
+    {
+        public long TotalUserTime, TotalKernelTime, PeriodUserTime, PeriodKernelTime;
+        public uint PageFaults, TotalProcesses, ActiveProcesses, TerminatedProcesses;
+    }
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern nint CreateJobObjectW(nint attributes, string? name);
     [DllImport("kernel32.dll")] private static extern bool SetInformationJobObject(nint job, int infoClass, nint info, uint length);
     [DllImport("kernel32.dll")] private static extern bool AssignProcessToJobObject(nint job, nint process);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateJobObject(nint job, uint code);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool QueryInformationJobObject(nint job, int kind, out JobAccounting accounting, uint length, nint returnedLength);
 }

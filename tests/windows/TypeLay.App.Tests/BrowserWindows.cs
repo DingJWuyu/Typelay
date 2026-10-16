@@ -6,6 +6,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Windows.Automation;
 using TypeLay.App;
 using Xunit;
 
@@ -167,18 +168,7 @@ internal sealed class BrowserWindows
         Assert.NotEqual(nint.Zero, previousDpi);
         try
         {
-            var renderers = new List<nint>();
-            EnumChildWindows(window, (child, _) =>
-            {
-                Native.GetWindowThreadProcessId(child, out uint processId);
-                var name = new StringBuilder(128);
-                GetClassNameW(child, name, name.Capacity);
-                if (IsWindowVisible(child) && _processes.TryGetValue((int)processId, out var owner) && !owner.HasExited
-                    && name.ToString() == "Chrome_RenderWidgetHostHWND")
-                    renderers.Add(child);
-                return true;
-            }, 0);
-            nint renderer = Assert.Single(renderers);
+            nint renderer = Assert.Single(ReadRenderers(window));
             Assert.Equal(window, Native.GetAncestor(renderer, 2));
             Assert.True(GetWindowRect(renderer, out var bounds));
             int width = bounds.Right - bounds.Left, height = bounds.Bottom - bounds.Top;
@@ -186,31 +176,171 @@ internal sealed class BrowserWindows
             uint dpi = Native.GetDpiForWindow(renderer);
             Assert.InRange(dpi, 48u, 960u);
             int x = bounds.Left + width / 2, y = bounds.Top + height / 2;
-            nint hit = WindowFromPoint(new()
-            {
-                X = x,
-                Y = y
-            });
-            Assert.Equal(window, Native.GetAncestor(hit, 2));
-            Assert.True(hit == renderer || IsChild(renderer, hit), "The click must reach the owned content viewport.");
-            int desktopLeft = GetSystemMetrics(76), desktopTop = GetSystemMetrics(77);
-            int desktopWidth = GetSystemMetrics(78), desktopHeight = GetSystemMetrics(79);
-            Assert.True(desktopWidth > 1 && desktopHeight > 1);
-            Assert.InRange(x, desktopLeft, desktopLeft + desktopWidth - 1);
-            Assert.InRange(y, desktopTop, desktopTop + desktopHeight - 1);
-            int absoluteX = (int)(((long)x - desktopLeft) * 65535 / (desktopWidth - 1));
-            int absoluteY = (int)(((long)y - desktopTop) * 65535 / (desktopHeight - 1));
-            Assert.Equal(window, Native.GetForegroundWindow());
-            Assert.Equal(0, Native.GetAsyncKeyState(1) & 0x8000);
-            MouseInput[] input = [new() { X = absoluteX, Y = absoluteY, Flags = 0xc001 },
-                new() { Flags = 2 }, new() { Flags = 4 }];
-            uint sent = SendInput((uint)input.Length, input, Marshal.SizeOf<MouseInput>());
-            if (sent == 2)
-                SendInput(1, [new() { Flags = 4 }], Marshal.SizeOf<MouseInput>());
-            Assert.Equal((uint)input.Length, sent);
+            ClickContentPoint(window, renderer, x, y);
             return (dpi, width, height);
         }
         finally { SetThreadDpiAwarenessContext(previousDpi); }
+    }
+
+    // UIA is intentionally primed for this internal-page fixture only. Document
+    // ValuePattern is Chromium's URL metadata, never the input or suggestions.
+    internal sealed record NewTabInput(AutomationElement Element, int[] RuntimeId, int[] DocumentId, nint Renderer);
+
+    public NewTabInput? FindNewTabInput(nint window, out string stage)
+    {
+        stage = "renderer-unavailable";
+        var renderers = ReadRenderers(window);
+        Assert.True(renderers.Length <= 1, "new-tab-renderer-ambiguous");
+        if (renderers.Length == 0)
+            return null;
+        stage = "document-unavailable";
+        var root = AutomationElement.FromHandle(renderers[0]);
+        var documents = root.FindAll(TreeScope.Subtree,
+            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document))
+            .Cast<AutomationElement>().Where(IsNewTabDocument).ToArray();
+        Assert.True(documents.Length <= 1, "new-tab-document-ambiguous");
+        if (documents.Length == 0)
+            return null;
+        stage = "input-unavailable";
+        var documentId = documents[0].GetRuntimeId();
+        var candidates = documents[0].FindAll(TreeScope.Descendants, new OrCondition(
+            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit),
+            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ComboBox)))
+            .Cast<AutomationElement>().Where(element =>
+            {
+                var current = element.Current;
+                return current.IsEnabled && current.IsKeyboardFocusable && !current.IsOffscreen && !current.IsPassword
+                    && !current.BoundingRectangle.IsEmpty && current.BoundingRectangle.Width > 0 && current.BoundingRectangle.Height > 0
+                    && OwnedDocument(element, window, out _)?.GetRuntimeId().SequenceEqual(documentId) == true;
+            }).ToArray();
+        Assert.True(candidates.Length <= 1, "new-tab-input-ambiguous");
+        if (candidates.Length == 1)
+            stage = "ready";
+        return candidates.Length == 1
+            ? new(candidates[0], candidates[0].GetRuntimeId(), documentId, renderers[0]) : null;
+    }
+
+    public void ClickNewTabInput(nint window, NewTabInput input)
+    {
+        AssertNewTabIdentity(window, input);
+        nint previousDpi = SetThreadDpiAwarenessContext(-4);
+        Assert.NotEqual(nint.Zero, previousDpi);
+        try
+        {
+            var bounds = input.Element.Current.BoundingRectangle;
+            Assert.True(!bounds.IsEmpty && bounds.Width > 0 && bounds.Height > 0, "new-tab-input-bounds");
+            Assert.True(GetWindowRect(input.Renderer, out var viewport), "new-tab-renderer-bounds");
+            Assert.True(bounds.Left >= viewport.Left && bounds.Right <= viewport.Right
+                && bounds.Top >= viewport.Top && bounds.Bottom <= viewport.Bottom, "new-tab-input-outside-content");
+            var point = new System.Windows.Point(bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2);
+            Assert.True(AutomationElement.FromPoint(point).GetRuntimeId().SequenceEqual(input.RuntimeId), "new-tab-input-hit-test");
+            AssertNewTabIdentity(window, input);
+            ClickContentPoint(window, input.Renderer, (int)point.X, (int)point.Y);
+        }
+        finally
+        {
+            SetThreadDpiAwarenessContext(previousDpi);
+        }
+    }
+
+    public string NewTabFocus(nint window, NewTabInput input)
+    {
+        Assert.True(Read().Any(candidate => candidate.Handle == window), "new-tab-window-unavailable");
+        Assert.True(Native.GetForegroundWindow() == window, "new-tab-foreground-changed");
+        var focused = AutomationElement.FocusedElement;
+        if (focused is null)
+            return "focus-unavailable";
+        var document = OwnedDocument(focused, window, out bool ownedRoot);
+        if (!ownedRoot)
+            return "focus-unavailable";
+        if (document is null)
+            return "focus-transfer";
+        AssertNewTabIdentity(window, input);
+        if (document.GetRuntimeId().SequenceEqual(input.DocumentId)
+            && focused.GetRuntimeId().SequenceEqual(input.RuntimeId) && focused.Current.HasKeyboardFocus)
+            return "source";
+        return "field-changed";
+    }
+
+    private void AssertNewTabIdentity(nint window, NewTabInput input)
+    {
+        Assert.True(Read().Any(candidate => candidate.Handle == window), "new-tab-window-unavailable");
+        Assert.True(Native.GetForegroundWindow() == window, "new-tab-foreground-changed");
+        Assert.True(ReadRenderers(window).Contains(input.Renderer), "new-tab-renderer-changed");
+        Assert.True(input.Element.GetRuntimeId().SequenceEqual(input.RuntimeId), "new-tab-field-changed");
+        var document = OwnedDocument(input.Element, window, out _);
+        Assert.True(document is not null && document.GetRuntimeId().SequenceEqual(input.DocumentId)
+            && IsNewTabDocument(document), "new-tab-document-changed");
+        var current = input.Element.Current;
+        Assert.True(current.IsEnabled && current.IsKeyboardFocusable && !current.IsOffscreen && !current.IsPassword,
+            "new-tab-input-unavailable");
+    }
+
+    private AutomationElement? OwnedDocument(AutomationElement element, nint window, out bool ownedRoot)
+    {
+        ownedRoot = false;
+        AutomationElement? document = null;
+        for (int depth = 0; element is not null && depth < 28; depth++, element = TreeWalker.RawViewWalker.GetParent(element))
+        {
+            var current = element.Current;
+            if (!_processes.TryGetValue(current.ProcessId, out var owner) || owner.HasExited)
+                return null;
+            if (document is null && current.ControlType == ControlType.Document)
+                document = element;
+            if ((nint)current.NativeWindowHandle == window)
+            {
+                ownedRoot = true;
+                return document;
+            }
+        }
+        return null;
+    }
+
+    private static bool IsNewTabDocument(AutomationElement element) =>
+        element.Current.ControlType == ControlType.Document
+        && element.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern)
+        && ((ValuePattern)pattern).Current.Value is "chrome://new-tab-page/" or "chrome://newtab/";
+
+    private nint[] ReadRenderers(nint window)
+    {
+        var renderers = new List<nint>();
+        EnumChildWindows(window, (child, _) =>
+        {
+            Native.GetWindowThreadProcessId(child, out uint processId);
+            var name = new StringBuilder(128);
+            GetClassNameW(child, name, name.Capacity);
+            if (IsWindowVisible(child) && _processes.TryGetValue((int)processId, out var owner) && !owner.HasExited
+                && name.ToString() == "Chrome_RenderWidgetHostHWND")
+                renderers.Add(child);
+            return true;
+        }, 0);
+        return renderers.ToArray();
+    }
+
+    private static void ClickContentPoint(nint window, nint renderer, int x, int y)
+    {
+        nint hit = WindowFromPoint(new()
+        {
+            X = x,
+            Y = y
+        });
+        Assert.Equal(window, Native.GetAncestor(hit, 2));
+        Assert.True(hit == renderer || IsChild(renderer, hit), "The click must reach the owned content viewport.");
+        int desktopLeft = GetSystemMetrics(76), desktopTop = GetSystemMetrics(77);
+        int desktopWidth = GetSystemMetrics(78), desktopHeight = GetSystemMetrics(79);
+        Assert.True(desktopWidth > 1 && desktopHeight > 1);
+        Assert.InRange(x, desktopLeft, desktopLeft + desktopWidth - 1);
+        Assert.InRange(y, desktopTop, desktopTop + desktopHeight - 1);
+        int absoluteX = (int)(((long)x - desktopLeft) * 65535 / (desktopWidth - 1));
+        int absoluteY = (int)(((long)y - desktopTop) * 65535 / (desktopHeight - 1));
+        Assert.Equal(window, Native.GetForegroundWindow());
+        Assert.Equal(0, Native.GetAsyncKeyState(1) & 0x8000);
+        MouseInput[] input = [new() { X = absoluteX, Y = absoluteY, Flags = 0xc001 },
+            new() { Flags = 2 }, new() { Flags = 4 }];
+        uint sent = SendInput((uint)input.Length, input, Marshal.SizeOf<MouseInput>());
+        if (sent == 2)
+            SendInput(1, [new() { Flags = 4 }], Marshal.SizeOf<MouseInput>());
+        Assert.Equal((uint)input.Length, sent);
     }
 
     private void Discover()
@@ -263,23 +393,16 @@ internal sealed class BrowserWindows
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
         try
         {
-            // Also retain and stop an identified descendant that started before
-            // ChildProcess assigned its job. Discover before closing that job:
-            // asynchronous termination can otherwise hide not-yet-held children.
-            // A discovery failure must still close the owned job.
+            // Retain exact process identities before terminating the owned job.
+            // Also await held identities outside that job, without killing them.
+            // A discovery failure must still terminate and close the owned job.
             try
             {
                 Discover();
             }
-            finally { owner.Dispose(); }
-            foreach (var process in _processes.Values)
+            finally
             {
-                try
-                {
-                    if (!process.HasExited)
-                        process.Kill(true);
-                }
-                catch (Exception error) when (error is InvalidOperationException or Win32Exception) { }
+                await owner.TerminateAndWaitAsync(deadline.Token);
             }
             await Task.WhenAll(_processes.Values.Select(process => process.WaitForExitAsync(deadline.Token)));
         }

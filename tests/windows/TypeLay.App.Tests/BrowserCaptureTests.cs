@@ -11,7 +11,7 @@ using Xunit;
 
 namespace TypeLay.App.Tests;
 
-// Actual browser + production broker, with an isolated local page/profile. This
+// Actual browser + production broker, with isolated test pages/profiles. This
 // proves acquisition and typing updates, not translation quality or real IME.
 [Collection("Desktop")]
 public sealed class BrowserCaptureTests(ITestOutputHelper output)
@@ -203,6 +203,146 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
                 output.WriteLine($"Isolated browser profile cleanup failed: {error.GetType().Name}; hresult=0x{error.HResult:x8}");
                 if (error is IOException)
                     output.WriteLine("Isolated cleanup detail: " + System.Text.Json.JsonSerializer.Serialize(error.Message.Replace(directory, "<isolated-browser>", StringComparison.OrdinalIgnoreCase)));
+            }
+        }
+    }
+
+    [Fact]
+    public async Task ChromeNewTabCentralSearchCapturesAndUpdatesWithoutSentencePunctuation()
+    {
+        string? chrome = new[] { Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 }
+            .Select(folder => Path.Combine(Environment.GetFolderPath(folder), "Google", "Chrome", "Application", "chrome.exe"))
+            .FirstOrDefault(File.Exists);
+        Assert.True(chrome is not null, "This desktop regression requires the runner's installed Google Chrome.");
+        output.WriteLine("Installed Chrome version: " + FileVersionInfo.GetVersionInfo(chrome!).ProductVersion);
+        output.WriteLine("New tab fixture uses UIA metadata to locate its input; browser accessibility is primed before capture.");
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-newtab-" + Guid.NewGuid().ToString("N"));
+        BrowserWindows? windows = null;
+        ChildProcess? ownedBrowser = null;
+        bool failed = false;
+        string stage = "startup", focus = "unobserved";
+        try
+        {
+            Directory.CreateDirectory(directory);
+            var start = new ProcessStartInfo(chrome!) { UseShellExecute = false, RedirectStandardError = true };
+            start.Environment["CHROME_LOG_FILE"] = Path.Combine(directory, "chrome.log");
+            start.ArgumentList.Add("--enable-logging");
+            start.ArgumentList.Add("--user-data-dir=" + Path.Combine(directory, "profile"));
+            start.ArgumentList.Add("--no-first-run");
+            start.ArgumentList.Add("--no-default-browser-check");
+            start.ArgumentList.Add("--disable-search-engine-choice-screen");
+            start.ArgumentList.Add("--new-window");
+            start.ArgumentList.Add("chrome://newtab");
+            ownedBrowser = new ChildProcess(start);
+            windows = new(ownedBrowser.Process, Guid.NewGuid().ToString("N"));
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            deadline.CancelAfter(TimeSpan.FromSeconds(20));
+            nint window = 0;
+            BrowserWindows.NewTabInput? field = null;
+            string? previousStage = null;
+            int startupChanges = 0;
+            do
+            {
+                stage = "window-unavailable";
+                var visible = windows.Read();
+                Assert.True(visible.Length <= 1, "new-tab-window-ambiguous");
+                if (visible.Length == 1)
+                {
+                    window = visible[0].Handle;
+                    if (Native.GetForegroundWindow() != window)
+                        Native.SetForegroundWindow(window);
+                    stage = "foreground-unavailable";
+                    if (Native.GetForegroundWindow() == window)
+                        field = windows.FindNewTabInput(window, out stage);
+                }
+                if (stage != previousStage && startupChanges < 12)
+                {
+                    previousStage = stage;
+                    startupChanges++;
+                    output.WriteLine("New tab prerequisite: phase=" + stage);
+                }
+                if (field is null)
+                    await Task.Delay(40, deadline.Token);
+            } while (field is null);
+            output.WriteLine("New tab prerequisite: internalDocumentConfirmed=True; uniqueInput=True");
+            stage = "click";
+            windows.ClickNewTabInput(window, field);
+            // SendInput insertion is not an observed DOM click. Wait for the
+            // exact UIA input focus, never adopt a toolbar field after transfer.
+            while ((focus = windows.NewTabFocus(window, field)) != "source")
+                await Task.Delay(40, deadline.Token);
+            output.WriteLine("New tab focus: phase=after-click; source=True; inputClickInserted=True");
+            using var broker = new BrokerClient();
+            using var input = new WindowsInputService(broker, 0);
+            await input.StartAsync().WaitAsync(deadline.Token);
+            var context = new InputContext(0, 0, 0, null, [], false);
+            void RequireSource()
+            {
+                focus = windows.NewTabFocus(window, field);
+                Assert.True(focus == "source", "new-tab-" + focus);
+            }
+            async Task<InputSnapshot> Observe(string expected)
+            {
+                var elapsed = Stopwatch.StartNew();
+                do
+                {
+                    RequireSource();
+                    var observed = await input.CaptureAsync(context).WaitAsync(deadline.Token);
+                    RequireSource();
+                    if (observed.Snapshot is { } source && observed.Focus == FocusMember.Source
+                        && (source.Ime == ImeState.Clear ? source.Text : source.PreviewText) == expected)
+                    {
+                        Assert.True(WindowsTarget.TryDecode(source.Target, out var target), "new-tab-target-unavailable");
+                        Assert.True(target.RootHwnd == (long)window
+                            && target.ElementToken == string.Join('.', field.RuntimeId), "new-tab-target-mismatch");
+                        Assert.False(source.DirectWriteSupported);
+                        if (source.Ime != ImeState.Clear)
+                            Assert.False(source.WriteSupported);
+                        return source;
+                    }
+                    await Task.Delay(40, deadline.Token);
+                } while (elapsed.Elapsed < TimeSpan.FromSeconds(6));
+                throw new Xunit.Sdk.XunitException("new-tab-capture-unavailable; inspect the broker's fixed stage/rejection trace");
+            }
+            const string initial = "ordinary search without punctuation", appended = " and more words";
+            stage = "first-input";
+            RequireSource();
+            TypeText(initial);
+            var first = await Observe(initial);
+            output.WriteLine("New tab capture: phase=first-input; source=True; exactSyntheticText=True");
+            stage = "appended-input";
+            RequireSource();
+            Keys(0x23);
+            RequireSource();
+            TypeText(appended);
+            var next = await Observe(initial + appended);
+            Assert.True(first.Target == next.Target, "new-tab-target-changed");
+            Assert.True(next.InputEpoch > first.InputEpoch);
+            Assert.True(next.ObservedAtMs >= first.ObservedAtMs);
+            output.WriteLine("New tab capture: phase=appended-input; source=True; exactSyntheticText=True; epochAdvanced=True");
+        }
+        catch
+        {
+            failed = true;
+            // No page screenshots, labels, URLs, input values or suggestion text.
+            output.WriteLine($"New tab failed: phase={stage}; focus={focus}");
+            throw;
+        }
+        finally
+        {
+            try
+            {
+                if (windows is not null && ownedBrowser is not null)
+                    await windows.StopAsync(ownedBrowser);
+                else
+                    ownedBrowser?.Dispose();
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, true);
+            }
+            catch (Exception error) when (failed && error is IOException or UnauthorizedAccessException
+                or System.ComponentModel.Win32Exception or InvalidOperationException or OperationCanceledException)
+            {
+                output.WriteLine($"Isolated new tab cleanup failed: {error.GetType().Name}; hresult=0x{error.HResult:x8}");
             }
         }
     }
