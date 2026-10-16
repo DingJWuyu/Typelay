@@ -11,6 +11,9 @@
     <ProjectReference Include="../../../../src/windows/TypeLay.Broker/TypeLay.Broker.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../../support/TypeLay.Platform.Windows/TypeLay.Platform.Windows.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../../support/BrowserWindows.cs" Link="BrowserWindows.cs" />
+  </ItemGroup>
   <Target Name="CopyProductionBrokerForContinuousCheck" AfterTargets="Build">
     <ItemGroup>
       <_ContinuousBrokerFiles Include="$(MSBuildThisFileDirectory)../../../../src/windows/TypeLay.Broker/bin/$(Configuration)/net10.0-windows/TypeLay.Broker.*" />

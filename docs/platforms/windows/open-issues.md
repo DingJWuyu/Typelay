@@ -39,7 +39,9 @@ Windows 与 Linux 并行开发，遵循[共同应用支持与完整体验](../..
 
 当前实现增加 ComboBox 的只读预览路径，但必须同时具有可编辑 ValuePattern 和明确可编辑的 TextPattern；普通选择器、密码、只读或未聚焦字段仍被拒绝。此路径不授予 Tab 或 F10 写回能力。[Windows 实际回归](https://github.com/DingJWuyu/Typelay/actions/runs/38427227828)已通过受控 WPF UIA ComboBox 到生产 Broker 的无标点采集、追加后版本更新，以及选择器/密码/只读拒绝；它没有启动模型，也不是 Chrome 新标签页实测。
 
-固定版本来源：[新标签页输入模板](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/ui/webui/resources/cr_components/searchbox/searchbox_input.html.ts#L24-L54)、[Blink 的可编辑组合框角色](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/third_party/blink/renderer/modules/accessibility/ax_object.cc#L6252-L6275)、[Windows UIA 类型映射](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/ui/accessibility/platform/ax_platform_node_win.cc#L1502-L1512)。检查到的中央框焦点/输入事件更新本地搜索框并请求补全，未要求迁到顶栏；真实页面仍需观察，不能只从源码保证所有版本/配置相同。
+[当前新标签页实测](https://github.com/DingJWuyu/Typelay/actions/runs/38830713213/job/116748645966)已在隔离 Chrome 中确认内部页身份、唯一中央编辑框与单次点击后的精确焦点；生产 Broker 两次采集匹配合成原文及无标点追加，目标不变且输入版本增长，未观察到转入顶栏。此例先用 UIA 定位，已预热可访问性树；尚未验证冷启动首次捕获、真实模型的自动/按需两模式或用户输入法。整例仍在最后删除临时目录时因文件占用失败，自有 Job 归零与已持有进程退出已确认，锁持有者未知。
+
+固定版本来源：[新标签页输入模板](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/ui/webui/resources/cr_components/searchbox/searchbox_input.html.ts#L24-L54)、[Blink 的可编辑组合框角色](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/third_party/blink/renderer/modules/accessibility/ax_object.cc#L6252-L6275)、[Windows UIA 类型映射](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/ui/accessibility/platform/ax_platform_node_win.cc#L1502-L1512)。检查到的中央框焦点/输入事件更新本地搜索框并请求补全，未要求迁到顶栏；其他版本/配置仍需观察，不能只从源码保证行为相同。
 
 需同时核对一个反差：`FieldPolicy` 的机器区域正则实际排除 `address.?bar`、`omnibox`、`地址栏`，但并不匹配所有本地化标签，例如“地址和搜索栏”。顶栏能翻译不代表中心搜索框应被排除，也不能在未读现场属性时认定是哪条正则命中。
 

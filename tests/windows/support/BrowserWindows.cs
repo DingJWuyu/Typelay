@@ -8,9 +8,8 @@ using System.Text;
 using System.Text.Json;
 using System.Windows.Automation;
 using TypeLay.App;
-using Xunit;
 
-namespace TypeLay.App.Tests;
+namespace TypeLay.Windows.Testing;
 
 // Tracks only the process family launched for this test. MainWindowHandle is
 // not a browser identity: a launcher or another member may own the page window.
@@ -159,22 +158,24 @@ internal sealed class BrowserWindows
 
     public (uint Dpi, int Width, int Height) ClickPageInput(nint window)
     {
-        Assert.Contains(Read(), candidate => candidate.Handle == window && candidate.Page && candidate.InputReady);
-        Assert.Equal(window, Native.GetForegroundWindow());
+        Require(Read().Any(candidate => candidate.Handle == window && candidate.Page && candidate.InputReady), "page-input-not-ready");
+        Require(window == Native.GetForegroundWindow(), "browser-foreground-changed");
         // The fixture centers its input in the renderer viewport. Read its HWND
         // bounds in physical pixels, not CSS pixels or a guessed toolbar offset.
         // This does not query UIA or pre-enable browser accessibility.
         nint previousDpi = SetThreadDpiAwarenessContext(-4); // Per-monitor V2, this test thread only.
-        Assert.NotEqual(nint.Zero, previousDpi);
+        Require(previousDpi != 0, "browser-dpi-context");
         try
         {
-            nint renderer = Assert.Single(ReadRenderers(window));
-            Assert.Equal(window, Native.GetAncestor(renderer, 2));
-            Assert.True(GetWindowRect(renderer, out var bounds));
+            var renderers = ReadRenderers(window);
+            Require(renderers.Length == 1, "page-renderer-ambiguous");
+            nint renderer = renderers[0];
+            Require(window == Native.GetAncestor(renderer, 2), "browser-renderer-root");
+            Require(GetWindowRect(renderer, out var bounds), "browser-renderer-bounds");
             int width = bounds.Right - bounds.Left, height = bounds.Bottom - bounds.Top;
-            Assert.True(width >= 100 && height >= 80, "The owned renderer must have a visible content viewport.");
+            Require(width >= 100 && height >= 80, "browser-renderer-viewport");
             uint dpi = Native.GetDpiForWindow(renderer);
-            Assert.InRange(dpi, 48u, 960u);
+            Require(dpi is >= 48u and <= 960u, "browser-dpi-range");
             int x = bounds.Left + width / 2, y = bounds.Top + height / 2;
             ClickContentPoint(window, renderer, x, y);
             return (dpi, width, height);
@@ -190,7 +191,7 @@ internal sealed class BrowserWindows
     {
         stage = "renderer-unavailable";
         var renderers = ReadRenderers(window);
-        Assert.True(renderers.Length <= 1, "new-tab-renderer-ambiguous");
+        Require(renderers.Length <= 1, "new-tab-renderer-ambiguous");
         if (renderers.Length == 0)
             return null;
         stage = "document-unavailable";
@@ -198,7 +199,7 @@ internal sealed class BrowserWindows
         var documents = root.FindAll(TreeScope.Subtree,
             new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Document))
             .Cast<AutomationElement>().Where(IsNewTabDocument).ToArray();
-        Assert.True(documents.Length <= 1, "new-tab-document-ambiguous");
+        Require(documents.Length <= 1, "new-tab-document-ambiguous");
         if (documents.Length == 0)
             return null;
         stage = "input-unavailable";
@@ -213,7 +214,7 @@ internal sealed class BrowserWindows
                     && !current.BoundingRectangle.IsEmpty && current.BoundingRectangle.Width > 0 && current.BoundingRectangle.Height > 0
                     && OwnedDocument(element, window, out _)?.GetRuntimeId().SequenceEqual(documentId) == true;
             }).ToArray();
-        Assert.True(candidates.Length <= 1, "new-tab-input-ambiguous");
+        Require(candidates.Length <= 1, "new-tab-input-ambiguous");
         if (candidates.Length == 1)
             stage = "ready";
         return candidates.Length == 1
@@ -224,16 +225,16 @@ internal sealed class BrowserWindows
     {
         AssertNewTabIdentity(window, input);
         nint previousDpi = SetThreadDpiAwarenessContext(-4);
-        Assert.NotEqual(nint.Zero, previousDpi);
+        Require(previousDpi != 0, "browser-dpi-context");
         try
         {
             var bounds = input.Element.Current.BoundingRectangle;
-            Assert.True(!bounds.IsEmpty && bounds.Width > 0 && bounds.Height > 0, "new-tab-input-bounds");
-            Assert.True(GetWindowRect(input.Renderer, out var viewport), "new-tab-renderer-bounds");
-            Assert.True(bounds.Left >= viewport.Left && bounds.Right <= viewport.Right
+            Require(!bounds.IsEmpty && bounds.Width > 0 && bounds.Height > 0, "new-tab-input-bounds");
+            Require(GetWindowRect(input.Renderer, out var viewport), "new-tab-renderer-bounds");
+            Require(bounds.Left >= viewport.Left && bounds.Right <= viewport.Right
                 && bounds.Top >= viewport.Top && bounds.Bottom <= viewport.Bottom, "new-tab-input-outside-content");
             var point = new System.Windows.Point(bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2);
-            Assert.True(AutomationElement.FromPoint(point).GetRuntimeId().SequenceEqual(input.RuntimeId), "new-tab-input-hit-test");
+            Require(AutomationElement.FromPoint(point).GetRuntimeId().SequenceEqual(input.RuntimeId), "new-tab-input-hit-test");
             AssertNewTabIdentity(window, input);
             ClickContentPoint(window, input.Renderer, (int)point.X, (int)point.Y);
         }
@@ -245,8 +246,8 @@ internal sealed class BrowserWindows
 
     public string NewTabFocus(nint window, NewTabInput input)
     {
-        Assert.True(Read().Any(candidate => candidate.Handle == window), "new-tab-window-unavailable");
-        Assert.True(Native.GetForegroundWindow() == window, "new-tab-foreground-changed");
+        Require(Read().Any(candidate => candidate.Handle == window), "new-tab-window-unavailable");
+        Require(Native.GetForegroundWindow() == window, "new-tab-foreground-changed");
         var focused = AutomationElement.FocusedElement;
         if (focused is null)
             return "focus-unavailable";
@@ -264,15 +265,15 @@ internal sealed class BrowserWindows
 
     private void AssertNewTabIdentity(nint window, NewTabInput input)
     {
-        Assert.True(Read().Any(candidate => candidate.Handle == window), "new-tab-window-unavailable");
-        Assert.True(Native.GetForegroundWindow() == window, "new-tab-foreground-changed");
-        Assert.True(ReadRenderers(window).Contains(input.Renderer), "new-tab-renderer-changed");
-        Assert.True(input.Element.GetRuntimeId().SequenceEqual(input.RuntimeId), "new-tab-field-changed");
+        Require(Read().Any(candidate => candidate.Handle == window), "new-tab-window-unavailable");
+        Require(Native.GetForegroundWindow() == window, "new-tab-foreground-changed");
+        Require(ReadRenderers(window).Contains(input.Renderer), "new-tab-renderer-changed");
+        Require(input.Element.GetRuntimeId().SequenceEqual(input.RuntimeId), "new-tab-field-changed");
         var document = OwnedDocument(input.Element, window, out _);
-        Assert.True(document is not null && document.GetRuntimeId().SequenceEqual(input.DocumentId)
+        Require(document is not null && document.GetRuntimeId().SequenceEqual(input.DocumentId)
             && IsNewTabDocument(document), "new-tab-document-changed");
         var current = input.Element.Current;
-        Assert.True(current.IsEnabled && current.IsKeyboardFocusable && !current.IsOffscreen && !current.IsPassword,
+        Require(current.IsEnabled && current.IsKeyboardFocusable && !current.IsOffscreen && !current.IsPassword,
             "new-tab-input-unavailable");
     }
 
@@ -324,23 +325,103 @@ internal sealed class BrowserWindows
             X = x,
             Y = y
         });
-        Assert.Equal(window, Native.GetAncestor(hit, 2));
-        Assert.True(hit == renderer || IsChild(renderer, hit), "The click must reach the owned content viewport.");
+        Require(window == Native.GetAncestor(hit, 2), "browser-click-root");
+        Require(hit == renderer || IsChild(renderer, hit), "browser-click-outside-content");
         int desktopLeft = GetSystemMetrics(76), desktopTop = GetSystemMetrics(77);
         int desktopWidth = GetSystemMetrics(78), desktopHeight = GetSystemMetrics(79);
-        Assert.True(desktopWidth > 1 && desktopHeight > 1);
-        Assert.InRange(x, desktopLeft, desktopLeft + desktopWidth - 1);
-        Assert.InRange(y, desktopTop, desktopTop + desktopHeight - 1);
+        Require(desktopWidth > 1 && desktopHeight > 1, "browser-desktop-bounds");
+        Require(x >= desktopLeft && x <= desktopLeft + desktopWidth - 1, "browser-click-x");
+        Require(y >= desktopTop && y <= desktopTop + desktopHeight - 1, "browser-click-y");
         int absoluteX = (int)(((long)x - desktopLeft) * 65535 / (desktopWidth - 1));
         int absoluteY = (int)(((long)y - desktopTop) * 65535 / (desktopHeight - 1));
-        Assert.Equal(window, Native.GetForegroundWindow());
-        Assert.Equal(0, Native.GetAsyncKeyState(1) & 0x8000);
+        Require(window == Native.GetForegroundWindow(), "browser-foreground-changed");
+        Require((Native.GetAsyncKeyState(1) & 0x8000) == 0, "browser-mouse-already-down");
         MouseInput[] input = [new() { X = absoluteX, Y = absoluteY, Flags = 0xc001 },
             new() { Flags = 2 }, new() { Flags = 4 }];
         uint sent = SendInput((uint)input.Length, input, Marshal.SizeOf<MouseInput>());
         if (sent == 2)
-            SendInput(1, [new() { Flags = 4 }], Marshal.SizeOf<MouseInput>());
-        Assert.Equal((uint)input.Length, sent);
+            SendInput(1, [new MouseInput { Flags = 4 }], Marshal.SizeOf<MouseInput>());
+        Require((uint)input.Length == sent, "browser-click-injection-incomplete");
+    }
+
+    private static void Require(bool condition, string code)
+    {
+        if (!condition)
+            throw new Failure(code);
+    }
+
+    internal sealed class Failure(string code) : Exception(code)
+    {
+        public string Code { get; } = code;
+    }
+
+    public static ProcessStartInfo NewTabStartInfo(string directory, Action<string> log)
+    {
+        string? chrome = new[] { Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 }
+            .Select(folder => Path.Combine(Environment.GetFolderPath(folder), "Google", "Chrome", "Application", "chrome.exe"))
+            .FirstOrDefault(File.Exists);
+        Require(chrome is not null, "installed-chrome-required");
+        log("Installed Chrome version: " + FileVersionInfo.GetVersionInfo(chrome!).ProductVersion);
+        log("New tab fixture uses UIA metadata to locate its input; browser accessibility is primed before capture.");
+        var start = new ProcessStartInfo(chrome!) { UseShellExecute = false, RedirectStandardError = true };
+        start.Environment["CHROME_LOG_FILE"] = Path.Combine(directory, "chrome.log");
+        start.ArgumentList.Add("--enable-logging");
+        start.ArgumentList.Add("--user-data-dir=" + Path.Combine(directory, "profile"));
+        start.ArgumentList.Add("--no-first-run");
+        start.ArgumentList.Add("--no-default-browser-check");
+        start.ArgumentList.Add("--disable-search-engine-choice-screen");
+        start.ArgumentList.Add("--new-window");
+        start.ArgumentList.Add("chrome://newtab");
+        return start;
+    }
+
+    public async Task<(nint Window, NewTabInput Input)> PrepareNewTabAsync(Action<string> log, CancellationToken cancellation)
+    {
+        string stage = "startup", focus = "unobserved";
+        try
+        {
+            nint window = 0;
+            NewTabInput? field = null;
+            string? previousStage = null;
+            int startupChanges = 0;
+            do
+            {
+                stage = "window-unavailable";
+                var visible = Read();
+                Require(visible.Length <= 1, "new-tab-window-ambiguous");
+                if (visible.Length == 1)
+                {
+                    window = visible[0].Handle;
+                    if (Native.GetForegroundWindow() != window)
+                        Native.SetForegroundWindow(window);
+                    stage = "foreground-unavailable";
+                    if (Native.GetForegroundWindow() == window)
+                        field = FindNewTabInput(window, out stage);
+                }
+                if (stage != previousStage && startupChanges < 12)
+                {
+                    previousStage = stage;
+                    startupChanges++;
+                    log("New tab prerequisite: phase=" + stage);
+                }
+                if (field is null)
+                    await Task.Delay(40, cancellation);
+            } while (field is null);
+            log("New tab prerequisite: internalDocumentConfirmed=True; uniqueInput=True");
+            stage = "click";
+            ClickNewTabInput(window, field);
+            // SendInput insertion is not an observed DOM click. Wait for the
+            // exact UIA input focus, never adopt a toolbar field after transfer.
+            while ((focus = NewTabFocus(window, field)) != "source")
+                await Task.Delay(40, cancellation);
+            log("New tab focus: phase=after-click; source=True; inputClickInserted=True");
+            return (window, field);
+        }
+        catch
+        {
+            log($"New tab prerequisite failed: phase={stage}; focus={focus}");
+            throw;
+        }
     }
 
     private void Discover()
@@ -413,6 +494,27 @@ internal sealed class BrowserWindows
             _processes.Clear();
         }
     }
+
+    public static void Keys(ushort key) => Send([
+        new() { Type = 1, Key = key }, new() { Type = 1, Key = key, Flags = 2 }
+    ]);
+    public static void TypeText(string text) => Send(text.SelectMany(unit => new[]
+    {
+        new KeyboardInput { Type = 1, Scan = unit, Flags = 4 },
+        new KeyboardInput { Type = 1, Scan = unit, Flags = 6 }
+    }).ToArray());
+    private static void Send(KeyboardInput[] input) =>
+        Require((uint)input.Length == SendInput((uint)input.Length, input, Marshal.SizeOf<KeyboardInput>()), "browser-key-injection-incomplete");
+    [StructLayout(LayoutKind.Explicit, Size = 40)]
+    private struct KeyboardInput
+    {
+        [FieldOffset(0)] public uint Type;
+        [FieldOffset(8)] public ushort Key;
+        [FieldOffset(10)] public ushort Scan;
+        [FieldOffset(12)] public uint Flags;
+    }
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint count, KeyboardInput[] input, int size);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct ProcessEntry

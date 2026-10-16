@@ -14,8 +14,9 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 // Explicit, network-using verification mode. Ordinary desktop tests never install models.
 // Uses the real installer/model, production Broker and overlay, with committed text
 // replay and one automation-mode direct shortcut in independent owned stock Edits.
-// This does not simulate physical IME input or qualify other controls.
-internal static class ContinuousTranslationCheck
+// Also exercises the UIA-primed Chrome new-tab field in both preview modes.
+// This does not simulate physical IME input or qualify unobserved controls.
+internal static partial class ContinuousTranslationCheck
 {
     public static int Run(string directory, string worker, string nativeFixture)
     {
@@ -41,6 +42,7 @@ internal static class ContinuousTranslationCheck
         var continuous = new SceneResult();
         var direct = new SceneResult();
         var practice = new SceneResult();
+        var newTab = new SceneResult();
         var cleanupErrors = new List<CleanupError>();
         bool ready = false;
         using var all = new CancellationTokenSource(TimeSpan.FromMinutes(20));
@@ -60,7 +62,7 @@ internal static class ContinuousTranslationCheck
             setup.Outcome = "ready";
             setup.Stage = "complete";
 
-            // Both independent scenes share one desktop budget. A failed scene
+            // All scenes share one desktop budget. A failed scene
             // does not buy a fresh deadline, model installation or worker restart.
             using var desktop = CancellationTokenSource.CreateLinkedTokenSource(all.Token);
             desktop.CancelAfter(TimeSpan.FromSeconds(90));
@@ -77,6 +79,12 @@ internal static class ContinuousTranslationCheck
                 practice = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
             else
                 practice = await VerifyPracticeAsync(directory, model, desktop.Token);
+            if (continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0 || practice.CleanupErrors.Count != 0)
+                newTab = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
+            else if (desktop.IsCancellationRequested)
+                newTab = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
+            else
+                newTab = await VerifyNewTabAsync(directory, model, desktop.Token);
         }
         catch (Exception error) when (error is not OutOfMemoryException)
         {
@@ -91,8 +99,8 @@ internal static class ContinuousTranslationCheck
             Cleanup("model", () => model?.Dispose(), cleanupErrors);
         }
         bool passed = setup.Outcome == "ready" && continuous.Outcome == "passed" && direct.Outcome == "verified"
-            && practice.Outcome == "verified" && cleanupErrors.Count == 0;
-        var firstFailure = new[] { setup, continuous, direct, practice }.FirstOrDefault(result => result.Failure != "none");
+            && practice.Outcome == "verified" && newTab.Outcome == "passed" && cleanupErrors.Count == 0;
+        var firstFailure = new[] { setup, continuous, direct, practice, newTab }.FirstOrDefault(result => result.Failure != "none");
         string failure = firstFailure?.Failure ?? (cleanupErrors.Count == 0 ? "none" : "cleanup-failed");
         string stage = passed ? "complete" : firstFailure?.Stage ?? "cleanup";
         await File.WriteAllTextAsync(Path.Combine(directory, "result.json"), JsonSerializer.Serialize(new
@@ -108,10 +116,11 @@ internal static class ContinuousTranslationCheck
             continuousPreview = continuous,
             directTranslation = direct,
             onDemandPractice = practice,
-            sourceBackend = "production-broker-stock-edit",
+            chromeNewTab = newTab,
+            sourceBackend = "production-broker-stock-edit-and-chrome-new-tab",
             physicalIme = false
         }, new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
-        Console.WriteLine($"Continuous translation check: {(passed ? "passed" : "failed")}; continuous={continuous.Outcome}; direct={direct.Outcome}; practice={practice.Outcome}; stage={stage}; code={failure}.");
+        Console.WriteLine($"Continuous translation check: {(passed ? "passed" : "failed")}; continuous={continuous.Outcome}; direct={direct.Outcome}; practice={practice.Outcome}; newTab={newTab.Outcome}; stage={stage}; code={failure}.");
         return passed ? 0 : 1;
     }
 
@@ -665,6 +674,7 @@ internal static class ContinuousTranslationCheck
             return;
         result.Outcome = "failed";
         result.Failure = error is CheckFailure check ? check.Code
+            : error is TypeLay.Windows.Testing.BrowserWindows.Failure browser ? browser.Code
             : error is OperationCanceledException ? deadlineCode : "operation-failed";
         result.ErrorType = error.GetType().Name;
         result.ErrorCode = error.HResult;

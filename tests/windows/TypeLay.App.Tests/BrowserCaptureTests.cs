@@ -1,7 +1,7 @@
 using TypeLay.Windows;
+using TypeLay.Windows.Testing;
 using System.Diagnostics;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Windows.Automation;
 using TypeLay.App;
 using TypeLay.Core;
@@ -160,9 +160,9 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             Assert.False(first.DirectWriteSupported);
             if (first.Ime != ImeState.Clear)
                 Assert.False(first.WriteSupported);
-            Keys(0x23); // End, then actual Unicode input with no punctuation or DOM value injection.
+            BrowserWindows.Keys(0x23); // End, then actual Unicode input with no punctuation or DOM value injection.
             const string appended = " and more words";
-            TypeText(appended);
+            BrowserWindows.TypeText(appended);
             var next = await Observe(initial + appended);
             Assert.Equal(first.Target, next.Target);
             Assert.True(next.InputEpoch > first.InputEpoch);
@@ -210,12 +210,6 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
     [Fact]
     public async Task ChromeNewTabCentralSearchCapturesAndUpdatesWithoutSentencePunctuation()
     {
-        string? chrome = new[] { Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 }
-            .Select(folder => Path.Combine(Environment.GetFolderPath(folder), "Google", "Chrome", "Application", "chrome.exe"))
-            .FirstOrDefault(File.Exists);
-        Assert.True(chrome is not null, "This desktop regression requires the runner's installed Google Chrome.");
-        output.WriteLine("Installed Chrome version: " + FileVersionInfo.GetVersionInfo(chrome!).ProductVersion);
-        output.WriteLine("New tab fixture uses UIA metadata to locate its input; browser accessibility is primed before capture.");
         string directory = Path.Combine(Path.GetTempPath(), "typelay-newtab-" + Guid.NewGuid().ToString("N"));
         BrowserWindows? windows = null;
         ChildProcess? ownedBrowser = null;
@@ -224,54 +218,11 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
         try
         {
             Directory.CreateDirectory(directory);
-            var start = new ProcessStartInfo(chrome!) { UseShellExecute = false, RedirectStandardError = true };
-            start.Environment["CHROME_LOG_FILE"] = Path.Combine(directory, "chrome.log");
-            start.ArgumentList.Add("--enable-logging");
-            start.ArgumentList.Add("--user-data-dir=" + Path.Combine(directory, "profile"));
-            start.ArgumentList.Add("--no-first-run");
-            start.ArgumentList.Add("--no-default-browser-check");
-            start.ArgumentList.Add("--disable-search-engine-choice-screen");
-            start.ArgumentList.Add("--new-window");
-            start.ArgumentList.Add("chrome://newtab");
-            ownedBrowser = new ChildProcess(start);
+            ownedBrowser = new ChildProcess(BrowserWindows.NewTabStartInfo(directory, output.WriteLine));
             windows = new(ownedBrowser.Process, Guid.NewGuid().ToString("N"));
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(20));
-            nint window = 0;
-            BrowserWindows.NewTabInput? field = null;
-            string? previousStage = null;
-            int startupChanges = 0;
-            do
-            {
-                stage = "window-unavailable";
-                var visible = windows.Read();
-                Assert.True(visible.Length <= 1, "new-tab-window-ambiguous");
-                if (visible.Length == 1)
-                {
-                    window = visible[0].Handle;
-                    if (Native.GetForegroundWindow() != window)
-                        Native.SetForegroundWindow(window);
-                    stage = "foreground-unavailable";
-                    if (Native.GetForegroundWindow() == window)
-                        field = windows.FindNewTabInput(window, out stage);
-                }
-                if (stage != previousStage && startupChanges < 12)
-                {
-                    previousStage = stage;
-                    startupChanges++;
-                    output.WriteLine("New tab prerequisite: phase=" + stage);
-                }
-                if (field is null)
-                    await Task.Delay(40, deadline.Token);
-            } while (field is null);
-            output.WriteLine("New tab prerequisite: internalDocumentConfirmed=True; uniqueInput=True");
-            stage = "click";
-            windows.ClickNewTabInput(window, field);
-            // SendInput insertion is not an observed DOM click. Wait for the
-            // exact UIA input focus, never adopt a toolbar field after transfer.
-            while ((focus = windows.NewTabFocus(window, field)) != "source")
-                await Task.Delay(40, deadline.Token);
-            output.WriteLine("New tab focus: phase=after-click; source=True; inputClickInserted=True");
+            var (window, field) = await windows.PrepareNewTabAsync(output.WriteLine, deadline.Token);
             using var broker = new BrokerClient();
             using var input = new WindowsInputService(broker, 0);
             await input.StartAsync().WaitAsync(deadline.Token);
@@ -307,14 +258,14 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             const string initial = "ordinary search without punctuation", appended = " and more words";
             stage = "first-input";
             RequireSource();
-            TypeText(initial);
+            BrowserWindows.TypeText(initial);
             var first = await Observe(initial);
             output.WriteLine("New tab capture: phase=first-input; source=True; exactSyntheticText=True");
             stage = "appended-input";
             RequireSource();
-            Keys(0x23);
+            BrowserWindows.Keys(0x23);
             RequireSource();
-            TypeText(appended);
+            BrowserWindows.TypeText(appended);
             var next = await Observe(initial + appended);
             Assert.True(first.Target == next.Target, "new-tab-target-changed");
             Assert.True(next.InputEpoch > first.InputEpoch);
@@ -370,25 +321,4 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             output.WriteLine("Browser focus diagnostic unavailable: " + error.GetType().Name);
         }
     }
-
-    private static void Keys(ushort key) => Send([
-        new() { Type = 1, Key = key }, new() { Type = 1, Key = key, Flags = 2 }
-    ]);
-    private static void TypeText(string text) => Send(text.SelectMany(unit => new[]
-    {
-        new KeyboardInput { Type = 1, Scan = unit, Flags = 4 },
-        new KeyboardInput { Type = 1, Scan = unit, Flags = 6 }
-    }).ToArray());
-    private static void Send(KeyboardInput[] input) =>
-        Assert.Equal((uint)input.Length, SendInput((uint)input.Length, input, Marshal.SizeOf<KeyboardInput>()));
-    [StructLayout(LayoutKind.Explicit, Size = 40)]
-    private struct KeyboardInput
-    {
-        [FieldOffset(0)] public uint Type;
-        [FieldOffset(8)] public ushort Key;
-        [FieldOffset(10)] public ushort Scan;
-        [FieldOffset(12)] public uint Flags;
-    }
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern uint SendInput(uint count, KeyboardInput[] input, int size);
 }
