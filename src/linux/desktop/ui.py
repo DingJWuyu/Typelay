@@ -1,6 +1,7 @@
 """GTK settings and a source-bound native view for the shared session controller."""
 
 import asyncio
+import uuid
 from pathlib import Path
 
 import gi
@@ -825,6 +826,11 @@ class Settings:
         self.value = None
         self.configuring = False
         self.dirty_controls = set()
+        self.exclusion_baseline = None
+        self.draft_session = str(uuid.uuid4())
+        self.draft_request = 0
+        self.pending_draft = None
+        self.submitted_draft = {}
         self.draft_messages = None
         self.loading_draft_messages = False
         self.pending_settings = {}
@@ -1322,7 +1328,9 @@ class Settings:
 
     def render_draft(self):
         dirty = bool(self.dirty_controls)
-        self.save_button.set_sensitive(dirty and self.draft_messages is not None)
+        self.save_button.set_sensitive(
+            dirty and self.draft_messages is not None and self.pending_draft is None
+        )
         self.draft_notice.set_text(
             self.draft_messages["unsavedNotice"] if dirty and self.draft_messages else ""
         )
@@ -1481,13 +1489,33 @@ class Settings:
     def draft_changed(self, key):
         if self.configuring or self.value is None:
             return
-        if self.draft_value(key) == (
-            self.value.get(key) or ([] if key == "excludedApplications" else "")
+        value = self.draft_value(key)
+        baseline = self.value.get(key) or ([] if key == "excludedApplications" else "")
+        if key == "excludedApplications" and self.exclusion_baseline is not None:
+            baseline = self.exclusion_baseline
+        if self.same_draft_value(key, value, baseline) and self.same_draft_value(
+            key, self.submitted_draft.get(key, value), value
         ):
             self.dirty_controls.discard(key)
+            if key == "excludedApplications":
+                self.exclusion_baseline = None
+                self.configure(self.value)
         else:
+            if key == "excludedApplications" and self.exclusion_baseline is None:
+                self.exclusion_baseline = list(baseline)
             self.dirty_controls.add(key)
         self.render_draft()
+
+    @staticmethod
+    def same_draft_value(key, left, right):
+        if key != "excludedApplications":
+            return left == right
+        # Ignore order and ASCII spelling locally. Non-ASCII changes stay dirty
+        # rather than guessing .NET's OrdinalIgnoreCase rules; the shared host
+        # remains authoritative when applying the submitted exclusion delta.
+        return {value.lower() if value.isascii() else value for value in left} == {
+            value.lower() if value.isascii() else value for value in right
+        }
 
     def change_control(self, key, value):
         if self.configuring or self.value is None or value is None:
@@ -1510,11 +1538,23 @@ class Settings:
             self.report_save_result(saved, "未保存，已恢复原设置。请检查语言方向或系统权限。")
 
     async def save(self):
-        if self.value is None or not self.dirty_controls or self.draft_messages is None:
+        if (
+            self.value is None
+            or not self.dirty_controls
+            or self.draft_messages is None
+            or self.pending_draft is not None
+        ):
             return
-        async with self.settings_lock:
-            draft = {key: self.draft_value(key) for key in self.dirty_controls}
-            try:
+        self.draft_request += 1
+        identity = {"session": self.draft_session, "request": self.draft_request}
+        self.pending_draft = identity
+        self.render_draft()
+        try:
+            async with self.settings_lock:
+                if self.pending_draft is not identity or not self.dirty_controls:
+                    return
+                draft = {key: self.draft_value(key) for key in self.dirty_controls}
+                self.submitted_draft = draft
                 shortcuts = {
                     name: draft.get(key, self.value[key])
                     for name, key in (
@@ -1527,29 +1567,54 @@ class Settings:
                 response = await self.host.ask(
                     "saveSettingsDraft",
                     {
+                        **identity,
                         "shortcuts": shortcuts,
                         **(
-                            {"excludedApplications": draft["excludedApplications"]}
+                            {
+                                "exclusions": {
+                                    "baseline": self.exclusion_baseline,
+                                    "values": draft["excludedApplications"],
+                                }
+                            }
                             if "excludedApplications" in draft
                             else {}
                         ),
                     },
                 )
+                if self.pending_draft is not identity:
+                    return
                 saved = isinstance(response, dict) and response.get("saved") is True
-            except (OSError, ValueError, EOFError, TimeoutError):
-                response, saved = None, False
-            if saved:
-                for key, value in draft.items():
-                    if self.draft_value(key) == value:
-                        self.dirty_controls.discard(key)
-                self.configure(self.value)
-            self.render_draft()
-            self.report_save_result(
-                saved,
-                response["message"]
-                if isinstance(response, dict) and isinstance(response.get("message"), str)
-                else self.draft_messages["invalidMessage"],
-            )
+                if saved:
+                    for key, value in draft.items():
+                        if self.same_draft_value(key, self.draft_value(key), value):
+                            self.dirty_controls.discard(key)
+                            if key == "excludedApplications":
+                                self.exclusion_baseline = None
+                        elif key == "excludedApplications":
+                            self.exclusion_baseline = list(value)
+                    self.configure(self.value)
+                self.report_save_result(
+                    saved,
+                    response["message"]
+                    if isinstance(response, dict) and isinstance(response.get("message"), str)
+                    else self.draft_messages["invalidMessage"],
+                )
+        except (OSError, ValueError, EOFError, TimeoutError):
+            if self.pending_draft is identity:
+                # The commit may already have happened. Cancel only this pending
+                # request, retain the draft and describe the outcome as unknown.
+                try:
+                    self.host.send("cancelSettingsDraft", identity)
+                except (OSError, ValueError, EOFError):
+                    pass
+                self.report_save_result(False, "保存结果未确认。草稿仍保留，请检查设置。")
+        finally:
+            if self.pending_draft is identity:
+                self.pending_draft = None
+                self.submitted_draft = {}
+                for key in list(self.dirty_controls):
+                    self.draft_changed(key)
+                self.render_draft()
 
     def dismiss(self, *_, quit_requested=None):
         if not self.dirty_controls:
@@ -1580,6 +1645,16 @@ class Settings:
         def response(widget, result):
             widget.destroy()
             if result == Gtk.ResponseType.OK:
+                if self.pending_draft is not None:
+                    try:
+                        self.host.send("cancelSettingsDraft", self.pending_draft)
+                    except (OSError, ValueError, EOFError):
+                        self.report_save_result(False, "保存结果未确认。草稿仍保留，请检查设置。")
+                        return
+                self.draft_session = str(uuid.uuid4())
+                self.pending_draft = None
+                self.submitted_draft = {}
+                self.exclusion_baseline = None
                 self.dirty_controls.clear()
                 self.configure(self.value)
                 self.render_draft()

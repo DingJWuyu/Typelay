@@ -18,6 +18,10 @@ internal sealed class SettingsWindow : Window
     private readonly ModelClient _model;
     private readonly StackPanel _content;
     private readonly StackPanel _nav;
+    private readonly Border _draftBar;
+    private readonly Button _saveDraftButton;
+    private readonly TextBlock _draftNotice;
+    private readonly Func<Window, string?> _selectApplication;
     private readonly List<RadioButton> _themeChoices = [];
     private readonly Action _openPractice;
     private readonly WindowsApplicationSupport? _support;
@@ -27,13 +31,16 @@ internal sealed class SettingsWindow : Window
     private SetupFailureView? _setupFailure, _setupRecoveryFailure;
     private string? _setupFailureStage;
     private bool _setupPaused, _startingModel;
-    private string? _renderedPage, _shortcutFeedback;
+    private string? _renderedPage, _draftFeedback;
     private string? _settingsError;
     private ShortcutSettingsDraft? _shortcutDraft;
+    private ExclusionSettingsDraft? _exclusionDraft;
+    private long _draftSubmissionGeneration;
+    private bool HasDraft => _shortcutDraft is not null || _exclusionDraft is not null;
     private TextBox? _wakeShortcutInput, _directShortcutInput;
     private ComboBox? _acceptShortcutInput, _exitShortcutInput;
     private TextBlock? _returnShortcutHint;
-    private TextBlock? _shortcutNotice, _shortcutStatus;
+    private TextBlock? _shortcutStatus;
     private Window? _closeDialog;
     private bool _updatingShortcuts, _emergencyShutdown;
     private bool _startupPresentationAllowed = true;
@@ -72,13 +79,14 @@ internal sealed class SettingsWindow : Window
     public Func<UserSettings, Task<bool>>? PrepareSettingsChange;
     private bool _savingSettings;
     public SettingsWindow(SettingsStore settings, ModelClient model, Action openPractice, WindowsApplicationSupport? support = null,
-        Func<ModelInstaller>? createInstaller = null)
+        Func<ModelInstaller>? createInstaller = null, Func<Window, string?>? selectApplication = null)
     {
         _settings = settings;
         _model = model;
         _openPractice = openPractice;
         _support = support;
         _createInstaller = createInstaller ?? (() => new ModelInstaller());
+        _selectApplication = selectApplication ?? SelectApplication;
         Title = "TypeLay 设置";
         Width = 790;
         Height = 560;
@@ -120,8 +128,28 @@ internal sealed class SettingsWindow : Window
         root.Children.Add(navBorder);
         _content = new StackPanel { Margin = new(28, 30, 28, 24) };
         var scroll = new ScrollViewer { Content = _content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
-        Grid.SetColumn(scroll, 1);
-        root.Children.Add(scroll);
+        var main = new Grid();
+        main.RowDefinitions.Add(new());
+        main.RowDefinitions.Add(new()
+        {
+            Height = GridLength.Auto
+        });
+        main.Children.Add(scroll);
+        var draftActions = new DockPanel { LastChildFill = true };
+        _saveDraftButton = UiTheme.Button(_draftMessages.SaveLabel, async () => await SaveDraftAsync(), primary: true);
+        _saveDraftButton.Margin = new(18, 0, 0, 0);
+        DockPanel.SetDock(_saveDraftButton, Dock.Right);
+        draftActions.Children.Add(_saveDraftButton);
+        _draftNotice = UiTheme.Text("", 12);
+        _draftNotice.VerticalAlignment = VerticalAlignment.Center;
+        draftActions.Children.Add(_draftNotice);
+        _draftBar = UiTheme.Border(draftActions, 0);
+        _draftBar.BorderThickness = new(0, 1, 0, 0);
+        _draftBar.Padding = new(28, 14, 28, 18);
+        Grid.SetRow(_draftBar, 1);
+        main.Children.Add(_draftBar);
+        Grid.SetColumn(main, 1);
+        root.Children.Add(main);
         var close = UiTheme.Button("×", () => RequestClose());
         AutomationProperties.SetName(close, "关闭设置");
         close.Width = 30;
@@ -172,13 +200,15 @@ internal sealed class SettingsWindow : Window
             _closeDialog.Activate();
             return false;
         }
-        if (_shortcutDraft is not null && !ConfirmDiscard())
+        if (HasDraft && !ConfirmDiscard())
             return false;
         _startupPresentationAllowed = false;
         _shortcutDraft = null;
-        _shortcutFeedback = null;
+        _exclusionDraft = null;
+        _draftFeedback = null;
         _settingsError = null;
         _support?.CancelCheck();
+        RefreshDraftBar();
         Hide();
         return true;
     }
@@ -202,7 +232,13 @@ internal sealed class SettingsWindow : Window
         body.Children.Add(UiTheme.Text(_draftMessages.CloseMessage, 13));
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 22, 0, 0) };
         var keep = UiTheme.Button(_draftMessages.KeepEditingLabel, () => dialog.DialogResult = false, primary: true);
-        var discard = UiTheme.Button(_draftMessages.DiscardLabel, () => dialog.DialogResult = true);
+        var discard = UiTheme.Button(_draftMessages.DiscardLabel, () =>
+        {
+            // Invalidate only draft submissions, before closing the modal can
+            // dispatch a retirement ACK. Already persisted settings stay saved.
+            _draftSubmissionGeneration++;
+            dialog.DialogResult = true;
+        });
         keep.Margin = new(0, 0, 10, 0);
         keep.IsCancel = true;
         keep.IsDefault = _draftMessages.DefaultCloseChoice == SettingsDraftCloseChoice.KeepEditing;
@@ -288,8 +324,6 @@ internal sealed class SettingsWindow : Window
         _preparationCard = null;
         _preparationSecondary = _preparationDiagnostics = null;
         _connectionChecks.Clear();
-        if (_page != "shortcuts" && _settingsError is { } error)
-            Note("设置未保存", error);
         switch (_page)
         {
             case "general":
@@ -314,6 +348,7 @@ internal sealed class SettingsWindow : Window
                 About();
                 break;
         }
+        RefreshDraftBar();
         if (focusedToggle is not null)
             RestoreSettingFocus(focusedToggle);
     }
@@ -377,12 +412,14 @@ internal sealed class SettingsWindow : Window
         _content.Children.Add(box);
         return body;
     }
-    private async Task<bool> SaveAsync(UserSettings value)
+    private async Task<bool> SaveAsync(UserSettings value, long? draftSubmission = null)
     {
         if (_savingSettings)
             return false;
         var expected = _settings.Value;
         _savingSettings = true;
+        RefreshDraftBar();
+        bool IsCurrentSubmission() => draftSubmission is null || draftSubmission == _draftSubmissionGeneration;
         string page = _page;
         string? focusedSetting = Keyboard.FocusedElement is Control focused && focused.IsDescendantOf(_content)
             ? AutomationProperties.GetName(focused) : null;
@@ -415,6 +452,8 @@ internal sealed class SettingsWindow : Window
             }
             bool prepared = await preparation;
             EnableContent(); // Refresh must rebuild enabled, focusable controls.
+            if (!IsCurrentSubmission())
+                return false;
             if (!prepared)
             {
                 _settingsError = "练习窗口尚未确认停止，设置未保存。请关闭练习窗口后再试。";
@@ -434,12 +473,16 @@ internal sealed class SettingsWindow : Window
         catch (ArgumentException)
         {
             EnableContent();
+            if (!IsCurrentSubmission())
+                return false;
             _settingsError = "请使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，排除 F12。两个按需快捷键不能相同。";
             Refresh();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
             EnableContent();
+            if (!IsCurrentSubmission())
+                return false;
             _settingsError = "请检查当前用户目录与组织策略。";
             Refresh();
         }
@@ -447,6 +490,7 @@ internal sealed class SettingsWindow : Window
         {
             EnableContent();
             _savingSettings = false;
+            RefreshDraftBar();
             if (waiting && restoreFocus && IsActive && _page == page)
                 RestoreSettingFocus(focusedSetting);
         }
@@ -465,7 +509,7 @@ internal sealed class SettingsWindow : Window
         AutomationProperties.SetName(modes, "工作模式");
         modes.SelectionChanged += async (_, _) => await SaveAsync(_settings.Value with { Mode = modes.SelectedIndex == 1 ? WorkMode.OnDemand : WorkMode.Automatic });
         Row("工作模式", "", modes);
-        var guidance = SettingsGuidancePresentation.Create(_settings.Value, exclusionsNeedSave: false);
+        var guidance = SettingsGuidancePresentation.Create(_settings.Value, exclusionsNeedSave: true);
         // Reuse the saved-mode explanation; the full shortcut and safety details
         // remain available below without pushing daily controls off the window.
         string summary = string.Join("。", guidance.ModeDescription.Split('。').Take(_settings.Value.Enabled ? 1 : 2)) + "。";
@@ -738,32 +782,6 @@ internal sealed class SettingsWindow : Window
         direct.TextChanged += (_, _) => ShortcutDraftChanged();
         Row("唤醒翻译 UI", "为当前输入框开启持续翻译；离开后结束。", wake);
         Row("直接翻译并替换", "一次性操作，绑定原输入框，不显示预览、不自动发送。", direct);
-        var save = UiTheme.Button(_draftMessages.SaveLabel, async () =>
-        {
-            var submitted = new ShortcutSettingsDraft(wake.Text, direct.Text,
-                accept.SelectedItem as string ?? "", exit.SelectedItem as string ?? "");
-            if (!submitted.TryApply(_settings.Value, out var latest, out var error))
-            {
-                _settingsError = SettingsDraftPresentation.ShortcutErrorMessage(error);
-                _shortcutFeedback = _draftMessages.InvalidMessage;
-                RefreshShortcuts();
-                return;
-            }
-            if (await SaveAsync(latest!))
-            {
-                _shortcutDraft = null;
-                _shortcutFeedback = _draftMessages.SavedMessage;
-            }
-            else
-                _shortcutFeedback = _draftMessages.InvalidMessage;
-            RefreshShortcuts();
-        });
-        save.HorizontalAlignment = HorizontalAlignment.Right;
-        save.Margin = new(0, 8, 0, 14);
-        _content.Children.Add(save);
-        _shortcutNotice = UiTheme.Text("", 12);
-        _shortcutNotice.Margin = new(0, 0, 0, 14);
-        _content.Children.Add(_shortcutNotice);
         _shortcutStatus = Note("按需快捷键状态", "");
         Note("直接替换的当前范围", "Windows x64 中通过运行时校验的原生 Edit 控件支持后台写回。翻译时可以切换焦点，结果仍只写回原输入框；冲突、输入法状态不明或不兼容控件会安全拒写。不会抢回焦点，也不使用实验性 Tab 写回作为后备。结果与失败原因可在托盘快速面板查看。");
         Note("组合键格式", "唤醒与直接替换支持 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24，当前不支持 F12。组合键被其他应用占用时，设置仍保存，但对应命令不会启用。");
@@ -779,14 +797,14 @@ internal sealed class SettingsWindow : Window
         var value = new ShortcutSettingsDraft(_wakeShortcutInput.Text, _directShortcutInput.Text,
             _acceptShortcutInput.SelectedItem as string ?? "", _exitShortcutInput.SelectedItem as string ?? "");
         _shortcutDraft = value == ShortcutSettingsDraft.From(_settings.Value) ? null : value;
-        _shortcutFeedback = null;
+        _draftFeedback = null;
         _settingsError = null;
         RefreshShortcuts();
     }
     private void RefreshShortcuts()
     {
         if (_wakeShortcutInput is null || _directShortcutInput is null || _acceptShortcutInput is null
-            || _exitShortcutInput is null || _shortcutNotice is null || _shortcutStatus is null)
+            || _exitShortcutInput is null || _shortcutStatus is null)
             return;
         if (_shortcutDraft is null)
         {
@@ -803,11 +821,64 @@ internal sealed class SettingsWindow : Window
         string accept = _acceptShortcutInput.SelectedItem as string ?? _settings.Value.AcceptShortcut;
         if (_returnShortcutHint is not null)
             _returnShortcutHint.Text = accept + " → " + accept;
-        _shortcutNotice.Text = _settingsError is { } error
-            ? (_shortcutFeedback == _draftMessages.InvalidMessage ? _draftMessages.InvalidMessage : "设置未保存") + "\n" + error
-            : _shortcutFeedback ?? (_shortcutDraft is not null ? _draftMessages.UnsavedNotice : "");
-        _shortcutNotice.Visibility = _shortcutNotice.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        RefreshDraftBar();
         _shortcutStatus.Text = ShortcutStatus?.Invoke() ?? "仅在启用 TypeLay 的按需模式下生效。自动模式不注册这两个快捷键。";
+    }
+    private async Task SaveDraftAsync()
+    {
+        if (_savingSettings || !HasDraft)
+            return;
+        var shortcuts = _shortcutDraft ?? ShortcutSettingsDraft.From(_settings.Value);
+        if (!shortcuts.TryApply(_settings.Value, out var latest, out var error))
+        {
+            _settingsError = SettingsDraftPresentation.ShortcutErrorMessage(error);
+            _draftFeedback = _draftMessages.InvalidMessage;
+            RefreshDraftBar();
+            return;
+        }
+        if (_exclusionDraft is not null && !_exclusionDraft.TryApply(latest!, out latest))
+        {
+            _settingsError = null;
+            _draftFeedback = _draftMessages.InvalidMessage;
+            RefreshDraftBar();
+            return;
+        }
+        long submission = ++_draftSubmissionGeneration;
+        bool saved = await SaveAsync(latest!, submission);
+        if (submission != _draftSubmissionGeneration)
+            return;
+        if (saved)
+        {
+            _shortcutDraft = null;
+            _exclusionDraft = null;
+            _draftFeedback = _draftMessages.SavedMessage;
+        }
+        else
+            _draftFeedback = _draftMessages.InvalidMessage;
+        Refresh();
+    }
+    private void RefreshDraftBar()
+    {
+        _draftNotice.Text = _settingsError is { } error
+            ? (_draftFeedback == _draftMessages.InvalidMessage ? _draftMessages.InvalidMessage : "设置未保存") + "\n" + error
+            : _draftFeedback ?? (HasDraft ? _draftMessages.UnsavedNotice : "");
+        _draftBar.Visibility = HasDraft || _draftFeedback is not null || _settingsError is not null
+            ? Visibility.Visible : Visibility.Collapsed;
+        _saveDraftButton.IsEnabled = HasDraft && !_savingSettings;
+    }
+    private void SetExclusionDraft(IReadOnlyList<string> baseline, IEnumerable<string> values)
+    {
+        var draft = values.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        _exclusionDraft = new HashSet<string>(baseline, StringComparer.OrdinalIgnoreCase).SetEquals(draft)
+            ? null : new ExclusionSettingsDraft(baseline, draft);
+        _draftFeedback = null;
+        _settingsError = null;
+        Refresh();
+    }
+    private static string? SelectApplication(Window owner)
+    {
+        var dialog = new OpenFileDialog { Filter = "Windows 应用 (*.exe)|*.exe", CheckFileExists = true };
+        return dialog.ShowDialog(owner) == true ? dialog.FileName : null;
     }
     private static void UpdateShortcutText(TextBox input, string value)
     {
@@ -866,18 +937,17 @@ internal sealed class SettingsWindow : Window
             _content.Children.Add(new Expander { Header = view.Labels.MoreApplications, Content = others, Margin = new(0, 8, 0, 14) });
         Rule();
         _content.Children.Add(UiTheme.Text("排除的应用", 15, bold: true));
-        if (_settings.Value.Excluded.Length == 0)
+        var exclusions = _exclusionDraft?.Values ?? _settings.Value.Excluded;
+        var exclusionBaseline = _exclusionDraft?.Baseline ?? exclusions;
+        if (exclusions.Count == 0)
             Note("当前没有排除任何应用", "排除后，该应用的所有输入框均不显示 TypeLay 界面。");
-        foreach (string app in _settings.Value.Excluded)
-            Row(app + ".exe", "所有该进程名窗口均排除。", UiTheme.Button("移除", async () => await SaveAsync(_settings.Value with { ExcludedApplications = _settings.Value.Excluded.Where(a => a != app).ToArray() })));
-        var add = UiTheme.Button("添加应用…", async () =>
+        foreach (string app in exclusions)
+            Row(app + ".exe", "所有该进程名窗口均排除。", UiTheme.Button("移除", () =>
+                SetExclusionDraft(exclusionBaseline, exclusions.Where(value => !StringComparer.OrdinalIgnoreCase.Equals(value, app)))));
+        var add = UiTheme.Button("添加应用…", () =>
         {
-            var dialog = new OpenFileDialog { Filter = "Windows 应用 (*.exe)|*.exe", CheckFileExists = true };
-            if (dialog.ShowDialog(this) == true)
-                await SaveAsync(_settings.Value with
-                {
-                    ExcludedApplications = _settings.Value.Excluded.Append(Path.GetFileNameWithoutExtension(dialog.FileName).ToLowerInvariant()).Distinct().Take(256).ToArray()
-                });
+            if (_selectApplication(this) is { } path)
+                SetExclusionDraft(exclusionBaseline, exclusions.Append(Path.GetFileNameWithoutExtension(path).ToLowerInvariant()));
         });
         add.HorizontalAlignment = HorizontalAlignment.Left;
         add.Margin = new(0, 12, 0, 0);

@@ -4332,6 +4332,15 @@ def run(arguments):
             )
             settings_page("应用支持")
             assert text(excluded) == "typelay-navigation-test"
+            assert Atspi.EditableText.set_text_contents(
+                excluded.get_editable_text_iface(),
+                "TYPELAY-NAVIGATION-TEST\ntypelay-navigation-test",
+            )
+            wait_for(
+                lambda: not status()["setup"]["settingsDraft"]
+                and text(excluded) == "typelay-navigation-test",
+                "equivalent ASCII exclusions incorrectly created an unsaved draft",
+            )
             saved_exclusions = saved["ExcludedApplications"]
             assert saved_exclusions is None or (
                 isinstance(saved_exclusions, list)

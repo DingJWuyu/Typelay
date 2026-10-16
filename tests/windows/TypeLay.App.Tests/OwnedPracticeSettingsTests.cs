@@ -115,8 +115,65 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
         Assert.Contains(Descendants(fixture.Window).OfType<TextBlock>(), control => control.Text.Contains("设置已更新"));
     });
 
+    [Theory]
+    [InlineData(SettingsDraftCloseChoice.KeepEditing)]
+    [InlineData(SettingsDraftCloseChoice.Discard)]
+    public Task PendingDraftSaveRespectsTheCloseChoiceBeforeRetirementCompletes(SettingsDraftCloseChoice choice) => desktop.RunAsync(async () =>
+    {
+        using var fixture = new SettingsFixture();
+        fixture.Settings.Update(fixture.Settings.Value with
+        {
+            ExcludedApplications = ["old"]
+        });
+        var retirement = new TaskCompletionSource<bool>();
+        fixture.Window.PrepareSettingsChange = _ => retirement.Task;
+        fixture.Window.ShowPage("apps");
+        fixture.Window.UpdateLayout();
+        Descendants(fixture.Window).OfType<Button>().Single(button => Equals(button.Content, "移除"))
+            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        fixture.Window.ShowPage("shortcuts");
+        fixture.Window.UpdateLayout();
+        Descendants(fixture.Window).OfType<TextBox>()
+            .Single(control => AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键").Text = "Ctrl+Shift+U";
+        int changes = 0;
+        fixture.Settings.Changed += () => changes++;
+        string persisted = File.ReadAllText(fixture.Path);
+        var save = Descendants(fixture.Window).OfType<Button>()
+            .Single(button => Equals(button.Content, SettingsDraftPresentation.Create().SaveLabel));
+        save.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Assert.False(save.IsEnabled);
+        Assert.Equal(persisted, File.ReadAllText(fixture.Path));
+        SettingsRenderingTests.InteractWithCloseDialog(fixture.Window, fixture.Window.Close, choice, duringClose: () =>
+        {
+            // The modal close can dispatch the ACK before RequestClose returns.
+            retirement.SetResult(true);
+            fixture.Window.Dispatcher.Invoke(() => { }, DispatcherPriority.ApplicationIdle);
+        });
+        Assert.Equal(choice == SettingsDraftCloseChoice.KeepEditing, fixture.Window.IsVisible);
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal(choice == SettingsDraftCloseChoice.KeepEditing ? 1 : 0, changes);
+        if (choice == SettingsDraftCloseChoice.Discard)
+        {
+            Assert.Equal(persisted, File.ReadAllText(fixture.Path));
+            fixture.Window.ShowPage("apps");
+            fixture.Window.UpdateLayout();
+            Assert.Contains(Descendants(fixture.Window).OfType<TextBlock>(), control => control.Text == "old.exe");
+            Assert.DoesNotContain(Descendants(fixture.Window).OfType<TextBlock>(), control =>
+                control.Text == SettingsDraftPresentation.Create().SavedMessage
+                || control.Text.Contains(SettingsDraftPresentation.Create().InvalidMessage, StringComparison.Ordinal));
+        }
+        else
+        {
+            Assert.Empty(new SettingsStore(fixture.Path).Value.Excluded);
+            Assert.Equal("Ctrl+Shift+U", new SettingsStore(fixture.Path).Value.WakeShortcut);
+            SettingsRenderingTests.InteractWithCloseDialog(fixture.Window, fixture.Window.Close, choice: null);
+            Assert.False(fixture.Window.IsVisible);
+            Assert.Empty(new SettingsStore(fixture.Path).Value.Excluded);
+        }
+    });
+
     [Fact]
-    public Task UnchangedShortcutSaveDoesNotRequestRetirement() => desktop.RunAsync(() =>
+    public Task CleanDraftCannotRequestRetirementOrReportASave() => desktop.RunAsync(() =>
     {
         using var fixture = new SettingsFixture();
         int requests = 0, changes = 0;
@@ -124,13 +181,14 @@ public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
         fixture.Settings.Changed += () => changes++;
         fixture.Window.ShowPage("shortcuts");
         fixture.Window.UpdateLayout();
-        Descendants(fixture.Window).OfType<Button>()
-            .Single(button => Equals(button.Content, SettingsDraftPresentation.Create().SaveLabel))
-            .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        var save = Descendants(fixture.Window).OfType<Button>()
+            .Single(button => Equals(button.Content, SettingsDraftPresentation.Create().SaveLabel));
+        Assert.False(save.IsEnabled);
+        save.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Assert.Equal(0, requests);
         Assert.Equal(0, changes);
         Assert.Equal(fixture.Settings.Value.AcceptShortcut, new SettingsStore(fixture.Path).Value.AcceptShortcut);
-        Assert.Contains(Descendants(fixture.Window).OfType<TextBlock>(),
+        Assert.DoesNotContain(Descendants(fixture.Window).OfType<TextBlock>(),
             control => control.Text == SettingsDraftPresentation.Create().SavedMessage);
     });
 

@@ -664,6 +664,98 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
     }
 
     [Fact]
+    public Task ExclusionEditsStayUnsavedAcrossPagesAndSaveAtomicallyWithShortcuts() => desktop.RunAsync(() =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-exclusion-draft-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string path = Path.Combine(directory, "settings.json");
+            var settings = WindowsRuntime.CreateSettings(path);
+            settings.Update(settings.Value with
+            {
+                ExcludedApplications = ["old", "retained"]
+            });
+            using var model = WindowsRuntime.CreateModel();
+            var window = new SettingsWindow(settings, model, () => { },
+                selectApplication: _ => @"C:\Applications\Added.EXE");
+            window.ShowPage("apps");
+            window.UpdateLayout();
+            var oldRow = Descendants(window).OfType<TextBlock>().Single(text => text.Text == "old.exe").Parent;
+            var row = VisualTreeHelper.GetParent(oldRow);
+            Descendants(row).OfType<Button>().Single(button => Equals(button.Content, "移除"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Add();
+            Add(); // Selecting the same executable again must not create a duplicate.
+            window.UpdateLayout();
+            Assert.Equal(new[] { "old", "retained" }, WindowsRuntime.CreateSettings(path).Value.Excluded);
+            Assert.DoesNotContain(Descendants(window).OfType<TextBlock>(), text => text.Text == "old.exe");
+            Assert.Single(Descendants(window).OfType<TextBlock>(), text => text.Text == "added.exe");
+            Descendants(window).OfType<ScrollViewer>().First().ScrollToBottom();
+            window.UpdateLayout();
+            Render(window, "settings-applications-draft-footer.png");
+            InteractWithCloseDialog(window, window.Close, SettingsDraftCloseChoice.KeepEditing);
+            Assert.True(window.IsVisible);
+            window.ShowPage("shortcuts");
+            window.UpdateLayout();
+            ShortcutEditor(window).Text = "Ctrl+Shift+U";
+            window.ShowPage("language");
+            settings.Update(settings.Value with
+            {
+                Target = "zh",
+                ExcludedApplications = ["OLD", "retained", "external"]
+            });
+            window.ShowPage("apps");
+            window.UpdateLayout();
+            Assert.DoesNotContain(Descendants(window).OfType<TextBlock>(), text => text.Text == "old.exe");
+            Assert.Single(Descendants(window).OfType<TextBlock>(), text => text.Text == "added.exe");
+            window.ShowPage("general");
+            window.UpdateLayout();
+            var save = Descendants(window).OfType<Button>().Single(button => Equals(button.Content, SettingsDraftPresentation.Create().SaveLabel));
+            Assert.True(save.IsVisible);
+            var scroll = Descendants(window).OfType<ScrollViewer>().First();
+            scroll.ScrollToBottom();
+            window.UpdateLayout();
+            var saveBounds = save.TransformToAncestor(window).TransformBounds(new Rect(save.RenderSize));
+            Assert.InRange(saveBounds.Bottom, 0, window.ActualHeight);
+            int changes = 0;
+            settings.Changed += () => changes++;
+            Directory.CreateDirectory(path + ".tmp");
+            save.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Equal(0, changes);
+            var failed = WindowsRuntime.CreateSettings(path).Value;
+            Assert.Equal(new[] { "OLD", "retained", "external" }, failed.Excluded);
+            Assert.NotEqual("Ctrl+Shift+U", failed.WakeShortcut);
+            Assert.Contains(Descendants(window).OfType<TextBlock>(), text =>
+                text.Text.Contains(SettingsDraftPresentation.Create().InvalidMessage, StringComparison.Ordinal));
+            Directory.Delete(path + ".tmp");
+            window.ShowPage("apps");
+            window.UpdateLayout();
+            Assert.Single(Descendants(window).OfType<TextBlock>(), text => text.Text == "added.exe");
+            Assert.DoesNotContain(Descendants(window).OfType<TextBlock>(), text => text.Text == "old.exe");
+            window.ShowPage("shortcuts");
+            Assert.Equal("Ctrl+Shift+U", ShortcutEditor(window).Text);
+            window.ShowPage("language");
+            window.UpdateLayout();
+            save.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var saved = WindowsRuntime.CreateSettings(path).Value;
+            Assert.Equal(1, changes);
+            Assert.Equal(new[] { "retained", "external", "added" }, saved.Excluded);
+            Assert.Equal("Ctrl+Shift+U", saved.WakeShortcut);
+            Assert.Equal("zh", saved.Target);
+            InteractWithCloseDialog(window, window.Close, choice: null);
+            Assert.False(window.IsVisible);
+
+            void Add() => Descendants(window).OfType<Button>().Single(button => Equals(button.Content, "添加应用…"))
+                .RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    });
+
+    [Fact]
     public async Task FourShortcutDraftRejectsDuplicatesAndSurvivesSaveFailureWithoutLosingLatestPreferences()
     {
         await desktop.RunAsync(() =>
@@ -1006,7 +1098,8 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
     private static TextBox ShortcutEditor(Window window, bool direct = false) => Descendants(window).OfType<TextBox>()
         .Single(control => AutomationProperties.GetName(control) == (direct ? "直接翻译并替换快捷键" : "唤醒翻译 UI 快捷键"));
 
-    private static void InteractWithCloseDialog(SettingsWindow window, Action close, SettingsDraftCloseChoice? choice)
+    internal static void InteractWithCloseDialog(SettingsWindow window, Action close, SettingsDraftCloseChoice? choice,
+        Action? duringClose = null)
     {
         var messages = SettingsDraftPresentation.Create();
         var existingWindows = Application.Current.Windows.Cast<Window>().ToHashSet();
@@ -1031,6 +1124,8 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                 Assert.Contains(Descendants(dialog).OfType<TextBlock>(), text => text.Text == messages.CloseMessage);
                 var selected = choice == SettingsDraftCloseChoice.Discard
                     ? buttons.Single(button => Equals(button.Content, messages.DiscardLabel)) : defaultButton;
+                if (duringClose is not null)
+                    dialog.Closing += (_, _) => duringClose();
                 selected.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 Assert.False(dialog.IsVisible, "The selected close choice must dismiss the dialog.");
             }

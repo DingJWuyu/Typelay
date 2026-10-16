@@ -6,7 +6,9 @@ namespace TypeLay.Linux;
 
 internal static class Program
 {
-    private sealed record SettingsDraftRequest(ShortcutSettingsDraft Shortcuts, string[]? ExcludedApplications = null);
+    private sealed record SettingsDraftRequest(Guid Session, long Request, ShortcutSettingsDraft Shortcuts,
+        ExclusionSettingsDraft? Exclusions = null);
+    private sealed record SettingsDraftCancellation(Guid Session, long Request);
     private sealed record PlacementRequest(RectPx Input, RectPx Work, double Width, double Height, double Gap, double MinimumHeight);
     private sealed record ApplicationSupportRequest(ApplicationSupportFact[] Facts);
     private sealed record TranslationPreparationRequest(TranslationPreparationPhase Phase,
@@ -43,6 +45,7 @@ internal static class Program
         using var model = LinuxModelFactory.Create(home, data);
         using var controller = new SessionController(settings, model, view, input, input, loop,
             async binding => (await link.Ask("retireAutomaticPractice", binding, timeoutMs: 2000)).ValueKind == JsonValueKind.True);
+        SettingsDraftRequest? pendingSettingsDraft = null;
         async Task<bool> ApplySettings(UserSettings next)
         {
             var expected = settings.Value;
@@ -78,6 +81,12 @@ internal static class Program
             input.Receive(operation, value);
             switch (operation)
             {
+                case "cancelSettingsDraft":
+                    var cancellation = DesktopLink.Decode<SettingsDraftCancellation>(value);
+                    if (pendingSettingsDraft is { } pending && pending.Session == cancellation.Session
+                        && pending.Request == cancellation.Request)
+                        pendingSettingsDraft = null;
+                    break;
                 case "draft":
                     view.DraftChanged?.Invoke(value.GetString()!);
                     break;
@@ -137,33 +146,49 @@ internal static class Program
                         SessionShortcutBindings.Restore(settings.Value.AcceptShortcut, settings.Value.ExitShortcut));
                 case "saveSettingsDraft":
                     var draft = DesktopLink.Decode<SettingsDraftRequest>(value);
-                    if (!draft.Shortcuts.TryApply(settings.Value, out var updated, out var error))
+                    if (draft.Session == Guid.Empty || draft.Request <= 0 || draft.Shortcuts is null)
+                        return new
+                        {
+                            saved = false,
+                            message = SettingsDraftPresentation.Create().InvalidMessage
+                        };
+                    var expectedSettings = settings.Value;
+                    if (!draft.Shortcuts.TryApply(expectedSettings, out var updated, out var error))
                         return new
                         {
                             saved = false,
                             message = SettingsDraftPresentation.ShortcutErrorMessage(error)
                         };
-                    if (draft.ExcludedApplications is { } exclusions)
-                    {
-                        if (exclusions.Length > 256 || exclusions.Any(app => string.IsNullOrWhiteSpace(app) || app.Length > 128))
-                            return new
-                            {
-                                saved = false,
-                                message = SettingsDraftPresentation.Create().InvalidMessage
-                            };
-                        updated = updated! with
+                    if (draft.Exclusions is { } exclusions && !exclusions.TryApply(updated!, out updated))
+                        return new
                         {
-                            ExcludedApplications = exclusions
+                            saved = false,
+                            message = SettingsDraftPresentation.Create().InvalidMessage
                         };
-                    }
+                    pendingSettingsDraft = draft;
                     try
                     {
-                        if (!await ApplySettings(updated!))
+                        if (!await controller.PrepareSettingsChangeAsync(updated!))
                             return new
                             {
                                 saved = false,
                                 message = "练习尚未确认结束，设置未保存。请重启 TypeLay 后重试。"
                             };
+                        if (!ReferenceEquals(pendingSettingsDraft, draft))
+                            return new
+                            {
+                                saved = false,
+                                message = "本次保存已取消。"
+                            };
+                        if (!ReferenceEquals(expectedSettings, settings.Value))
+                            return new
+                            {
+                                saved = false,
+                                message = "设置已更改，请重新保存。"
+                            };
+                        // The owner loop cannot process a cancellation between
+                        // this final identity check and the synchronous commit.
+                        settings.Update(updated!);
                         return new
                         {
                             saved = true,
@@ -177,6 +202,11 @@ internal static class Program
                             saved = false,
                             message = SettingsDraftPresentation.Create().InvalidMessage
                         };
+                    }
+                    finally
+                    {
+                        if (ReferenceEquals(pendingSettingsDraft, draft))
+                            pendingSettingsDraft = null;
                     }
                 case "automaticPractice":
                     var automaticProgress = controller.AutomaticPracticeProgress;

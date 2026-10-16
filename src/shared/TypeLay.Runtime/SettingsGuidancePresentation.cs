@@ -5,9 +5,9 @@ namespace TypeLay.Runtime;
 public sealed record SettingsGuidanceView(string ModeDescription, string AcceptanceDescription,
     string SaveScopeDescription);
 
-// Both settings windows describe the saved configuration, not unsaved shortcut
-// drafts. Their exclusion editors have different existing save scopes; this
-// presentation does not change persistence, sessions, or input permissions.
+// Both settings windows describe the saved configuration, not their unsaved
+// drafts. This presentation does not change persistence, sessions, or input
+// permissions; the host supplies its editor's save scope.
 public static class SettingsGuidancePresentation
 {
     public static SettingsGuidanceView Create(UserSettings settings, bool exclusionsNeedSave)

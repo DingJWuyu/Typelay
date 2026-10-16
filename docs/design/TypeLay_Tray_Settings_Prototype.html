@@ -2103,10 +2103,6 @@ dialog p {
     renderDraft();
   }
   function changeExclusions(value) {
-    if (state.platform === 'windows') {
-      saveNow({excludedApplications: value});
-      return;
-    }
     $('excludedApplications').value = value;
     draftMessage = '';
     renderDraft();
@@ -2140,9 +2136,9 @@ dialog p {
   function renderDraft() {
     renderExclusions();
     const hasDraft = dirty();
-    $('draftBar').hidden = !(state.page === 'shortcuts' || (state.page === 'support' && state.platform === 'linux') || hasDraft);
+    $('draftBar').hidden = !(hasDraft || draftMessage);
     $('saveDraft').disabled = !hasDraft;
-    $('draftMessage').textContent = draftMessage || (hasDraft ? '这些修改尚未保存；离开此页后仍会保留。' : state.page === 'shortcuts' ? '快捷键需要保存后生效。' : '应用排除列表需要保存后生效。');
+    $('draftMessage').textContent = draftMessage || (hasDraft ? '这些修改尚未保存；离开此页后仍会保留。' : '');
     $('draftMessage').classList.toggle('error', !!draftMessage && draftMessage.startsWith('未保存'));
   }
   function validDemand(value) {

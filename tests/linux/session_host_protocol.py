@@ -77,13 +77,120 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def draft(accept="F7", exit_key="F8"):
         return {
+            "session": str(uuid.uuid4()),
+            "request": 1,
             "shortcuts": {
                 "wake": "Ctrl+Shift+F9",
                 "direct": "Ctrl+Shift+F10",
                 "accept": accept,
                 "exit": exit_key,
-            }
+            },
         }
+
+    async def test_exclusion_draft_merges_only_local_changes_with_latest_settings(self):
+        draft = self.draft()
+        draft["exclusions"] = {
+            "baseline": ["removed-elsewhere", "remove-here", "keep"],
+            "values": ["removed-elsewhere", "KEEP", "added-here"],
+        }
+        self.assertTrue(
+            await self.ask(
+                "settings",
+                {
+                    "theme": "dark",
+                    "source": "zh",
+                    "excludedApplications": ["External", "Remove-Here", "Keep"],
+                },
+            )
+        )
+        self.assertTrue((await self.ask("saveSettingsDraft", draft))["saved"])
+        settings = self.latest("settings")
+        self.assertEqual(settings["excludedApplications"], ["External", "Keep", "added-here"])
+        self.assertEqual((settings["theme"], settings["source"]), ("dark", "zh"))
+
+    async def test_discard_during_retirement_prevents_the_pending_draft_from_being_saved(self):
+        await self.bind_automatic_practice()
+        before = (self.home / "config/settings.json").read_bytes()
+        draft = self.draft()
+        draft["exclusions"] = {"baseline": [], "values": ["unsaved-app"]}
+        self.sequence += 1
+        save_id = self.sequence
+        await self.send({"id": save_id, "op": "saveSettingsDraft", "data": draft})
+        retirement = await self.receive_until(
+            lambda item: item.get("op") == "retireAutomaticPractice"
+        )
+        await self.send(
+            {
+                "event": "cancelSettingsDraft",
+                "data": {"session": draft["session"], "request": draft["request"]},
+            }
+        )
+        # This ordinary request drains the earlier notification on the owner
+        # loop while the save still awaits the real retirement acknowledgement.
+        await self.ask("settingsDraft")
+        await self.send({"reply": retirement["id"], "data": True})
+        reply = await self.receive_until(lambda item: item.get("reply") == save_id)
+        self.assertFalse(reply["data"]["saved"])
+        self.assertEqual((self.home / "config/settings.json").read_bytes(), before)
+
+    async def test_wrong_generation_or_session_and_late_cancellation_cannot_undo_a_save(self):
+        await self.bind_automatic_practice()
+        draft = self.draft()
+        draft["exclusions"] = {"baseline": [], "values": ["saved-app"]}
+        self.sequence += 1
+        save_id = self.sequence
+        await self.send({"id": save_id, "op": "saveSettingsDraft", "data": draft})
+        retirement = await self.receive_until(
+            lambda item: item.get("op") == "retireAutomaticPractice"
+        )
+        for identity in (
+            {"session": draft["session"], "request": draft["request"] + 1},
+            {"session": str(uuid.uuid4()), "request": draft["request"]},
+        ):
+            await self.send({"event": "cancelSettingsDraft", "data": identity})
+        await self.ask("settingsDraft")
+        await self.send({"reply": retirement["id"], "data": True})
+        reply = await self.receive_until(lambda item: item.get("reply") == save_id)
+        self.assertTrue(reply["data"]["saved"])
+        saved = (self.home / "config/settings.json").read_bytes()
+        self.assertEqual(json.loads(saved)["ExcludedApplications"], ["saved-app"])
+        await self.send(
+            {
+                "event": "cancelSettingsDraft",
+                "data": {"session": draft["session"], "request": draft["request"]},
+            }
+        )
+        await self.ask("settingsDraft")
+        self.assertEqual((self.home / "config/settings.json").read_bytes(), saved)
+
+    async def test_failed_exclusion_save_keeps_disk_and_retry_merges_later_external_changes(self):
+        self.assertTrue(await self.ask("settings", {"excludedApplications": ["keep", "remove"]}))
+        before = (self.home / "config/settings.json").read_bytes()
+        draft = self.draft()
+        draft["exclusions"] = {"baseline": ["keep", "remove"], "values": ["keep", "added"]}
+        obstruction = self.home / "config/settings.json.tmp"
+        obstruction.mkdir()
+        self.assertFalse((await self.ask("saveSettingsDraft", draft))["saved"])
+        self.assertEqual((self.home / "config/settings.json").read_bytes(), before)
+        obstruction.rmdir()
+        self.assertTrue(
+            await self.ask("settings", {"excludedApplications": ["keep", "remove", "external"]})
+        )
+        draft["request"] += 1
+        self.assertTrue((await self.ask("saveSettingsDraft", draft))["saved"])
+        self.assertEqual(
+            self.latest("settings")["excludedApplications"], ["keep", "external", "added"]
+        )
+
+    async def test_exclusion_capacity_rejects_the_whole_draft_without_saving_shortcuts(self):
+        self.assertTrue(
+            await self.ask("settings", {"excludedApplications": [f"app-{n}" for n in range(256)]})
+        )
+        before = (self.home / "config/settings.json").read_bytes()
+        draft = self.draft()
+        draft["exclusions"] = {"baseline": [], "values": ["overflow"]}
+        self.assertFalse((await self.ask("saveSettingsDraft", draft))["saved"])
+        self.assertEqual((self.home / "config/settings.json").read_bytes(), before)
 
     def latest(self, name):
         return next(value["data"] for value in reversed(self.events) if value.get("event") == name)
