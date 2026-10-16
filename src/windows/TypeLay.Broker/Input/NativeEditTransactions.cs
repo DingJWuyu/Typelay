@@ -74,6 +74,9 @@ internal sealed class NativeEditTransactions : IDisposable
         }
         if (result.Status != 1 || result.Ime != ImeState.Clear || !result.Selection.IsValid(result.Text))
             return null;
+        // A newer owned focus descriptor becomes current only after its real
+        // native read and post-read identity checks succeed.
+        _bindings[identity.ControlHwnd] = binding;
         return new(binding.Target, result.Text, result.Selection, bounds, result.Multiline,
             FieldAccess.Supported, result.Ime, WindowsInterruptClock.NowMs, inputEpoch, owned.NativeFocusRevision,
             WriteSupported: true, DirectWriteSupported: false);
@@ -164,16 +167,26 @@ internal sealed class NativeEditTransactions : IDisposable
             // A normal capture cannot reuse or retire an owned registration.
             if (owned is null && existing.Owned is not null)
                 return null;
-            if (existing.Owned == owned && existing.Original with
+            bool advancedOwnedFocus = existing.Owned is { } previous && owned is { } current
+                && current.NativeFocusRevision > previous.NativeFocusRevision
+                && current with
+                {
+                    NativeFocusRevision = previous.NativeFocusRevision
+                } == previous;
+            if ((existing.Owned == owned || advancedOwnedFocus) && existing.Original with
             {
                 Lifetime = identity.Lifetime
             } == identity)
             {
                 existing = existing with
                 {
-                    TouchedAt = WindowsInterruptClock.NowMs
+                    TouchedAt = WindowsInterruptClock.NowMs,
+                    Owned = owned
                 };
-                _bindings[identity.ControlHwnd] = existing;
+                // Focus advancement does not replace this exact owned lifetime.
+                // Keep it local until CaptureOwned validates the new native read.
+                if (!advancedOwnedFocus)
+                    _bindings[identity.ControlHwnd] = existing;
                 return existing;
             }
             Release(existing);

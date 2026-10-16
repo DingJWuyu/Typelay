@@ -72,6 +72,17 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             await scene.Wait(() => N.Focused() == (scene.Root, GetDlgItem(scene.Root, 2)));
             await scene.Focus();
             Assert.True(scene.Descriptor.NativeFocusRevision > descriptor.NativeFocusRevision);
+            var returned = await broker.CallAsync(request with
+            {
+                OwnedCapture = scene.Descriptor
+            });
+            Assert.NotNull(returned.Snapshot);
+            Assert.Equal(FocusMember.Source, returned.Focus);
+            Assert.Equal(first.Snapshot.Target, returned.Snapshot.Target);
+            Assert.Equal(first.Snapshot.InputEpoch, returned.Snapshot.InputEpoch);
+            Assert.Equal(scene.Descriptor.NativeFocusRevision, returned.Snapshot.FocusEpoch);
+            Assert.Equal(first.Snapshot.Text, returned.Snapshot.Text);
+            Assert.Equal(N.ReadSelection(scene.Field), returned.Snapshot.Selection);
         }
         var refused = await broker.CallAsync(request with
         {
