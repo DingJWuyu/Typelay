@@ -11,7 +11,7 @@ internal enum OwnedEditorAdmissionReason
     None, UiTarget, UiEditorHidden, UiEditorLeft, UiEditorTop, UiEditorRight, UiEditorBottom,
     UiPending, UiPaused, UiView, UiButton, HostDisposed, HostSealed, HostNotReady, HostPending,
     HostChild, HostMonitor, HostDescriptor, HostGeneration, HostOverlay,
-    InputNotReady, InputPressMissing, InputSequence, InputTime, InputX, InputY, InputInjected
+    InputNotReady, InputPressMissing, InputSequence, InputFreshness, InputX, InputY, InputInjected
 }
 
 internal sealed partial class KeyboardHook
@@ -56,7 +56,7 @@ internal sealed partial class KeyboardHook
             current.Cancel(current.Intent);
     }
     private long _editorInputSequence;
-    private sealed record EditorPress(long Sequence, uint Time, int X, int Y, bool Injected, bool Released);
+    private sealed record EditorPress(long Sequence, uint Time, long ReceivedAtMs, int X, int Y, bool Injected, bool Released);
     private EditorPress? _editorPress;
     private uint _lastEditorPressTime;
     private bool _seenEditorPress;
@@ -81,37 +81,41 @@ internal sealed partial class KeyboardHook
     }
     internal void ConfigureOwnedEditorFocus(Func<TargetId, bool> focused) => _ownedEditorFocus = focused;
     internal long EditorInputSequence => Interlocked.Read(ref _editorInputSequence);
-    internal long BeginOwnedEditorInput(out OwnedEditorAdmissionReason reason, out object? detail)
+    internal long BeginOwnedEditorInput(out long expiresAtMs, out OwnedEditorAdmissionReason reason, out object? detail)
     {
         var press = Volatile.Read(ref _editorPress);
         uint position = GetMessagePos();
         int x = unchecked((short)position), y = unchecked((short)(position >> 16));
         OwnedEditorAdmissionReason rejected = OwnedEditorAdmissionReason.None;
         long? inputSequence = null;
-        uint? messageTime = null;
+        long? evaluatedAtMs = null;
+        long pressDeadline = press is null ? 0 : checked(press.ReceivedAtMs + 500);
         bool Rejected(OwnedEditorAdmissionReason value)
         {
             rejected = value;
             return false;
         }
-        // WM_MOUSEACTIVATE belongs to the queued original press, not whichever
-        // click happened most recently while the UI thread was busy.
+        // WM_MOUSEACTIVATE is sent, so GetMessageTime need not identify this
+        // press's timestamp. Use our LL observation clock and keep its original deadline.
         bool admitted = (ShortcutsReady || Rejected(OwnedEditorAdmissionReason.InputNotReady))
             && (press is not null || Rejected(OwnedEditorAdmissionReason.InputPressMissing))
             && (press!.Sequence == (inputSequence = EditorInputSequence) || Rejected(OwnedEditorAdmissionReason.InputSequence))
-            && (press.Time == (messageTime = unchecked((uint)GetMessageTime())) || Rejected(OwnedEditorAdmissionReason.InputTime))
+            && ((evaluatedAtMs = WindowsInterruptClock.NowMs) >= press.ReceivedAtMs
+                && evaluatedAtMs < pressDeadline || Rejected(OwnedEditorAdmissionReason.InputFreshness))
             && (press.X == x || Rejected(OwnedEditorAdmissionReason.InputX))
             && (press.Y == y || Rejected(OwnedEditorAdmissionReason.InputY))
             && (!press.Injected || _allowInjectedInput || Rejected(OwnedEditorAdmissionReason.InputInjected));
         reason = rejected;
-        // Only already-read press/message values. A short-circuited native time
-        // or input-sequence check stays null rather than acquiring new evidence.
+        expiresAtMs = admitted ? pressDeadline : 0;
+        // A short-circuited clock or input-sequence check stays null rather
+        // than acquiring new evidence for diagnostics.
         detail = admitted ? null : new
         {
             pressSequence = press?.Sequence,
             inputSequence,
             pressTime = press?.Time,
-            messageTime,
+            pressReceivedAtMs = press?.ReceivedAtMs,
+            evaluatedAtMs,
             pressX = press?.X,
             pressY = press?.Y,
             messageX = x,
@@ -128,12 +132,13 @@ internal sealed partial class KeyboardHook
         var press = Volatile.Read(ref _editorPress);
         if (message == 0x201)
         {
+            long receivedAtMs = WindowsInterruptClock.NowMs;
             long sequence = Interlocked.Increment(ref _editorInputSequence);
             bool unambiguous = !_seenEditorPress || _lastEditorPressTime != data.Time;
             _lastEditorPressTime = data.Time;
             _seenEditorPress = true;
             Interlocked.Exchange(ref _editorPress, unambiguous && _mouseButtons == 0 && !Modified
-                ? new(sequence, data.Time, data.Point.X, data.Point.Y, injected, false) : null);
+                ? new(sequence, data.Time, receivedAtMs, data.Point.X, data.Point.Y, injected, false) : null);
             return;
         }
         if (message == 0x202 && _mouseButtons == 1 && press is { Released: false }
@@ -153,7 +158,6 @@ internal sealed partial class KeyboardHook
             && (press is null || press.X != data.Point.X || press.Y != data.Point.Y))
             Interlocked.Increment(ref _editorInputSequence);
     }
-    [DllImport("user32.dll")] private static extern int GetMessageTime();
     [DllImport("user32.dll")] private static extern uint GetMessagePos();
     public Guid ConnectionId => Volatile.Read(ref _ownedChannel)?.Connection ?? Guid.Empty;
     internal void ConfigureOwnedPractice(Func<TargetId, bool> ownsTarget, Action<InputLease, AcceptancePermit?> publish, Action revoke)

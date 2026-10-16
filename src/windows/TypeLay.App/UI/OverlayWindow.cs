@@ -409,8 +409,8 @@ internal sealed class OverlayWindow : Window, ISessionView
             Native.Point cursor;
             if (ownedTarget)
             {
-                // Hit-test the queued initiating press, not a later hover. The
-                // host binds this same message position and time to its LL press.
+                // Use message-position context rather than a later hover. The
+                // host checks it against the fresh LL press as auxiliary evidence.
                 uint position = GetMessagePos();
                 cursor = new()
                 {

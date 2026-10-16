@@ -128,13 +128,12 @@ internal sealed partial class PracticeHost
         if (overlay == 0 || Native.GetWindowThreadProcessId(overlay, out uint overlayProcess) != Native.GetCurrentThreadId()
             || overlayProcess != Environment.ProcessId)
             return Rejected(OwnedEditorAdmissionReason.HostOverlay);
-        long inputSequence = monitor.BeginOwnedEditorInput(out var reason, out object? detail);
+        long inputSequence = monitor.BeginOwnedEditorInput(out long expires, out var reason, out object? detail);
         if (inputSequence == 0)
         {
             TraceOwnedEditorAdmission(reason, detail);
             return null;
         }
-        long expires = checked(WindowsInterruptClock.NowMs + 500);
         Guid connection = _connection, run = _runId;
         long sequence = _sequence;
         _editorSealed = true; // Before synchronous admission can render/revoke/reenter.
