@@ -75,9 +75,7 @@ internal sealed partial class PracticeHost
 
     internal bool IsOwnedEditorTarget(TargetId target) => OwnsAutomaticTarget(target);
 
-    // The first slice is available only through the existing explicit software
-    // automation constructor. Production cannot advertise a partial edit flow.
-    internal bool EditorReady(TargetId target) => _allowInjectedInput && _editorOverlay is not null && SourceReady(target);
+    internal bool EditorReady(TargetId target) => _editorOverlay is not null && SourceReady(target);
     internal bool SuppressOwnedWrite(InputContext context) => _editorSealed
         && (context.BoundTarget is { } target && OwnsAutomaticTarget(target) || CapturesAutomaticForeground);
     internal bool SuppressOwnedCapture(InputContext context) => SuppressOwnedWrite(context) && ReturnDescriptor(context) is null;

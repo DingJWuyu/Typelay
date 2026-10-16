@@ -528,7 +528,7 @@ internal sealed class OverlayWindow : Window, ISessionView
 
     internal bool ActivateOwnedEditor(OwnedEditorControl control)
     {
-        if (!_automationTest || _ownedEditor != control || _viewContext is not { CanEdit: true } context
+        if (_ownedEditor != control || _viewContext is not { CanEdit: true } context
             || context.Token != control.AdmittedToken || _pausedRevision is not null || !IsVisible
             || _ownedActivationRequested || control.OverlayHwnd != (long)_hwnd
             || WindowsInterruptClock.NowMs > control.ExpiresAtMs)

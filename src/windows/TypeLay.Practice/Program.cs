@@ -319,20 +319,12 @@ internal static partial class Program
             if (_automatic)
             {
                 var view = AutomaticPracticePresentation.Create(settings!, _automaticProgress);
-                string progress = _automaticProgress?.Completed == true ? view.ProgressNotice
-                    : _automaticProgress?.AcceptanceCompleted == true
-                    ? "第一次接受已验证"
-                    : _automaticProgress?.PreviewCompleted == true
-                        ? "已生成预览。"
-                        : _automaticProgress?.Target is not null ? "已识别练习输入框，等待自动生成预览。"
-                        : "请点击练习输入框，等待原生连接确认。";
-                changed = SetText(_title!, "自动接受练习")
-                    | SetText(_summary!, "输入一句话，查看译文后按 Tab 接受。")
-                    | SetText(_notice, view.CurrentStateNotice) | SetText(_preview, "自动预览")
-                    | SetText(_replace, "Tab 接受")
-                    | SetText(_capability!, "编辑练习尚未开放")
-                    | SetText(_progressNotice, CompletionProgressNotice(progress));
-                Native.SetWindowTextW(_window, "自动接受练习");
+                changed = SetText(_title!, view.Title) | SetText(_summary!, view.Summary)
+                    | SetText(_notice, view.CurrentStateNotice) | SetText(_preview, view.PreviewStep)
+                    | SetText(_replace, view.ReplaceStep)
+                    | SetText(_capability!, "")
+                    | SetText(_progressNotice, CompletionProgressNotice(view.ProgressNotice));
+                Native.SetWindowTextW(_window, view.Title);
             }
             else
             {
@@ -630,7 +622,7 @@ internal static partial class Program
         // This runs at the same outer GUI boundary as InstallPlan, never on the
         // pipe reader. Fence only the old generation; keep this field's cookie,
         // lifetime and any result mapping until its ordinary release ACK.
-        if (!_allowInjectedInput || _retired || _editorFence is not null || _witnessFailed
+        if (_retired || _editorFence is not null || _witnessFailed
             || control.SourceEventSequence != 0 || control.Descriptor != Descriptor()
             || !SourceFocused() || _closePending || _restartPending
             || WindowsInterruptClock.NowMs >= control.ExpiresAtMs)

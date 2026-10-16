@@ -52,7 +52,7 @@ internal static partial class ContinuousTranslationCheck
             });
             string original = AutomaticPracticePresentation.Create(settings.Value).SampleText;
             host = new PracticeHost(info => child = new ChildProcess(info));
-            overlay = new OverlayWindow(automationTest: true);
+            overlay = new OverlayWindow();
             var hook = new KeyboardHook(allowInjectedInput: true, overlay.Handle);
             monitor = new(hook);
             host.Initialize(settings, hook, allowInjectedInput: true);
@@ -393,7 +393,7 @@ internal static partial class ContinuousTranslationCheck
         result.Facts = new
         {
             inputKind = "software-input",
-            productionEditingEnabled = false,
+            productionEditingEnabled = true,
             physicalIme = false,
             injectedClicks,
             freshPreview,
@@ -504,7 +504,7 @@ internal static partial class ContinuousTranslationCheck
         {
             inputKind = "software-input",
             kind = kind.ToString(),
-            productionEditingEnabled = false,
+            productionEditingEnabled = true,
             reenteredDraft,
             sourceFocus,
             sourceUnchanged,

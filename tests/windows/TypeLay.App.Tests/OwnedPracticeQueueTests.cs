@@ -356,15 +356,17 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         Assert.False(scene.CanRenew(originalContentEpoch));
     });
 
-    [Fact]
-    public Task HostRenewalInvalidationPreservesTheOriginalPressWithinItsDeadline() => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task HostEditingCapabilityPreservesInjectionPolicyAndOriginalPressDeadline(bool allowInjectedInput) => desktop.RunAsync(async () =>
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(25));
         string directory = Path.Combine(Path.GetTempPath(), "typelay-owned-host-" + Guid.NewGuid().ToString("N"));
         string path = Path.Combine(directory, "settings.json");
         ChildProcess? child = null;
-        var overlay = new OverlayWindow(automationTest: true);
+        var overlay = new OverlayWindow();
         bool tabDown = false;
         try
         {
@@ -376,8 +378,9 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             });
             using var model = WindowsRuntime.CreateModel(); // Controlled plans below do not invoke a model.
             using var host = new PracticeHost(info => child = new ChildProcess(info));
-            using var hook = new KeyboardHook(allowInjectedInput: true);
-            host.Initialize(settings, hook, allowInjectedInput: true);
+            using var hook = new KeyboardHook(allowInjectedInput);
+            host.Initialize(settings, hook, allowInjectedInput);
+            host.InitializeEditing(overlay);
             using var input = new WindowsInputService(new BrokerClient(), overlay.Handle, monitor: hook, practice: host);
             using var controller = new SessionController(settings, model, overlay, hook, input, new ManualPracticeLoop(),
                 host.RetireAutomaticAsync, host.ConfirmRetiredAutomaticAsync);
@@ -394,6 +397,24 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             hook.Publish(first.Lease, first.Permit);
             await Until(() => Ready(first));
             string original = N.ReadText(field, Limits.MaxTextUnits);
+            Assert.True(host.EditorReady(first.Lease.Source.Target));
+            if (!allowInjectedInput)
+            {
+                // Production capability does not authorize software input. The
+                // exact host receipt must still reject before any acceptance.
+                Assert.Equal(1u, SendInput(1, [new KeyInput { Type = 1, Key = 9 }], Marshal.SizeOf<KeyInput>()));
+                tabDown = true;
+                Assert.Equal(1u, SendInput(1, [new KeyInput { Type = 1, Key = 9, Flags = 2 }], Marshal.SizeOf<KeyInput>()));
+                tabDown = false;
+                await Until(() => host.RejectedAcceptance(first.Lease.PracticeRunId!.Value) is not null);
+                Assert.Equal(WriteStatus.RejectedBeforeMutation,
+                    host.RejectedAcceptance(first.Lease.PracticeRunId!.Value)!.Value.Status);
+                Assert.False(host.EditorReady(first.Lease.Source.Target));
+                Assert.False(settings.Value.ExperimentalWriteback);
+                Assert.True(N.PostMessage(root, 0x0010, 0, 0));
+                await child!.Process.WaitForExitAsync(deadline.Token);
+                return;
+            }
 
             // No candidate is queued. The heartbeat still expires the original
             // grant; publishing the same expired observation cannot renew it.

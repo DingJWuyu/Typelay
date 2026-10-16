@@ -63,7 +63,7 @@ internal sealed class SettingsWindow : Window
         {
             var progress = PracticeProgress?.Invoke();
             var automatic = AutomaticPracticeProgress?.Invoke();
-            _practiceStatus.Text = automatic is not null ? FirstAcceptanceView().ProgressNotice
+            _practiceStatus.Text = automatic is not null ? AutomaticPracticeEntryView().ProgressNotice
                 : progress is null ? "" : OnDemandPracticePresentation.Create(_settings.Value, progress).ProgressNotice;
             _practiceStatus.Visibility = progress is null && automatic is null ? Visibility.Collapsed : Visibility.Visible;
         }
@@ -531,7 +531,7 @@ internal sealed class SettingsWindow : Window
         }));
         Rule();
         Row("第一次使用？", _settings.Value.AcceptShortcut == "Tab" ? ""
-            : "自动接受练习目前只支持无修饰 Tab。你的快捷键保持不变，仍可进行按需翻译练习。",
+            : "完整练习目前只支持无修饰 Tab。你的快捷键保持不变，仍可进行按需翻译练习。",
             UiTheme.Button(PracticeEntryView().StartLabel, StartPractice));
         _practiceStatus = UiTheme.Text("", 12, true);
         _content.Children.Add(_practiceStatus);
@@ -629,18 +629,16 @@ internal sealed class SettingsWindow : Window
     }
     private bool UsesAutomaticPractice => _settings.Value.Mode == WorkMode.Automatic && _settings.Value.AcceptShortcut == "Tab";
     private OnDemandPracticeView PracticeEntryView() => UsesAutomaticPractice
-        ? FirstAcceptanceView() : OnDemandPracticePresentation.Create(_settings.Value);
-    private OnDemandPracticeView FirstAcceptanceView()
+        ? AutomaticPracticeEntryView() : OnDemandPracticePresentation.Create(_settings.Value);
+    private OnDemandPracticeView AutomaticPracticeEntryView()
     {
         var progress = AutomaticPracticeProgress?.Invoke();
         var view = AutomaticPracticePresentation.Create(_settings.Value, progress);
-        return new("自动接受练习", "练习自动预览与第一次接受。", view.SampleText, view.InputLabel,
-            view.PreviewStep, "本阶段仅验证第一次接受，不包含人工编辑和回源。", view.CapabilityNote,
-            _settings.Value.Mode == WorkMode.Automatic ? "开始自动接受练习" : "切换为自动模式并开始练习",
+        return new(view.Title, view.Summary, view.SampleText, view.InputLabel,
+            view.PreviewStep, view.ReplaceStep, view.CapabilityNote, view.StartLabel,
             view.ConfirmationText, view.CancelLabel, view.CloseLabel, view.CurrentStateNotice,
-            view.LanguageNeedsChange, view.LaunchFailedMessage,
-            progress?.AcceptanceCompleted == true ? "已验证第一次接受。本阶段不包含人工编辑和回源。" : view.ProgressNotice, view.RestartLabel,
-            false, false, false);
+            view.LanguageNeedsChange, view.LaunchFailedMessage, view.ProgressNotice, view.RestartLabel,
+            view.PreviewCompleted, view.EditedAcceptanceCompleted, view.Completed);
     }
     private bool ConfirmPractice(OnDemandPracticeView view)
     {

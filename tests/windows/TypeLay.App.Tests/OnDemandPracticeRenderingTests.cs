@@ -130,7 +130,7 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                 window.ShowPage();
                 window.UpdateLayout();
                 var start = Descendants(window).OfType<Button>().Single(button =>
-                    Equals(button.Content, "开始自动接受练习"));
+                    Equals(button.Content, AutomaticPracticePresentation.Create(settings.Value).StartLabel));
                 start.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                 window.UpdateLayout();
                 Assert.Equal(0, launches);
