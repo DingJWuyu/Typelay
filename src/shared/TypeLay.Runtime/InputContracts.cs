@@ -118,6 +118,9 @@ public interface IInputMonitor : IDisposable
     bool ForegroundExpired => false;
     // Pending old-grant retirement only; never a fresh source observation.
     OwnedPracticeBinding? PracticeForegroundSuspension => null;
+    // Presentation only: an asynchronous adapter may not have installed the
+    // issued operation yet. This read never creates or refreshes write authority.
+    bool AcceptanceReady(SessionViewToken token, AcceptancePermit issued, long nowMs) => true;
     FocusMember GetFocus(TargetId target);
     void ConfigureShortcuts(bool enabled, string wake, string direct, SessionShortcutBindings sessionBindings, bool sessionEnabled);
     bool TryRead(out InputNotice? notice);

@@ -204,6 +204,8 @@ class DistributionTests(unittest.TestCase):
                     "Run": str(run),
                     "Sequence": sequence,
                     "Progress": None,
+                    "Acceptance": None,
+                    "AutomaticProgress": None,
                 }
                 process.stdin.write(frame(command))
                 process.stdin.flush()
@@ -257,6 +259,8 @@ class DistributionTests(unittest.TestCase):
                         "Run": str(run),
                         "Sequence": 3,
                         "Progress": None,
+                        "Acceptance": None,
+                        "AutomaticProgress": None,
                     }
                 ],
             )

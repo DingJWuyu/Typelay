@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Runtime.ExceptionServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -158,8 +159,47 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
                 Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == ApplicationSupportPresentation.ReasonText(ApplicationSupportReason.NoFocusedField));
                 Assert.DoesNotContain(Descendants(window).OfType<TextBlock>(), text => text.Text == "已连接");
             }
-            Click(window, "试一试");
+            var practice = AutomaticPracticePresentation.Create(settings.Value);
+            bool confirmed = false;
+            Exception? confirmationFailure = null;
+            // The default Tab entry now asks permission to leave OnDemand mode.
+            // Interact with its real modal in ShowDialog's nested dispatcher.
+            var confirmation = window.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                Window[] dialogs = [];
+                try
+                {
+                    dialogs = window.OwnedWindows.Cast<Window>().ToArray();
+                    var dialog = Assert.Single(dialogs);
+                    Assert.Equal("自动接受练习", dialog.Title);
+                    dialog.UpdateLayout();
+                    Assert.Equal(0, launches);
+                    Assert.Equal(WorkMode.OnDemand, settings.Value.Mode);
+                    Assert.Contains(Descendants(dialog).OfType<TextBlock>(), text => text.Text == practice.ConfirmationText);
+                    var cancel = Assert.Single(Buttons(dialog), button => button.IsDefault);
+                    Assert.Equal(practice.CancelLabel, cancel.Content);
+                    Assert.True(cancel.IsCancel);
+                    Click(dialog, practice.StartLabel);
+                    confirmed = true;
+                }
+                catch (Exception error) { confirmationFailure = error; }
+                finally
+                {
+                    foreach (var dialog in dialogs.Where(item => item.IsVisible))
+                        dialog.Close();
+                }
+            }), DispatcherPriority.ContextIdle);
+            try
+            {
+                Click(window, "试一试");
+            }
+            finally { confirmation.Abort(); }
+            if (confirmationFailure is not null)
+                ExceptionDispatchInfo.Capture(confirmationFailure).Throw();
+            Assert.True(confirmed);
             Assert.Equal(1, launches);
+            Assert.Equal(WorkMode.Automatic, settings.Value.Mode);
+            Assert.Equal(WorkMode.Automatic, new SettingsStore(Path.Combine(directory, "settings.json")).Value.Mode);
             Assert.False(settings.Value.OnboardingComplete);
             window.ShowPage("translation");
             window.UpdateLayout();

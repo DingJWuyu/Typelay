@@ -17,6 +17,74 @@ public sealed class AutomaticPracticeProgressTests
     }
 
     [Fact]
+    public void InstalledAcceptanceControlsTheHintWithoutDelayingPreview()
+    {
+        using var s = new SessionScenario();
+        bool installed = false;
+        s.Input.AcceptanceReadiness = (_, _, _) => installed;
+        Bind(s);
+        s.ReadyCandidate();
+        Assert.Equal("translated", s.View.Preview);
+        Assert.NotNull(s.Input.Permit);
+        Assert.False(s.View.CanAccept);
+        installed = true;
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.True(s.View.CanAccept);
+        installed = false;
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.False(s.View.CanAccept);
+        Assert.Equal("translated", s.View.Preview);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void RenewedIssuedPermitDoesNotExtendAnInstalledAcceptanceHint()
+    {
+        using var s = new SessionScenario();
+        long installedExpiry = 0;
+        s.Input.AcceptanceReadiness = (_, _, now) => now <= installedExpiry;
+        Bind(s);
+        s.ReadyCandidate();
+        var original = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        installedExpiry = original.ExpiresAtMs;
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.True(s.View.CanAccept);
+        s.Tick(60);
+        Assert.NotEqual(original.Plan.Id, s.Input.Permit!.Plan.Id);
+        Assert.True(s.View.CanAccept);
+        s.Tick(50);
+        Assert.True(s.Input.Permit!.ExpiresAtMs > installedExpiry);
+        Assert.False(s.View.CanAccept);
+        Assert.Equal("translated", s.View.Preview);
+    }
+
+    [Fact]
+    public void AnOldInstalledCandidateCannotPresentANewTranslationAsAcceptable()
+    {
+        using var s = new SessionScenario();
+        s.Input.AcceptanceReadiness = (_, issued, _) => issued.Plan.Replacement == "translated";
+        Bind(s);
+        s.ReadyCandidate();
+        Assert.True(s.View.CanAccept);
+        s.Source = s.Source with
+        {
+            Text = "different source",
+            Selection = new(16, 16),
+            InputEpoch = s.Source.InputEpoch + 1
+        };
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        s.CompleteTranslation("new candidate");
+        s.Tick();
+        Assert.Equal("new candidate", s.View.Preview);
+        Assert.Equal("new candidate", s.Input.Permit!.Plan.Replacement);
+        Assert.False(s.View.CanAccept);
+        s.Controller.RefreshAcceptancePresentation();
+        Assert.False(s.View.CanAccept);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
     public void VerifiedOwnedFieldCanAcceptWithoutEnablingGlobalWriteback()
     {
         using var s = new SessionScenario();

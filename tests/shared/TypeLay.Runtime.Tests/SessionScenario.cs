@@ -206,6 +206,12 @@ internal sealed class SessionScenario : IDisposable
         {
             get; private set;
         }
+        public Func<SessionViewToken, AcceptancePermit, long, bool>? AcceptanceReadiness
+        {
+            get; set;
+        }
+        public bool AcceptanceReady(SessionViewToken token, AcceptancePermit issued, long nowMs) =>
+            AcceptanceReadiness?.Invoke(token, issued, nowMs) ?? true;
         public ShortcutLease? Shortcut
         {
             get; private set;

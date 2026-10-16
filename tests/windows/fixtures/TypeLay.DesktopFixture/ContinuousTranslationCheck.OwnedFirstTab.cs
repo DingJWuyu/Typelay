@@ -16,7 +16,7 @@ internal static partial class ContinuousTranslationCheck
     {
         var result = new SceneResult { Outcome = "running", Stage = "owned-start" };
         var elapsed = Stopwatch.StartNew();
-        long? firstPreviewMs = null, acceptedMs = null;
+        long? firstPreviewMs = null, acceptanceReadyMs = null, acceptedMs = null;
         ChildProcess? child = null;
         PracticeHost? host = null;
         OverlayWindow? overlay = null;
@@ -70,15 +70,25 @@ internal static partial class ContinuousTranslationCheck
                 "owned-source-not-ordinary-collapsed-caret");
             var editor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
             result.Stage = "owned-automatic-preview";
-            // No F9, reference inference, publish probe, or permit-install wait.
-            // The first and only Tab follows the first real visible candidate.
+            // No F9, reference inference, publish probe, or private install wait.
+            // One Tab follows the current visible candidate and the same public
+            // "Tab 接受译文" cue a user sees, rather than preview completion alone.
             await UntilAsync(() =>
             {
                 Require(feedbackCode is null, "owned-preview-feedback");
                 Require(N.Focused() == (root, field), "owned-preview-focus");
-                return VisibleTranslation(overlay, editor) && controller.AutomaticPracticeProgress?.PreviewCompleted == true;
+                bool visible = VisibleTranslation(overlay, editor);
+                if (visible)
+                {
+                    firstPreviewMs ??= elapsed.ElapsedMilliseconds;
+                    result.Stage = "owned-public-acceptance-ready";
+                }
+                return visible && controller.AutomaticPracticeProgress?.PreviewCompleted == true
+                    && Descendants(overlay).OfType<TextBlock>().Any(hint => hint.IsVisible && hint.Text == "接受译文"
+                        && hint.Parent is StackPanel row && Descendants(row).OfType<TextBlock>()
+                            .Any(key => key.IsVisible && key.Text == "Tab"));
             }, cancellation);
-            firstPreviewMs = elapsed.ElapsedMilliseconds;
+            acceptanceReadyMs = elapsed.ElapsedMilliseconds;
             string candidate = editor.Text;
             var progress = controller.AutomaticPracticeProgress!;
             sourceUnchanged = N.ReadText(field, Limits.MaxTextUnits) == original && N.ReadSelection(field) == selection;
@@ -168,6 +178,7 @@ internal static partial class ContinuousTranslationCheck
                 injectedEnterKeys = 0,
                 submitCounterAvailable = false,
                 firstPreviewMs,
+                acceptanceReadyMs,
                 acceptedMs,
                 feedbackCode,
                 sourceUnchanged,
@@ -228,6 +239,8 @@ internal static partial class ContinuousTranslationCheck
         public Guid ConnectionId => inner.ConnectionId;
         public bool ForegroundExpired => ((IInputMonitor)inner).ForegroundExpired;
         public OwnedPracticeBinding? PracticeForegroundSuspension => ((IInputMonitor)inner).PracticeForegroundSuspension;
+        public bool AcceptanceReady(SessionViewToken token, AcceptancePermit issued, long nowMs) =>
+            inner.AcceptanceReady(token, issued, nowMs);
         public FocusMember GetFocus(TargetId target) => inner.GetFocus(target);
         public void ConfigureShortcuts(bool enabled, string wake, string direct, SessionShortcutBindings bindings, bool sessionEnabled) =>
             inner.ConfigureShortcuts(enabled, wake, direct, bindings, sessionEnabled);

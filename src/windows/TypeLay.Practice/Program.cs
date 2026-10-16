@@ -253,7 +253,7 @@ internal static class Program
                 string progress = _automaticProgress?.AcceptanceCompleted == true
                     ? "第一次接受已验证"
                     : _automaticProgress?.PreviewCompleted == true
-                        ? $"已生成预览。请在练习输入框按 {settings.AcceptShortcut} 接受。"
+                        ? "已生成预览。"
                         : _automaticProgress?.Target is not null ? "已识别练习输入框，等待自动生成预览。"
                         : "请点击练习输入框，等待原生连接确认。";
                 changed = SetText(_title!, "自动接受练习")

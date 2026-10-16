@@ -18,6 +18,7 @@ internal sealed partial class KeyboardHook
     private OwnedChannel? _ownedChannel;
     private OwnedSource? _ownedSource;
     private OwnedInstalled? _ownedInstalled;
+    private long _ownedAttemptSequence;
     public Guid ConnectionId => Volatile.Read(ref _ownedChannel)?.Connection ?? Guid.Empty;
     internal void ConfigureOwnedPractice(Func<TargetId, bool> ownsTarget, Action<InputLease, AcceptancePermit?> publish, Action revoke)
     {
@@ -42,6 +43,34 @@ internal sealed partial class KeyboardHook
     {
         Interlocked.Exchange(ref _ownedInstalled, null);
         _ownedGate.Revoke();
+    }
+    public bool AcceptanceReady(SessionViewToken token, AcceptancePermit issued, long nowMs)
+    {
+        if (_ownedPracticeTarget?.Invoke(token.Target) != true)
+            return true;
+        var installed = Volatile.Read(ref _ownedInstalled);
+        var channel = Volatile.Read(ref _ownedChannel);
+        if (!_sessionEnabled || installed is null || channel is null || channel.Writer.Poisoned
+            || Interlocked.Read(ref _ownedAttemptSequence) == installed.Sequence
+            || installed.Lease.Source.Target != token.Target || installed.Lease.CommandGeneration != token.CommandGeneration
+            || installed.Lease.SessionRevision != token.Revision || installed.Lease.PracticeConnectionId != channel.Connection
+            || installed.Lease.CommandGeneration != CommandGeneration || installed.Lease.UserEpoch != UserEpoch
+            || installed.Lease.ForegroundEpoch != ForegroundEpoch || !OwnedFocus(installed.Descriptor)
+            || nowMs < installed.Permit.ObservedAtMs || nowMs > installed.Permit.ExpiresAtMs)
+            return false;
+        var active = installed.Permit.Plan;
+        var proposed = issued.Plan;
+        // Repeated fresh captures may propose a new ID for the exact same
+        // operation. Only the already-installed plan's original TTL is used.
+        return active with
+        {
+            Id = proposed.Id,
+            Expected = active.Expected with
+            {
+                ObservedAtMs = proposed.Expected.ObservedAtMs,
+                Bounds = proposed.Expected.Bounds
+            }
+        } == proposed;
     }
     internal void ClearOwnedChannel()
     {
@@ -78,6 +107,8 @@ internal sealed partial class KeyboardHook
                 && lease.CommandGeneration == CommandGeneration && lease.UserEpoch == UserEpoch
                 && lease.ForegroundEpoch == ForegroundEpoch && now >= lease.Source.ObservedAtMs
                 && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs && !channel.Writer.Poisoned;
+            if (installed is not null && (down && data.Key == acceptanceKey || injected && !_allowInjectedInput))
+                Interlocked.Exchange(ref _ownedAttemptSequence, installed.Sequence);
             var decision = _ownedGate.ProcessAcceptanceKey(new(data.Key, down, repeated, data.Key == acceptanceKey),
                 new(lease?.Source.Target, exact, lease?.Source.Ime ?? ImeState.Unknown, Modified, injected, fresh,
                     lease?.Source.InputEpoch ?? -1, lease?.Source.FocusEpoch ?? -1, now));

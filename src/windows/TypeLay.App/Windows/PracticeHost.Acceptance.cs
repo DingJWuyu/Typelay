@@ -231,6 +231,8 @@ internal sealed partial class PracticeHost
         _monitor?.RevokeOwnedPlan();
         if (_acceptance is { State: "install" or "installed" })
             RevokeCurrentAcceptance();
+        else
+            _session?.RefreshAcceptancePresentation();
     }
     private void RevokeCurrentAcceptance()
     {
@@ -239,6 +241,7 @@ internal sealed partial class PracticeHost
             return;
         current.State = "revoke-plan";
         SendPlanControl("revoke-plan", current);
+        _session?.RefreshAcceptancePresentation();
     }
     private void InstallNextAcceptance()
     {
@@ -335,7 +338,10 @@ internal sealed partial class PracticeHost
             {
                 current.State = "installed";
                 if (SourceReady(current.Lease.Source.Target))
+                {
                     _monitor?.InstallOwnedPlan(current.Plan.PlanSequence, current.Lease, current.Plan.Permit, current.Plan.Descriptor);
+                    _session?.RefreshAcceptancePresentation();
+                }
                 else
                     RevokeCurrentAcceptance();
             }

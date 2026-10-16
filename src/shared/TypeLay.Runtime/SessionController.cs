@@ -25,6 +25,8 @@ public sealed partial class SessionController : IDisposable
     private SessionShortcutAcknowledgement? _sessionShortcuts;
     private readonly ISessionLoop _loop;
     private long _generation, _nextCapture, _permitUntil, _editTransitionUntil, _retryBrokerAt;
+    private AcceptancePermit? _presentationPermit;
+    private bool _renderedAcceptanceReady;
     private bool _capturing, _writing, _translationRunning, _startingBroker, _returningToSource, _disposed;
     private bool _inputReadFailed;
     private PauseAnchor? _pauseAnchor;
@@ -472,6 +474,8 @@ public sealed partial class SessionController : IDisposable
             _permitUntil = 0;
             Render();
         }
+        else if (_renderedAcceptanceReady != CanPresentAcceptance(now))
+            Render();
     }
     private SessionShortcutBindings CurrentSessionBindings =>
         SessionShortcutBindings.Restore(_settings.Value.AcceptShortcut, _settings.Value.ExitShortcut);
@@ -790,6 +794,7 @@ public sealed partial class SessionController : IDisposable
                         snapshot.ObservedAtMs + Limits.PermitMaxAgeMs);
             }
             _permitUntil = permit?.ExpiresAtMs ?? 0;
+            _presentationPermit = permit;
             bool escape = SessionBindingsReady(snapshot.Target, false)
                 && _session.State is not (SessionState.NoSession or SessionState.Paused or SessionState.OutcomeUnknown);
             RememberAutomaticPermit(practiceBinding, permit);
@@ -1281,6 +1286,7 @@ public sealed partial class SessionController : IDisposable
             return;
         if (!_settings.Value.Enabled && PauseAnchorIsCurrent(_loop.NowMs))
         {
+            _renderedAcceptanceReady = false;
             _overlay.RenderPaused(_pauseAnchor!, _pauseViewRevision);
             return;
         }
@@ -1291,10 +1297,29 @@ public sealed partial class SessionController : IDisposable
         SessionViewContext? context = _session.Current is { } source
             ? new(new(source.Target, _hook.CommandGeneration, _generation), CurrentSessionBindings,
                 SessionBindingsReady(source.Target, true)) : null;
-        _overlay.Render(_session, _settings.Value, _permitUntil >= _loop.NowMs && _permitUntil != 0, status, context);
+        _renderedAcceptanceReady = CanPresentAcceptance(_loop.NowMs);
+        _overlay.Render(_session, _settings.Value, _renderedAcceptanceReady, status, context);
+    }
+    // Hosts call this only after their existing install/revoke boundary changes.
+    // It repaints the current candidate; it cannot issue a plan or update a lease.
+    public void RefreshAcceptancePresentation() => Render();
+    private bool CanPresentAcceptance(long nowMs)
+    {
+        if (_presentationPermit is not { } issued || _permitUntil == 0 || nowMs > _permitUntil
+            || _session.State is not (SessionState.ValidTranslation or SessionState.EditedTranslationPending)
+            || _session.Current is not { } source)
+            return false;
+        return issued.Plan.Revision == _session.Revision && issued.Plan.Replacement == _session.Candidate
+            && issued.Plan.Expected with
+            {
+                ObservedAtMs = source.ObservedAtMs,
+                Bounds = source.Bounds
+            } == source
+            && _hook.AcceptanceReady(new(source.Target, _hook.CommandGeneration, _generation), issued, nowMs);
     }
     private void RevokeInput(string reason)
     {
+        _presentationPermit = null;
         _hook.Revoke();
         if (!string.IsNullOrWhiteSpace(_tracePath))
             Trace("input-revoked", detail: new
