@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -154,6 +155,108 @@ internal sealed class BrowserWindows
                 log("Owned browser screenshot unavailable: " + error.GetType().Name);
             }
         }
+    }
+
+    public static async Task<ProcessStartInfo> PageStartInfoAsync(string directory, string title, string initial,
+        string logPath, Action<string> log, CancellationToken cancellation)
+    {
+        string page = Path.Combine(directory, "search.html");
+        await File.WriteAllTextAsync(page, $$"""
+        <!doctype html><meta charset="utf-8"><title>{{WebUtility.HtmlEncode(title)}}</title>
+        <style>body{margin:0;height:100vh;display:grid;place-items:center;font:20px sans-serif}input{width:65vw;padding:14px}</style>
+        <input id="query" type="search" aria-label="Search" value="{{WebUtility.HtmlEncode(initial)}}" autofocus>
+        <script>
+        let inputClicked = false;
+        document.addEventListener("pointerdown", event => {
+          inputClicked = event.isTrusted && event.target === document.getElementById("query");
+        });
+        function reportFocus() {
+          const input = document.getElementById("query");
+          const bounds = input.getBoundingClientRect();
+          const inputReady = bounds.width > 0 && bounds.height > 0 &&
+            document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2) === input;
+          const pageFocused = document.hasFocus();
+          const inputFocused = document.activeElement === input;
+          const title = {{JsonSerializer.Serialize(title)}} + " " + (pageFocused && inputFocused ? "focused" : "unfocused") +
+            " ready=" + inputReady + " page=" + pageFocused + " input=" + inputFocused + " click=" + inputClicked;
+          if (document.title !== title) document.title = title;
+          requestAnimationFrame(reportFocus);
+        }
+        // Sample live DOM state without changing focus or enabling UIA.
+        requestAnimationFrame(reportFocus);
+        </script>
+        """, cancellation);
+        return ChromeStartInfo(directory, new Uri(page).AbsoluteUri, logPath, log);
+    }
+
+    public async Task<nint> PreparePageAsync(Action<string> log, CancellationToken cancellation)
+    {
+        nint window = 0;
+        bool clicked = false;
+        var startup = Stopwatch.StartNew();
+        string? previousStartupState = null;
+        int startupChanges = 0;
+        void RecordStartupState(int visibleWindows, int pageWindows, bool final = false)
+        {
+            string state = $"totalOwnedWindows={TotalWindowCount}; visibleOwnedWindows={visibleWindows}; "
+                + $"ownedPages={pageWindows}; {DescribeProcesses()}";
+            if (!final && (state == previousStartupState || startupChanges >= 12))
+                return;
+            previousStartupState = state;
+            if (!final)
+                startupChanges++;
+            log($"Browser startup {(final ? "final" : "change")} elapsedMs={startup.ElapsedMilliseconds}: {state}");
+        }
+        // Cold preparation shares the caller's total cancellation budget.
+        do
+        {
+            var observed = Read();
+            var pages = observed.Where(candidate => candidate.Page).ToArray();
+            RecordStartupState(observed.Length, pages.Length);
+            Require(pages.Length <= 1, "page-window-ambiguous");
+            if (pages.Length == 1)
+            {
+                window = pages[0].Handle;
+                if (Native.GetForegroundWindow() != window)
+                    Native.SetForegroundWindow(window);
+                if (pages[0].InputReady && Native.GetForegroundWindow() == window && !clicked)
+                {
+                    var geometry = ClickPageInput(window);
+                    clicked = true;
+                    log($"Clicked owned page input: dpi={geometry.Dpi}; viewportWidth={geometry.Width}; viewportHeight={geometry.Height}");
+                }
+                if (clicked && Native.GetForegroundWindow() == window && pages[0].Focused)
+                    break;
+            }
+            await Task.Delay(40, cancellation);
+        } while (true);
+        var ready = Read();
+        RecordStartupState(ready.Length, ready.Count(candidate => candidate.Page), final: true);
+        log($"Browser startup atMs={WindowsInterruptClock.NowMs}: ownedProcesses={ProcessCount}; "
+            + $"visibleOwnedWindows={ready.Length}; ownedPages={ready.Count(candidate => candidate.Page)}; "
+            + $"foregroundOwned={window != 0 && Native.GetForegroundWindow() == window}; "
+            + $"domFocusConfirmed={ready.Any(candidate => candidate.Handle == window && candidate.Focused)}; "
+            + $"inputClicked={clicked}");
+        Require(clicked && window != 0 && Native.GetForegroundWindow() == window
+            && ready.Any(candidate => candidate.Handle == window && candidate.Focused), "page-dom-focus-unconfirmed");
+        return window;
+    }
+
+    // Called only after the cold-page model preview is already visible. This
+    // independent UIA check must never become a discovery/activation prerequisite.
+    public void ConfirmPageSource(nint window, string elementToken, string pageUri, string expected)
+    {
+        Require(Read().Any(candidate => candidate.Handle == window && candidate.Page && candidate.Focused)
+            && Native.GetForegroundWindow() == window, "page-focus-changed");
+        var focused = AutomationElement.FocusedElement;
+        Require(focused is not null && string.Join('.', focused.GetRuntimeId()) == elementToken
+            && focused.Current.HasKeyboardFocus, "page-field-changed");
+        var document = OwnedDocument(focused!, window, out bool ownedRoot);
+        Require(ownedRoot && document is not null
+            && document.TryGetCurrentPattern(ValuePattern.Pattern, out var documentPattern)
+            && ((ValuePattern)documentPattern).Current.Value == pageUri, "page-document-changed");
+        Require(focused!.TryGetCurrentPattern(ValuePattern.Pattern, out var inputPattern)
+            && ((ValuePattern)inputPattern).Current.Value == expected, "page-source-changed");
     }
 
     public (uint Dpi, int Width, int Height) ClickPageInput(nint window)
@@ -357,21 +460,26 @@ internal sealed class BrowserWindows
 
     public static ProcessStartInfo NewTabStartInfo(string directory, Action<string> log)
     {
+        log("New tab fixture uses UIA metadata to locate its input; browser accessibility is primed before capture.");
+        return ChromeStartInfo(directory, "chrome://newtab", Path.Combine(directory, "chrome.log"), log);
+    }
+
+    private static ProcessStartInfo ChromeStartInfo(string directory, string destination, string logPath, Action<string> log)
+    {
         string? chrome = new[] { Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 }
             .Select(folder => Path.Combine(Environment.GetFolderPath(folder), "Google", "Chrome", "Application", "chrome.exe"))
             .FirstOrDefault(File.Exists);
         Require(chrome is not null, "installed-chrome-required");
         log("Installed Chrome version: " + FileVersionInfo.GetVersionInfo(chrome!).ProductVersion);
-        log("New tab fixture uses UIA metadata to locate its input; browser accessibility is primed before capture.");
         var start = new ProcessStartInfo(chrome!) { UseShellExecute = false, RedirectStandardError = true };
-        start.Environment["CHROME_LOG_FILE"] = Path.Combine(directory, "chrome.log");
+        start.Environment["CHROME_LOG_FILE"] = logPath;
         start.ArgumentList.Add("--enable-logging");
         start.ArgumentList.Add("--user-data-dir=" + Path.Combine(directory, "profile"));
         start.ArgumentList.Add("--no-first-run");
         start.ArgumentList.Add("--no-default-browser-check");
         start.ArgumentList.Add("--disable-search-engine-choice-screen");
         start.ArgumentList.Add("--new-window");
-        start.ArgumentList.Add("chrome://newtab");
+        start.ArgumentList.Add(destination);
         return start;
     }
 

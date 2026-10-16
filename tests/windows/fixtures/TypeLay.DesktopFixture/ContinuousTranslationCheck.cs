@@ -14,7 +14,8 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 // Explicit, network-using verification mode. Ordinary desktop tests never install models.
 // Uses the real installer/model, production Broker and overlay, with committed text
 // replay and one automation-mode direct shortcut in independent owned stock Edits.
-// Also exercises the UIA-primed Chrome new-tab field in both preview modes.
+// Also exercises cold ordinary-page discovery and the UIA-primed Chrome
+// new-tab field in both preview modes.
 // This does not simulate physical IME input or qualify unobserved controls.
 internal static partial class ContinuousTranslationCheck
 {
@@ -42,6 +43,7 @@ internal static partial class ContinuousTranslationCheck
         var continuous = new SceneResult();
         var direct = new SceneResult();
         var practice = new SceneResult();
+        var coldPage = new SceneResult();
         var newTab = new SceneResult();
         var cleanupErrors = new List<CleanupError>();
         bool ready = false;
@@ -80,6 +82,13 @@ internal static partial class ContinuousTranslationCheck
             else
                 practice = await VerifyPracticeAsync(directory, model, desktop.Token);
             if (continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0 || practice.CleanupErrors.Count != 0)
+                coldPage = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
+            else if (desktop.IsCancellationRequested)
+                coldPage = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
+            else
+                coldPage = await VerifyColdPageAsync(directory, model, desktop.Token);
+            if (continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0 || practice.CleanupErrors.Count != 0
+                || coldPage.CleanupErrors.Count != 0)
                 newTab = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
             else if (desktop.IsCancellationRequested)
                 newTab = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
@@ -99,8 +108,8 @@ internal static partial class ContinuousTranslationCheck
             Cleanup("model", () => model?.Dispose(), cleanupErrors);
         }
         bool passed = setup.Outcome == "ready" && continuous.Outcome == "passed" && direct.Outcome == "verified"
-            && practice.Outcome == "verified" && newTab.Outcome == "passed" && cleanupErrors.Count == 0;
-        var firstFailure = new[] { setup, continuous, direct, practice, newTab }.FirstOrDefault(result => result.Failure != "none");
+            && practice.Outcome == "verified" && coldPage.Outcome == "passed" && newTab.Outcome == "passed" && cleanupErrors.Count == 0;
+        var firstFailure = new[] { setup, continuous, direct, practice, coldPage, newTab }.FirstOrDefault(result => result.Failure != "none");
         string failure = firstFailure?.Failure ?? (cleanupErrors.Count == 0 ? "none" : "cleanup-failed");
         string stage = passed ? "complete" : firstFailure?.Stage ?? "cleanup";
         await File.WriteAllTextAsync(Path.Combine(directory, "result.json"), JsonSerializer.Serialize(new
@@ -116,11 +125,12 @@ internal static partial class ContinuousTranslationCheck
             continuousPreview = continuous,
             directTranslation = direct,
             onDemandPractice = practice,
+            chromeColdPage = coldPage,
             chromeNewTab = newTab,
-            sourceBackend = "production-broker-stock-edit-and-chrome-new-tab",
+            sourceBackend = "production-broker-stock-edit-and-chrome",
             physicalIme = false
         }, new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
-        Console.WriteLine($"Continuous translation check: {(passed ? "passed" : "failed")}; continuous={continuous.Outcome}; direct={direct.Outcome}; practice={practice.Outcome}; newTab={newTab.Outcome}; stage={stage}; code={failure}.");
+        Console.WriteLine($"Continuous translation check: {(passed ? "passed" : "failed")}; continuous={continuous.Outcome}; direct={direct.Outcome}; practice={practice.Outcome}; coldPage={coldPage.Outcome}; newTab={newTab.Outcome}; stage={stage}; code={failure}.");
         return passed ? 0 : 1;
     }
 

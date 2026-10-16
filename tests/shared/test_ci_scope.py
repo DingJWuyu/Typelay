@@ -11,6 +11,7 @@ SELECTOR = Path(__file__).resolve().parents[2] / "eng/shared/ci_scope.py"
 FULL = {"windows": "true", "linux": "true", "qt": "false", "settings": "false", "practice": "false"}
 LINUX = {**FULL, "windows": "false"}
 WINDOWS = {**FULL, "linux": "false"}
+SHARED_ONLY = {**FULL, "windows": "false", "linux": "false"}
 QT = {**LINUX, "linux": "false", "qt": "true"}
 SETTINGS = {**LINUX, "settings": "true"}
 PRACTICE = {**LINUX, "practice": "true"}
@@ -151,6 +152,19 @@ class ScopeTests(unittest.TestCase):
                 self.commit({path: None, "src/linux/desktop/practice.py": "practice"})
                 self.assertEqual(expected, self.select(before))
 
+    def test_verified_neutral_only_push_keeps_only_shared_checks(self):
+        self.commit(
+            {
+                "docs/only.md": "docs",
+                "README.md": "notes",
+                "AGENTS.md": "guidance",
+                "GLOSSARY.md": "terms",
+            }
+        )
+        for branch in ("work/linux-usability", "work/windows-experience"):
+            with self.subTest(branch=branch):
+                self.assertEqual(SHARED_ONLY, self.select(self.base, branch))
+
     def test_shared_unknown_workflow_and_opposite_platform_require_both(self):
         for branch in ("work/linux-usability", "work/windows-experience"):
             for path in (
@@ -164,7 +178,7 @@ class ScopeTests(unittest.TestCase):
             ):
                 with self.subTest(branch=branch, path=path):
                     self.reset(self.base)
-                    self.commit({path: "changed"})
+                    self.commit({path: "changed", "docs/notes.md": "docs"})
                     self.assertEqual(FULL, self.select(self.base, branch))
         for path, branch in (
             ("tests/windows/changed.cs", "work/linux-usability"),
@@ -172,7 +186,7 @@ class ScopeTests(unittest.TestCase):
         ):
             with self.subTest(path=path):
                 self.reset(self.base)
-                self.commit({path: "changed"})
+                self.commit({path: "changed", "docs/notes.md": "docs"})
                 self.assertEqual(FULL, self.select(self.base, branch))
 
     def test_reverted_and_merged_changes_still_count(self):
@@ -180,7 +194,7 @@ class ScopeTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.reset(self.base)
                 self.commit({path: "temporary"})
-                self.commit({path: None, "tests/linux/current.py": "linux"})
+                self.commit({path: None, "docs/notes.md": "docs"})
                 self.assertEqual(FULL, self.select(self.base))
         self.reset(self.base)
         side = self.commit({"src/windows/side.cs": "windows"})
@@ -205,10 +219,10 @@ class ScopeTests(unittest.TestCase):
         self.commit({"tests/linux/空 格\t\nfile.py": None})
         self.assertEqual(LINUX, self.select(before))
 
-    def test_missing_or_invalid_push_evidence_requires_both(self):
+    def test_neutral_push_with_missing_or_invalid_evidence_requires_both(self):
         side = self.commit({"src/windows/side.cs": "side"})
         self.reset(self.base)
-        after = self.commit({"tests/linux/current.py": "linux"})
+        after = self.commit({"docs/only.md": "docs"})
         blob = self.git("hash-object", "-w", "--stdin", data=b"not a commit")
         for field in ("BEFORE", "AFTER"):
             for value in ("", "0" * 40, "not-a-sha", "f" * 40, blob):
@@ -228,9 +242,8 @@ class ScopeTests(unittest.TestCase):
                 self.assertEqual(FULL, self.select(self.base, **event))
         self.assertEqual(FULL, self.select(side, AFTER=after))
         self.assertEqual(FULL, self.select(after))  # Empty push.
-        before = self.git("rev-parse", "HEAD")
-        self.commit({"docs/only.md": "docs", "README.md": "notes"})
-        self.assertEqual(FULL, self.select(before))
+        self.commit({})
+        self.assertEqual(FULL, self.select(after))  # Empty commit.
         for branch in ("trunk", "windows-preview", "cachyos-preview", "other"):
             self.assertEqual(FULL, self.select(self.base, branch))
         for event in ("pull_request", "workflow_dispatch"):

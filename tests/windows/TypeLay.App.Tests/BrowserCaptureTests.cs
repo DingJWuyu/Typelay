@@ -19,11 +19,6 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
     [Fact]
     public async Task ChromePageSearchCapturesAndUpdatesWithoutSentencePunctuation()
     {
-        string? chrome = new[] { Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 }
-            .Select(folder => Path.Combine(Environment.GetFolderPath(folder), "Google", "Chrome", "Application", "chrome.exe"))
-            .FirstOrDefault(File.Exists);
-        Assert.True(chrome is not null, "This desktop regression requires the runner's installed Google Chrome.");
-        output.WriteLine("Installed Chrome version: " + FileVersionInfo.GetVersionInfo(chrome!).ProductVersion);
         string directory = Path.Combine(Path.GetTempPath(), "typelay-browser-" + Guid.NewGuid().ToString("N"));
         string title = "TypeLay browser input regression " + Guid.NewGuid().ToString("N");
         var repository = new DirectoryInfo(AppContext.BaseDirectory);
@@ -38,102 +33,14 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
         try
         {
             Directory.CreateDirectory(directory);
-            string page = Path.Combine(directory, "search.html");
             const string initial = "ordinary search without punctuation";
-            await File.WriteAllTextAsync(page, $$"""
-            <!doctype html><meta charset="utf-8"><title>{{title}}</title>
-            <style>body{margin:0;height:100vh;display:grid;place-items:center;font:20px sans-serif}input{width:65vw;padding:14px}</style>
-            <input id="query" type="search" aria-label="Search" value="ordinary search without punctuation" autofocus>
-            <script>
-            let inputClicked = false;
-            document.addEventListener("pointerdown", event => {
-              inputClicked = event.isTrusted && event.target === document.getElementById("query");
-            });
-            function reportFocus() {
-              const input = document.getElementById("query");
-              const bounds = input.getBoundingClientRect();
-              const inputReady = bounds.width > 0 && bounds.height > 0 &&
-                document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2) === input;
-              const pageFocused = document.hasFocus();
-              const inputFocused = document.activeElement === input;
-              const title = "{{title}} " + (pageFocused && inputFocused ? "focused" : "unfocused") +
-                " ready=" + inputReady + " page=" + pageFocused + " input=" + inputFocused + " click=" + inputClicked;
-              if (document.title !== title) document.title = title;
-              requestAnimationFrame(reportFocus);
-            }
-            // Sample live state without changing focus or enabling UIA, rather
-            // than retaining whichever focus event happened to run last.
-            requestAnimationFrame(reportFocus);
-            </script>
-            """, TestContext.Current.CancellationToken);
-            var start = new ProcessStartInfo(chrome!) { UseShellExecute = false, RedirectStandardError = true };
-            // Official Chromium file logging, scoped to this disposable profile.
-            // ChildProcess deliberately drains stderr without retaining its text.
-            start.Environment["CHROME_LOG_FILE"] = Path.Combine(diagnostics, "chrome.log");
-            start.ArgumentList.Add("--enable-logging");
-            start.ArgumentList.Add("--user-data-dir=" + Path.Combine(directory, "profile"));
-            start.ArgumentList.Add("--no-first-run");
-            start.ArgumentList.Add("--no-default-browser-check");
-            start.ArgumentList.Add("--disable-search-engine-choice-screen");
-            start.ArgumentList.Add("--new-window");
-            start.ArgumentList.Add(new Uri(page).AbsoluteUri);
+            var start = await BrowserWindows.PageStartInfoAsync(directory, title, initial,
+                Path.Combine(diagnostics, "chrome.log"), output.WriteLine, TestContext.Current.CancellationToken);
             ownedBrowser = new ChildProcess(start);
-            var browser = ownedBrowser.Process;
-            windows = new(browser, title);
+            windows = new(ownedBrowser.Process, title);
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(20));
-            nint window = 0;
-            bool clicked = false;
-            var startup = Stopwatch.StartNew();
-            string? previousStartupState = null;
-            int startupChanges = 0;
-            void RecordStartupState(int visibleWindows, int pageWindows, bool final = false)
-            {
-                string state = $"totalOwnedWindows={windows.TotalWindowCount}; visibleOwnedWindows={visibleWindows}; "
-                    + $"ownedPages={pageWindows}; {windows.DescribeProcesses()}";
-                if (!final && (state == previousStartupState || startupChanges >= 12))
-                    return;
-                previousStartupState = state;
-                if (!final)
-                    startupChanges++;
-                output.WriteLine($"Browser startup {(final ? "final" : "change")} elapsedMs={startup.ElapsedMilliseconds}: {state}");
-            }
-            // Cold browser/profile preparation shares the total cancellation budget.
-            // Each subsequent source observation keeps its own six-second limit.
-            do
-            {
-                var observed = windows.Read();
-                var pages = observed.Where(candidate => candidate.Page).ToArray();
-                RecordStartupState(observed.Length, pages.Length);
-                Assert.True(pages.Length <= 1, "The isolated page must belong to exactly one owned browser window.");
-                if (pages.Length == 1)
-                {
-                    window = pages[0].Handle;
-                    if (Native.GetForegroundWindow() != window)
-                        Native.SetForegroundWindow(window);
-                    if (pages[0].InputReady && Native.GetForegroundWindow() == window && !clicked)
-                    {
-                        var geometry = windows.ClickPageInput(window);
-                        clicked = true;
-                        output.WriteLine($"Clicked owned page input: dpi={geometry.Dpi}; viewportWidth={geometry.Width}; viewportHeight={geometry.Height}");
-                    }
-                    if (clicked && Native.GetForegroundWindow() == window && pages[0].Focused)
-                        break;
-                }
-                await Task.Delay(40, deadline.Token);
-            } while (true);
-            var ready = windows.Read();
-            RecordStartupState(ready.Length, ready.Count(candidate => candidate.Page), final: true);
-            output.WriteLine($"Browser startup atMs={WindowsInterruptClock.NowMs}: ownedProcesses={windows.ProcessCount}; "
-                + $"visibleOwnedWindows={ready.Length}; ownedPages={ready.Count(candidate => candidate.Page)}; "
-                + $"foregroundOwned={window != 0 && Native.GetForegroundWindow() == window}; "
-                + $"domFocusConfirmed={ready.Any(candidate => candidate.Handle == window && candidate.Focused)}; "
-                + $"inputClicked={clicked}; "
-                + $"launcherExited={browser.HasExited}");
-            bool fixtureReady = clicked && window != 0 && Native.GetForegroundWindow() == window
-                && ready.Any(candidate => candidate.Handle == window && candidate.Focused);
-            Assert.True(fixtureReady,
-                "Browser fixture startup failed: the owned local page and DOM input focus were not established; no input capture was attempted.");
+            nint window = await windows.PreparePageAsync(output.WriteLine, deadline.Token);
             using var broker = new BrokerClient();
             using var input = new WindowsInputService(broker, 0);
             await input.StartAsync().WaitAsync(deadline.Token);

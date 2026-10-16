@@ -133,8 +133,11 @@ def select():
                 and succeeds("merge-base", "--is-ancestor", before, after)
             )
             if valid_push:
-                paths = {path for path in touched_paths(before, after) if not neutral(path)}
-                if (
+                touched = touched_paths(before, after)
+                paths = {path for path in touched if not neutral(path)}
+                if touched and not paths:
+                    windows, linux = False, False
+                elif (
                     paths
                     and branch == "work/linux-usability"
                     and all(path.startswith(LINUX_PATHS) for path in paths)
