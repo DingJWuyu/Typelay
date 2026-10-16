@@ -104,6 +104,34 @@ internal sealed partial class KeyboardHook
         Interlocked.Exchange(ref _ownedInstalled, null);
         _ownedGate.Revoke();
     }
+    internal bool OwnedPlanAttempted(long sequence) => sequence > 0
+        && Interlocked.Read(ref _ownedAttemptSequence) >= sequence;
+
+    internal bool CanRenewOwnedPlan(InputLease lease, AcceptancePermit permit, long attemptFloorSequence, long contentEpoch)
+    {
+        long now = WindowsInterruptClock.NowMs;
+        var latest = Volatile.Read(ref _lease)?.Observation;
+        var channel = Volatile.Read(ref _ownedChannel);
+        if (attemptFloorSequence <= 0 || OwnedPlanAttempted(attemptFloorSequence)
+            || !_sessionEnabled || !ShortcutsReady || latest is null || channel is null || channel.Writer.Poisoned
+            || ContentEpoch != contentEpoch || lease.CommandGeneration != CommandGeneration
+            || lease.UserEpoch != UserEpoch || lease.ForegroundEpoch != ForegroundEpoch
+            || lease.PracticeConnectionId != channel.Connection || !OwnedFocus(channel.Descriptor)
+            || permit.Plan.Expected != lease.Source || permit.ObservedAtMs != lease.Source.ObservedAtMs
+            || now < permit.ObservedAtMs || now > permit.ExpiresAtMs
+            || latest.Source.ObservedAtMs < lease.Source.ObservedAtMs || latest.Source.ObservedAtMs > now)
+            return false;
+        // A newer capture of the same operation may overtake the install ACK.
+        // It proves current identity, never extends the original permit's TTL.
+        return lease with
+        {
+            Source = lease.Source with
+            {
+                ObservedAtMs = latest.Source.ObservedAtMs,
+                Bounds = latest.Source.Bounds
+            }
+        } == latest;
+    }
     public bool AcceptanceReady(SessionViewToken token, AcceptancePermit issued, long nowMs)
     {
         if (_ownedPracticeTarget?.Invoke(token.Target) != true)

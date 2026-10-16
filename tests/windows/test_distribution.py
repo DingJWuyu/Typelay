@@ -207,6 +207,7 @@ class DistributionTests(unittest.TestCase):
                     "Acceptance": None,
                     "AutomaticProgress": None,
                     "InputCompletion": None,
+                    "Editing": None,
                 }
                 process.stdin.write(frame(command))
                 process.stdin.flush()
@@ -263,6 +264,7 @@ class DistributionTests(unittest.TestCase):
                         "Acceptance": None,
                         "AutomaticProgress": None,
                         "InputCompletion": None,
+                        "Editing": None,
                     }
                 ],
             )

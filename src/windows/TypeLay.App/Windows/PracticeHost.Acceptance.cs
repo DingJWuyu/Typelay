@@ -28,12 +28,18 @@ internal sealed partial class PracticeHost
     }
     private RetirementEvidence? _retirementEvidence;
     private readonly List<OwnedMapping> _abandoned = [];
-    private sealed class PendingPlan(OwnedAcceptancePlan plan, InputLease lease, OwnedMapping input, OwnedMapping result)
+    private sealed class PendingPlan(OwnedAcceptancePlan plan, InputLease lease, OwnedMapping input, OwnedMapping result,
+        long contentEpoch, long attemptFloorSequence)
     {
         public OwnedAcceptancePlan Plan { get; } = plan;
         public InputLease Lease { get; } = lease;
         public OwnedMapping Input { get; } = input;
         public OwnedMapping Result { get; } = result;
+        public long ContentEpoch { get; } = contentEpoch;
+        public long AttemptFloorSequence { get; } = attemptFloorSequence;
+        // Renewal chains retain their first plan's attempt boundary, even after
+        // release advances the direct predecessor used for ACK identity.
+        public long RenewalAttemptFloor => AttemptFloorSequence > 0 ? AttemptFloorSequence : Plan.PlanSequence;
         public string State { get; set; } = "install";
         public bool Received
         {
@@ -41,7 +47,7 @@ internal sealed partial class PracticeHost
         }
     }
     private PendingPlan? _acceptance;
-    private (InputLease Lease, AcceptancePermit Permit)? _nextAcceptance;
+    private (InputLease Lease, AcceptancePermit Permit, long ReplacesPlanSequence, long ContentEpoch)? _nextAcceptance;
     public bool IsAutomatic => _automatic && _runId != Guid.Empty;
     internal void Initialize(SettingsStore settings, KeyboardHook monitor, bool allowInjectedInput)
     {
@@ -210,22 +216,68 @@ internal sealed partial class PracticeHost
             RevokeAcceptance();
             return;
         }
-        // Keep the exact already-issued short-lived plan while its basis agrees.
-        // Replacing it on every capture would never leave time for its install ACK.
-        if (_acceptance is { State: "install" or "installed" } current && !current.Received
-            && current.Plan.Permit.ExpiresAtMs - WindowsInterruptClock.NowMs > 25
-            && current.Plan.Permit.Plan.SessionId == permit.Plan.SessionId
-            && current.Plan.Permit.Plan.Revision == permit.Plan.Revision
-            && current.Plan.Permit.Plan.Expected.InputEpoch == permit.Plan.Expected.InputEpoch
-            && current.Plan.Permit.Plan.Expected.FocusEpoch == permit.Plan.Expected.FocusEpoch
-            && current.Plan.Permit.Plan.Expected.Text == permit.Plan.Expected.Text
-            && current.Plan.Permit.Plan.Expected.Selection == permit.Plan.Expected.Selection
-            && current.Plan.Permit.Plan.Replacement == permit.Plan.Replacement)
+        if (_acceptance is { } attempted && (attempted.Received || _monitor.OwnedPlanAttempted(attempted.RenewalAttemptFloor)))
+        {
+            RevokeAcceptance();
             return;
-        _nextAcceptance = (lease, permit);
+        }
+        if (_acceptance is { } current && SameAcceptanceOperation(current.Plan.Permit.Plan, permit.Plan))
+        {
+            // Keep the newest real observation, but never rebase the input
+            // watermark of this unchanged operation while an ACK is in flight.
+            if (!RenewalCurrent(lease, permit, current.RenewalAttemptFloor, current.ContentEpoch))
+            {
+                RevokeAcceptance();
+                return;
+            }
+            if (permit.ObservedAtMs <= current.Plan.Permit.ObservedAtMs
+                || _nextAcceptance is { } queued && queued.ReplacesPlanSequence == current.Plan.PlanSequence
+                && permit.ObservedAtMs <= queued.Permit.ObservedAtMs)
+                return;
+            _nextAcceptance = (lease, permit, current.Plan.PlanSequence, current.ContentEpoch);
+            PollAcceptance();
+            return;
+        }
+        _nextAcceptance = (lease, permit, 0, _monitor.ContentEpoch);
         if (_acceptance is null)
             InstallNextAcceptance();
         else if (_acceptance.State is "install" or "installed")
+            RevokeCurrentAcceptance();
+    }
+    private static bool SameAcceptanceOperation(WritePlan original, WritePlan proposed) => original with
+    {
+        Id = proposed.Id,
+        Expected = original.Expected with
+        {
+            ObservedAtMs = proposed.Expected.ObservedAtMs,
+            Bounds = proposed.Expected.Bounds
+        }
+    } == proposed;
+
+    private bool RenewalCurrent(InputLease lease, AcceptancePermit permit, long attemptFloorSequence, long contentEpoch) =>
+        !_disposed && !_disconnecting && _nativeActive && _pending is null && !_editorSealed
+        && _communication is { IsCancellationRequested: false }
+        && lease.PracticeRunId == _runId && lease.PracticeConnectionId == _connection
+        && _descriptor is { } descriptor && descriptor.NativeFocusRevision == lease.Source.FocusEpoch
+        && _monitor?.CanRenewOwnedPlan(lease, permit, attemptFloorSequence, contentEpoch) == true
+        && SourceReady(lease.Source.Target);
+
+    // Called after the controller's existing Tick. It only advances a real
+    // captured candidate through the original revoke/release/install protocol.
+    internal void PollAcceptance()
+    {
+        _dispatcher.VerifyAccess();
+        if (_nextAcceptance is not { ReplacesPlanSequence: > 0 } next)
+            return;
+        if (_acceptance is not { } current || current.Plan.PlanSequence != next.ReplacesPlanSequence
+            || !RenewalCurrent(next.Lease, next.Permit, current.RenewalAttemptFloor, next.ContentEpoch)
+            || current.Received || !SameAcceptanceOperation(current.Plan.Permit.Plan, next.Permit.Plan))
+        {
+            RevokeAcceptance();
+            return;
+        }
+        if (current.State is "install" or "installed"
+            && current.Plan.Permit.ExpiresAtMs - WindowsInterruptClock.NowMs <= 25)
             RevokeCurrentAcceptance();
     }
     internal void RevokeAcceptance()
@@ -246,13 +298,16 @@ internal sealed partial class PracticeHost
         SendPlanControl("revoke-plan", current);
         _session?.RefreshAcceptancePresentation();
     }
-    private void InstallNextAcceptance()
+    private void InstallNextAcceptance(long releasedPlanSequence = 0, long attemptFloorSequence = 0)
     {
         var desired = _nextAcceptance;
         _nextAcceptance = null;
         if (desired is not { } next || _acceptance is not null || _descriptor is not { } descriptor
             || _child is null || !SourceReady(next.Lease.Source.Target) || _witnessWriter is null
             || WindowsInterruptClock.NowMs > next.Permit.ExpiresAtMs)
+            return;
+        if (next.ReplacesPlanSequence > 0 && (next.ReplacesPlanSequence != releasedPlanSequence
+            || !RenewalCurrent(next.Lease, next.Permit, attemptFloorSequence, next.ContentEpoch)))
             return;
         var plan = new OwnedAcceptancePlan(_connection, _runId, checked(++_planSequence), descriptor,
             next.Permit, next.Lease.UserEpoch, next.Lease.ForegroundEpoch, next.Lease.CommandGeneration,
@@ -262,7 +317,21 @@ internal sealed partial class PracticeHost
         {
             input = OwnedPracticeAcceptanceProtocol.CreatePlan(_child.Process.Handle, plan);
             result = OwnedPracticeAcceptanceProtocol.CreateResult(_child.Process.Handle);
-            var current = new PendingPlan(plan, next.Lease, input, result);
+            if (next.ReplacesPlanSequence > 0
+                && !RenewalCurrent(next.Lease, next.Permit, attemptFloorSequence, next.ContentEpoch))
+            {
+                input.CloseUndeliveredRemote(_child.Process.Handle);
+                input.Clear();
+                input.Dispose();
+                input = null;
+                result.CloseUndeliveredRemote(_child.Process.Handle);
+                result.Clear();
+                result.Dispose();
+                result = null;
+                return;
+            }
+            var current = new PendingPlan(plan, next.Lease, input, result, next.ContentEpoch,
+                next.ReplacesPlanSequence > 0 ? attemptFloorSequence : 0);
             _acceptance = current;
             SendPlanControl("install", current);
         }
@@ -342,7 +411,9 @@ internal sealed partial class PracticeHost
             if (current.State == "install")
             {
                 current.State = "installed";
-                if (SourceReady(current.Lease.Source.Target))
+                if (SourceReady(current.Lease.Source.Target)
+                    && (current.AttemptFloorSequence == 0 || RenewalCurrent(current.Lease, current.Plan.Permit,
+                        current.AttemptFloorSequence, current.ContentEpoch)))
                 {
                     _monitor?.InstallOwnedPlan(current.Plan.PlanSequence, current.Lease, current.Plan.Permit, current.Plan.Descriptor);
                     _session?.RefreshAcceptancePresentation();
@@ -357,6 +428,7 @@ internal sealed partial class PracticeHost
         {
             if (current.Received)
                 throw new InvalidDataException("practice-plan-duplicate-receipt");
+            _nextAcceptance = null;
             var result = OwnedPracticeAcceptanceProtocol.ReadResult(current.Result);
             if (result.Connection != _connection || result.Run != _runId || result.PlanSequence != current.Plan.PlanSequence
                 || result.PlanId != current.Plan.Permit.Plan.Id || result.WitnessSequence != control.WitnessSequence
@@ -380,6 +452,15 @@ internal sealed partial class PracticeHost
         }
         else if (message.Kind == "released-plan" && current.State == "release-plan")
         {
+            long releasedPlanSequence = current.Plan.PlanSequence;
+            long attemptFloorSequence = current.RenewalAttemptFloor;
+            if (_nextAcceptance is { ReplacesPlanSequence: > 0 } next
+                && (next.ReplacesPlanSequence != releasedPlanSequence || current.Received
+                    || !SameAcceptanceOperation(current.Plan.Permit.Plan, next.Permit.Plan)
+                    || !RenewalCurrent(next.Lease, next.Permit, attemptFloorSequence, next.ContentEpoch)))
+                _nextAcceptance = null;
+            // A matched release always frees the old mapping, even if the next
+            // observation expired or an input attempt invalidated its renewal.
             current.Input.Clear();
             current.Result.Clear();
             current.Input.Dispose();
@@ -391,7 +472,7 @@ internal sealed partial class PracticeHost
                 BeginRun(_child);
             }
             else
-                InstallNextAcceptance();
+                InstallNextAcceptance(releasedPlanSequence, attemptFloorSequence);
         }
         else
             throw new InvalidDataException("practice-plan-ack-order");

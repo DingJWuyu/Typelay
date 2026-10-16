@@ -309,6 +309,42 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
     });
 
+    [Theory]
+    [InlineData("expired")]
+    [InlineData("content")]
+    [InlineData("attempt")]
+    public Task RenewalCannotReuseAnExpiredOrInterruptedPlan(string interruption) => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(interruption != "attempt");
+        await scene.Start(true);
+        await scene.Install();
+        scene.PublishForRenewal();
+        long originalContentEpoch = scene.ContentEpoch;
+        Assert.True(scene.CanRenew(originalContentEpoch));
+        if (interruption == "expired")
+            await scene.Wait(() => WindowsInterruptClock.NowMs > scene.Plan!.Permit.ExpiresAtMs);
+        else
+        {
+            if (interruption == "content")
+            {
+                scene.ClickSource();
+                await scene.Wait(() => scene.ContentEpoch > originalContentEpoch);
+                Assert.Equal((scene.Root, scene.Field), N.Focused());
+            }
+            else
+            {
+                // A default-denied injected release records the old plan's
+                // attempt without a down edge changing ContentEpoch.
+                scene.Key(9, false);
+                await scene.Wait(() => scene.PlanAttempted);
+                Assert.Equal(originalContentEpoch, scene.ContentEpoch);
+            }
+            Assert.True(WindowsInterruptClock.NowMs <= scene.Plan!.Permit.ExpiresAtMs,
+                "The interruption must be observed before the original authorization expires.");
+        }
+        Assert.False(scene.CanRenew(originalContentEpoch));
+    });
+
     [Fact]
     public Task RetirementAcknowledgementPreventsTheOldPlanOrALateInstallFromExecuting() => desktop.RunAsync(async () =>
     {
@@ -455,6 +491,11 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         }
         public List<PracticeMessage> Messages { get; } = [];
         public int Receipts => Messages.Count(message => message.Kind == "receipt");
+        private InputLease? _planLease;
+        public long ContentEpoch => _hook.ContentEpoch;
+        public bool PlanAttempted => _hook.OwnedPlanAttempted(Plan!.PlanSequence);
+        public void PublishForRenewal() => _hook.Publish(_planLease!, Plan!.Permit);
+        public bool CanRenew(long contentEpoch) => _hook.CanRenewOwnedPlan(_planLease!, Plan!.Permit, Plan.PlanSequence, contentEpoch);
         public QueueScene(bool automation)
         {
             _hook = new(allowInjectedInput: automation);
@@ -576,6 +617,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             var write = new WritePlan(Guid.NewGuid(), Guid.NewGuid(), 1, snapshot, null, Replacement, Replacement, Replacement.Length);
             var permit = new AcceptancePermit(write, snapshot.InputEpoch, snapshot.FocusEpoch, now, now + Limits.PermitMaxAgeMs);
             var lease = new InputLease(snapshot, _hook.UserEpoch, _hook.ForegroundEpoch, true, _hook.CommandGeneration, 1, _run, _connection);
+            _planLease = lease;
             Plan = new(_connection, _run, ++_planSequence, Descriptor, permit, lease.UserEpoch, lease.ForegroundEpoch,
                 lease.CommandGeneration, lease.SessionRevision, _writer!.Sequence);
             _planMapping = OwnedPracticeAcceptanceProtocol.CreatePlan(_child!.Process.Handle, Plan);
@@ -635,6 +677,24 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 _pressed.Add(key);
             else
                 _pressed.Remove(key);
+        }
+        public void ClickSource()
+        {
+            Assert.True(N.GetWindowRect(Field, out var bounds));
+            Assert.True(Native.GetCursorPos(out var previous));
+            Assert.False(Native.GetAsyncKeyState(1) < 0);
+            try
+            {
+                Assert.True(SetCursorPos(bounds.Left + 12, bounds.Top + 12));
+                uint inserted = SendInput(2, [new KeyInput { MouseFlags = 2 }, new KeyInput { MouseFlags = 4 }], Marshal.SizeOf<KeyInput>());
+                if (inserted == 1)
+                    Assert.Equal(1u, SendInput(1, [new KeyInput { MouseFlags = 4 }], Marshal.SizeOf<KeyInput>()));
+                Assert.Equal(2u, inserted);
+            }
+            finally
+            {
+                Assert.True(SetCursorPos(previous.X, previous.Y));
+            }
         }
         private async Task Pump()
         {
@@ -713,7 +773,9 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         [FieldOffset(0)] public uint Type;
         [FieldOffset(8)] public ushort Key;
         [FieldOffset(12)] public uint Flags;
+        [FieldOffset(20)] public uint MouseFlags;
     }
+    [DllImport("user32.dll")] private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] private static extern nint GetDlgItem(nint window, int id);
     [DllImport("user32.dll")] private static extern nint GetWindow(nint window, uint command);
     [DllImport("user32.dll")] private static extern nint GetWindowLongPtrW(nint window, int index);

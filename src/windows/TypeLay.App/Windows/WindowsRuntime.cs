@@ -27,10 +27,13 @@ internal static class WindowsRuntime
         var loop = new DispatcherSessionLoop();
         if (support is not null)
             loop.Tick += support.Poll;
-        return new(settings, model, overlay, monitor,
+        var controller = new SessionController(settings, model, overlay, monitor,
             new WindowsInputService(broker, overlay.Handle, support, monitor, practice), loop,
             practice is null ? null : practice.RetireAutomaticAsync,
             practice is null ? null : practice.ConfirmRetiredAutomaticAsync);
+        if (practice is not null)
+            loop.Tick += practice.PollAcceptance;
+        return controller;
     }
 
     private static void SetStartup(bool enabled)
@@ -49,6 +52,10 @@ internal static class WindowsRuntime
         public event Action? Tick;
         public DispatcherSessionLoop() => _timer.Tick += (_, _) => Tick?.Invoke();
         public void Start() => _timer.Start();
-        public void Stop() => _timer.Stop();
+        public void Stop()
+        {
+            _timer.Stop();
+            Tick = null;
+        }
     }
 }

@@ -50,7 +50,9 @@ internal static partial class ContinuousTranslationCheck
             input = new(new WindowsInputService(new BrokerClient(), overlay.Handle, monitor: hook, practice: host));
             // The same production objects and composition as WindowsRuntime;
             // the two decorators only retain returned facts at public ports.
-            controller = new(settings, model, overlay, monitor, input, new AcceptanceLoop(), host.RetireAutomaticAsync);
+            var loop = new AcceptanceLoop();
+            controller = new(settings, model, overlay, monitor, input, loop, host.RetireAutomaticAsync);
+            loop.Tick += host.PollAcceptance;
             host.Bind(controller);
             controller.OperationFeedback += value => feedbackCode ??= value.Code;
             await controller.StartAsync().WaitAsync(cancellation);
@@ -336,7 +338,11 @@ internal static partial class ContinuousTranslationCheck
         public event Action? Tick;
         public AcceptanceLoop() => _timer.Tick += (_, _) => Tick?.Invoke();
         public void Start() => _timer.Start();
-        public void Stop() => _timer.Stop();
+        public void Stop()
+        {
+            _timer.Stop();
+            Tick = null;
+        }
     }
 
     private sealed class AcceptanceMonitor(KeyboardHook inner) : IInputMonitor
