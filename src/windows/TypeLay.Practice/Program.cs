@@ -39,6 +39,9 @@ internal static class Program
     private static byte[]? _transaction;
     private static long _lastPlanSequence, _installWitnessFloor, _lastWitnessAcknowledged, _sourceReadyRevision;
     private static bool _automatic, _allowInjectedInput, _planActive, _planReported, _witnessFailed;
+    private static bool _observeInputCompletion;
+    private static long _inputCompletionSequence;
+    private static Queue<PracticeMessage>? _inputCompletions;
     private static bool _tabHeld, _tabConsumed, _tabExtended;
     private static uint _tabScanCode;
     private static readonly long ProcessStartUtcTicks = Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks;
@@ -133,6 +136,13 @@ internal static class Program
                 }
                 if (!available)
                 {
+                    // TranslateMessage may enqueue WM_CHAR. The queue fixture
+                    // observes completion only after those messages also drain.
+                    // A fairness-only posted-message turn has not checked the
+                    // input queue; let its existing wake/reset run first.
+                    if (inputBurst < 8)
+                        while (_inputCompletions?.TryDequeue(out var completion) == true)
+                            WriteReply(completion);
                     inputBurst = 0;
                     if (Native.MsgWaitForMultipleObjectsEx(0, 0, uint.MaxValue, 0x04ff, 4) == uint.MaxValue)
                         return Fail();
@@ -144,13 +154,26 @@ internal static class Program
                     return _exitCode;
                 if (_window == 0)
                     continue;
-                if (ProcessInput(ref message, inputQueue))
-                    continue;
-                if (!Native.IsDialogMessageW(_window, ref message))
+                bool consumed = ProcessInput(ref message, inputQueue);
+                if (!consumed && !Native.IsDialogMessageW(_window, ref message))
                 {
                     Native.TranslateMessage(ref message);
                     Native.DispatchMessageW(ref message);
                 }
+                // Only the queue fixture opts in. Ordinary production and real
+                // model sessions emit nothing; no input authority is changed.
+                // The original MSG has completed its decision and, if passed,
+                // its normal dispatch before this content-free notification.
+                if (_observeInputCompletion && inputQueue && message.WParam == 9
+                    && message.Id is 0x0100 or 0x0101)
+                {
+                    if (_inputCompletions!.Count >= 8)
+                        throw new InvalidDataException("practice-input-completion-limit");
+                    _inputCompletions.Enqueue(new("test-tab-dispatched", _connection, _run, _sequence,
+                        InputCompletion: new(checked(++_inputCompletionSequence), message.Id == 0x0100, consumed)));
+                }
+                if (consumed)
+                    continue;
                 ApplyControls();
             }
         }
@@ -356,6 +379,9 @@ internal static class Program
                     _installWitnessFloor = _lastWitnessAcknowledged = _sourceReadyRevision = 0;
                     _witnessFailed = false;
                     _allowInjectedInput = false;
+                    _observeInputCompletion = message.Acceptance?.ObserveInputCompletion == true;
+                    _inputCompletionSequence = 0;
+                    _inputCompletions = _observeInputCompletion ? new() : null;
                     if (_automatic)
                     {
                         var acceptance = message.Acceptance ?? throw new InvalidDataException("practice-witness-missing");
@@ -528,12 +554,15 @@ internal static class Program
         _witnessMapping = null;
     }
 
-    private static void Reply(string kind, OwnedAcceptanceControl? acceptance = null)
+    private static void Reply(string kind, OwnedAcceptanceControl? acceptance = null) =>
+        WriteReply(new(kind, _connection, _run, _sequence, Acceptance: acceptance));
+
+    private static void WriteReply(PracticeMessage message)
     {
         // Bounded stdio never pumps GUI messages. ACK cannot overtake execution.
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         PracticeProgressPipe.WriteAsync(Console.OpenStandardOutput(),
-            new(kind, _connection, _run, _sequence, Acceptance: acceptance), deadline.Token).GetAwaiter().GetResult();
+            message, deadline.Token).GetAwaiter().GetResult();
     }
 
     private static void InvalidateFocus()

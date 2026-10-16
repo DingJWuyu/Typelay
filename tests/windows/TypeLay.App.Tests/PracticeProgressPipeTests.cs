@@ -19,10 +19,14 @@ public sealed class PracticeProgressPipeTests
         var run = Guid.NewGuid();
         var plan = Guid.NewGuid();
         var descriptor = new OwnedCaptureDescriptor(120, 630000000000000000, 501, 502, 121, 41, 7, 1);
+        Assert.False(new OwnedAcceptanceControl().ObserveInputCompletion);
         PracticeMessage[] messages =
         [
+            new("begin", connection, run, 1, Acceptance: new(ObserveInputCompletion: true)),
             new("begin-auto", connection, run, 1, Acceptance: new(WitnessHandle: 601,
                 WitnessBytes: OwnedPracticeAcceptanceProtocol.WitnessBytes)),
+            new("test-tab-dispatched", connection, run, 1, InputCompletion: new(1, true, false)),
+            new("test-tab-dispatched", connection, run, 1, InputCompletion: new(2, false, true)),
             new("source-ready", connection, run, 1, Acceptance: new(Descriptor: descriptor)),
             new("install", connection, run, 2, Acceptance: new(plan, 1, 602,
                 OwnedPracticeAcceptanceProtocol.BodyBytes, 603, OwnedPracticeAcceptanceProtocol.BodyBytes)),
@@ -113,6 +117,7 @@ public sealed class PracticeProgressPipeTests
     [InlineData("restart", 0)]
     [InlineData("unknown", 1)]
     [InlineData("retired", -1)]
+    [InlineData("test-tab-dispatched", 1)]
     public async Task MissingSequenceOrUnknownControlCannotBecomeAnAcknowledgement(string kind, long sequence)
     {
         using var stream = new MemoryStream();

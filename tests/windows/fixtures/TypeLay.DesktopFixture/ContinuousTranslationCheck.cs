@@ -455,7 +455,10 @@ internal static partial class ContinuousTranslationCheck
             var settings = CreateSettings(path, WorkMode.Automatic);
             settings.Update(settings.Value with
             {
-                OnboardingComplete = false
+                OnboardingComplete = false,
+                // This automatic acceptance key uses the existing on-demand
+                // fallback, keeping cancellation and failed-save coverage.
+                AcceptShortcut = "F8"
             });
             var view = OnDemandPracticePresentation.Create(settings.Value);
             var expected = await model.TranslateTextAsync(view.SampleText, settings.Value.Direction).WaitAsync(cancellation);
@@ -502,10 +505,20 @@ internal static partial class ContinuousTranslationCheck
                     && Descendants(window).OfType<TextBlock>().Any(text => text.Text == "设置未保存");
                 Require(saveFailureVisible, "practice-settings-failure-not-visible");
             }
-            result.Stage = "practice-confirm-mode-change";
-            Choose(true);
-            modePersisted = WindowsRuntime.CreateSettings(path).Value.Mode == WorkMode.OnDemand;
-            Require(modePersisted && child is not null, "practice-start-not-persisted");
+            result.Stage = "practice-current-mode-entry";
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.OnDemand,
+                AcceptShortcut = "Tab"
+            });
+            window.ShowPage();
+            window.UpdateLayout();
+            var start = Descendants(window).OfType<Button>().Single(button => Equals(button.Content, "开始练习"));
+            start.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            var persisted = WindowsRuntime.CreateSettings(path).Value;
+            modePersisted = persisted.Mode == WorkMode.OnDemand && persisted.AcceptShortcut == "Tab";
+            Require(modePersisted && settings.Value.Mode == WorkMode.OnDemand && child is not null,
+                "practice-current-mode-entry-changed-mode");
             nint root = 0;
             await UntilAsync(() =>
             {

@@ -29,11 +29,12 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         await scene.Install();
         scene.Key(9, true);
         scene.Key(9, false);
-        await scene.Wait(() => scene.Receipts == 1 && N.Focused().Control != scene.Field);
+        await scene.Wait(() => scene.Receipts == 1);
+        await scene.WaitInput((true, false), (false, false));
         var result = scene.Result();
         Assert.Equal(WriteStatus.RejectedBeforeMutation, result.Receipt.Status);
         Assert.Equal(0, result.AcceptedAtMs);
-        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        scene.AssertOrdinary();
         await scene.WaitConsumed(2);
         Assert.All(scene.Audit(), edge => Assert.True(edge.Injected));
         Assert.Equal(hookAutomation, scene.Audit()[0].Eligible);
@@ -44,18 +45,18 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
     {
         await using var scene = new QueueScene(true);
         await scene.Start(true);
-        scene.Key(9, true); // No plan exists: the original Tab must move focus.
-        await scene.Wait(() => N.Focused().Control != scene.Field);
+        scene.Key(9, true); // No plan exists: preserve this Edit's ordinary Tab behavior.
+        await scene.WaitInput((true, false));
+        scene.AssertOrdinaryDown();
         await scene.WaitConsumed(1);
-        long firstRevision = scene.Descriptor.NativeFocusRevision;
-        await scene.Focus(); // Same HWND A -> B -> A has a new monotonic revision.
-        Assert.True(scene.Descriptor.NativeFocusRevision > firstRevision);
+        await scene.Focus(); // Match the baseline's source focus before the held repeat.
         await scene.Install();
         scene.Key(9, true);
         scene.Key(9, false);
         await scene.WaitConsumed(3);
+        await scene.WaitInput((true, false), (true, false), (false, false));
         Assert.Equal(0, scene.Receipts);
-        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        scene.AssertOrdinary(repeated: true);
         var edges = scene.Audit();
         Assert.Equal(0, edges[0].PlanSequence);
         Assert.False(edges[0].Eligible);
@@ -75,9 +76,11 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         await scene.Install();
         scene.Key(9, true);
         await scene.Wait(() => scene.Receipts == 1);
+        await scene.WaitInput((true, true));
         scene.Key(9, true);
         scene.Key(9, false);
         await scene.WaitConsumed(5);
+        await scene.WaitInput((true, true), (true, true), (false, true));
         Assert.Equal(1, scene.Receipts);
         var result = scene.Result();
         Assert.Equal(WriteStatus.Verified, result.Receipt.Status);
@@ -102,26 +105,27 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         await scene.Retire(release: false);
         scene.Key(9, true);
         scene.Key(9, false);
-        await scene.Wait(() => N.Focused().Control != scene.Field);
-        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        await scene.WaitInput((true, false), (false, false));
+        scene.AssertOrdinary();
         Assert.Equal(0, scene.Receipts);
         Assert.Equal(nint.Zero, N.GetProp(scene.Field, "TypeLay.NativeInput.Lifetime.v2"));
         Assert.True(N.IsWindowEnabled(GetDlgItem(scene.Root, 102)));
         await scene.Send("install", scene.InstallControl); // Retired child rejects before reopening handles.
         await scene.Wait(() => !N.IsWindowEnabled(GetDlgItem(scene.Root, 102)));
         Assert.Equal(0, scene.Receipts);
-        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        scene.AssertOrdinary();
     });
 
     [Fact]
     public Task ANewPressAfterAnExternalReleaseDoesNotInheritTheOldConsumedDecision() => desktop.RunAsync(async () =>
     {
         await using var scene = new QueueScene(true);
-        await scene.Start(true);
+        await scene.Start(true, baselineAfterWrite: true);
         await scene.Install();
         scene.Key(9, true);
         await scene.Wait(() => scene.Receipts == 1);
         Assert.Equal(WriteStatus.Verified, scene.Result().Receipt.Status);
+        await scene.WaitInput((true, true));
         var input = new TextBox();
         var other = new Window { Content = input, Width = 320, Height = 140, Title = "TypeLay external release" };
         int releases = 0;
@@ -135,16 +139,19 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         await scene.Retire(release: true);
         await scene.Begin(true);
         await scene.Focus();
-        scene.Key(9, true); // New run has no plan: first down passes to Restart.
-        await scene.Wait(() => N.Focused().Control == GetDlgItem(scene.Root, 102));
-        scene.Key(9, true); // Its repeat also passes to Close, not the old consumed press.
-        await scene.Wait(() => N.Focused().Control == GetDlgItem(scene.Root, 2));
+        scene.Key(9, true); // New run has no plan: compare its original down with the baseline.
+        await scene.WaitInput((true, false));
+        scene.AssertOrdinaryDown();
+        await scene.Focus();
+        scene.Key(9, true); // The repeat must also retain ordinary behavior, not the old consume decision.
         scene.Key(9, false);
+        await scene.WaitInput((true, false), (true, false), (false, false));
         await scene.WaitConsumed(3);
         Assert.Equal(1, scene.Receipts);
-        Assert.Equal(QueueScene.Replacement, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        scene.AssertOrdinary(repeated: true);
         Assert.DoesNotContain(scene.Messages, message => message.Kind == "witness-failed");
-        // FIFO acknowledges release consumption, not a nonexistent GUI keyup counter.
+        // The explicit test completion observes the original up's dispatch;
+        // the independent FIFO still confirms exact witness consumption.
     });
 
     private sealed class QueueScene : IAsyncDisposable
@@ -162,6 +169,8 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         private Task? _pump;
         private Exception? _pipeError;
         private readonly HashSet<ushort> _pressed = [];
+        private sealed record SourceState(string Text, TextRange Selection, (nint Root, nint Control) Focus);
+        private SourceState? _ordinaryDown, _ordinaryPress, _ordinaryRepeat;
         public nint Root
         {
             get; private set;
@@ -184,7 +193,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             _hook = new(allowInjectedInput: automation);
             _deadline.CancelAfter(TimeSpan.FromSeconds(25));
         }
-        public async Task Start(bool automation)
+        public async Task Start(bool automation, bool baselineAfterWrite = false)
         {
             var settings = WindowsRuntime.CreateSettings(Path.Combine(_directory, "settings.json"));
             settings.Update(settings.Value with
@@ -199,10 +208,72 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             _pump = Pump();
             await Wait(() => { _child.Process.Refresh(); Root = _child.Process.MainWindowHandle; return Root != 0 && Field != 0 && _hook.Ready; });
             Assert.All(new[] { 9, 0x10, 0x11, 0x12, 0x5B, 0x5C }, key => Assert.False(Native.GetAsyncKeyState(key) < 0));
+            await MeasureOrdinaryTab(baselineAfterWrite);
             await Begin(automation);
             await Focus();
-            Original = N.ReadText(Field, Limits.MaxTextUnits);
+            Assert.Equal(Original, N.ReadText(Field, Limits.MaxTextUnits));
             Assert.Equal(N.ReadSelection(Field).Start, N.ReadSelection(Field).End);
+        }
+        private SourceState ReadState() => new(N.ReadText(Field, Limits.MaxTextUnits), N.ReadSelection(Field), N.Focused());
+        public async Task WaitInput(params (bool Down, bool Consumed)[] expected)
+        {
+            PracticeInputCompletion[] Completed() => Messages.Where(message => message.Kind == "test-tab-dispatched"
+                && message.Run == _run && message.Sequence == _sequence).Select(message => message.InputCompletion!).ToArray();
+            await Wait(() => Completed().Length >= expected.Length);
+            var completed = Completed();
+            Assert.Equal(expected.Length, completed.Length);
+            for (int index = 0; index < expected.Length; index++)
+                Assert.Equal(new PracticeInputCompletion(index + 1, expected[index].Down, expected[index].Consumed), completed[index]);
+        }
+        public void AssertOrdinaryDown() => Assert.True(ReadState() == _ordinaryDown,
+            "The original down must match this same Edit's non-automatic text, selection and focus behavior.");
+        public void AssertOrdinary(bool repeated = false) => Assert.True(ReadState() == (repeated ? _ordinaryRepeat : _ordinaryPress),
+            "The original Tab must match this same Edit's non-automatic text, selection and focus behavior.");
+        private async Task MeasureOrdinaryTab(bool afterWrite)
+        {
+            // The same child, stock Edit, enabled controls and ordinary dispatch,
+            // before automatic acceptance. Never infer passthrough from zero writes
+            // or assume that a multiline Edit navigates rather than inserting Tab.
+            _run = Guid.NewGuid();
+            _sequence++;
+            await Send("begin", new(ObserveInputCompletion: true));
+            await Wait(() => Messages.Any(message => message.Kind == "started" && message.Run == _run));
+            await FocusSource();
+            var original = ReadState();
+            Original = original.Text;
+            Assert.Equal(original.Selection.Start, original.Selection.End);
+            if (afterWrite)
+            {
+                N.SendString(Field, N.WM_SETTEXT, Replacement);
+                N.Send(Field, N.EM_SETSEL, (nuint)Replacement.Length, Replacement.Length);
+            }
+            var basis = ReadState();
+            Key(9, true);
+            await WaitInput((true, false));
+            _ordinaryDown = ReadState();
+            Key(9, false);
+            await WaitInput((true, false), (false, false));
+            _ordinaryPress = ReadState();
+            await Restore(basis);
+            Key(9, true);
+            await WaitInput((true, false), (false, false), (true, false));
+            await FocusSource();
+            Key(9, true);
+            Key(9, false);
+            await WaitInput((true, false), (false, false), (true, false), (true, false), (false, false));
+            _ordinaryRepeat = ReadState();
+            // Test setup only: restore the known synthetic source and caret before
+            // retirement ACK and the new automatic lifetime. No plan exists yet.
+            await Restore(original);
+            await Retire(release: false);
+            Assert.Equal(nint.Zero, N.GetProp(Field, "TypeLay.NativeInput.Lifetime.v2"));
+        }
+        private async Task Restore(SourceState state)
+        {
+            N.SendString(Field, N.WM_SETTEXT, state.Text);
+            N.Send(Field, N.EM_SETSEL, (nuint)state.Selection.Start, state.Selection.End);
+            await FocusSource();
+            Assert.True(ReadState() == state, "Baseline setup must restore the exact synthetic source, selection and focus.");
         }
         public async Task Begin(bool automation)
         {
@@ -212,13 +283,18 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             _witness?.Dispose();
             _witness = OwnedPracticeAcceptanceProtocol.CreateWitness(_child!.Process.Handle);
             _writer = new(_witness);
-            await Send("begin-auto", new(WitnessHandle: _witness.RemoteHandle, WitnessBytes: _witness.Length, AllowInjectedInput: automation));
+            await Send("begin-auto", new(WitnessHandle: _witness.RemoteHandle, WitnessBytes: _witness.Length, AllowInjectedInput: automation, ObserveInputCompletion: true));
             await Wait(() => Messages.Any(message => message.Kind == "started" && message.Run == _run));
         }
-        public async Task Focus()
+        private async Task FocusSource()
         {
             Assert.True(N.SetForegroundWindow(Root));
             Assert.True(N.PostMessage(Root, 0x0007, 0, 0));
+            await Wait(() => N.Focused() == (Root, Field));
+        }
+        public async Task Focus()
+        {
+            await FocusSource();
             await Wait(() => N.Focused() == (Root, Field) && Descriptor is not null
                 && Descriptor.BeginSequence == _sequence && (long)N.GetProp(Field, "TypeLay.OwnedFocusRevision.v1") == Descriptor.NativeFocusRevision);
             _hook.SetOwnedChannel(_connection, _writer!, Descriptor);

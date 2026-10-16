@@ -2243,8 +2243,9 @@ dialog p {
       ? '安装接入组件…' : state.connection === 'conflict' ? '处理输入法冲突…' : '重新检查';
     $('previewCapability').textContent = connected ? '可用' : '未确认';
     const linux = state.platform === 'linux';
-    $('practiceTitle').textContent = linux ? '试一试翻译与编辑' : '试一试按需翻译';
-    $('practiceDescription').textContent = linux ? '在自有练习框体验自动翻译、接受与修改。' : '在练习输入框体验唤醒和直接替换。';
+    const firstAcceptance = !linux && state.mode === 'Automatic' && saved.acceptShortcut === 'Tab';
+    $('practiceTitle').textContent = linux ? '试一试翻译与编辑' : firstAcceptance ? '试一试自动接受' : '试一试按需翻译';
+    $('practiceDescription').textContent = linux ? '在自有练习框体验自动翻译、接受与修改。' : firstAcceptance ? '在自有练习框体验自动预览与第一次接受。' : '在练习输入框体验唤醒和直接替换。';
     $('registeredApplicationRow').hidden = !linux || state.integration !== 'ready';
     $('applicationOutcome').hidden = !linux || !state.application || (state.applicationLaunched && connected);
     $('selectedApplication').textContent = state.application
@@ -2457,11 +2458,11 @@ dialog p {
   };
   $('browserGuide').onclick = () => confirmAction('连接浏览器输入框', '在浏览器扩展管理页启用 TypeLay 接入组件，并由你确认所需权限。随后重新打开页面，在输入框中检查连接。此演示不会安装扩展。', '知道了', () => {}, '关闭');
   all('[data-practice]').forEach(b => b.onclick = () => {
-    const automatic = state.platform === 'linux';
+    const automatic = state.platform === 'linux' || (state.mode === 'Automatic' && saved.acceptShortcut === 'Tab');
     const mode = automatic ? 'Automatic' : 'OnDemand';
     const go = () => {
       if (state.mode !== mode && !saveNow({mode})) return;
-      location.href = 'TypeLay_UIUX_Prototype.html?scenario=' + (automatic ? 'automatic-practice' : 'practice') + '&theme=' + document.documentElement.dataset.theme;
+      location.href = 'TypeLay_UIUX_Prototype.html?scenario=' + (automatic ? 'automatic-practice' : 'practice') + (automatic && state.platform === 'windows' ? '&practice=first-acceptance' : '') + '&theme=' + document.documentElement.dataset.theme;
     };
     if (state.mode !== mode) confirmAction(automatic ? '切换到自动模式并练习？' : '切换到按需模式并练习？', automatic ? '继续会保存全局自动模式。接受授权仅用于本次自有练习框，不开启全局实验替换；关闭练习不会自动改回模式。' : '练习使用唤醒与直接替换快捷键。继续会保存全局按需模式；关闭练习不会自动改回。', '切换并练习', go);else go();
   });

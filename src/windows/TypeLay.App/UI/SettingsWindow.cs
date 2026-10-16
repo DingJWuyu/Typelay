@@ -315,9 +315,14 @@ internal sealed class SettingsWindow : Window
                 break;
         }
         if (focusedToggle is not null)
-            _content.Children.OfType<Grid>().SelectMany(row => row.Children.OfType<ToggleButton>())
+            RestoreSettingFocus(focusedToggle);
+    }
+    private void RestoreSettingFocus(string? name)
+    {
+        if (!string.IsNullOrEmpty(name))
+            _content.Children.OfType<Grid>().SelectMany(row => row.Children.OfType<Control>())
                 .Concat(_themeChoices)
-                .SingleOrDefault(toggle => AutomationProperties.GetName(toggle) == focusedToggle)?.Focus();
+                .SingleOrDefault(control => AutomationProperties.GetName(control) == name)?.Focus();
     }
     private void Heading(string name, string description = "")
     {
@@ -378,10 +383,39 @@ internal sealed class SettingsWindow : Window
             return false;
         var expected = _settings.Value;
         _savingSettings = true;
-        _content.IsEnabled = false;
+        string page = _page;
+        string? focusedSetting = Keyboard.FocusedElement is Control focused && focused.IsDescendantOf(_content)
+            ? AutomationProperties.GetName(focused) : null;
+        bool waiting = false, restoreFocus = IsActive;
+        void FocusLeft(object? sender, EventArgs e) => restoreFocus = false;
+        void FocusMoved(object sender, KeyboardFocusChangedEventArgs e) => restoreFocus = false;
+        void PointerUsed(object sender, MouseButtonEventArgs e) => restoreFocus = false;
+        void EnableContent()
+        {
+            if (!waiting)
+                return;
+            Deactivated -= FocusLeft;
+            GotKeyboardFocus -= FocusMoved;
+            PreviewMouseDown -= PointerUsed;
+            _content.IsEnabled = true;
+        }
         try
         {
-            if (_settings.HasChanges(value) && PrepareSettingsChange is not null && !await PrepareSettingsChange(value))
+            var preparation = _settings.HasChanges(value) && PrepareSettingsChange is not null
+                ? PrepareSettingsChange(value) : Task.FromResult(true);
+            if (!preparation.IsCompleted)
+            {
+                waiting = true;
+                _content.IsEnabled = false;
+                // Disabling moves focus itself. Only later user/navigation focus
+                // changes cancel restoration of the original semantic control.
+                Deactivated += FocusLeft;
+                GotKeyboardFocus += FocusMoved;
+                PreviewMouseDown += PointerUsed;
+            }
+            bool prepared = await preparation;
+            EnableContent(); // Refresh must rebuild enabled, focusable controls.
+            if (!prepared)
             {
                 _settingsError = "练习窗口尚未确认停止，设置未保存。请关闭练习窗口后再试。";
                 Refresh();
@@ -399,18 +433,22 @@ internal sealed class SettingsWindow : Window
         }
         catch (ArgumentException)
         {
+            EnableContent();
             _settingsError = "请使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，排除 F12。两个按需快捷键不能相同。";
             Refresh();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
         {
+            EnableContent();
             _settingsError = "请检查当前用户目录与组织策略。";
             Refresh();
         }
         finally
         {
+            EnableContent();
             _savingSettings = false;
-            _content.IsEnabled = true;
+            if (waiting && restoreFocus && IsActive && _page == page)
+                RestoreSettingFocus(focusedSetting);
         }
         return false;
     }
@@ -554,7 +592,7 @@ internal sealed class SettingsWindow : Window
             ShowPage("apps");
             return;
         }
-        bool automatic = _settings.Value.AcceptShortcut == "Tab";
+        bool automatic = UsesAutomaticPractice;
         var view = PracticeEntryView();
         if (!_settings.Value.Enabled || view.LanguageNeedsChange)
         {
@@ -566,7 +604,7 @@ internal sealed class SettingsWindow : Window
         // The modal may have processed other settings/model callbacks. Keep their
         // latest values and never restore an earlier snapshot on practice close.
         if (!_model.Ready || !_settings.Value.Enabled
-            || PracticeEntryView().LanguageNeedsChange || automatic != (_settings.Value.AcceptShortcut == "Tab"))
+            || PracticeEntryView().LanguageNeedsChange || automatic != UsesAutomaticPractice)
             return;
         WorkMode mode = automatic ? WorkMode.Automatic : WorkMode.OnDemand;
         if (_settings.Value.Mode != mode && !await SaveAsync(_settings.Value with
@@ -589,7 +627,8 @@ internal sealed class SettingsWindow : Window
                 view.Title, MessageBoxButton.OK, MessageBoxImage.Information);
         }
     }
-    private OnDemandPracticeView PracticeEntryView() => _settings.Value.AcceptShortcut == "Tab"
+    private bool UsesAutomaticPractice => _settings.Value.Mode == WorkMode.Automatic && _settings.Value.AcceptShortcut == "Tab";
+    private OnDemandPracticeView PracticeEntryView() => UsesAutomaticPractice
         ? FirstAcceptanceView() : OnDemandPracticePresentation.Create(_settings.Value);
     private OnDemandPracticeView FirstAcceptanceView()
     {

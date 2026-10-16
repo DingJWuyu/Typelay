@@ -114,8 +114,11 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
         finally { await ClosePreparation(window, directory); }
     });
 
-    [Fact]
-    public Task ReadyPreparationPromotesPracticeWithoutClaimingApplicationConnection() => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData(WorkMode.OnDemand, "Tab", false)]
+    [InlineData(WorkMode.Automatic, "F8", true)]
+    public Task ReadyPreparationPreservesOnDemandModeAndConfirmsAutomaticFallback(
+        WorkMode mode, string acceptKey, bool confirmModeChange) => desktop.RunAsync(async () =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-ready-ui-" + Guid.NewGuid().ToString("N"));
         SettingsWindow? window = null;
@@ -124,7 +127,8 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
             settings.Update(settings.Value with
             {
-                Mode = WorkMode.OnDemand
+                Mode = mode,
+                AcceptShortcut = acceptKey
             });
             using var model = ProtocolModel(directory);
             int launches = 0;
@@ -159,22 +163,26 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
                 Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == ApplicationSupportPresentation.ReasonText(ApplicationSupportReason.NoFocusedField));
                 Assert.DoesNotContain(Descendants(window).OfType<TextBlock>(), text => text.Text == "已连接");
             }
-            var practice = AutomaticPracticePresentation.Create(settings.Value);
-            bool confirmed = false;
+            Assert.Equal(acceptKey, settings.Value.AcceptShortcut);
+            var practice = OnDemandPracticePresentation.Create(settings.Value);
+            bool sawConfirmation = false, confirmed = false;
             Exception? confirmationFailure = null;
-            // The default Tab entry now asks permission to leave OnDemand mode.
-            // Interact with its real modal in ShowDialog's nested dispatcher.
+            // Close an unexpected mode-switch modal so this regression fails
+            // at the entry behavior rather than hanging in its nested dispatcher.
             var confirmation = window.Dispatcher.BeginInvoke(new Action(() =>
             {
                 Window[] dialogs = [];
                 try
                 {
-                    dialogs = window.OwnedWindows.Cast<Window>().ToArray();
+                    dialogs = window.OwnedWindows.Cast<Window>().Where(item => item.IsVisible).ToArray();
+                    sawConfirmation = dialogs.Length != 0;
+                    if (!confirmModeChange)
+                        return;
                     var dialog = Assert.Single(dialogs);
-                    Assert.Equal("自动接受练习", dialog.Title);
+                    Assert.Equal(practice.Title, dialog.Title);
                     dialog.UpdateLayout();
                     Assert.Equal(0, launches);
-                    Assert.Equal(WorkMode.OnDemand, settings.Value.Mode);
+                    Assert.Equal(mode, settings.Value.Mode);
                     Assert.Contains(Descendants(dialog).OfType<TextBlock>(), text => text.Text == practice.ConfirmationText);
                     var cancel = Assert.Single(Buttons(dialog), button => button.IsDefault);
                     Assert.Equal(practice.CancelLabel, cancel.Content);
@@ -196,10 +204,13 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             finally { confirmation.Abort(); }
             if (confirmationFailure is not null)
                 ExceptionDispatchInfo.Capture(confirmationFailure).Throw();
-            Assert.True(confirmed);
+            Assert.Equal(confirmModeChange, sawConfirmation);
+            Assert.Equal(confirmModeChange, confirmed);
             Assert.Equal(1, launches);
-            Assert.Equal(WorkMode.Automatic, settings.Value.Mode);
-            Assert.Equal(WorkMode.Automatic, new SettingsStore(Path.Combine(directory, "settings.json")).Value.Mode);
+            Assert.Equal(WorkMode.OnDemand, settings.Value.Mode);
+            var persisted = new SettingsStore(Path.Combine(directory, "settings.json")).Value;
+            Assert.Equal(WorkMode.OnDemand, persisted.Mode);
+            Assert.Equal(acceptKey, persisted.AcceptShortcut);
             Assert.False(settings.Value.OnboardingComplete);
             window.ShowPage("translation");
             window.UpdateLayout();

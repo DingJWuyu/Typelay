@@ -220,7 +220,16 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
             Assert.Equal(ordinary!.Process.Id, target.ProcessId);
             Assert.Equal((long)otherRoot, target.RootHwnd);
             Assert.Equal((long)GetDlgItem(otherRoot, 101), target.ControlHwnd);
-            Assert.NotEmpty(captured.Text);
+            string expectedText = OnDemandPracticePresentation.Create(settings.Value).SampleText;
+            if (captured.Ime == ImeState.Clear)
+                Assert.Equal(expectedText, captured.Text);
+            else
+            {
+                Assert.Equal(ImeState.Unknown, captured.Ime);
+                Assert.Empty(captured.Text);
+                Assert.Equal(expectedText, captured.PreviewText);
+                Assert.False(captured.WriteSupported);
+            }
 
             if (!disconnect)
             {

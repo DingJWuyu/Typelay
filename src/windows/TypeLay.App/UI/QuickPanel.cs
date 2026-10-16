@@ -80,33 +80,61 @@ internal sealed class QuickPanel : Window
         if (_saving)
             return false;
         _saving = true;
-        _body.IsEnabled = false;
         var expected = _settings.Value;
+        string? focusedMode = Keyboard.FocusedElement is RadioButton focused && _modeChoices.Contains(focused)
+            ? AutomationProperties.GetName(focused) : null;
+        bool waiting = false, restoreFocus = IsActive;
+        void FocusLeft(object? sender, EventArgs e) => restoreFocus = false;
+        void FocusMoved(object sender, KeyboardFocusChangedEventArgs e) => restoreFocus = false;
+        void PointerUsed(object sender, MouseButtonEventArgs e) => restoreFocus = false;
+        void EnableContent()
+        {
+            if (!waiting)
+                return;
+            Deactivated -= FocusLeft;
+            GotKeyboardFocus -= FocusMoved;
+            PreviewMouseDown -= PointerUsed;
+            _body.IsEnabled = true;
+        }
         try
         {
-            if (!await _session.PrepareSettingsChangeAsync(value) || !ReferenceEquals(expected, _settings.Value))
+            var preparation = _session.PrepareSettingsChangeAsync(value);
+            if (!preparation.IsCompleted)
+            {
+                waiting = true;
+                _body.IsEnabled = false;
+                Deactivated += FocusLeft;
+                GotKeyboardFocus += FocusMoved;
+                PreviewMouseDown += PointerUsed;
+            }
+            bool prepared = await preparation;
+            EnableContent();
+            if (!prepared || !ReferenceEquals(expected, _settings.Value))
             {
                 _saveFailed = true;
                 Refresh();
                 return false;
             }
             _settings.Update(value);
+            // A confirmed write of the same settings does not publish Changed.
+            _saveFailed = false;
+            Refresh();
+            return true;
         }
         catch (SettingsPersistenceException)
         {
+            EnableContent();
             _saveFailed = true;
             Refresh();
             return false;
         }
         finally
         {
+            EnableContent();
             _saving = false;
-            _body.IsEnabled = true;
+            if (waiting && restoreFocus && IsActive && focusedMode is not null)
+                _modeChoices.Single(choice => AutomationProperties.GetName(choice) == focusedMode).Focus();
         }
-        // A confirmed write of the same settings does not publish Changed.
-        _saveFailed = false;
-        Refresh();
-        return true;
     }
     private void Refresh()
     {

@@ -9,7 +9,11 @@ namespace TypeLay.Windows;
 // this one child connection, run and nonzero sequence. No source text travels here.
 internal sealed record PracticeMessage(string Kind, Guid Connection, Guid Run, long Sequence,
     OnDemandPracticeProgress? Progress = null, OwnedAcceptanceControl? Acceptance = null,
-    AutomaticPracticeProgress? AutomaticProgress = null);
+    AutomaticPracticeProgress? AutomaticProgress = null, PracticeInputCompletion? InputCompletion = null);
+
+// Explicit queue-fixture observation only. This is a completed GUI dispatch,
+// not a low-level witness or authority to accept input.
+internal sealed record PracticeInputCompletion(long Sequence, bool Down, bool Consumed);
 
 internal static class PracticeProgressPipe
 {
@@ -53,11 +57,18 @@ internal static class PracticeProgressPipe
         if (message.Connection == Guid.Empty || message.Run == Guid.Empty || message.Sequence <= 0
             || message.Kind is not ("begin" or "retire" or "started" or "retired" or "restart" or "closed" or "progress"
                 or "begin-auto" or "source-ready" or "install" or "installed" or "revoke-plan" or "revoked-plan"
-                or "release-plan" or "released-plan" or "receipt" or "witness-consumed" or "witness-failed" or "auto-progress")
+                or "release-plan" or "released-plan" or "receipt" or "witness-consumed" or "witness-failed" or "auto-progress"
+                or "test-tab-dispatched")
             || (message.Kind == "progress" ? message.Progress?.RunId != message.Run : message.Progress is not null))
             throw new InvalidDataException("practice-progress-message");
         if (message.Acceptance is { Version: not OwnedPracticeAcceptanceProtocol.Version }
             || (message.Kind == "auto-progress" ? message.AutomaticProgress?.RunId != message.Run : message.AutomaticProgress is not null))
             throw new InvalidDataException("practice-progress-acceptance");
+        if (message.Kind == "test-tab-dispatched"
+            ? message.InputCompletion is not { Sequence: > 0 } || message.Acceptance is not null
+            : message.InputCompletion is not null)
+            throw new InvalidDataException("practice-input-completion");
+        if (message.Acceptance?.ObserveInputCompletion == true && message.Kind is not ("begin" or "begin-auto"))
+            throw new InvalidDataException("practice-input-observation");
     }
 }

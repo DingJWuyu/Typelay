@@ -46,7 +46,7 @@ WPF 暂停视图清除文本及撤销状态，只显示共享呈现定义中的�
 
 ## 自有练习与首 Tab 接受
 
-按需练习沿用当前配置的 F9/F10、正式模型和 Broker。自动首接受候选仅支持现配置为无修饰 Tab 的自有 stock Edit，使用独立受管进程的本次授权；其它接受键不被改写，按需入口保留。全局 `ExperimentalWriteback` 和第三方 B-01 门保持原状。此候选尚待真实 Windows 软件输入链验收，不开放编辑回源、不保存完整教程完成状态。练习进度只记录已生成预览；浮层接受提示另核本次精确计划的安装 ACK 与原有效期，撤权、尝试接受或会话变化立即取消提示，呈现查询本身不授予权限。
+按需练习沿用当前配置的 F9/F10、正式模型和 Broker。自动首接受候选仅支持现配置为无修饰 Tab 的自有 stock Edit，使用独立受管进程的本次授权；其它接受键不被改写，按需入口保留。全局 `ExperimentalWriteback` 和第三方 B-01 门保持原状。该首接受已通过真实 Windows 软件输入链验证，保留精确回执、焦点、光标和 Undo；不开放编辑回源、不保存完整教程完成状态。练习进度只记录已生成预览；浮层接受提示另核本次精确计划的安装 ACK 与原有效期，撤权、尝试接受或会话变化立即取消提示，呈现查询本身不授予权限。
 
 **精确捕获：**`capture-owned` 绑定 PID/启动时间、根/控件 HWND、线程、cookie、run 代次和 native FocusRevision，在读取正文及安装 hook 前核验。独立 `TypeLay.NativeInput.OwnedCapture.v1` 消息使用 owned 专属 op6，旧 v2 hook 不接收；op6 的专属焦点版本字段不是写入截止时间。精确 Edit 的 EN_SETFOCUS/EN_KILLFOCUS 与顶层 WM_ACTIVATE 在其它操作前推进单调 native FocusRevision 并撤权；Begin/Retire 不重置计数。捕获、安装、键见证和执行固定同一版本，最终回到相同 HWND 不能恢复旧授权。
 

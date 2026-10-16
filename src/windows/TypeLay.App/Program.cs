@@ -127,7 +127,7 @@ internal static class Program
                 SettingsDraftPresentation.SaveUnconfirmedMessage, Forms.ToolTipIcon.Info));
             menu.Items.Add(toggle);
             menu.Items.Add("设置…", null, (_, _) => app.Dispatcher.Invoke(() => window.ShowPage()));
-            menu.Items.Add(OnDemandPracticePresentation.Create(settings.Value).Title, null, (_, _) => app.Dispatcher.Invoke(window.StartPractice));
+            menu.Items.Add("翻译练习", null, (_, _) => app.Dispatcher.Invoke(window.StartPractice));
             menu.Items.Add(new Forms.ToolStripSeparator());
             menu.Items.Add("退出 TypeLay", null, (_, _) => app.Dispatcher.Invoke(Quit));
             tray.ContextMenuStrip = menu;
