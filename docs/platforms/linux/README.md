@@ -50,19 +50,19 @@ GTK3/GTK4 默认与配置按键、编辑回源、暂停恢复及后台原字段�
 
 ## 获取发行包
 
-在目标提交的 TypeLay checks 中确认 **Linux 完整检查与“Attach the matching desktop components to the main distribution”封装步骤均成功**，再下载 `typelay-linux-<commit>` artifact ZIP，解压其中的 `TypeLay-Linux-preview-x86_64.tar.gz` 及 `.sha256`。同次 Windows 检查有独立结论，不能仅凭工作流总状态判断 Linux 包。完整主包已经附带匹配桌面合作组件，无需另找第二个输入法压缩包。仅设置界面的部分检查会跳过合作组件封装，其 setup-only 包不能作为完整接入包。需要源码构建时，依赖与命令见[Linux 开发说明](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/linux/development.md#构建)。发行包自带 .NET 运行时；GTK、PyGObject、Ayatana 等桌面依赖仍由系统包管理器提供。
+作为稳定版本使用前，须确认目标提交的 Linux 完整检查通过。开发候选允许取用已成功完成“Attach the matching desktop components to the main distribution”封装的产物，但须先阅读该提交的失败与未验范围；封装成功不代表桌面验收通过。下载 `typelay-linux-<commit>` artifact ZIP，解压其中的 `TypeLay-Linux-preview-x86_64.tar.gz` 及 `.sha256`。同次 Windows 检查有独立结论，不能仅凭工作流总状态判断 Linux 包。完整主包已经附带匹配桌面合作组件，无需另找第二个输入法压缩包。仅设置界面的部分检查会跳过合作组件封装，其 setup-only 包不能作为完整接入包。需要源码构建时，依赖与命令见[Linux 开发说明](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/platforms/linux/development.md#构建)。发行包自带 .NET 运行时；GTK、PyGObject、Ayatana 等桌面依赖仍由系统包管理器提供。
 
-### 当前安全修复候选
+### 当前开发候选
 
-[9d419b94 的完整发行产物](https://github.com/DingJWuyu/Typelay/actions/runs/38596552508/artifacts/11912875430)包含运行时目录无效时拒绝卸载的修复，以及显式唤醒后首次源捕获失败的一次提示。包内安装器已与该提交源码逐字节核对，255 项文件清单摘要全部验证；正式构建的 16 项发行回归及 15 项受管进程生命周期检查通过。提示只解释失败，仍撤销许可和唤醒资格，不自动重试，也不代表此前偶发 F9 拒绝或捕获未建立的问题已解决。该轮桌面检查仍有上节列出的失败，不能据包验证通过推荐为日常稳定版。
+[cbd65733 的完整候选包](https://github.com/DingJWuyu/Typelay/actions/runs/38868475276/artifacts/12032383767)已封装同提交的桌面合作组件。本轮真实模型检查完成自有 GTK3 的自动接受、编辑回源和第二次接受、完成关闭及偏好重启读取；已注册应用启动、排除与恢复主路径也通过。旧应用支持选择控件聚焦及 GTK 场景仍有失败，整套桌面验收未全绿，不能据这些主路径通过推荐为日常稳定版。
 
 <details>
 <summary>下载校验与配对版本</summary>
 
-- 源码：`9d419b9416db34231009fa3cca31a3d2c1792524`；包内 `build-info.json` 记录同一提交且 `sourceDirty=false`。
-- 内层 `TypeLay-Linux-preview-x86_64.tar.gz`：271,174,583 字节；SHA-256：`c8f7453b6fc45027fa6500ed72fc5eb350726b44f94f7bdd91136b27b3c26d45`，与包旁 `.sha256` 相符。
-- 外层 Actions ZIP：272,949,908 字节；SHA-256：`6dfb685678ecb259cccbb8561afe648ef2f93d91de52af835311e7c7d94d9577`。不要混用内外校验值。
-- 主包已带匹配的桌面合作组件，其来源也记录为同一提交。artifact 预计在 2026-10-28 16:26 UTC 到期，过期后须核对新的候选及其独立验证结果。
+- 源码：`cbd657334b3f815f194650b59f6e8e33468b02e3`；包内 `build-info.json` 记录同一提交且 `sourceDirty=false`。
+- 内层 `TypeLay-Linux-preview-x86_64.tar.gz`：271,288,030 字节；SHA-256：`5bd5861e816ac1caf559bce09b197256854e70ff503ccc154889361c2db99959`，与包旁 `.sha256` 相符。
+- 外层 Actions ZIP：275,225,658 字节；SHA-256：`ec34e73caf22610f0c7ea0bc4db4e0040529806149f0fc44ab7a5ca3149d7ab7`，已核对 artifact 摘要。不要混用内外校验值。
+- 附带桌面合作组件的来源记录为同一提交，其归档摘要已核对。artifact 预计在 2026-10-30 07:49 UTC 到期，过期后须核对新的候选及其独立验证结果。
 
 </details>
 
@@ -118,7 +118,7 @@ Argos 发布源未提供可用的固定发布者摘要时，安装器记录 HTTP
 python fcitx-cooperative.py launch ~/.local/bin/typelay --practice
 ```
 
-练习窗继承这次明确启动的输入法环境，不自动切换 daemon。普通 `typelay --practice` 不会被收养为受管目标，也不会获得练习专属写回授权。自动练习的授权仅覆盖本次已验证的自有 GTK3 字段，不开启全局实验替换。当前[隔离桌面验证](https://github.com/DingJWuyu/Typelay/actions/runs/38824018159)已完成真实输入后的首次接受、第二句翻译与重新绑定、点击译文编辑、实际改稿、第一次 Tab 零写入回源，以及重新核验后的第二次 Tab 精确接受人工稿，两次写回均为 Verified。随后已通过真实完成按钮快捷键自然关闭、仅保存教程提示偏好、释放自有进程占用，以及客户端重启读取该偏好。此项通过不代表整套桌面验收通过。步骤仅由本次目标的实际 Verified 回执完成；关闭、重启、离开原输入框与译文编辑器的焦点范围、断连或真实配置变化会退役授权。暂停或改设置涉及活跃练习时，先等原生撤销确认，再提交设置；未确认结束时禁止新授权并给出失败提示。保存完成偏好失败可以重试，保留的完成证据不能恢复写权限。
+练习窗继承这次明确启动的输入法环境，不自动切换 daemon。普通 `typelay --practice` 不会被收养为受管目标，也不会获得练习专属写回授权。自动练习的授权仅覆盖本次已验证的自有 GTK3 字段，不开启全局实验替换。当前[隔离桌面验证](https://github.com/DingJWuyu/Typelay/actions/runs/38868475276)已完成真实输入后的首次接受、第二句翻译与重新绑定、点击译文编辑、实际改稿、第一次 Tab 零写入回源，以及重新核验后的第二次 Tab 精确接受人工稿，两次写回均为 Verified。随后已通过真实完成按钮快捷键自然关闭、仅保存教程提示偏好、释放自有进程占用，以及客户端重启读取该偏好。此项通过不代表整套桌面验收通过。步骤仅由本次目标的实际 Verified 回执完成；关闭、重启、离开原输入框与译文编辑器的焦点范围、断连或真实配置变化会退役授权。暂停或改设置涉及活跃练习时，先等原生撤销确认，再提交设置；未确认结束时禁止新授权并给出失败提示。保存完成偏好失败可以重试，保留的完成证据不能恢复写权限。
 
 设置默认请求 790 × 560 窗口，实际尺寸由桌面决定。左侧按四个实际功能组导航，每页独立滚动；可用上下方向键切换侧栏选项，再用 Tab 进入本页控件：
 
