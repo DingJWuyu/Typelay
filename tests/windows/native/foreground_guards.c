@@ -1,5 +1,5 @@
 // Deterministic API-boundary regression for the production transaction executor.
-// Faults change focus, selection or time only at EM_SETSEL's return boundary.
+// Faults change state at the selection, IME and capture-read API boundaries.
 // This does not demonstrate Windows accessibility callbacks or OS reentrancy.
 // Compile with 16-bit wchar_t, function sections and unused-section elimination.
 #define __declspec(value)
@@ -34,12 +34,31 @@ static struct {
     int start, end, length;
     int set_calls, replace_calls, text_reads, injected_changes, boundary_checked, invalid_call;
     int composition_bytes, fail_focus_property;
+    int capture_fault, capture_boundary, password, disabled;
+    int hidden, root_disabled, minimized, clipped, bad_parent, root_hidden, rectangle_failure;
+    intptr_t style;
     WCHAR text[CAPACITY];
 } field;
 
 static HANDLE handle(uintptr_t value) { return (HANDLE)value; }
 static void require(int condition) { if (!condition) field.invalid_call = 1; }
 static void require_source(HANDLE hwnd) { require(hwnd == handle(SourceWindow)); }
+static void change_capture_state(int boundary) {
+    if (!field.capture_fault || field.capture_boundary != boundary || field.injected_changes) return;
+    field.injected_changes++;
+    switch (field.capture_fault) {
+    case 1: field.style |= 0x800; break;
+    case 2: field.password = '*'; break;
+    case 3: field.disabled = 1; break;
+    case 4: field.hidden = 1; break;
+    case 5: field.root_disabled = 1; break;
+    case 6: field.minimized = 1; break;
+    case 7: field.clipped = 1; break;
+    case 8: field.bad_parent = 1; break;
+    case 9: field.root_hidden = 1; break;
+    case 10: field.rectangle_failure = 1; break;
+    }
+}
 
 // The included production hook entry point is not exercised by this executor
 // test. COFF still resolves its references before discarding unused sections;
@@ -89,7 +108,7 @@ int HeapFree(HANDLE heap, uint32_t flags, void *value) {
 static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
     require_source(hwnd);
     switch (message) {
-    case GetPasswordChar: return 0;
+    case GetPasswordChar: return field.password;
     case GetLimitText: return MAX_UNITS;
     case GetTextLength: return field.length;
     case GetText:
@@ -104,6 +123,7 @@ static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
             *(int32_t *)wp = field.start;
             *(int32_t *)lp = field.end;
         }
+        change_capture_state(2);
         return 0;
     case SetSelection:
         field.set_calls++;
@@ -180,7 +200,7 @@ void QueryInterruptTimePrecise(uint64_t *value) { *value = field.precise_100ns; 
 uint32_t GetCurrentThreadId(void) { return ThreadId; }
 uint32_t GetCurrentProcessId(void) { return ProcessId; }
 uint32_t GetWindowThreadProcessId(HANDLE hwnd, uint32_t *pid) {
-    require_source(hwnd);
+    require(hwnd == handle(SourceWindow) || hwnd == handle(RootWindow));
     *pid = ProcessId;
     return ThreadId;
 }
@@ -191,12 +211,33 @@ HANDLE GetAncestor(HANDLE hwnd, uint32_t flags) {
 }
 HANDLE GetForegroundWindow(void) { return field.foreground; }
 HANDLE GetFocus(void) { return field.focus; }
+HANDLE GetParent(HANDLE hwnd) { require_source(hwnd); return handle(field.bad_parent ? OtherField : RootWindow); }
 int IsWindowUnicode(HANDLE hwnd) { require_source(hwnd); return 1; }
-int IsWindowEnabled(HANDLE hwnd) { require_source(hwnd); return 1; }
+int IsWindowEnabled(HANDLE hwnd) {
+    require(hwnd == handle(SourceWindow) || hwnd == handle(RootWindow));
+    return hwnd == handle(RootWindow) ? !field.root_disabled : !field.disabled;
+}
+int IsWindowVisible(HANDLE hwnd) {
+    require(hwnd == handle(SourceWindow) || hwnd == handle(RootWindow));
+    return hwnd == handle(RootWindow) ? !field.root_hidden : !field.hidden;
+}
+int IsIconic(HANDLE hwnd) { require(hwnd == handle(RootWindow)); return field.minimized; }
+int GetClientRect(HANDLE hwnd, Rect *rect) {
+    require(hwnd == handle(SourceWindow) || hwnd == handle(RootWindow));
+    rect->left = rect->top = 0;
+    rect->right = rect->bottom = hwnd == handle(RootWindow) ? 300 : 100;
+    return !field.rectangle_failure;
+}
+int ClientToScreen(HANDLE hwnd, Point *point) {
+    require(hwnd == handle(SourceWindow) || hwnd == handle(RootWindow));
+    point->x += 10;
+    point->y += hwnd == handle(SourceWindow) && field.clipped ? 400 : 10;
+    return 1;
+}
 intptr_t GetWindowLongPtrW(HANDLE hwnd, int index) {
     require_source(hwnd);
     require(index == -4 || index == -16);
-    return index == -4 ? (intptr_t)stock_edit : 0;
+    return index == -4 ? (intptr_t)stock_edit : field.style;
 }
 intptr_t GetClassLongPtrW(HANDLE hwnd, int index) {
     require_source(hwnd);
@@ -250,6 +291,7 @@ int32_t ImmGetCompositionStringW(HANDLE context, uint32_t index, void *buffer, u
 int ImmReleaseContext(HANDLE hwnd, HANDLE context) {
     require_source(hwnd);
     require(context == handle(4));
+    change_capture_state(1);
     return 1;
 }
 
@@ -258,6 +300,10 @@ static void prepare_transaction(enum Scenario scenario) {
     field.scenario = scenario;
     field.set_calls = field.replace_calls = field.text_reads = field.injected_changes = field.boundary_checked = 0;
     field.composition_bytes = 0;
+    field.capture_fault = field.capture_boundary = field.password = field.disabled = 0;
+    field.hidden = field.root_disabled = field.minimized = field.clipped = field.bad_parent = 0;
+    field.root_hidden = field.rectangle_failure = 0;
+    field.style = 0x50000000; // Current WS_CHILD | WS_VISIBLE, not a configured safety flag.
     field.foreground = handle(RootWindow);
     field.focus = handle(SourceWindow);
     field.coarse_ms = 100;
@@ -454,6 +500,22 @@ static int accepted_owned_focus_round_trip_keeps_the_real_rejection(void) {
         && field.start == 4 && field.end == 7
         && TypeLayOwnedFocusRevision(handle(SourceWindow), 0) == revision + 2;
 }
+static int owned_capture_rechecks_dynamic_qualification_around_reading(void) {
+    for (int boundary = 1; boundary <= 2; boundary++) {
+        for (int fault = 1; fault <= 10; fault++) {
+            prepare_transaction(Unchanged);
+            request.op = 6;
+            request.authorization_deadline_ms = (int64_t)TypeLayOwnedFocusRevision(handle(SourceWindow), 0);
+            field.capture_boundary = boundary;
+            field.capture_fault = fault;
+            execute_owned_capture(&request);
+            if (request.status != 2 || field.injected_changes != 1 || field.text_reads != boundary - 1
+                || field.set_calls || field.replace_calls || field.invalid_call
+                || !equal(field.text, initial_text, 13) || field.start != 12 || field.end != 12) return 0;
+        }
+    }
+    return 1;
+}
 static int failed_focus_mirror_permanently_retires_owned_authority(void) {
     HANDLE hwnd = handle(SourceWindow);
     prepare_transaction(Unchanged);
@@ -484,6 +546,7 @@ static int run_checks(void) {
     if (!owned_acceptance_reports_one_execution_and_cannot_replay()) return 7;
     if (!accepted_owned_focus_round_trip_keeps_the_real_rejection()) return 8;
     if (!owned_capture_rechecks_the_exact_focus_revision_before_reading()) return 11;
+    if (!owned_capture_rechecks_dynamic_qualification_around_reading()) return 13;
     if (!failed_focus_mirror_permanently_retires_owned_authority()) return 9;
     return 0;
 }

@@ -1,7 +1,10 @@
 using System.Diagnostics;
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using TypeLay.App;
@@ -19,6 +22,216 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
 {
+    [Theory]
+    [InlineData("process")]
+    [InlineData("start")]
+    [InlineData("root")]
+    [InlineData("control")]
+    [InlineData("thread")]
+    [InlineData("cookie")]
+    [InlineData("focus-revision")]
+    [InlineData("missing-generation")]
+    [InlineData("focus-round-trip")]
+    public Task ProductionCaptureRequiresTheExactLiveOwnedDescriptor(string change) => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(true);
+        await scene.Start(true);
+        using var broker = new BrokerClient();
+        await broker.StartAsync();
+        var descriptor = scene.Descriptor;
+        var request = new BrokerRequest(BrokerProtocol.Version, 0, "capture-owned", "", OwnedCapture: descriptor);
+        var first = await broker.CallAsync(request);
+        var again = await broker.CallAsync(request);
+        Assert.NotNull(first.Snapshot);
+        Assert.NotNull(again.Snapshot);
+        Assert.Equal(FocusMember.Source, first.Focus);
+        Assert.Equal(scene.Original, first.Snapshot.Text);
+        Assert.Equal(N.ReadSelection(scene.Field), first.Snapshot.Selection);
+        Assert.Equal(ImeState.Clear, first.Snapshot.Ime);
+        Assert.True(first.Snapshot.WriteSupported);
+        Assert.False(first.Snapshot.DirectWriteSupported);
+        Assert.Equal(first.Snapshot.Target, again.Snapshot.Target);
+        Assert.Equal(descriptor.NativeFocusRevision, first.Snapshot.FocusEpoch);
+        var invalid = change switch
+        {
+            "process" => descriptor with { ProcessId = descriptor.ProcessId + 1 },
+            "start" => descriptor with { ProcessStartUtcTicks = descriptor.ProcessStartUtcTicks + 1 },
+            "root" => descriptor with { RootHwnd = descriptor.ControlHwnd },
+            "control" => descriptor with { ControlHwnd = (long)GetDlgItem(scene.Root, 2) },
+            "thread" => descriptor with { ThreadId = descriptor.ThreadId + 1 },
+            "cookie" => descriptor with { NativeCookie = descriptor.NativeCookie + 1 },
+            "focus-revision" => descriptor with { NativeFocusRevision = descriptor.NativeFocusRevision + 1 },
+            "missing-generation" => descriptor with { BeginSequence = 0 },
+            _ => descriptor
+        };
+        if (change == "focus-round-trip")
+        {
+            // Exact fixture setup, independent of this multiline Edit's normal
+            // Tab behavior. Never invoke the Close button's action.
+            AutomationElement.FromHandle(GetDlgItem(scene.Root, 2)).SetFocus();
+            await scene.Wait(() => N.Focused() == (scene.Root, GetDlgItem(scene.Root, 2)));
+            await scene.Focus();
+            Assert.True(scene.Descriptor.NativeFocusRevision > descriptor.NativeFocusRevision);
+        }
+        var refused = await broker.CallAsync(request with
+        {
+            OwnedCapture = invalid
+        });
+        Assert.Null(refused.Snapshot);
+        Assert.Equal(FocusMember.Other, refused.Focus);
+        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        Assert.Equal((scene.Root, scene.Field), N.Focused());
+        if (change != "focus-round-trip")
+        {
+            // Clear after a rejected observation must not mint a new target and
+            // bypass the session's target quarantine.
+            var resumed = await broker.CallAsync(request);
+            Assert.NotNull(resumed.Snapshot);
+            Assert.Equal(first.Snapshot.Target, resumed.Snapshot.Target);
+        }
+    });
+
+    [Theory]
+    [InlineData("excluded")]
+    [InlineData("sensitive-label")]
+    [InlineData("readonly")]
+    [InlineData("password")]
+    [InlineData("hidden")]
+    [InlineData("parent-disabled")]
+    public Task ProductionOwnedCaptureRechecksLiveFieldMetadata(string change) => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(true);
+        await scene.Start(true);
+        using var broker = new BrokerClient();
+        await broker.StartAsync();
+        var request = new BrokerRequest(BrokerProtocol.Version, 0, "capture-owned", "", OwnedCapture: scene.Descriptor);
+        Assert.NotNull((await broker.CallAsync(request)).Snapshot);
+        switch (change)
+        {
+            case "excluded":
+                using (var process = Process.GetProcessById(scene.Descriptor.ProcessId))
+                    request = request with
+                    {
+                        Excluded = [process.ProcessName]
+                    };
+                break;
+            case "sensitive-label":
+                nint label = GetWindow(scene.Field, 3); // The production label immediately precedes the Edit.
+                Assert.Equal("练习输入框", N.ReadText(label, 128));
+                N.SendString(label, N.WM_SETTEXT, "Password");
+                break;
+            case "readonly":
+                Assert.NotEqual(nuint.Zero, N.Send(scene.Field, 0x00CF, 1)); // EM_SETREADONLY.
+                break;
+            case "password":
+                nint style = GetWindowLongPtrW(scene.Field, -16);
+                Assert.NotEqual(nint.Zero, style);
+                Assert.Equal(style, SetWindowLongPtrW(scene.Field, -16, style | 0x20));
+                Assert.NotEqual(0, (long)GetWindowLongPtrW(scene.Field, -16) & 0x20);
+                break;
+            case "hidden":
+                ShowWindow(scene.Field, 0);
+                break;
+            case "parent-disabled":
+                EnableWindow(scene.Root, false);
+                break;
+        }
+        try
+        {
+            var refused = await broker.CallAsync(request);
+            Assert.Null(refused.Snapshot);
+            Assert.Equal(FocusMember.Other, refused.Focus);
+            Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        }
+        finally
+        {
+            // Restore only the fixture-owned root so its normal close path remains available.
+            if (change == "parent-disabled")
+                EnableWindow(scene.Root, true);
+        }
+    });
+
+    [Fact]
+    public Task UnknownOutcomeRemainsQuarantinedAfterOwnedCaptureIsCleared() => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(true);
+        await scene.Start(true);
+        using var broker = new BrokerClient();
+        await broker.StartAsync();
+        var request = new BrokerRequest(BrokerProtocol.Version, 0, "capture-owned", "", OwnedCapture: scene.Descriptor);
+        var source = Assert.IsType<InputSnapshot>((await broker.CallAsync(request)).Snapshot);
+        var session = new Session(new("auto", "en"));
+        session.Observe(source, FocusMember.Source, source.ObservedAtMs);
+        await Task.Delay((int)Limits.DebounceMs);
+        var job = Assert.IsType<TranslationJob>(session.TakeTranslationJob(WindowsInterruptClock.NowMs));
+        Assert.True(session.Complete(job, QueueScene.Replacement));
+        var ready = Assert.IsType<InputSnapshot>((await broker.CallAsync(request)).Snapshot);
+        session.Observe(ready, FocusMember.Source, ready.ObservedAtMs);
+        var context = new AcceptanceContext(FocusMember.Source, false, false, ready.Ime, ready.InputEpoch, ready.FocusEpoch);
+        var plan = Assert.IsType<WritePlan>(session.Prepare(ready, context, ready.ObservedAtMs).Plan);
+        Assert.True(session.BeginWrite(plan));
+        // Controlled receipt, real Broker identities: this is not a native
+        // Unknown generator or proof of a real write transaction.
+        Assert.True(session.FinishWrite(plan, new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome)));
+        Assert.Equal(SessionState.OutcomeUnknown, session.State);
+        Assert.Equal("cleared", (await broker.CallAsync(new(BrokerProtocol.Version, 0, "clear", ""))).Status);
+        Assert.Null((await broker.CallAsync(request with
+        {
+            OwnedCapture = scene.Descriptor with
+            {
+                NativeCookie = scene.Descriptor.NativeCookie + 1
+            }
+        })).Snapshot);
+        session.LeaveFamily();
+        var resumed = Assert.IsType<InputSnapshot>((await broker.CallAsync(request)).Snapshot);
+        Assert.Equal(source.Target, resumed.Target);
+        session.Observe(resumed, FocusMember.Source, resumed.ObservedAtMs);
+        Assert.Equal(SessionState.OutcomeUnknown, session.State);
+        Assert.Null(session.TakeTranslationJob(resumed.ObservedAtMs + Limits.DebounceMs));
+        context = context with
+        {
+            InputEpoch = resumed.InputEpoch,
+            FocusEpoch = resumed.FocusEpoch
+        };
+        var denied = session.Prepare(resumed, context, resumed.ObservedAtMs);
+        Assert.Null(denied.Plan);
+        Assert.Equal(Denial.UnknownOutcome, denied.Reason);
+        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+    });
+
+    [Fact]
+    public Task LegacyOwnedCaptureMessageCannotReadThroughTheCurrentHook() => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(true);
+        await scene.Start(true);
+        using var broker = new BrokerClient();
+        await broker.StartAsync();
+        var descriptor = scene.Descriptor;
+        Assert.NotNull((await broker.CallAsync(new(BrokerProtocol.Version, 0, "capture-owned", "",
+            OwnedCapture: descriptor))).Snapshot); // Proves the real capture hook is installed.
+        byte[] nonce = RandomNumberGenerator.GetBytes(16);
+        ulong first = BitConverter.ToUInt64(nonce, 0), second = BitConverter.ToUInt64(nonce, 8);
+        using var mapping = MemoryMappedFile.CreateNew($"Local\\TypeLay.Input.{first:x16}{second:x16}", 49264);
+        using var view = mapping.CreateViewAccessor();
+        view.Write(0, 2u);
+        view.Write(12, 6u);
+        view.Write(16, (uint)descriptor.ProcessId);
+        view.Write(20, descriptor.ThreadId);
+        view.Write(24, descriptor.ControlHwnd);
+        view.Write(32, descriptor.RootHwnd);
+        view.Write(40, descriptor.NativeCookie);
+        view.Write(48, GetTickCount64() + 500UL);
+        view.Write(96, descriptor.NativeFocusRevision);
+        uint message = RegisterWindowMessageW("TypeLay.NativeInput.OwnedCapture.v1");
+        Assert.NotEqual(0u, message);
+        N.Send(scene.Field, message, (nuint)first, unchecked((nint)second));
+        Assert.Equal(0u, view.ReadUInt32(4));
+        Assert.Equal(0, view.ReadInt32(56));
+        Assert.Equal((ushort)0, view.ReadUInt16(32876)); // First UTF-16 unit of observed.
+        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        // This exercises old wire against the current DLL, not a full old binary.
+    });
+
     [Theory]
     [InlineData(false, true)]
     [InlineData(true, false)]
@@ -444,5 +657,12 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         [FieldOffset(12)] public uint Flags;
     }
     [DllImport("user32.dll")] private static extern nint GetDlgItem(nint window, int id);
+    [DllImport("user32.dll")] private static extern nint GetWindow(nint window, uint command);
+    [DllImport("user32.dll")] private static extern nint GetWindowLongPtrW(nint window, int index);
+    [DllImport("user32.dll")] private static extern nint SetWindowLongPtrW(nint window, int index, nint value);
+    [DllImport("user32.dll")] private static extern bool ShowWindow(nint window, int command);
+    [DllImport("user32.dll")] private static extern bool EnableWindow(nint window, bool enabled);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern uint RegisterWindowMessageW(string name);
+    [DllImport("kernel32.dll")] private static extern ulong GetTickCount64();
     [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint count, KeyInput[] inputs, int size);
 }

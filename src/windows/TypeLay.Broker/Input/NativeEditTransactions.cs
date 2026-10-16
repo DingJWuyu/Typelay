@@ -222,9 +222,11 @@ internal sealed class NativeEditTransactions : IDisposable
             // Owned capture therefore requires its own capability and message;
             // never send op6 through the ordinary v2 registration.
             if (!NativeLibrary.TryGetExport(_library, "TypeLayOwnedCaptureVersion", out nint version)
-                || Marshal.GetDelegateForFunctionPointer<ReadProtocolVersion>(version)() != 1)
+                || Marshal.GetDelegateForFunctionPointer<ReadProtocolVersion>(version)() != 2)
                 return null;
-            _ownedCaptureMessage = RegisterWindowMessageW("TypeLay.NativeInput.OwnedCapture.v1");
+            // v2 repeats dynamic qualification and parent visibility around the
+            // body read. Its separate message cannot be handled by an old DLL.
+            _ownedCaptureMessage = RegisterWindowMessageW("TypeLay.NativeInput.OwnedCapture.v2");
             if (_ownedCaptureMessage == 0)
                 return null;
         }

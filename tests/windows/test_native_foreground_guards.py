@@ -229,6 +229,7 @@ class NativeForegroundGuardTests(unittest.TestCase):
                 10: "unknown wire operation cannot read the source",
                 11: "owned capture requires the exact focus revision before reading",
                 12: "automatic lifetime cannot use ordinary v2 write routes",
+                13: "owned capture rechecks dynamic qualification before and after reading",
             }
             self.assertEqual(
                 result.returncode,

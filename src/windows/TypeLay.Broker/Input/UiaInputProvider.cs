@@ -110,31 +110,102 @@ internal sealed class UiaInputProvider : IDisposable
         }
         if (_ownedCapture is not null)
             Clear();
-        return CaptureCore(request, null);
+        return CaptureCore(request);
     }
 
     public (InputSnapshot?, FocusMember) CaptureOwned(BrokerRequest request)
-    {
-        if (request.Op != "capture-owned" || request.CaptureDirect || request.OwnedCapture is not { } owned
-            || !NativeEditTransactions.IsCurrentOwned(owned))
-        {
-            Clear();
-            return (null, FocusMember.Other);
-        }
-        return CaptureCore(request, owned);
-    }
-
-    private (InputSnapshot?, FocusMember) CaptureCore(BrokerRequest request, OwnedCaptureDescriptor? owned)
     {
         using var trace = CaptureTrace.Start();
         (InputSnapshot?, FocusMember) Reject(string reason)
         {
             trace?.Result(reason);
-            if (owned is not null)
-            {
-                Clear();
-                return (null, FocusMember.Other);
-            }
+            Clear();
+            return (null, FocusMember.Other);
+        }
+        trace?.Stage("owned-identity");
+        if (request.Op != "capture-owned" || request.CaptureDirect || request.OwnedCapture is not { } owned
+            || owned.RootHwnd == request.OverlayHwnd || !NativeEditTransactions.IsCurrentOwned(owned))
+            return Reject("owned-identity-changed");
+
+        // The trusted descriptor selects one exact stock Edit. Reacquire its
+        // metadata on every capture; no cached UIA object proves native focus.
+        trace?.Stage("owned-field-metadata");
+        AutomationElement element;
+        using (_metadataCache.Activate())
+            element = AutomationElement.FromHandle((nint)owned.ControlHwnd);
+        var info = element.Cached;
+        if (info.ProcessId != owned.ProcessId || info.NativeWindowHandle != owned.ControlHwnd
+            || (info.ControlType != ControlType.Edit && info.ControlType != ControlType.Document)
+            || !NativeEditTransactions.IsCurrentOwned(owned))
+            return Reject("owned-identity-changed");
+        if (element.GetCachedPropertyValue(AutomationElement.IsPasswordProperty, true) is not false
+            || element.GetCachedPropertyValue(AutomationElement.IsEnabledProperty, true) is not true
+            || element.GetCachedPropertyValue(AutomationElement.IsOffscreenProperty, true) is not false)
+            return Reject("owned-field-metadata-missing");
+
+        trace?.Stage("process-identity");
+        using var process = Process.GetProcessById(owned.ProcessId);
+        long start = process.StartTime.ToUniversalTime().Ticks;
+        if (start != owned.ProcessStartUtcTicks)
+            return Reject("owned-process-changed");
+        string app = process.ProcessName.ToLowerInvariant();
+        string token = string.Join('.', element.GetRuntimeId());
+        if (_quarantine.Contains((owned.ProcessId, start, token)))
+            return Reject("quarantined-target");
+
+        // ES_READONLY is live stock-Edit metadata, not a promise made by the
+        // practice configuration. Native op6 qualifies it again before reading.
+        long style = (long)GetWindowLongPtrW((nint)owned.ControlHwnd, -16);
+        if (Marshal.GetLastPInvokeError() != 0 || (style & 0x40000000) == 0)
+            return Reject("owned-style-unavailable");
+        var ariaProperty = AutomationProperty.LookupById(30102);
+        string aria = ariaProperty is null ? "" : element.GetCachedPropertyValue(ariaProperty, true) as string ?? "";
+        var metadata = new FieldMetadata(app, info.Name ?? "", info.AutomationId ?? "", info.HelpText ?? "",
+            aria, info.IsPassword, info.IsEnabled, (style & 0x800) != 0, info.IsOffscreen,
+            false, (style & 4) != 0, false, false);
+        if (!FieldPolicy.Allows(metadata, request.Excluded ?? []))
+            return Reject("field-policy");
+        var rect = info.BoundingRectangle;
+        var bounds = new RectPx(rect.X, rect.Y, rect.Width, rect.Height);
+        if (!bounds.IsValid || !GetWindowRect((nint)owned.RootHwnd, out var windowRect)
+            || !bounds.Intersects(new(windowRect.Left, windowRect.Top, windowRect.Right - windowRect.Left,
+                windowRect.Bottom - windowRect.Top)))
+            return Reject("invalid-bounds");
+
+        var idBytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{owned.ProcessId}/{start}/{owned.RootHwnd}/{token}"));
+        var id = new WindowsTarget(owned.ProcessId, start, owned.RootHwnd, owned.ControlHwnd,
+            NativeEditTransactions.Provider, token, new Guid(idBytes.AsSpan(0, 16)));
+        trace?.Stage("native-capture");
+        // Only native op6 reads the body/selection and establishes IME Clear.
+        // Failure cannot fall through to the ordinary UIA capture/write route.
+        if (!NativeEditTransactions.IsCurrentOwned(owned)
+            || _edits.CaptureOwned(id, owned, bounds, _inputEpoch) is not { } captured)
+            return Reject("owned-native-unavailable");
+        if (!NativeEditTransactions.IsCurrentOwned(owned))
+            return Reject("owned-focus-changed");
+        if (_previous?.Target != captured.Target || _previous.Text != captured.Text
+            || _lastSourceUserEpoch != request.SourceUserEpoch)
+            _inputEpoch++;
+        _lastSourceUserEpoch = request.SourceUserEpoch;
+        _lastFocus = FocusMember.Source;
+        _element = element;
+        _application = app;
+        _ownedCapture = owned;
+        _previous = captured with
+        {
+            InputEpoch = _inputEpoch,
+            FocusEpoch = owned.NativeFocusRevision
+        };
+        trace?.Result("observed-owned-native");
+        return (_previous, FocusMember.Source);
+    }
+
+    private (InputSnapshot?, FocusMember) CaptureCore(BrokerRequest request)
+    {
+        using var trace = CaptureTrace.Start();
+        (InputSnapshot?, FocusMember) Reject(string reason)
+        {
+            trace?.Result(reason);
             return Unavailable(request);
         }
         trace?.Stage("foreground");
@@ -157,15 +228,6 @@ internal sealed class UiaInputProvider : IDisposable
         if (_native.BindFocused() != token)
             return Reject("focused-identity-changed");
         var info = element.Cached;
-        if (owned is not null && (info.ProcessId != owned.ProcessId
-            || info.NativeWindowHandle != owned.ControlHwnd || (long)foreground != owned.RootHwnd
-            || !NativeEditTransactions.IsCurrentOwned(owned)))
-            return Reject("owned-identity-changed");
-        if (owned is not null
-            && (element.GetCachedPropertyValue(AutomationElement.IsPasswordProperty, true) is not false
-                || element.GetCachedPropertyValue(AutomationElement.IsEnabledProperty, true) is not true
-                || element.GetCachedPropertyValue(AutomationElement.IsOffscreenProperty, true) is not false))
-            return Reject("owned-field-metadata-missing");
         bool comboBox = info.ControlType == ControlType.ComboBox;
         if (info.ControlType != ControlType.Edit && info.ControlType != ControlType.Document && !comboBox)
             return Reject("not-edit-control");
@@ -182,8 +244,6 @@ internal sealed class UiaInputProvider : IDisposable
             || app is "typelay.app" or "typelay.broker")
             return Reject("excluded-application");
         long start = process.StartTime.ToUniversalTime().Ticks;
-        if (owned is not null && start != owned.ProcessStartUtcTicks)
-            return Reject("owned-process-changed");
         if (_quarantine.Contains((info.ProcessId, start, token)))
             return Reject("quarantined-target");
         nint root = foreground;
@@ -244,31 +304,6 @@ internal sealed class UiaInputProvider : IDisposable
         var id = new WindowsTarget(info.ProcessId, start, (long)root, info.NativeWindowHandle,
             value is null ? "uia-text-preview-v2" : "uia-value-text-v2", token, new Guid(idBytes.AsSpan(0, 16)));
         trace?.Stage("native-capture");
-        if (owned is not null)
-        {
-            // The descriptor only selects this exact field. A failed native
-            // qualification must never fall through to UIA body reads or writes.
-            if (comboBox || !StillFocused(root, token) || !NativeEditTransactions.IsCurrentOwned(owned)
-                || _edits.CaptureOwned(id, owned, bounds, _inputEpoch) is not { } captured)
-                return Reject("owned-native-unavailable");
-            if (!StillFocused(root, token) || !NativeEditTransactions.IsCurrentOwned(owned))
-                return Reject("owned-focus-changed");
-            if (_previous?.Target != captured.Target || _previous.Text != captured.Text
-                || _lastSourceUserEpoch != request.SourceUserEpoch)
-                _inputEpoch++;
-            _lastSourceUserEpoch = request.SourceUserEpoch;
-            _lastFocus = FocusMember.Source;
-            _element = element;
-            _application = app;
-            _ownedCapture = owned;
-            _previous = captured with
-            {
-                InputEpoch = _inputEpoch,
-                FocusEpoch = owned.NativeFocusRevision
-            };
-            trace?.Result("observed-owned-native");
-            return (_previous, FocusMember.Source);
-        }
         if (!comboBox && request.CaptureDirect && _edits.Capture(id, bounds, _inputEpoch, _focusEpoch) is { } direct)
         {
             trace?.Stage("focus-recheck");
@@ -593,6 +628,7 @@ internal sealed class UiaInputProvider : IDisposable
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
     [DllImport("user32.dll")] private static extern nint GetAncestor(nint hwnd, uint flags);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint hwnd, out uint processId);
+    [DllImport("user32.dll", SetLastError = true)] private static extern nint GetWindowLongPtrW(nint hwnd, int index);
     [DllImport("user32.dll")][return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetWindowRect(nint hwnd, out Rectangle rect);
     [DllImport("user32.dll")][return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetForegroundWindow(nint hwnd);
 }

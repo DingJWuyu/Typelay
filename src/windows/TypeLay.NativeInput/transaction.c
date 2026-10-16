@@ -25,10 +25,17 @@ API uint32_t GetCurrentThreadId(void);
 API uint32_t GetCurrentProcessId(void);
 API uint32_t GetWindowThreadProcessId(HANDLE, uint32_t *);
 API HANDLE GetAncestor(HANDLE, uint32_t);
+API HANDLE GetParent(HANDLE);
 API HANDLE GetForegroundWindow(void);
 API HANDLE GetFocus(void);
 API int IsWindowUnicode(HANDLE);
 API int IsWindowEnabled(HANDLE);
+API int IsWindowVisible(HANDLE);
+API int IsIconic(HANDLE);
+typedef struct { int32_t x, y; } Point;
+typedef struct { int32_t left, top, right, bottom; } Rect;
+API int GetClientRect(HANDLE, Rect *);
+API int ClientToScreen(HANDLE, Point *);
 API intptr_t GetWindowLongPtrW(HANDLE, int);
 API intptr_t GetClassLongPtrW(HANDLE, int);
 typedef struct {
@@ -70,7 +77,7 @@ static const WCHAR focus_property[] = L"TypeLay.OwnedFocusRevision.v1";
 // never create, remove or rotate it. The process pins this DLL for that lifetime.
 static struct { HANDLE hwnd; uint32_t thread; uint64_t cookie, focus_revision; int retired, automatic; } owned;
 static const WCHAR message_name[] = L"TypeLay.NativeInput.Transaction.v2";
-static const WCHAR owned_capture_message_name[] = L"TypeLay.NativeInput.OwnedCapture.v1";
+static const WCHAR owned_capture_message_name[] = L"TypeLay.NativeInput.OwnedCapture.v2";
 
 __declspec(dllexport) uint32_t TypeLayNativeProtocolVersion(void) { return VERSION; }
 
@@ -213,6 +220,31 @@ __declspec(dllexport) uint64_t TypeLayOwnedFocusRevision(HANDLE hwnd, uint32_t o
 static int owned_focus_current(uint64_t expected) {
     return !expected || (owned.focus_revision == expected && !owned.retired);
 }
+static int client_bounds(HANDLE hwnd, Rect *bounds) {
+    Rect client;
+    if (!GetClientRect(hwnd, &client) || client.right <= client.left || client.bottom <= client.top) return 0;
+    Point first = {client.left, client.top}, last = {client.right, client.bottom};
+    if (!ClientToScreen(hwnd, &first) || !ClientToScreen(hwnd, &last)
+        || last.x <= first.x || last.y <= first.y) return 0;
+    bounds->left = first.x; bounds->top = first.y; bounds->right = last.x; bounds->bottom = last.y;
+    return 1;
+}
+static int owned_capture_current(Transaction *tx, uint64_t revision) {
+    HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd, root = (HANDLE)(uintptr_t)tx->root;
+    uint32_t pid = 0;
+    Rect control, parent;
+    // The trusted practice is one direct child, not a general clipping-tree
+    // adapter. IsWindowVisible alone does not detect scrolling out of its parent.
+    // Keep this stricter read gate exclusive to owned op6, never ordinary op1-5.
+    if (!qualify(tx) || GetParent(hwnd) != root
+        || GetWindowThreadProcessId(root, &pid) != tx->thread || pid != tx->pid
+        || !IsWindowEnabled(root) || !IsWindowVisible(root) || !IsWindowVisible(hwnd) || IsIconic(root)
+        || !client_bounds(hwnd, &control) || !client_bounds(root, &parent)
+        || control.right <= parent.left || control.left >= parent.right
+        || control.bottom <= parent.top || control.top >= parent.bottom) return 0;
+    return owned_current(tx) && owned_focus_current(revision) && foreground_source(tx)
+        && (uint64_t)(uintptr_t)GetPropW(hwnd, property) == tx->cookie;
+}
 static int read_text(Transaction *tx, WNDPROC proc) {
     HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd;
     LRESULT length = CallWindowProcW(proc, hwnd, 0x0e, 0, 0);
@@ -246,14 +278,13 @@ static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accep
     if (cookie != tx->cookie) { tx->reason = 2; return; }
     tx->ime = ime(hwnd);
     if (tx->ime != 1) { tx->reason = 9; return; }
-    if (tx->op == 6 && (!owned_current(tx) || !owned_focus_current(focus_revision)
-        || !foreground_source(tx))) { tx->reason = 10; return; }
+    // IMM may reenter. Qualification and visibility must still hold afterwards,
+    // immediately before the first source-body read.
+    if (tx->op == 6 && !owned_capture_current(tx, focus_revision)) { tx->reason = 10; return; }
     int observed = read_text(tx, proc) - 1;
     if (observed < 0) { tx->reason = 16; return; }
     if (tx->op == 1 || tx->op == 4 || tx->op == 6) {
-        if (tx->op == 6 && (!owned_current(tx) || !owned_focus_current(focus_revision)
-            || !foreground_source(tx) || ime(hwnd) != 1
-            || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie)) { tx->reason = 10; return; }
+        if (tx->op == 6 && (ime(hwnd) != 1 || !owned_capture_current(tx, focus_revision))) { tx->reason = 10; return; }
         tx->length = observed;
         tx->status = 1; tx->reason = 0; return;
     }
@@ -320,7 +351,7 @@ static void execute(Transaction *tx) {
     execute_guarded(tx, 0, 0);
 }
 
-__declspec(dllexport) uint32_t TypeLayOwnedCaptureVersion(void) { return 1; }
+__declspec(dllexport) uint32_t TypeLayOwnedCaptureVersion(void) { return 2; }
 static void execute_owned_capture(Transaction *tx) {
     // This independent message uses offset 96 as ExpectedFocusRevision, never
     // an authorization deadline. The old v2 route does not recognize op6.
