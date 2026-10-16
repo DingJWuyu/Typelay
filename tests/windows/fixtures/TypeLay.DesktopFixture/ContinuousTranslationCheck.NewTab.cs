@@ -25,6 +25,9 @@ internal static partial class ContinuousTranslationCheck
         string sourceDirectory = Path.Combine(directory, "chrome-new-tab", "source");
         int shortcutAttempts = 0;
         uint shortcutInputsInserted = 0;
+        int sourceObservationCount = 0;
+        double sourceObservationTotalMs = 0, sourceObservationMaxMs = 0, lastSourceObservationMs = 0;
+        double? beforeShortcutObservationMs = null;
         try
         {
             await UntilAsync(() => { Require(model.Ready, "model-unavailable"); return !model.Busy; }, cancellation);
@@ -59,17 +62,38 @@ internal static partial class ContinuousTranslationCheck
             await controller.StartAsync().WaitAsync(cancellation);
             var editor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
             TargetId? target = null;
-            void RequireSource()
+            async Task RequireSourceAsync()
             {
-                string focus = windows.NewTabFocus(window, field);
+                cancellation.ThrowIfCancellationRequested();
+                // UIA ancestor reads must not occupy the WPF dispatcher that
+                // also schedules production captures. Await each read fully;
+                // never leave a timed-out read racing source cleanup or input.
+                string focus = await Task.Run(() =>
+                {
+                    Require(Thread.CurrentThread.GetApartmentState() == ApartmentState.MTA,
+                        "new-tab-observer-apartment");
+                    var observation = Stopwatch.StartNew();
+                    try
+                    {
+                        return windows.NewTabFocus(window, field);
+                    }
+                    finally
+                    {
+                        lastSourceObservationMs = observation.Elapsed.TotalMilliseconds;
+                        sourceObservationCount++;
+                        sourceObservationTotalMs += lastSourceObservationMs;
+                        sourceObservationMaxMs = Math.Max(sourceObservationMaxMs, lastSourceObservationMs);
+                    }
+                }, cancellation);
+                cancellation.ThrowIfCancellationRequested();
                 Require(focus == "source", "new-tab-" + focus);
                 Require(broker.WriteRequests == 0, "new-tab-write-requested");
                 Require(model.Ready, "model-unavailable");
                 Require(feedbackCode is null, "new-tab-production-feedback");
             }
-            InputSnapshot? Captured(string expected, int afterCapture)
+            async Task<InputSnapshot?> CapturedAsync(string expected, int afterCapture)
             {
-                RequireSource();
+                await RequireSourceAsync();
                 if (broker.Captures <= afterCapture || broker.LatestCapture is not { Focus: FocusMember.Source, Snapshot: { } snapshot })
                     return null;
                 Require(WindowsTarget.TryDecode(snapshot.Target, out var native)
@@ -86,38 +110,44 @@ internal static partial class ContinuousTranslationCheck
                 target = snapshot.Target;
                 return snapshot;
             }
+            async Task UntilObservedAsync(Func<Task<bool>> condition)
+            {
+                while (!await condition())
+                    await Task.Delay(20, cancellation);
+                cancellation.ThrowIfCancellationRequested();
+            }
             async Task<InputSnapshot> WaitPreviewAsync(int index, int afterCapture, Stopwatch elapsed, Action<long> previewSeen)
             {
                 InputSnapshot? captured = null;
                 bool reported = false;
-                await UntilAsync(() =>
+                await UntilObservedAsync(async () =>
                 {
-                    captured = Captured(sources[index], afterCapture);
+                    captured = await CapturedAsync(sources[index], afterCapture);
                     if (captured is not null && !reported)
                     {
                         reported = true;
                         RecordSnapshot(result.Stage, captured);
                     }
                     return captured is not null && VisibleTranslation(overlay, editor) && editor.Text == translations[index];
-                }, cancellation);
+                });
                 previewSeen(elapsed.ElapsedMilliseconds);
                 // Confirm the original source again using the controller's next
                 // natural capture after the translated preview became visible.
                 int atPreview = broker.Captures;
-                await UntilAsync(() =>
+                await UntilObservedAsync(async () =>
                 {
-                    captured = Captured(sources[index], atPreview);
+                    captured = await CapturedAsync(sources[index], atPreview);
                     return captured is not null && VisibleTranslation(overlay, editor) && editor.Text == translations[index];
-                }, cancellation);
+                });
                 return captured!;
             }
-            void Append(int index)
+            async Task AppendAsync(int index)
             {
-                RequireSource();
+                await RequireSourceAsync();
                 if (index != 0)
                 {
                     BrowserWindows.Keys(0x23);
-                    RequireSource();
+                    await RequireSourceAsync();
                 }
                 BrowserWindows.TypeText(additions[index]);
             }
@@ -130,12 +160,12 @@ internal static partial class ContinuousTranslationCheck
             result.Stage = "new-tab-automatic-first-preview";
             int before = broker.Captures;
             var elapsed = Stopwatch.StartNew();
-            Append(0);
+            await AppendAsync(0);
             var first = await WaitPreviewAsync(0, before, elapsed, value => automatic.FirstPreviewMs = value);
             automatic.FirstCapture = NewTabSnapshotFacts.From(first);
             result.Stage = "new-tab-automatic-refreshed-preview";
             before = broker.Captures;
-            Append(1);
+            await AppendAsync(1);
             var refreshed = await WaitPreviewAsync(1, before, elapsed, value => automatic.RefreshedPreviewMs = value);
             Require(refreshed.InputEpoch > first.InputEpoch && refreshed.ObservedAtMs >= first.ObservedAtMs
                 && translations[1] != translations[0], "new-tab-automatic-preview-not-refreshed");
@@ -146,27 +176,36 @@ internal static partial class ContinuousTranslationCheck
             active = onDemand;
             onDemand.Outcome = "running";
             result.Stage = "new-tab-on-demand-mode";
-            settings.Update(settings.Value with { Mode = WorkMode.OnDemand });
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.OnDemand
+            });
             Require(!settings.Value.ExperimentalWriteback && settings.Value.Mode == WorkMode.OnDemand,
                 "new-tab-settings-mismatch");
             Require(TranslationShortcut.TryParse(settings.Value.WakeShortcut, out var shortcut)
                 && shortcut!.Modifiers == (ShortcutModifiers.Control | ShortcutModifiers.Shift) && shortcut.Key == "F9",
                 "new-tab-configured-shortcut-mismatch");
             configuredWake = shortcut!.ToString();
-            await UntilAsync(() => { RequireSource(); return !overlay.IsVisible; }, cancellation);
+            await UntilObservedAsync(async () =>
+            {
+                await RequireSourceAsync();
+                return !overlay.IsVisible;
+            });
             result.Stage = "new-tab-on-demand-inactive-input";
             before = broker.Captures;
-            Append(2);
-            await UntilAsync(() =>
+            await AppendAsync(2);
+            await UntilObservedAsync(async () =>
             {
+                var captured = await CapturedAsync(sources[2], before);
                 Require(!overlay.IsVisible, "new-tab-preview-before-shortcut");
-                return Captured(sources[2], before) is not null;
-            }, cancellation);
+                return captured is not null;
+            });
             // A capture is not a native lease ACK. Send once at this observable
             // boundary; never wait for a publish log, add a delay, or retry F9.
+            await RequireSourceAsync();
+            beforeShortcutObservationMs = lastSourceObservationMs;
             Require(new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x78 }.All(key => GetAsyncKeyState(key) >= 0),
                 "new-tab-key-already-down");
-            RequireSource();
             result.Stage = "new-tab-on-demand-shortcut";
             before = broker.Captures;
             elapsed.Restart();
@@ -176,7 +215,7 @@ internal static partial class ContinuousTranslationCheck
             onDemand.FirstCapture = NewTabSnapshotFacts.From(first);
             result.Stage = "new-tab-on-demand-refreshed-preview";
             before = broker.Captures;
-            Append(3);
+            await AppendAsync(3);
             refreshed = await WaitPreviewAsync(3, before, elapsed, value => onDemand.RefreshedPreviewMs = value);
             Require(refreshed.InputEpoch > first.InputEpoch && refreshed.ObservedAtMs >= first.ObservedAtMs
                 && translations[3] != translations[2], "new-tab-on-demand-preview-not-refreshed");
@@ -225,7 +264,14 @@ internal static partial class ContinuousTranslationCheck
                 writeRequests = broker?.WriteRequests,
                 submitCounterAvailable = false,
                 enterInputsInserted = 0,
-                submitActionsInserted = 0
+                submitActionsInserted = 0,
+                sourceObservation = new
+                {
+                    count = sourceObservationCount,
+                    totalMs = Math.Round(sourceObservationTotalMs, 2),
+                    maxMs = Math.Round(sourceObservationMaxMs, 2),
+                    beforeShortcutMs = beforeShortcutObservationMs is { } observed ? Math.Round(observed, 2) : (double?)null
+                }
             };
         }
         Console.WriteLine($"Chrome new tab model: {result.Outcome}; automatic={automatic.Outcome}; onDemand={onDemand.Outcome}; stage={result.Stage}; code={result.Failure}.");
