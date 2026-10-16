@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Runtime.ExceptionServices;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -289,7 +290,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             import json, struct, sys
             size = struct.unpack("<i", sys.stdin.buffer.read(4))[0]
             request = json.loads(sys.stdin.buffer.read(size))
-            reply = json.dumps({"id": request["id"], "status": "ready"}).encode()
+            reply = json.dumps({"id": request["id"], "status": "ready", "directions": json.loads(sys.argv[1])}).encode()
             sys.stdout.buffer.write(struct.pack("<i", len(reply)) + reply)
             sys.stdout.buffer.flush()
             sys.stdin.buffer.read()
@@ -307,6 +308,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             start.ArgumentList.Add("-I");
             start.ArgumentList.Add("-B");
             start.ArgumentList.Add(worker);
+            start.ArgumentList.Add(JsonSerializer.Serialize(ModelCatalog.Directions.Select(direction => direction.Id)));
             return new ChildProcess(start);
         });
     }
