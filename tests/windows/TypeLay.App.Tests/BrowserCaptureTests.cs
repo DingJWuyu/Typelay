@@ -98,6 +98,8 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
                     startupChanges++;
                 output.WriteLine($"Browser startup {(final ? "final" : "change")} elapsedMs={startup.ElapsedMilliseconds}: {state}");
             }
+            // Cold browser/profile preparation shares the total cancellation budget.
+            // Each subsequent source observation keeps its own six-second limit.
             do
             {
                 var observed = windows.Read();
@@ -119,7 +121,7 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
                         break;
                 }
                 await Task.Delay(40, deadline.Token);
-            } while (startup.Elapsed < TimeSpan.FromSeconds(6));
+            } while (true);
             var ready = windows.Read();
             RecordStartupState(ready.Length, ready.Count(candidate => candidate.Page), final: true);
             output.WriteLine($"Browser startup atMs={WindowsInterruptClock.NowMs}: ownedProcesses={windows.ProcessCount}; "
