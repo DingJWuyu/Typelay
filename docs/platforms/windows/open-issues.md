@@ -39,7 +39,7 @@ Windows 与 Linux 并行开发，遵循[共同应用支持与完整体验](../..
 
 当前实现增加 ComboBox 的只读预览路径，但必须同时具有可编辑 ValuePattern 和明确可编辑的 TextPattern；普通选择器、密码、只读或未聚焦字段仍被拒绝。此路径不授予 Tab 或 F10 写回能力。[Windows 实际回归](https://github.com/DingJWuyu/Typelay/actions/runs/38427227828)已通过受控 WPF UIA ComboBox 到生产 Broker 的无标点采集、追加后版本更新，以及选择器/密码/只读拒绝；它没有启动模型，也不是 Chrome 新标签页实测。
 
-[当前新标签页实测](https://github.com/DingJWuyu/Typelay/actions/runs/38833026609)已确认隔离 Chrome 的内部页身份、唯一中央编辑框及点击后的精确焦点。生产 Broker 的合成原文与无标点追加采集通过，真实模型的自动模式首译和追加刷新也已通过，原文、焦点与内部 Document 保持；本轮没有写请求。按需模式的一次配置唤醒键因观察已超过 150ms 而拒绝，尚未验证按需预览。该场景先用 UIA 定位，已预热可访问性树，不能外推冷启动首次捕获或用户输入法；测试同步身份观察与产品定时器同在 WPF 线程的干扰正在分离。浏览器目录清理仍报告文件占用，自有 Job 归零与已持有进程退出已确认，锁持有者未知。
+[当前新标签页实测](https://github.com/DingJWuyu/Typelay/actions/runs/38834570056)已确认隔离 Chrome 的内部页身份、唯一中央编辑框及点击后的精确焦点。生产 Broker 的合成原文与无标点追加采集通过；真实模型的自动模式和单次 `Ctrl+Shift+F9` 按需模式均完成首译与追加刷新，原文、焦点与内部 Document 保持。实验写回关闭，写请求和 Enter 动作为零；新标签页没有提交计数器，不能据此声称已验证所有提交路径。该场景先用 UIA 定位，已预热可访问性树，不能外推冷启动首次捕获或用户输入法，也不证明快捷键在所有环境均可靠。测试身份观察已移离产品 WPF 调度线程。浏览器目录清理仍报告文件占用，自有 Job 归零与已持有进程退出已确认，锁持有者未知，整例仍红。
 
 固定版本来源：[新标签页输入模板](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/ui/webui/resources/cr_components/searchbox/searchbox_input.html.ts#L24-L54)、[Blink 的可编辑组合框角色](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/third_party/blink/renderer/modules/accessibility/ax_object.cc#L6252-L6275)、[Windows UIA 类型映射](https://github.com/chromium/chromium/blob/3ff7ac5a9224be9156d7f8703a06e22890aafd34/ui/accessibility/platform/ax_platform_node_win.cc#L1502-L1512)。检查到的中央框焦点/输入事件更新本地搜索框并请求补全，未要求迁到顶栏；其他版本/配置仍需观察，不能只从源码保证行为相同。
 
