@@ -1,5 +1,6 @@
-"""Fault-inject the production C algorithm, not real Windows event reentrancy."""
+"""Production algorithm guards and a separate, one-shot Windows API-stack observation."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -9,6 +10,124 @@ from pathlib import Path
 
 
 class NativeForegroundGuardTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Real WinEvent observation requires Windows x64.")
+    def test_stock_edit_winevent_observation_completes(self):
+        root = Path(__file__).resolve().parents[2]
+        evidence = root / "artifacts/test-results/winevent-stack-probe.json"
+        evidence.parent.mkdir(parents=True, exist_ok=True)
+        record = {"schemaVersion": 1, "result": "error", "stage": "build-test-dll"}
+        try:
+            compiler, linker = shutil.which("clang"), shutil.which("lld-link")
+            self.assertIsNotNone(compiler, "The Windows native build requires LLVM.")
+            self.assertIsNotNone(linker, "The Windows native build requires lld-link.")
+            with tempfile.TemporaryDirectory(prefix="typelay-winevent-probe-") as directory:
+                work = Path(directory)
+                libraries = {
+                    "kernel32": ["GetCurrentThreadId", "GetCurrentProcessId"],
+                    "user32": [
+                        "GetWindowThreadProcessId",
+                        "GetAncestor",
+                        "GetForegroundWindow",
+                        "GetFocus",
+                        "IsWindowVisible",
+                        "IsWindowUnicode",
+                        "IsWindowEnabled",
+                        "GetWindowLongPtrW",
+                        "GetClassLongPtrW",
+                        "GetClassNameW",
+                        "GetClassInfoW",
+                        "CallWindowProcW",
+                        "SetWinEventHook",
+                        "UnhookWinEvent",
+                    ],
+                }
+                for library, exports in libraries.items():
+                    definition = work / f"{library}.def"
+                    definition.write_text(
+                        f"LIBRARY {library}.dll\nEXPORTS\n" + "\n".join(exports) + "\n",
+                        encoding="utf-8",
+                    )
+                    self.run_checked(
+                        [
+                            linker,
+                            "/lib",
+                            "/machine:x64",
+                            f"/def:{definition}",
+                            f"/out:{work / (library + '.lib')}",
+                        ]
+                    )
+                obj, dll = work / "probe.obj", work / "TypeLay.WinEventProbe.dll"
+                self.run_checked(
+                    [
+                        compiler,
+                        "--target=x86_64-pc-windows-msvc",
+                        "-std=c11",
+                        "-O2",
+                        "-ffreestanding",
+                        "-fno-builtin",
+                        "-fno-stack-protector",
+                        "-Wall",
+                        "-Wextra",
+                        "-Werror",
+                        "-c",
+                        str(root / "tests/windows/native/winevent_stack_probe.c"),
+                        "-o",
+                        str(obj),
+                    ]
+                )
+                self.run_checked(
+                    [
+                        linker,
+                        "/dll",
+                        "/machine:x64",
+                        "/entry:DllMain",
+                        "/nodefaultlib",
+                        "/dynamicbase",
+                        "/highentropyva",
+                        "/nxcompat",
+                        "/Brepro",
+                        f"/implib:{work / 'probe.lib'}",
+                        f"/out:{dll}",
+                        str(obj),
+                        *(str(work / (library + ".lib")) for library in libraries),
+                    ]
+                )
+                record["stage"] = "run-fixture"
+                fixture = root / (
+                    "tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/"
+                    "TypeLay.NativeFixture.dll"
+                )
+                self.assertTrue(fixture.is_file(), "Build the Release NativeFixture first.")
+                try:
+                    result = subprocess.run(
+                        ["dotnet", str(fixture), "--winevent-stack-probe", str(dll)],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                except subprocess.TimeoutExpired:
+                    record["stage"] = "fixture-timeout"
+                    raise
+                parsed = json.loads(result.stdout)
+                self.assertIsInstance(parsed, dict)
+                record = parsed
+                self.assertEqual(result.returncode, 0, record)
+                self.assertIn(record["result"], ("observed", "not-observed"))
+                self.assertEqual(record["nativeStatus"], 0)
+                self.assertEqual(record["hooksInstalled"], 2)
+                self.assertEqual(record["hooksRemoved"], 2)
+                self.assertEqual(record["setSelCalls"], 1)
+                self.assertEqual(record["initialSelection"], [0, 0])
+                self.assertEqual(record["finalSelection"], [4, 7])
+                inside = record["caretLocationInside"] + record["textSelectionInside"]
+                self.assertEqual(record["result"] == "observed", inside > 0)
+                for event in ("caretLocation", "textSelection"):
+                    self.assertGreaterEqual(record[event + "Events"], record[event + "Inside"])
+                # Completion with zero callbacks is a valid negative observation,
+                # never proof that production reentrancy/retirement was exercised.
+        finally:
+            evidence.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+
     def test_post_selection_changes_cannot_reach_text_mutation(self):
         source = Path(__file__).resolve().parent / "native/foreground_guards.c"
         with tempfile.TemporaryDirectory(prefix="typelay-native-guards-") as directory:

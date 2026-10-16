@@ -71,6 +71,8 @@ dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release 
 
 该算法程序也调用生产 owned 登记/开始/退休导出，验证退休后旧 op1/op3/op4/op2/op5 被拒及新 run 中旧 op3/op1 不能复活；仍不替代 Windows wire。`ProductionForegroundWriteTests` 的 owned 模式使用同一生产 DLL 和未修改的 Edit，覆盖退休 ACK 后旧请求拒绝、新 run 的 Undo 正例，以及已实际排队的旧事务先收束再 ACK；GUI barrier 不证明退休消息已在释放前入队。搬迁包练习测试实际执行生产 begin/retire/begin/close 握手，验证 DLL 随包可用与寿命换代。
 
+同一 Python 入口在 Windows x64 另运行一次独立 WinEvent 可观察性 probe，需要已构建的 Release NativeFixture 和可交互桌面。它临时编译 `tests/windows/native/winevent_stack_probe.c` 为测试专用 DLL，仅由自有 fixture 显式加载，不进入发行包。显示并聚焦未修改的 stock Edit，先设置普通折叠 caret，再针对当前 PID/TID 注册两个精确类别的 [WINEVENT_INCONTEXT hook](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwineventhook)，只计数自有字段的 caret location 与 text selection 回调。唯一真实 `CallWindowProcW(EM_SETSEL, 4, 7)` 调用前后设/清栈内标记，不读正文、不注入事件、不嵌套消息泵。[EM_SETSEL](https://learn.microsoft.com/en-us/windows/win32/controls/em-setsel) 没有保证一定产生这些事件；单份 `artifacts/test-results/winevent-stack-probe.json` 的 `observed` 只证明该 API 栈内回调出现，`not-observed` 是完成观测后的负结果，前置、挂 hook、选区结果或清理失败为 `error`。测试成功只表示完成观测，不能替代生产 execute 或 owned 退休重入证明；无事件时不自动换场景或扩大矩阵。
+
 [654906ed 的 Windows 实跑](https://github.com/DingJWuyu/Typelay/actions/runs/38760488940/job/116510216177)已通过 22 项前台事务回归（含两项 owned 退休 wire）、5 项生产练习生命周期、11 项练习管道，以及 16 项受控原生适配器和 15 项打包检查。真实 DLL 构建、完整格式检查、搬迁包 begin/retire/begin/close 握手均通过；真实模型按需练习取得 verified，重启进度和关闭保留设置均通过。App 测试为 129 过、1 失败；唯一失败是 Chrome 页面/窗口/DOM 焦点启动前置，尚未进入输入捕获，完整作业仍未通过。`EM_SETSEL` 内同步重入导致的期限/焦点变化尚无不修改 stock Edit 的确定性触发证据；系统 API 替身的算法故障注入不等于该 OS 行为已实测。真实同步重入证明仍是完整教程授权启用前的阻塞项。此片不验证完整自动教程、练习授权、物理按键所有权或第三方应用支持。
 
 ## 暂停入口回归

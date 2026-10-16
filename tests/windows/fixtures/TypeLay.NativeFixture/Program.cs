@@ -18,6 +18,8 @@ internal static class Program
             Console.Error.WriteLine("Native fixture requires Windows x64.");
             return 2;
         }
+        if (args.Length == 2 && args[0] == "--winevent-stack-probe" && Path.IsPathFullyQualified(args[1]))
+            return WinEventStackProbe.Run(args[1]);
         bool hookTest = args.Length == 1 && args[0] is "--hook-test" or "--hook-test-automation";
         bool ownedControls = args.Length == 4 && args[0] == "--owned-controls"
             && Path.IsPathFullyQualified(args[1]) && Guid.TryParse(args[2], out _ownedConnection)
