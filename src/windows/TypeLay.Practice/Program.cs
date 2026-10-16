@@ -849,13 +849,6 @@ internal static partial class Program
             || WindowsInterruptClock.NowMs >= _returnExpiresAt)
             throw new InvalidDataException("practice-return-resume");
         _returnResumed = true;
-        if (control.Kind == OwnedReturnKind.Tab)
-        {
-            if (Native.GetForegroundWindow() != _window || _edit is null)
-                InvalidateSourceReturn(EditorReason.Root);
-            else
-                Native.SetFocus(_edit.Handle);
-        }
     }
 
     private static void ObserveReturnApp(nuint activation, nint peerThread)

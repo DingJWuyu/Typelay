@@ -444,6 +444,7 @@ internal static partial class ContinuousTranslationCheck
             }
             progress = controller.AutomaticPracticeProgress!;
             int returnCount = input.Returns.Count;
+            var returnBinding = input.LastCapture?.OwnedSource?.Binding;
             result.Stage = prefix + "-input";
             if (kind == OwnedReturnKind.Tab)
                 SendOwnedTab(result.CleanupErrors);
@@ -453,9 +454,19 @@ internal static partial class ContinuousTranslationCheck
                 Require(SetOwnedCursorPos(bounds.Left + 6, bounds.Top + 8), "owned-source-mouse-pointer");
                 SendOwnedClick(result.CleanupErrors); // Original down/up must reach the stock Edit.
             }
-            await UntilAsync(() => N.Focused() == (root, field) && editor.IsReadOnly
-                && controller.AutomaticPracticeProgress is { ReturnedToSource: true } returned
-                && returned.CommandGeneration != progress.CommandGeneration && OwnedAcceptanceVisible(overlay), cancellation);
+            result.Stage = prefix + "-proof";
+            await UntilAsync(() =>
+            {
+                if (input.Returns.Count == returnCount + 1 && returnBinding is { } binding
+                    && binding.RunId == progress.RunId && binding.ConnectionId == progress.ConnectionId
+                    && binding.CommandGeneration == progress.CommandGeneration && binding.Target == target
+                    && input.Returns[returnCount] is { Request.PracticeReturn: { } request, Result.Returned: false }
+                    && request.Binding == binding)
+                    throw new CheckFailure(prefix + "-rejected");
+                return N.Focused() == (root, field) && editor.IsReadOnly
+                    && controller.AutomaticPracticeProgress is { ReturnedToSource: true } returned
+                    && returned.CommandGeneration != progress.CommandGeneration && OwnedAcceptanceVisible(overlay);
+            }, cancellation);
             sourceFocus = N.Focused() == (root, field);
             sourceUnchanged = N.ReadText(field, Limits.MaxTextUnits) == source;
             var afterSelection = N.ReadSelection(field);
