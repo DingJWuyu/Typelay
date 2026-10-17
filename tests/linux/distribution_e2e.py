@@ -117,10 +117,10 @@ class DistributionTests(unittest.TestCase):
         self.assertFalse(any(self.home.iterdir()), "reading setup feedback created user state")
 
     def test_failed_setup_uses_shared_guidance_and_keeps_the_previous_version(self):
-        current = self.home / "data/typelay/components/previous"
+        current = self.home / "data/typelay/components/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
         current.mkdir(parents=True)
         (current / "retained").write_text("previous usable version")
-        (current.parent / "current").symlink_to("previous")
+        (current.parent / "current").symlink_to("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
         for _ in range(2):
             result = subprocess.run(
                 [
@@ -145,7 +145,9 @@ class DistributionTests(unittest.TestCase):
             self.assertIn("安装诊断", result.stdout)
             self.assertNotIn(str(self.home), result.stdout + result.stderr)
             self.assertNotIn("Traceback", result.stdout + result.stderr)
-            self.assertEqual(os.readlink(current.parent / "current"), "previous")
+            self.assertEqual(
+                os.readlink(current.parent / "current"), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            )
             self.assertEqual((current / "retained").read_text(), "previous usable version")
 
     def test_desktop_feedback_and_practice_use_shared_presentations(self):

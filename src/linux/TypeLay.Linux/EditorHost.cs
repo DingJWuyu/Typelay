@@ -45,7 +45,7 @@ internal static class EditorHost
                 return 0;
             }
             using var model = LinuxModelFactory.Create(home, data);
-            await model.StartAsync();
+            await new LinuxModelInstallationStore(home, data).StartModelAsync(model);
             if (!model.Ready)
             {
                 await Error("not-ready");

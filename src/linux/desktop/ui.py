@@ -1107,7 +1107,11 @@ class Settings:
                     for cell in widget.get_cells():
                         widget.set_cell_data_func(
                             cell,
-                            lambda _layout, renderer, model, iterator, _data: renderer.set_property(
+                            lambda _layout,
+                            renderer,
+                            model,
+                            iterator,
+                            _data=None: renderer.set_property(
                                 "sensitive", not model.get_value(iterator, 1).startswith("Ctrl+")
                             ),
                         )

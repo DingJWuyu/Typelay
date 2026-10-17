@@ -2,7 +2,7 @@
 
 uv resolves Linux CPython wheels and verifies their hashes. A versioned environment
 is built in its final location so absolute venv paths remain valid. The active
-symlink changes only after the real offline worker passes both translation checks.
+symlink is published by the host only after its serving candidate also handshakes.
 """
 
 import errno
@@ -33,6 +33,8 @@ from paths import private_directory  # noqa: E402
 PYTHON = "3.13.16"
 MAX_ARCHIVE = 1024 * 1024 * 1024
 
+
+PREPARED_PREFIX = "TYPELAY_MODEL_PREPARED="
 
 FAILURE_PREFIX = "TYPELAY_SETUP_FAILURE="
 FAILURE_CODES = {"network", "disk-space", "integrity", "permission", "runtime", "unknown"}
@@ -460,7 +462,11 @@ def install(home, data, cache):
     except BlockingIOError:
         os.close(lock)
         raise OSError("installation-already-running") from None
-    version = private_directory(components / uuid.uuid4().hex)
+    try:
+        version = private_directory(components / uuid.uuid4().hex)
+    except BaseException:
+        os.close(lock)
+        raise
     environment = {
         key: value
         for key, value in os.environ.items()
@@ -475,7 +481,7 @@ def install(home, data, cache):
             "PYTHONNOUSERSITE": "1",
         }
     )
-    active = False
+    prepared = False
 
     def run(arguments, timeout, capture=False):
         process = subprocess.Popen(
@@ -500,6 +506,12 @@ def install(home, data, cache):
 
     stage = "prepare"
     try:
+        current = components / "current"
+        previous = os.readlink(current) if current.is_symlink() else None
+        if (previous is not None and not re.fullmatch(r"[0-9a-f]{32}", previous)) or (
+            previous is None and current.exists()
+        ):
+            raise ValueError("model-current")
         directions = model_catalog(home)
         stage = "runtime"
         print("正在安装私有 CPython 3.13.16 运行时", flush=True)
@@ -593,18 +605,42 @@ def install(home, data, cache):
             timeout=180,
             capture=True,
         )
-        if len(result) > 16384 or json.loads(result).get("status") != "passed":
+        if len(result) > 16384:
+            raise ValueError("model-self-check")
+        check = json.loads(result)
+        results = check.get("results") if isinstance(check, dict) else None
+        if (
+            not isinstance(results, list)
+            or check.get("status") != "passed"
+            or check.get("device") != "cpu"
+            or len(results) != len(directions)
+            or any(
+                not isinstance(item, dict)
+                or not isinstance(item.get("direction"), str)
+                or item.get("status") != "translated"
+                or item.get("nonempty") is not True
+                or item.get("differs") is not True
+                for item in results
+            )
+            or sorted(item.get("direction", "") for item in results)
+            != sorted(direction.id for direction in directions)
+        ):
             raise ValueError("model-self-check")
         (version / "self-check.json").write_bytes(result)
-        stage = "activate"
-        pending = components / (".current-" + version.name)
-        pending.symlink_to(version.name, target_is_directory=True)
-        os.replace(pending, components / "current")
-        active = True
-        try:
-            print("本地翻译组件安装完成，真实双向翻译自检通过。", flush=True)
-        except OSError:
-            pass
+        # Prepare records the exact predecessor under the installation flock.
+        # The host rechecks it after reacquiring that same lock, before hello.
+        with (version / "activation.json").open("x", encoding="utf-8") as stream:
+            json.dump({"schema": 1, "previous": previous}, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        for directory in (version, components):
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        print(PREPARED_PREFIX + version.name, flush=True)
+        prepared = True
         return 0
     except Paused:
         raise
@@ -612,12 +648,13 @@ def install(home, data, cache):
         report_failure(error, stage, data, cache, home)
         return 1
     finally:
-        # A stop between the atomic rename and the next Python instruction must
-        # never remove the newly active, fully verified version.
-        if not active and (components / "current").resolve() != version.resolve():
-            shutil.rmtree(version)
-        (components / (".current-" + version.name)).unlink(missing_ok=True)
-        os.close(lock)
+        # Successful preparation hands cleanup ownership to activation. Callers
+        # must wait for exit 0, rather than act on the descriptor line alone.
+        try:
+            if not prepared:
+                shutil.rmtree(version)
+        finally:
+            os.close(lock)
 
 
 if __name__ == "__main__":

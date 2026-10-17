@@ -5,6 +5,7 @@ import asyncio
 import fcntl
 import json
 import os
+import re
 import signal
 import socket
 import struct
@@ -13,14 +14,129 @@ import sys
 import uuid
 
 from paths import Paths, connect_private, peer_credentials
-from setup import FAILURE_PREFIX, failure_code
+from setup import FAILURE_PREFIX, PREPARED_PREFIX, failure_code
 from wire import MAX_FRAME, encode, now_ms, receive_sync
+
+ACTIVATION_TIMEOUT = 225
 
 
 def control(paths, operation, data=None):
     with connect_private(paths.control, 1.5) as connection:
+        if operation == "activateModel":
+            connection.settimeout(ACTIVATION_TIMEOUT + 5)
         connection.sendall(encode({"id": 1, "op": operation, "data": data}))
         return receive_sync(connection).get("data")
+
+
+def valid_activation(value):
+    return (
+        isinstance(value, dict)
+        and set(value) == {"identity", "generation"}
+        and all(
+            isinstance(item, str) and re.fullmatch(r"[0-9a-f]{32}", item) for item in value.values()
+        )
+    )
+
+
+def prepared_generation(message, previous):
+    if not message.startswith(PREPARED_PREFIX):
+        return previous
+    value = message[len(PREPARED_PREFIX) :]
+    if previous is not None or not re.fullmatch(r"[0-9a-f]{32}", value):
+        raise ValueError("model-preparation-result")
+    return value
+
+
+async def activate_model(host, value):
+    if not valid_activation(value):
+        return "unchanged"
+    confirmed = False
+    try:
+        result = await host.ask("activateModel", value, timeout=ACTIVATION_TIMEOUT)
+        confirmed = result == "confirmed"
+        return result if result in ("confirmed", "unchanged", "unconfirmed") else "unconfirmed"
+    finally:
+        # Link.ask only removes its future. Explicit identity cancellation also
+        # reaches the host when its control peer disconnects or GUI pauses.
+        if not confirmed:
+            try:
+                host.send("cancelModelActivation", value["identity"])
+            except (OSError, EOFError):
+                pass
+
+
+def install_models(paths):
+    generation = None
+    failure = None
+    process = subprocess.Popen(
+        [
+            "/usr/bin/python3",
+            "-I",
+            "-B",
+            str(paths.home / "desktop/setup.py"),
+            str(paths.home),
+            str(paths.data),
+            str(paths.cache),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        while line := process.stdout.readline(1025):
+            if len(line) > 1024:
+                raise ValueError("setup-output-size")
+            message = line.decode("utf-8", errors="replace").strip()
+            generation = prepared_generation(message, generation)
+            failure = failure_code(message, failure)
+            if not message.startswith(PREPARED_PREFIX):
+                print(message, flush=True)
+        code = process.wait()
+        if code or generation is None or failure is not None:
+            return code or 1
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+        process.stdout.close()
+    value = {"identity": uuid.uuid4().hex, "generation": generation}
+    # A missing socket alone does not prove that no desktop is starting. Keep
+    # its exact session lock through the helper's entire lifetime.
+    lock = os.open(paths.session / "desktop.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            result = control(paths, "activateModel", value)
+        else:
+            helper = subprocess.Popen(
+                [
+                    str(paths.home / "native/typelay-supervise"),
+                    str(paths.home / "app/TypeLay.Linux"),
+                    "--activate-model",
+                    str(paths.home),
+                    str(paths.data),
+                    generation,
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                output, _ = helper.communicate(timeout=ACTIVATION_TIMEOUT)
+                result = output.decode("ascii").strip() if len(output) <= 64 else "unconfirmed"
+                if helper.returncode and result == "confirmed":
+                    result = "unconfirmed"
+            finally:
+                if helper.poll() is None:
+                    helper.terminate()
+                    helper.wait(timeout=5)
+    finally:
+        os.close(lock)
+    if result == "confirmed":
+        print("本地翻译组件安装完成，真实双向自检与服务握手通过。", flush=True)
+        return 0
+    print("TypeLay: 新组件启用未确认，已保留组件，可重新打开设置检查。", file=sys.stderr)
+    return 1
 
 
 def doctor(paths):
@@ -213,7 +329,9 @@ async def desktop(paths, background, lock, tutorial=False):
         settings = components["settings"]
         settings.installation(
             state,
-            "组件已安装，但翻译服务尚未就绪。可退出并重新启动 TypeLay。" if activated else "",
+            "新组件启用结果尚未确认。已保留本地组件，可重新启动 TypeLay 检查。"
+            if activated
+            else "",
             failure=failure,
         )
 
@@ -225,6 +343,7 @@ async def desktop(paths, background, lock, tutorial=False):
         )
         failure = None
         reload_started = False
+        generation = None
         try:
             installer = await asyncio.create_subprocess_exec(
                 "/usr/bin/python3",
@@ -243,23 +362,33 @@ async def desktop(paths, background, lock, tutorial=False):
                 if len(line) > 1024:
                     raise ValueError("setup-output-size")
                 message = line.decode("utf-8", errors="replace").strip()
+                generation = prepared_generation(message, generation)
+                if message.startswith(PREPARED_PREFIX):
+                    continue
                 if message.startswith(FAILURE_PREFIX):
                     failure = failure_code(message, failure)
                 else:
                     settings.installation_progress(message)
             code = await installer.wait()
-            if failure is None and (code == 75 or (pause_installation and code != 0)):
+            if failure is None and (code == 75 or pause_installation):
                 installation_result("paused")
-            elif code != 0 or failure is not None:
+            elif code != 0 or failure is not None or generation is None:
                 installation_result("failed", failure)
             else:
                 reload_started = True
                 settings.installation("starting")
-                ready = await host.ask("reloadModel", timeout=125)
-                if ready:
+                result = await activate_model(
+                    host, {"identity": uuid.uuid4().hex, "generation": generation}
+                )
+                if result == "confirmed":
                     settings.installation("ready")
                 else:
-                    installation_result("failed", "runtime", activated=True)
+                    installation_result("failed", "runtime", activated=result == "unconfirmed")
+        except asyncio.CancelledError:
+            if reload_started:
+                installation_result("failed", "runtime", activated=True)
+            else:
+                installation_result("paused")
         except (OSError, ValueError, EOFError, TimeoutError):
             installation_result(
                 "failed", "runtime" if reload_started else failure, activated=reload_started
@@ -283,6 +412,8 @@ async def desktop(paths, background, lock, tutorial=False):
             components["settings"].installation("pausing", "正在暂停，保留已验证的下载进度…")
             if installer and installer.returncode is None:
                 installer.terminate()
+            else:
+                install_task.cancel()
 
     peers = set()
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -359,6 +490,8 @@ async def desktop(paths, background, lock, tutorial=False):
         )
 
         async def command(operation, value, caller_pid=None):
+            if operation == "activateModel":
+                return await activate_model(host, value)
             if operation in ("wake", "direct"):
                 return await components["input"].trigger(operation, value)
             if operation == "settings":
@@ -461,17 +594,38 @@ async def desktop(paths, background, lock, tutorial=False):
                 pid, _, _ = peer_credentials(connection)
                 if len(peers) >= 8:
                     raise OSError("control-capacity")
+                deadline = None
+                activation_peer = False
+
+                async def peer_request(operation, value):
+                    nonlocal deadline, activation_peer
+                    if operation == "activateModel":
+                        if activation_peer or not valid_activation(value):
+                            return "unchanged"
+                        activation_peer = True
+                        if deadline is not None:
+                            GLib.source_remove(deadline)
+                        deadline = GLib.timeout_add(
+                            (ACTIVATION_TIMEOUT + 5) * 1000, lambda: (peer.close(), False)[1]
+                        )
+                    return await command(operation, value, pid)
+
+                def peer_closed():
+                    if deadline is not None:
+                        GLib.source_remove(deadline)
+                    peers.discard(peer)
+
                 peer = Link(
                     GLib,
                     connection.fileno(),
                     connection.fileno(),
                     lambda *_: None,
-                    lambda operation, value: command(operation, value, pid),
-                    lambda: peers.discard(peer),
+                    peer_request,
+                    peer_closed,
                     connection,
                 )
                 peers.add(peer)
-                GLib.timeout_add(2000, lambda: (peer.close(), False)[1])
+                deadline = GLib.timeout_add(2000, lambda: (peer.close(), False)[1])
             except OSError:
                 connection.close()
             return True
@@ -607,18 +761,7 @@ def main():
     if args.doctor:
         return doctor(paths)
     if args.install_models:
-        os.execv(
-            "/usr/bin/python3",
-            [
-                "/usr/bin/python3",
-                "-I",
-                "-B",
-                str(paths.home / "desktop/setup.py"),
-                str(paths.home),
-                str(paths.data),
-                str(paths.cache),
-            ],
-        )
+        return install_models(paths)
     operation = (
         "quit"
         if args.quit
@@ -661,7 +804,10 @@ def main():
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (OSError, EOFError, ValueError, RuntimeError, ImportError):
+    except KeyboardInterrupt:
+        print("TypeLay: 操作已停止，请重新打开设置检查组件状态。", file=sys.stderr)
+        raise SystemExit(75) from None
+    except (OSError, EOFError, ValueError, RuntimeError, ImportError, subprocess.SubprocessError):
         print(
             "TypeLay: 无法启动。请确认依赖已安装，并在 niri Wayland 会话运行 typelay --doctor。",
             file=sys.stderr,

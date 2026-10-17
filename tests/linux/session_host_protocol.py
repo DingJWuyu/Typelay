@@ -6,7 +6,10 @@ covers serialization and owner-loop settings behavior, not native key routing.
 
 import argparse
 import asyncio
+import fcntl
 import json
+import os
+import shutil
 import struct
 import tempfile
 import time
@@ -15,6 +18,7 @@ import uuid
 from pathlib import Path
 
 HOST = None
+SUPERVISOR = None
 
 
 class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
@@ -25,6 +29,9 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.events = []
         self.sequence = 0
         self.input_reply = lambda _operation, _data: None
+        await self.start_host()
+
+    async def start_host(self):
         self.process = await asyncio.create_subprocess_exec(
             str(HOST),
             str(self.home / "package"),
@@ -73,6 +80,277 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
                     )
                 else:
                     self.assertIn("event", value)
+
+    def model_generation(self, *, previous=None, directions=None, held=False, legacy=False):
+        # These real Python pipe peers exercise ownership and publication, never
+        # claim model inference. Production worker inventory tests live separately.
+        generation = uuid.uuid4().hex
+        root = self.home / "data/components" / generation
+        (root / "models").mkdir(parents=True)
+        (root / "runtime/python").mkdir(parents=True)
+        (root / "runtime/venv/bin").mkdir(parents=True)
+        shutil.copy2(Path("/usr/bin/python3").resolve(), root / "runtime/python/python")
+        (root / "runtime/venv/bin/python").symlink_to("../../python/python")
+        (root / "models/installed.json").write_text(
+            json.dumps(
+                {
+                    "directions": directions if directions is not None else ["zh_en", "en_zh"],
+                    "held": held,
+                }
+            )
+        )
+        if not legacy:
+            (root / "activation.json").write_text(json.dumps({"schema": 1, "previous": previous}))
+        if held:
+            os.mkfifo(root / "hello-gate")
+        package = self.home / "package"
+        (package / "native").mkdir(parents=True, exist_ok=True)
+        if not (package / "native/typelay-supervise").exists():
+            shutil.copy2(SUPERVISOR, package / "native/typelay-supervise")
+        (package / "worker").mkdir(exist_ok=True)
+        (package / "worker/run_worker.py").write_text(r"""
+import json, os, pathlib, struct, sys
+root = pathlib.Path(sys.argv[sys.argv.index('--models') + 1]).parent
+settings = json.loads((root / 'models/installed.json').read_text())
+(root / 'pid').write_text(str(os.getpid()))
+while True:
+    header = sys.stdin.buffer.read(4)
+    if not header: break
+    request = json.loads(sys.stdin.buffer.read(struct.unpack('<I', header)[0]))
+    with (root / 'requests').open('a') as log: log.write(request['op'] + '\n')
+    if request['op'] == 'hello':
+        if settings['held']:
+            with (root / 'hello-gate').open() as gate: gate.read(1)
+        response = {'status': 'ready', 'directions': settings['directions']}
+    else: response = {'status': 'translated', 'text': root.name}
+    response['id'] = request['id']
+    encoded = json.dumps(response).encode()
+    sys.stdout.buffer.write(struct.pack('<I', len(encoded)) + encoded)
+    sys.stdout.buffer.flush()
+""")
+        return generation, root
+
+    async def release_hello(self, root):
+        async with asyncio.timeout(3):
+            while True:
+                try:
+                    fd = os.open(root / "hello-gate", os.O_WRONLY | os.O_NONBLOCK)
+                    break
+                except OSError as error:
+                    if error.errno != 6:  # ENXIO: the candidate has not reached hello yet.
+                        raise
+                    await asyncio.sleep(0.01)
+        os.write(fd, b"!")
+        os.close(fd)
+
+    async def test_model_activation_confirms_one_candidate_and_rejects_partial_or_stale_successors(
+        self,
+    ):
+        old, old_root = self.model_generation()
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": old}),
+            "confirmed",
+        )
+        self.assertTrue(self.latest("status")["modelReady"])
+        partial, partial_root = self.model_generation(previous=old, directions=["zh_en"])
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": partial}),
+            "unchanged",
+        )
+        self.assertTrue(self.latest("status")["modelReady"])
+        self.assertEqual(os.readlink(old_root.parent / "current"), old)
+        fresh, fresh_root = self.model_generation(previous=old)
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": fresh}),
+            "confirmed",
+        )
+        self.assertEqual(os.readlink(old_root.parent / "current"), fresh)
+        self.assertFalse(Path(f"/proc/{old_root.joinpath('pid').read_text()}").exists())
+        self.assertEqual(fresh_root.joinpath("requests").read_text().splitlines(), ["hello"])
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": partial}),
+            "unchanged",
+        )
+        self.assertTrue(partial_root.is_dir())
+
+    async def test_model_activation_shares_python_flock_and_cancellation_has_exact_identity(self):
+        old, old_root = self.model_generation()
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": old}),
+            "confirmed",
+        )
+        candidate, root = self.model_generation(previous=old, held=True)
+        with (old_root.parent / "install.lock").open("r+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(
+                await self.ask(
+                    "activateModel", {"identity": uuid.uuid4().hex, "generation": candidate}
+                ),
+                "unchanged",
+            )
+        self.assertFalse((root / "pid").exists())
+        identity = uuid.uuid4().hex
+        self.sequence += 1
+        request = self.sequence
+        await self.send(
+            {
+                "id": request,
+                "op": "activateModel",
+                "data": {"identity": identity, "generation": candidate},
+            }
+        )
+        await self.send({"event": "cancelModelActivation", "data": uuid.uuid4().hex})
+        await self.ask("settingsDraft")
+        await self.release_hello(root)
+        result = await self.receive_until(lambda value: value.get("reply") == request)
+        self.assertEqual(result["data"], "confirmed")
+        await self.send({"event": "cancelModelActivation", "data": identity})
+        rejected, rejected_root = self.model_generation(previous=candidate, held=True)
+        self.sequence += 1
+        request = self.sequence
+        cancelled = uuid.uuid4().hex
+        await self.send(
+            {
+                "id": request,
+                "op": "activateModel",
+                "data": {"identity": cancelled, "generation": rejected},
+            }
+        )
+        await self.send({"event": "cancelModelActivation", "data": cancelled})
+        result = await self.receive_until(lambda value: value.get("reply") == request)
+        self.assertEqual(result["data"], "unchanged")
+        self.assertEqual(os.readlink(root.parent / "current"), candidate)
+        self.assertTrue(self.latest("status")["modelReady"])
+        self.assertTrue(rejected_root.is_dir())
+
+    async def test_startup_recovers_only_explicit_previous_and_legacy_does_not_scan(self):
+        previous, previous_root = self.model_generation(legacy=True)
+        active, active_root = self.model_generation(previous=previous, directions=[])
+        (active_root.parent / "current").symlink_to(active)
+        self.assertTrue(await self.ask("start"))
+        await self.receive_until(
+            lambda value: value.get("event") == "status" and value["data"]["modelReady"]
+        )
+        self.assertEqual(os.readlink(active_root.parent / "current"), previous)
+        self.assertEqual(previous_root.joinpath("requests").read_text().splitlines(), ["hello"])
+        await self.asyncTearDown()
+        (active_root / "activation.json").unlink()
+        (active_root.parent / "current").unlink()
+        (active_root.parent / "current").symlink_to(active)
+        self.events.clear()
+        await self.start_host()
+        self.assertTrue(await self.ask("start"))
+        failed = await self.receive_until(
+            lambda value: value.get("event") == "status" and "无法加载" in value["data"]["model"]
+        )
+        self.assertFalse(failed["data"]["modelReady"])
+        self.assertEqual(os.readlink(active_root.parent / "current"), active)
+        self.assertEqual(previous_root.joinpath("requests").read_text().splitlines(), ["hello"])
+
+    async def test_damaged_startup_stays_available_and_only_explicit_previous_can_recover(self):
+        for damage in ("pointer", "runtime", "metadata", "metadata-directory", "previous-metadata"):
+            with self.subTest(damage=damage):
+                await self.asyncTearDown()
+                previous, previous_root = self.model_generation(legacy=True)
+                active, root = self.model_generation(
+                    previous=previous, directions=[] if damage == "previous-metadata" else None
+                )
+                current = root.parent / "current"
+                current.unlink(missing_ok=True)
+                current.symlink_to("../outside" if damage == "pointer" else active)
+                if damage == "runtime":
+                    python = root / "runtime/venv/bin/python"
+                    python.unlink()
+                    python.symlink_to("/usr/bin/python3")
+                if damage == "metadata":
+                    (root / "activation.json").write_text(
+                        json.dumps({"schema": "1", "previous": previous})
+                    )
+                if damage == "metadata-directory":
+                    (root / "activation.json").unlink()
+                    (root / "activation.json").mkdir()
+                if damage == "previous-metadata":
+                    (previous_root / "activation.json").write_text(
+                        json.dumps({"schema": 999, "previous": None})
+                    )
+                self.events.clear()
+                await self.start_host()
+                self.assertTrue(await self.ask("start"))
+                if damage == "runtime":
+                    await self.receive_until(
+                        lambda value: value.get("event") == "status" and value["data"]["modelReady"]
+                    )
+                    self.assertEqual(os.readlink(current), previous)
+                    self.assertEqual(
+                        (previous_root / "requests").read_text().splitlines(), ["hello"]
+                    )
+                else:
+                    # Wait for the complete startup operation, not the transient
+                    # active failure before an explicit previous is considered.
+                    async with asyncio.timeout(3):
+                        while not (await self.ask("translationPreparation", {"phase": "Idle"}))[
+                            "primaryAction"
+                        ]["enabled"]:
+                            await asyncio.sleep(0)
+                    status = self.latest("status")
+                    self.assertFalse(status["modelReady"])
+                    self.assertIn("无法加载", status["model"])
+                    self.assertFalse((previous_root / "pid").exists())
+                    self.assertEqual(
+                        os.readlink(current), "../outside" if damage == "pointer" else active
+                    )
+                self.assertIsInstance(
+                    await self.ask("translationPreparation", {"phase": "Idle"}), dict
+                )
+
+    async def test_one_shot_activation_confirms_publication_and_reaps_the_serving_candidate(self):
+        generation, root = self.model_generation()
+        helper = await asyncio.create_subprocess_exec(
+            str(SUPERVISOR),
+            str(HOST),
+            "--activate-model",
+            str(self.home / "package"),
+            str(self.home / "data"),
+            generation,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            output, error = await asyncio.wait_for(helper.communicate(), 5)
+        finally:
+            if helper.returncode is None:
+                helper.terminate()
+                await asyncio.wait_for(helper.wait(), 3)
+        self.assertEqual((helper.returncode, output, error), (0, b"confirmed\n", b""))
+        self.assertEqual(os.readlink(root.parent / "current"), generation)
+        self.assertEqual((root / "requests").read_text().splitlines(), ["hello"])
+        self.assertFalse(Path(f"/proc/{root.joinpath('pid').read_text()}").exists())
+
+    async def test_cancel_during_practice_retirement_never_starts_candidate(self):
+        await self.bind_automatic_practice()
+        candidate, root = self.model_generation()
+        self.sequence += 1
+        request = self.sequence
+        identity = uuid.uuid4().hex
+        await self.send(
+            {
+                "id": request,
+                "op": "activateModel",
+                "data": {"identity": identity, "generation": candidate},
+            }
+        )
+        retirement = await self.receive_until(
+            lambda value: value.get("op") == "retireAutomaticPractice"
+        )
+        await self.send({"event": "cancelModelActivation", "data": identity})
+        await self.ask("settingsDraft")
+        await self.send({"reply": retirement["id"], "data": True})
+        result = await self.receive_until(lambda value: value.get("reply") == request)
+        self.assertEqual(result["data"], "unchanged")
+        self.assertFalse((root / "pid").exists())
+        self.assertFalse((root.parent / "current").exists())
+        with (root.parent / "install.lock").open("r+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     @staticmethod
     def draft(accept="F7", exit_key="F8"):
@@ -269,7 +547,12 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.latest("settings")["enabled"])
         self.assertFalse(await self.ask("beginAutomaticPractice", str(uuid.uuid4())))
         self.assertFalse(await self.ask("endAutomaticPractice", binding["runId"]))
-        self.assertFalse(await self.ask("reloadModel"))
+        self.assertEqual(
+            await self.ask(
+                "activateModel", {"identity": uuid.uuid4().hex, "generation": uuid.uuid4().hex}
+            ),
+            "unchanged",
+        )
         self.assertEqual(len(calls), 1, "unconfirmed retirement was silently retried")
 
     async def test_identical_save_and_invalid_binding_do_not_retire_private_practice(self):
@@ -412,11 +695,12 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(missing["secondaryActions"][0]["id"], "NextStep")
         self.assertEqual(missing["secondaryActions"][0]["label"], "选择接入方式")
 
-        component = self.home / "data/components/current"
-        (component / "runtime/venv/bin").mkdir(parents=True)
-        (component / "runtime/venv/bin/python").touch()
-        (component / "models").mkdir()
-        (component / "models/installed.json").write_text("{}")
+        generation, component = self.model_generation(directions=[])
+        (component.parent / "current").symlink_to(generation)
+        # Restart observes one immutable installed generation, not marker files
+        # written through a moving current path in an already-running client.
+        await self.asyncTearDown()
+        await self.start_host()
         installed = await self.ask("translationPreparation", {"phase": "Idle"})
         self.assertNotEqual(installed["primaryAction"]["id"], "NextStep")
         self.assertIn("已安装", installed["statusText"] + installed["guidance"])
@@ -460,6 +744,7 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
         status = self.latest("status")
         self.assertFalse(status["modelReady"])
         self.assertFalse(status["modelInstalled"])
+        self.assertEqual(status["model"], "未安装本地模型")
         choices = self.latest("settingsGuidance")["languageChoices"]
         self.assertEqual([choice["code"] for choice in choices["source"]], ["auto", "zh", "en"])
         self.assertEqual([choice["code"] for choice in choices["target"]], ["en", "zh"])
@@ -477,7 +762,12 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
                     (self.latest("settings")["source"], self.latest("settings")["target"]),
                     (source, target),
                 )
-        self.assertFalse(await self.ask("reloadModel"))
+        self.assertEqual(
+            await self.ask(
+                "activateModel", {"identity": uuid.uuid4().hex, "generation": uuid.uuid4().hex}
+            ),
+            "unchanged",
+        )
         self.assertEqual(self.latest("status")["modelDirections"], [])
         persisted = json.loads((self.home / "config/settings.json").read_text())
         self.assertEqual((persisted["Source"], persisted["Target"]), ("en", "zh"))
@@ -806,8 +1096,10 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", type=Path, required=True)
+    parser.add_argument("--supervisor", type=Path)
     arguments, remaining = parser.parse_known_args()
     HOST = arguments.host.resolve()
+    SUPERVISOR = (arguments.supervisor or HOST.parent.parent / "native/typelay-supervise").resolve()
     if not HOST.is_file():
         parser.error("--host must identify a built TypeLay.Linux executable")
     unittest.main(argv=[__file__, *remaining])

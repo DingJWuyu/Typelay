@@ -256,7 +256,10 @@ def main():
             assert tray.groups["target"]["en"].get_active()
             assert tray.model.get_label() == "本地模型尚未就绪"
             saved_language_choices = (directory / "config/settings.json").read_bytes()
-            assert await host.ask("reloadModel") is False
+            assert (
+                await host.ask("activateModel", {"identity": "a" * 32, "generation": "b" * 32})
+                == "unchanged"
+            )
             assert tray.groups["source"]["auto"].get_active()
             assert tray.groups["target"]["en"].get_active()
             assert tray.parents["source"].get_sensitive() and tray.parents["target"].get_sensitive()

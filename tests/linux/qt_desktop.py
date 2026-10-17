@@ -497,8 +497,28 @@ def run_qt(
                                     combo.get_selection_iface(), 0
                                 )
                                 assert selected and selected.get_name() == saved_key
-                                assert not selected.get_state_set().contains(
-                                    Atspi.StateType.SENSITIVE
+
+                                def saved_row_states():
+                                    selected.clear_cache()
+                                    return selected.get_state_set()
+
+                                # GTK exposes the popup item here. Its row
+                                # sensitivity is applied when the popup renders.
+                                action = combo.get_action_iface()
+                                assert action and Atspi.Action.do_action(action, 0)
+                                wait_for(
+                                    lambda: (states := saved_row_states()).contains(
+                                        Atspi.StateType.SHOWING
+                                    )
+                                    and not states.contains(Atspi.StateType.SENSITIVE),
+                                    "saved Ctrl shortcut was not disabled in the real popup",
+                                )
+                                assert Atspi.Action.do_action(action, 0)
+                                wait_for(
+                                    lambda: not saved_row_states().contains(
+                                        Atspi.StateType.SHOWING
+                                    ),
+                                    "session-key popup did not close before the ordinary selection",
                                 )
                             index = 0 if key_name == default else int(key_name[1:])
                             assert Atspi.Selection.select_child(combo.get_selection_iface(), index)

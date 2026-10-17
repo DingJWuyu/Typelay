@@ -7,6 +7,42 @@ namespace TypeLay.Runtime.Tests;
 public sealed class ModelClientReplacementTests
 {
     [Fact]
+    public async Task ExpectedDirectionsMustMatchTheServingCandidateBeforePublication()
+    {
+        using var peers = new Peers();
+        using var client = peers.Client();
+        await client.StartAsync();
+        Assert.False(await client.ReloadAsync(peers.Paths("subset"), () => throw new Exception("must-not-publish"),
+            TestContext.Current.CancellationToken, ["zh_en", "en_zh"]));
+        Assert.True(client.Ready);
+        Assert.Equal(["zh_en", "en_zh"], client.AvailableDirections);
+        Assert.Equal("old", (await client.TranslateTextAsync("hello", new("en", "zh"))).Text);
+    }
+
+    [Fact]
+    public async Task ExpectedDirectionsAreSnapshottedAndInvalidPlansCannotCancelAReplacement()
+    {
+        using var peers = new Peers();
+        using var client = peers.Client();
+        await client.StartAsync();
+        string[] expected = ["zh_en", "en_zh"];
+        var replacing = client.ReloadAsync(peers.Paths("held-hello"), () => { }, TestContext.Current.CancellationToken, expected);
+        await peers.NextStarted(2);
+        await peers.Started[1].Wait("hello");
+        expected[1] = "zh_en";
+        foreach (string[] invalid in new string[][] { [], ["unknown"], ["zh_en", "zh_en"] })
+            Assert.Throws<ArgumentException>(() =>
+            {
+                _ = client.ReloadAsync(peers.Paths("new"), () => { }, TestContext.Current.CancellationToken, invalid);
+            });
+        Assert.Equal(["zh_en", "en_zh"], client.AvailableDirections);
+        await peers.Started[1].Release();
+        Assert.True(await replacing);
+        Assert.Equal(2, peers.Started.Count);
+        Assert.Equal("held-hello", (await client.TranslateTextAsync("hello", new("en", "zh"))).Text);
+    }
+
+    [Fact]
     public async Task ASubsetCanTakeOverAndSurviveARejectedSuccessor()
     {
         using var peers = new Peers();

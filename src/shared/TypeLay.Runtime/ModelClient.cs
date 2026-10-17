@@ -101,13 +101,18 @@ public sealed class ModelClient : ITranslationService, IDisposable
     // The caller owns its installation lease before entering here. Publication is
     // synchronous and must never acquire a store lock or perform process/UI work.
     // A publication exception leaves the previous live connection unchanged.
-    public Task<bool> ReloadAsync(ModelRuntimePaths paths, Action publishInstallation, CancellationToken ct = default)
+    public Task<bool> ReloadAsync(ModelRuntimePaths paths, Action publishInstallation, CancellationToken ct = default,
+        IEnumerable<string>? expectedDirections = null)
     {
         ArgumentNullException.ThrowIfNull(publishInstallation);
+        // Snapshot and validate before cancelling a healthy lifecycle operation.
+        var expected = expectedDirections?.ToArray();
+        if (expected is not null && !ModelCatalog.IsValidDirectionSet(expected))
+            throw new ArgumentException("model-directions", nameof(expectedDirections));
         lock (_owner)
-            return BeginReplacement(paths, publishInstallation, ct);
+            return BeginReplacement(paths, publishInstallation, ct, expected);
     }
-    private Task<bool> BeginReplacement(ModelRuntimePaths paths, Action publish, CancellationToken ct)
+    private Task<bool> BeginReplacement(ModelRuntimePaths paths, Action publish, CancellationToken ct, string[]? expected = null)
     {
         _operation?.Cancel();
         var operation = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -115,9 +120,9 @@ public sealed class ModelClient : ITranslationService, IDisposable
         ++_admission; // Reject even unsent requests queued before a failed replacement.
         if (_active is null)
             _status = "正在准备翻译";
-        return ReplaceAsync(paths, publish, operation);
+        return ReplaceAsync(paths, publish, operation, expected);
     }
-    private async Task<bool> ReplaceAsync(ModelRuntimePaths paths, Action publish, CancellationTokenSource operation)
+    private async Task<bool> ReplaceAsync(ModelRuntimePaths paths, Action publish, CancellationTokenSource operation, string[]? expected)
     {
         Connection? candidate = null, previous = null;
         bool lifecycle = false, serial = false, committed = false;
@@ -155,7 +160,8 @@ public sealed class ModelClient : ITranslationService, IDisposable
                 }
                 var hello = await ExchangeAsync(candidate, new(0, "hello"), TimeSpan.FromSeconds(120), operation.Token);
                 operation.Token.ThrowIfCancellationRequested();
-                if (hello.Status != "ready" || !ModelCatalog.IsValidDirectionSet(hello.Directions))
+                if (hello.Status != "ready" || !ModelCatalog.IsValidDirectionSet(hello.Directions)
+                    || expected is not null && !expected.ToHashSet(StringComparer.Ordinal).SetEquals(hello.Directions!))
                     return false;
                 candidate.Directions = Array.AsReadOnly(hello.Directions!.ToArray());
             }

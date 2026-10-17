@@ -1375,17 +1375,16 @@ class InstallationFailureTests(unittest.TestCase):
         returncode=0,
         discarded_archive=False,
         worker_result=None,
-        close_after_activation=False,
         cleanup_error=None,
         expected_code=1,
     ):
         with tempfile.TemporaryDirectory(prefix="typelay-install-failure-") as directory:
             base = Path(directory)
             shutil.copytree(ROOT / "src/shared/TypeLay.Worker", base / "home/worker")
-            current = base / "data/components/old"
+            current = base / "data/components/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             current.mkdir(parents=True)
             (current / "retained").write_text("old usable version")
-            (current.parent / "current").symlink_to("old")
+            (current.parent / "current").symlink_to("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 
             def process(arguments, **options):
                 output = b""
@@ -1404,13 +1403,7 @@ class InstallationFailureTests(unittest.TestCase):
                     poll=lambda: returncode,
                 )
 
-            class Output(io.StringIO):
-                def write(self, text):
-                    if close_after_activation and os.readlink(current.parent / "current") != "old":
-                        raise BrokenPipeError(errno.EPIPE, "private-token")
-                    return super().write(text)
-
-            output = Output()
+            output = io.StringIO()
 
             def open_response(request, **kwargs):
                 if failure is not None:
@@ -1468,14 +1461,22 @@ class InstallationFailureTests(unittest.TestCase):
             ):
                 runpy.run_path(str(ROOT / "src/linux/desktop/setup.py"), run_name="__main__")
             self.assertEqual(result.exception.code, expected_code)
-            if expected_code:
-                self.assertEqual(os.readlink(current.parent / "current"), "old")
-            else:
-                self.assertNotEqual(os.readlink(current.parent / "current"), "old")
-                self.assertTrue((current.parent / "current/self-check.json").is_file())
-                inventory = json.loads(
-                    (current.parent / "current/models/installed.json").read_text()
+            self.assertEqual(
+                os.readlink(current.parent / "current"), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            )
+            if not expected_code:
+                prepared = next(
+                    line[len(setup.PREPARED_PREFIX) :]
+                    for line in output.getvalue().splitlines()
+                    if line.startswith(setup.PREPARED_PREFIX)
                 )
+                candidate = current.parent / prepared
+                self.assertTrue((candidate / "self-check.json").is_file())
+                self.assertEqual(
+                    json.loads((candidate / "activation.json").read_text()),
+                    {"schema": 1, "previous": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                )
+                inventory = json.loads((candidate / "models/installed.json").read_text())
                 self.assertEqual(inventory["schema"], 1)
                 self.assertEqual(inventory["directions"], ["zh_en", "en_zh"])
                 self.assertEqual(
@@ -1486,7 +1487,7 @@ class InstallationFailureTests(unittest.TestCase):
             if expected_code and cleanup_error is None:
                 self.assertEqual(
                     sorted(path.name for path in current.parent.iterdir()),
-                    ["current", "install.lock", "old"],
+                    ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "current", "install.lock"],
                 )
             if discarded_archive:
                 self.assertFalse((base / "cache/components/zh_en-1.9.argosmodel").exists())
@@ -1562,6 +1563,7 @@ class InstallationFailureTests(unittest.TestCase):
     def test_failed_self_check_reports_runtime_without_claiming_model_corruption(self):
         for result in (
             b'{"status":"failed","reason":"private-token"}',
+            b'{"status":"passed"}',
             b"private-token invalid JSON",
         ):
             with self.subTest(result=result):
@@ -1570,9 +1572,24 @@ class InstallationFailureTests(unittest.TestCase):
                 self.assertIn('"stage":"self-check"', output)
                 self.assertNotIn("重新获取损坏", output)
 
-    def test_closed_output_after_activation_does_not_turn_success_into_failure(self):
+    def test_preparation_returns_one_verified_candidate_without_switching_current(self):
         self.run_setup(
-            worker_result=b'{"status":"passed"}', close_after_activation=True, expected_code=0
+            worker_result=json.dumps(
+                {
+                    "status": "passed",
+                    "device": "cpu",
+                    "results": [
+                        {
+                            "direction": direction,
+                            "status": "translated",
+                            "nonempty": True,
+                            "differs": True,
+                        }
+                        for direction in ("zh_en", "en_zh")
+                    ],
+                }
+            ).encode(),
+            expected_code=0,
         )
 
     def test_cleanup_failure_cannot_replace_the_first_failure_including_unknown(self):
@@ -1637,10 +1654,10 @@ class InstallationProcessTests(unittest.TestCase):
                 encoding="utf-8",
             )
             executable.chmod(0o700)
-            current = base / "data/components/old"
+            current = base / "data/components/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             current.mkdir(parents=True)
             (current / "retained").write_text("old usable version")
-            (current.parent / "current").symlink_to("old")
+            (current.parent / "current").symlink_to("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
             process = subprocess.Popen(
                 [
                     sys.executable,
@@ -1671,7 +1688,9 @@ class InstallationProcessTests(unittest.TestCase):
                 self.assertEqual(process.returncode, 128 + signal.SIGTERM, (output, error))
                 self.assertFalse(Path(f"/proc/{child}").exists(), "installer leaked its descendant")
                 child = None
-                self.assertEqual(os.readlink(current.parent / "current"), "old")
+                self.assertEqual(
+                    os.readlink(current.parent / "current"), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                )
                 self.assertEqual((current / "retained").read_text(), "old usable version")
             finally:
                 # Only process IDs created by this fixture are ever signalled.
@@ -1705,9 +1724,9 @@ class PresentationProcessTests(unittest.TestCase):
                 "time.sleep(30)\n"
             )
             executable.chmod(0o700)
-            current = home / "data/components/previous"
+            current = home / "data/components/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
             current.mkdir(parents=True)
-            (current.parent / "current").symlink_to("previous")
+            (current.parent / "current").symlink_to("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             process = subprocess.Popen(
                 [
                     sys.executable,
@@ -1737,7 +1756,9 @@ class PresentationProcessTests(unittest.TestCase):
                 self.assertEqual(diagnostic, "runtime")
                 self.assertNotIn("已暂停", output.decode())
                 self.assertFalse(Path(f"/proc/{int(pid.read_text())}").exists())
-                self.assertEqual(os.readlink(current.parent / "current"), "previous")
+                self.assertEqual(
+                    os.readlink(current.parent / "current"), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                )
             finally:
                 if process.poll() is None:
                     process.kill()

@@ -6,6 +6,7 @@ namespace TypeLay.Linux;
 
 internal static class Program
 {
+    private sealed record ModelActivationRequest(string Identity, string Generation);
     private sealed record SettingsDraftRequest(Guid Session, long Request, ShortcutSettingsDraft Shortcuts,
         ExclusionSettingsDraft? Exclusions = null);
     private sealed record SettingsDraftCancellation(Guid Session, long Request);
@@ -26,6 +27,10 @@ internal static class Program
             Console.WriteLine(JsonSerializer.Serialize(SetupPresentation(failureCode), DesktopLink.Json));
             return 0;
         }
+        if (OperatingSystem.IsLinux() && args is ["--activate-model", var activationHome, var activationData, var generation]
+            && Path.IsPathFullyQualified(activationHome) && Path.IsPathFullyQualified(activationData)
+            && LinuxModelInstallationStore.ValidId(generation))
+            return ActivateModel(activationHome, activationData, generation).GetAwaiter().GetResult();
         if (OperatingSystem.IsLinux() && args is ["--editor-host", var editorHome, var editorConfig, var editorData]
             && args.Skip(1).All(Path.IsPathFullyQualified))
             return EditorHost.Run(editorHome, editorConfig, editorData).GetAwaiter().GetResult();
@@ -43,6 +48,8 @@ internal static class Program
         var settings = new SettingsStore(Path.Combine(config, "settings.json"),
             enabled => SetStartup(enabled, home, config), app => Path.GetFileName(app.Trim()).ToLowerInvariant());
         using var model = LinuxModelFactory.Create(home, data);
+        var installations = new LinuxModelInstallationStore(home, data);
+        (string Identity, CancellationTokenSource Cancellation)? activation = null;
         using var controller = new SessionController(settings, model, view, input, input, loop,
             async binding => (await link.Ask("retireAutomaticPractice", binding, timeoutMs: 2000)).ValueKind == JsonValueKind.True);
         SettingsDraftRequest? pendingSettingsDraft = null;
@@ -82,6 +89,11 @@ internal static class Program
             input.Receive(operation, value);
             switch (operation)
             {
+                case "cancelModelActivation":
+                    if (value.ValueKind == JsonValueKind.String && activation is { } cancelling
+                        && cancelling.Identity == value.GetString())
+                        cancelling.Cancellation.Cancel();
+                    break;
                 case "cancelSettingsDraft":
                     var cancellation = DesktopLink.Decode<SettingsDraftCancellation>(value);
                     if (pendingSettingsDraft is { } pending && pending.Session == cancellation.Session
@@ -126,7 +138,7 @@ internal static class Program
                         return false;
                     started = true;
                     await controller.StartAsync();
-                    modelStart = model.StartAsync();
+                    modelStart = activation is null ? installations.StartModelAsync(model) : Task.CompletedTask;
                     Status();
                     return true;
                 case "allowField":
@@ -358,15 +370,44 @@ internal static class Program
                         || next.Excluded.Length > 256 || next.Excluded.Any(app => string.IsNullOrWhiteSpace(app) || app.Length > 128))
                         return false;
                     return await ApplySettings(next);
-                case "reloadModel":
-                    if (model.Busy || !modelStart.IsCompleted)
-                        return false;
-                    if (!await controller.RetireAutomaticPracticeAsync() || model.Busy || !modelStart.IsCompleted)
-                        return false;
-                    model.Dispose();
-                    modelStart = model.StartAsync();
-                    await modelStart;
-                    return model.Ready;
+                case "activateModel":
+                    if (activation is not null || value.ValueKind != JsonValueKind.Object
+                        || value.EnumerateObject().Count() != 2
+                        || !value.TryGetProperty("identity", out var identity) || identity.ValueKind != JsonValueKind.String
+                        || !LinuxModelInstallationStore.ValidId(identity.GetString())
+                        || !value.TryGetProperty("generation", out var selected) || selected.ValueKind != JsonValueKind.String
+                        || !LinuxModelInstallationStore.ValidId(selected.GetString()))
+                        return "unchanged";
+                    var request = DesktopLink.Decode<ModelActivationRequest>(value);
+                    using (var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(215)))
+                    {
+                        activation = (request.Identity, cancellation);
+                        try
+                        {
+                            // The store's nonblocking flock precedes the model's
+                            // lifecycle gates, including the retirement await.
+                            using var lease = installations.Acquire();
+                            if (!await controller.RetireAutomaticPracticeAsync())
+                                return "unchanged";
+                            cancellation.Token.ThrowIfCancellationRequested();
+                            if (activation?.Cancellation != cancellation)
+                                return "unchanged";
+                            controller.StopSession();
+                            return await lease.ActivateAsync(model, request.Generation, cancellation.Token)
+                                ? "confirmed" : "unchanged";
+                        }
+                        catch (LinuxModelInstallationStore.PublicationUnconfirmedException) { return "unconfirmed"; }
+                        catch (Exception activationError) when (activationError is IOException or UnauthorizedAccessException
+                            or JsonException or OperationCanceledException or ArgumentException)
+                        {
+                            return "unchanged";
+                        }
+                        finally
+                        {
+                            if (activation?.Cancellation == cancellation)
+                                activation = null;
+                        }
+                    }
                 default:
                     return null;
             }
@@ -381,6 +422,26 @@ internal static class Program
             Console.Error.WriteLine("TypeLay: desktop session stopped safely.");
             return 1;
         }
+        finally { activation?.Cancellation.Cancel(); }
+    }
+    private static async Task<int> ActivateModel(string home, string data, string generation)
+    {
+        string result;
+        try
+        {
+            using var model = LinuxModelFactory.Create(home, data);
+            using var lease = new LinuxModelInstallationStore(home, data).Acquire();
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(215));
+            result = await lease.ActivateAsync(model, generation, cancellation.Token) ? "confirmed" : "unchanged";
+        }
+        catch (LinuxModelInstallationStore.PublicationUnconfirmedException) { result = "unconfirmed"; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException
+            or JsonException or OperationCanceledException or ArgumentException)
+        {
+            result = "unchanged";
+        }
+        Console.WriteLine(result);
+        return result == "confirmed" ? 0 : 1;
     }
     private static bool ValidAutomaticBinding(JsonElement value)
     {

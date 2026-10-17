@@ -19,6 +19,7 @@ from gi.repository import GLib
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from link import Link  # noqa: E402
+from main import activate_model  # noqa: E402
 from niri import Niri  # noqa: E402
 from paths import Paths  # noqa: E402
 from wire import MAX_FRAME, Channel, Decoder, encode, now_ms, receive_sync  # noqa: E402
@@ -130,6 +131,48 @@ class PipeTransportTests(unittest.TestCase):
         # Closing from the owner callback must be harmless, including when the
         # failure is detected synchronously inside send().
         self.channel.close()
+
+    def test_activation_timeout_and_cancellation_forward_only_their_own_identity(self):
+        self.channel.close()
+        host = Link(GLib, self.input_read, self.output_write, lambda *_: None, None, lambda: None)
+        self.addCleanup(host.close)
+
+        async def exercise():
+            context = GLib.MainContext.default()
+            for index, outcome in enumerate(
+                ("cancel", "timeout", "unchanged", "unconfirmed", "confirmed")
+            ):
+                identity = f"{index + 1:032x}"
+                value = {"identity": identity, "generation": "a" * 32}
+                with patch("main.ACTIVATION_TIMEOUT", 0.01 if outcome == "timeout" else 2):
+                    pending = asyncio.create_task(activate_model(host, value))
+                    await asyncio.sleep(0)
+                    request = Decoder().feed(os.read(self.output_read, MAX_FRAME))[0]
+                    self.assertEqual((request["op"], request["data"]), ("activateModel", value))
+                    if outcome == "cancel":
+                        pending.cancel()
+                        with self.assertRaises(asyncio.CancelledError):
+                            await pending
+                    elif outcome == "timeout":
+                        with self.assertRaises(TimeoutError):
+                            await pending
+                    else:
+                        os.write(
+                            self.input_write, encode({"reply": request["id"], "data": outcome})
+                        )
+                        context.iteration(False)
+                        self.assertEqual(await pending, outcome)
+                if outcome == "confirmed":
+                    with self.assertRaises(BlockingIOError):
+                        os.read(self.output_read, MAX_FRAME)
+                else:
+                    self.assertEqual(
+                        Decoder().feed(os.read(self.output_read, MAX_FRAME)),
+                        [{"event": "cancelModelActivation", "data": identity}],
+                    )
+                self.assertTrue(host.channel.alive)
+
+        asyncio.run(exercise())
 
     def test_capture_failure_trace_is_private_to_its_pending_null_reply(self):
         self.channel.close()

@@ -332,8 +332,13 @@ jobs:
         id: models
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
-          mkdir -p artifacts/linux/desktop-data artifacts/linux/desktop-cache
-          python artifacts/linux/package/desktop/setup.py "$PWD/artifacts/linux/package" "$PWD/artifacts/linux/desktop-data/typelay" "$PWD/artifacts/linux/desktop-cache/typelay"
+          export XDG_CONFIG_HOME="$PWD/artifacts/linux/model-install-config"
+          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
+          export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
+          export XDG_RUNTIME_DIR="$PWD/artifacts/linux/model-install-runtime"
+          mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          artifacts/linux/package/typelay --install-models
       - name: Verify first-run tutorial with the real local model
         if: ${{ !cancelled() && steps.models.outcome == 'success' }}
         run: |
