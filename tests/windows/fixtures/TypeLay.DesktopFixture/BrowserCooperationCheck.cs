@@ -228,7 +228,7 @@ internal static partial class BrowserCooperationCheck
             });
             await Phase(direct, "wait-public-command-ready", 30, async ct =>
             {
-                await FocusPageAsync(cdp!, windows!, ct);
+                await FocusCommandFieldAsync(cdp!, windows!, ct);
                 await WaitPublicCommandReadyAsync(ct);
                 direct.Stage = "single-f10-selection";
                 await PrepareInputAsync(cdp!, windows!, "Keep [", "] unchanged", selectSource: true, ct);
@@ -247,7 +247,7 @@ internal static partial class BrowserCooperationCheck
             });
             await Phase(background, "wait-public-command-ready", 30, async ct =>
             {
-                await FocusPageAsync(cdp!, windows!, ct);
+                await FocusCommandFieldAsync(cdp!, windows!, ct);
                 await WaitPublicCommandReadyAsync(ct);
                 background.Stage = "single-f10-full-text";
                 await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);

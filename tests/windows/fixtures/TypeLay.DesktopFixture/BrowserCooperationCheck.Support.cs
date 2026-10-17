@@ -95,6 +95,27 @@ internal static partial class BrowserCooperationCheck
             await Task.Delay(40, ct);
         }
     }
+    private static async Task FocusCommandFieldAsync(Cdp cdp, BrowserWindows windows, CancellationToken ct)
+    {
+        await FocusPageAsync(cdp, windows, ct);
+        // Returning to Chrome only focuses the document. The settings button
+        // removed its former overlay, so explicitly click the visible source
+        // before expecting that field's public command readiness.
+        var point = await cdp.EvaluateAsync("(()=>{const r=a.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,visible:a.isConnected&&r.width>0&&r.height>0};})()", ct);
+        Require(point.GetProperty("visible").GetBoolean(), "source-field-not-visible");
+        double x = point.GetProperty("x").GetDouble(), y = point.GetProperty("y").GetDouble();
+        foreach (string type in new[] { "mousePressed", "mouseReleased" })
+            await cdp.PageCallAsync("Input.dispatchMouseEvent", new
+            {
+                type,
+                x,
+                y,
+                button = "left",
+                clickCount = 1
+            }, ct);
+        var state = await cdp.StateAsync("", ct);
+        Require(state.PageFocused && state.Focus == "a", "source-focus-precondition");
+    }
     private static async Task WaitPublicCommandReadyAsync(CancellationToken ct)
     {
         // This is the shipped tray's exact accessible label, including the
@@ -125,7 +146,7 @@ internal static partial class BrowserCooperationCheck
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            throw new InvalidOperationException("public-command-ready-unavailable");
+            throw new Failure("public-command-ready-unavailable");
         }
     }
     private static async Task PrepareInputAsync(Cdp cdp, BrowserWindows windows, string prefix, string suffix,

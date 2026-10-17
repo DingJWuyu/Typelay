@@ -576,10 +576,14 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
                     Assert.Equal(1u, SendInput(1, [new KeyboardInput { Type = 1, Key = 0x78, Flags = 2 }], Marshal.SizeOf<KeyboardInput>()));
                     pressed = false;
                     InputNotice? notice = null;
-                    await Until(() => (notice is not null || hook.TryRead(out notice)) && releases > releasedBefore, deadline.Token);
+                    await Until(() => (notice is not null || hook.TryRead(out notice)) && hook.CommandsReleased, deadline.Token);
+                    // This registered command owns both edges, including a
+                    // refusal. Drain the source dispatcher before asserting
+                    // that no second consumer received either edge.
+                    await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ApplicationIdle);
                     Assert.Equal("wake", notice!.Kind);
-                    Assert.Equal(pressedBefore + 1, presses);
-                    Assert.Equal(releasedBefore + 1, releases);
+                    Assert.Equal(pressedBefore, presses);
+                    Assert.Equal(releasedBefore, releases);
                     return notice;
                 }
             });
