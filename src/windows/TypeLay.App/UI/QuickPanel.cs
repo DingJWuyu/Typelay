@@ -22,6 +22,9 @@ internal sealed class QuickPanel : Window
     private readonly LanguagePicker _sourceLanguage, _targetLanguage;
     private readonly Button _swapLanguages;
     private readonly List<RadioButton> _modeChoices = [];
+    private Grid? _statusRow;
+    private Border? _statusDot;
+    private TextBlock? _statusText, _operationFeedback;
     private bool _saveFailed, _saving;
     public QuickPanel(SettingsStore settings, ModelClient model, SessionController session, Action showSettings, Action quit)
     {
@@ -63,7 +66,7 @@ internal sealed class QuickPanel : Window
         Closing += (_, e) => { e.Cancel = true; Hide(); };
         _settings.Changed += Refresh;
         _model.Changed += Refresh;
-        _session.Changed += Refresh;
+        _session.Changed += RefreshStatus;
         Refresh();
     }
     public void OpenAtTray()
@@ -151,6 +154,25 @@ internal sealed class QuickPanel : Window
             if (waiting && restoreFocus && IsActive && focusedMode is not null)
                 _modeChoices.Single(choice => AutomationProperties.GetName(choice) == focusedMode).Focus();
         }
+    }
+    private void RefreshStatus()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(RefreshStatus));
+            return;
+        }
+        if (_statusRow is null || _statusDot is null || _statusText is null || _operationFeedback is null)
+            return;
+        _statusRow.ToolTip = _session.ServiceStatus;
+        _statusDot.SetResourceReference(Border.BackgroundProperty,
+            _settings.Value.Enabled && _model.Ready && _session.InputAvailable ? "Good" : "Muted");
+        _statusText.Text = !_settings.Value.Enabled ? "TypeLay 已暂停" : !_model.Ready ? _model.Status
+            : !_session.InputAvailable ? _session.ConnectionStatus
+            : _settings.Value.Mode == WorkMode.OnDemand ? _session.ShortcutStatus
+            : !_settings.Value.ExperimentalWriteback ? "本地翻译已就绪" : _model.Status;
+        _operationFeedback.Text = _session.OperationStatus ?? "";
+        _operationFeedback.Visibility = _session.OperationStatus is null ? Visibility.Collapsed : Visibility.Visible;
     }
     private void Refresh()
     {
@@ -243,7 +265,7 @@ internal sealed class QuickPanel : Window
             error.Margin = new(14, 0, 14, 12);
             _body.Children.Add(error);
         }
-        var status = new Grid { Margin = new(14, 11, 14, 11), ToolTip = _session.ServiceStatus };
+        var status = _statusRow = new Grid { Margin = new(14, 11, 14, 11) };
         status.ColumnDefinitions.Add(new()
         {
             Width = new(15)
@@ -253,11 +275,9 @@ internal sealed class QuickPanel : Window
         {
             Width = GridLength.Auto
         });
-        var dot = new Border { Width = 7, Height = 7, CornerRadius = new(4), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center };
-        dot.SetResourceReference(Border.BackgroundProperty, _settings.Value.Enabled && _model.Ready && _session.InputAvailable ? "Good" : "Muted");
+        var dot = _statusDot = new Border { Width = 7, Height = 7, CornerRadius = new(4), HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center };
         status.Children.Add(dot);
-        string state = !_settings.Value.Enabled ? "TypeLay 已暂停" : !_session.InputAvailable ? _session.ServiceStatus : _model.Ready && !_settings.Value.ExperimentalWriteback ? "本地翻译已就绪 · 只读预览" : _model.Status;
-        var model = UiTheme.Text(state, 11.5, true);
+        var model = _statusText = UiTheme.Text("", 11.5, true);
         Grid.SetColumn(model, 1);
         status.Children.Add(model);
         var local = UiTheme.Text("本机", 10.5, true);
@@ -266,12 +286,10 @@ internal sealed class QuickPanel : Window
         var statusBorder = UiTheme.Border(status, 0);
         statusBorder.BorderThickness = new(0, 1, 0, 1);
         _body.Children.Add(statusBorder);
-        if (_session.OperationStatus is { } operation)
-        {
-            var feedback = UiTheme.Text(operation, 11, true);
-            feedback.Margin = new(14, 10, 14, 10);
-            _body.Children.Add(feedback);
-        }
+        _operationFeedback = UiTheme.Text("", 11, true);
+        _operationFeedback.Margin = new(14, 10, 14, 10);
+        _body.Children.Add(_operationFeedback);
+        RefreshStatus();
         var actions = new StackPanel { Margin = new(7) };
         var settingsButton = UiTheme.Button("⚙    设置…", () => { Hide(); _showSettings(); });
         settingsButton.Height = 38;

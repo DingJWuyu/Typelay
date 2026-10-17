@@ -13,11 +13,11 @@ namespace TypeLay.App.Tests;
 public sealed class BrowserShortcutHookTests(WpfDesktopFixture desktop)
 {
     [Fact]
-    public async Task NativeBrowserShortcutFreezesAfterItsOwnHookEpochsAndRefusesLaterInput()
+    public async Task PageOwnershipPassesNewPressButNativeOwnedPressKeepsItsRepeatAndRelease()
     {
         await desktop.RunAsync(async () =>
         {
-            var input = new TextBox { Text = "Original", AcceptsReturn = true };
+            var input = new TextBox { Text = "Original" };
             var window = new Window { Content = input, Width = 400, Height = 150 };
             window.Show();
             window.Activate();
@@ -28,45 +28,40 @@ public sealed class BrowserShortcutHookTests(WpfDesktopFixture desktop)
             timeout.CancelAfter(TimeSpan.FromSeconds(5));
             while (!hook.ShortcutsReady || Native.GetForegroundWindow() != hwnd || !input.IsKeyboardFocused)
                 await Task.Delay(10, timeout.Token);
-            Assert.False(Native.GetAsyncKeyState(0x87) < 0);
+            int downs = 0, ups = 0;
+            input.PreviewKeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.F24) downs++; };
+            input.PreviewKeyUp += (_, e) => { if (e.Key == System.Windows.Input.Key.F24) ups++; };
             hook.SetShortcuts([new("direct", 0x87, ShortcutModifiers.None)]);
-            var before = hook.BrowserEpochs;
-            long originalTime = WindowsInterruptClock.NowMs;
-            var source = new InputSnapshot(new("windows-browser", "document:1", Guid.NewGuid()), input.Text,
-                new(0, 0), new(0, 0, 100, 20), false, FieldAccess.Supported, ImeState.Clear, originalTime, 1, 2,
-                WriteSupported: true, DirectWriteSupported: true);
-            object authority = new();
-            hook.PublishBrowserShortcut(new(new(source, hook.ContentEpoch, hook.ForegroundEpoch), hwnd, hook.CommandGeneration, authority));
-            BrowserShortcutPress? press = null;
+            Guid generation = hook.CommandGeneration;
             try
             {
                 Send(0x87, false);
+                InputNotice? original = null;
+                while (!hook.TryRead(out original))
+                    await Task.Delay(1, timeout.Token);
+                Assert.Equal("direct", original!.Kind);
+                Assert.True(original.CommandSequence > 0);
+                Assert.Null(original.Source); // A matched native command still cannot invent a source.
+                hook.DeferCommandRegistration();
+                Assert.False(hook.CommandsReleased);
+                Send(0x87, false);
                 Send(0x87, true);
-                while (!hook.TryReadBrowserPress(out press))
+                while (!hook.CommandsReleased)
                     await Task.Delay(1, timeout.Token);
-                Assert.NotNull(press);
-                Assert.Equal(press.Sequence, press.CommandId);
-                Assert.InRange(press.CommandId, 1, 9007199254740991);
-                Assert.Same(source, press.Binding.Lease.Source);
-                Assert.Same(authority, press.Binding.Basis);
-                Assert.Equal(before.User + 1, press.CompletionEpochs.User);
-                Assert.Equal(before.Source + 1, press.CompletionEpochs.Source);
-                Assert.Equal(before.Content + 1, press.CompletionEpochs.Content);
-                Assert.Equal(before.Foreground, press.CompletionEpochs.Foreground);
-                Assert.True(press.Current(hook.BrowserEpochs, press.TriggeredAtMs));
-                Assert.False(press.Current(before, press.TriggeredAtMs));
-                Assert.False(press.Current(press.CompletionEpochs, press.TriggeredAtMs + 151));
-                Assert.False(press.Current(press.CompletionEpochs, press.TriggeredAtMs - 1));
-                Assert.False(hook.TryRead(out _)); // No second native/legacy terminal notice.
-                hook.PublishBrowserShortcut(new(new(source, hook.ContentEpoch, hook.ForegroundEpoch), hwnd, hook.CommandGeneration, new object()));
-                Assert.Same(authority, press.Binding.Basis); // Normal renewal does not replace the frozen basis.
-                Send(0x41, false);
-                Send(0x41, true);
-                while (hook.ContentEpoch == press.CompletionEpochs.Content)
+                Assert.Equal(0, downs);
+                Assert.Equal(0, ups);
+                Assert.False(hook.TryRead(out _));
+                Assert.Equal(generation, hook.CommandGeneration);
+                Assert.True(hook.NextCommandSequence() > original.CommandSequence);
+                Send(0x87, false);
+                Send(0x87, true);
+                while (ups == 0)
                     await Task.Delay(1, timeout.Token);
-                Assert.False(press.Current(hook.BrowserEpochs, press.TriggeredAtMs));
+                Assert.Equal(1, downs);
+                Assert.Equal(1, ups);
+                Assert.False(hook.TryRead(out _));
             }
-            finally { Send(0x87, true); Send(0x41, true); }
+            finally { Send(0x87, true); window.Close(); }
         });
     }
     private static void Send(ushort key, bool up) => Assert.Equal(1u,

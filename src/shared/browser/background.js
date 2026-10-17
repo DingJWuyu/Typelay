@@ -10,7 +10,7 @@ let configuration = null;
 let lastConnect = -Infinity;
 let connectTimer = null;
 let nextRequestId = 0;
-const nativeDispatch = () => configuration?.data?.shortcutDispatch === "native";
+const nativeDispatch = () => ["native", "source-local"].includes(configuration?.data?.shortcutDispatch);
 const routable = port => !!port && (!nativeDispatch() || !!routes.get(port)?.documentId);
 function postDocument(connection, port, message) {
   if (routable(port)) postNative(connection, {...message, route: routes.get(port)});
@@ -68,7 +68,8 @@ function connect() {
       if (request.expires < Date.now()) pending.delete(id);
     }
     const target = data.target;
-    const port = target ? documents.get(target.split(":")[0]) : active;
+    const port = target ? documents.get(target.split(":")[0])
+      : data.documentToken ? documents.get(data.documentToken) : active;
     if (!routable(port)) {
       if (message.id) postNative(connection, {id: message.id, data: null});
       return;

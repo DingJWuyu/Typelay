@@ -89,7 +89,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             && chords.Add(wakeChord!.ToString()) && chords.Add(directChord!.ToString())
             && chords.Add(normalized!.Accept) && chords.Add(normalized.Exit);
         _sessionEnabled = sessionEnabled && distinct;
-        _hotkeys.Configure(enabled && distinct, wake, direct);
+        _hotkeys.Configure(enabled && distinct, wake, direct, registerNow: !_deferCommandRegistration);
         SetShortcuts(_hotkeys.Bindings);
     }
     public FocusMember GetFocus(TargetId target)
@@ -166,7 +166,6 @@ internal sealed partial class KeyboardHook : IInputMonitor
     }
     public void SetShortcuts(RegisteredShortcut[] shortcuts)
     {
-        PublishBrowserShortcut(null);
         InvalidateOrdinaryChord();
         var configuration = new ShortcutConfiguration(Guid.NewGuid(), shortcuts);
         Interlocked.Exchange(ref _shortcuts, configuration);
@@ -318,7 +317,10 @@ internal sealed partial class KeyboardHook : IInputMonitor
     {
         _threadId = Native.GetCurrentThreadId();
         for (int i = 0; i < _keys.Length; i++)
-            _keys[i] = Native.GetAsyncKeyState(i) < 0;
+            // Generic modifier aliases are also represented by their physical
+            // left/right keys; an alias has no separate future LL key-up.
+            _keys[i] = i is not (0x10 or 0x11 or 0x12) && Native.GetAsyncKeyState(i) < 0;
+        ObserveCommandRelease();
         _mouseButtons = (uint)new[] { 1, 2, 4, 5, 6 }.Count(key => Native.GetAsyncKeyState(key) < 0);
         _hook = Native.SetWindowsHookExW(13, _callback, Native.GetModuleHandleW(null), 0);
         _mouseHook = Native.SetWindowsHookExW(14, _mouseCallback, Native.GetModuleHandleW(null), 0);
@@ -545,19 +547,23 @@ internal sealed partial class KeyboardHook : IInputMonitor
     {
         if (code < 0)
             return Native.CallNextHookEx(_hook, code, wParam, lParam);
-        BrowserShortcutPress? browserPress = null;
         try
         {
             Interlocked.Increment(ref _editorInputSequence);
             var data = Marshal.PtrToStructure<Native.KeyData>(lParam);
             bool down = wParam == 0x100 || wParam == 0x104;
             bool injected = (data.Flags & 0x12) != 0;
+            if (down)
+                Volatile.Write(ref _commandGroupReleased, 0);
             bool repeated = data.Key < 256 && _keys[data.Key];
             if (data.Key < 256)
                 _keys[data.Key] = down;
+            bool commandConsumed = data.Key < 256 && _commandConsumed[data.Key];
+            if (!down && data.Key < 256)
+                _commandConsumed[data.Key] = false;
             if (down && !IsModifier(data.Key))
             {
-                TryInvokeShortcut(data.Key, repeated, injected, out browserPress);
+                commandConsumed = TryInvokeShortcut(data.Key, repeated, injected);
                 Interlocked.Increment(ref _contentEpoch);
             }
             var binding = Volatile.Read(ref _lease);
@@ -622,11 +628,11 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 if (Native.GetForegroundWindow() != _editorHwnd)
                     Interlocked.Increment(ref _sourceUserEpoch);
             }
-            return Native.CallNextHookEx(_hook, code, wParam, lParam);
+            return commandConsumed ? 1 : Native.CallNextHookEx(_hook, code, wParam, lParam);
         }
         finally
         {
-            CompleteBrowserPress(browserPress);
+            ObserveCommandRelease();
         }
     }
     private static bool IsModifier(uint key) => key is 0x10 or 0x11 or 0x12 or 0x5B or 0x5C
@@ -636,13 +642,16 @@ internal sealed partial class KeyboardHook : IInputMonitor
         | (_keys[0x12] || _keys[0xA4] || _keys[0xA5] ? ShortcutModifiers.Alt : ShortcutModifiers.None)
         | (_keys[0x10] || _keys[0xA0] || _keys[0xA1] ? ShortcutModifiers.Shift : ShortcutModifiers.None)
         | (_keys[0x5B] || _keys[0x5C] ? (ShortcutModifiers)8 : ShortcutModifiers.None);
-    private void TryInvokeShortcut(uint key, bool repeated, bool injected, out BrowserShortcutPress? browserPress)
+    private bool TryInvokeShortcut(uint key, bool repeated, bool injected)
     {
-        browserPress = null;
+        if (key < 256 && _commandConsumed[key])
+            return true;
+        if (!_nativeCommandsEnabled)
+            return false;
         if (repeated || injected && !_allowInjectedInput || _keys[0x5B] || _keys[0x5C])
         {
             TraceShortcutKey(repeated ? "repeat" : injected && !_allowInjectedInput ? "injected" : "windows-key", key);
-            return;
+            return false;
         }
         var configuration = Volatile.Read(ref _shortcuts);
         RegisteredShortcut? command = null;
@@ -655,11 +664,11 @@ internal sealed partial class KeyboardHook : IInputMonitor
         if (command is null)
         {
             TraceShortcutKey("modifiers", key);
-            return;
+            return false;
         }
-        long sequence = Interlocked.Increment(ref _commandSequence);
-        if (TryInvokeBrowserShortcut(command.Action, configuration.Generation, sequence, WindowsInterruptClock.NowMs, out browserPress))
-            return;
+        if (key < 256)
+            _commandConsumed[key] = true;
+        long sequence = NextCommandSequence();
         var nativeLease = Volatile.Read(ref _shortcutLease);
         var lease = nativeLease?.Observation;
         long now = WindowsInterruptClock.NowMs;
@@ -678,44 +687,44 @@ internal sealed partial class KeyboardHook : IInputMonitor
         if (!ShortcutsReady)
         {
             Reject(Denial.PlatformFailure, "not-ready");
-            return;
+            return true;
         }
         if (lease is null)
         {
             Reject(Denial.StaleObservation, "no-lease");
-            return;
+            return true;
         }
         if (lease.ContentEpoch != contentEpoch)
         {
             Reject(Denial.EpochChanged, "content-epoch");
-            return;
+            return true;
         }
         if (lease.ForegroundEpoch != foregroundEpoch)
         {
             Reject(Denial.NotSourceFocus, "foreground-epoch");
-            return;
+            return true;
         }
         if (now < lease.Source.ObservedAtMs || now - lease.Source.ObservedAtMs > Limits.ObservationMaxAgeMs)
         {
             Reject(Denial.StaleObservation, "future-or-stale");
-            return;
+            return true;
         }
         if (Native.GetForegroundWindow() != (nint)nativeLease!.RootHwnd)
         {
             Reject(Denial.NotSourceFocus, "root");
-            return;
+            return true;
         }
         if (lease.Source.Access != FieldAccess.Supported)
         {
             Reject(Denial.Unsupported, "access");
-            return;
+            return true;
         }
         bool previewWake = command.Action == "wake" && lease.Source.Ime == ImeState.Unknown
             && lease.Source.PreviewText is not null;
         if (lease.Source.Ime != ImeState.Clear && !previewWake)
         {
             Reject(Denial.ImeUnclear, "ime");
-            return;
+            return true;
         }
         _notices.Enqueue(new(command.Action, AcceptedAtMs: now, ForegroundEpoch: foregroundEpoch, Source: lease.Source,
             CommandGeneration: configuration.Generation, CommandSequence: sequence));
@@ -723,6 +732,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             contentEpoch: contentEpoch, foregroundEpoch: foregroundEpoch, evaluatedAtMs: now,
             commandGeneration: configuration.Generation, commandSequence: sequence,
             leaseCommandGeneration: nativeLease?.DiagnosticGeneration);
+        return true;
     }
     private nint OnMouse(int code, nint wParam, nint lParam)
     {

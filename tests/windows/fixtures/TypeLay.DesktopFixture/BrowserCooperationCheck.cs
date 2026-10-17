@@ -226,8 +226,11 @@ internal static partial class BrowserCooperationCheck
                 await SetOnDemandAsync(app!.Process, data, ct);
                 await FocusPageAsync(cdp, windows!, ct);
             });
-            await Phase(direct, "single-f10-selection", 30, async ct =>
+            await Phase(direct, "wait-public-command-ready", 30, async ct =>
             {
+                await FocusPageAsync(cdp!, windows!, ct);
+                await WaitPublicCommandReadyAsync(ct);
+                direct.Stage = "single-f10-selection";
                 await PrepareInputAsync(cdp!, windows!, "Keep [", "] unchanged", selectSource: true, ct);
                 long offset = TraceLength(trace);
                 SendChord([0x11, 0x10, 0x79], cleanupErrors);
@@ -242,8 +245,11 @@ internal static partial class BrowserCooperationCheck
                 direct.Stage = "wait-direct-receipt";
                 await WaitTraceAsync(trace, "browser-direct-Verified", offset, ct);
             });
-            await Phase(background, "single-f10-full-text", 30, async ct =>
+            await Phase(background, "wait-public-command-ready", 30, async ct =>
             {
+                await FocusPageAsync(cdp!, windows!, ct);
+                await WaitPublicCommandReadyAsync(ct);
+                background.Stage = "single-f10-full-text";
                 await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
                 long offset = TraceLength(trace);
                 SendChord([0x11, 0x10, 0x79], cleanupErrors);

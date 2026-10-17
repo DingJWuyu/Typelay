@@ -11,7 +11,7 @@ namespace TypeLay.Runtime;
 public sealed record InputNotice(string Kind, AcceptancePermit? Permit = null, long AcceptedAtMs = 0,
     long UserEpoch = 0, long ForegroundEpoch = 0, InputSnapshot? Source = null, Guid CommandGeneration = default,
     WriteReceipt? CompletedReceipt = null, Denial Rejection = Denial.None, long CommandSequence = 0, TargetId? Target = null, long SessionRevision = 0,
-    Guid? PracticeRunId = null, Guid? PracticeConnectionId = null);
+    Guid? PracticeRunId = null, Guid? PracticeConnectionId = null, CommandCaptureEvidence? CommandCapture = null);
 // Only an explicit command's refusal, cancellation or failure is broadcast.
 // Revision identifies every command, including legacy sequence zero. Hosts may
 // use it for queued UI de-duplication; messages and codes never contain field text.

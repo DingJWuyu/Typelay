@@ -49,7 +49,7 @@ internal sealed partial class BrowserInput : IDisposable
     private sealed record EditorTransition(SessionViewToken Token, long Deadline, TaskCompletionSource<bool> Completion);
     private EditorTransition? _editorTransition;
     private SessionViewToken? _editorToken;
-    private readonly Queue<(InputNotice Notice, BrowserInputEpochs? Epochs, long Deadline)> _notices = new();
+    private readonly Queue<(InputNotice Notice, long Deadline)> _notices = new();
     public event Action<BrowserEvent>? Ui;
     public BrowserInput(BrowserServer server, KeyboardHook hook)
     {
@@ -62,9 +62,12 @@ internal sealed partial class BrowserInput : IDisposable
             {
                 _hook.Revoke();
                 _hook.NotifyBrowserChange(true, true);
+                RequestCommandOwnerRefresh();
             }
             if (_configuration is not null)
                 peer.Send("configure-shortcuts", _configuration);
+            _ownerRefreshRequested = true;
+            _restorationAttempted = false;
             Trace("browser-connected");
         };
         server.Disconnected += Lost;
@@ -106,6 +109,10 @@ internal sealed partial class BrowserInput : IDisposable
     public void Start() => _server.Start();
     public void Configure(bool enabled, string wake, string direct, SessionShortcutBindings bindings, bool sessionEnabled)
     {
+        _commandsEnabled = enabled;
+        _wake = CommandKey(wake);
+        _direct = CommandKey(direct);
+        _ownerRefreshRequested = true;
         _bindings = bindings;
         _sessionEnabled = sessionEnabled;
         _configurationGeneration = _hook.CommandGeneration;
@@ -116,7 +123,9 @@ internal sealed partial class BrowserInput : IDisposable
             sessionEnabled,
             accept = bindings.Accept,
             exit = bindings.Exit,
-            shortcutDispatch = "native",
+            shortcutDispatch = "source-local",
+            wake = _wake,
+            direct = _direct,
             sourceLocalAcceptanceVersion = 1
         };
         CancelEditorTransition();
@@ -127,13 +136,14 @@ internal sealed partial class BrowserInput : IDisposable
         _frozen.Clear();
         _active.Clear();
         _publication = null;
-        _hook.PublishBrowserShortcut(null);
         foreach (var peer in _server.Peers)
             peer.Send("configure-shortcuts", _configuration);
         TraceObservation(ObservationStage.Lifecycle, ObservationReason.Configured);
     }
     public async Task<InputCapture> CaptureAsync(InputContext context)
     {
+        _commandExcluded = context.Excluded.ToArray();
+        PollCommandOwner(WindowsInterruptClock.NowMs);
         // An authorized editor click does not claim focus. Wait only for the
         // exact page UI acknowledgement before asking for its bound source.
         if (_editorTransition is { } transition && context.BoundTarget == transition.Token.Target)
@@ -190,6 +200,8 @@ internal sealed partial class BrowserInput : IDisposable
         if (active != description!.Route)
             return CaptureRejected(ObservationReason.ActiveDocumentChanged, description, editor);
         TraceObservation(ObservationStage.Describe, ObservationReason.Ready, description.Data, editor);
+        if (!editor)
+            ApproveCommandPolicy(peer, description, id, authority, context.Excluded);
         var result = await peer.RequestAsync("capture", new
         {
             target = id.Value,
@@ -280,7 +292,7 @@ internal sealed partial class BrowserInput : IDisposable
             if (!ValidAuthority(authority))
                 return ApprovalRejected(stage, ObservationReason.AuthorityInvalid, reply);
             var applied = data.GetProperty("sessionBindings");
-            if (String(applied, "shortcutDispatch") != "native")
+            if (String(applied, "shortcutDispatch") != "source-local")
                 return ApprovalRejected(stage, ObservationReason.DispatchMismatch, reply);
             if (!Guid.TryParse(String(applied, "generation"), out var generation))
                 return ApprovalRejected(stage, ObservationReason.AcknowledgementGenerationInvalid, reply);
@@ -357,6 +369,8 @@ internal sealed partial class BrowserInput : IDisposable
     internal BrowserObservation? Latest(TargetId target) => _current?.Target == target ? _current : _observations.Latest(target);
     private void Lost(BrowserPeer peer)
     {
+        if (_commandOwner?.Peer == peer)
+            RequestCommandOwnerRefresh();
         _active.Remove(peer.ConnectionId);
         if (_current?.Peer == peer)
         {
@@ -373,13 +387,12 @@ internal sealed partial class BrowserInput : IDisposable
         if (_lastWindowEpoch != _hook.WindowEpoch)
         {
             _lastWindowEpoch = _hook.WindowEpoch;
+            RequestCommandOwnerRefresh();
             Revoke(true); // OS foreground transitions revoke page tickets too.
             TraceObservation(ObservationStage.Lifecycle, ObservationReason.WindowEpochChanged);
         }
-        while (_hook.TryReadBrowserPress(out var press))
-            if (press is not null)
-                _ = TriggerAsync(press);
         long now = WindowsInterruptClock.NowMs;
+        PollCommandOwner(now);
         if (_editorTransition is { } transition && !transition.Completion.Task.IsCompleted && now > transition.Deadline)
             CancelEditorTransition();
         foreach (var key in _frozen.Where(item => now > item.Value.RetireAfter).Select(item => item.Key).ToArray())
@@ -400,16 +413,16 @@ internal sealed partial class BrowserInput : IDisposable
             return false;
         }
         notice = queued.Notice;
-        if (queued.Epochs is { } expected)
+        if (notice.CommandCapture is not null)
         {
             long now = WindowsInterruptClock.NowMs;
-            if (expected != _hook.BrowserEpochs || now < notice.AcceptedAtMs || now > queued.Deadline)
+            if (now < notice.AcceptedAtMs || now > queued.Deadline)
             {
                 ReleaseCommand(notice.CommandGeneration, notice.CommandSequence);
                 notice = notice with
                 {
                     Source = null,
-                    Rejection = Denial.EpochChanged
+                    Rejection = Denial.StaleObservation
                 };
             }
             else
@@ -433,12 +446,15 @@ internal sealed partial class BrowserInput : IDisposable
             CancelEditorTransition();
             _editorFocused = false;
         }
-        _hook.PublishBrowserShortcut(null);
         foreach (var peer in _server.Peers)
             peer.Send("revoke", new
             {
                 shortcuts
             });
     }
-    public void Dispose() => _server.Dispose();
+    public void Dispose()
+    {
+        RetireCommandOwner();
+        _server.Dispose();
+    }
 }

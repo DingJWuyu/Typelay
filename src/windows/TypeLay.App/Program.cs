@@ -1,3 +1,4 @@
+using TypeLay.Core;
 using TypeLay.Runtime;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
@@ -139,13 +140,28 @@ internal static class Program
             {
                 if (disposed)
                     return;
-                tray.Text = (settings.Value.Enabled ? "TypeLay · " + model.Status : "TypeLay · 已暂停")
-                    + (automationTest ? " · 自动化测试" : "");
+                if (!app.Dispatcher.CheckAccess())
+                {
+                    app.Dispatcher.BeginInvoke(new Action(TrayStatus));
+                    return;
+                }
+                string status = !settings.Value.Enabled ? "已暂停" : !model.Ready ? model.Status
+                    : !session.InputAvailable ? session.ConnectionStatus
+                    : settings.Value.Mode == WorkMode.OnDemand ? session.ShortcutStatus : model.Status;
+                string text = "TypeLay · " + status + (automationTest ? " · 自动化测试" : "");
+                tray.Text = text.Length > 63 ? text[..63] : text;
                 toggle.Text = settings.Value.Enabled ? "暂停 TypeLay" : "启用 TypeLay";
             }
             settings.Changed += TrayStatus;
             settings.Changed += () => { if (!settings.Value.Enabled) support.CancelCheck(); };
             model.Changed += TrayStatus;
+            session.Changed += () =>
+            {
+                if (disposed)
+                    return;
+                TrayStatus();
+                window.RefreshShortcutStatus();
+            };
             UserPreferenceChangedEventHandler themeChanged = (_, _) => app.Dispatcher.BeginInvoke(new Action(() => UiTheme.Apply(settings.Value.Theme)));
             SystemEvents.UserPreferenceChanged += themeChanged;
             app.Exit += (_, _) => SystemEvents.UserPreferenceChanged -= themeChanged;

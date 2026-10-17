@@ -72,6 +72,16 @@ internal sealed class SettingsWindow : Window
     {
         get; set;
     }
+    public void RefreshShortcutStatus()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(RefreshShortcutStatus));
+            return;
+        }
+        if (_page == "shortcuts" && _renderedPage == _page && _shortcutStatus is not null)
+            _shortcutStatus.Text = ShortcutStatus?.Invoke() ?? "仅在启用 TypeLay 的按需模式下生效。自动模式不注册这两个快捷键。";
+    }
     public void RefreshPracticeProgress()
     {
         if (_practiceStatus is not null)
@@ -824,7 +834,7 @@ internal sealed class SettingsWindow : Window
                 || (_exitShortcutInput.SelectedItem as string)?.StartsWith("Ctrl+", StringComparison.Ordinal) == true
                     ? accept + " 返回原输入框" : accept + " → " + accept;
         RefreshDraftBar();
-        _shortcutStatus.Text = ShortcutStatus?.Invoke() ?? "仅在启用 TypeLay 的按需模式下生效。自动模式不注册这两个快捷键。";
+        RefreshShortcutStatus();
     }
     private async Task SaveDraftAsync()
     {

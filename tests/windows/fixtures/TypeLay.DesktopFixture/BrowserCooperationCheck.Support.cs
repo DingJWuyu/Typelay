@@ -95,6 +95,39 @@ internal static partial class BrowserCooperationCheck
             await Task.Delay(40, ct);
         }
     }
+    private static async Task WaitPublicCommandReadyAsync(CancellationToken ct)
+    {
+        // This is the shipped tray's exact accessible label, including the
+        // visible automation marker. It is read before normal typing/selection,
+        // never after those actions to wait for a private source observation.
+        const string ready = "TypeLay · 浏览器快捷键已就绪。 · 自动化测试";
+        try
+        {
+            while (true)
+            {
+                ct.ThrowIfCancellationRequested();
+                bool visible = await Task.Run(() =>
+                {
+                    var trays = AutomationElement.RootElement.FindAll(TreeScope.Children,
+                        new OrCondition(new PropertyCondition(AutomationElement.ClassNameProperty, "Shell_TrayWnd"),
+                            new PropertyCondition(AutomationElement.ClassNameProperty, "Shell_SecondaryTrayWnd")));
+                    foreach (AutomationElement tray in trays)
+                        if (tray.FindFirst(TreeScope.Descendants, new AndCondition(
+                            new PropertyCondition(AutomationElement.NameProperty, ready),
+                            new PropertyCondition(AutomationElement.IsOffscreenProperty, false))) is not null)
+                            return true;
+                    return false;
+                }, ct).WaitAsync(ct);
+                if (visible)
+                    return;
+                await Task.Delay(40, ct);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw new InvalidOperationException("public-command-ready-unavailable");
+        }
+    }
     private static async Task PrepareInputAsync(Cdp cdp, BrowserWindows windows, string prefix, string suffix,
         bool selectSource, CancellationToken ct)
     {

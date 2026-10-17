@@ -204,6 +204,8 @@ class NativeBrowserContract(unittest.TestCase):
                                     "sourceReady": True,
                                     "editorReady": True,
                                     "shortcutDispatch": "page",
+                                    "target": original["target"],
+                                    "sourceLocalAcceptanceVersion": 0,
                                 },
                             )
                             snapshot = self.request(

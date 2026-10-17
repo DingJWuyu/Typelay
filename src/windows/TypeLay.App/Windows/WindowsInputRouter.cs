@@ -11,7 +11,7 @@ internal sealed class WindowsInputRouter(WindowsInputService native, KeyboardHoo
     public bool Ready => hook.Ready;
     public bool ShortcutsReady => hook.ShortcutsReady;
     public bool CanInterceptAcceptance => browser.OwnsForeground ? browser.CanIntercept : hook.CanInterceptAcceptance;
-    public string ShortcutStatus => hook.ShortcutStatus;
+    public string ShortcutStatus => browser.CommandStatus ?? hook.ShortcutStatus;
     public long UserEpoch => hook.UserEpoch;
     public long SourceUserEpoch => hook.SourceUserEpoch;
     public long ForegroundEpoch => hook.ForegroundEpoch;
@@ -25,6 +25,7 @@ internal sealed class WindowsInputRouter(WindowsInputService native, KeyboardHoo
     public FocusMember GetFocus(TargetId target) => BrowserInput.Owns(target) ? browser.GetFocus(target) : hook.GetFocus(target);
     public void ConfigureShortcuts(bool enabled, string wake, string direct, SessionShortcutBindings bindings, bool sessionEnabled)
     {
+        browser.BeforeConfigure();
         hook.ConfigureShortcuts(enabled, wake, direct, bindings, sessionEnabled);
         browser.Configure(enabled, wake, direct, bindings, sessionEnabled);
     }
@@ -54,7 +55,6 @@ internal sealed class WindowsInputRouter(WindowsInputService native, KeyboardHoo
             browser.PublishShortcut(lease);
         else if (!browser.OwnsForeground)
         {
-            hook.PublishBrowserShortcut(null);
             hook.PublishShortcut(lease);
         }
         else

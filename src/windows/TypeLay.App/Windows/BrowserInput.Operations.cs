@@ -67,78 +67,360 @@ internal sealed partial class BrowserInput
             rejection = ObservationReason.EditorFocused;
         if (rejection != ObservationReason.Ready)
         {
-            _hook.PublishBrowserShortcut(null);
             TraceObservation(ObservationStage.Shortcut, rejection);
             return;
         }
-        record!.Peer.Send("publish-shortcut", new
-        {
-            target = record.Target.Value,
-            authority = record.Authority,
-            generation = _hook.CommandGeneration
-        });
-        _hook.PublishBrowserShortcut(new(lease, record.Root, _hook.CommandGeneration, record));
         TraceObservation(ObservationStage.Shortcut, ObservationReason.Ready);
     }
-    private async Task TriggerAsync(BrowserShortcutPress press)
+    private sealed class CommandOwner(BrowserPeer peer, BrowserRoute route, nint root, long windowEpoch, Guid generation, long startedAt)
     {
-        var binding = press.Binding;
-        var source = binding.Lease.Source;
-        long deadline = press.TriggeredAtMs + Limits.ObservationMaxAgeMs;
-        InputNotice Refusal(Denial reason) => new(press.Kind, AcceptedAtMs: press.TriggeredAtMs,
-            CommandGeneration: binding.Generation, Rejection: reason, CommandSequence: press.Sequence);
-        if (binding.Basis is not BrowserObservation original || !ForegroundCurrent(original)
-            || !press.Current(_hook.BrowserEpochs, WindowsInterruptClock.NowMs))
-        {
-            _notices.Enqueue((Refusal(Denial.EpochChanged), null, 0));
-            return;
-        }
-        var reply = await original.Peer.RequestAsync("trigger-shortcut", new
-        {
-            target = source.Target.Value,
-            authority = original.Authority,
-            generation = binding.Generation,
-            kind = press.Kind,
-            commandId = press.CommandId,
-            triggeredAtMs = press.TriggeredAtMs
-        }, (int)Math.Max(1, deadline - WindowsInterruptClock.NowMs));
-        if (!ShortcutReplyMatches(reply, original, press) || !ForegroundCurrent(original)
-            || !press.Current(_hook.BrowserEpochs, WindowsInterruptClock.NowMs))
-        {
-            _notices.Enqueue((Refusal(Denial.StaleObservation), null, 0));
-            return;
-        }
-        if (press.Kind == "direct" && _frozen.Count >= 4)
-        {
-            _notices.Enqueue((Refusal(Denial.PlatformFailure), null, 0));
-            return;
-        }
-        // The captured body is comparison evidence only. Runtime receives the
-        // original before-key snapshot and original t0, never the RPC's later time.
-        if (press.Kind == "direct")
-            // Runtime waits at most 120s; ModelClient exchanges at most 90s.
-            // Retain an accepted original across later busy/wake commands.
-            _frozen.TryAdd((source.Target, source.ObservedAtMs), new(original, binding.Generation, press.Sequence, press.TriggeredAtMs + 212000));
-        _notices.Enqueue((new(press.Kind, AcceptedAtMs: press.TriggeredAtMs,
-            UserEpoch: press.CompletionEpochs.User, ForegroundEpoch: press.CompletionEpochs.Foreground,
-            Source: source, CommandGeneration: binding.Generation, CommandSequence: press.Sequence),
-            press.CompletionEpochs, deadline));
+        public BrowserPeer Peer { get; } = peer;
+        public BrowserRoute Route { get; } = route;
+        public nint Root { get; } = root;
+        public long WindowEpoch { get; } = windowEpoch;
+        public Guid Generation { get; } = generation;
+        public string Id { get; } = Guid.NewGuid().ToString();
+        public long EstablishUntil { get; } = startedAt + 200;
+        public long MaxIssuedExpiry, GrantSequence, PendingGrant, LastGrantAt, LastCommandId;
+        public long RetiredAt = long.MaxValue;
+        public bool Active, EverActive, Prepared, RetirementAcknowledged;
+        public BrowserReply? Preparation;
+        public CommandPolicy? ReadyPolicy, PendingPolicy;
+        public BrowserCommandKey? Wake, Direct;
+        public readonly Dictionary<long, long> Grants = new();
+        public readonly List<CommandPolicy> Policies = new();
     }
-    private bool ShortcutReplyMatches(BrowserReply? reply, BrowserObservation original, BrowserShortcutPress press)
+    private sealed record CommandPolicy(TargetId Target, JsonElement Authority, string[] Excluded, long ExpiresAt)
     {
-        if (reply is null || reply.Route != original.Route || !Boolean(reply.Data, "triggered")
-            || Number(reply.Data, "commandId") != press.CommandId
-            || Number(reply.Data, "triggeredAtMs") != press.TriggeredAtMs
-            || !reply.Data.TryGetProperty("native", out var native))
-            return false;
-        if (!Approved(original.Peer, new(native, reply.Route), [], out var authority, out var metadata, out var target, out _)
-            || target != original.Target || !SameAuthority(authority, original.Authority) || !Boolean(native, "focused"))
-            return false;
-        var snapshot = Snapshot(native, target, metadata!);
-        var expected = press.Binding.Lease.Source;
-        return snapshot is not null && snapshot.Text == expected.Text && snapshot.Selection == expected.Selection
-            && snapshot.InputEpoch == expected.InputEpoch && snapshot.FocusEpoch == expected.FocusEpoch
-            && snapshot.Ime == ImeState.Clear;
+        public string Token => String(Authority, "token")!;
+    }
+    private sealed record BrowserCommandKey(uint Keyval, int Modifiers);
+    private CommandOwner? _commandOwner;
+    private readonly List<CommandOwner> _retiredCommandOwners = new();
+    private bool _commandsEnabled, _ownerRefreshRequested = true, _registrationDeferred, _restorationAttempted;
+    private string[]? _commandExcluded;
+    private BrowserCommandKey? _wake, _direct;
+    internal string? CommandStatus => _registrationDeferred || OwnsForeground
+        ? _commandOwner is { Active: true, ReadyPolicy: { } policy } owner
+            && owner.RetiredAt == long.MaxValue && OwnerForeground(owner) && policy.ExpiresAt >= WindowsInterruptClock.NowMs
+            ? "浏览器快捷键已就绪。"
+            : "浏览器快捷键尚未就绪，请返回受支持的输入框。"
+        : null;
+    private static BrowserCommandKey? CommandKey(string text)
+    {
+        if (!TranslationShortcut.TryParse(text, out var chord))
+            return null;
+        uint key = chord!.Key.Length == 1 ? chord.Key[0]
+            : 65469u + uint.Parse(chord.Key.AsSpan(1), System.Globalization.CultureInfo.InvariantCulture);
+        int modifiers = (chord.Modifiers.HasFlag(ShortcutModifiers.Shift) ? 1 : 0)
+            | (chord.Modifiers.HasFlag(ShortcutModifiers.Control) ? 4 : 0)
+            | (chord.Modifiers.HasFlag(ShortcutModifiers.Alt) ? 8 : 0);
+        return new(key, modifiers);
+    }
+    private static bool CommandKeyMatches(JsonElement data, string name, BrowserCommandKey? expected) => expected is not null
+        && data.TryGetProperty(name, out var key) && Number(key, "keyval") == expected.Keyval && Number(key, "modifiers") == expected.Modifiers;
+    internal void BeforeConfigure()
+    {
+        RetireCommandOwner();
+        _commandExcluded = null;
+        _ownerRefreshRequested = true;
+        _restorationAttempted = false;
+    }
+    private void RequestCommandOwnerRefresh()
+    {
+        RetireCommandOwner();
+        _ownerRefreshRequested = true;
+        _restorationAttempted = false;
+    }
+    private bool OwnerForeground(CommandOwner owner) => owner.Peer.Alive && owner.Generation == _hook.CommandGeneration
+        && owner.WindowEpoch == _hook.WindowEpoch && owner.Root != 0 && owner.Root == ForegroundRoot()
+        && _active.GetValueOrDefault(owner.Peer.ConnectionId) == owner.Route;
+    private void RetireCommandOwner()
+    {
+        if (_commandOwner is not { } owner)
+            return;
+        owner.RetiredAt = WindowsInterruptClock.NowMs;
+        owner.Active = false;
+        owner.ReadyPolicy = owner.PendingPolicy = null;
+        _commandOwner = null;
+        _retiredCommandOwners.Add(owner);
+        if (owner.MaxIssuedExpiry != 0 && owner.Peer.Alive)
+            owner.Peer.Send("deactivate-command-owner", new
+            {
+                documentToken = owner.Route.DocumentToken,
+                ownerId = owner.Id,
+                generation = owner.Generation,
+                grantSequence = owner.GrantSequence
+            });
+        else if (owner.MaxIssuedExpiry == 0)
+            owner.RetirementAcknowledged = true;
+    }
+    private void PollCommandOwner(long now)
+    {
+        foreach (var owner in _retiredCommandOwners.Append(_commandOwner).OfType<CommandOwner>())
+        {
+            owner.Policies.RemoveAll(policy => now > policy.ExpiresAt + Limits.ObservationMaxAgeMs);
+            foreach (long sequence in owner.Grants.Where(grant => now > grant.Value + Limits.ObservationMaxAgeMs).Select(grant => grant.Key).ToArray())
+                owner.Grants.Remove(sequence);
+        }
+        _retiredCommandOwners.RemoveAll(owner => now > Math.Max(owner.MaxIssuedExpiry, owner.RetiredAt) + Limits.ObservationMaxAgeMs);
+        if (_commandOwner is { } current)
+        {
+            if (!OwnerForeground(current) || !_commandsEnabled || !_sessionEnabled
+                || !current.Active && now > current.EstablishUntil
+                || current.Active && (now > current.MaxIssuedExpiry || current.PendingGrant != 0 && now - current.LastGrantAt > 200))
+                RetireCommandOwner();
+            else if (current.Prepared && !current.Active && current.MaxIssuedExpiry == 0 && _hook.CommandsReleased)
+                ActivateCommandOwner(current, now);
+            else if (current.Active && current.PendingGrant == 0 && now - current.LastGrantAt >= 200)
+                SendOwnerGrant(current, false, now);
+        }
+        if (_commandOwner is not null)
+            return;
+        bool safelyRetired = _retiredCommandOwners.All(owner => owner.RetirementAcknowledged || now > owner.MaxIssuedExpiry);
+        if (!safelyRetired || !_hook.CommandsReleased)
+            return;
+        if (_ownerRefreshRequested && _commandsEnabled && _sessionEnabled && _commandExcluded is not null
+            && _retiredCommandOwners.Count < 4 && _wake is not null && _direct is not null)
+        {
+            var peer = ForegroundPeer(out _);
+            if (peer is not null && _active.TryGetValue(peer.ConnectionId, out var route))
+            {
+                _ownerRefreshRequested = false;
+                var owner = new CommandOwner(peer, route, ForegroundRoot(), _hook.WindowEpoch, _hook.CommandGeneration, now);
+                owner.Wake = _wake;
+                owner.Direct = _direct;
+                _commandOwner = owner;
+                _ = PrepareCommandOwnerAsync(owner);
+                return;
+            }
+        }
+        if (_registrationDeferred && !_restorationAttempted)
+        {
+            _restorationAttempted = true;
+            if (_hook.RestoreCommandRegistration())
+                _registrationDeferred = false;
+        }
+    }
+    private async Task PrepareCommandOwnerAsync(CommandOwner owner)
+    {
+        var reply = await owner.Peer.RequestAsync("prepare-command-owner", new
+        {
+            documentToken = owner.Route.DocumentToken,
+            ownerId = owner.Id,
+            generation = owner.Generation
+        }, (int)Math.Max(1, owner.EstablishUntil - WindowsInterruptClock.NowMs));
+        if (_commandOwner != owner)
+            return;
+        if (!OwnerForeground(owner) || WindowsInterruptClock.NowMs > owner.EstablishUntil
+            || reply?.Route != owner.Route || String(reply.Data, "ownerId") != owner.Id
+            || Number(reply.Data, "commandLocalVersion") != 1
+            || !CommandKeyMatches(reply.Data, "wake", _wake) || !CommandKeyMatches(reply.Data, "direct", _direct)
+            || !Approved(owner.Peer, reply, _commandExcluded!, out _, out _, out _, out _)
+            || !Boolean(reply.Data, "focused"))
+        {
+            RetireCommandOwner();
+            return;
+        }
+        owner.Preparation = reply;
+        owner.Prepared = true;
+        if (_hook.CommandsReleased)
+            ActivateCommandOwner(owner, WindowsInterruptClock.NowMs);
+    }
+    private void ActivateCommandOwner(CommandOwner owner, long now)
+    {
+        if (owner.Preparation is not { } reply || !OwnerForeground(owner) || now > owner.EstablishUntil
+            || !_hook.CommandsReleased)
+        {
+            RetireCommandOwner();
+            return;
+        }
+        var authority = reply.Data.GetProperty("authority").Clone();
+        long expiry = Number(authority, "observedAtMs") + Limits.ObservationMaxAgeMs;
+        if (now > expiry)
+        {
+            RetireCommandOwner();
+            return;
+        }
+        var target = new TargetId("windows-browser", String(authority, "target")!, owner.Peer.ConnectionId);
+        bool suspended = _hook.SuspendCommandRegistration();
+        _hook.DeferCommandRegistration();
+        _registrationDeferred = true;
+        _restorationAttempted = false;
+        if (!suspended)
+        {
+            RetireCommandOwner();
+            return;
+        }
+        // A native press racing the release remains owned until its real up.
+        if (!_hook.CommandsReleased)
+            return;
+        owner.PendingPolicy = new(target, authority, _commandExcluded!.ToArray(), expiry);
+        owner.Policies.Add(owner.PendingPolicy);
+        SendOwnerGrant(owner, true, now);
+    }
+    private void SendOwnerGrant(CommandOwner owner, bool activate, long now)
+    {
+        long sequence = ++owner.GrantSequence;
+        long expiry = now + 800;
+        owner.MaxIssuedExpiry = Math.Max(owner.MaxIssuedExpiry, expiry); // Includes a grant whose ACK may be lost.
+        owner.Grants.Add(sequence, expiry);
+        owner.PendingGrant = sequence;
+        owner.LastGrantAt = now;
+        if (activate)
+        {
+            var policy = owner.Policies[^1];
+            owner.Peer.Send("activate-command-owner", new
+            {
+                target = policy.Target.Value,
+                ownerId = owner.Id,
+                generation = owner.Generation,
+                grantSequence = sequence,
+                expiresAtMs = expiry,
+                authority = policy.Authority,
+                releasedAtMs = _hook.CommandsReleasedAt
+            });
+        }
+        else
+            owner.Peer.Send("renew-command-owner", new
+            {
+                documentToken = owner.Route.DocumentToken,
+                ownerId = owner.Id,
+                generation = owner.Generation,
+                grantSequence = sequence,
+                expiresAtMs = expiry
+            });
+    }
+    private void OwnerAcknowledged(BrowserPeer peer, BrowserRoute route, JsonElement data)
+    {
+        string? id = String(data, "ownerId");
+        var owner = _retiredCommandOwners.Append(_commandOwner).OfType<CommandOwner>()
+            .FirstOrDefault(item => item.Peer == peer && item.Route == route && item.Id == id);
+        if (owner is null || String(data, "generation") != owner.Generation.ToString()
+            || !CommandKeyMatches(data, "wake", owner.Wake) || !CommandKeyMatches(data, "direct", owner.Direct))
+            return;
+        long sequence = Number(data, "grantSequence");
+        if (sequence != owner.GrantSequence)
+            return;
+        if (String(data, "state") == "retired")
+        {
+            owner.RetirementAcknowledged = true;
+            if (_commandOwner == owner)
+                RetireCommandOwner();
+            return;
+        }
+        if (_commandOwner != owner || owner.RetiredAt != long.MaxValue)
+            return;
+        long now = WindowsInterruptClock.NowMs;
+        if (String(data, "state") != "active" || sequence != owner.PendingGrant
+            || now - owner.LastGrantAt > 200 || !owner.EverActive && now > owner.EstablishUntil
+            || !owner.Grants.TryGetValue(sequence, out long expiry) || Number(data, "expiresAtMs") != expiry
+            || now > expiry || !OwnerForeground(owner))
+        {
+            RetireCommandOwner();
+            return;
+        }
+        var policy = owner.Policies.FindLast(item => item.Token == String(data, "policyToken") && item.Target.Value == String(data, "target"));
+        if (!owner.EverActive && (policy is null || owner.PendingPolicy != policy))
+        {
+            RetireCommandOwner();
+            return;
+        }
+        owner.Active = true;
+        owner.EverActive = true;
+        owner.PendingGrant = 0;
+        if (policy is not null && owner.PendingPolicy == policy)
+            owner.ReadyPolicy = policy;
+    }
+    private void ApproveCommandPolicy(BrowserPeer peer, BrowserReply description, TargetId target, JsonElement authority, string[] excluded)
+    {
+        if (_commandOwner is not { Active: true } owner || owner.Peer != peer || owner.Route != description.Route
+            || !OwnerForeground(owner) || !Boolean(description.Data, "focused") || owner.Policies.Count >= 16)
+            return;
+        long expiry = Number(authority, "observedAtMs") + Limits.ObservationMaxAgeMs;
+        if (WindowsInterruptClock.NowMs > expiry)
+            return;
+        var policy = new CommandPolicy(target, authority.Clone(), excluded.ToArray(), expiry);
+        if (owner.Policies.Any(item => item.Token == policy.Token))
+            return;
+        owner.Policies.Add(policy);
+        owner.PendingPolicy = policy;
+        _ = ApproveCommandPolicyAsync(owner, policy);
+    }
+    private async Task ApproveCommandPolicyAsync(CommandOwner owner, CommandPolicy policy)
+    {
+        var reply = await owner.Peer.RequestAsync("approve-command-policy", new
+        {
+            target = policy.Target.Value,
+            ownerId = owner.Id,
+            generation = owner.Generation,
+            authority = policy.Authority
+        }, (int)Math.Max(1, policy.ExpiresAt - WindowsInterruptClock.NowMs));
+        if (_commandOwner == owner && owner.PendingPolicy == policy && OwnerForeground(owner) && reply?.Route == owner.Route
+            && Boolean(reply.Data, "applied") && String(reply.Data, "ownerId") == owner.Id
+            && String(reply.Data, "generation") == owner.Generation.ToString()
+            && String(reply.Data, "target") == policy.Target.Value && String(reply.Data, "policyToken") == policy.Token
+            && CommandKeyMatches(reply.Data, "wake", _wake) && CommandKeyMatches(reply.Data, "direct", _direct)
+            && WindowsInterruptClock.NowMs <= policy.ExpiresAt)
+            owner.ReadyPolicy = policy;
+    }
+    private void SourceCommand(BrowserPeer peer, BrowserRoute route, JsonElement data)
+    {
+        var owner = _retiredCommandOwners.Append(_commandOwner).OfType<CommandOwner>().FirstOrDefault(item =>
+            item.Peer == peer && item.Route == route && item.Id == String(data, "ownerId"));
+        long commandId = Number(data, "commandId"), t0 = Number(data, "triggeredAtMs"), now = WindowsInterruptClock.NowMs;
+        string? kind = String(data, "kind");
+        if (owner is null || !owner.EverActive || owner.Generation != _hook.CommandGeneration || String(data, "generation") != owner.Generation.ToString()
+            || kind is not ("wake" or "direct") || commandId is <= 0 or > 9007199254740991 || commandId <= owner.LastCommandId
+            || !owner.Grants.TryGetValue(Number(data, "ownerGrantSequence"), out long ownerExpiry)
+            || t0 < 0 || now < t0 || now - t0 > Limits.ObservationMaxAgeMs)
+            return;
+        owner.LastCommandId = commandId;
+        if (_notices.Count >= 16)
+            return;
+        long sequence = _hook.NextCommandSequence();
+        void Reject(Denial reason) => _notices.Enqueue((new(kind, AcceptedAtMs: t0,
+            CommandGeneration: owner.Generation, Rejection: reason, CommandSequence: sequence), t0 + Limits.ObservationMaxAgeMs));
+        if (!data.TryGetProperty("native", out var native))
+        {
+            Reject(String(data, "reason") == "ImeUnclear" ? Denial.ImeUnclear : Denial.StaleObservation);
+            return;
+        }
+        var policy = owner.Policies.FindLast(item => item.Token == String(data, "policyToken"));
+        long capturedAt = Number(data, "capturedAtMs"), upper = Number(data, "captureUpperMs");
+        if (policy is null || upper < capturedAt || upper > t0 + Limits.ObservationMaxAgeMs
+            || upper > ownerExpiry || upper > policy.ExpiresAt || upper > owner.RetiredAt
+            || !Approved(peer, new(native, route), policy.Excluded, out var authority, out var metadata, out var target, out var ack)
+            || target != policy.Target || !native.TryGetProperty("sessionBindings", out var applied)
+            || String(applied, "target") != policy.Target.Value
+            || String(authority, "metadataKey") != String(policy.Authority, "metadataKey")
+            || !Boolean(native, "focused"))
+        {
+            Reject(Denial.StaleObservation);
+            return;
+        }
+        var source = Snapshot(native, target, metadata!);
+        var evidence = new CommandCaptureEvidence(target, t0, capturedAt);
+        if (source is null || evidence.Check(source, now) != Denial.None || source.Ime != ImeState.Clear || !source.DirectWriteSupported)
+        {
+            Reject(Denial.StaleObservation);
+            return;
+        }
+        if (kind == "direct" && _frozen.Count >= 4)
+        {
+            Reject(Denial.PlatformFailure);
+            return;
+        }
+        var epochs = _hook.BrowserEpochs;
+        var record = new BrowserObservation(peer, route, authority, target, capturedAt, owner.Root, epochs, ack!);
+        _observations.Remember(record);
+        if (OwnerForeground(owner))
+            _current = record;
+        if (kind == "direct")
+            _frozen.TryAdd((target, capturedAt), new(record, owner.Generation, sequence, t0 + 212000));
+        _notices.Enqueue((new(kind, AcceptedAtMs: t0, UserEpoch: epochs.User, ForegroundEpoch: epochs.Foreground,
+            Source: source, CommandGeneration: owner.Generation, CommandSequence: sequence, CommandCapture: evidence),
+            t0 + Limits.ObservationMaxAgeMs));
     }
     public async Task<WriteReceipt> WriteDirectAsync(WritePlan plan, string[] excluded)
     {
@@ -259,6 +541,16 @@ internal sealed partial class BrowserInput
     private void Receive(BrowserEvent message)
     {
         var (peer, name, value, route) = message;
+        if (name == "command-owner")
+        {
+            OwnerAcknowledged(peer, route, value);
+            return;
+        }
+        if (name == "source-command")
+        {
+            SourceCommand(peer, route, value);
+            return;
+        }
         if (name == "document-focus")
         {
             bool changed = false;
@@ -272,6 +564,8 @@ internal sealed partial class BrowserInput
                 _active.Remove(peer.ConnectionId);
                 changed = true;
             }
+            if (changed)
+                RequestCommandOwnerRefresh();
             if (changed && _current?.Peer == peer)
             {
                 _editorFocused = false;
@@ -283,6 +577,8 @@ internal sealed partial class BrowserInput
         }
         if (name == "document-closed")
         {
+            if (_commandOwner?.Peer == peer && _commandOwner.Route == route)
+                RequestCommandOwnerRefresh();
             if (_active.GetValueOrDefault(peer.ConnectionId) == route)
                 _active.Remove(peer.ConnectionId);
             if (_current?.Peer == peer && _current.Route == route)
@@ -310,13 +606,21 @@ internal sealed partial class BrowserInput
             return;
         if (name == "input" || name == "destroy")
         {
+            bool focusChanged = Boolean(value, "focusChanged");
+            if (focusChanged && _commandOwner is { } owner && owner.Peer == peer && owner.Route == route)
+                owner.ReadyPolicy = owner.PendingPolicy = null;
+            if (focusChanged && Boolean(value, "focused") && _commandOwner is not { Active: true }
+                && _active.GetValueOrDefault(peer.ConnectionId) == route && ProcessFor(ForegroundRoot()) == peer.BrowserProcessId)
+                RequestCommandOwnerRefresh(); // A new focused field is only a metadata candidate.
             if (_current?.Peer == peer && _current.Route == route && ForegroundRoot() == _current.Root)
             {
                 if (_editorTransition is { } transition && !transition.Completion.Task.IsCompleted
                     && (target != transition.Token.Target.Value || !Boolean(value, "focusChanged") || Boolean(value, "focused")))
                     CancelEditorTransition();
                 bool textChanged = Boolean(value, "textChanged") || name == "destroy";
-                bool focusChanged = Boolean(value, "focusChanged");
+                if (name == "destroy" && _commandOwner is { } destroyedOwner
+                    && destroyedOwner.Peer == peer && destroyedOwner.Route == route)
+                    destroyedOwner.ReadyPolicy = destroyedOwner.PendingPolicy = null;
                 _hook.NotifyBrowserChange(textChanged, focusChanged);
                 _publication = null;
                 if (name == "destroy")
@@ -339,8 +643,8 @@ internal sealed partial class BrowserInput
             && Number(value, "sessionRevision") == lease.SessionRevision)
             _notices.Enqueue((new("escape", AcceptedAtMs: WindowsInterruptClock.NowMs, UserEpoch: _hook.UserEpoch,
                 ForegroundEpoch: _hook.ForegroundEpoch, CommandGeneration: _hook.CommandGeneration,
-                Target: current.Target, SessionRevision: lease.SessionRevision), null, 0));
-        // "shortcut" events are never consumed in Windows native-dispatch mode.
+                Target: current.Target, SessionRevision: lease.SessionRevision), 0));
+        // Legacy "shortcut" events never enter the Windows command sequence domain.
     }
     private void RememberPublication(BrowserPeer peer, BrowserRoute route, JsonElement value)
     {
@@ -371,7 +675,7 @@ internal sealed partial class BrowserInput
         });
         _notices.Enqueue((new("accept", issued.Permit, at, issued.Lease.UserEpoch, issued.Lease.ForegroundEpoch,
             CommandGeneration: issued.Lease.CommandGeneration, CompletedReceipt: receipt,
-            Target: issued.Observation.Target, SessionRevision: issued.Lease.SessionRevision), null, 0));
+            Target: issued.Observation.Target, SessionRevision: issued.Lease.SessionRevision), 0));
         if (receipt.Status == WriteStatus.OutcomeUnknown)
             peer.Send("quarantine", new
             {

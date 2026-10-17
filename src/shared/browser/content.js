@@ -15,6 +15,8 @@
   const consumed = new Map();
   const held = new Map();
   const MAX_TEXT = 8192;
+  let commandOwner = null, preparedCommandOwner = null, commandPolicy = null, commandOwnerTimer = null;
+  let nextSourceCommandId = 0;
   let counter = 0, publication = null, shortcut = null, configuration = null, hintTimer = null, ordered = null, editorControl = null;
   let clock = null, commandClock = null, lastHostStamp = NaN, alive = true, overlay = null, mutating = false, ownInputEvent = null;
   // Cache native methods in the extension's isolated world, never invoke a
@@ -33,7 +35,7 @@
   const shortcutDispatch = () => configuration?.shortcutDispatch === undefined
     ? "page" : configuration.shortcutDispatch;
   function sessionApplied() {
-    return ["page", "native"].includes(shortcutDispatch()) && typeof configuration?.sessionEnabled === "boolean"
+    return ["page", "native", "source-local"].includes(shortcutDispatch()) && typeof configuration?.sessionEnabled === "boolean"
       && typeof configuration.generation === "string"
       && configuration.generation.length > 0
       && typeof configuration.accept === "string" && typeof configuration.exit === "string"
@@ -54,7 +56,7 @@
     || rich?.modelFocus === 1 && field.richFocusSupported === true);
   function sessionBindings(field) {
     const source = sourceConfigured(field);
-    const sourceLocal = configuration?.sourceLocalAcceptanceVersion === 1 && shortcutDispatch() === "native"
+    const sourceLocal = configuration?.sourceLocalAcceptanceVersion === 1 && ["native", "source-local"].includes(shortcutDispatch())
       && source && alive && !!field && !field.richText && !field.dead && !field.quarantined
       && allowedElement(field.element) && field.element.isConnected && field.element.getRootNode() === document
       && typeof (field.element instanceof HTMLTextAreaElement ? areaReplace : inputReplace) === "function";
@@ -134,13 +136,13 @@
     return false;
   }
   function clockValid() {
-    if (!clock) return clockReject("clockUnavailable");
+    if (!clock) { if (commandOwner) retireCommandOwner(); return clockReject("clockUnavailable"); }
     const elapsed = monoNow() - clock.mono;
     if (elapsed < 0 || Math.abs(Date.now() - clock.wall - elapsed) > 20) {
       observationInterrupted();
       return clockReject("clockDiscontinuity");
     }
-    if (elapsed > 1500) { clock = publication = shortcut = null; return clockReject("clockExpired"); }
+    if (elapsed > 1500) { clock = publication = shortcut = null; retireCommandOwner(); return clockReject("clockExpired"); }
     return true;
   }
   function now(upper = false) {
@@ -192,6 +194,91 @@
   }
   const fresh = (stamp, age) => Number.isFinite(stamp) && stamp <= lastHostStamp
     && Number.isFinite(now(true)) && now(true) >= stamp && now(true) - stamp <= age;
+  const commandBindingValid = binding => Number.isSafeInteger(binding?.keyval) && binding.keyval > 0
+    && binding.keyval <= 0x10ffff && Number.isSafeInteger(binding.modifiers)
+    && binding.modifiers >= 0 && (binding.modifiers & ~13) === 0;
+  function commandConfigured(generation) {
+    return shortcutDispatch() === "source-local" && configuration?.enabled === true && sessionCurrent(generation)
+      && commandBindingValid(configuration.wake) && commandBindingValid(configuration.direct)
+      && (configuration.wake.keyval !== configuration.direct.keyval
+        || configuration.wake.modifiers !== configuration.direct.modifiers);
+  }
+  const ownerIdValid = id => typeof id === "string" && id.length > 0 && id.length <= 128;
+  const grantValid = sequence => Number.isSafeInteger(sequence) && sequence > 0;
+  function commandOwnerAck(data, state, bindings = configuration, policy = null) {
+    send("command-owner", {ownerId: data.ownerId, generation: data.generation,
+      grantSequence: data.grantSequence, expiresAtMs: data.expiresAtMs, state,
+      wake: bindings?.wake, direct: bindings?.direct,
+      ...(policy ? {target: policy.field.id, policyToken: policy.authority.token} : {})});
+  }
+  function retireCommandOwner(notify = true) {
+    const previous = commandOwner;
+    commandOwner = commandPolicy = preparedCommandOwner = null;
+    clearTimeout(commandOwnerTimer); commandOwnerTimer = null;
+    if (previous && notify) commandOwnerAck(previous, "retired", previous.configuration);
+  }
+  function commandOwnerCurrent() {
+    const current = commandOwner;
+    if (!current) return false;
+    if (current.configuration !== configuration || !commandConfigured(current.generation)
+      || document.visibilityState !== "visible" || !document.hasFocus() || !liveDeadline(current)) {
+      if (commandOwner === current) retireCommandOwner();
+      return false;
+    }
+    return commandOwner === current;
+  }
+  function armCommandOwnerExpiry() {
+    clearTimeout(commandOwnerTimer);
+    const current = commandOwner;
+    const remaining = Math.min(current.expiresAtPerformanceMs - monoNow(), current.expiresAtWallMs - Date.now());
+    commandOwnerTimer = setTimeout(() => { if (commandOwner === current) retireCommandOwner(); }, Math.max(0, Math.ceil(remaining)));
+  }
+  function commandPolicyProof(field, basis) {
+    drainMutations();
+    return !!field && !field.richText && !field.dead && !field.quarantined && focused(field)
+      && basis?.target === field.id && approved(field, basis) && !!issued(field, basis)
+      && Number.isSafeInteger(basis.observedAtMs) && basis.observedAtMs >= 0
+      && Number.isFinite(now(true)) && now(true) <= basis.observedAtMs + 150;
+  }
+  function storeCommandPolicy(field, basis) {
+    commandPolicy = {field, authority: basis, expiresAtMs: basis.observedAtMs + 150};
+  }
+  function sourceCommand(event, field) {
+    if (!commandOwnerCurrent()) return false;
+    const current = commandOwner;
+    const kind = shortcutMatches(event, current.configuration.wake) ? "wake"
+      : shortcutMatches(event, current.configuration.direct) ? "direct" : null;
+    const triggerMono = event.timeStamp;
+    if (!kind || !Number.isFinite(triggerMono) || triggerMono < current.activateMono || triggerMono > monoNow()) return false;
+    if (nextSourceCommandId >= Number.MAX_SAFE_INTEGER) { retireCommandOwner(); return false; }
+    // Freeze the existing proved clock before any body/selection operation.
+    // No later calibration, owner renewal, or fresh snapshot may move this t0.
+    const frozenClock = {lower: clock.lower, upper: clock.upper};
+    const triggeredAtMs = Math.floor(frozenClock.lower + triggerMono);
+    if (!Number.isSafeInteger(triggeredAtMs) || triggeredAtMs < 0) return false;
+    drainMutations();
+    const policy = commandPolicy;
+    const command = {ownerId: current.ownerId, ownerGrantSequence: current.grantSequence,
+      commandId: ++nextSourceCommandId, generation: current.generation, kind, triggeredAtMs,
+      ...(policy?.field === field ? {policyToken: policy.authority.token} : {})};
+    consume(event);
+    retireOrdered(); retireEditorControl(); publication = shortcut = null;
+    const reject = reason => { send("source-command", {...command, reason}); refreshHint(); return true; };
+    if (!field || field.richText || !focused(field) || field.dead || field.quarantined) return reject("SourceChanged");
+    if (event.isComposing || event.keyCode === 229) field.ime = "Composing";
+    if (field.ime !== "Clear") return reject("ImeUnclear");
+    if (!policy || policy.field !== field || !commandPolicyProof(field, policy.authority)) return reject("PolicyUnavailable");
+    const snapshot = capture(field, policy.authority, true);
+    const captureMono = monoNow(), captureUpperMs = Math.ceil(frozenClock.upper + captureMono);
+    if (!snapshot || commandPolicy !== policy || commandOwner !== current || !commandOwnerCurrent()
+      || !commandPolicyProof(field, policy.authority) || triggerMono > captureMono
+      || !Number.isSafeInteger(captureUpperMs)
+      || captureUpperMs > current.expiresAtMs || captureUpperMs > policy.expiresAtMs
+      || captureUpperMs > triggeredAtMs + 150) return reject("StaleObservation");
+    send("source-command", {...command, capturedAtMs: snapshot.observedAtMs, captureUpperMs, native: snapshot});
+    refreshHint();
+    return true;
+  }
   function focused(field) {
     return document.visibilityState === "visible" && document.hasFocus()
       && document.activeElement === field.element && field.element.isConnected;
@@ -520,12 +607,17 @@
     if (rememberSelection(field) && !mutating) changed(field, false, false);
   }
   function observationInterrupted() {
+    retireCommandOwner();
     retireOrdered();
     publication = shortcut = clock = null;
     hide();
     for (const field of targets.values()) { field.ime = "Unknown"; field.authorities?.clear(); }
   }
   function changed(field, textChanged, focusChanged) {
+    if (focusChanged) {
+      if (commandPolicy?.field === field) commandPolicy = null;
+      if (shortcutDispatch() === "source-local") field.authorities?.clear();
+    }
     retireOrdered(); retireEditorControl();
     publication = shortcut = null;
     if (!focusChanged) field.input++;
@@ -539,6 +631,14 @@
     if (records.length && overlay?.paused && !pauseCurrent(overlay.field, overlay.authority, true)) hide();
     for (const record of records) {
       if (record.type === "attributes") {
+        if (shortcutDispatch() === "source-local") {
+          for (const field of targets.values()) {
+            if (!field.richText && (record.target === field.element || record.target.contains(field.element))) {
+              field.authorities?.clear();
+              if (commandPolicy?.field === field) commandPolicy = null;
+            }
+          }
+        }
         // ProseMirror selection updates can write the unchanged root class.
         // Check every record: a real change followed by restoration still revokes.
         const unchangedWriteClass = mutating && ordered?.claimed && ordered.field.richText
@@ -562,6 +662,7 @@
         for (const field of targets.values()) {
           if (node === field.element || node.contains?.(field.element)) {
             retireOrdered();
+            if (commandPolicy?.field === field) commandPolicy = null;
             field.dead = true;
             targets.delete(field.id);
             publication = shortcut = null;
@@ -881,6 +982,75 @@
     const field = data.target ? targets.get(data.target) : fieldFor(document.activeElement);
     switch (message.op) {
       case "describe": return describe(field);
+      case "prepare-command-owner": {
+        if (!ownerIdValid(data.ownerId) || !commandConfigured(data.generation) || commandOwnerCurrent()
+          || !field || field.richText || !focused(field)) return null;
+        const result = describe(field);
+        if (!result || !commandConfigured(data.generation)) return null;
+        preparedCommandOwner = {ownerId: data.ownerId, generation: data.generation, field, configuration};
+        return {...result, ownerId: data.ownerId, commandLocalVersion: 1,
+          wake: configuration.wake, direct: configuration.direct};
+      }
+      case "activate-command-owner": {
+        const prepared = preparedCommandOwner;
+        preparedCommandOwner = null; // Every attempted activation consumes its preparation.
+        const valid = !!prepared && prepared.ownerId === data.ownerId && prepared.generation === data.generation
+          && prepared.configuration === configuration && prepared.field === field && data.target === field?.id
+          && commandConfigured(data.generation) && grantValid(data.grantSequence) && !commandOwner
+          && !!field && !field.richText && focused(field) && approved(field, data.authority)
+          && calibrate(field, data.authority) && commandPolicyProof(field, data.authority)
+          && Number.isSafeInteger(data.expiresAtMs) && Number.isSafeInteger(data.releasedAtMs)
+          && data.releasedAtMs >= 0 && data.releasedAtMs <= commandClock.boottimeMs
+          && [...held.values()].every(press => Number.isSafeInteger(press.latestObservedUpperMs)
+            && press.latestObservedUpperMs <= data.releasedAtMs);
+        const expiresAtPerformanceMs = valid ? deadline(data.expiresAtMs, 800) : NaN;
+        const candidate = {...data, configuration, expiresAtPerformanceMs,
+          expiresAtWallMs: data.expiresAtMs - clock?.upperWall, activateMono: monoNow()};
+        if (!valid || !liveDeadline(candidate)) {
+          if (commandOwner?.ownerId === data.ownerId) retireCommandOwner(false);
+          commandOwnerAck(data, "rejected"); return null;
+        }
+        // Only this host's proved real all-up transition can retire keys whose
+        // key-up was missed while unfocused. Newer observed presses stay held.
+        retireOrdered(); retireEditorControl(); held.clear();
+        commandOwner = candidate;
+        storeCommandPolicy(field, data.authority);
+        armCommandOwnerExpiry();
+        commandOwnerAck(candidate, "active", configuration, commandPolicy);
+        return null;
+      }
+      case "renew-command-owner": {
+        const current = commandOwner;
+        if (!current || data.documentToken !== documentId || data.ownerId !== current.ownerId
+          || data.generation !== current.generation || !commandOwnerCurrent() || !grantValid(data.grantSequence)
+          || data.grantSequence <= current.grantSequence || !Number.isSafeInteger(data.expiresAtMs)) {
+          if (commandOwner?.ownerId === data.ownerId) retireCommandOwner(false);
+          commandOwnerAck(data, "rejected"); return null;
+        }
+        const candidate = {...current, grantSequence: data.grantSequence, expiresAtMs: data.expiresAtMs,
+          expiresAtPerformanceMs: deadline(data.expiresAtMs, 800), expiresAtWallMs: data.expiresAtMs - clock.upperWall};
+        if (!liveDeadline(candidate)) { retireCommandOwner(false); commandOwnerAck(data, "rejected"); return null; }
+        commandOwner = candidate;
+        armCommandOwnerExpiry();
+        commandOwnerAck(candidate, "active");
+        return null;
+      }
+      case "deactivate-command-owner":
+        if (data.documentToken === documentId && commandOwner?.ownerId === data.ownerId
+          && commandOwner.generation === data.generation) retireCommandOwner(false);
+        if (data.documentToken === documentId && preparedCommandOwner?.ownerId === data.ownerId
+          && preparedCommandOwner.generation === data.generation) preparedCommandOwner = null;
+        commandOwnerAck(data, "retired");
+        return null;
+      case "approve-command-policy":
+        commandPolicy = null;
+        if (commandOwnerCurrent() && data.ownerId === commandOwner.ownerId && data.generation === commandOwner.generation
+          && data.target === field?.id && !!field && !field.richText && focused(field)
+          && approved(field, data.authority) && calibrate(field, data.authority) && commandPolicyProof(field, data.authority)
+          && commandOwnerCurrent()) storeCommandPolicy(field, data.authority);
+        return commandPolicy ? {applied: true, ownerId: data.ownerId, generation: data.generation,
+          target: field.id, policyToken: commandPolicy.authority.token, wake: configuration.wake,
+          direct: configuration.direct} : {applied: false};
       case "capture": return capture(field, data.authority, data.requireFocused === true);
       case "publish": {
         if (!sameOrderedPublication(data)) retireOrdered();
@@ -915,6 +1085,7 @@
       }
       case "publish-shortcut": shortcut = calibrate(field, data.authority) ? data : null; return null;
       case "configure-shortcuts":
+        retireCommandOwner();
         // Revoke the old generation before applying even invalid or disabled input.
         retireOrdered(); publication = shortcut = null; hide();
         configuration = {...data};
@@ -937,6 +1108,7 @@
           expiresAtWallMs: data.expiresAtMs - clock?.upperWall}, true);
       }
       case "trigger-shortcut": {
+        if (shortcutDispatch() === "source-local") return {triggered: false};
         const nativeDispatch = shortcutDispatch() === "native";
         const rejected = nativeDispatch ? {triggered: false, commandId: data.commandId,
           triggeredAtMs: data.triggeredAtMs} : {triggered: false};
@@ -998,7 +1170,7 @@
           && approved(field, data.authority)
           // Editing may renew the clock with a fresh metadata-only host proof.
           // Existing source permits and pressed-key tickets keep their copied deadlines.
-          && (data.metadataOnly !== true || shortcutDispatch() === "native" && overlay.editing && !overlay.paused
+          && (data.metadataOnly !== true || ["native", "source-local"].includes(shortcutDispatch()) && overlay.editing && !overlay.paused
             && data.target === field.id && overlay.revision === data.revision && document.hasFocus()
             && field.ime === "Clear" && field.content === data.authority.contentRevision
             && field.input === data.authority.inputRevision && field.focus === data.authority.focusRevision
@@ -1049,10 +1221,10 @@
       if (synced || message.op === "configure-shortcuts") result = command(message);
       else {
         if (message.op === "capture") noteCapture(lastClockReason);
-        retireOrdered(); publication = shortcut = null; hide();
+        retireCommandOwner(); retireOrdered(); publication = shortcut = null; hide();
       }
     }
-    catch (_) { retireOrdered(); publication = shortcut = null; hide(); }
+    catch (_) { retireCommandOwner(); retireOrdered(); publication = shortcut = null; hide(); }
     commandClock = null;
     if (captureStarted !== null && result) {
       const elapsed = monoNow() - captureStarted;
@@ -1069,11 +1241,11 @@
     reportFocus();
     // Focus loss does not interrupt these window-capture observers. Keep both
     // Clear and sticky Composing so a frozen direct request retains its source.
-    if (!document.hasFocus()) { retireOrdered(); publication = shortcut = null; hide(); }
+    if (!document.hasFocus()) { retireCommandOwner(); retireOrdered(); publication = shortcut = null; hide(); }
   }, true);
   document.addEventListener("visibilitychange", () => {
     reportFocus();
-    if (document.hidden) { retireOrdered(); publication = shortcut = null; hide(); }
+    if (document.hidden) { retireCommandOwner(); retireOrdered(); publication = shortcut = null; hide(); }
   });
   window.addEventListener("focusin", event => {
     const field = fieldFor(event.target);
@@ -1293,9 +1465,17 @@
       catch (_) { /* A diagnostic channel failure cannot change key handling. */ }
     };
   }
+  function observeHeld(press, event) {
+    // Freeze this observation's proved host upper bound now. A later calibration
+    // must never manufacture release evidence for an unknown old physical press.
+    const upper = clock && clockValid() && Number.isFinite(event.timeStamp) && event.timeStamp >= 0
+      && event.timeStamp <= monoNow() ? Math.ceil(clock.upper + event.timeStamp) : NaN;
+    press.latestObservedUpperMs = Number.isSafeInteger(upper) ? upper : null;
+  }
   window.addEventListener("keydown", event => {
     if (!event.isTrusted) return;
     if (held.has(event.code)) {
+      observeHeld(held.get(event.code), event);
       retireEditorControl();
       if (ordered && !ordered.claimed) retireOrdered();
       tabDiagnostic(event, fields.get(event.target))("held");
@@ -1304,6 +1484,7 @@
     }
     if (event.repeat) { retireOrdered(); retireEditorControl(); tabDiagnostic(event, fields.get(event.target))("repeat"); return; }
     const press = {consumed: false};
+    observeHeld(press, event);
     held.set(event.code, press);
     // A closed shadow root retargets to the host at window capture. Handle the
     // installed editor here so one physical key has one owner across focus/config.
@@ -1325,6 +1506,7 @@
     }
     retireEditorControl();
     const field = fieldFor(event.target);
+    if (shortcutDispatch() === "source-local" && sourceCommand(event, field)) return;
     const reportTab = tabDiagnostic(event, field);
     if (!field || !focused(field)) { retireOrdered(); reportTab("target-unfocused"); return; }
     if (event.isComposing || event.keyCode === 229) { retireOrdered(); reportTab("composing"); field.ime = "Composing"; publication = shortcut = null; refreshHint(); return; }

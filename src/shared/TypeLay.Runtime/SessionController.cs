@@ -36,6 +36,7 @@ public sealed partial class SessionController : IDisposable
     private string? _statusOverride;
     private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
     private string? _lastTrace;
+    private string _lastShortcutStatus;
     private Guid _practiceCaptureTraceGeneration;
     private int _practiceCaptureTraceCount;
     private bool _practiceCaptureTracePublished;
@@ -158,6 +159,7 @@ public sealed partial class SessionController : IDisposable
         _model = model;
         _overlay = overlay;
         _hook = input;
+        _lastShortcutStatus = ShortcutStatus;
         _loop = loop;
         _session = new Session(settings.Value.Direction);
         _activation = new TranslationActivation(settings.Value.Mode);
@@ -332,6 +334,16 @@ public sealed partial class SessionController : IDisposable
             RejectShortcut(notice.Kind, Denial.Unsupported);
             return;
         }
+        if (notice.CommandCapture is { } capture)
+        {
+            Denial reason = notice.AcceptedAtMs == capture.TriggeredAtMs
+                ? capture.Check(notice.Source, _loop.NowMs) : Denial.StaleObservation;
+            if (reason != Denial.None)
+            {
+                RejectShortcut(notice.Kind, reason);
+                return;
+            }
+        }
         if (notice.Kind == "wake")
             Wake(notice);
         else
@@ -364,6 +376,12 @@ public sealed partial class SessionController : IDisposable
     {
         if (_disposed)
             return;
+        string shortcutStatus = ShortcutStatus;
+        if (_lastShortcutStatus != shortcutStatus)
+        {
+            _lastShortcutStatus = shortcutStatus;
+            Changed?.Invoke();
+        }
         RefreshConnectionStatus();
         CheckAutomaticPracticeIdentity();
         DrainInputNotices();
@@ -971,7 +989,9 @@ public sealed partial class SessionController : IDisposable
             SetServiceStatus("本地模型尚未就绪，未执行直接替换。", "model-not-ready");
             return;
         }
-        var (operation, reason) = DirectTranslation.Start(source, _settings.Value.Direction, notice.AcceptedAtMs);
+        var (operation, reason) = notice.CommandCapture is { } capture
+            ? DirectTranslation.StartFromCommandCapture(source, _settings.Value.Direction, capture, _loop.NowMs)
+            : DirectTranslation.Start(source, _settings.Value.Direction, notice.AcceptedAtMs);
         if (operation is null)
         {
             SetServiceStatus(reason == Denial.NoCandidate ? "没有需要直接翻译的文本。" : "无法确认原输入内容的安全状态，未执行直接替换。", "shortcut-" + reason.ToString().ToLowerInvariant());

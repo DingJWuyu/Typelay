@@ -247,6 +247,8 @@ class FirefoxNativeContract(unittest.TestCase):
                     "sourceReady": True,
                     "editorReady": True,
                     "shortcutDispatch": "page",
+                    "target": original["target"],
+                    "sourceLocalAcceptanceVersion": 0,
                 },
             )
             snapshot = self.capture(native, connection, original, web)

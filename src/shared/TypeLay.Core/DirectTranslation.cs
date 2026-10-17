@@ -1,5 +1,22 @@
 namespace TypeLay.Core;
 
+// A source executor may capture in the original key's event after its trigger
+// timestamp. Both stamps retain one original budget; admission never renews it.
+public sealed record CommandCaptureEvidence(TargetId Target, long TriggeredAtMs, long CapturedAtMs)
+{
+    public Denial Check(InputSnapshot source, long admittedAtMs)
+    {
+        if (source.Target != Target)
+            return Denial.TargetChanged;
+        if (source.ObservedAtMs != CapturedAtMs || TriggeredAtMs < 0
+            || CapturedAtMs < TriggeredAtMs || admittedAtMs < CapturedAtMs
+            || CapturedAtMs - TriggeredAtMs > Limits.ObservationMaxAgeMs
+            || admittedAtMs - TriggeredAtMs > Limits.ObservationMaxAgeMs)
+            return Denial.StaleObservation;
+        return Denial.None;
+    }
+}
+
 /// <summary>An immutable source-bound one-shot. A plan is not permission to mutate the target.</summary>
 public sealed class DirectTranslation
 {
@@ -31,6 +48,21 @@ public sealed class DirectTranslation
         if (string.IsNullOrWhiteSpace(source.SourceText))
             return (null, Denial.NoCandidate);
         return (new(source, direction, triggeredAtMs), Denial.None);
+    }
+
+    public static (DirectTranslation? Operation, Denial Reason) StartFromCommandCapture(InputSnapshot source,
+        LanguageDirection direction, CommandCaptureEvidence capture, long admittedAtMs)
+    {
+        Denial reason = capture.Check(source, admittedAtMs);
+        if (reason != Denial.None)
+            return (null, reason);
+        direction.Validate();
+        reason = WriteSafety.CheckSnapshot(source, capture.CapturedAtMs);
+        if (reason != Denial.None)
+            return (null, reason);
+        if (string.IsNullOrWhiteSpace(source.SourceText))
+            return (null, Denial.NoCandidate);
+        return (new(source, direction, capture.TriggeredAtMs), Denial.None);
     }
 
     // Focus does not participate in this completion. The backend must independently

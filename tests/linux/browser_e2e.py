@@ -290,6 +290,7 @@ class BrowserContract(unittest.TestCase):
             ({"sourceLocalAcceptanceVersion": 1}, 0),
             ({"shortcutDispatch": "native"}, 0),
             ({"shortcutDispatch": "native", "sourceLocalAcceptanceVersion": 1}, 1),
+            ({"shortcutDispatch": "source-local", "sourceLocalAcceptanceVersion": 1}, 1),
             ({"shortcutDispatch": "native", "sourceLocalAcceptanceVersion": 2}, 0),
             ({"shortcutDispatch": "native", "sourceLocalAcceptanceVersion": "1"}, 0),
             (
@@ -417,7 +418,21 @@ class BrowserContract(unittest.TestCase):
               const currentId = document.sent.at(-1).id;
               document.onMessage.emit({id: previousId, data: {oldConnectionReply: true}});
               document.onMessage.emit({id: currentId, data: {currentConnectionReply: true}});
-              return {replies: connections[1].sent.filter(message => message.id !== undefined),
+              const replies = connections[1].sent.filter(message => message.id !== undefined);
+              const unproved = port();
+              unproved.name = 'typelay-document';
+              unproved.sender = {...document.sender, documentId: undefined, tab: {id: 2, windowId: 1}};
+              onConnect.emit(unproved);
+              unproved.onMessage.emit({event: 'document', data: '2'.repeat(36)});
+              unproved.onMessage.emit({event: 'focus', data: true});
+              connections[1].onMessage.emit({op: 'configure-shortcuts', data: {shortcutDispatch: 'source-local'}});
+              connections[1].onMessage.emit({id: 2, op: 'prepare-command-owner'});
+              const blocked = connections[1].sent.at(-1);
+              // Retire the previous document's owner even after active focus moved.
+              connections[1].onMessage.emit({id: 3, op: 'deactivate-command-owner', data: {documentToken}});
+              const retirement = document.sent.at(-1);
+              document.onMessage.emit({id: retirement.id, data: {retired: true}});
+              return {replies, blocked, retirement, routedReply: connections[1].sent.at(-1),
                 extensionId, documentToken};
             }""",
             BACKGROUND.read_text(),
@@ -428,6 +443,154 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(response["data"], {"currentConnectionReply": True})
         self.assertEqual(response["route"]["extensionId"], result["extensionId"])
         self.assertEqual(response["route"]["documentToken"], result["documentToken"])
+        self.assertEqual(result["blocked"], {"id": 2, "data": None})
+        self.assertEqual(result["retirement"]["op"], "deactivate-command-owner")
+        self.assertEqual(result["routedReply"]["id"], 3)
+        self.assertEqual(result["routedReply"]["data"], {"retired": True})
+        self.assertEqual(result["routedReply"]["route"]["documentToken"], result["documentToken"])
+
+    def activate_source_command_owner(self, owner_id="test-owner", released_at=None):
+        return self.page.evaluate(
+            """request => {
+              if (!window.fixturePassedCommandKeys) {
+                window.fixturePassedCommandKeys = [];
+                for (const kind of ['keydown', 'keyup']) window.addEventListener(kind, event => {
+                  if (['F9', 'F10'].includes(event.key)) fixturePassedCommandKeys.push(event.type);
+                }, true);
+              }
+              fixtureCommand({id: 7800, op: 'configure-shortcuts', data: {
+                generation: 'source-command', enabled: true, sessionEnabled: true,
+                accept: 'Tab', exit: 'Esc', shortcutDispatch: 'source-local',
+                sourceLocalAcceptanceVersion: 1, wake: {keyval: 65478, modifiers: 0},
+                direct: {keyval: 65479, modifiers: 0}}});
+              const prepared = fixtureCommand({id: 7801, op: 'prepare-command-owner', data: {
+                ownerId: request.ownerId, generation: 'source-command'}});
+              if (!prepared) return null;
+              const stamp = fixtureHostClock().boottimeMs;
+              window.fixtureOwner = {ownerId: request.ownerId, generation: 'source-command',
+                documentToken: prepared.target.split(':')[0], target: prepared.target,
+                authority: prepared.authority, grantSequence: 1, expiresAtMs: stamp + 800,
+                releasedAtMs: request.releasedAtMs ?? stamp};
+              fixtureCommand({id: 7802, op: 'activate-command-owner', data: fixtureOwner});
+              return {prepared, owner: fixtureOwner,
+                ack: fixtureMessages.filter(item => item.event === 'command-owner').at(-1)?.data};
+            }""",
+            {"ownerId": owner_id, "releasedAtMs": released_at},
+        )
+
+    def source_commands(self):
+        return self.page.evaluate("fixtureMessages.filter(item => item.event === 'source-command')")
+
+    def test_source_command_captures_current_input_once_without_a_published_shortcut(self):
+        self.type_source()
+        result = self.activate_source_command_owner()
+        self.assertNotIn("text", result["prepared"])
+        self.assertNotIn("selection", result["prepared"])
+        self.assertEqual(result["prepared"]["commandLocalVersion"], 1)
+        self.assertEqual(result["prepared"]["sessionBindings"]["sourceLocalAcceptanceVersion"], 1)
+        self.assertEqual(result["ack"]["state"], "active")
+        self.assertEqual(result["ack"]["target"], result["owner"]["target"])
+        self.assertEqual(result["ack"]["policyToken"], result["owner"]["authority"]["token"])
+        self.page.keyboard.insert_text(" now")
+        self.page.keyboard.down("F10")
+        self.page.keyboard.down("F10")
+        self.page.keyboard.up("F10")
+        commands = self.source_commands()
+        self.assertEqual(len(commands), 1)
+        command = commands[0]["data"]
+        self.assertEqual(command["kind"], "direct")
+        self.assertEqual(command["native"]["text"], "Hello now")
+        self.assertEqual(command["native"]["selection"], {"start": 9, "end": 9})
+        self.assertEqual(command["policyToken"], result["owner"]["authority"]["token"])
+        self.assertEqual(command["ownerGrantSequence"], 1)
+        self.assertGreaterEqual(command["capturedAtMs"], command["triggeredAtMs"])
+        self.assertLessEqual(command["captureUpperMs"], command["triggeredAtMs"] + 150)
+        self.assertLessEqual(command["captureUpperMs"], result["owner"]["expiresAtMs"])
+        self.assertLessEqual(
+            command["captureUpperMs"], result["owner"]["authority"]["observedAtMs"] + 150
+        )
+        self.assertEqual(self.page.evaluate("fixturePassedCommandKeys"), [])
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello now")
+        self.assertEqual(
+            self.page.evaluate("fixtureMessages.filter(item => item.event === 'shortcut')"), []
+        )
+        self.assertTrue(
+            self.page.evaluate("""fixtureMessages.findIndex(item => item.event === 'command-owner'
+          && item.data.state === 'active') < fixtureMessages.findIndex(item => item.event === 'source-command')""")
+        )
+
+    def test_source_command_owner_renewal_cannot_renew_policy_or_revive_a_retired_owner(self):
+        self.type_source()
+        owner = self.activate_source_command_owner()["owner"]
+        self.page.wait_for_timeout(175)  # Expire only the original 150ms read policy.
+        self.page.evaluate("""() => fixtureCommand({id: 7810, op: 'renew-command-owner', data: {
+          ...fixtureOwner, grantSequence: 2, expiresAtMs: fixtureHostClock().boottimeMs + 800}})""")
+        self.page.keyboard.press("F10")
+        commands = self.source_commands()
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0]["data"]["reason"], "PolicyUnavailable")
+        self.assertNotIn("native", commands[0]["data"])
+        self.assertEqual(self.page.evaluate("fixturePassedCommandKeys"), [])
+        self.command("deactivate-command-owner", {**owner, "grantSequence": 2})
+        self.page.evaluate("""() => fixtureCommand({id: 7811, op: 'renew-command-owner', data: {
+          ...fixtureOwner, grantSequence: 3, expiresAtMs: fixtureHostClock().boottimeMs + 800}})""")
+        self.assertEqual(
+            self.page.evaluate(
+                "fixtureMessages.filter(item => item.event === 'command-owner').at(-1).data.state"
+            ),
+            "rejected",
+        )
+        self.page.keyboard.press("F9")
+        self.assertEqual(len(self.source_commands()), 1)
+        self.assertEqual(self.page.evaluate("fixturePassedCommandKeys"), ["keydown", "keyup"])
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+
+    def test_source_command_requires_new_policy_after_focus_change(self):
+        self.type_source()
+        self.activate_source_command_owner()
+        late = self.page.evaluate("""() => {
+          document.getElementById('other').focus();
+          document.getElementById('source').focus();
+          return fixtureCommand({id: 7819, op: 'approve-command-policy', data: {
+            target: fixtureOwner.target, authority: fixtureOwner.authority,
+            ownerId: fixtureOwner.ownerId, generation: fixtureOwner.generation}});
+        }""")
+        self.assertEqual(late, {"applied": False})
+        self.page.locator("#other").focus()
+        self.page.keyboard.insert_text("Other")
+        self.page.keyboard.press("F9")
+        self.assertEqual(self.source_commands()[0]["data"]["reason"], "PolicyUnavailable")
+        applied = self.page.evaluate("""() => {
+          const description = fixtureCommand({id: 7820, op: 'describe'});
+          return fixtureCommand({id: 7821, op: 'approve-command-policy', data: {
+            target: description.target, authority: description.authority,
+            ownerId: fixtureOwner.ownerId, generation: fixtureOwner.generation}});
+        }""")
+        self.assertTrue(applied["applied"])
+        self.page.keyboard.press("F9")
+        commands = self.source_commands()
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(commands[1]["data"]["policyToken"], applied["policyToken"])
+        self.assertEqual(commands[1]["data"]["native"]["target"], applied["target"])
+        self.assertEqual(commands[1]["data"]["native"]["text"], "Other")
+        self.assertGreater(commands[1]["data"]["commandId"], commands[0]["data"]["commandId"])
+
+    def test_source_command_activation_requires_release_proof_frozen_when_keys_were_observed(self):
+        # No describe/capture has calibrated the page when this press starts.
+        self.page.keyboard.insert_text("Hello")
+        self.page.keyboard.down("Shift")
+        result = self.activate_source_command_owner()
+        self.assertEqual(result["ack"]["state"], "rejected")
+        self.page.keyboard.up("Shift")
+        self.page.keyboard.down("Shift")
+        result = self.activate_source_command_owner(released_at=0)
+        self.assertEqual(result["ack"]["state"], "rejected")
+        self.page.keyboard.up("Shift")
+        result = self.activate_source_command_owner("released-owner")
+        self.assertEqual(result["ack"]["state"], "active")
+        self.page.keyboard.press("F10")
+        self.assertEqual(len(self.source_commands()), 1)
+        self.assertIn("native", self.source_commands()[0]["data"])
 
     def shortcut_snapshot(self, dispatch=None):
         return self.page.evaluate(

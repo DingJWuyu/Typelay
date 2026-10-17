@@ -102,6 +102,36 @@ public sealed class BrowserContractTests
         Assert.NotNull(history.Observation(target, 130));
     }
     [Fact]
+    public void FailedHotkeyReleaseCannotBecomePageOwnershipAndSameConfigurationCanRestore()
+    {
+        var registered = new HashSet<int>();
+        bool refuseDirectRelease = true, refuseWakeRegistration = false;
+        using var hotkeys = new OnDemandHotkeys(0,
+            (_, id, _, _) => !(id == 0x5451 && refuseWakeRegistration) && registered.Add(id),
+            (_, id) => id == 0x5452 && refuseDirectRelease ? false : registered.Remove(id));
+        hotkeys.Configure(true, "Ctrl+Shift+F9", "Ctrl+Shift+F10");
+        Assert.True(hotkeys.Registered);
+        Assert.False(hotkeys.Suspend());
+        Assert.True(hotkeys.HasRegistration);
+        Assert.Equal([0x5452], registered);
+        Assert.True(hotkeys.Resume());
+        Assert.Equal(2, registered.Count);
+        refuseDirectRelease = false;
+        Assert.True(hotkeys.Suspend());
+        Assert.Empty(registered);
+        Assert.True(hotkeys.Resume()); // Same desired tuple must really re-register.
+        Assert.Equal(2, registered.Count);
+        Assert.True(hotkeys.Suspend());
+        refuseWakeRegistration = true;
+        Assert.False(hotkeys.Resume());
+        Assert.False(hotkeys.Registered);
+        Assert.True(hotkeys.HasRegistration);
+        Assert.Equal([0x5452], registered);
+        Assert.Contains("唤醒翻译 UI", hotkeys.Status);
+        Assert.True(hotkeys.Suspend());
+        Assert.Empty(registered);
+    }
+    [Fact]
     public void BrowserWireUsesSharedPageEnumSpelling()
     {
         var frame = JsonSerializer.SerializeToElement(new

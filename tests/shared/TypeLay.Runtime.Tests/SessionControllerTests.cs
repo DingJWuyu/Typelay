@@ -5,6 +5,31 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class SessionControllerTests
 {
+    [Fact]
+    public void ShortcutReadinessStatusChangesNotifyOnceWithoutCreatingInputWork()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand, initiallyAvailable: true);
+        s.Tick();
+        int changes = 0;
+        s.Controller.Changed += () => changes++;
+        Assert.Equal("controlled", s.Controller.ShortcutStatus);
+        s.Input.ShortcutsReady = false;
+        s.Tick();
+        Assert.Equal("快捷键输入观察未就绪，当前不会执行按需命令。", s.Controller.ShortcutStatus);
+        Assert.Equal(1, changes);
+        s.Tick();
+        Assert.Equal(1, changes);
+        s.Input.ShortcutsReady = true;
+        s.Tick();
+        Assert.Equal("controlled", s.Controller.ShortcutStatus);
+        Assert.Equal(2, changes);
+        s.Tick();
+        Assert.Equal(2, changes);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+    }
+
     [Theory]
     [InlineData(0, false)]
     [InlineData(1, true)]
@@ -1838,6 +1863,126 @@ public sealed class SessionControllerTests
         s.Tick();
         Assert.Equal("new translation", s.View.Preview);
         Assert.Equal(s.Source.Target, s.Input.Permit!.Plan.Expected.Target);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CommandCaptureDirectWorkKeepsTheOriginalTargetAndConsumesOneCommand(bool leaveBeforeAdmission)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        long triggeredAt = s.Loop.NowMs;
+        var source = s.Source with
+        {
+            ObservedAtMs = triggeredAt + 70
+        };
+        var notice = new InputNotice("direct", AcceptedAtMs: triggeredAt, Source: source,
+            ForegroundEpoch: s.Input.ForegroundEpoch, CommandGeneration: s.Input.CommandGeneration,
+            CommandSequence: 1, CommandCapture: new(source.Target, triggeredAt, source.ObservedAtMs));
+        s.Input.Notices.Enqueue(notice);
+        s.Input.Notices.Enqueue(notice);
+        if (leaveBeforeAdmission)
+            s.FocusAnotherField();
+        s.Tick(100);
+        var job = Assert.Single(s.Model.Jobs);
+        Assert.Same(source, job.Basis);
+        Assert.False(s.View.Visible);
+        if (!leaveBeforeAdmission)
+            s.FocusAnotherField();
+        s.Tick();
+        s.CompleteTranslation("direct result");
+        var write = Assert.Single(s.Service.DirectWrites);
+        Assert.Equal(source.Target, write.Expected.Target);
+        Assert.Equal("direct result", write.ResultText);
+        s.Input.Notices.Enqueue(notice);
+        s.Tick(5000);
+        Assert.Single(s.Model.Jobs);
+        Assert.Single(s.Service.DirectWrites);
+        Assert.Empty(s.Service.Writes);
+        Assert.Equal(0, s.Service.Returns);
+    }
+
+    [Theory]
+    [InlineData("accepted", "staleobservation")]
+    [InlineData("target", "targetchanged")]
+    [InlineData("lifetime", "targetchanged")]
+    [InlineData("observed", "staleobservation")]
+    [InlineData("expired", "staleobservation")]
+    [InlineData("future", "staleobservation")]
+    public void CommandCaptureMustMatchTheNoticeSourceAndOriginalAdmissionBudget(string mismatch, string reason)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        long triggeredAt = s.Loop.NowMs;
+        var source = s.Source;
+        var evidence = new CommandCaptureEvidence(source.Target, triggeredAt, triggeredAt);
+        evidence = mismatch switch
+        {
+            "target" => evidence with { Target = new("controlled", "other", source.Target.Lifetime) },
+            "lifetime" => evidence with { Target = source.Target with { Lifetime = Guid.NewGuid() } },
+            "observed" => evidence with { CapturedAtMs = triggeredAt + 1 },
+            "future" => evidence with { CapturedAtMs = triggeredAt + 101 },
+            _ => evidence
+        };
+        if (mismatch == "future")
+            source = source with
+            {
+                ObservedAtMs = evidence.CapturedAtMs
+            };
+        s.Input.Notices.Enqueue(new("direct", AcceptedAtMs: triggeredAt + (mismatch == "accepted" ? 1 : 0),
+            Source: source, CommandGeneration: s.Input.CommandGeneration, CommandSequence: 1,
+            CommandCapture: evidence));
+        s.Tick(mismatch == "expired" ? Limits.ObservationMaxAgeMs + 1 : 100);
+        Assert.Equal("shortcut-" + reason, Assert.Single(feedback).Code);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.DirectWrites);
+        Assert.Empty(s.Service.Writes);
+        Assert.False(s.View.Visible);
+    }
+
+    [Fact]
+    public void LaterObservationWithoutCommandCaptureRetainsTheLegacyRejection()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Input.Notices.Enqueue(new("direct", AcceptedAtMs: s.Loop.NowMs,
+            Source: s.Source with
+            {
+                ObservedAtMs = s.Loop.NowMs + 70
+            },
+            CommandGeneration: s.Input.CommandGeneration, CommandSequence: 1));
+        s.Tick(100);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.DirectWrites);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CommandCaptureDoesNotLetWakeBypassOriginalForegroundChecks(bool changedEpoch)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        long triggeredAt = s.Loop.NowMs;
+        var source = s.Source with
+        {
+            ObservedAtMs = triggeredAt + 70
+        };
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Input.Notices.Enqueue(new("wake", AcceptedAtMs: triggeredAt, Source: source,
+            ForegroundEpoch: s.Input.ForegroundEpoch, CommandGeneration: s.Input.CommandGeneration,
+            CommandSequence: 1, CommandCapture: new(source.Target, triggeredAt, source.ObservedAtMs)));
+        if (changedEpoch)
+            s.Input.ForegroundEpoch++;
+        else
+            s.Input.FocusedTarget = new("controlled", "other", Guid.NewGuid());
+        s.Tick(100);
+        Assert.Equal("shortcut-notsourcefocus", Assert.Single(feedback).Code);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.DirectWrites);
+        Assert.Empty(s.Service.Writes);
+        Assert.False(s.View.Visible);
     }
 
     [Fact]
