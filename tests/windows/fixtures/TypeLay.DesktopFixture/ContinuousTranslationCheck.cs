@@ -1,6 +1,9 @@
 using System.Diagnostics;
 using System.IO;
+using System.Net;
+using System.Net.Http;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -40,6 +43,7 @@ internal static partial class ContinuousTranslationCheck
     private static async Task<int> VerifyAsync(string directory, string worker, string nativeFixture)
     {
         var setup = new SceneResult { Outcome = "running", Stage = "prepare-model" };
+        var directionInstallation = new SceneResult();
         var ownedFirstTab = new SceneResult();
         var ownedEditorHandoff = new SceneResult();
         var ownedTabReturn = new SceneResult();
@@ -68,6 +72,10 @@ internal static partial class ContinuousTranslationCheck
                 prepared.Complete();
             }
             ready = true;
+            setup.Stage = "direction-installation";
+            directionInstallation = await VerifyDirectionInstallationAsync(directory, worker,
+                Path.Combine(data, "downloads"), all.Token);
+            Require(directionInstallation.Outcome == "verified", "direction-installation-failed");
             setup.Stage = "initialize-desktop";
             UiTheme.Initialize("light");
             setup.Outcome = "ready";
@@ -124,12 +132,13 @@ internal static partial class ContinuousTranslationCheck
         {
             Cleanup("model", () => model?.Dispose(), cleanupErrors);
         }
-        bool passed = setup.Outcome == "ready" && ownedFirstTab.Outcome == "verified" && ownedEditorHandoff.Outcome == "verified"
+        bool passed = setup.Outcome == "ready" && directionInstallation.Outcome == "verified"
+            && ownedFirstTab.Outcome == "verified" && ownedEditorHandoff.Outcome == "verified"
             && ownedTabReturn.Outcome == "verified" && ownedMouseReturn.Outcome == "verified"
             && ownedEditedAcceptance.Outcome == "verified" && ownedFinish.Outcome == "verified"
             && continuous.Outcome == "passed" && direct.Outcome == "verified"
             && practice.Outcome == "verified" && coldPage.Outcome == "passed" && newTab.Outcome == "passed" && cleanupErrors.Count == 0;
-        var firstFailure = new[] { setup, ownedFirstTab, ownedEditorHandoff, ownedTabReturn, ownedMouseReturn, ownedEditedAcceptance, ownedFinish, continuous, direct, practice, coldPage, newTab }.FirstOrDefault(result => result.Failure != "none");
+        var firstFailure = new[] { directionInstallation, setup, ownedFirstTab, ownedEditorHandoff, ownedTabReturn, ownedMouseReturn, ownedEditedAcceptance, ownedFinish, continuous, direct, practice, coldPage, newTab }.FirstOrDefault(result => result.Failure != "none");
         string failure = firstFailure?.Failure ?? (cleanupErrors.Count == 0 ? "none" : "cleanup-failed");
         string stage = passed ? "complete" : firstFailure?.Stage ?? "cleanup";
         await File.WriteAllTextAsync(Path.Combine(directory, "result.json"), JsonSerializer.Serialize(new
@@ -142,6 +151,7 @@ internal static partial class ContinuousTranslationCheck
             cleanupErrors,
             modelReady = ready,
             modelSetup = setup,
+            directionInstallation,
             ownedAutomaticFirstTab = ownedFirstTab,
             ownedEditorHandoff,
             ownedTabReturn,
@@ -158,6 +168,204 @@ internal static partial class ContinuousTranslationCheck
         }, new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
         Console.WriteLine($"Continuous translation check: {(passed ? "passed" : "failed")}; owned-first-tab={ownedFirstTab.Outcome}; owned-editor={ownedEditorHandoff.Outcome}; continuous={continuous.Outcome}; direct={direct.Outcome}; practice={practice.Outcome}; coldPage={coldPage.Outcome}; newTab={newTab.Outcome}; stage={stage}; code={failure}.");
         return passed ? 0 : 1;
+    }
+
+    private static async Task<SceneResult> VerifyDirectionInstallationAsync(string directory, string worker,
+        string downloadCache, CancellationToken cancellation)
+    {
+        var result = new SceneResult { Outcome = "running", Stage = "copy-download-cache" };
+        var archives = new List<object>();
+        var installations = new List<object>();
+        var handlers = new List<CachedDirectionModelsHandler>();
+        ModelClient? model = null;
+        try
+        {
+            string data = Path.Combine(directory, "direction-installation");
+            Require(!Directory.Exists(data), "direction-data-already-exists");
+            string cache = Path.Combine(data, "downloads");
+            Directory.CreateDirectory(cache);
+            foreach (string source in Directory.EnumerateFiles(downloadCache))
+            {
+                cancellation.ThrowIfCancellationRequested();
+                await using var input = File.OpenRead(source);
+                await using var output = File.Create(Path.Combine(cache, Path.GetFileName(source)));
+                await input.CopyToAsync(output, cancellation);
+            }
+            var hashes = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (string id in new[] { "zh_en", "en_zh" })
+            {
+                var direction = ModelCatalog.Get(id);
+                string name = id + "-" + direction.Version + ".argosmodel";
+                string source = Path.Combine(downloadCache, name), copy = Path.Combine(cache, name);
+                Require(File.Exists(source) && File.Exists(copy), "direction-model-cache-missing");
+                string hash = await HashArchiveAsync(source);
+                Require(hash == await HashArchiveAsync(copy), "direction-model-cache-copy-changed");
+                hashes.Add(id, hash);
+                archives.Add(new
+                {
+                    direction = id,
+                    sha256 = hash,
+                    bytes = new FileInfo(copy).Length
+                });
+            }
+
+            // These are real isolated installations. Only model package requests are
+            // blocked; the installer still reads official runtime/dependency metadata.
+            // The second request deliberately excludes the already committed direction.
+            foreach (var phase in new[]
+            {
+                (Name: "single-direction", Requested: new[] { "zh_en" }, Expected: new[] { "zh_en" }, Schema: 2),
+                (Name: "add-direction", Requested: new[] { "en_zh" }, Expected: new[] { "zh_en", "en_zh" }, Schema: 1)
+            })
+            {
+                cancellation.ThrowIfCancellationRequested();
+                result.Stage = phase.Name + "-prepare";
+                using var handler = new CachedDirectionModelsHandler();
+                handlers.Add(handler);
+                using var prepared = await new ModelInstaller(data, worker, handler,
+                    localPackages: Path.Combine(data, "unused-local-packages"))
+                    .PrepareAsync(new SetupLog(), cancellation, requestedDirections: phase.Requested);
+                Require(prepared.Directions.SequenceEqual(phase.Expected), "direction-prepared-set");
+                using var inventory = JsonDocument.Parse(await File.ReadAllTextAsync(
+                    Path.Combine(prepared.Paths.Models, "installed.json"), cancellation));
+                int schema = inventory.RootElement.GetProperty("schema").GetInt32();
+                string?[] installed = inventory.RootElement.GetProperty("directions").EnumerateArray()
+                    .Select(item => item.GetString()).ToArray();
+                Require(schema == phase.Schema && installed.SequenceEqual(phase.Expected), "direction-installed-set");
+                using var check = JsonDocument.Parse(await File.ReadAllTextAsync(
+                    Path.Combine(prepared.Root, "setup-self-check.json"), cancellation));
+                var checkedResults = check.RootElement.GetProperty("results").EnumerateArray().ToArray();
+                string?[] checkedDirections = checkedResults.Select(item => item.GetProperty("direction").GetString()).ToArray();
+                Require(check.RootElement.GetProperty("status").GetString() == "passed"
+                    && check.RootElement.GetProperty("device").GetString() == "cpu"
+                    && checkedDirections.SequenceEqual(phase.Expected)
+                    && checkedResults.All(item => item.GetProperty("status").GetString() == "translated"
+                        && item.GetProperty("nonempty").GetBoolean() && item.GetProperty("differs").GetBoolean()),
+                    "direction-self-check-set");
+                var locks = JsonSerializer.Deserialize<DownloadLock[]>(await File.ReadAllTextAsync(
+                    Path.Combine(prepared.Root, "dependency-lock.json"), cancellation));
+                string requested = phase.Requested.Single();
+                var archive = locks?.SingleOrDefault(item => item.Name == "argos-" + requested);
+                Require(archive is not null && archive.Url == ModelCatalog.Get(requested).Url
+                    && archive.Sha256 == hashes[requested], "direction-model-cache-not-used");
+
+                result.Stage = phase.Name + "-activate";
+                model ??= new ModelClient(prepared.Paths, info => new ChildProcess(info));
+                Require(await model.ReloadAsync(prepared.Paths, prepared.Publish, cancellation,
+                    expectedDirections: prepared.Directions), "direction-model-not-ready");
+                Require(model.Ready && model.AvailableDirections.SequenceEqual(phase.Expected), "direction-hello-set");
+                prepared.Complete();
+                var committed = new ModelInstallationStore(data, worker).ReadCommittedDirections();
+                Require(committed is not null && committed.SequenceEqual(phase.Expected), "direction-committed-set");
+                var translations = new List<object>();
+                installations.Add(new
+                {
+                    phase = phase.Name,
+                    requestedDirections = phase.Requested,
+                    preparedDirections = prepared.Directions,
+                    installedSchema = schema,
+                    installedDirections = installed,
+                    selfCheckDirections = checkedDirections,
+                    helloDirections = model.AvailableDirections.ToArray(),
+                    committedDirections = committed,
+                    archiveCacheDirection = requested,
+                    translations
+                });
+                result.Stage = phase.Name + "-translate";
+                foreach (string id in phase.Expected)
+                {
+                    cancellation.ThrowIfCancellationRequested();
+                    var direction = ModelCatalog.Get(id);
+                    var translated = await model.TranslateTextAsync(direction.SelfCheckText,
+                        new(direction.Source, direction.Target)).WaitAsync(cancellation);
+                    Require(translated.Status == "translated" && translated.Text.Length > 0
+                        && translated.Text != direction.SelfCheckText, "direction-translation-failed");
+                    translations.Add(new
+                    {
+                        direction = id,
+                        status = translated.Status,
+                        nonempty = true,
+                        differs = true
+                    });
+                }
+                if (phase.Schema == 2)
+                {
+                    result.Stage = "single-direction-auto";
+                    string english = ModelCatalog.Get("en_zh").SelfCheckText;
+                    cancellation.ThrowIfCancellationRequested();
+                    var same = await model.TranslateTextAsync(english, new("auto", "en")).WaitAsync(cancellation);
+                    Require(same.Status == "no-translation" && same.Text.Length == 0, "direction-auto-same-language");
+                    translations.Add(new
+                    {
+                        direction = "auto_en",
+                        status = same.Status,
+                        outputUnits = same.Text.Length
+                    });
+                    cancellation.ThrowIfCancellationRequested();
+                    var missing = await model.TranslateTextAsync(english, new("auto", "zh")).WaitAsync(cancellation);
+                    Require(missing.Status == "error" && missing.Code == "language-unavailable" && missing.Text.Length == 0,
+                        "direction-auto-missing-language");
+                    translations.Add(new
+                    {
+                        direction = "auto_zh",
+                        status = missing.Status,
+                        code = missing.Code,
+                        outputUnits = missing.Text.Length
+                    });
+                }
+            }
+            result.Outcome = "verified";
+            result.Stage = "complete";
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            RecordFailure(result, error, "direction-installation-deadline");
+        }
+        finally
+        {
+            Cleanup("direction-model", () => model?.Dispose(), result.CleanupErrors);
+            CompleteCleanup(result);
+            result.Facts = new
+            {
+                archives,
+                installations,
+                modelDownloadAttempts = handlers.Sum(handler => handler.ModelDownloadAttempts),
+                modelDownloadsBlocked = true,
+                runtimeMetadataMayUseNetwork = true,
+                boundary = "real-installer-and-model-api",
+                sourceFieldsExercised = false,
+                f10Exercised = false
+            };
+        }
+        return result;
+
+        async Task<string> HashArchiveAsync(string path)
+        {
+            await using var file = File.OpenRead(path);
+            return Convert.ToHexString(await SHA256.HashDataAsync(file, cancellation)).ToLowerInvariant();
+        }
+    }
+
+    private sealed class CachedDirectionModelsHandler() : DelegatingHandler(new HttpClientHandler
+    {
+        AllowAutoRedirect = false,
+        AutomaticDecompression = DecompressionMethods.All
+    })
+    {
+        public int ModelDownloadAttempts
+        {
+            get; private set;
+        }
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (request.RequestUri is { } uri && ModelCatalog.Directions.Any(direction =>
+                new Uri(direction.Url).IdnHost.Equals(uri.IdnHost, StringComparison.OrdinalIgnoreCase)))
+            {
+                ++ModelDownloadAttempts;
+                throw new HttpRequestException("direction-model-download-forbidden");
+            }
+            return base.SendAsync(request, cancellationToken);
+        }
     }
 
     private static async Task<SceneResult> VerifyContinuousAsync(string directory, string nativeFixture,

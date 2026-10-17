@@ -998,8 +998,11 @@ public sealed partial class SessionController : IDisposable
                 return;
             if (response.Status != "translated")
             {
-                SetCommandStatus(response.Status == "no-translation" ? "当前文本无需翻译，未作替换。" : "直接翻译未完成，原文未作替换。", feedbackRevision,
-                    response.Status == "no-translation" ? "no-translation" : "translation-failed");
+                if (response.Code == "language-unavailable")
+                    SetCommandStatus("尚未准备本次翻译所需方向，请到“准备翻译”补充模型；原文未作替换。", feedbackRevision, "language-unavailable");
+                else
+                    SetCommandStatus(response.Status == "no-translation" ? "当前文本无需翻译，未作替换。" : "直接翻译未完成，原文未作替换。", feedbackRevision,
+                        response.Status == "no-translation" ? "no-translation" : "translation-failed");
                 return;
             }
             var (plan, _) = operation.Complete(response.Text);
@@ -1089,7 +1092,7 @@ public sealed partial class SessionController : IDisposable
                 _statusOverride = result.Code switch
                 {
                     "segment-too-long" => "文本较长，请缩短选区",
-                    "language-unavailable" => "尚无该语言方向模型",
+                    "language-unavailable" => "尚未准备本次翻译所需方向，请到“准备翻译”补充模型",
                     _ => "暂时无法翻译"
                 };
             Render();

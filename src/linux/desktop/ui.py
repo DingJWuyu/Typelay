@@ -203,8 +203,24 @@ class ApplicationSupportPane:
         self.preparation_guidance.set_no_show_all(True)
         self.preparation_notice = self.note("", self.preparation_body)
         self.preparation_notice.set_no_show_all(True)
+        self.direction_details = Gtk.Expander(label="安装方向（可选）")
+        self.direction_details.set_no_show_all(True)
+        self.direction_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        self.direction_box.set_no_show_all(True)
+        self.direction_details.add(self.direction_box)
+        self.direction_guidance = self.note("如需节省空间，可取消一个方向。", self.direction_box)
+        self.direction_guidance.set_no_show_all(True)
+        self.direction_choices = {}
+        self.direction_facts = None
+        self.preparation_body.pack_start(self.direction_details, False, False, 0)
         self.prepare_actions = Gtk.Box(spacing=8)
         self.prepare_actions.pack_start(owner.install_button, False, False, 0)
+        self.complete_directions_button = Gtk.Button()
+        self.complete_directions_button.set_no_show_all(True)
+        self.complete_directions_button.connect(
+            "clicked", lambda *_: owner.install_clicked(action="CompleteDirections")
+        )
+        self.prepare_actions.pack_start(self.complete_directions_button, False, False, 0)
         self.preparation_body.pack_start(self.prepare_actions, False, False, 0)
         self.box.pack_start(Gtk.Separator(), False, False, 4)
         connection_heading = Gtk.Box(spacing=12)
@@ -345,7 +361,22 @@ class ApplicationSupportPane:
         else:
             style.add_class("settings-notice")
         actions = [primary, *view["secondaryActions"]]
-        install_action = next((action for action in actions if action["id"] != "NextStep"), None)
+        self.render_directions(view, current)
+        install_action = next(
+            (
+                action
+                for action in actions
+                if action["id"] not in ("NextStep", "CompleteDirections")
+            ),
+            None,
+        )
+        complete_action = next(
+            (action for action in actions if action["id"] == "CompleteDirections"), None
+        )
+        self.complete_directions_button.set_visible(complete_action is not None)
+        if complete_action:
+            self.complete_directions_button.set_label(complete_action["label"])
+            self.complete_directions_button.set_sensitive(complete_action["enabled"] and current)
         next_action = next((action for action in actions if action["id"] == "NextStep"), None)
         if install_action:
             self.owner.install_button.set_label(install_action["label"])
@@ -367,6 +398,44 @@ class ApplicationSupportPane:
             next_style.add_class("suggested-action")
         else:
             next_style.remove_class("suggested-action")
+
+    def render_directions(self, view, current):
+        facts = tuple(
+            (direction["id"], direction["label"], direction["installed"])
+            for direction in view["directions"]
+        )
+        if facts != self.direction_facts:
+            self.direction_facts = facts
+            for choice in self.direction_choices.values():
+                choice.destroy()
+            self.direction_choices.clear()
+            for identity, label, installed in facts:
+                choice = Gtk.CheckButton(label=label + ("（已安装）" if installed else ""))
+                choice.get_accessible().set_name("本地翻译方向：" + label)
+                choice.set_active(installed or view["canSelectDirections"])
+                choice.connect("toggled", self.direction_toggled)
+                self.direction_choices[identity] = choice
+                self.direction_box.pack_start(choice, False, False, 0)
+                choice.show()
+        if view["canSelectDirections"] and not self.selected_directions():
+            for choice in self.direction_choices.values():
+                choice.set_active(True)
+        for identity, _label, installed in facts:
+            self.direction_choices[identity].set_sensitive(
+                current and view["canSelectDirections"] and not installed
+            )
+        self.direction_guidance.set_visible(view["canSelectDirections"])
+        self.direction_box.set_visible(bool(facts))
+        self.direction_details.set_visible(bool(facts))
+
+    def direction_toggled(self, choice):
+        if not any(item.get_active() for item in self.direction_choices.values()):
+            choice.set_active(True)
+
+    def selected_directions(self):
+        return tuple(
+            identity for identity, choice in self.direction_choices.items() if choice.get_active()
+        )
 
     def render_connection(self):
         label = self.value["labels"]["connectApplications"] if self.value else "连接应用"
@@ -1738,13 +1807,46 @@ class Settings:
     def open_tutorial(self):
         self.tutorial.show()
 
-    def install_clicked(self, *_):
+    def install_clicked(self, *_, action=None):
+        view = self.preparation_view
+        if not view or self.preparation_view_revision != self.preparation_revision:
+            return
+        selected_action = next(
+            (
+                item
+                for item in [view["primaryAction"], *view["secondaryActions"]]
+                if (
+                    item["id"] == action
+                    if action
+                    else item["id"] not in ("NextStep", "CompleteDirections")
+                )
+            ),
+            None,
+        )
+        if not selected_action or not selected_action["enabled"]:
+            return
         if self.installation_state == "running":
             self.pause_requested()
         elif self.installation_state == "paused":
             self.install_requested()
         elif self.installation_state not in ("pausing", "starting"):
-            self.confirm_install(self.install_requested)
+            directions = self.application_support.selected_directions()
+            if self.installation_state == "failed":
+                self.confirm_install(self.install_requested, directions)
+                return
+            repair = selected_action["id"] in ("Repair", "Retry")
+            if repair:
+                directions = tuple(item["id"] for item in view["directions"] if item["installed"])
+            if action == "CompleteDirections" or repair and not directions:
+                directions = tuple(item["id"] for item in view["directions"])
+            if directions:
+
+                def prepare():
+                    for identity, choice in self.application_support.direction_choices.items():
+                        choice.set_active(identity in directions)
+                    self.install_requested(directions, repair=repair)
+
+                self.confirm_install(prepare, directions)
 
     def installation(self, state, message="", failure=None):
         self.installation_state = state
@@ -1769,6 +1871,9 @@ class Settings:
     def refresh_preparation(self):
         self.preparation_revision += 1
         self.install_button.set_sensitive(False)
+        self.application_support.complete_directions_button.set_sensitive(False)
+        for choice in self.application_support.direction_choices.values():
+            choice.set_sensitive(False)
         self.application_support.next_button.set_sensitive(False)
         if not self.preparation_pending:
             self.preparation_pending = True
@@ -1848,7 +1953,7 @@ class Settings:
         self.tasks(self.application_support.refresh())
         self.refresh_preparation()
 
-    def confirm_install(self, install):
+    def confirm_install(self, install, directions):
         dialog = Gtk.MessageDialog(
             transient_for=self.window,
             modal=True,
@@ -1856,9 +1961,15 @@ class Settings:
             buttons=Gtk.ButtonsType.OK_CANCEL,
             text="下载并安装本地翻译组件？",
         )
+        available = self.preparation_view["directions"]
+        models = (
+            "中英双向"
+            if len(directions) == len(available)
+            else "、".join(item["label"] for item in available if item["id"] in directions)
+        )
         dialog.format_secondary_text(
-            "将从 Astral、PyPI 和 Argos 下载 Python 运行时、依赖及中英双向模型，"
-            "需要网络及数 GB 可用空间。翻译在本机运行，输入内容不会上传。"
+            f"将从 Astral、PyPI 和 Argos 下载运行组件及{models}模型，需要网络及数 GB 空间。"
+            "翻译在本机运行，输入内容不会上传。"
         )
 
         def response(widget, result):

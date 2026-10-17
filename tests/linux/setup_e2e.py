@@ -1377,6 +1377,12 @@ class InstallationFailureTests(unittest.TestCase):
         worker_result=None,
         cleanup_error=None,
         expected_code=1,
+        requested=None,
+        committed=("zh_en", "en_zh"),
+        expected_directions=("zh_en", "en_zh"),
+        repair=False,
+        activation=None,
+        damaged_marker=False,
     ):
         with tempfile.TemporaryDirectory(prefix="typelay-install-failure-") as directory:
             base = Path(directory)
@@ -1384,7 +1390,23 @@ class InstallationFailureTests(unittest.TestCase):
             current = base / "data/components/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             current.mkdir(parents=True)
             (current / "retained").write_text("old usable version")
-            (current.parent / "current").symlink_to("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            if committed is not None:
+                (current.parent / "current").symlink_to("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                (current / "models").mkdir()
+                (current / "models/installed.json").write_text(
+                    json.dumps(
+                        {"schema": 1 if len(committed) == 2 else 2, "directions": list(committed)}
+                    )
+                )
+                if damaged_marker:
+                    (current / "models/installed.json").write_text("private-token")
+                record = activation or (
+                    {"schema": 2, "previous": None, "directions": list(committed)}
+                    if len(committed) == 1
+                    else None
+                )
+                if record is not None:
+                    (current / "activation.json").write_text(json.dumps(record))
 
             def process(arguments, **options):
                 output = b""
@@ -1462,6 +1484,11 @@ class InstallationFailureTests(unittest.TestCase):
                         str(base / "home"),
                         str(base / "data"),
                         str(base / "cache"),
+                        *(
+                            []
+                            if requested is None
+                            else [json.dumps({"directions": requested, "repair": repair})]
+                        ),
                     ],
                 ),
                 patch.object(subprocess, "Popen", side_effect=process),
@@ -1478,9 +1505,12 @@ class InstallationFailureTests(unittest.TestCase):
             ):
                 runpy.run_path(str(ROOT / "src/linux/desktop/setup.py"), run_name="__main__")
             self.assertEqual(result.exception.code, expected_code)
-            self.assertEqual(
-                os.readlink(current.parent / "current"), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            )
+            if committed is not None:
+                self.assertEqual(
+                    os.readlink(current.parent / "current"), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                )
+            else:
+                self.assertFalse((current.parent / "current").exists())
             if not expected_code:
                 prepared = next(
                     line[len(setup.PREPARED_PREFIX) :]
@@ -1493,16 +1523,23 @@ class InstallationFailureTests(unittest.TestCase):
                     candidate / "runtime/python/cpython-3.13.16-linux-x86_64-gnu/bin/python3.13",
                 )
                 self.assertTrue((candidate / "self-check.json").is_file())
+                activation = {
+                    "schema": 1 if len(expected_directions) == 2 else 2,
+                    "previous": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    if committed is not None
+                    else None,
+                }
+                if activation["schema"] == 2:
+                    activation["directions"] = list(expected_directions)
                 self.assertEqual(
-                    json.loads((candidate / "activation.json").read_text()),
-                    {"schema": 1, "previous": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                    json.loads((candidate / "activation.json").read_text()), activation
                 )
                 inventory = json.loads((candidate / "models/installed.json").read_text())
-                self.assertEqual(inventory["schema"], 1)
-                self.assertEqual(inventory["directions"], ["zh_en", "en_zh"])
+                self.assertEqual(inventory["schema"], activation["schema"])
+                self.assertEqual(inventory["directions"], list(expected_directions))
                 self.assertEqual(
                     {entry["path"].split("/")[0] for entry in inventory["files"]},
-                    {"zh_en", "en_zh"},
+                    set(expected_directions),
                 )
             self.assertEqual((current / "retained").read_text(), "old usable version")
             if expected_code and cleanup_error is None:
@@ -1592,6 +1629,98 @@ class InstallationFailureTests(unittest.TestCase):
                 self.assertIn('"category":"runtime"', output)
                 self.assertIn('"stage":"self-check"', output)
                 self.assertNotIn("重新获取损坏", output)
+
+    def test_requested_single_direction_prepares_only_that_inventory_and_self_check(self):
+        self.run_setup(
+            requested=["zh_en"],
+            committed=None,
+            expected_directions=("zh_en",),
+            expected_code=0,
+            worker_result=json.dumps(
+                {
+                    "status": "passed",
+                    "device": "cpu",
+                    "results": [
+                        {
+                            "direction": "zh_en",
+                            "status": "translated",
+                            "nonempty": True,
+                            "differs": True,
+                        }
+                    ],
+                }
+            ).encode(),
+        )
+
+    def test_supplement_preserves_committed_intent_and_rejects_an_inexact_check(self):
+        single_check = json.dumps(
+            {
+                "status": "passed",
+                "device": "cpu",
+                "results": [
+                    {
+                        "direction": "en_zh",
+                        "status": "translated",
+                        "nonempty": True,
+                        "differs": True,
+                    }
+                ],
+            }
+        ).encode()
+        output = self.run_setup(
+            requested=["en_zh"], committed=("zh_en",), worker_result=single_check
+        )
+        self.assertIn('"stage":"self-check"', output)
+        check = json.dumps(
+            {
+                "status": "passed",
+                "device": "cpu",
+                "results": [
+                    {
+                        "direction": direction,
+                        "status": "translated",
+                        "nonempty": True,
+                        "differs": True,
+                    }
+                    for direction in ("zh_en", "en_zh")
+                ],
+            }
+        ).encode()
+        self.run_setup(
+            requested=["en_zh"], committed=("zh_en",), worker_result=check, expected_code=0
+        )
+
+    def test_bad_or_conflicting_committed_intent_requires_explicit_full_repair(self):
+        check = json.dumps(
+            {
+                "status": "passed",
+                "device": "cpu",
+                "results": [
+                    {
+                        "direction": direction,
+                        "status": "translated",
+                        "nonempty": True,
+                        "differs": True,
+                    }
+                    for direction in ("zh_en", "en_zh")
+                ],
+            }
+        ).encode()
+        for damage in ({"damaged_marker": True}, {"activation": {"schema": 1, "previous": None}}):
+            with self.subTest(damage=damage):
+                output = self.run_setup(
+                    requested=["zh_en"], committed=("zh_en",), worker_result=check, **damage
+                )
+                self.assertIn('"stage":"model-verify"', output)
+                self.assertNotIn("正在安装私有", output)
+                self.run_setup(
+                    requested=["zh_en", "en_zh"],
+                    committed=("zh_en",),
+                    repair=True,
+                    worker_result=check,
+                    expected_code=0,
+                    **damage,
+                )
 
     def test_preparation_returns_one_verified_candidate_without_switching_current(self):
         self.run_setup(

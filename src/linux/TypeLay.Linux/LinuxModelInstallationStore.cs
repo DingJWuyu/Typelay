@@ -68,6 +68,66 @@ internal sealed class LinuxModelInstallationStore(string home, string data)
         }
         return new(python, Path.Combine(home, "worker", "run_worker.py"), models);
     }
+    private sealed record Activation(string? Previous, IReadOnlyList<string> Directions);
+    private Activation ReadActivation(string id, bool required)
+    {
+        string path = Path.Combine(Root(id), "activation.json");
+        FileAttributes attributes;
+        try
+        {
+            attributes = File.GetAttributes(path);
+        }
+        catch (FileNotFoundException) when (!required) { return new(null, Array.AsReadOnly(FullDirections)); }
+        catch (DirectoryNotFoundException) when (!required) { return new(null, Array.AsReadOnly(FullDirections)); }
+        // Legacy metadata may be absent, but existing invalid entries must
+        // not acquire legacy semantics.
+        if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+            throw new InvalidDataException("model-activation");
+        if (new FileInfo(path).Length > 4096)
+            throw new InvalidDataException("model-activation");
+        using var document = JsonDocument.Parse(File.ReadAllText(path));
+        var root = document.RootElement;
+        if (root.ValueKind != JsonValueKind.Object
+            || !root.TryGetProperty("schema", out var schema) || schema.ValueKind != JsonValueKind.Number
+            || !schema.TryGetInt32(out int version) || version is not (1 or 2)
+            || root.EnumerateObject().Count() != (version == 1 ? 2 : 3)
+            || !root.TryGetProperty("previous", out var previous)
+            || previous.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+            throw new InvalidDataException("model-activation");
+        string? value = previous.GetString();
+        if (value is not null && (!ValidId(value) || value == id))
+            throw new InvalidDataException("model-activation");
+        return new(value, ModelCatalog.ReadInstallationDirections(root));
+    }
+    public IReadOnlyList<string>? ReadCommittedDirections()
+    {
+        try
+        {
+            return Current() is { } id ? CommittedDirections(id) : Array.Empty<string>();
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or ArgumentException)
+        {
+            return null;
+        }
+    }
+    private IReadOnlyList<string> CommittedDirections(string id)
+    {
+        var directions = Directions(id);
+        if (!new HashSet<string>(ReadActivation(id, required: false).Directions, StringComparer.Ordinal).SetEquals(directions))
+            throw new InvalidDataException("model-directions");
+        return directions;
+    }
+    private IReadOnlyList<string> Directions(string id)
+    {
+        string models = Path.Combine(Root(id), "models");
+        CheckDirectory(models);
+        string marker = Path.Combine(models, "installed.json");
+        if ((File.GetAttributes(marker) & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0
+            || new FileInfo(marker).Length > 8 * 1024 * 1024)
+            throw new InvalidDataException("model-inventory");
+        using var document = JsonDocument.Parse(File.ReadAllText(marker));
+        return ModelCatalog.ReadInstallationDirections(document.RootElement);
+    }
     public Lease Acquire()
     {
         CheckDirectory(_components);
@@ -87,13 +147,15 @@ internal sealed class LinuxModelInstallationStore(string home, string data)
     }
     public async Task StartModelAsync(ModelClient model)
     {
-        ModelRuntimePaths StartupPaths(string id)
+        ModelRuntimePaths StartupPaths(string id, IReadOnlyList<string> expected)
         {
             try
             {
+                if (!new HashSet<string>(expected, StringComparer.Ordinal).SetEquals(Directions(id)))
+                    throw new InvalidDataException("model-directions");
                 return Paths(id);
             }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException)
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or ArgumentException or JsonException)
             {
                 return UnavailablePaths;
             }
@@ -103,19 +165,20 @@ internal sealed class LinuxModelInstallationStore(string home, string data)
             using var lease = Acquire();
             if (lease.Active is null)
                 return;
-            string? previous = lease.Previous(lease.Active, required: false);
-            if (await model.ReloadAsync(StartupPaths(lease.Active), () => { }))
+            var active = ReadActivation(lease.Active, required: false);
+            if (await model.ReloadAsync(StartupPaths(lease.Active, active.Directions), () => { }, expectedDirections: active.Directions))
                 return;
-            if (previous is not null)
+            if (active.Previous is { } previous)
             {
-                lease.Previous(previous, required: false);
-                await model.ReloadAsync(StartupPaths(previous), () => lease.Publish(previous));
+                var recovery = ReadActivation(previous, required: false);
+                await model.ReloadAsync(StartupPaths(previous, recovery.Directions), () => lease.Publish(previous),
+                    expectedDirections: recovery.Directions);
             }
             return;
         }
         catch (OperationCanceledException) { return; } // A newer lifecycle owner won.
         catch (Exception error) when (error is IOException or UnauthorizedAccessException
-            or JsonException or ArgumentException)
+            or InvalidDataException or JsonException or ArgumentException)
         {
         }
         // Empty paths cannot contain markers or start a process. Reuse the
@@ -140,42 +203,29 @@ internal sealed class LinuxModelInstallationStore(string home, string data)
             _fd = fd;
             Active = active;
         }
-        internal string? Previous(string id, bool required)
-        {
-            string path = Path.Combine(_store.Root(id), "activation.json");
-            FileAttributes attributes;
-            try
-            {
-                attributes = File.GetAttributes(path);
-            }
-            catch (FileNotFoundException) when (!required) { return null; }
-            catch (DirectoryNotFoundException) when (!required) { return null; }
-            // Legacy metadata may be absent, but existing invalid entries must
-            // not acquire legacy semantics.
-            if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
-                throw new IOException("model-activation");
-            if (new FileInfo(path).Length > 4096)
-                throw new IOException("model-activation");
-            using var document = JsonDocument.Parse(File.ReadAllText(path));
-            var root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object || root.EnumerateObject().Count() != 2
-                || !root.TryGetProperty("schema", out var schema) || schema.ValueKind != JsonValueKind.Number
-                || !schema.TryGetInt32(out int version) || version != 1
-                || !root.TryGetProperty("previous", out var previous)
-                || previous.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
-                throw new IOException("model-activation");
-            string? value = previous.GetString();
-            if (value is not null && (!ValidId(value) || value == id))
-                throw new IOException("model-activation");
-            return value;
-        }
         public Task<bool> ActivateAsync(ModelClient model, string id, CancellationToken ct)
         {
             ObjectDisposedException.ThrowIf(_fd < 0, this);
             ct.ThrowIfCancellationRequested();
-            if (Previous(id, required: true) != Active || _store.Current() != Active || id == Active)
+            var activation = _store.ReadActivation(id, required: true);
+            if (activation.Previous != Active || _store.Current() != Active || id == Active)
                 throw new IOException("model-preparation-stale");
-            return model.ReloadAsync(_store.Paths(id), () => Publish(id), ct, FullDirections);
+            var selected = new HashSet<string>(activation.Directions, StringComparer.Ordinal);
+            if (!selected.SetEquals(_store.Directions(id)))
+                throw new InvalidDataException("model-directions");
+            if (Active is { } active)
+            {
+                try
+                {
+                    if (!_store.CommittedDirections(active).All(selected.Contains))
+                        throw new InvalidDataException("model-direction-loss");
+                }
+                catch (Exception error) when (ModelCatalog.IsCompleteDirectionSet(selected)
+                    && error is InvalidDataException or JsonException or FileNotFoundException or DirectoryNotFoundException)
+                { /* An explicit full preparation cannot discard a catalog direction. */
+                }
+            }
+            return model.ReloadAsync(_store.Paths(id), () => Publish(id), ct, activation.Directions);
         }
         internal void Publish(string id)
         {

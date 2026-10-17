@@ -1,6 +1,8 @@
 """Real model/browser/cooperative Entry acceptance; generic GTK still refuses."""
 
 import ctypes
+import gettext
+import hashlib
 import json
 import os
 import re
@@ -13,12 +15,13 @@ import time
 from contextlib import ExitStack
 from http.server import HTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from main import control
 from native_e2e import key
 from niri import contents, request
 from paths import Paths
-from wire import now_ms
+from wire import Decoder, encode, now_ms
 
 
 def settings_viewport_from_pane(initial, current):
@@ -138,6 +141,296 @@ def prepare_tab(stack):
         send_key(False)
 
     return send_tab
+
+
+def verify_direction_installation(arguments, environment):
+    """Real settings installation and worker inference, using the existing two archives."""
+    from support.gtk_accessibility import Atspi, named, select_settings_page
+
+    started = time.monotonic()
+    deadline = started + 120
+    result = {"outcome": "running", "stage": "start-isolated-settings"}
+    trace = arguments.output / "direction-controller.jsonl"
+    trace.write_text("")
+
+    def remaining():
+        value = deadline - time.monotonic()
+        assert value > 0, "direction installation exhausted its existing desktop budget"
+        return value
+
+    def await_value(predicate, description, timeout=15):
+        return wait_for(predicate, description, min(timeout, remaining()))
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="typelay-direction-model-") as directory:
+            isolated = {
+                **environment,
+                "XDG_CONFIG_HOME": str(Path(directory) / "config"),
+                "XDG_DATA_HOME": str(Path(directory) / "data"),
+                "TYPELAY_TRACE": str(trace),
+            }
+            with patch.dict(os.environ, isolated):
+                paths = Paths(arguments.package)
+            catalog = json.loads((paths.home / "worker/model-catalog.json").read_text())[
+                "directions"
+            ]
+            samples = {item["id"]: item["selfCheckText"] for item in catalog}
+            archives = {
+                item["id"]: paths.cache
+                / "components"
+                / f"{item['id']}-{item['version']}.argosmodel"
+                for item in catalog
+            }
+
+            def cache_identity(path):
+                assert path.is_file() and not path.is_symlink(), "default install archive missing"
+                assert path.stat().st_size > 0, "default install archive is empty"
+                with path.open("rb") as stream:
+                    return (
+                        hashlib.file_digest(stream, "sha256").hexdigest(),
+                        path.stat().st_mtime_ns,
+                    )
+
+            cached = {identity: cache_identity(path) for identity, path in archives.items()}
+            with (arguments.output / "direction-installation.log").open("w") as log:
+                process = subprocess.Popen(
+                    [str(paths.launcher), "--background"], env=isolated, stdout=log, stderr=log
+                )
+                try:
+
+                    def state():
+                        assert process.poll() is None, "direction settings process exited"
+                        try:
+                            return control(paths, "status") or {}
+                        except (OSError, EOFError, ValueError):
+                            return {}
+
+                    def item(name):
+                        return await_value(
+                            lambda: named(process.pid, name), "direction control missing: " + name
+                        )
+
+                    def activate(name, *, capture=False):
+                        node = item(name)
+                        assert Atspi.Component.grab_focus(node.get_component_iface()), name
+
+                        def enabled():
+                            node.clear_cache()
+                            states = node.get_state_set()
+                            return all(
+                                states.contains(value)
+                                for value in (
+                                    Atspi.StateType.SHOWING,
+                                    Atspi.StateType.ENABLED,
+                                    Atspi.StateType.SENSITIVE,
+                                )
+                            )
+
+                        await_value(enabled, "direction control unavailable: " + name)
+                        if capture:
+                            subprocess.run(
+                                ["grim", str(arguments.output / "direction-single-ready.png")],
+                                check=True,
+                                timeout=min(3, remaining()),
+                            )
+                        assert Atspi.Action.do_action(node.get_action_iface(), 0), name
+
+                    def installed(expected, schema):
+                        def ready():
+                            value = state()
+                            setup = value.get("setup", {})
+                            assert setup.get("installation") != "failed", (
+                                "direction preparation failed"
+                            )
+                            return (
+                                value.get("modelReady")
+                                and value.get("modelDirections") == expected
+                                and setup.get("installation") == "ready"
+                            )
+
+                        await_value(ready, "selected directions did not become ready", remaining())
+                        root = paths.models.parent.resolve(strict=True)
+                        marker = json.loads((root / "models/installed.json").read_text())
+                        check = json.loads((root / "self-check.json").read_text())
+                        assert marker["schema"] == schema and marker["directions"] == expected
+                        assert check["status"] == "passed" and check["device"] == "cpu"
+                        assert [row["direction"] for row in check["results"]] == expected
+                        assert all(
+                            row["status"] == "translated" and row["nonempty"] and row["differs"]
+                            for row in check["results"]
+                        )
+                        assert {
+                            entry.name for entry in (root / "models").iterdir() if entry.is_dir()
+                        } == set(expected)
+                        assert {
+                            row["name"]: row["observedSha256"] for row in marker["dependencies"]
+                        } == {identity: cached[identity][0] for identity in expected}
+                        return root
+
+                    def inference(expected, requests):
+                        # This separate real worker verifies inference against the installed
+                        # generation. The UI host's own hello is observed in modelDirections.
+                        worker = subprocess.Popen(
+                            [
+                                str(paths.home / "native/typelay-supervise"),
+                                str(paths.python),
+                                "-I",
+                                "-B",
+                                str(paths.home / "worker/run_worker.py"),
+                                "--models",
+                                str(paths.models),
+                            ],
+                            stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL,
+                            env=isolated,
+                        )
+                        frames = [{"id": 1, "op": "hello"}] + [
+                            {"id": index + 2, "op": "translate", **request}
+                            for index, request in enumerate(requests)
+                        ]
+                        try:
+                            output, _ = worker.communicate(
+                                b"".join(map(encode, frames)), timeout=remaining()
+                            )
+                            assert worker.returncode == 0, "installed worker failed"
+                        finally:
+                            if worker.poll() is None:
+                                worker.terminate()
+                                try:
+                                    worker.wait(timeout=5)
+                                except subprocess.TimeoutExpired:
+                                    worker.kill()
+                                    worker.wait(timeout=3)
+                        decoder = Decoder()
+                        responses = decoder.feed(output)
+                        assert not decoder.buffer and len(responses) == len(frames)
+                        assert [row["id"] for row in responses] == list(range(1, len(frames) + 1))
+                        assert (
+                            responses[0]["status"] == "ready"
+                            and responses[0]["directions"] == expected
+                        )
+                        return responses[1:]
+
+                    await_value(
+                        lambda: state().get("setup", {}).get("preparation"),
+                        "initial preparation missing",
+                    )
+                    select_settings_page(process.pid, "应用支持", timeout=min(15, remaining()))
+                    activate("安装方向（可选）")
+                    for label in ("中文 → English", "English → 中文"):
+                        assert (
+                            item("本地翻译方向：" + label)
+                            .get_state_set()
+                            .contains(Atspi.StateType.CHECKED)
+                        )
+                    activate("本地翻译方向：English → 中文")
+                    assert (
+                        not item("本地翻译方向：English → 中文")
+                        .get_state_set()
+                        .contains(Atspi.StateType.CHECKED)
+                    )
+                    result["stage"] = "prepare-single"
+                    activate("准备本地翻译…")
+                    item("下载并安装本地翻译组件？")
+                    activate(gettext.dgettext("gtk30", "_OK").replace("_", ""))
+                    single = installed(["zh_en"], 2)
+                    result["singleDirections"] = ["zh_en"]
+                    result["stage"] = "infer-single"
+                    translated, same, missing = inference(
+                        ["zh_en"],
+                        [
+                            {"text": samples["zh_en"], "source": "zh", "target": "en"},
+                            {"text": samples["en_zh"], "source": "auto", "target": "en"},
+                            {"text": samples["en_zh"], "source": "auto", "target": "zh"},
+                        ],
+                    )
+                    assert translated["status"] == "translated" and translated["text"] not in (
+                        None,
+                        "",
+                        samples["zh_en"],
+                    )
+                    assert same["status"] == "no-translation"
+                    assert (
+                        missing["status"] == "error" and missing["code"] == "language-unavailable"
+                    )
+                    result.update(
+                        sameLanguage="no-translation", missingDirection="language-unavailable"
+                    )
+                    result["stage"] = "complete-directions"
+                    await_value(
+                        lambda: state()
+                        .get("setup", {})
+                        .get("preparation", {})
+                        .get("primaryAction", {})
+                        .get("id")
+                        == "NextStep",
+                        "ready preparation presentation missing",
+                    )
+                    management = item("本地翻译组件管理")
+                    if not management.get_state_set().contains(Atspi.StateType.EXPANDED):
+                        activate("本地翻译组件管理")
+                    activate("补齐另一方向", capture=True)
+                    item("下载并安装本地翻译组件？")
+                    activate(gettext.dgettext("gtk30", "_OK").replace("_", ""))
+                    complete = installed(["zh_en", "en_zh"], 1)
+                    assert complete != single
+                    assert (
+                        json.loads((complete / "activation.json").read_text())["previous"]
+                        == single.name
+                    )
+                    result["stage"] = "infer-complete"
+                    responses = inference(
+                        ["zh_en", "en_zh"],
+                        [
+                            {"text": samples["zh_en"], "source": "zh", "target": "en"},
+                            {"text": samples["en_zh"], "source": "auto", "target": "zh"},
+                        ],
+                    )
+                    for response, sample in zip(responses, samples.values(), strict=True):
+                        assert response["status"] == "translated" and response["text"] not in (
+                            None,
+                            "",
+                            sample,
+                        )
+                    assert {
+                        identity: cache_identity(path) for identity, path in archives.items()
+                    } == cached
+                    result["completedDirections"] = ["zh_en", "en_zh"]
+                    assert control(paths, "quit") is True
+                    assert process.wait(timeout=7) == 0
+                    assert not paths.control.exists() and not paths.native.exists()
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=7)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=3)
+            writes = [
+                json.loads(line)["operation"] for line in trace.read_text().splitlines() if line
+            ]
+            assert not any(operation.startswith("write-") for operation in writes)
+            result.update(
+                outcome="passed",
+                stage="complete",
+                writeAttempts=0,
+                modelArchivesUnchanged=True,
+                sourceFieldsExercised=False,
+                f10Exercised=False,
+            )
+    finally:
+        result["elapsedSeconds"] = round(time.monotonic() - started, 2)
+        if result["outcome"] != "passed":
+            result["outcome"] = "failed"
+        try:
+            (arguments.output / "direction-installation.json").write_text(
+                json.dumps(result, indent=2)
+            )
+        except OSError:
+            pass  # Evidence output must not replace the actual failure.
+    return "real settings single-direction preparation, Auto same/missing direction without writes, and union completion with both directions usable"
 
 
 def run(arguments):
@@ -275,6 +568,8 @@ def run(arguments):
 
     resources = ExitStack()
     try:
+        if arguments.desktop_scope == "setup":
+            evidence.append(verify_direction_installation(arguments, environment))
         send_tab = (
             prepare_tab(resources)
             if arguments.desktop_scope in ("all", "browser", "qt", "gtk4")

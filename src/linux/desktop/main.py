@@ -278,6 +278,7 @@ async def desktop(paths, background, lock, tutorial=False):
     installer = None
     install_task = None
     pause_installation = False
+    installation_request = None
 
     def task(coroutine):
         if len(tasks) >= 64:
@@ -367,7 +368,7 @@ async def desktop(paths, background, lock, tutorial=False):
             failure=failure,
         )
 
-    async def install():
+    async def install(request):
         nonlocal installer
         settings = components["settings"]
         settings.installation(
@@ -385,6 +386,7 @@ async def desktop(paths, background, lock, tutorial=False):
                 str(paths.home),
                 str(paths.data),
                 str(paths.cache),
+                json.dumps({"directions": request[0], "repair": request[1]}),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -431,11 +433,13 @@ async def desktop(paths, background, lock, tutorial=False):
                 await installer.wait()
             installer = None
 
-    def install_requested():
-        nonlocal install_task, pause_installation
+    def install_requested(directions=None, repair=False):
+        nonlocal install_task, pause_installation, installation_request
         if install_task is None or install_task.done():
+            if directions is not None or installation_request is None:
+                installation_request = (None if directions is None else tuple(directions), repair)
             pause_installation = False
-            install_task = task(install())
+            install_task = task(install(installation_request))
 
     def pause_requested():
         nonlocal pause_installation

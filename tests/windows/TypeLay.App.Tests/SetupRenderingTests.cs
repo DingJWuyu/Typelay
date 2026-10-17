@@ -35,7 +35,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
                 attempts++;
                 return new ModelInstaller(directory, Path.Combine(directory, "worker.py"),
                     new WaitingHttp(), downloadTimeout: TimeSpan.FromMilliseconds(50));
-            });
+            }, installations: Installations(directory));
             window.Width = 790;
             window.Height = 560;
             window.ShowPage("apps");
@@ -44,6 +44,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             AssertPrimary(window, primary);
             AssertWithinViewport(window, primary);
             AssertWithinViewport(window, Named<TextBlock>(window, "PreparationGuidance"));
+            DirectionChoices(window)[0].IsChecked = false;
             Click(window, ApplicationSupportPresentation.Preparation(new(false, false)).PrimaryAction.Label);
             var failure = SetupFailurePresentation.Create(SetupFailureCategory.Network);
             await Until(() => Buttons(window).Any(button => Equals(button.Content, failure.RetryLabel)));
@@ -64,6 +65,10 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             AssertWithinViewport(window, Named<Button>(window, "PreparationPrimaryAction"));
             window.RequestClose();
             window.ShowPage("apps");
+            var directions = DirectionChoices(window);
+            Assert.False(directions[0].IsChecked);
+            Assert.True(directions[1].IsChecked);
+            Assert.All(directions, choice => Assert.False(choice.IsEnabled));
             Click(window, failure.RetryLabel);
             await Until(() => attempts == 2 && Buttons(window).Any(button => Equals(button.Content, failure.RetryLabel)));
             Assert.False(model.Ready);
@@ -71,8 +76,10 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
         finally { await ClosePreparation(window, directory); }
     });
 
-    [Fact]
-    public Task ExplicitPauseOffersResumeInsteadOfFailure() => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task ExplicitPauseOffersResumeInsteadOfFailure(bool selectSingleDirection) => desktop.RunAsync(async () =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-setup-ui-" + Guid.NewGuid().ToString("N"));
         SettingsWindow? window = null;
@@ -86,10 +93,27 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
                 var http = new WaitingHttp();
                 attempts.Add(http);
                 return new ModelInstaller(directory, Path.Combine(directory, "worker.py"), http);
-            });
+            }, installations: Installations(directory));
             window.ShowPage("apps");
+            Assert.False(Descendants(window).OfType<Expander>()
+                .Single(expander => Equals(expander.Header, "组件与安装说明")).IsExpanded);
+            if (selectSingleDirection)
+            {
+                var choices = DirectionChoices(window);
+                Assert.Equal(new[] { "zh_en", "en_zh" }, choices.Select(choice => (string)choice.Tag));
+                Assert.All(choices, choice => { Assert.True(choice.IsChecked); Assert.True(choice.IsEnabled); });
+                choices[1].IsChecked = false;
+                choices[0].IsChecked = false;
+                Assert.True(choices[0].IsChecked);
+                Assert.False(choices[1].IsChecked);
+            }
+            // The default path starts directly while the direction options are still collapsed.
             Click(window, ApplicationSupportPresentation.Preparation(new(false, false)).PrimaryAction.Label);
             await attempts[0].Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var directions = DirectionChoices(window);
+            Assert.True(directions[0].IsChecked);
+            Assert.Equal(!selectSingleDirection, directions[1].IsChecked == true);
+            Assert.All(directions, choice => Assert.False(choice.IsEnabled));
             var primary = Named<Button>(window, "PreparationPrimaryAction");
             Assert.True(primary.Focus());
             Click(window, "暂停下载");
@@ -106,11 +130,108 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             Assert.False(model.Ready);
             Assert.Same(primary, Named<Button>(window, "PreparationPrimaryAction"));
             Assert.True(primary.IsEnabled);
+            window.ShowPage("translation");
+            directions = DirectionChoices(window);
+            Assert.True(directions[0].IsChecked);
+            Assert.Equal(!selectSingleDirection, directions[1].IsChecked == true);
+            Assert.All(directions, choice => Assert.False(choice.IsEnabled));
+            primary = Named<Button>(window, "PreparationPrimaryAction");
             Click(window, SetupFailurePresentation.ResumeLabel);
             Assert.Equal(2, attempts.Count);
             await attempts[1].Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Same(primary, Named<Button>(window, "PreparationPrimaryAction"));
             Assert.Equal("暂停下载", primary.Content);
+        }
+        finally { await ClosePreparation(window, directory); }
+    });
+
+    [Theory]
+    [InlineData("zh_en", false)]
+    [InlineData("en_zh", true)]
+    public Task InstalledDirectionStaysLockedWhileRepairAndCompletionKeepTheirDistinctScopes(string installed, bool complete) => desktop.RunAsync(async () =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-direction-ui-" + Guid.NewGuid().ToString("N"));
+        SettingsWindow? window = null;
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
+            using var model = ProtocolModel(directory, [installed]);
+            await model.StartAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            var attempts = new List<WaitingHttp>();
+            window = new SettingsWindow(settings, model, () => { }, createInstaller: () =>
+            {
+                var http = new WaitingHttp();
+                attempts.Add(http);
+                return new ModelInstaller(directory, Path.Combine(directory, "worker.py"), http);
+            }, installations: Installations(directory));
+            window.ShowPage("translation");
+            var directions = DirectionChoices(window);
+            Assert.All(directions, choice =>
+            {
+                Assert.Equal(Equals(choice.Tag, installed), choice.IsChecked == true);
+                Assert.False(choice.IsEnabled);
+                Assert.Equal(Equals(choice.Tag, installed), ((string)choice.Content).Contains("已安装"));
+            });
+            Assert.True(Named<Button>(window, "PreparationCompleteDirectionsAction").IsEnabled);
+            Assert.True(Named<Button>(window, "PreparationRepairAction").IsEnabled);
+            Click(window, complete ? "补齐另一方向" : "修复本地翻译组件…");
+            await attempts[0].Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.All(directions, choice => Assert.Equal(complete || Equals(choice.Tag, installed), choice.IsChecked == true));
+            Click(window, "暂停下载");
+            await Until(() => Buttons(window).Any(button => Equals(button.Content, SetupFailurePresentation.ResumeLabel)));
+            window.ShowPage("apps");
+            directions = DirectionChoices(window);
+            Assert.All(directions, choice =>
+            {
+                Assert.Equal(complete || Equals(choice.Tag, installed), choice.IsChecked == true);
+                Assert.False(choice.IsEnabled);
+            });
+            Click(window, SetupFailurePresentation.ResumeLabel);
+            await attempts[1].Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(model.Ready);
+            Assert.Equal(new[] { installed }, model.AvailableDirections);
+            Assert.False(settings.Value.OnboardingComplete);
+        }
+        finally { await ClosePreparation(window, directory); }
+    });
+
+    [Fact]
+    public Task UnreadableInstallationOffersExplicitFullRepairAndRetainsItAfterPause() => desktop.RunAsync(async () =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-repair-ui-" + Guid.NewGuid().ToString("N"));
+        SettingsWindow? window = null;
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
+            Directory.CreateDirectory(Path.Combine(directory, "models"));
+            File.WriteAllText(Path.Combine(directory, "models", "installed.json"), "{");
+            using var model = Model(directory);
+            var attempts = new List<WaitingHttp>();
+            window = new SettingsWindow(settings, model, () => { }, createInstaller: () =>
+            {
+                var http = new WaitingHttp();
+                attempts.Add(http);
+                return new ModelInstaller(directory, Path.Combine(directory, "worker.py"), http);
+            }, installations: Installations(directory));
+            window.ReportSetupFailure(new(SetupFailureCategory.Integrity, ModelSetupStage.Activate));
+            window.ShowPage("translation");
+            var directions = DirectionChoices(window);
+            Assert.All(directions, choice => { Assert.False(choice.IsChecked); Assert.False(choice.IsEnabled); });
+            Assert.Equal("请完整修复中英双向组件。", Named<TextBlock>(window, "PreparationGuidance").Text);
+            Click(window, "完整修复本地翻译…");
+            await attempts[0].Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.All(directions, choice => Assert.True(choice.IsChecked));
+            Click(window, "暂停下载");
+            await Until(() => Buttons(window).Any(button => Equals(button.Content, SetupFailurePresentation.ResumeLabel)));
+            window.RequestClose();
+            window.ShowPage("translation");
+            directions = DirectionChoices(window);
+            Assert.All(directions, choice => { Assert.True(choice.IsChecked); Assert.False(choice.IsEnabled); });
+            Click(window, SetupFailurePresentation.ResumeLabel);
+            await attempts[1].Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.False(model.Ready);
+            Assert.False(settings.Value.OnboardingComplete);
+            Assert.Equal("{", File.ReadAllText(Path.Combine(directory, "models", "installed.json")));
         }
         finally { await ClosePreparation(window, directory); }
     });
@@ -133,7 +254,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             });
             using var model = ProtocolModel(directory);
             int launches = 0;
-            window = new SettingsWindow(settings, model, () => launches++, new WindowsApplicationSupport());
+            window = new SettingsWindow(settings, model, () => launches++, new WindowsApplicationSupport(), installations: Installations(directory));
             window.Width = 790;
             window.Height = 560;
             window.ShowPage("apps");
@@ -231,7 +352,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             using var model = ProtocolModel(directory);
             window = new SettingsWindow(settings, model, () => Assert.Fail("A failed preparation must keep recovery first."),
                 createInstaller: () => new ModelInstaller(directory, Path.Combine(directory, "worker.py"),
-                    new WaitingHttp(), downloadTimeout: TimeSpan.FromMilliseconds(50)));
+                    new WaitingHttp(), downloadTimeout: TimeSpan.FromMilliseconds(50)), installations: Installations(directory));
             window.ShowPage("apps");
             Click(window, "重新准备");
             await Until(() => Descendants(window).OfType<Expander>().Any(expander => Equals(expander.Header, "安装诊断")));
@@ -257,7 +378,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
         {
             var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
             using var model = ProtocolModel(directory);
-            window = new SettingsWindow(settings, model, () => { });
+            window = new SettingsWindow(settings, model, () => { }, installations: Installations(directory));
             window.ShowPage("shortcuts");
             window.UpdateLayout();
             await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ContextIdle);
@@ -279,13 +400,18 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
 
     // A controlled worker protocol reply drives the real ModelClient and real WPF
     // controls. It verifies presentation only, not model inference or installation.
-    private static ModelClient ProtocolModel(string directory)
+    private static ModelClient ProtocolModel(string directory, string[]? directions = null)
     {
         Directory.CreateDirectory(Path.Combine(directory, "models"));
         string python = Path.Combine(directory, "python.exe");
         string worker = Path.Combine(directory, "worker.py");
         File.WriteAllText(python, "controlled executable marker");
-        File.WriteAllText(Path.Combine(directory, "models", "installed.json"), "{}");
+        File.WriteAllText(Path.Combine(directory, "models", "installed.json"),
+            JsonSerializer.Serialize(new
+            {
+                schema = 2,
+                directions = directions ?? ["zh_en", "en_zh"]
+            }));
         File.WriteAllText(worker, """
             import json, struct, sys
             size = struct.unpack("<i", sys.stdin.buffer.read(4))[0]
@@ -308,9 +434,20 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             start.ArgumentList.Add("-I");
             start.ArgumentList.Add("-B");
             start.ArgumentList.Add(worker);
-            start.ArgumentList.Add(JsonSerializer.Serialize(ModelCatalog.Directions.Select(direction => direction.Id)));
+            start.ArgumentList.Add(JsonSerializer.Serialize(directions ?? ["zh_en", "en_zh"]));
             return new ChildProcess(start);
         });
+    }
+
+    private static ModelInstallationStore Installations(string directory) => new(directory, Path.Combine(directory, "worker.py"));
+
+    private static CheckBox[] DirectionChoices(Window window)
+    {
+        window.UpdateLayout();
+        var details = Descendants(window).OfType<Expander>().Single(expander => Equals(expander.Header, "组件与安装说明"));
+        details.IsExpanded = true;
+        window.UpdateLayout();
+        return Descendants(details).OfType<CheckBox>().ToArray();
     }
 
     private static T Named<T>(DependencyObject root, string name) where T : FrameworkElement =>

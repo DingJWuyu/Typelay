@@ -102,7 +102,7 @@ public enum TranslationPreparationPhase
 
 public enum TranslationPreparationAction
 {
-    Prepare, Pause, Resume, Retry, NextStep, Repair
+    Prepare, Pause, Resume, Retry, NextStep, Repair, CompleteDirections
 }
 
 public enum TranslationPreparationNextStep
@@ -115,14 +115,26 @@ public sealed record TranslationPreparationFact(
     bool ModelInstalled,
     TranslationPreparationPhase Phase = TranslationPreparationPhase.Idle,
     SetupFailureCategory? FailureCategory = null,
-    SetupFailureCategory? RecoveryFailureCategory = null);
+    SetupFailureCategory? RecoveryFailureCategory = null,
+    IReadOnlyList<string>? InstalledDirections = null,
+    IReadOnlyList<string>? ReadyDirections = null,
+    bool InstallationIntentKnown = true);
 
 public sealed record TranslationPreparationActionView(
     TranslationPreparationAction Id, string Label, bool Enabled = true);
 
 public sealed record TranslationPreparationView(
     string StatusText, string Guidance, TranslationPreparationActionView PrimaryAction,
-    TranslationPreparationActionView[] SecondaryActions);
+    TranslationPreparationActionView[] SecondaryActions)
+{
+    public TranslationPreparationDirectionView[] Directions { get; init; } = [];
+    public bool CanSelectDirections
+    {
+        get; init;
+    }
+}
+
+public sealed record TranslationPreparationDirectionView(string Id, string Label, bool Installed);
 
 public enum InputConnectionState
 {

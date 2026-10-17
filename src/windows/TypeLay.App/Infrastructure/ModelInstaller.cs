@@ -61,7 +61,8 @@ internal sealed class ModelInstaller
         }
     }
 
-    public async Task<ModelInstallationStore.PreparedInstallation> PrepareAsync(IProgress<SetupProgress> progress, CancellationToken ct)
+    public async Task<ModelInstallationStore.PreparedInstallation> PrepareAsync(IProgress<SetupProgress> progress, CancellationToken ct,
+        IEnumerable<string>? requestedDirections = null, bool repair = false)
     {
         ModelInstallationStore.Lease? lease = null;
         ModelInstallationStore.PreparedInstallation? prepared = null;
@@ -69,10 +70,26 @@ internal sealed class ModelInstaller
         var stage = ModelSetupStage.Prepare;
         try
         {
+            string[] requested = requestedDirections?.ToArray() ?? ModelCatalog.Directions.Select(direction => direction.Id).ToArray();
+            if (!ModelCatalog.IsValidDirectionSet(requested))
+                throw new InvalidDataException("model-directions");
             ct.ThrowIfCancellationRequested();
             lease = await new ModelInstallationStore(_data, _worker).AcquireAsync(ct);
+            IReadOnlyList<string> committed;
+            try
+            {
+                committed = lease.CommittedDirections;
+            }
+            catch (Exception error) when (repair && ModelCatalog.IsCompleteDirectionSet(requested)
+                && error is InvalidDataException or JsonException or FileNotFoundException or DirectoryNotFoundException)
+            {
+                committed = [];
+            }
+            var directions = ModelCatalog.Directions.Where(direction => requested.Contains(direction.Id, StringComparer.Ordinal)
+                || committed.Contains(direction.Id, StringComparer.Ordinal)).ToArray();
+            var selected = Array.AsReadOnly(directions.Select(direction => direction.Id).ToArray());
             _sourceModels = lease.ActivePaths.Models;
-            prepared = lease.Prepare();
+            prepared = lease.Prepare(selected);
             string staging = prepared.Root;
             Directory.CreateDirectory(_cache);
             stage = ModelSetupStage.Runtime;
@@ -129,7 +146,7 @@ internal sealed class ModelInstaller
             }
             string modelStage = Path.Combine(staging, "models");
             Directory.CreateDirectory(modelStage);
-            foreach (var direction in ModelCatalog.Directions)
+            foreach (var direction in directions)
             {
                 string pair = direction.Id;
                 string dest = Path.Combine(modelStage, pair);
@@ -187,8 +204,8 @@ internal sealed class ModelInstaller
                 });
             await File.WriteAllTextAsync(Path.Combine(modelStage, "installed.json"), JsonSerializer.Serialize(new
             {
-                schema = 1,
-                directions = ModelCatalog.Directions.Select(direction => direction.Id).ToArray(),
+                schema = ModelCatalog.IsCompleteDirectionSet(selected) ? 1 : 2,
+                directions = selected,
                 installedAt = DateTimeOffset.UtcNow,
                 files,
                 dependencies = _locks
@@ -217,7 +234,7 @@ internal sealed class ModelInstaller
                 if (child.Process.ExitCode != 0 || result.Length > 16384)
                     throw new InvalidDataException("cpu-self-check-failed");
                 using var check = JsonDocument.Parse(result);
-                if (!PassedSelfCheck(check.RootElement))
+                if (!PassedSelfCheck(check.RootElement, selected))
                     throw new InvalidDataException("cpu-self-check-failed");
                 await File.WriteAllTextAsync(Path.Combine(staging, "setup-self-check.json"), result, ct);
             }
@@ -287,6 +304,32 @@ internal sealed class ModelInstaller
         progress.Report(new($"复用本机{direction.SourceName} → {direction.TargetName} 模型"));
         try
         {
+            Dictionary<string, string>? expected = null;
+            if (source == Path.Combine(_sourceModels!, direction.Id))
+            {
+                using var inventory = JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(_sourceModels!, "installed.json"), ct));
+                expected = new(StringComparer.Ordinal);
+                foreach (var entry in inventory.RootElement.GetProperty("files").EnumerateArray())
+                {
+                    var pathValue = entry.GetProperty("path");
+                    if (pathValue.ValueKind != JsonValueKind.String)
+                        return false;
+                    string relative = pathValue.GetString()!;
+                    if (!relative.StartsWith(direction.Id + "/", StringComparison.Ordinal))
+                        continue;
+                    var hashValue = entry.GetProperty("sha256");
+                    if (hashValue.ValueKind != JsonValueKind.String)
+                        return false;
+                    string hash = hashValue.GetString()!;
+                    if (hash.Length != 64 || !hash.All(Uri.IsHexDigit)
+                        || !expected.TryAdd(relative[(direction.Id.Length + 1)..], hash))
+                        return false;
+                }
+                foreach (string relative in ModelFiles)
+                    if (!expected.TryGetValue(relative, out string? hash)
+                        || !string.Equals(await Hash(Path.Combine(source, relative), ct), hash, StringComparison.OrdinalIgnoreCase))
+                        return false;
+            }
             foreach (string relative in ModelFiles)
             {
                 ct.ThrowIfCancellationRequested();
@@ -295,25 +338,30 @@ internal sealed class ModelInstaller
                 await using var input = File.OpenRead(Path.Combine(source, relative));
                 await using var output = new FileStream(target, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, true);
                 await input.CopyToAsync(output, ct);
+                await output.DisposeAsync();
+                if (expected is not null && !string.Equals(await Hash(target, ct), expected[relative], StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("model-copy-integrity");
             }
             // The lock identifies the copied model bytes; the full file inventory is written below.
             _locks.Add(new("argos-" + direction.Id, direction.Version, "local-installed-model:model/model.bin",
                 await Hash(Path.Combine(destination, "model", "model.bin"), ct)));
             return true;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException
+            or KeyNotFoundException or InvalidOperationException)
         {
             if (Directory.Exists(destination))
                 Directory.Delete(destination, true);
             return false;
         }
     }
-    private static bool PassedSelfCheck(JsonElement check)
+    private static bool PassedSelfCheck(JsonElement check, IReadOnlyList<string> expected)
     {
         if (check.GetProperty("status").GetString() != "passed" || check.GetProperty("device").GetString() != "cpu")
             return false;
         var results = check.GetProperty("results").EnumerateArray().ToArray();
-        return ModelCatalog.IsCompleteDirectionSet(results.Select(result => result.GetProperty("direction").GetString()!).ToArray())
+        var actual = results.Select(result => result.GetProperty("direction").GetString()!).ToArray();
+        return ModelCatalog.IsValidDirectionSet(actual) && new HashSet<string>(expected, StringComparer.Ordinal).SetEquals(actual)
             && results.All(result => result.GetProperty("status").GetString() == "translated"
                 && result.GetProperty("nonempty").GetBoolean() && result.GetProperty("differs").GetBoolean());
     }

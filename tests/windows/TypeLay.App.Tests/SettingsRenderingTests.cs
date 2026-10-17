@@ -605,7 +605,8 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                 using var model = new ModelClient(new(Path.Combine(directory, "python.exe"),
                     Path.Combine(directory, "worker.py"), Path.Combine(directory, "models")), info => new ChildProcess(info));
                 Assert.False(model.Installed);
-                var window = new SettingsWindow(settings, model, () => Assert.Fail("Startup must not open a tutorial."), new WindowsApplicationSupport());
+                var window = new SettingsWindow(settings, model, () => Assert.Fail("Startup must not open a tutorial."), new WindowsApplicationSupport(),
+                    installations: new ModelInstallationStore(directory, Path.Combine(directory, "worker.py")));
                 var view = ApplicationSupportPresentation.Create([]);
                 window.ShowStartupPage();
                 window.UpdateLayout();

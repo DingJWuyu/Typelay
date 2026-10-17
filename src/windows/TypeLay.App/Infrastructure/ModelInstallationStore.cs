@@ -52,6 +52,31 @@ internal sealed class ModelInstallationStore(string data, string worker,
             return new(Path.Combine(_data, "unconfirmed", "python.exe"), _worker, Path.Combine(_data, "unconfirmed", "models"));
         }
     }
+    public IReadOnlyList<string>? ReadCommittedDirections()
+    {
+        try
+        {
+            return ReadDirections(Read());
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or ArgumentException)
+        {
+            return null;
+        }
+    }
+    private IReadOnlyList<string> ReadDirections(Manifest manifest)
+    {
+        var paths = Paths(manifest.Active);
+        if (manifest.Active == "legacy" && !Path.Exists(paths.Models)
+            && !Path.Exists(Path.Combine(_data, "runtime")))
+            return Array.Empty<string>();
+        string marker = Path.Combine(paths.Models, "installed.json");
+        CheckPath(marker);
+        if (new FileInfo(marker).Length > 8 * 1024 * 1024)
+            throw new InvalidDataException("model-inventory");
+        using var inventory = JsonDocument.Parse(File.ReadAllText(marker));
+        return ModelCatalog.ReadInstallationDirections(inventory.RootElement);
+    }
+
     public async Task<Lease> AcquireAsync(CancellationToken ct)
     {
         CheckPath(_data);
@@ -162,13 +187,24 @@ internal sealed class ModelInstallationStore(string data, string worker,
         }
         public ModelRuntimePaths ActivePaths => _store.Paths(_manifest.Active);
         public ModelRuntimePaths? PreviousPaths => _manifest.Previous is { } previous ? _store.Paths(previous) : null;
-        public PreparedInstallation Prepare()
+        public IReadOnlyList<string> CommittedDirections
+        {
+            get
+            {
+                RequireOwner();
+                return _store.ReadDirections(_manifest);
+            }
+        }
+        public PreparedInstallation Prepare(IReadOnlyList<string>? directions = null)
         {
             RequireOwner();
+            string[] snapshot = directions?.ToArray() ?? ModelCatalog.Directions.Select(direction => direction.Id).ToArray();
+            if (!ModelCatalog.IsValidDirectionSet(snapshot))
+                throw new InvalidDataException("model-directions");
             string id = Guid.NewGuid().ToString("N");
             string root = _store.Root(id);
             Directory.CreateDirectory(root);
-            return new(this, id, root, _store.Paths(id));
+            return new(this, id, root, _store.Paths(id), Array.AsReadOnly(snapshot));
         }
         private void RequireOwner()
         {
@@ -299,11 +335,12 @@ internal sealed class ModelInstallationStore(string data, string worker,
             _handle = null;
         }
     }
-    internal sealed class PreparedInstallation(Lease lease, string id, string root, ModelRuntimePaths paths) : IDisposable
+    internal sealed class PreparedInstallation(Lease lease, string id, string root, ModelRuntimePaths paths, IReadOnlyList<string> directions) : IDisposable
     {
         private bool _published;
         public string Root { get; } = root;
         public ModelRuntimePaths Paths { get; } = paths;
+        public IReadOnlyList<string> Directions { get; } = directions;
         public void Publish()
         {
             lease.Publish(id);

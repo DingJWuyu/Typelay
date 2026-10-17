@@ -45,6 +45,28 @@ public sealed class ApplicationSupportPresentationTests
     }
 
     [Fact]
+    public void SubsetPreparationKeepsInstalledIntentSeparateFromActualReadiness()
+    {
+        var view = ApplicationSupportPresentation.Preparation(new(false, true,
+            InstalledDirections: ["zh_en"], ReadyDirections: []));
+        Assert.Equal("本地翻译尚未就绪", view.StatusText);
+        Assert.False(view.CanSelectDirections);
+        Assert.Equal(["zh_en"], view.Directions.Where(direction => direction.Installed).Select(direction => direction.Id));
+        Assert.Contains(view.SecondaryActions, action => action.Id == TranslationPreparationAction.CompleteDirections);
+        var ready = ApplicationSupportPresentation.Preparation(new(true, true,
+            InstalledDirections: ["zh_en"], ReadyDirections: ["zh_en"]));
+        Assert.Contains("中文 → English", ready.StatusText);
+        Assert.DoesNotContain("English → 中文", ready.StatusText);
+        var empty = ApplicationSupportPresentation.Preparation(new(false, false, InstalledDirections: []));
+        Assert.True(empty.CanSelectDirections);
+        Assert.Equal(2, empty.Directions.Length);
+        var damaged = ApplicationSupportPresentation.Preparation(new(false, false, InstallationIntentKnown: false));
+        Assert.False(damaged.CanSelectDirections);
+        Assert.Equal(TranslationPreparationAction.Repair, damaged.PrimaryAction.Id);
+        Assert.Contains("完整修复", damaged.PrimaryAction.Label);
+    }
+
+    [Fact]
     public void UnreadyTranslationKeepsPracticeDisabledWhileConnectionDetailsRemainDiscoverable()
     {
         var windows = ApplicationSupportPresentation.Preparation(new(false, false));

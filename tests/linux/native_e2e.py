@@ -488,7 +488,10 @@ def outer(arguments, script=None):
             start_new_session=True,
         )
         try:
-            deadline = time.monotonic() + (240 if arguments.desktop else 45)
+            # Setup also installs one direction and completes its union from the
+            # existing model cache; that independent real chain is bounded to 120s.
+            timeout = 360 if arguments.desktop and arguments.desktop_scope == "setup" else 240
+            deadline = time.monotonic() + (timeout if arguments.desktop else 45)
             result = arguments.output / result_name
             while (
                 time.monotonic() < deadline

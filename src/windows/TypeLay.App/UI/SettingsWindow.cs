@@ -26,6 +26,11 @@ internal sealed class SettingsWindow : Window
     private readonly Action _openPractice;
     private readonly WindowsApplicationSupport? _support;
     private readonly Func<ModelInstaller> _createInstaller;
+    private readonly ModelInstallationStore _installations;
+    private readonly HashSet<string> _selectedPreparationDirections = ModelCatalog.Directions
+        .Select(direction => direction.Id).ToHashSet(StringComparer.Ordinal);
+    private IReadOnlyList<string>? _preparationRequest;
+    private bool _repairInstallation, _updatingPreparationDirections;
     private readonly SettingsDraftMessages _draftMessages = SettingsDraftPresentation.Create();
     private string _page = "general", _setupStatus = "";
     private SetupFailureView? _setupFailure, _setupRecoveryFailure;
@@ -56,7 +61,7 @@ internal sealed class SettingsWindow : Window
     private TextBlock? _preparationStatus, _preparationGuidance, _modelStatus;
     private Button? _preparationPrimary;
     private Border? _preparationCard;
-    private StackPanel? _preparationSecondary, _preparationDiagnostics;
+    private StackPanel? _preparationSecondary, _preparationDiagnostics, _preparationDirections;
     private readonly List<Button> _connectionChecks = [];
     public Func<AutomaticPracticeProgress?>? AutomaticPracticeProgress
     {
@@ -81,13 +86,15 @@ internal sealed class SettingsWindow : Window
     public Func<UserSettings, Task<bool>>? PrepareSettingsChange;
     private bool _savingSettings;
     public SettingsWindow(SettingsStore settings, ModelClient model, Action openPractice, WindowsApplicationSupport? support = null,
-        Func<ModelInstaller>? createInstaller = null, Func<Window, string?>? selectApplication = null)
+        Func<ModelInstaller>? createInstaller = null, Func<Window, string?>? selectApplication = null,
+        ModelInstallationStore? installations = null)
     {
         _settings = settings;
         _model = model;
         _openPractice = openPractice;
         _support = support;
         _createInstaller = createInstaller ?? (() => new ModelInstaller());
+        _installations = installations ?? new ModelInstallationStore(AppPaths.Data, AppPaths.Worker);
         _selectApplication = selectApplication ?? SelectApplication;
         Title = "TypeLay 设置";
         Width = 790;
@@ -332,7 +339,7 @@ internal sealed class SettingsWindow : Window
         _preparationStatus = _preparationGuidance = _modelStatus = null;
         _preparationPrimary = null;
         _preparationCard = null;
-        _preparationSecondary = _preparationDiagnostics = null;
+        _preparationSecondary = _preparationDiagnostics = _preparationDirections = null;
         _connectionChecks.Clear();
         switch (_page)
         {
@@ -1082,6 +1089,8 @@ internal sealed class SettingsWindow : Window
             : "准备私有运行组件与中英模型。仅在本机推理；无需自行安装 Python，也不上传输入文字。", 12, true);
         intro.Margin = new(0, 8, 0, 8);
         detailsBody.Children.Add(intro);
+        _preparationDirections = new StackPanel { Margin = new(0, 0, 0, 8) };
+        detailsBody.Children.Add(_preparationDirections);
         var runtime = UiTheme.Button("微软运行库说明", () => OpenUri("https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist"));
         runtime.HorizontalAlignment = HorizontalAlignment.Left;
         detailsBody.Children.Add(runtime);
@@ -1103,9 +1112,13 @@ internal sealed class SettingsWindow : Window
             : _setupPaused ? TranslationPreparationPhase.Paused
             : _setupFailure is not null ? TranslationPreparationPhase.Failed
             : TranslationPreparationPhase.Idle;
-        return ApplicationSupportPresentation.Preparation(new(_model.Ready, _model.Installed, phase,
-            _setupFailure is { } failure ? SetupFailurePresentation.CategoryFromCode(failure.Code) : null,
-            _setupRecoveryFailure is { } recovery ? SetupFailurePresentation.CategoryFromCode(recovery.Code) : null));
+        var installed = _installations.ReadCommittedDirections();
+        bool needsFullRepair = installed is null && _preparationRequest is null;
+        return ApplicationSupportPresentation.Preparation(new(_model.Ready, installed is { Count: > 0 },
+            needsFullRepair ? TranslationPreparationPhase.Idle : phase,
+            !needsFullRepair && _setupFailure is { } failure ? SetupFailurePresentation.CategoryFromCode(failure.Code) : null,
+            !needsFullRepair && _setupRecoveryFailure is { } recovery ? SetupFailurePresentation.CategoryFromCode(recovery.Code) : null,
+            installed, _model.AvailableDirections, InstallationIntentKnown: installed is not null));
     }
     private void RunPreparationAction(TranslationPreparationActionView action)
     {
@@ -1121,8 +1134,8 @@ internal sealed class SettingsWindow : Window
             RefreshPreparation();
         }
         else if (action.Id is TranslationPreparationAction.Prepare or TranslationPreparationAction.Resume
-            or TranslationPreparationAction.Retry or TranslationPreparationAction.Repair)
-            _ = Install();
+            or TranslationPreparationAction.Retry or TranslationPreparationAction.Repair or TranslationPreparationAction.CompleteDirections)
+            _ = Install(action.Id, view);
     }
     private void RefreshPreparation()
     {
@@ -1132,6 +1145,7 @@ internal sealed class SettingsWindow : Window
             || _preparationSecondary is null || _preparationDiagnostics is null || _progress is null || _progressLabel is null)
             return;
         var view = PreparationView();
+        RefreshPreparationDirections(view);
         if (_preparationCard is not null)
             _preparationCard.Visibility = _page == "general" && view.PrimaryAction.Id == TranslationPreparationAction.NextStep
                 ? Visibility.Collapsed : Visibility.Visible;
@@ -1180,10 +1194,72 @@ internal sealed class SettingsWindow : Window
         else
             _preparationDiagnostics.Children.Clear();
     }
-    private async Task Install()
+    private void RefreshPreparationDirections(TranslationPreparationView view)
+    {
+        if (_preparationDirections is null)
+            return;
+        if (_preparationDirections.Children.Count == 0)
+            foreach (var direction in view.Directions)
+            {
+                var choice = new CheckBox
+                {
+                    Name = "PreparationDirection_" + direction.Id,
+                    Tag = direction.Id,
+                    FontSize = 12,
+                    Margin = new(0, 4, 0, 4)
+                };
+                choice.SetResourceReference(Control.ForegroundProperty, "Text");
+                choice.Checked += (_, _) => SelectPreparationDirection(choice);
+                choice.Unchecked += (_, _) => SelectPreparationDirection(choice);
+                _preparationDirections.Children.Add(choice);
+            }
+        var selected = _preparationRequest ?? (view.CanSelectDirections
+            ? _selectedPreparationDirections.ToArray()
+            : view.Directions.Where(direction => direction.Installed).Select(direction => direction.Id).ToArray());
+        _updatingPreparationDirections = true;
+        try
+        {
+            foreach (var (choice, direction) in _preparationDirections.Children.OfType<CheckBox>().Zip(view.Directions))
+            {
+                string label = direction.Label + (direction.Installed ? " · 已安装" : "");
+                choice.Content = label;
+                AutomationProperties.SetName(choice, label);
+                choice.IsChecked = direction.Installed || selected.Contains(direction.Id, StringComparer.Ordinal);
+                choice.IsEnabled = view.CanSelectDirections && _preparationRequest is null && !direction.Installed;
+            }
+        }
+        finally { _updatingPreparationDirections = false; }
+    }
+    private void SelectPreparationDirection(CheckBox choice)
+    {
+        if (_updatingPreparationDirections)
+            return;
+        var view = PreparationView();
+        if (choice.IsEnabled && view.CanSelectDirections && _preparationRequest is null)
+        {
+            string id = (string)choice.Tag;
+            if (choice.IsChecked == true)
+                _selectedPreparationDirections.Add(id);
+            else if (_selectedPreparationDirections.Count > 1)
+                _selectedPreparationDirections.Remove(id);
+        }
+        RefreshPreparationDirections(view);
+    }
+    private async Task Install(TranslationPreparationAction action, TranslationPreparationView view)
     {
         if (_install is not null)
             return;
+        if (action is not (TranslationPreparationAction.Resume or TranslationPreparationAction.Retry)
+            || _preparationRequest is null)
+        {
+            var installed = view.Directions.Where(direction => direction.Installed).Select(direction => direction.Id).ToArray();
+            IEnumerable<string> requested = action == TranslationPreparationAction.CompleteDirections
+                || action is (TranslationPreparationAction.Repair or TranslationPreparationAction.Retry) && installed.Length == 0
+                ? view.Directions.Select(direction => direction.Id)
+                : installed.Length > 0 ? installed : _selectedPreparationDirections;
+            _preparationRequest = Array.AsReadOnly(requested.ToArray());
+            _repairInstallation = action is TranslationPreparationAction.Repair or TranslationPreparationAction.Retry;
+        }
         using var operation = new CancellationTokenSource();
         _install = operation;
         _setupFailure = null;
@@ -1209,16 +1285,19 @@ internal sealed class SettingsWindow : Window
                         _progress.Value = 100.0 * update.Downloaded / update.Total.Value;
                 }
             });
-            using var prepared = await _createInstaller().PrepareAsync(progress, operation.Token);
+            using var prepared = await _createInstaller().PrepareAsync(progress, operation.Token,
+                _preparationRequest, repair: _repairInstallation);
             acceptingProgress = false;
             operation.Token.ThrowIfCancellationRequested();
             SessionMustEnd?.Invoke();
             _startingModel = true;
             _setupStatus = "正在启动本地翻译…";
             RefreshPreparation();
-            if (await _model.ReloadAsync(prepared.Paths, prepared.Publish, operation.Token))
+            if (await _model.ReloadAsync(prepared.Paths, prepared.Publish, operation.Token, expectedDirections: prepared.Directions))
             {
                 prepared.Complete();
+                _preparationRequest = null;
+                _repairInstallation = false;
                 await SaveAsync(_settings.Value with
                 {
                     OnboardingComplete = true

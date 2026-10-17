@@ -24,11 +24,11 @@ public sealed class ModelInstallerTests
         Directory.CreateDirectory(Path.GetDirectoryName(python)!);
         Directory.CreateDirectory(Path.GetDirectoryName(inventory)!);
         File.WriteAllText(python, "previous-runtime");
-        File.WriteAllText(inventory, "previous-inventory");
+        File.WriteAllText(inventory, "{\"schema\":1}");
         await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(files.Responses(ModelArchive),
             startProcess: files.Child("exit /b 7")).PrepareAsync(NoProgress, TestContext.Current.CancellationToken));
         Assert.Equal("previous-runtime", File.ReadAllText(python));
-        Assert.Equal("previous-inventory", File.ReadAllText(inventory));
+        Assert.Equal("{\"schema\":1}", File.ReadAllText(inventory));
         files.AssertChildrenExited();
     }
 
@@ -183,6 +183,72 @@ public sealed class ModelInstallerTests
     }
 
     [Fact]
+    public async Task SingleDirectionPreparationAndSupplementUseExactCommittedUnion()
+    {
+        using var files = new SetupFiles();
+        var firstResponses = files.Responses(ModelArchive);
+        using (var first = await files.Installer(firstResponses, startProcess: files.Child(PassedCheck("zh_en")))
+            .PrepareAsync(NoProgress, TestContext.Current.CancellationToken, ["zh_en"]))
+        {
+            Assert.Equal(new[] { "zh_en" }, first.Directions);
+            using var inventory = JsonDocument.Parse(File.ReadAllText(Path.Combine(first.Paths.Models, "installed.json")));
+            Assert.Equal(2, inventory.RootElement.GetProperty("schema").GetInt32());
+            Assert.All(inventory.RootElement.GetProperty("files").EnumerateArray(), entry =>
+                Assert.StartsWith("zh_en/", entry.GetProperty("path").GetString()));
+            Assert.DoesNotContain("/v1/translate-en_zh-1_9.argosmodel", firstResponses.Requests);
+            Assert.False(Directory.Exists(Path.Combine(first.Paths.Models, "en_zh")));
+            // Commit only the installation intent for the next installer call;
+            // the controlled check is not evidence of model/service readiness.
+            first.Publish();
+        }
+        string pointer = File.ReadAllText(Path.Combine(files.Root, "components.json"));
+        var mismatch = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(files.Responses(ModelArchive),
+            startProcess: files.Child(PassedCheck("en_zh")))
+            .PrepareAsync(NoProgress, TestContext.Current.CancellationToken, ["en_zh"]));
+        Assert.Equal(ModelSetupStage.SelfCheck, mismatch.Stage);
+        Assert.Equal(pointer, File.ReadAllText(Path.Combine(files.Root, "components.json")));
+        using var supplement = await files.Installer(files.Responses(ModelArchive),
+            startProcess: files.Child(PassedCheck("zh_en", "en_zh")))
+            .PrepareAsync(NoProgress, TestContext.Current.CancellationToken, ["en_zh"]);
+        Assert.Equal(new[] { "zh_en", "en_zh" }, supplement.Directions);
+        using var complete = JsonDocument.Parse(File.ReadAllText(Path.Combine(supplement.Paths.Models, "installed.json")));
+        Assert.Equal(1, complete.RootElement.GetProperty("schema").GetInt32());
+        Assert.Equal(pointer, File.ReadAllText(Path.Combine(files.Root, "components.json")));
+        files.AssertChildrenExited();
+    }
+
+    [Theory]
+    [InlineData("path")]
+    [InlineData("sha256")]
+    public async Task InvalidLocalReuseInventoryFallsBackToDownload(string nullField)
+    {
+        using var files = new SetupFiles();
+        string extraction = Path.Combine(files.Root, "source");
+        using (var archive = new ZipArchive(new MemoryStream(ModelArchive("zh_en"))))
+            archive.ExtractToDirectory(extraction);
+        string models = Path.Combine(files.Root, "models");
+        Directory.CreateDirectory(models);
+        Directory.Move(Path.Combine(extraction, "package"), Path.Combine(models, "zh_en"));
+        var entry = new Dictionary<string, string?>
+        {
+            ["path"] = "zh_en/metadata.json",
+            ["sha256"] = new string('a', 64)
+        };
+        entry[nullField] = null;
+        File.WriteAllText(Path.Combine(models, "installed.json"), JsonSerializer.Serialize(new
+        {
+            schema = 1,
+            files = new[] { entry }
+        }));
+        var responses = files.Responses(ModelArchive);
+        var error = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(responses,
+            startProcess: _ => throw new Win32Exception(5)).PrepareAsync(NoProgress, TestContext.Current.CancellationToken));
+        Assert.Equal(ModelSetupStage.SelfCheck, error.Stage);
+        Assert.Contains("/v1/translate-zh_en-1_9.argosmodel", responses.Requests);
+        Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
+    }
+
+    [Fact]
     public async Task LockedCompletedArchiveIsPermissionFailureAndIsRetained()
     {
         using var files = new SetupFiles();
@@ -234,7 +300,7 @@ public sealed class ModelInstallerTests
         Directory.CreateDirectory(Path.GetDirectoryName(python)!);
         Directory.CreateDirectory(Path.GetDirectoryName(inventory)!);
         File.WriteAllText(python, "previous-runtime");
-        File.WriteAllText(inventory, "previous-inventory");
+        File.WriteAllText(inventory, "{\"schema\":1}");
         var installer = files.Installer(files.Responses(ModelArchive),
             startProcess: _ => throw new Win32Exception(errorCode, "private system error"));
         var error = await Assert.ThrowsAsync<ModelSetupException>(() => installer.PrepareAsync(NoProgress,
@@ -243,7 +309,7 @@ public sealed class ModelInstallerTests
         Assert.Equal(ModelSetupStage.SelfCheck, error.Stage);
         Assert.DoesNotContain("private system error", error.ToString());
         Assert.Equal("previous-runtime", File.ReadAllText(python));
-        Assert.Equal("previous-inventory", File.ReadAllText(inventory));
+        Assert.Equal("{\"schema\":1}", File.ReadAllText(inventory));
         Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
         Assert.True(File.Exists(files.CachedModel("zh_en")));
         Assert.True(File.Exists(files.CachedModel("en_zh")));
@@ -429,6 +495,19 @@ public sealed class ModelInstallerTests
             finally { child.Dispose(); }
         }
     }
+
+    private static string PassedCheck(params string[] directions) => JsonSerializer.Serialize(new
+    {
+        status = "passed",
+        device = "cpu",
+        results = directions.Select(direction => new
+        {
+            direction,
+            status = "translated",
+            nonempty = true,
+            differs = true
+        })
+    });
 
     private static HttpResponseMessage Json(object value) => Bytes(JsonSerializer.SerializeToUtf8Bytes(value));
     private static HttpResponseMessage Bytes(byte[] value) => new(HttpStatusCode.OK) { Content = new ByteArrayContent(value) };

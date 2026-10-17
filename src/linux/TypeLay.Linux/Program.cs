@@ -339,11 +339,14 @@ internal static class Program
                     return SetupPresentation(value.ValueKind == JsonValueKind.String ? value.GetString() : null);
                 case "translationPreparation":
                     var preparation = DesktopLink.Decode<TranslationPreparationRequest>(value);
+                    var installedDirections = installations.ReadCommittedDirections();
                     return ApplicationSupportPresentation.Preparation(new(model.Ready, model.Installed,
                         preparation.Phase == TranslationPreparationPhase.Idle && !modelStart.IsCompleted
                             ? TranslationPreparationPhase.StartingModel : preparation.Phase,
                         preparation.FailureCode is null ? null
-                            : SetupFailurePresentation.CategoryFromCode(preparation.FailureCode)),
+                            : SetupFailurePresentation.CategoryFromCode(preparation.FailureCode),
+                        InstalledDirections: installedDirections, ReadyDirections: model.AvailableDirections,
+                        InstallationIntentKnown: installedDirections is not null),
                         TranslationPreparationNextStep.ChooseConnection);
                 case "applicationSupport":
                     // The desktop owns detection and explicit installation actions.
@@ -398,7 +401,7 @@ internal static class Program
                         }
                         catch (LinuxModelInstallationStore.PublicationUnconfirmedException) { return "unconfirmed"; }
                         catch (Exception activationError) when (activationError is IOException or UnauthorizedAccessException
-                            or JsonException or OperationCanceledException or ArgumentException)
+                            or InvalidDataException or JsonException or OperationCanceledException or ArgumentException)
                         {
                             return "unchanged";
                         }
@@ -453,7 +456,7 @@ internal static class Program
             failure = "cancelled";
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException
-            or JsonException or ArgumentException)
+            or InvalidDataException or JsonException or ArgumentException)
         {
             result = "unchanged";
             failure = activationRequested ? "activation-failed" : "installation-invalid";

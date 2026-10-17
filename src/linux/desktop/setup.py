@@ -451,7 +451,66 @@ def extract_model(archive, destination, direction):
             raise ValueError("model-layout")
 
 
-def install(home, data, cache):
+def installation_directions(models, catalog):
+    available = tuple(direction.id for direction in catalog)
+
+    def directions(value):
+        if (
+            not isinstance(value, dict)
+            or type(value.get("schema")) is not int
+            or value["schema"] not in (1, 2)
+        ):
+            raise ValueError("model-inventory")
+        if value["schema"] == 1 and "directions" not in value:
+            return available
+        selected = value.get("directions")
+        if (
+            not isinstance(selected, list)
+            or not selected
+            or any(not isinstance(item, str) for item in selected)
+            or len(set(selected)) != len(selected)
+            or not set(selected).issubset(available)
+            or value["schema"] == 1
+            and set(selected) != set(available)
+        ):
+            raise ValueError("model-inventory")
+        return tuple(item for item in available if item in selected)
+
+    for path in (models.parent, models, models / "installed.json"):
+        if path.is_symlink():
+            raise ValueError("model-inventory")
+    marker = models / "installed.json"
+    metadata = marker.stat()
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 8 * 1024 * 1024:
+        raise ValueError("model-inventory")
+    selected = directions(json.loads(marker.read_text(encoding="utf-8")))
+    activation = models.parent / "activation.json"
+    try:
+        metadata = activation.lstat()
+    except FileNotFoundError:
+        recorded = available  # Only an absent legacy record implies full intent.
+    else:
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 4096:
+            raise ValueError("model-activation")
+        value = json.loads(activation.read_text(encoding="utf-8"))
+        recorded = directions(value)
+        if set(value) != (
+            {"schema", "previous"} if value["schema"] == 1 else {"schema", "previous", "directions"}
+        ):
+            raise ValueError("model-activation")
+        previous = value["previous"]
+        if previous is not None and (
+            not isinstance(previous, str)
+            or not re.fullmatch(r"[0-9a-f]{32}", previous)
+            or previous == models.parent.name
+        ):
+            raise ValueError("model-activation")
+    if selected != recorded:
+        raise ValueError("model-directions")
+    return selected
+
+
+def install(home, data, cache, requested_directions=None, repair=False):
     for path in (data, cache):
         private_directory(path)
     components = private_directory(data / "components")
@@ -512,7 +571,27 @@ def install(home, data, cache):
             previous is None and current.exists()
         ):
             raise ValueError("model-current")
-        directions = model_catalog(home)
+        catalog = model_catalog(home)
+        available = tuple(direction.id for direction in catalog)
+        requested = available if requested_directions is None else tuple(requested_directions)
+        if (
+            not requested
+            or any(not isinstance(item, str) for item in requested)
+            or len(set(requested)) != len(requested)
+            or not set(requested).issubset(available)
+        ):
+            raise ValueError("model-directions")
+        stage = "model-verify"
+        committed = ()
+        if previous is not None:
+            try:
+                committed = installation_directions(components / previous / "models", catalog)
+            except (ValueError, FileNotFoundError):
+                if not repair or set(requested) != set(available):
+                    raise
+        selected = set(committed) | set(requested)
+        directions = tuple(direction for direction in catalog if direction.id in selected)
+        schema = 1 if len(directions) == len(catalog) else 2
         stage = "runtime"
         print("正在安装私有 CPython 3.13.16 运行时", flush=True)
         uv("python", "install", PYTHON, "--no-bin")
@@ -578,7 +657,7 @@ def install(home, data, cache):
                 }
             )
         inventory = {
-            "schema": 1,
+            "schema": schema,
             "directions": [direction.id for direction in directions],
             "pythonVersion": PYTHON,
             "dependencies": dependencies,
@@ -591,7 +670,7 @@ def install(home, data, cache):
         }
         (models / "installed.json").write_text(json.dumps(inventory, indent=2), encoding="utf-8")
         stage = "self-check"
-        print("正在校验模型并执行真实中英双向 CPU 翻译自检", flush=True)
+        print("正在校验所选模型并执行真实 CPU 翻译自检", flush=True)
         result = run(
             [
                 str(executable),
@@ -630,7 +709,10 @@ def install(home, data, cache):
         # Prepare records the exact predecessor under the installation flock.
         # The host rechecks it after reacquiring that same lock, before hello.
         with (version / "activation.json").open("x", encoding="utf-8") as stream:
-            json.dump({"schema": 1, "previous": previous}, stream)
+            activation = {"schema": schema, "previous": previous}
+            if schema == 2:
+                activation["directions"] = [direction.id for direction in directions]
+            json.dump(activation, stream)
             stream.flush()
             os.fsync(stream.fileno())
         for directory in (version, components):
@@ -661,9 +743,24 @@ if __name__ == "__main__":
     os.umask(0o077)
     home = None
     try:
-        supervised = len(sys.argv) == 5 and sys.argv[1] == "--supervised"
+        supervised = sys.argv[1:2] == ["--supervised"]
         arguments = sys.argv[2:] if supervised else sys.argv[1:]
-        if len(arguments) != 3 or any(not Path(value).is_absolute() for value in arguments):
+        if len(arguments) not in (3, 4) or any(
+            not Path(value).is_absolute() for value in arguments[:3]
+        ):
+            raise ValueError("setup-arguments")
+        request = (
+            json.loads(arguments[3])
+            if len(arguments) == 4
+            else {"directions": None, "repair": False}
+        )
+        if (
+            not isinstance(request, dict)
+            or set(request) != {"directions", "repair"}
+            or type(request["repair"]) is not bool
+            or request["directions"] is not None
+            and not isinstance(request["directions"], list)
+        ):
             raise ValueError("setup-arguments")
         home = Path(arguments[0])
         if not supervised:
@@ -686,7 +783,11 @@ if __name__ == "__main__":
             )
         signal.signal(signal.SIGTERM, pause)
         signal.signal(signal.SIGINT, pause)
-        raise SystemExit(install(*(Path(value) for value in arguments)))
+        raise SystemExit(
+            install(
+                *(Path(value) for value in arguments[:3]), request["directions"], request["repair"]
+            )
+        )
     except Paused:
         presentation = setup_presentation(home)
         print(

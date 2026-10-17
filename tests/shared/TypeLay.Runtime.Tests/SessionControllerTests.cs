@@ -1394,6 +1394,24 @@ public sealed class SessionControllerTests
     }
 
     [Fact]
+    public void MissingAutoDirectionOffersPreparationWithoutSubmittingADirectWrite()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        var feedback = new List<CommandFeedback>();
+        s.Controller.OperationFeedback += feedback.Add;
+        s.Command("direct");
+        s.Tick();
+        Assert.NotNull(s.Model.Pending);
+        s.Model.Pending.SetResult(new(1, "error", Code: "language-unavailable"));
+        s.Tick();
+        var failure = Assert.Single(feedback);
+        Assert.Equal("language-unavailable", failure.Code);
+        Assert.Contains("准备翻译", failure.Message);
+        Assert.Contains("原文未作替换", failure.Message);
+        Assert.Empty(s.Service.DirectWrites);
+    }
+
+    [Fact]
     public void InterruptedDirectTranslationReportsNoReplacementBeforeAnyWriteWasSubmitted()
     {
         using var s = new SessionScenario(WorkMode.OnDemand);

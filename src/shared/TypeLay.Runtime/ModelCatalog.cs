@@ -48,6 +48,31 @@ public static class ModelCatalog
         TargetChoices = Array.AsReadOnly(languages.Where(language => Directions.Any(direction => direction.Target == language.Code)).ToArray());
     }
 
+    // Installation intent is not verified runtime capability. Only a worker
+    // that has checked files and loaded every requested model can grant Ready.
+    public static IReadOnlyList<string> ReadInstallationDirections(JsonElement inventory)
+    {
+        if (inventory.ValueKind != JsonValueKind.Object
+            || !inventory.TryGetProperty("schema", out var schema)
+            || schema.ValueKind != JsonValueKind.Number || !schema.TryGetInt32(out int version)
+            || version is not (1 or 2))
+            throw new InvalidDataException("model-inventory");
+        if (!inventory.TryGetProperty("directions", out var value))
+        {
+            if (version != 1)
+                throw new InvalidDataException("model-inventory");
+            return Array.AsReadOnly(Directions.Select(direction => direction.Id).ToArray());
+        }
+        if (value.ValueKind != JsonValueKind.Array
+            || value.EnumerateArray().Any(item => item.ValueKind != JsonValueKind.String))
+            throw new InvalidDataException("model-inventory");
+        string[] ids = value.EnumerateArray().Select(item => item.GetString()!).ToArray();
+        if (!IsValidDirectionSet(ids) || version == 1 && !IsCompleteDirectionSet(ids))
+            throw new InvalidDataException("model-inventory");
+        return Array.AsReadOnly(Directions.Where(direction => ids.Contains(direction.Id, StringComparer.Ordinal))
+            .Select(direction => direction.Id).ToArray());
+    }
+
     public static ModelDirection Get(string id) => Directions.FirstOrDefault(direction => direction.Id == id)
         ?? throw new ArgumentException("model-direction", nameof(id));
 

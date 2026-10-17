@@ -5,6 +5,45 @@ public static class ApplicationSupportPresentation
     public static TranslationPreparationView Preparation(TranslationPreparationFact facts,
         TranslationPreparationNextStep nextStep = TranslationPreparationNextStep.TryIt)
     {
+        var view = PreparationCore(facts, nextStep);
+        var installed = facts.InstalledDirections ?? [];
+        if (facts.Phase == TranslationPreparationPhase.Idle && facts.FailureCategory is null)
+        {
+            if (!facts.InstallationIntentKnown)
+                view = view with
+                {
+                    StatusText = "本地组件安装记录无法读取",
+                    Guidance = "请完整修复中英双向组件。",
+                    PrimaryAction = new(TranslationPreparationAction.Repair, "完整修复本地翻译…"),
+                    SecondaryActions = []
+                };
+            else if (installed.Count > 0 && !ModelCatalog.IsCompleteDirectionSet(installed))
+                view = view with
+                {
+                    SecondaryActions = [new(TranslationPreparationAction.CompleteDirections, "补齐另一方向"), .. view.SecondaryActions]
+                };
+            if (facts.ModelReady && facts.ReadyDirections is { Count: > 0 } ready)
+                view = view with
+                {
+                    StatusText = "本地翻译已就绪 · " + string.Join("、", ready.Select(id =>
+                {
+                    var direction = ModelCatalog.Get(id);
+                    return direction.SourceName + " → " + direction.TargetName;
+                }))
+                };
+        }
+        return view with
+        {
+            Directions = ModelCatalog.Directions.Select(direction => new TranslationPreparationDirectionView(
+                direction.Id, direction.SourceName + " → " + direction.TargetName,
+                installed.Contains(direction.Id, StringComparer.Ordinal))).ToArray(),
+            CanSelectDirections = facts.InstallationIntentKnown && installed.Count == 0
+                && facts.Phase == TranslationPreparationPhase.Idle && facts.FailureCategory is null
+        };
+    }
+    private static TranslationPreparationView PreparationCore(TranslationPreparationFact facts,
+        TranslationPreparationNextStep nextStep)
+    {
         ArgumentNullException.ThrowIfNull(facts);
         if (!Enum.IsDefined(facts.Phase) || !Enum.IsDefined(nextStep))
             throw new ArgumentException("translation-preparation-facts", nameof(facts));

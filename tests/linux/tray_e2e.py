@@ -337,14 +337,18 @@ def main():
             await settled()
             assert (state["source"], state["target"]) == ("en", "zh")
             assert state["theme"] == "dark"
+            installations_requested = []
+            pauses_requested = []
             settings_surface = Settings(
                 host,
                 tasks,
                 lambda: None,
-                lambda: None,
-                lambda: None,
+                lambda directions=None, repair=False: installations_requested.append(
+                    (directions, repair)
+                ),
+                lambda: pauses_requested.append(True),
                 None,
-                None,
+                lambda: host.ask("applicationSupport", {"facts": []}),
                 None,
                 None,
             )
@@ -353,6 +357,137 @@ def main():
             settings_surface.report(model_state)
             await settled()
             settings_surface.window.show_all()
+            settings_surface.pages.set_visible_child_name("application-support")
+            preparation = settings_surface.application_support
+            choices = preparation.direction_choices
+            assert list(choices) == ["zh_en", "en_zh"]
+            assert all(
+                choice.get_active() and choice.get_sensitive() for choice in choices.values()
+            )
+            assert not preparation.complete_directions_button.get_visible()
+            assert not preparation.direction_details.get_expanded()
+
+            def confirmation():
+                dialogs = [
+                    window
+                    for window in Gtk.Window.list_toplevels()
+                    if isinstance(window, Gtk.MessageDialog) and window.get_visible()
+                ]
+                assert len(dialogs) == 1, "preparation did not show one confirmation"
+                return dialogs[0]
+
+            settings_surface.install_button.clicked()
+            dialog = confirmation()
+            assert "中英双向模型" in dialog.get_property("secondary-text")
+            dialog.response(Gtk.ResponseType.OK)
+            assert installations_requested.pop() == (("zh_en", "en_zh"), False)
+            assert not preparation.direction_details.get_expanded(), (
+                "default preparation required an extra direction-selection step"
+            )
+            preparation.direction_details.set_expanded(True)
+            choices["en_zh"].set_active(False)
+            choices["zh_en"].set_active(False)
+            assert choices["zh_en"].get_active(), "the last selected direction was removed"
+            settings_surface.refresh_preparation()
+            assert not any(choice.get_sensitive() for choice in choices.values())
+            await settled()
+            assert choices["zh_en"].get_active() and not choices["en_zh"].get_active()
+            settings_surface.install_button.clicked()
+            dialog = confirmation()
+            assert "中文 → English" in dialog.get_property("secondary-text")
+            assert "中英双向模型" not in dialog.get_property("secondary-text")
+            dialog.response(Gtk.ResponseType.CANCEL)
+            assert not installations_requested, "cancelling installed a direction"
+            settings_surface.install_button.clicked()
+            confirmation().response(Gtk.ResponseType.OK)
+            assert installations_requested.pop() == (("zh_en",), False)
+            for phase in ("running", "pausing", "paused", "starting", "failed"):
+                settings_surface.installation(
+                    phase, failure="network" if phase == "failed" else None
+                )
+                assert not any(choice.get_sensitive() for choice in choices.values())
+                await settled()
+                assert not any(choice.get_sensitive() for choice in choices.values())
+                assert choices["zh_en"].get_active() and not choices["en_zh"].get_active()
+                assert not preparation.complete_directions_button.get_visible()
+                if phase in ("running", "paused", "failed"):
+                    settings_surface.install_button.clicked()
+                    if phase == "running":
+                        assert pauses_requested.pop() is True
+                    else:
+                        if phase == "failed":
+                            confirmation().response(Gtk.ResponseType.OK)
+                        assert installations_requested.pop() == (None, False), (
+                            "resume or retry replaced the existing installation request"
+                        )
+            settings_surface.installation("idle")
+            await settled()
+            assert all(choice.get_sensitive() for choice in choices.values())
+            assert choices["zh_en"].get_active() and not choices["en_zh"].get_active()
+            # Real marker-only observations are installation intent, never Ready.
+            # The host is already running; no executable or model is launched here.
+            component = directory / "data/components" / ("c" * 32)
+            inventory = component / "models/installed.json"
+            inventory.parent.mkdir(parents=True)
+            python_marker = component / "runtime/venv/bin/python"
+            python_marker.parent.mkdir(parents=True)
+            python_marker.touch()
+            current = component.parent / "current"
+            current.symlink_to(component.name)
+            inventory.write_text(json.dumps({"schema": 2, "directions": ["zh_en"]}))
+            activation = component / "activation.json"
+            activation.write_text(
+                json.dumps({"schema": 2, "previous": None, "directions": ["zh_en"]})
+            )
+            settings_surface.refresh_preparation()
+            await settled()
+            assert choices["zh_en"].get_active() and not choices["en_zh"].get_active()
+            assert not any(choice.get_sensitive() for choice in choices.values())
+            assert "已安装" in choices["zh_en"].get_label()
+            assert preparation.complete_directions_button.get_visible()
+            settings_surface.install_button.clicked()
+            dialog = confirmation()
+            assert "中文 → English" in dialog.get_property("secondary-text")
+            dialog.response(Gtk.ResponseType.OK)
+            assert installations_requested.pop() == (("zh_en",), True)
+            preparation.complete_directions_button.clicked()
+            dialog = confirmation()
+            assert "中英双向模型" in dialog.get_property("secondary-text")
+            dialog.response(Gtk.ResponseType.CANCEL)
+            assert not installations_requested
+            assert choices["zh_en"].get_active() and not choices["en_zh"].get_active()
+            preparation.complete_directions_button.clicked()
+            confirmation().response(Gtk.ResponseType.OK)
+            assert installations_requested.pop() == (("zh_en", "en_zh"), False)
+            settings_surface.installation("failed", failure="network")
+            await settled()
+            settings_surface.install_button.clicked()
+            dialog = confirmation()
+            assert "中英双向模型" in dialog.get_property("secondary-text")
+            dialog.response(Gtk.ResponseType.OK)
+            assert installations_requested.pop() == (None, False)
+            inventory.write_text("broken installation record")
+            settings_surface.installation("idle")
+            await settled()
+            assert not any(choice.get_sensitive() for choice in choices.values())
+            assert not preparation.complete_directions_button.get_visible()
+            assert settings_surface.install_button.get_label() == "完整修复本地翻译…"
+            settings_surface.install_button.clicked()
+            confirmation().response(Gtk.ResponseType.OK)
+            assert installations_requested.pop() == (("zh_en", "en_zh"), True)
+            inventory.write_text(json.dumps({"schema": 1}))
+            activation.write_text(json.dumps({"schema": 1, "previous": None}))
+            settings_surface.refresh_preparation()
+            await settled()
+            assert all(choice.get_active() for choice in choices.values())
+            assert not any(choice.get_sensitive() for choice in choices.values())
+            assert not preparation.complete_directions_button.get_visible()
+            current.unlink()
+            settings_surface.refresh_preparation()
+            await settled()
+            assert all(
+                choice.get_active() and choice.get_sensitive() for choice in choices.values()
+            )
             settings_surface.pages.set_visible_child_name("language")
             assert model_state["modelReady"] is False
             assert model_state["modelDirections"] == []
@@ -463,6 +598,7 @@ def main():
             print(
                 "PASS: native tray registration, pause/resume, settings persistence, modes, "
                 "catalog-driven settings/tray languages without a model, language swap, "
+                "explicit direction selection and frozen preparation retries, "
                 "persistence failure/report/retry, secondary settings action and exit action"
             )
         finally:

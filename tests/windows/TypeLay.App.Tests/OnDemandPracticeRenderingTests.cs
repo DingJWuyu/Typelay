@@ -126,7 +126,8 @@ public sealed class OnDemandPracticeRenderingTests(WpfDesktopFixture desktop)
                     Path.Combine(directory, "missing-worker"), Path.Combine(directory, "missing-models")),
                     info => new ChildProcess(info)); // No worker started or installation requested.
                 int launches = 0;
-                window = new SettingsWindow(settings, model, () => launches++);
+                window = new SettingsWindow(settings, model, () => launches++,
+                    installations: new ModelInstallationStore(directory, Path.Combine(directory, "worker.py")));
                 window.ShowPage();
                 window.UpdateLayout();
                 var start = Descendants(window).OfType<Button>().Single(button =>

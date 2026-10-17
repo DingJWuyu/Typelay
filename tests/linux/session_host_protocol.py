@@ -82,7 +82,9 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
                 else:
                     self.assertIn("event", value)
 
-    def model_generation(self, *, previous=None, directions=None, held=False, legacy=False):
+    def model_generation(
+        self, *, previous=None, directions=None, held=False, legacy=False, hello_directions=None
+    ):
         # These real Python pipe peers exercise ownership and publication, never
         # claim model inference. Production worker inventory tests live separately.
         generation = uuid.uuid4().hex
@@ -95,13 +97,18 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
         (root / "models/installed.json").write_text(
             json.dumps(
                 {
+                    "schema": 2 if directions is not None and len(directions) == 1 else 1,
                     "directions": directions if directions is not None else ["zh_en", "en_zh"],
                     "held": held,
+                    "helloDirections": hello_directions,
                 }
             )
         )
         if not legacy:
-            (root / "activation.json").write_text(json.dumps({"schema": 1, "previous": previous}))
+            activation = {"schema": 1, "previous": previous}
+            if directions is not None and len(directions) == 1:
+                activation.update(schema=2, directions=directions)
+            (root / "activation.json").write_text(json.dumps(activation))
         if held:
             os.mkfifo(root / "hello-gate")
         package = self.home / "package"
@@ -122,7 +129,7 @@ while True:
     if request['op'] == 'hello':
         if settings['held']:
             with (root / 'hello-gate').open() as gate: gate.read(1)
-        response = {'status': 'ready', 'directions': settings['directions']}
+        response = {'status': 'ready', 'directions': settings['helloDirections'] if settings['helloDirections'] is not None else settings['directions']}
     else: response = {'status': 'translated', 'text': root.name}
     response['id'] = request['id']
     encoded = json.dumps(response).encode()
@@ -173,6 +180,66 @@ while True:
             "unchanged",
         )
         self.assertTrue(partial_root.is_dir())
+
+    async def test_single_direction_can_be_supplemented_only_after_exact_candidate_hello(self):
+        old, old_root = self.model_generation(directions=["zh_en"])
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": old}),
+            "confirmed",
+        )
+        self.assertEqual(self.latest("status")["modelDirections"], ["zh_en"])
+        incomplete, failed_root = self.model_generation(previous=old, hello_directions=["zh_en"])
+        self.assertEqual(
+            await self.ask(
+                "activateModel", {"identity": uuid.uuid4().hex, "generation": incomplete}
+            ),
+            "unchanged",
+        )
+        self.assertEqual(os.readlink(old_root.parent / "current"), old)
+        self.assertTrue(self.latest("status")["modelReady"])
+        self.assertEqual(self.latest("status")["modelDirections"], ["zh_en"])
+        self.assertTrue(Path(f"/proc/{old_root.joinpath('pid').read_text()}").exists())
+        self.assertFalse(Path(f"/proc/{failed_root.joinpath('pid').read_text()}").exists())
+        full, root = self.model_generation(previous=old)
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": full}),
+            "confirmed",
+        )
+        self.assertEqual(self.latest("status")["modelDirections"], ["zh_en", "en_zh"])
+        self.assertEqual(root.joinpath("requests").read_text().splitlines(), ["hello"])
+        self.assertFalse(Path(f"/proc/{old_root.joinpath('pid').read_text()}").exists())
+
+    async def test_conflicting_committed_intent_requires_full_repair_without_losing_old_service(
+        self,
+    ):
+        old, old_root = self.model_generation()
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": old}),
+            "confirmed",
+        )
+        marker = old_root / "models/installed.json"
+        damaged = json.loads(marker.read_text())
+        damaged.update(schema=2, directions=["zh_en"])
+        marker.write_text(json.dumps(damaged))
+        partial, partial_root = self.model_generation(previous=old, directions=["zh_en"])
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": partial}),
+            "unchanged",
+        )
+        self.assertEqual(os.readlink(old_root.parent / "current"), old)
+        self.assertFalse((partial_root / "pid").exists())
+        self.assertTrue(self.latest("status")["modelReady"])
+        self.assertEqual(self.latest("status")["modelDirections"], ["zh_en", "en_zh"])
+        presentation = await self.ask("translationPreparation", {"phase": "Idle"})
+        self.assertFalse(presentation["canSelectDirections"])
+        self.assertEqual(presentation["primaryAction"]["id"], "Repair")
+        full, root = self.model_generation(previous=old)
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": full}),
+            "confirmed",
+        )
+        self.assertEqual(os.readlink(root.parent / "current"), full)
+        self.assertFalse(Path(f"/proc/{old_root.joinpath('pid').read_text()}").exists())
 
     async def test_model_activation_shares_python_flock_and_cancellation_has_exact_identity(self):
         old, old_root = self.model_generation()
@@ -226,7 +293,7 @@ while True:
 
     async def test_startup_recovers_only_explicit_previous_and_legacy_does_not_scan(self):
         previous, previous_root = self.model_generation(legacy=True)
-        active, active_root = self.model_generation(previous=previous, directions=[])
+        active, active_root = self.model_generation(previous=previous, hello_directions=[])
         (active_root.parent / "current").symlink_to(active)
         self.assertTrue(await self.ask("start"))
         await self.receive_until(
@@ -254,7 +321,8 @@ while True:
                 await self.asyncTearDown()
                 previous, previous_root = self.model_generation(legacy=True)
                 active, root = self.model_generation(
-                    previous=previous, directions=[] if damage == "previous-metadata" else None
+                    previous=previous,
+                    hello_directions=[] if damage == "previous-metadata" else None,
                 )
                 current = root.parent / "current"
                 current.unlink(missing_ok=True)
@@ -333,7 +401,7 @@ while True:
             ("hello", "worker-not-ready"),
         ):
             with self.subTest(damage=damage):
-                generation, root = self.model_generation(directions=[])
+                generation, root = self.model_generation(hello_directions=[])
                 if damage == "metadata":
                     (root / "activation.json").write_text("private-invalid-metadata")
                 helper = await asyncio.create_subprocess_exec(
@@ -803,7 +871,7 @@ while True:
         self.assertEqual(missing["secondaryActions"][0]["id"], "NextStep")
         self.assertEqual(missing["secondaryActions"][0]["label"], "选择接入方式")
 
-        generation, component = self.model_generation(directions=[])
+        generation, component = self.model_generation(hello_directions=[])
         (component.parent / "current").symlink_to(generation)
         # Restart observes one immutable installed generation, not marker files
         # written through a moving current path in an already-running client.

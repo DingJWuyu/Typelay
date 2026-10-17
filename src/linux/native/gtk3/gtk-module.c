@@ -531,13 +531,13 @@ static void normalize_ordered_publication(JsonObject *value) {
 }
 static gboolean same_ordered_publication(JsonObject *next) {
     if (!ordered || ordered->revoked || !next) return FALSE;
-    JsonNode *old = json_node_new(JSON_NODE_OBJECT), *incoming = json_node_new(JSON_NODE_OBJECT);
+    JsonNode *old = json_node_new(JSON_NODE_OBJECT), *next_node = json_node_new(JSON_NODE_OBJECT);
     json_node_take_object(old, tl_copy(ordered->publication));
-    json_node_take_object(incoming, tl_copy(next));
+    json_node_take_object(next_node, tl_copy(next));
     normalize_ordered_publication(json_node_get_object(old));
-    normalize_ordered_publication(json_node_get_object(incoming));
-    gboolean same = json_node_equal(old, incoming);
-    json_node_free(old); json_node_free(incoming);
+    normalize_ordered_publication(json_node_get_object(next_node));
+    gboolean same = json_node_equal(old, next_node);
+    json_node_free(old); json_node_free(next_node);
     return same; /* Retention only, never a new grant or a replaced source stamp. */
 }
 gboolean tl_acceptance_ready(Target *target) {
