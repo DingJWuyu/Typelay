@@ -164,34 +164,80 @@ jobs:
       CCACHE_BASEDIR: ${{ github.workspace }}
       CCACHE_COMPILERCHECK: content
       CCACHE_MAXSIZE: 512MiB
+      GTK4_PACKAGE_SHA256: 7386543a425d523b76f08a8269b530dcbebc45a53a68cfdef5251e8238d60dc9
+      GTK4_SIGNATURE_SHA256: 894fd81f845eb49137d73056f62b27f2d194d2990ebe6dfdc956cd678db76048
+      QT_PACKAGE_SHA256: 257c5ef6180119d5b4365bdfe2a2ad051694b5dff390eac8e736dd78b8107b21
+      QT_SIGNATURE_SHA256: abf939ab10c2d7f28af81e5230c72e2acbd803fe43590fda331f474ec871dcfb
+      LIBIME_PACKAGE_SHA256: adacfc6243df2544665a1d4cc8f2bf2ee6d4966fc2c5f2a37a3ff579134b6c67
+      CHINESE_PACKAGE_SHA256: cc03b9d1d0bb921d88130e4ef17a4162a1037f6dbb0a165f6a73b83236f06ec4
     steps:
       - name: Install target desktop build dependencies
         run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 gtk4 at-spi2-core json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols ccache opencc procps-ng zstd qt6-base libxkbcommon libxcb
+      - name: Restore the fixed GTK4 package
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: needs.scope.outputs.settings != 'true'
+        id: gtk4-package-cache
+        with:
+          path: |
+            /tmp/typelay-target-sdk/gtk4.pkg.tar.zst
+            /tmp/typelay-target-sdk/gtk4.pkg.tar.zst.sig
+          key: arch-gtk4-x86_64-${{ env.GTK4_PACKAGE_SHA256 }}-${{ env.GTK4_SIGNATURE_SHA256 }}
       - name: Match the target GTK4 upstream release
         if: needs.scope.outputs.settings != 'true'
+        id: gtk4-sdk
         run: |
           mkdir -p /tmp/typelay-target-sdk
           cd /tmp/typelay-target-sdk
           package='gtk4-1%3A4.22.5-1-x86_64.pkg.tar.zst'
-          curl --fail --location "https://archive.archlinux.org/packages/g/gtk4/$package" -o gtk4.pkg.tar.zst
-          curl --fail --location "https://archive.archlinux.org/packages/g/gtk4/$package.sig" -o gtk4.pkg.tar.zst.sig
-          echo '7386543a425d523b76f08a8269b530dcbebc45a53a68cfdef5251e8238d60dc9  gtk4.pkg.tar.zst' | sha256sum -c -
-          echo '894fd81f845eb49137d73056f62b27f2d194d2990ebe6dfdc956cd678db76048  gtk4.pkg.tar.zst.sig' | sha256sum -c -
+          if [ '${{ steps.gtk4-package-cache.outputs.cache-hit }}' != true ]; then
+            curl --fail --location "https://archive.archlinux.org/packages/g/gtk4/$package" -o gtk4.pkg.tar.zst
+            curl --fail --location "https://archive.archlinux.org/packages/g/gtk4/$package.sig" -o gtk4.pkg.tar.zst.sig
+          fi
+          echo "$GTK4_PACKAGE_SHA256  gtk4.pkg.tar.zst" | sha256sum -c -
+          echo "$GTK4_SIGNATURE_SHA256  gtk4.pkg.tar.zst.sig" | sha256sum -c -
           pacman -U --noconfirm ./gtk4.pkg.tar.zst
           test "$(pkg-config --modversion gtk4)" = 4.22.5
+      - name: Save the verified GTK4 package
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: ${{ !cancelled() && steps.gtk4-sdk.outcome == 'success' && steps.gtk4-package-cache.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            /tmp/typelay-target-sdk/gtk4.pkg.tar.zst
+            /tmp/typelay-target-sdk/gtk4.pkg.tar.zst.sig
+          key: ${{ steps.gtk4-package-cache.outputs.cache-primary-key }}
+      - name: Restore the fixed Qt package
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: needs.scope.outputs.settings != 'true'
+        id: qt-package-cache
+        with:
+          path: |
+            /tmp/typelay-target-sdk/qt6-base-6.11.2-3-x86_64.pkg.tar.zst
+            /tmp/typelay-target-sdk/qt6-base-6.11.2-3-x86_64.pkg.tar.zst.sig
+          key: arch-qt-x86_64-${{ env.QT_PACKAGE_SHA256 }}-${{ env.QT_SIGNATURE_SHA256 }}
       - name: Match the target Qt upstream ABI
         if: needs.scope.outputs.settings != 'true'
+        id: qt-sdk
         run: |
           mkdir -p /tmp/typelay-target-sdk
           cd /tmp/typelay-target-sdk
           package='qt6-base-6.11.2-3-x86_64.pkg.tar.zst'
-          curl --fail --location "https://archive.archlinux.org/packages/q/qt6-base/$package" -o "$package"
-          curl --fail --location "https://archive.archlinux.org/packages/q/qt6-base/$package.sig" -o "$package.sig"
-          echo '257c5ef6180119d5b4365bdfe2a2ad051694b5dff390eac8e736dd78b8107b21  qt6-base-6.11.2-3-x86_64.pkg.tar.zst' | sha256sum -c -
-          echo 'abf939ab10c2d7f28af81e5230c72e2acbd803fe43590fda331f474ec871dcfb  qt6-base-6.11.2-3-x86_64.pkg.tar.zst.sig' | sha256sum -c -
+          if [ '${{ steps.qt-package-cache.outputs.cache-hit }}' != true ]; then
+            curl --fail --location "https://archive.archlinux.org/packages/q/qt6-base/$package" -o "$package"
+            curl --fail --location "https://archive.archlinux.org/packages/q/qt6-base/$package.sig" -o "$package.sig"
+          fi
+          echo "$QT_PACKAGE_SHA256  qt6-base-6.11.2-3-x86_64.pkg.tar.zst" | sha256sum -c -
+          echo "$QT_SIGNATURE_SHA256  qt6-base-6.11.2-3-x86_64.pkg.tar.zst.sig" | sha256sum -c -
           pacman -U --noconfirm "./$package"
           test "$(pkg-config --modversion Qt6Core)" = 6.11.2
           test -f /usr/lib/qt6/plugins/platforms/libqwayland.so
+      - name: Save the verified Qt package
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: ${{ !cancelled() && steps.qt-sdk.outcome == 'success' && steps.qt-package-cache.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            /tmp/typelay-target-sdk/qt6-base-6.11.2-3-x86_64.pkg.tar.zst
+            /tmp/typelay-target-sdk/qt6-base-6.11.2-3-x86_64.pkg.tar.zst.sig
+          key: ${{ steps.qt-package-cache.outputs.cache-primary-key }}
       - name: Initialize the disposable container D-Bus identity
         run: dbus-uuidgen --ensure=/etc/machine-id
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -292,6 +338,13 @@ jobs:
         with:
           path: artifacts/ccache
           key: ${{ steps.fcitx-cache.outputs.cache-primary-key }}
+      - name: Restore the fixed target input method packages
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: ${{ needs.scope.outputs.settings != 'true' && !cancelled() && (steps.fcitx.outcome == 'success' || steps.fcitx.outcome == 'failure') }}
+        id: ime-package-cache
+        with:
+          path: artifacts/linux/target-packages
+          key: arch-ime-x86_64-${{ env.LIBIME_PACKAGE_SHA256 }}-${{ env.CHINESE_PACKAGE_SHA256 }}
       - name: Package and relocate the optional Fcitx cooperation runtime
         id: fcitx-package
         # pack.py requires matching successful-build inputs. A later isolated
@@ -314,14 +367,27 @@ jobs:
           # Keep normal package signatures and dependency validation enabled.
           mkdir -p artifacts/linux/target-packages
           cd artifacts/linux/target-packages
-          curl --fail --location --output libime.pkg.tar.zst https://archive.archlinux.org/packages/l/libime/libime-1.1.16-1-x86_64.pkg.tar.zst
-          curl --fail --location --output libime.pkg.tar.zst.sig https://archive.archlinux.org/packages/l/libime/libime-1.1.16-1-x86_64.pkg.tar.zst.sig
-          curl --fail --location --output chinese.pkg.tar.zst https://archive.archlinux.org/packages/f/fcitx5-chinese-addons/fcitx5-chinese-addons-5.1.14-1-x86_64.pkg.tar.zst
-          curl --fail --location --output chinese.pkg.tar.zst.sig https://archive.archlinux.org/packages/f/fcitx5-chinese-addons/fcitx5-chinese-addons-5.1.14-1-x86_64.pkg.tar.zst.sig
-          printf '%s\n' 'adacfc6243df2544665a1d4cc8f2bf2ee6d4966fc2c5f2a37a3ff579134b6c67  libime.pkg.tar.zst' 'cc03b9d1d0bb921d88130e4ef17a4162a1037f6dbb0a165f6a73b83236f06ec4  chinese.pkg.tar.zst' | sha256sum --check
+          if [ '${{ steps.ime-package-cache.outputs.cache-hit }}' != true ]; then
+            curl --fail --location --output libime.pkg.tar.zst https://archive.archlinux.org/packages/l/libime/libime-1.1.16-1-x86_64.pkg.tar.zst
+            curl --fail --location --output libime.pkg.tar.zst.sig https://archive.archlinux.org/packages/l/libime/libime-1.1.16-1-x86_64.pkg.tar.zst.sig
+            curl --fail --location --output chinese.pkg.tar.zst https://archive.archlinux.org/packages/f/fcitx5-chinese-addons/fcitx5-chinese-addons-5.1.14-1-x86_64.pkg.tar.zst
+            curl --fail --location --output chinese.pkg.tar.zst.sig https://archive.archlinux.org/packages/f/fcitx5-chinese-addons/fcitx5-chinese-addons-5.1.14-1-x86_64.pkg.tar.zst.sig
+          fi
+          printf '%s\n' "$LIBIME_PACKAGE_SHA256  libime.pkg.tar.zst" "$CHINESE_PACKAGE_SHA256  chinese.pkg.tar.zst" | sha256sum --check
+          test -s libime.pkg.tar.zst.sig
+          test -s chinese.pkg.tar.zst.sig
           pacman -U --noconfirm libime.pkg.tar.zst chinese.pkg.tar.zst
+          test "$(pacman -Q libime)" = 'libime 1.1.16-1'
+          test "$(pacman -Q fcitx5-chinese-addons)" = 'fcitx5-chinese-addons 5.1.14-1'
+          echo 'packages-verified=true' >> "$GITHUB_OUTPUT"
           cd ../../..
           python "artifacts/linux/relocated 输入法/TypeLay-Fcitx-cooperative/fcitx-cooperative.py" preflight
+      - name: Save the verified target input method packages
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: ${{ !cancelled() && steps.fcitx-package.outputs.packages-verified == 'true' && steps.ime-package-cache.outputs.cache-hit != 'true' }}
+        with:
+          path: artifacts/linux/target-packages
+          key: ${{ steps.ime-package-cache.outputs.cache-primary-key }}
       - name: Attach the matching desktop components to the main distribution
         id: complete-package
         if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.fcitx-package.outcome == 'success' && steps.qt.outcome == 'success' }}
