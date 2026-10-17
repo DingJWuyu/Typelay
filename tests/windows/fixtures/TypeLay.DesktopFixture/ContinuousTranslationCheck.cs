@@ -1069,6 +1069,7 @@ internal static partial class ContinuousTranslationCheck
     {
         [FieldOffset(0)] public uint Type;
         [FieldOffset(8)] public ushort Key;
+        [FieldOffset(10)] public ushort Scan;
         [FieldOffset(12)] public uint Flags;
     }
     [DllImport("user32.dll", SetLastError = true)]

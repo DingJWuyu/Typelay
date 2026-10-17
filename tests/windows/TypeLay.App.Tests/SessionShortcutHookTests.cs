@@ -257,15 +257,23 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
             Assert.All(new[] { 27, 0x7B, 0x10, 0x11, 0x12, 0x5B, 0x5C }, key => Assert.False(Native.GetAsyncKeyState(key) < 0));
             hook.ConfigureShortcuts(false, "Ctrl+Shift+F9", "Ctrl+Shift+F10", SessionShortcutBindings.Default, true);
             hook.BeginOwnedEditorForeground(intent, hwnd, hwnd, _ => { });
+            var descriptor = new OwnedCaptureDescriptor(process.Id, process.StartTime.ToUniversalTime().Ticks,
+                (long)hwnd, (long)hwnd, 1, 1, 1, 1);
             Send(27, true);
             await Until(() => escapeDown == 1, deadline.Token);
+            Assert.True(hook.BeginOwnedReturnInput(OwnedReturnKind.Escape, descriptor, out var returning),
+                "The original scan-code Esc must reach the production return-input admission.");
+            Assert.NotNull(returning);
+            Assert.Equal(intent, returning.EditorIntent);
+            Assert.Equal(hook.EditorInputSequence, returning.Sequence);
+            Assert.True(returning.Sequence > 0);
+            Assert.False(returning.Released);
+            Assert.Equal(new OwnedReturnKeyPress(1, false, true), returning.KeyPress);
             Assert.False(hook.TryRead(out _));
 
             // The stopped reader isolates the real Hook's owned-source early
             // return. Controlled metadata grants no native field or write authority.
             Assert.True(writer.Stop());
-            var descriptor = new OwnedCaptureDescriptor(process.Id, process.StartTime.ToUniversalTime().Ticks,
-                (long)hwnd, (long)hwnd, 1, 1, 1, 1);
             hook.SetOwnedChannel(Guid.NewGuid(), writer, descriptor);
             Send(0x7B, true); // Another actual input retires the return intent while Esc is held.
             Send(0x7B, false);
@@ -303,7 +311,16 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
         }
         void Send(ushort key, bool down)
         {
-            Assert.Equal(1u, SendInput(1, [new KeyboardInput { Type = 1, Key = key, Flags = down ? 0u : 2u }], Marshal.SizeOf<KeyboardInput>()));
+            // Only this Esc fixture needs the real scan identity carried by the
+            // production return fence. SendInput itself supplies the injected flag.
+            var edge = new KeyboardInput
+            {
+                Type = 1,
+                Key = key,
+                Scan = key == 27 ? (ushort)1 : (ushort)0,
+                Flags = (key == 27 ? 8u : 0u) | (down ? 0u : 2u)
+            };
+            Assert.Equal(1u, SendInput(1, [edge], Marshal.SizeOf<KeyboardInput>()));
             if (down)
                 held.Add(key);
             else
@@ -430,6 +447,7 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
     {
         [FieldOffset(0)] public uint Type;
         [FieldOffset(8)] public ushort Key;
+        [FieldOffset(10)] public ushort Scan;
         [FieldOffset(12)] public uint Flags;
     }
     [DllImport("user32.dll", SetLastError = true)]

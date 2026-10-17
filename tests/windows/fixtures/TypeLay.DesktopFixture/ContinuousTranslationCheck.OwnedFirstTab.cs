@@ -425,7 +425,9 @@ internal static partial class ContinuousTranslationCheck
         try
         {
             result.Stage = "owned-editor-escape-return";
-            Require(SendInput(1, [new() { Type = 1, Key = 27 }], Marshal.SizeOf<KeyboardInput>()) == 1,
+            // Scan-code Esc retains the exact original hardware-key identity
+            // through the production return fence and its repeat/release pairing.
+            Require(SendInput(1, [new() { Type = 1, Scan = 1, Flags = 8 }], Marshal.SizeOf<KeyboardInput>()) == 1,
                 "owned-editor-escape-down");
             held = true;
             await UntilAsync(() => N.Focused() == (root, field) && !overlay.IsVisible
@@ -440,7 +442,7 @@ internal static partial class ContinuousTranslationCheck
                 && controller.AutomaticPracticeProgress is { Completed: false, ReturnedToSource: false },
                 "owned-editor-escape-proof");
             result.Stage = "owned-editor-escape-held-release";
-            KeyboardInput[] remainder = [new() { Type = 1, Key = 27 }, new() { Type = 1, Key = 27, Flags = 2 }];
+            KeyboardInput[] remainder = [new() { Type = 1, Scan = 1, Flags = 8 }, new() { Type = 1, Scan = 1, Flags = 10 }];
             uint inserted = SendInput(2, remainder, Marshal.SizeOf<KeyboardInput>());
             if (inserted == 2)
                 held = false;
@@ -473,7 +475,7 @@ internal static partial class ContinuousTranslationCheck
         }
         finally
         {
-            if (held && SendInput(1, [new() { Type = 1, Key = 27, Flags = 2 }], Marshal.SizeOf<KeyboardInput>()) != 1)
+            if (held && SendInput(1, [new() { Type = 1, Scan = 1, Flags = 10 }], Marshal.SizeOf<KeyboardInput>()) != 1)
                 result.CleanupErrors.Add(new("owned-editor-escape", "key-release-incomplete", "Win32", Marshal.GetLastWin32Error()));
         }
     }
