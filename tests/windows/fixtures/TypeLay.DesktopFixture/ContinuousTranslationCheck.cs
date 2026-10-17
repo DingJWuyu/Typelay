@@ -386,6 +386,8 @@ internal static partial class ContinuousTranslationCheck
     {
         var result = new SceneResult { Outcome = "running", Stage = "ordinary-model-idle" };
         string editorReturnOutcome = "not-run", editorExitOutcome = "not-run", sourceExitOutcome = "not-run";
+        string? returnStatus = null;
+        bool? returnTargetMatches = null;
         bool candidateReady = false, draftChanged = false, draftRetained = false, freshAfterReturn = false;
         bool sourceUnchanged = false, selectionPreserved = false, zeroSubmits = false, submitCounterVerified = false;
         bool editorExitReturned = false, editorExitHidden = false, sourceExitHidden = false;
@@ -498,7 +500,10 @@ internal static partial class ContinuousTranslationCheck
             int beforeReturn = broker.Captures;
             SendOrdinaryControlShortcut(0x41, out returnInputs, result.CleanupErrors);
             await UntilAsync(() => broker.Returns == 1 && N.Focused() == (root, field), cancellation);
-            Require(broker.ReturnTarget == target && broker.ReturnStatus == "focused", "ordinary-return-not-confirmed");
+            returnStatus = broker.ReturnStatus;
+            returnTargetMatches = broker.ReturnTarget == target;
+            Require(returnTargetMatches == true, "ordinary-return-target-mismatch");
+            Require(returnStatus == "focused", "ordinary-return-not-focused");
             // The observed capture must have started after the real Broker return
             // completed. Runtime must then expose the retained draft as editable.
             await UntilAsync(() => FreshSource(beforeReturn, 1) && ReadyPresentation() && editor.Text == draft, cancellation);
@@ -512,8 +517,11 @@ internal static partial class ContinuousTranslationCheck
             Require(editor.Text == draft, "ordinary-draft-lost-on-reentry");
             SendOrdinaryControlShortcut(0x42, out editorExitInputs, result.CleanupErrors);
             await UntilAsync(() => broker.Returns == 2 && N.Focused() == (root, field) && !overlay.IsVisible, cancellation);
-            editorExitReturned = broker.ReturnTarget == target && broker.ReturnStatus == "focused";
-            Require(editorExitReturned, "ordinary-editor-exit-return-not-confirmed");
+            returnStatus = broker.ReturnStatus;
+            returnTargetMatches = broker.ReturnTarget == target;
+            Require(returnTargetMatches == true, "ordinary-editor-exit-return-target-mismatch");
+            Require(returnStatus == "focused", "ordinary-editor-exit-return-not-focused");
+            editorExitReturned = true;
             int afterEditorExit = broker.Captures;
             await UntilAsync(() =>
             {
@@ -612,7 +620,9 @@ internal static partial class ContinuousTranslationCheck
                 zeroSubmits,
                 submitCounterVerified,
                 writeRequests = broker?.WriteRequests ?? 0,
-                returns = broker?.Returns ?? 0
+                returns = broker?.Returns ?? 0,
+                returnStatus,
+                returnTargetMatches
             };
         }
         Console.WriteLine($"Ordinary control shortcuts: {result.Outcome}; editor-return={editorReturnOutcome}; editor-exit={editorExitOutcome}; source-exit={sourceExitOutcome}; stage={result.Stage}; code={result.Failure}.");

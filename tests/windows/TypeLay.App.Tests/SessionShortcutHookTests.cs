@@ -288,14 +288,27 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
                 Assert.Equal(epoch + 1, notice.UserEpoch);
                 Assert.InRange(notice.AcceptedAtMs, snapshot.ObservedAtMs, snapshot.ObservedAtMs + Limits.ObservationMaxAgeMs);
             }
+            else
+                await Until(() => functionDown == 1, deadline.Token);
             // Retiring or replacing the configuration cannot release the Fn
             // already consumed by this exact Ctrl group.
             Configure();
             Publish();
-            Send([ScanKey(0x42, true), ScanKey(0x42, false)]);
+            Send([ScanKey(0x42, true)]);
+            if (!automation)
+                await Until(() => functionDown == 2, deadline.Token);
+            Send([ScanKey(0x42, false)]);
+            if (!automation)
+                await Until(() => functionUp == 1, deadline.Token);
             // The original Fn has released while Ctrl remains held. A new
             // independent Fn, its repeat and its up all belong to the app.
-            Send([ScanKey(0x42, true), ScanKey(0x42, true), ScanKey(0x42, false), ScanKey(0x1D, false)]);
+            // Observe each passed down before the next, since Windows can
+            // coalesce queued repeats into one WPF key event.
+            Send([ScanKey(0x42, true)]);
+            await Until(() => functionDown == (automation ? 1 : 3), deadline.Token);
+            Send([ScanKey(0x42, true)]);
+            await Until(() => functionDown == (automation ? 2 : 4), deadline.Token);
+            Send([ScanKey(0x42, false), ScanKey(0x1D, false)]);
             held = false;
             await Until(() => controlUp == 1, deadline.Token);
             Assert.Equal(automation ? 2 : 4, functionDown);

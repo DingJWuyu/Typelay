@@ -436,11 +436,12 @@ internal sealed class OverlayWindow : Window, ISessionView
     private bool ClaimOrdinaryEditorKey(KeyEventArgs input, Key key)
     {
         // ProcessKeyAction scopes this original MSG around WPF's ReportInput.
+        // The routed event may use WPF's cached time; the raw MSG is matched to LL below.
         var message = ComponentDispatcher.CurrentKeyboardMessage;
         long bits = message.lParam.ToInt64();
         uint virtualKey = (uint)KeyInterop.VirtualKeyFromKey(key), scan = (uint)(bits >> 16) & 255;
         if (message.hwnd != _hwnd || message.message is not (0x100 or 0x104) || message.wParam != (nint)virtualKey
-            || message.time != input.Timestamp || (bits & 0xe0000000L) != 0 || scan == 0)
+            || (bits & 0xe0000000L) != 0 || scan == 0)
             return false;
         // A real new down retires the old WPF mirror even when admission fails.
         // The Hook still owns the old physical pair; a synthetic routed event

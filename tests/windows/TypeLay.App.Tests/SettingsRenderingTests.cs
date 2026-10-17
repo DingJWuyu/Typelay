@@ -996,8 +996,14 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
             Assert.False(window.IsVisible);
             void Select(ComboBox selector, string key)
             {
+                Assert.Contains(key, selector.Items.Cast<string>());
+                window.UpdateLayout();
+                window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
+                Assert.True(selector.IsLoaded, "The shortcut selector must be loaded before user interaction.");
                 selector.IsDropDownOpen = true;
                 window.UpdateLayout();
+                window.Dispatcher.Invoke(() => { }, DispatcherPriority.ContextIdle);
+                Assert.True(Assert.IsType<Popup>(selector.Template.FindName("PART_Popup", selector)).IsOpen);
                 var item = Assert.IsType<ComboBoxItem>(selector.ItemContainerGenerator.ContainerFromItem(key));
                 Assert.True(item.IsEnabled);
                 var peer = UIElementAutomationPeer.CreatePeerForElement(selector).GetChildren()
