@@ -1435,6 +1435,135 @@ def run(arguments):
                                 )
                                 + "\n"
                             )
+                            multiline_original = gtk_state()["multiline"]["text"]
+                            prefix, suffix = "Before 😀\n", "\nAfter untouched"
+
+                            def select_control_multiline():
+                                field = gtk_state()["multiline"]
+                                subprocess.run(
+                                    [
+                                        "xdotool",
+                                        "mousemove",
+                                        "--sync",
+                                        str(round(field["x"] + 12)),
+                                        str(round(field["y"] + 12)),
+                                        "click",
+                                        "1",
+                                    ],
+                                    check=True,
+                                    timeout=3,
+                                )
+                                wait_for(
+                                    lambda: gtk_state().get("focus") == "fixture-multiline"
+                                    and gtk_state().get("focusedImeClear"),
+                                    "GTK Ctrl TextView did not focus its original clear IM context",
+                                )
+                                key("ctrl+Home")
+                                key("Down")
+                                key("Home")
+                                key("shift+Down")
+                                key("shift+End")
+                                wait_for(
+                                    lambda: gtk_state()["multiline"]["start"] == len(prefix)
+                                    and gtk_state()["multiline"]["end"]
+                                    == len(field["text"]) - len(suffix),
+                                    "GTK Ctrl TextView did not select the original multiline range",
+                                )
+
+                            select_control_multiline()
+                            wait_for(ready_to_accept, "GTK Ctrl TextView candidate was not ready")
+                            multiline_bindings = status()["input"]["sessionShortcuts"]
+                            assert multiline_bindings == acknowledgement
+                            before_multiline = gtk_state()
+                            middle = before_multiline["candidate"]["text"]
+                            assert "\n" in middle and re.search(r"[\u3400-\u9fff]", middle)
+                            expected_multiline = prefix + middle + suffix
+                            offset, dispatch_offset = trace_checkpoint(), key_trace_checkpoint()
+                            wait_for(ready_to_accept, "GTK Ctrl TextView acceptance was not ready")
+                            send_control_key("F7", repeat=True)
+                            wait_for(
+                                lambda: gtk_state()["multiline"]["text"] == expected_multiline
+                                and verified_write(offset),
+                                "GTK Ctrl TextView did not verify the exact selected replacement",
+                            )
+                            observed_key(dispatch_offset, "function", "release", True)
+                            multiline_accepted = gtk_state()
+                            assert len(new_write_outcomes(offset)) == 1
+                            assert multiline_accepted["focus"] == "fixture-multiline"
+                            for name in ("first", "second"):
+                                assert multiline_accepted[name] == before_multiline[name]
+                            assert (
+                                multiline_accepted["functionKeys"][6]
+                                == before_multiline["functionKeys"][6]
+                            )
+                            for name in ("userActionsStarted", "userActionsFinished"):
+                                assert multiline_accepted[name] == before_multiline[name] + 1
+
+                            # GTK3 supplies user-action grouping, not native undo.
+                            # Restore only the selected ASCII source with real input;
+                            # the emoji and outside lines never leave the buffer.
+                            select_control_multiline()
+                            typed(multiline_original[len(prefix) : -len(suffix)])
+                            wait_for(
+                                lambda: gtk_state()["multiline"]["text"] == multiline_original
+                                and gtk_state().get("focusedImeClear"),
+                                "GTK TextView did not restore its original selected source",
+                            )
+                            select_control_multiline()
+                            wait_for(ready_to_accept, "GTK Ctrl TextView exit was not ready")
+                            before_multiline_exit = gtk_state()
+                            offset, dispatch_offset = trace_checkpoint(), key_trace_checkpoint()
+                            send_control_key("F8")
+                            wait_for(
+                                lambda: not status().get("overlayVisible")
+                                and status().get("viewState") is None,
+                                "GTK Ctrl TextView did not exit the original session",
+                            )
+                            observed_key(dispatch_offset, "function", "release", True)
+                            multiline_exited = gtk_state()
+                            assert multiline_exited["multiline"]["text"] == multiline_original
+                            assert (
+                                multiline_exited["functionKeys"][7]
+                                == before_multiline_exit["functionKeys"][7]
+                            )
+                            assert not new_write_outcomes(offset)
+
+                            select_control_multiline()
+                            wait_for(
+                                ready_to_accept, "GTK Ctrl TextView target-change was not ready"
+                            )
+                            before_multiline_target = gtk_state()
+                            offset, dispatch_offset = trace_checkpoint(), key_trace_checkpoint()
+                            try:
+                                control_keys["Control_L"](True)
+                                click_entry("first")
+                                control_keys["F7"](True)
+                            finally:
+                                control_keys["Control_L"](False)
+                                control_keys["F7"](False)
+                            observed_key(dispatch_offset, "function", "release", False)
+                            multiline_rejected = gtk_state()
+                            for name in ("first", "second"):
+                                assert multiline_rejected[name] == before_multiline_target[name]
+                            assert multiline_rejected["multiline"]["text"] == multiline_original
+                            for phase in ("down", "up"):
+                                assert (
+                                    multiline_rejected["functionKeys"][6][phase]
+                                    == before_multiline_target["functionKeys"][6][phase] + 1
+                                )
+                            assert not new_write_outcomes(offset)
+                            (arguments.output / "gtk-control-textview.json").write_text(
+                                json.dumps(
+                                    {
+                                        "bindings": multiline_bindings,
+                                        "accepted": multiline_accepted,
+                                        "exited": multiline_exited,
+                                        "targetChanged": multiline_rejected,
+                                    },
+                                    indent=2,
+                                )
+                                + "\n"
+                            )
                             stop()
                             settings.update(
                                 AcceptShortcut=ordinary_pair[0], ExitShortcut=ordinary_pair[1]
@@ -1452,6 +1581,11 @@ def run(arguments):
                             evidence.append(
                                 "Wayland GtkEntry: saved Ctrl+Fn source-only capability, one verified model write, "
                                 "repeat/release ownership, independent exit, target-change refusal, restored ordinary acceptance"
+                            )
+                            evidence.append(
+                                "Wayland GTK3 plain TextView: saved Ctrl+Fn, exact real-model multiline selection "
+                                "with emoji/outside text retained, one user-action group and receipt, repeat/release "
+                                "ownership, exit without write, target-change refusal; ordinary keys restored"
                             )
 
                         def check_overlay_motion(draft):

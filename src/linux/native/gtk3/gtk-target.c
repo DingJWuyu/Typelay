@@ -105,7 +105,8 @@ static const TlFcitxPrefixV1 *prefix_capability(GtkIMContext *context) {
         && value->validate && value->prepare_caret && value->cancel ? value : NULL;
 }
 gboolean tl_prefix_supported(Target *target) {
-    if (!standard_entry(target) || !bind_context(target)) return FALSE;
+    if (!(standard_entry(target) || (standard_textview(target)
+        && plain_text_buffer(GTK_TEXT_BUFFER(target->buffer)))) || !bind_context(target)) return FALSE;
     GtkIMContext *context = g_object_ref(target->im_context);
     GtkWidget *widget = g_object_ref(target->widget);
     const TlFcitxPrefixV1 *cap = prefix_capability(context);
@@ -132,7 +133,7 @@ gboolean tl_prefix_transition(Target *target, guint64 id) {
 }
 gboolean tl_prefix_validate(Target *target, guint64 id, const TlFcitxStateV1 *before,
     const TlFcitxStateV1 *current) {
-    if (!standard_entry(target) || !target->im_context) return FALSE;
+    if (!(standard_entry(target) || standard_textview(target)) || !target->im_context) return FALSE;
     GtkIMContext *context = g_object_ref(target->im_context);
     GtkWidget *widget = g_object_ref(target->widget);
     const TlFcitxPrefixV1 *cap = prefix_capability(context);
@@ -141,7 +142,8 @@ gboolean tl_prefix_validate(Target *target, guint64 id, const TlFcitxStateV1 *be
     return valid && !target->dead && target->im_context == context;
 }
 gboolean tl_prefix_finish(Target *target, guint64 id) {
-    if (!standard_entry(target) || !target->im_context || target->im_probing) return FALSE;
+    if (!(standard_entry(target) || standard_textview(target))
+        || !target->im_context || target->im_probing) return FALSE;
     GtkIMContext *context = g_object_ref(target->im_context);
     GtkWidget *widget = g_object_ref(target->widget);
     const TlFcitxPrefixV1 *cap = prefix_capability(context);
@@ -157,7 +159,7 @@ gboolean tl_prefix_finish(Target *target, guint64 id) {
     return TRUE;
 }
 gboolean tl_prefix_prepare(Target *target, guint64 id, const TlFcitxStateV1 *current) {
-    if (!standard_entry(target) || !target->im_context) return FALSE;
+    if (!(standard_entry(target) || standard_textview(target)) || !target->im_context) return FALSE;
     GtkIMContext *context = g_object_ref(target->im_context);
     GtkWidget *widget = g_object_ref(target->widget);
     const TlFcitxPrefixV1 *cap = prefix_capability(context);
@@ -811,6 +813,21 @@ static gboolean entry_focus_init(Target *target, gboolean background, EntryFocus
     g_signal_connect(top, "notify::is-active", G_CALLBACK(entry_focus_changed), guard);
     return entry_focus_matches(target, guard);
 }
+/* Compile-time hooks for the shared TextBuffer transaction. The ticket stays
+ * owned by the source dispatcher; this writer neither retains nor renews it. */
+static gboolean textview_ticket_check(gpointer ticket, Target *target, gboolean source, gboolean proof) {
+    return !ticket || tl_ordered_check(ticket, target, source, proof);
+}
+static gboolean textview_ticket_prepare(gpointer ticket, Target *target, const TlFcitxStateV1 *state) {
+    return ticket && tl_ordered_prepare(ticket, target, state);
+}
+static void textview_take(gpointer ticket) {
+    if (ticket) tl_drop_publication();
+    else tl_clear_permit();
+}
+static gboolean textview_ticket_claim(gpointer ticket, Target *target) {
+    return !ticket || tl_ordered_claim(ticket, target);
+}
 #include "../common/gtk-textbuffer-write.inc"
 
 static JsonObject *write_source(Target *target, JsonObject *request, gboolean direct, OrderedTicket *ticket) {
@@ -883,7 +900,7 @@ static JsonObject *write_source(Target *target, JsonObject *request, gboolean di
     g_string_free(computed, TRUE);
     if (!matches) { g_free(after_delete); g_free(text); return receipt("RejectedBeforeMutation", "BadPlan"); }
     if (standard_textview(target)) {
-        JsonObject *reply = write_textview(target, plan, basis, approved, text, after_delete, from, to, caret, until, generation, !direct);
+        JsonObject *reply = write_textview(target, plan, basis, approved, text, after_delete, from, to, caret, until, generation, !direct, ticket);
         g_free(after_delete); g_free(text);
         return reply;
     }
@@ -1104,7 +1121,8 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     return write_source(target, request, direct, NULL);
 }
 JsonObject *tl_write_ordered(Target *target, JsonObject *request, OrderedTicket *ticket) {
-    if (!ticket || !standard_entry(target) || !tl_ordered_check(ticket, target, TRUE, FALSE))
+    if (!ticket || !(standard_entry(target) || standard_textview(target))
+        || !tl_ordered_check(ticket, target, TRUE, FALSE))
         return receipt("RejectedBeforeMutation", "EpochChanged");
     return write_source(target, request, FALSE, ticket);
 }

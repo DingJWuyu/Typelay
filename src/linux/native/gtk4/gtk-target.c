@@ -661,6 +661,24 @@ static gboolean entry_focus_init(Target *target, gboolean background, EntryFocus
     g_signal_connect(top, "notify::is-active", G_CALLBACK(entry_focus_changed), guard);
     return entry_focus_matches(target, guard);
 }
+/* GTK4 has no source-control ticket route yet. Keep the shared writer's NULL
+ * path on its original preparation and permit retirement. */
+static gboolean textview_ticket_check(gpointer ticket, Target *target, gboolean source, gboolean proof) {
+    (void)target; (void)source; (void)proof;
+    return ticket == NULL;
+}
+static gboolean textview_ticket_prepare(gpointer ticket, Target *target, const TlFcitxStateV1 *state) {
+    (void)ticket; (void)target; (void)state;
+    return FALSE;
+}
+static void textview_take(gpointer ticket) {
+    (void)ticket;
+    tl_clear_permit();
+}
+static gboolean textview_ticket_claim(gpointer ticket, Target *target) {
+    (void)target;
+    return ticket == NULL;
+}
 #include "../common/gtk-textbuffer-write.inc"
 
 JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
@@ -732,7 +750,7 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     g_string_free(computed, TRUE);
     if (!matches) { g_free(after_delete); g_free(text); return receipt("RejectedBeforeMutation", "BadPlan"); }
     if (standard_textview(target)) {
-        JsonObject *reply = write_textview(target, plan, basis, approved, text, after_delete, from, to, caret, until, generation, !direct);
+        JsonObject *reply = write_textview(target, plan, basis, approved, text, after_delete, from, to, caret, until, generation, !direct, NULL);
         g_free(after_delete); g_free(text);
         return reply;
     }

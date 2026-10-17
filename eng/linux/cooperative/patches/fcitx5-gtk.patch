@@ -573,7 +573,7 @@
          } else {
              fcitx_g_client_process_key(
                  fcitxcontext->client, event->keyval, event->hardware_keycode,
-@@ -1772,3 +1946,236 @@
+@@ -1772,3 +1946,240 @@
  }
  
  // kate: indent-mode cstyle; replace-tabs on;
@@ -725,10 +725,14 @@
 +
 +
 +static gboolean typelay_prefix_supports(GtkIMContext *context, GtkWidget *widget) {
-+    if (!FCITX_IS_IM_CONTEXT(context) || !widget || G_OBJECT_TYPE(widget) != GTK_TYPE_ENTRY
-+        || G_OBJECT_TYPE(gtk_entry_get_buffer(GTK_ENTRY(widget))) != GTK_TYPE_ENTRY_BUFFER
++    if (!FCITX_IS_IM_CONTEXT(context) || !widget
 +        || !get_boolean_env("TYPELAY_FCITX_COOPERATIVE", FALSE) || !_use_sync_mode
 +        || !_key_snooper_id || g_main_depth() != 1) return FALSE;
++    const gboolean entry = G_OBJECT_TYPE(widget) == GTK_TYPE_ENTRY
++        && G_OBJECT_TYPE(gtk_entry_get_buffer(GTK_ENTRY(widget))) == GTK_TYPE_ENTRY_BUFFER;
++    const gboolean text_view = G_OBJECT_TYPE(widget) == GTK_TYPE_TEXT_VIEW
++        && G_OBJECT_TYPE(gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget))) == GTK_TYPE_TEXT_BUFFER;
++    if (!entry && !text_view) return FALSE;
 +    auto *self = FCITX_IM_CONTEXT(context);
 +    gpointer owner = nullptr;
 +    if (self->client_window) gdk_window_get_user_data(self->client_window, &owner);
