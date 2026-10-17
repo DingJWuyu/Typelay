@@ -119,13 +119,45 @@ def install_models(paths):
                 ],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
             try:
-                output, _ = helper.communicate(timeout=ACTIVATION_TIMEOUT)
-                result = output.decode("ascii").strip() if len(output) <= 64 else "unconfirmed"
+                output, error = helper.communicate(timeout=ACTIVATION_TIMEOUT)
+                reported = (
+                    output.decode("ascii", errors="replace").strip()
+                    if len(output) <= 64
+                    else "unknown"
+                )
+                if reported not in ("confirmed", "unchanged", "unconfirmed"):
+                    reported = "empty" if not output else "unknown"
+                result = (
+                    reported
+                    if reported in ("confirmed", "unchanged", "unconfirmed")
+                    else "unconfirmed"
+                )
                 if helper.returncode and result == "confirmed":
                     result = "unconfirmed"
+                if result != "confirmed":
+                    failure = (
+                        error.decode("ascii", errors="replace").strip()
+                        if len(error) <= 128
+                        else "unknown"
+                    )
+                    if failure not in (
+                        "installation-invalid",
+                        "worker-not-ready",
+                        "activation-failed",
+                        "publication-unconfirmed",
+                        "cancelled",
+                    ):
+                        failure = "unknown"
+                    # Preserve this attempt's outcome, never raw child output or
+                    # an inferred claim that an unconfirmed publish did not occur.
+                    print(
+                        f"TypeLay: activation-helper exit={helper.returncode} "
+                        f"status={reported} failure={failure}",
+                        file=sys.stderr,
+                    )
             finally:
                 if helper.poll() is None:
                     helper.terminate()

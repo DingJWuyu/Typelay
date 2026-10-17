@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import struct
+import sys
 import tempfile
 import time
 import unittest
@@ -325,6 +326,113 @@ while True:
         self.assertEqual(os.readlink(root.parent / "current"), generation)
         self.assertEqual((root / "requests").read_text().splitlines(), ["hello"])
         self.assertFalse(Path(f"/proc/{root.joinpath('pid').read_text()}").exists())
+
+    async def test_one_shot_activation_reports_only_the_failed_stage(self):
+        for damage, failure in (
+            ("metadata", "installation-invalid"),
+            ("hello", "worker-not-ready"),
+        ):
+            with self.subTest(damage=damage):
+                generation, root = self.model_generation(directions=[])
+                if damage == "metadata":
+                    (root / "activation.json").write_text("private-invalid-metadata")
+                helper = await asyncio.create_subprocess_exec(
+                    str(SUPERVISOR),
+                    str(HOST),
+                    "--activate-model",
+                    str(self.home / "package"),
+                    str(self.home / "data"),
+                    generation,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                try:
+                    output, error = await asyncio.wait_for(helper.communicate(), 5)
+                finally:
+                    if helper.returncode is None:
+                        helper.terminate()
+                        await asyncio.wait_for(helper.wait(), 3)
+                self.assertEqual(
+                    (helper.returncode, output, error), (1, b"unchanged\n", f"{failure}\n".encode())
+                )
+                self.assertFalse((root.parent / "current").exists())
+                if damage == "metadata":
+                    self.assertFalse((root / "pid").exists())
+                else:
+                    self.assertEqual((root / "requests").read_text().splitlines(), ["hello"])
+                    self.assertFalse(Path(f"/proc/{root.joinpath('pid').read_text()}").exists())
+
+    async def test_install_cli_preserves_helper_outcome_without_forwarding_private_output(self):
+        generation, root = self.model_generation()
+        package = self.home / "package"
+        (package / "desktop").mkdir()
+        # Preparation and helper are controlled executable peers. The real CLI
+        # runs once per case; these cases make no model-inference claim.
+        (package / "desktop/setup.py").write_text(f"print('TYPELAY_MODEL_PREPARED={generation}')\n")
+        (package / "app").mkdir()
+        executable = package / "app/TypeLay.Linux"
+        runtime = self.home / "run"
+        runtime.mkdir()
+        source = Path(__file__).resolve().parents[2] / "src/linux/desktop"
+        for code, output, error, status, failure in (
+            (1, "unchanged\n", "worker-not-ready\n", "unchanged", "worker-not-ready"),
+            (1, "unchanged\n", "activation-failed\n", "unchanged", "activation-failed"),
+            (9, "confirmed\n", "private-details\n", "confirmed", "unknown"),
+            (1, "", "private-details\n", "empty", "unknown"),
+            (
+                1,
+                "private-result\n",
+                "installation-invalid\nprivate-details\n",
+                "unknown",
+                "unknown",
+            ),
+        ):
+            with self.subTest(status=status):
+                calls = root / "helper-calls"
+                calls.unlink(missing_ok=True)
+                executable.write_text(
+                    "#!/usr/bin/python3\nimport pathlib,sys\n"
+                    f"with pathlib.Path({str(calls)!r}).open('a') as log: log.write('call\\n')\n"
+                    f"sys.stdout.write({output!r})\nsys.stderr.write({error!r})\n"
+                    f"raise SystemExit({code})\n"
+                )
+                executable.chmod(0o700)
+                cli = await asyncio.create_subprocess_exec(
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    "-c",
+                    "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); "
+                    "runpy.run_module('main',run_name='__main__')",
+                    str(source),
+                    "--install-models",
+                    env={
+                        **os.environ,
+                        "TYPELAY_HOME": str(package),
+                        "XDG_CONFIG_HOME": str(self.home / "cli-config"),
+                        "XDG_DATA_HOME": str(self.home / "cli-data"),
+                        "XDG_CACHE_HOME": str(self.home / "cli-cache"),
+                        "XDG_RUNTIME_DIR": str(runtime),
+                        "WAYLAND_DISPLAY": "",
+                        "NIRI_SOCKET": "",
+                    },
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                try:
+                    stdout, stderr = await asyncio.wait_for(cli.communicate(), 5)
+                finally:
+                    if cli.returncode is None:
+                        cli.terminate()
+                        await asyncio.wait_for(cli.wait(), 3)
+                self.assertEqual(cli.returncode, 1, stdout + stderr)
+                self.assertIn(
+                    f"activation-helper exit={code} status={status} failure={failure}".encode(),
+                    stderr,
+                )
+                self.assertIn("已保留组件".encode(), stderr)
+                self.assertNotIn(b"private-", stdout + stderr)
+                self.assertEqual(calls.read_text().splitlines(), ["call"])
 
     async def test_cancel_during_practice_retirement_never_starts_candidate(self):
         await self.bind_automatic_practice()

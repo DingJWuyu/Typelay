@@ -339,6 +339,63 @@ jobs:
           mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR"
           chmod 700 "$XDG_RUNTIME_DIR"
           artifacts/linux/package/typelay --install-models
+      - name: Preserve bounded model activation failure metadata
+        if: ${{ !cancelled() && steps.models.outcome == 'failure' }}
+        run: |
+          python - <<'PY_METADATA'
+          import json, os, re, stat
+          from pathlib import Path
+          root = Path("artifacts/linux/desktop-data/typelay/components").absolute()
+          def kind(path):
+              try:
+                  mode = path.lstat().st_mode
+                  return "link" if stat.S_ISLNK(mode) else "directory" if stat.S_ISDIR(mode) else "file" if stat.S_ISREG(mode) else "other"
+              except FileNotFoundError:
+                  return "missing"
+              except OSError:
+                  return "unavailable"
+          def small_json(path):
+              try:
+                  if kind(path) != "file" or path.stat().st_size > 4096:
+                      return None
+                  value = json.loads(path.read_text())
+                  return value if isinstance(value, dict) else None
+              except (OSError, ValueError):
+                  return None
+          def relative(path, base):
+              try:
+                  return str(Path(os.path.abspath(path)).relative_to(Path(os.path.abspath(base))))
+              except ValueError:
+                  return "outside-generation"
+          report = {"currentKind": kind(root / "current"), "generations": []}
+          if report["currentKind"] == "link":
+              target = os.readlink(root / "current")
+              report["currentTarget"] = target if re.fullmatch(r"[0-9a-f]{32}", target) else "invalid-target"
+          generations = sorted(path for path in root.iterdir() if re.fullmatch(r"[0-9a-f]{32}", path.name) and kind(path) == "directory") if kind(root) == "directory" else []
+          report["generationCount"] = len(generations)
+          for generation in generations[:8]:
+              activation = small_json(generation / "activation.json")
+              check = small_json(generation / "self-check.json")
+              item = {"id": generation.name, "activationKind": kind(generation / "activation.json"), "activationValidJson": activation is not None, "selfCheckPassed": bool(check and check.get("status") == "passed")}
+              if activation:
+                  item["schema"] = activation.get("schema") if type(activation.get("schema")) is int else "invalid"
+                  previous = activation.get("previous")
+                  item["previous"] = previous if previous is None or isinstance(previous, str) and re.fullmatch(r"[0-9a-f]{32}", previous) else "invalid"
+              runtime = generation / "runtime"
+              python = runtime / "venv/bin/python"
+              item["pythonKind"] = kind(python)
+              item["declaredParents"] = [{"path": relative(parent, runtime), "kind": kind(parent)} for parent in (runtime, runtime / "venv", runtime / "venv/bin")]
+              try:
+                  target = Path(os.readlink(python)) if python.is_symlink() else python
+                  item["pythonLink"] = relative(target if target.is_absolute() else python.parent / target, runtime)
+                  resolved = python.resolve(strict=True)
+                  item["pythonResolved"] = relative(resolved, runtime)
+                  item["parents"] = [{"path": relative(parent, runtime), "kind": kind(parent)} for parent in list(resolved.parents)[:12] if parent == runtime or parent.is_relative_to(runtime)]
+              except (OSError, RuntimeError):
+                  item["pythonResolution"] = "unavailable"
+              report["generations"].append(item)
+          Path("artifacts/linux/model-activation-metadata.json").write_text(json.dumps(report, indent=2))
+          PY_METADATA
       - name: Verify first-run tutorial with the real local model
         if: ${{ !cancelled() && steps.models.outcome == 'success' }}
         run: |
@@ -409,6 +466,7 @@ jobs:
             artifacts/linux/fcitx-cooperative-5.1.22/*.log
             ${{ steps.complete-package.outcome != 'success' && 'artifacts/TypeLay-Fcitx-cooperative.tar.gz' || '' }}
             artifacts/linux/desktop-data/typelay/components/*/self-check.json
+            artifacts/linux/model-activation-metadata.json
             artifacts/linux/native/libtypelay-gtk3.so
             artifacts/linux/native/typelay-supervise
             artifacts/TypeLay-Linux-preview-x86_64.tar.gz

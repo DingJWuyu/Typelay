@@ -427,19 +427,39 @@ internal static class Program
     private static async Task<int> ActivateModel(string home, string data, string generation)
     {
         string result;
+        string? failure = null;
+        bool activationRequested = false;
         try
         {
             using var model = LinuxModelFactory.Create(home, data);
             using var lease = new LinuxModelInstallationStore(home, data).Acquire();
             using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(215));
-            result = await lease.ActivateAsync(model, generation, cancellation.Token) ? "confirmed" : "unchanged";
+            // ActivateAsync validates the immutable paths and metadata before
+            // returning the candidate task. No exception text crosses this port.
+            var activating = lease.ActivateAsync(model, generation, cancellation.Token);
+            activationRequested = true;
+            result = await activating ? "confirmed" : "unchanged";
+            if (result == "unchanged")
+                failure = "worker-not-ready";
         }
-        catch (LinuxModelInstallationStore.PublicationUnconfirmedException) { result = "unconfirmed"; }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException
-            or JsonException or OperationCanceledException or ArgumentException)
+        catch (LinuxModelInstallationStore.PublicationUnconfirmedException)
+        {
+            result = "unconfirmed";
+            failure = "publication-unconfirmed";
+        }
+        catch (OperationCanceledException)
         {
             result = "unchanged";
+            failure = "cancelled";
         }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException
+            or JsonException or ArgumentException)
+        {
+            result = "unchanged";
+            failure = activationRequested ? "activation-failed" : "installation-invalid";
+        }
+        if (failure is not null)
+            Console.Error.WriteLine(failure);
         Console.WriteLine(result);
         return result == "confirmed" ? 0 : 1;
     }
