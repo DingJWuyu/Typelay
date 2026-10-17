@@ -118,6 +118,33 @@ internal sealed class NativeEditTransactions : IDisposable
         identity.ProcessId == owned.ProcessId && identity.ProcessStartUtcTicks == owned.ProcessStartUtcTicks
         && identity.RootHwnd == owned.RootHwnd && identity.ControlHwnd == owned.ControlHwnd;
 
+    // Zero-write return confirmation uses only an already captured ordinary
+    // lifetime. It cannot install a cookie, refresh a binding or read the body.
+    public bool ConfirmsReturnFocus(WindowsTarget target)
+    {
+        if (target.Provider != Provider || !_bindings.TryGetValue(target.ControlHwnd, out var binding)
+            || binding.Target != target || !binding.Initialized || binding.Owned is not null)
+            return false;
+        nint root = (nint)target.RootHwnd, control = (nint)target.ControlHwnd;
+        if (GetAncestor(root, 2) != root || GetAncestor(control, 2) != root
+            || GetWindowThreadProcessId(control, out uint pid) != binding.Thread || pid != target.ProcessId
+            || GetWindowThreadProcessId(root, out uint rootPid) == 0 || rootPid != target.ProcessId
+            || !IsWindowVisible(root) || !IsWindowVisible(control)
+            || !IsWindowEnabled(root) || !IsWindowEnabled(control)
+            || unchecked((ulong)(long)GetPropW(control, "TypeLay.NativeInput.Lifetime.v2")) != binding.Cookie)
+            return false;
+        var name = new StringBuilder(32);
+        if (GetClassNameW(control, name, name.Capacity) != 4 || name.ToString() != "Edit")
+            return false;
+        using var process = Process.GetProcessById(target.ProcessId);
+        if (process.StartTime.ToUniversalTime().Ticks != target.ProcessStartUtcTicks)
+            return false;
+        var gui = new GuiThreadInfo { Size = (uint)Marshal.SizeOf<GuiThreadInfo>() };
+        return GetGUIThreadInfo(binding.Thread, ref gui) && gui.Focus == control
+            && GetForegroundWindow() == root
+            && unchecked((ulong)(long)GetPropW(control, "TypeLay.NativeInput.Lifetime.v2")) == binding.Cookie;
+    }
+
     public WriteReceipt Write(WritePlan plan) => Write(plan, 2, 0);
 
     // This is the original acceptance deadline, not a fresh native dispatch budget.
@@ -389,6 +416,12 @@ internal sealed class NativeEditTransactions : IDisposable
     }
     [DllImport("user32.dll")] private static extern nint GetAncestor(nint hwnd, uint flags);
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(nint hwnd);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowEnabled(nint hwnd);
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetGUIThreadInfo(uint thread, ref GuiThreadInfo info);

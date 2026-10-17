@@ -42,7 +42,7 @@ internal static class Program
                         "write" => new(BrokerProtocol.Version, request.Id, "receipt", Receipt: provider.Write(request)),
                         "direct-write" => new(BrokerProtocol.Version, request.Id, "receipt", Receipt: provider.WriteDirect(request)),
                         "return" => new(BrokerProtocol.Version, request.Id,
-                            provider.ReturnToSource(request.BoundTarget, out returnReason) ? "focused" : "denied"),
+                            provider.ReturnToSource(request, out returnReason) ? "focused" : "denied"),
                         "capture" => Observe(provider, request),
                         "capture-owned" => ObserveOwned(provider, request),
                         "observe-pause" => ObservePause(provider, request),

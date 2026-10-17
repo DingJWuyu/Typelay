@@ -271,10 +271,10 @@ internal sealed class OverlayWindow : Window, ISessionView
                     || key == _exitKey && _exitModifiers == ModifierKeys.Control);
             if (ordinaryControl && !e.IsRepeat)
             {
-                if (!ClaimOrdinaryEditorKey(e, key, out string? refusal))
+                if (!ClaimOrdinaryEditorKey(e, key, out string? refusal, out int messageFlags))
                 {
                     if (traceOrdinary)
-                        _ordinaryInput?.QueueOrdinaryKeyTrace("wpf", refusal!, entryRefusal, e.Handled, e.IsRepeat);
+                        _ordinaryInput?.QueueOrdinaryKeyTrace("wpf", refusal!, entryRefusal, e.Handled, e.IsRepeat, messageFlags);
                     return;
                 }
             }
@@ -466,12 +466,13 @@ internal sealed class OverlayWindow : Window, ISessionView
         _ownedEditor is null && _editing && !_composing && _editor.IsKeyboardFocused
             && _viewContext is { CanEdit: true } context ? context.Token : null);
 
-    private bool ClaimOrdinaryEditorKey(KeyEventArgs input, Key key, out string? refusal)
+    private bool ClaimOrdinaryEditorKey(KeyEventArgs input, Key key, out string? refusal, out int messageFlags)
     {
         // ProcessKeyAction scopes this original MSG around WPF's ReportInput.
         // The routed event may use WPF's cached time; the raw MSG is matched to LL below.
         var message = ComponentDispatcher.CurrentKeyboardMessage;
         long bits = message.lParam.ToInt64();
+        messageFlags = (int)((bits >> 29) & 7);
         uint virtualKey = (uint)KeyInterop.VirtualKeyFromKey(key), scan = (uint)(bits >> 16) & 255;
         refusal = message.hwnd != _hwnd ? "message-window"
             : message.message is not (0x100 or 0x104) ? "message-kind"

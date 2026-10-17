@@ -253,7 +253,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 commandGeneration: configuration.Generation);
     }
     internal void QueueOrdinaryKeyTrace(string stage, string reason, string? entryRefusal = null,
-        bool? handled = null, bool? repeat = null)
+        bool? handled = null, bool? repeat = null, int? messageFlags = null)
     {
         if (string.IsNullOrWhiteSpace(_tracePath))
             return;
@@ -263,7 +263,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             return;
         }
         // Shared bound for the original Ctrl, Fn and WPF stages. Only fixed
-        // labels and already observed booleans; no extra clock or identity read.
+        // labels and already observed metadata; no extra clock or identity read.
         if (Interlocked.Increment(ref _shortcutTraceCount) > 64)
         {
             Interlocked.Decrement(ref _shortcutTraceCount);
@@ -279,7 +279,8 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 reason,
                 entryRefusal,
                 handled,
-                repeat
+                repeat,
+                messageFlags
             });
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)

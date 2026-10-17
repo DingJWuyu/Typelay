@@ -560,10 +560,10 @@ internal sealed class UiaInputProvider : IDisposable
         _quarantine.Add((t.ProcessId, t.ProcessStartUtcTicks, t.ElementToken));
         return new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
     }
-    public bool ReturnToSource(TargetId? target, out string reason)
+    public bool ReturnToSource(BrokerRequest request, out string reason)
     {
-        // Fixed outcome/stage names only. The caller writes them after replying;
-        // no diagnostic read changes this original return attempt.
+        // Fixed outcome/stage names only. The caller writes them after replying.
+        var target = request.BoundTarget;
         reason = "target-missing";
         if (target is null)
             return false;
@@ -592,8 +592,47 @@ internal sealed class UiaInputProvider : IDisposable
         _element.SetFocus();
         reason = "focus-recheck";
         bool focused = string.Join('.', AutomationElement.FocusedElement.GetRuntimeId()) == binding.ElementToken;
-        reason = focused ? "focused" : "focus-unconfirmed";
-        return focused;
+        if (focused)
+        {
+            reason = "focused";
+            return true;
+        }
+        reason = "focus-unconfirmed";
+        if (!_edits.ConfirmsReturnFocus(binding))
+            return false;
+
+        // A registered stock Edit has an exact native focus/lifetime witness.
+        // Reacquire its UIA identity and policy metadata between two such checks;
+        // a delayed global UIA focus observation cannot substitute another field.
+        reason = "native-return-metadata";
+        AutomationElement current;
+        using (_metadataCache.Activate())
+            current = AutomationElement.FromHandle((nint)binding.ControlHwnd);
+        var info = current.Cached;
+        if (info.ProcessId != binding.ProcessId || info.NativeWindowHandle != binding.ControlHwnd
+            || info.ControlType != ControlType.Edit || string.Join('.', current.GetRuntimeId()) != binding.ElementToken
+            || current.GetCachedPropertyValue(AutomationElement.IsPasswordProperty, true) is not false
+            || current.GetCachedPropertyValue(AutomationElement.IsEnabledProperty, true) is not true
+            || current.GetCachedPropertyValue(AutomationElement.IsOffscreenProperty, true) is not false)
+            return false;
+        long style = (long)GetWindowLongPtrW((nint)binding.ControlHwnd, -16);
+        if (Marshal.GetLastPInvokeError() != 0 || (style & 0x40000000) == 0 || (style & 0x20) != 0
+            || _application is null)
+            return false;
+        var ariaProperty = AutomationProperty.LookupById(30102);
+        string aria = ariaProperty is null ? "" : current.GetCachedPropertyValue(ariaProperty, true) as string ?? "";
+        var metadata = new FieldMetadata(_application, info.Name ?? "", info.AutomationId ?? "", info.HelpText ?? "",
+            aria, false, true, (style & 0x800) != 0, false, false, (style & 4) != 0, false, false);
+        reason = "native-return-policy";
+        if (!FieldPolicy.Allows(metadata, request.Excluded ?? []))
+            return false;
+        reason = "native-return-focus-changed";
+        if (!_edits.ConfirmsReturnFocus(binding))
+            return false;
+        // This acknowledges focus only. The next ordinary capture and Core's
+        // saved edit basis still decide whether the draft may be retained.
+        reason = "focused-native";
+        return true;
     }
     public void Clear(TargetId? expected = null)
     {
