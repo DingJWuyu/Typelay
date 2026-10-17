@@ -903,17 +903,6 @@ def run_qt(
                 )
                 control_original = "Please send me the latest report."
                 control_candidate = enter_source(control_original)
-                before_click = state()
-                click_rectangle(before_click, before_click["editorGeometry"])
-                readonly = wait_for(
-                    lambda: value
-                    if (value := state())["overlayEventCount"] > before_click["overlayEventCount"]
-                    else None,
-                    "the read-only Qt candidate did not receive the real click",
-                )
-                assert readonly["editorReadOnly"] and not readonly["editorFocused"]
-                assert readonly["first"]["focused"]
-                assert readonly["first"]["text"] == control_original
                 wait_for(ready_to_accept, "original Qt Ctrl acceptance was not ready")
                 before = state()
                 offset = trace_checkpoint()
@@ -953,6 +942,88 @@ def run_qt(
                 for name in ("firstF8Press", "firstF8Release"):
                     assert exited["keys"].get(name, 0) == before_exit["keys"].get(name, 0)
                 assert not new_write_outcomes(exit_offset)
+                editor_source = "Please review the final message."
+                enter_source(editor_source)
+                actual = state()
+                click_rectangle(actual, actual["editorGeometry"])
+                wait_for(
+                    lambda: state().get("editorFocused") and not state().get("editorReadOnly"),
+                    "saved Qt Ctrl bindings did not enable the actual editor",
+                )
+                manual_draft = "This is the exact manually edited translation."
+                key("ctrl+a")
+                typed(manual_draft)
+                wait_for(
+                    lambda: state().get("editorText") == manual_draft and settled(state()),
+                    "Qt Ctrl editor did not retain the exact manual draft",
+                )
+                before_return = state()
+                return_offset = trace_checkpoint()
+                subprocess.run(
+                    [
+                        "xdotool",
+                        "keydown",
+                        "--delay",
+                        "0",
+                        "Control_L",
+                        "keydown",
+                        "--delay",
+                        "0",
+                        "F7",
+                    ],
+                    check=True,
+                    timeout=2,
+                )
+                try:
+                    wait_for(
+                        lambda: state()["first"]["focused"]
+                        and ready_to_accept("EditedTranslationPending"),
+                        "first Qt Ctrl+F7 did not return with a fresh draft permit",
+                    )
+                    assert state()["first"]["text"] == editor_source
+                    assert state()["first"]["changes"] == before_return["first"]["changes"]
+                    assert not new_write_outcomes(return_offset)
+                    subprocess.run(
+                        [
+                            "xdotool",
+                            "keyup",
+                            "--delay",
+                            "0",
+                            "Control_L",
+                            "keydown",
+                            "--delay",
+                            "0",
+                            "F7",
+                        ],
+                        check=True,
+                        timeout=2,
+                    )
+                    wait_for(lambda: settled(state()), "held editor Fn did not settle after return")
+                    assert state()["first"]["text"] == editor_source
+                    assert not new_write_outcomes(return_offset)
+                finally:
+                    subprocess.run(["xdotool", "keyup", "F7", "Control_L"], check=True, timeout=2)
+                wait_for(
+                    lambda: ready_to_accept("EditedTranslationPending") and settled(state()),
+                    "new source capture did not publish the returned manual draft",
+                )
+                for name in ("firstF7Press", "firstF7Release"):
+                    assert state()["keys"].get(name, 0) == before_return["keys"].get(name, 0)
+                before_write = state()["first"]["changes"]
+                write_offset = trace_checkpoint()
+                send_control_key("F7")
+                wait_for(
+                    lambda: state()["first"]["text"] == manual_draft
+                    and verified_write(write_offset),
+                    "fresh Qt Ctrl+F7 did not accept the exact returned draft",
+                )
+                assert state()["first"]["changes"] == before_write + 1
+                assert len(new_write_outcomes(write_offset)) == 1
+                key("ctrl+z")
+                wait_for(
+                    lambda: state()["first"]["text"] == editor_source and settled(state()),
+                    "one native undo did not restore the manually accepted Qt source",
+                )
                 set_mode(session_keys=("Tab", "Esc"))
                 ordinary_original = "Please check the current schedule."
                 ordinary_candidate = enter_source(ordinary_original)
@@ -976,7 +1047,7 @@ def run_qt(
                             "savedConfigurationLoaded": True,
                             "sourceAcceptRepeatCtrlFirstReleaseAndUndo": True,
                             "sourceExitWithoutWrite": True,
-                            "editorUnavailable": True,
+                            "editorReturnHeldReleaseFreshAcceptAndUndo": True,
                             "savedChordDisplayAndOrdinarySelection": True,
                             "defaultTabAndUndo": True,
                             "input": "XTest through nested niri; not physical keyboard",
@@ -987,7 +1058,8 @@ def run_qt(
                 )
                 evidence.append(
                     "real production host/model saved Ctrl+F7/F8: source acceptance once, "
-                    "Ctrl-first release, repeat, undo and exit; editing refused; real settings "
+                    "Ctrl-first release, repeat, undo and exit; manual editor returns without writing, "
+                    "held Fn stays owned and a fresh full chord accepts the exact draft once; real settings "
                     "display saved chords and restore Tab/Esc; default Tab and undo pass"
                 )
                 original = "Please send me the latest report."

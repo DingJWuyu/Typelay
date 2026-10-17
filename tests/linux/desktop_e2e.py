@@ -759,7 +759,7 @@ def run(arguments):
                         assert acknowledgement == {
                             "bindings": {"accept": "Ctrl+F7", "exit": "Ctrl+F8"},
                             "sourceReady": True,
-                            "editorReady": False,
+                            "editorReady": True,
                         }
                         before_control = browser_control_state()
                         offset = trace_checkpoint()
@@ -814,6 +814,112 @@ def run(arguments):
                         for name in ("source", "other", "input"):
                             assert rejected_control[name] == before_target[name]
                         assert not new_write_outcomes(offset)
+                        editor_cdp = browser.new_cdp_session(page)
+
+                        def browser_editor():
+                            return next(
+                                (
+                                    node
+                                    for node in editor_cdp.send("Accessibility.getFullAXTree")[
+                                        "nodes"
+                                    ]
+                                    if not node.get("ignored")
+                                    and node.get("name", {}).get("value") == "TypeLay 译文"
+                                    and node.get("role", {}).get("value") == "textbox"
+                                ),
+                                None,
+                            )
+
+                        def edit_browser_candidate(source, *, exit_editor=False):
+                            browser_control_source(source)
+                            candidate = wait_for(
+                                browser_editor, "browser candidate was not accessible"
+                            )
+                            quad = editor_cdp.send(
+                                "DOM.getBoxModel", {"backendNodeId": candidate["backendDOMNodeId"]}
+                            )["model"]["border"]
+                            page.mouse.click(sum(quad[::2]) / 4, sum(quad[1::2]) / 4)
+                            wait_for(
+                                lambda: view("EditingTranslation")
+                                and any(
+                                    item.get("name") == "focused"
+                                    and item.get("value", {}).get("value")
+                                    for item in (browser_editor() or {}).get("properties", [])
+                                ),
+                                "real browser candidate click did not focus the production editor",
+                            )
+                            draft = "Manually edited browser candidate."
+                            key("ctrl+a")
+                            typed(draft)
+                            wait_for(
+                                lambda: (browser_editor() or {}).get("value", {}).get("value")
+                                == draft,
+                                "browser editor did not retain the typed manual draft",
+                            )
+                            before = browser_control_state()
+                            assert before["source"] == source
+                            checkpoint = trace_checkpoint()
+                            if exit_editor:
+                                send_control_key("F8", repeat=True)
+                                wait_for(
+                                    lambda: not status().get("overlayVisible")
+                                    and status().get("viewState") is None
+                                    and browser_control_state()["focus"] == "source",
+                                    "browser editor Ctrl+F8 did not exit back to the original source",
+                                )
+                                exited = browser_control_state()
+                                for name in ("source", "other", "input", "keys"):
+                                    assert exited[name] == before[name]
+                                assert not new_write_outcomes(checkpoint)
+                                return exited
+                            try:
+                                control_keys["Control_L"](True)
+                                control_keys["F7"](True)
+                                wait_for(
+                                    lambda: browser_control_state()["focus"] == "source"
+                                    and ready_to_accept("EditedTranslationPending"),
+                                    "first browser editor Ctrl+F7 did not return with a new source permit",
+                                )
+                                assert browser_control_state()["source"] == source
+                                assert not new_write_outcomes(checkpoint)
+                                control_keys["F7"](True)
+                            finally:
+                                control_keys["Control_L"](False)
+                                control_keys["F7"](False)
+                            returned = browser_control_state()
+                            for name in ("source", "other", "input", "keys"):
+                                assert returned[name] == before[name]
+                            assert not new_write_outcomes(checkpoint)
+                            wait_for(
+                                lambda: ready_to_accept("EditedTranslationPending"),
+                                "browser manual candidate was not ready after the whole return pair released",
+                            )
+                            checkpoint = trace_checkpoint()
+                            send_control_key("F7")
+                            wait_for(
+                                lambda: browser_control_state()["source"] == draft
+                                and verified_write(checkpoint),
+                                "second independent browser Ctrl+F7 did not accept the exact manual draft",
+                            )
+                            accepted = browser_control_state()
+                            assert len(new_write_outcomes(checkpoint)) == 1
+                            assert accepted["input"] == before["input"] + 1
+                            assert accepted["keys"] == before["keys"]
+                            assert accepted["other"] == before["other"]
+                            assert accepted["focus"] == "source"
+                            return {"returned": returned, "accepted": accepted}
+
+                        edited_control = edit_browser_candidate("Please review this browser note.")
+                        editor_exit = edit_browser_candidate(
+                            "Please keep the browser note unchanged.", exit_editor=True
+                        )
+                        (arguments.output / "browser-control-editor.json").write_text(
+                            json.dumps({**edited_control, "exited": editor_exit}, indent=2) + "\n"
+                        )
+                        evidence.append(
+                            "Wayland Chromium editor: real candidate click and manual draft, first Ctrl+Fn returns with zero writes, "
+                            "held repeat/release ownership, second complete pair verifies the exact draft and editor exit leaves source unchanged"
+                        )
                         stop()
                         settings.update(
                             AcceptShortcut=ordinary_pair[0], ExitShortcut=ordinary_pair[1]

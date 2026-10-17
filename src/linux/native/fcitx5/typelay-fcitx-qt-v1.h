@@ -97,6 +97,18 @@ public:
 #define TypeLayFcitxQtOrderedProviderV1_iid "org.typelay.FcitxQtOrderedProvider/1.0"
 Q_DECLARE_INTERFACE(TypeLayFcitxQtOrderedProviderV1, TypeLayFcitxQtOrderedProviderV1_iid)
 
+// Additive editor route: the provider retains the claimed Ctrl/Fn group until
+// both original scans are released, including across source focus return.
+// This is routing only; the consumer freezes its current no-write editor token
+// and a deadline no later than the original Ctrl admission + 150ms.
+class TypeLayFcitxQtEditorOrderedProviderV1 {
+public:
+    virtual ~TypeLayFcitxQtEditorOrderedProviderV1() = default;
+    virtual bool supportsEditorOrderedKeys(QObject *actual, quint32 accept, quint32 exit) const = 0;
+};
+#define TypeLayFcitxQtEditorOrderedProviderV1_iid "org.typelay.FcitxQtEditorOrderedProvider/1.0"
+Q_DECLARE_INTERFACE(TypeLayFcitxQtEditorOrderedProviderV1, TypeLayFcitxQtEditorOrderedProviderV1_iid)
+
 class TypeLayFcitxQtOrderedControlV1 {
 public:
     virtual ~TypeLayFcitxQtOrderedControlV1() = default;

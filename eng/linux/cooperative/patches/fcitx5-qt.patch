@@ -308,7 +308,7 @@
 +    TlScope forwarding("tlqtPendingForward");
      if (type == QEvent::KeyPress && qtcode == Qt::Key_Menu) {
          QPoint globalPos;
-@@ -1051,13 +1252,42 @@
+@@ -1051,13 +1252,43 @@
              pos = window->mapFromGlobal(globalPos);
          }
 -        QWindowSystemInterface::handleContextMenuEvent(window, false, pos,
@@ -341,6 +341,7 @@
 +    if (tlCooperate() && (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease)) {
 +        const auto *key = static_cast<const QKeyEvent *>(event);
 +        QPointer<QFcitxPlatformInputContext> alive(this);
++        tlReleaseControlGroup(key);
 +        if (tlOrderedKey(key)) return true;
 +        if (!alive) return false;
 +        if (tlControlKey(key)) return true;
@@ -494,7 +495,7 @@
 +            data.event = tlCopyKey(keyEvent);
  #else
              data.event = std::make_unique<QKeyEvent>(keyEvent);
-@@ -1306,3 +1619,567 @@
+@@ -1306,3 +1619,582 @@
  }
  
 +// TypeLay 2026-10-12: exact-object cooperation for the original async IM path.
@@ -783,6 +784,16 @@
 +    return installed(accept) && installed(exit);
 +}
 +
++bool QFcitxPlatformInputContext::supportsEditorOrderedKeys(QObject *actual, quint32 accept, quint32 exit) const {
++    return supportsOrderedKeys(actual, accept, exit);
++}
++
++void QFcitxPlatformInputContext::tlReleaseControlGroup(const QKeyEvent *key) {
++    if (key->type() != QEvent::KeyRelease || key->isAutoRepeat()) return;
++    if (key->nativeScanCode() == tlClaimedCtrlScan_) tlClaimedCtrlScan_ = 0;
++    if (key->nativeScanCode() == tlClaimedFnScan_) tlClaimedFnScan_ = 0;
++}
++
 +void QFcitxPlatformInputContext::tlDeadline(qint64 until) {
 +    tlOrdered_.until = until;
 +    tlOrderedDeadline_.start(int(std::clamp<qint64>(until - tlNow(), 0, 150)));
@@ -827,6 +838,8 @@
 +    tlOrdered_.claimed = true;
 +    if (tlDecision_) tlDecision_->claimed = true;
 +    tlHeldControlKeys_.insert(tlOrdered_.scan, true);
++    tlClaimedCtrlScan_ = tlOrdered_.ctrlScan;
++    tlClaimedFnScan_ = tlOrdered_.scan;
 +    return true;
 +}
 +
@@ -884,7 +897,8 @@
 +        return false;
 +    }
 +    if (!down || !scan || key->key() != Qt::Key_Control ||
-+        (key->modifiers() & ~Qt::ControlModifier) || tlPendingDbus || tlPendingForward || tlOutputDepth)
++        (key->modifiers() & ~Qt::ControlModifier) || tlPendingDbus || tlPendingForward || tlOutputDepth ||
++        tlClaimedCtrlScan_ || tlClaimedFnScan_ || !tlHeldControlKeys_.isEmpty())
 +        return false;
 +    QPointer<QObject> actual(focusObjectWrapper());
 +    QPointer<QObject> consumer(qApp->property(TypeLayFcitxQtConsumerPropertyV1).value<QObject *>());
@@ -926,6 +940,7 @@
 +        auto item = std::move(tlDeferred_.front());
 +        tlDeferred_.pop_front();
 +        const auto &key = *item.event;
++        tlReleaseControlGroup(&key);
 +        if (key.type() == QEvent::KeyPress && !tlHeldControlKeys_.contains(key.nativeScanCode())
 +            && tlHeldControlKeys_.size() < 64 && (key.key() == Qt::Key_Tab || key.key() == Qt::Key_Escape
 +                || (key.key() >= Qt::Key_F1 && key.key() <= Qt::Key_F24)))
@@ -1012,7 +1027,8 @@
 +        return consumed;
 +    }
 +    if (release || event->isAutoRepeat()) { trace("precheck", 0); return false; }
-+    const bool sessionCandidate = event->key() >= Qt::Key_F1 && event->key() <= Qt::Key_F24;
++    const bool sessionCandidate = event->key() == Qt::Key_Control
++        || (event->key() >= Qt::Key_F1 && event->key() <= Qt::Key_F24);
 +    if (!traceCandidate && !sessionCandidate) return false;
 +    if (tlHeldControlKeys_.size() >= 64) return false;
 +    tlHeldControlKeys_.insert(scan, false);
@@ -1097,20 +1113,22 @@
 +          window_(window) { event_.setTimestamp(event.timestamp()); }
  
      const QKeyEvent &keyEvent() { return event_; }
-@@ -104,7 +113,19 @@
+@@ -104,7 +113,21 @@
  };
  
 -class QFcitxPlatformInputContext : public QPlatformInputContext {
 +class QFcitxPlatformInputContext : public QPlatformInputContext, public TypeLayFcitxQtV1,
-+                                   public TypeLayFcitxQtControlKeysV1, public TypeLayFcitxQtOrderedProviderV1 {
++                                   public TypeLayFcitxQtControlKeysV1, public TypeLayFcitxQtOrderedProviderV1,
++                                   public TypeLayFcitxQtEditorOrderedProviderV1 {
      Q_OBJECT
-+    Q_INTERFACES(TypeLayFcitxQtV1 TypeLayFcitxQtControlKeysV1 TypeLayFcitxQtOrderedProviderV1)
++    Q_INTERFACES(TypeLayFcitxQtV1 TypeLayFcitxQtControlKeysV1 TypeLayFcitxQtOrderedProviderV1 TypeLayFcitxQtEditorOrderedProviderV1)
  public:
 +    bool inspect(QObject *, TypeLayFcitxQtStateV1 *) override;
 +    bool validateLocal(QObject *, const TypeLayFcitxQtStateV1 *) override;
 +    bool prepareCaret(QObject *, const TypeLayFcitxQtStateV1 *) override;
 +    bool supportsControlKeys(QObject *, quint32 accept, quint32 exit) const override;
 +    bool supportsOrderedKeys(QObject *, quint32 accept, quint32 exit) const override;
++    bool supportsEditorOrderedKeys(QObject *, quint32 accept, quint32 exit) const override;
 +    void cancelOrdered(quint64 ticket) override;
 +    bool validateOrdered(QObject *, quint64, const TypeLayFcitxQtStateV1 *, const TypeLayFcitxQtStateV1 *) override;
 +    bool claimOrdered(QObject *, quint64, const TypeLayFcitxQtStateV1 *, const TypeLayFcitxQtStateV1 *) override;
@@ -1118,7 +1136,7 @@
 +    bool eventFilter(QObject *, QEvent *) override;
      QFcitxPlatformInputContext();
      ~QFcitxPlatformInputContext() override;
-@@ -160,4 +181,69 @@
+@@ -160,4 +181,71 @@
      void processKeyEventFinished(QDBusPendingCallWatcher *);
  
 +Q_SIGNALS:
@@ -1181,6 +1199,8 @@
 +    bool tlInspecting_ = false;
 +    bool tlControl_ = false;
 +    QHash<quint32, bool> tlHeldControlKeys_;
++    quint32 tlClaimedCtrlScan_ = 0, tlClaimedFnScan_ = 0;
++    void tlReleaseControlGroup(const QKeyEvent *);
 +    QString tlEngine_;
 +    void tlBind(QObject *, QObject *retained = nullptr);
 +    void tlChanged(quint32);

@@ -15,7 +15,7 @@
   const consumed = new Map();
   const held = new Map();
   const MAX_TEXT = 8192;
-  let counter = 0, publication = null, shortcut = null, configuration = null, hintTimer = null, ordered = null;
+  let counter = 0, publication = null, shortcut = null, configuration = null, hintTimer = null, ordered = null, editorControl = null;
   let clock = null, commandClock = null, lastHostStamp = NaN, alive = true, overlay = null, mutating = false, ownInputEvent = null;
   // Cache native methods in the extension's isolated world, never invoke a
   // page-overridden setter or a page-supplied replacement function.
@@ -49,7 +49,7 @@
   function sessionBindings(field) {
     const source = sourceConfigured(field);
     return {generation: configuration?.generation ?? null, accept: configuration?.accept ?? null,
-      exit: configuration?.exit ?? null, sourceReady: source, editorReady: source && !controlPair()};
+      exit: configuration?.exit ?? null, sourceReady: source, editorReady: source};
   }
   function sessionKey(event, action) {
     return sessionConfigured() && event.ctrlKey === controlBinding(action)
@@ -60,6 +60,7 @@
     if (ordered) ordered.revoked = true;
     ordered = null; // Physical press ownership lives until its real key-up.
   }
+  function retireEditorControl() { editorControl = null; } // Never clear held press ownership.
   function viewCurrent(field, data) {
     if (!field || !sessionApplied() || data.generation !== configuration.generation) return false;
     if (data.view?.state === "Paused") return true; // Metadata-only pause has its own revision.
@@ -101,7 +102,7 @@
     captureCounts[lastCaptureReason] = Math.min(1000000, captureCounts[lastCaptureReason] + 1);
     return null;
   }
-  function clockReject(reason) { retireOrdered(); lastClockReason = reason; return false; }
+  function clockReject(reason) { retireOrdered(); retireEditorControl(); lastClockReason = reason; return false; }
   function fineClock() {
     const first = monoNow();
     let previous = first;
@@ -492,7 +493,7 @@
     for (const field of targets.values()) { field.ime = "Unknown"; field.authorities?.clear(); }
   }
   function changed(field, textChanged, focusChanged) {
-    retireOrdered();
+    retireOrdered(); retireEditorControl();
     publication = shortcut = null;
     if (!focusChanged) field.input++;
     if (textChanged) field.content++;
@@ -506,6 +507,8 @@
     for (const record of records) {
       if (record.type === "attributes") {
         if (ordered && (record.target === ordered.field.element || record.target.contains(ordered.field.element))) retireOrdered();
+        if (editorControl && (record.target === editorControl.field.element
+          || record.target.contains(editorControl.field.element))) retireEditorControl();
         continue;
       }
       if (!mutating) {
@@ -542,7 +545,7 @@
     if (reducedMotion.matches && overlay) { cancelMotion(overlay); position(); }
   });
   function hide() {
-    retireOrdered();
+    retireOrdered(); retireEditorControl();
     clearTimeout(hintTimer); hintTimer = null;
     if (!overlay) return;
     const previous = overlay;
@@ -696,13 +699,26 @@
       editor.setAttribute("aria-label", "TypeLay 译文");
       editor.readOnly = true;
       editor.addEventListener("pointerdown", event => {
+        retireEditorControl();
         if (!overlay?.editing) { event.preventDefault(); if (overlay?.editable && sessionCurrent(overlay.generation)) ui("beginEdit"); }
       });
-      editor.addEventListener("input", () => { if (overlay?.editing) ui("draft", editor.value); });
-      editor.addEventListener("compositionstart", event => { if (event.isTrusted) { overlay.composing = true; ui("composition", true); } });
-      editor.addEventListener("compositionend", event => { if (event.isTrusted) { overlay.composing = false; ui("composition", false); } });
-      editor.addEventListener("focus", () => ui("focus", true));
-      editor.addEventListener("blur", () => ui("focus", false));
+      for (const kind of ["beforeinput", "input"]) editor.addEventListener(kind, event => {
+        retireEditorControl();
+        if (overlay?.editor !== editor) return;
+        if (event.isComposing) overlay.composing = true;
+        if (kind === "input" && overlay.editing) ui("draft", editor.value);
+      });
+      for (const kind of ["compositionstart", "compositionupdate", "compositionend"]) {
+        editor.addEventListener(kind, event => {
+          retireEditorControl();
+          if (overlay?.editor !== editor) return;
+          // A synthetic notification can revoke but cannot establish Clear.
+          overlay.composing = !(event.isTrusted && kind === "compositionend");
+          if (event.isTrusted) ui("composition", overlay.composing);
+        });
+      }
+      editor.addEventListener("focus", () => { retireEditorControl(); ui("focus", true); });
+      editor.addEventListener("blur", () => { retireEditorControl(); ui("focus", false); });
       const footer = document.createElement("footer"), hint = document.createElement("span");
       hint.className = "hint";
       footer.append(hint);
@@ -770,6 +786,14 @@
     // A new view is authoritative immediately, including during a resize.
     // Land at its current layout rather than carrying an older revision's motion.
     cancelMotion(overlay);
+    const viewIdentity = JSON.stringify({generation: data.generation, revision: data.revision, view});
+    if (overlay.viewIdentity !== viewIdentity) retireEditorControl();
+    overlay.viewIdentity = viewIdentity;
+    // Only successful display updates set the bounds for a future Ctrl. An
+    // existing editor ticket keeps its original copied bounds through renewal.
+    overlay.expiresAtPerformanceMs = deadline(data.expiresAtMs, 800);
+    overlay.expiresAtWallMs = data.expiresAtMs - clock?.upperWall;
+    if (!liveDeadline(overlay)) { hide(); return {visible: false}; }
     if (overlay.revision !== data.revision) overlay.resumePending = false;
     overlay.revision = data.revision;
     overlay.generation = data.generation;
@@ -782,7 +806,7 @@
     overlay.language.hidden = paused;
     overlay.panel.classList.toggle("paused", paused);
     overlay.renewed = data.expiresAtMs - 800;
-    overlay.editable = !paused && !controlPair() && view.editable && view.viewContext?.canEdit === true;
+    overlay.editable = !paused && sourceConfigured(field) && view.editable && view.viewContext?.canEdit === true;
     overlay.editor.dataset.editable = String(!!overlay.editable);
     overlay.editor.title = overlay.editable
       ? view.presentation.editorOwnsText ? "编辑译文" : "点击译文以编辑" : "";
@@ -856,9 +880,14 @@
         retireOrdered(); publication = shortcut = null; hide();
         configuration = {...data};
         return null;
-      case "revoke": retireOrdered(); publication = null; if (data.shortcuts) shortcut = null; return null;
+      case "revoke":
+        retireOrdered(); publication = null;
+        // Editing owns a separate, no-write UI token. Normal source revocation
+        // during editing cannot replace or cancel that token.
+        if (data.shortcuts) { retireEditorControl(); shortcut = null; }
+        return null;
       case "direct": {
-        retireOrdered();
+        retireOrdered(); retireEditorControl();
         if (!sessionCurrent(data.generation)) return rejection("EpochChanged");
         if (!data.plan?.id || consumed.has(data.plan.id)) return rejection("BadPlan");
         for (const [id, expiry] of consumed) if (monoNow() > expiry) consumed.delete(id);
@@ -877,14 +906,14 @@
           || field.focus !== data.authority.focusRevision || field.ime !== "Clear") return {triggered: false};
         const snapshot = capture(field, data.authority);
         if (!snapshot || !sessionCurrent(data.generation)) return {triggered: false};
-        retireOrdered();
+        retireOrdered(); retireEditorControl();
         send("shortcut", {kind: data.kind, generation: data.generation, native: snapshot, acceptedAtMs: now()});
         publication = shortcut = null;
         return {triggered: true};
       }
-      case "quarantine": retireOrdered(); if (field) field.quarantined = true; publication = null; return null;
+      case "quarantine": retireOrdered(); retireEditorControl(); if (field) field.quarantined = true; publication = null; return null;
       case "return": {
-        if (controlPair()) return {returned: false};
+        if (!sourceConfigured(field)) return {returned: false};
         if (!sessionCurrent(data.generation) || !field || !approved(field, data.authority)
           || field.content !== data.authority.contentRevision || field.ime !== "Clear"
           || !document.hasFocus() || overlay?.composing || !sessionCurrent(data.generation)) return {returned: false};
@@ -900,18 +929,21 @@
           && (!overlay.paused || pauseCurrent(field, data.authority) && calibrate(field, data.authority))
           && fresh(data.expiresAtMs - 800, 800) && sessionApplied() && data.generation === configuration.generation
           && overlay?.generation === data.generation) {
+          overlay.expiresAtPerformanceMs = deadline(data.expiresAtMs, 800);
+          overlay.expiresAtWallMs = data.expiresAtMs - clock?.upperWall;
+          if (!liveDeadline(overlay)) { hide(); return null; }
           overlay.authority = data.authority;
           overlay.renewed = data.expiresAtMs - 800; position();
         } else hide();
         return null;
       case "overlay-edit":
-        if (!controlPair() && overlay?.field === field && overlayCurrent(data) && overlay.editable && !overlay.paused
+        if (sourceConfigured(field) && overlay?.field === field && overlayCurrent(data) && overlay.editable && !overlay.paused
           && data.allowed === true && document.hasFocus() && field.ime === "Clear") {
           overlay.editing = true; overlay.editor.readOnly = false; overlay.editor.focus({preventScroll: true});
         }
         return null;
       case "overlay-resume":
-        if (!controlPair() && overlay?.field === field && overlayCurrent(data) && !overlay.paused && document.hasFocus()) {
+        if (sourceConfigured(field) && overlay?.field === field && overlayCurrent(data) && !overlay.paused && document.hasFocus()) {
           overlay.status.textContent = "无法返回原输入框，请点击译文继续编辑";
         }
         return null;
@@ -1001,6 +1033,56 @@
     const press = held.get(event.code);
     if (press) press.consumed = true;
   }
+  function editorControlCurrent(ticket) {
+    if (!ticket || editorControl !== ticket || !alive || overlay !== ticket.overlay
+      || configuration !== ticket.configuration || !sessionCurrent(ticket.generation)
+      || !sourceConfigured(ticket.field) || !liveDeadline(ticket)) return false;
+    const current = ticket.overlay, field = ticket.field;
+    if (fields.get(field.element) !== field || field.dead || field.quarantined
+      || field.ime !== "Clear" || !approved(field, ticket.authority)) return false;
+    const selected = selection(field);
+    return current.viewIdentity === ticket.viewIdentity && current.editing && current.editable
+      && !current.paused && !current.composing && !current.editor.readOnly
+      && current.editor === ticket.editor && current.editor.value === ticket.draft
+      && document.visibilityState === "visible" && document.hasFocus()
+      && document.activeElement === current.host && current.host.isConnected
+      && current.shadow.activeElement === ticket.editor
+      && field.content === ticket.content && field.input === ticket.input && field.focus === ticket.focus
+      && read(field) === ticket.source && selected?.start === ticket.selection.start
+      && selected?.end === ticket.selection.end && editorControl === ticket;
+  }
+  function beginEditorControl(event, press) {
+    if (!controlPair() || !overlay || !["ControlLeft", "ControlRight"].includes(event.code)
+      || event.altKey || event.shiftKey || event.metaKey || !sourceConfigured(overlay.field)
+      || [...held.values()].some(value => value.consumed)
+      || [...held.keys()].some(code => code !== event.code && ["ControlLeft", "ControlRight"].includes(code))) return;
+    drainMutations();
+    const current = overlay, field = current?.field;
+    if (!current || !field || field.dead || field.quarantined || field.ime !== "Clear"
+      || !approved(field, current.authority) || !liveDeadline(current)) return;
+    const ticket = {overlay: current, field, editor: current.editor, configuration,
+      viewIdentity: current.viewIdentity, revision: current.revision, generation: current.generation,
+      authority: current.authority, content: field.content, input: field.input, focus: field.focus,
+      source: read(field), selection: selection(field), draft: current.editor.value,
+      controlCode: event.code, controlPress: press,
+      expiresAtPerformanceMs: current.expiresAtPerformanceMs, expiresAtWallMs: current.expiresAtWallMs};
+    editorControl = ticket;
+    if (!editorControlCurrent(ticket)) retireEditorControl();
+  }
+  function editorControlKey(event, press) {
+    const ticket = editorControl;
+    const operation = controlBinding("accept") && sessionKey(event, "accept") ? "return"
+      : controlBinding("exit") && sessionKey(event, "exit") ? "escape" : null;
+    drainMutations();
+    if (!operation || !editorControlCurrent(ticket) || event.isComposing || event.keyCode === 229
+      || held.get(ticket.controlCode) !== ticket.controlPress || held.get(event.code) !== press
+      || press.consumed) return false;
+    consume(event); // This press only requests a return/exit; it has no source permit.
+    retireEditorControl();
+    publication = null;
+    send("ui", {target: ticket.field.id, operation, revision: ticket.revision, generation: ticket.generation});
+    return true;
+  }
   function sameOrderedPublication(next) {
     if (!ordered || ordered.revoked || !next) return false;
     const normalize = current => {
@@ -1032,6 +1114,7 @@
   function beginOrdered(event, field, press) {
     if (!controlPair() || !sourceConfigured(field) || !["ControlLeft", "ControlRight"].includes(event.code)
       || event.altKey || event.shiftKey || event.metaKey || !publication
+      || [...held.values()].some(value => value.consumed)
       || [...held.keys()].some(code => code !== event.code && ["ControlLeft", "ControlRight"].includes(code))) return;
     drainMutations();
     const current = publication, basis = current?.authority;
@@ -1115,23 +1198,34 @@
   window.addEventListener("keydown", event => {
     if (!event.isTrusted) return;
     if (held.has(event.code)) {
+      retireEditorControl();
       if (ordered && !ordered.claimed) retireOrdered();
       tabDiagnostic(event, fields.get(event.target))("held");
       if (held.get(event.code).consumed) consume(event);
       return;
     }
-    if (event.repeat) { retireOrdered(); tabDiagnostic(event, fields.get(event.target))("repeat"); return; }
+    if (event.repeat) { retireOrdered(); retireEditorControl(); tabDiagnostic(event, fields.get(event.target))("repeat"); return; }
     const press = {consumed: false};
     held.set(event.code, press);
     // A closed shadow root retargets to the host at window capture. Handle the
     // installed editor here so one physical key has one owner across focus/config.
     if (overlay && event.target === overlay.host && overlay.editing
       && overlay.shadow.activeElement === overlay.editor && sessionCurrent(overlay.generation)) {
-      if (controlPair() || event.isComposing || overlay.composing || event.keyCode === 229) return;
-      if (sessionKey(event, "accept")) { publication = null; consume(event); ui("return"); }
-      else if (sessionKey(event, "exit")) { publication = null; consume(event); ui("escape"); }
-      return;
+      if (event.isComposing || overlay.composing || event.keyCode === 229) {
+        overlay.composing = true; retireEditorControl(); return;
+      }
+      if (event.key === "Control") {
+        retireOrdered(); retireEditorControl();
+        beginEditorControl(event, press);
+        return; // Editing Ctrl never creates a source write ticket.
+      }
+      if (editorControlKey(event, press)) return;
+      retireEditorControl();
+      if (!controlBinding("accept") && sessionKey(event, "accept")) { publication = null; consume(event); ui("return"); }
+      else if (!controlBinding("exit") && sessionKey(event, "exit")) { publication = null; consume(event); ui("escape"); }
+      return; // Even a refused editor Fn cannot fall through into source acceptance.
     }
+    retireEditorControl();
     const field = fieldFor(event.target);
     const reportTab = tabDiagnostic(event, field);
     if (!field || !focused(field)) { retireOrdered(); reportTab("target-unfocused"); return; }
@@ -1189,6 +1283,7 @@
   window.addEventListener("keyup", event => {
     if (!event.isTrusted) return;
     if (ordered && !ordered.claimed && event.code === ordered.controlCode) retireOrdered();
+    if (editorControl && event.code === editorControl.controlCode) retireEditorControl();
     if (held.get(event.code)?.consumed) { event.preventDefault(); event.stopImmediatePropagation(); }
     held.delete(event.code);
   }, true);

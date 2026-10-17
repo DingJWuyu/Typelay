@@ -314,7 +314,7 @@ class BrowserContract(unittest.TestCase):
         self.configure_control()
         snapshot = self.type_source()
         self.assertTrue(snapshot["sessionBindings"]["sourceReady"])
-        self.assertFalse(snapshot["sessionBindings"]["editorReady"])
+        self.assertTrue(snapshot["sessionBindings"]["editorReady"])
         self.assertTrue(self.publish_control(snapshot)["published"])
         self.page.keyboard.down("Control")
         # A normal same-candidate host renewal cannot replace the old plan or
@@ -333,32 +333,6 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(accepted[0]["data"]["planId"], "test-plan")
         self.assertEqual(accepted[0]["data"]["receipt"]["status"], "Verified")
         self.assertEqual(self.page.evaluate("controlEvents"), [])
-
-    def test_control_configuration_cannot_open_the_overlay_editor(self):
-        self.configure_control()
-        snapshot = self.type_source()
-        rendered = self.command(
-            "overlay-render",
-            {
-                "target": snapshot["target"],
-                "authority": snapshot["authority"],
-                "revision": 1,
-                "view": {
-                    "state": "ValidTranslation",
-                    "text": "你好",
-                    "editable": True,
-                    "presentation": {
-                        "visible": True,
-                        "editorOwnsText": False,
-                        "tabHint": "Ctrl+F7 接受译文",
-                    },
-                },
-            },
-        )
-        self.assertTrue(rendered["visible"])
-        self.command("overlay-edit", {"target": snapshot["target"], "allowed": True})
-        self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
-        self.assertFalse(self.capture()["sessionBindings"]["editorReady"])
 
     def test_control_source_exit_and_ordinary_binding_restore(self):
         self.configure_control()
@@ -1813,7 +1787,10 @@ class BrowserContract(unittest.TestCase):
     def test_f24_editor_return_requires_release_and_fresh_second_keydown(self):
         self.check_editor_draft_return_then_accept("F24", "F1")
 
-    def check_editor_draft_return_then_accept(self, accept, exit_key):
+    def test_control_editor_returns_without_write_then_requires_a_new_complete_pair(self):
+        self.check_editor_draft_return_then_accept("Ctrl+F7", "Ctrl+F8")
+
+    def open_editor(self, accept, exit_key):
         self.command(
             "configure-shortcuts",
             {
@@ -1829,7 +1806,6 @@ class BrowserContract(unittest.TestCase):
               'display:block;margin-top:500px;margin-left:160px;width:480px;box-sizing:border-box';} """
         )
         snapshot = self.type_source()
-        revision = snapshot["authority"]["inputRevision"]
         view = {
             "presentation": {
                 "visible": True,
@@ -1871,6 +1847,14 @@ class BrowserContract(unittest.TestCase):
         data["revision"] = 2
         self.command("overlay-render", data)
         self.command("overlay-edit", {"target": snapshot["target"], "allowed": True})
+        return snapshot, data
+
+    def check_editor_draft_return_then_accept(self, accept, exit_key):
+        snapshot, data = self.open_editor(accept, exit_key)
+        revision = snapshot["authority"]["inputRevision"]
+        view = data["view"]
+        control = accept.startswith("Ctrl+")
+        main_key = accept.removeprefix("Ctrl+")
         self.page.keyboard.press("Control+A")
         human_draft = (
             "中文人工草稿，保留选区与原生撤销。" * 20 if accept == "Tab" else "Human draft"
@@ -1918,7 +1902,10 @@ class BrowserContract(unittest.TestCase):
         draft = self.page.evaluate("""window.fixtureMessages.findLast(message =>
           message.event === 'ui' && message.data.operation === 'draft').data.value""")
         self.assertEqual(draft, human_draft + "!")
-        self.session_key(accept, "down")
+        if control:
+            self.page.keyboard.down("Control")
+            self.command("revoke", {"shortcuts": False})
+        self.session_key(main_key, "down")
         self.assertTrue(
             self.page.evaluate("""window.fixtureMessages.some(message =>
           message.event === 'ui' && message.data.operation === 'return')""")
@@ -1939,14 +1926,28 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(returned["selection"], snapshot["selection"])
         self.assertEqual(returned["authority"]["inputRevision"], revision)
         self.publish(returned, self.plan(returned, draft))
-        self.session_key(accept, "down", repeat=True)
+        self.session_key(main_key, "down", repeat=True)
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
-        self.session_key(accept, "up")
+        if control:
+            # Re-pressing Ctrl while the consumed return Fn is still down does
+            # not start a source ticket. Even a subsequent fresh Fn must pass.
+            self.page.keyboard.up("Control")
+            self.page.keyboard.down("Control")
+            self.session_key(main_key, "up")
+            self.session_key(main_key, "down")
+            self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+            self.assertEqual(self.accepted(), [])
+            self.page.keyboard.up("Control")
+        self.session_key(main_key, "up")
         returned = self.capture()
         self.publish(returned, self.plan(returned, draft))
-        self.session_key(accept, "down")
-        self.session_key(accept, "up")
+        if control:
+            self.page.keyboard.down("Control")
+        self.session_key(main_key, "down")
+        if control:
+            self.page.keyboard.up("Control")
+        self.session_key(main_key, "up")
         self.assertEqual(self.page.locator("#source").input_value(), human_draft + "!")
         self.assertEqual(len(self.accepted()), 1)
         if accept == "F24":
@@ -1959,6 +1960,75 @@ class BrowserContract(unittest.TestCase):
                     ("keyup", False),
                 ]
             )
+
+    def test_control_editor_exit_owns_repeat_and_release_without_a_write(self):
+        self.open_editor("Ctrl+F7", "Ctrl+F8")
+        self.page.keyboard.down("Control")
+        self.page.keyboard.down("F8")
+        self.page.keyboard.down("F8")
+        self.page.keyboard.up("Control")
+        self.page.keyboard.up("F8")
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+        self.assertEqual(
+            self.page.evaluate("""fixtureMessages.filter(message =>
+              message.event === 'ui' && message.data.operation === 'escape').length"""),
+            1,
+        )
+
+    def test_control_editor_changes_and_renewal_cannot_restore_the_original_ticket(self):
+        for change in ("revoke", "input", "composition", "view", "deadline"):
+            with self.subTest(change=change):
+                self.page.reload()
+                self.page.locator("#source").focus()
+                snapshot, data = self.open_editor("Ctrl+F7", "Ctrl+F8")
+                editor = self.overlay_control("TypeLay 译文", "textbox")
+                self.page.evaluate("""() => {
+                  window.editorKeys = [];
+                  for (const type of ['keydown', 'keyup']) window.addEventListener(type, event => {
+                    if (event.key === 'F7') editorKeys.push(type);
+                  });
+                }""")
+                self.page.keyboard.down("Control")
+                if change == "revoke":
+                    self.command("revoke", {"shortcuts": True})
+                elif change == "input":
+                    # Same-value DOM notification still invalidates the old
+                    # editor action; matching the final draft is insufficient.
+                    self.overlay_dom(
+                        editor, "function() { this.dispatchEvent(new InputEvent('input')); }"
+                    )
+                elif change == "composition":
+                    self.overlay_dom(
+                        editor,
+                        """function() {
+                          this.dispatchEvent(new CompositionEvent('compositionstart'));
+                          this.dispatchEvent(new CompositionEvent('compositionend'));
+                        }""",
+                    )
+                elif change == "view":
+                    data["revision"] += 1
+                else:
+                    # Keep the visible lease alive while deliberately crossing
+                    # the first Ctrl's fixed 800ms display deadline.
+                    self.page.wait_for_timeout(450)
+                self.assertTrue(self.command("overlay-render", data)["visible"])
+                self.command(
+                    "overlay-renew",
+                    {"target": snapshot["target"], "authority": snapshot["authority"]},
+                )
+                if change == "deadline":
+                    self.page.wait_for_timeout(450)
+                self.page.keyboard.down("F7")
+                self.page.keyboard.up("Control")
+                self.page.keyboard.up("F7")
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.accepted(), [])
+                self.assertFalse(
+                    self.page.evaluate("""fixtureMessages.some(message =>
+                      message.event === 'ui' && ['return', 'escape'].includes(message.data.operation))""")
+                )
+                self.assertEqual(self.page.evaluate("editorKeys"), ["keydown", "keyup"])
 
     def test_untrusted_tab_and_password_are_not_adapted(self):
         snapshot = self.type_source()

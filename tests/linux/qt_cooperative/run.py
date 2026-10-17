@@ -416,7 +416,7 @@ def ordered_controls(out, env, children, delay_finished=False):
                     },
                 )
 
-            def publish():
+            def publish(replacement_text="Translated result"):
                 wait(settled, "genuine IM retirement before original publication")
                 description = native.describe()
                 captured = native.call(
@@ -436,7 +436,7 @@ def ordered_controls(out, env, children, delay_finished=False):
                     "inputEpoch": captured["authority"]["inputRevision"],
                     "focusEpoch": captured["authority"]["focusRevision"],
                 }
-                replacement = plan(source, "Translated result")
+                replacement = plan(source, replacement_text)
                 value = {
                     "target": captured["target"],
                     "generation": generation,
@@ -487,7 +487,7 @@ def ordered_controls(out, env, children, delay_finished=False):
             configure()
             prepare()
             bindings = native.describe()["sessionBindings"]
-            assert bindings["sourceReady"] and not bindings["editorReady"]
+            assert bindings["sourceReady"] and bindings["editorReady"]
             if delay_finished:
                 publication = publish()
                 chord()
@@ -723,6 +723,160 @@ def ordered_controls(out, env, children, delay_finished=False):
                         fixture("undo", field="first")
                         assert state()["first"]["text"] == "Original source"
                         result["same_candidate_renewal_receipt_keeps_original_plan"] = True
+
+                def editor_view():
+                    prepare()
+                    publication = publish()
+                    target = publication["target"]
+                    identity = publication["permit"]["plan"]["expected"]["target"]
+                    view = {
+                        "state": "EditingTranslation",
+                        "text": "Exact manual translation",
+                        "editable": True,
+                        "viewContext": {
+                            "token": {
+                                "target": identity,
+                                "commandGeneration": generation,
+                                "revision": 1,
+                            },
+                            "bindings": {"accept": "Ctrl+F7", "exit": "Ctrl+F8"},
+                            "canEdit": True,
+                        },
+                        "presentation": {"visible": True, "editorOwnsText": True},
+                    }
+                    assert native.call(
+                        "overlay-render",
+                        {
+                            "target": target,
+                            "authority": publication["authority"],
+                            "generation": generation,
+                            "revision": 1,
+                            "expiresAtMs": now_ms() + 800,
+                            "view": view,
+                        },
+                    )["editing"]
+                    assert native.call(
+                        "overlay-resume",
+                        {"target": target, "generation": generation, "revision": 1},
+                    )["editing"]
+                    wait(
+                        lambda: state().get("editorFocused") and settled(),
+                        "real editor focus and IM retirement",
+                    )
+                    return publication
+
+                def returns():
+                    native.call(
+                        "describe"
+                    )  # Drain real UI messages; no synthetic consumer invocation.
+                    return [
+                        event
+                        for event in native.events
+                        if event.get("event") == "ui" and event["data"].get("operation") == "return"
+                    ]
+
+                publication = editor_view()
+                initial_returns = len(returns())
+                accepted_before = len(
+                    [event for event in native.events if event.get("event") == "accepted"]
+                )
+                old_keys = state()["keys"]
+                before_changes = state()["first"]["changes"]
+                run(["xdotool", "keydown", "--delay", "0", "Control_L"], env=environment)
+                try:
+                    wait(
+                        lambda: state()["keys"].get("controlPress", 0)
+                        > old_keys.get("controlPress", 0)
+                        and settled(),
+                        "original editor Ctrl delivered before source-only withdrawal",
+                    )
+                    native.call("revoke", {"shortcuts": 0})
+                    run(["xdotool", "keydown", "--delay", "0", "F7"], env=environment)
+                    wait(
+                        lambda: len(returns()) == initial_returns + 1 and settled(),
+                        "source-only revoke preserves the original no-write editor command",
+                    )
+                    assert state()["first"]["text"] == "Original source"
+                    assert state()["first"]["changes"] == before_changes
+                    assert (
+                        len([event for event in native.events if event.get("event") == "accepted"])
+                        == accepted_before
+                    )
+                    assert native.call(
+                        "return",
+                        {
+                            "target": publication["target"],
+                            "authority": publication["authority"],
+                            "generation": generation,
+                        },
+                    )["returned"]
+                    wait(
+                        lambda: state()["first"]["focused"] and settled(),
+                        "native return to original source",
+                    )
+                    run(
+                        [
+                            "xdotool",
+                            "keyup",
+                            "--delay",
+                            "0",
+                            "Control_L",
+                            "keydown",
+                            "--delay",
+                            "0",
+                            "F7",
+                        ],
+                        env=environment,
+                    )
+                    wait(settled, "held Fn remains the original editor action after source return")
+                    assert state()["first"]["text"] == "Original source"
+                    assert len(returns()) == initial_returns + 1
+                finally:
+                    run(["xdotool", "keyup", "F7", "Control_L"], env=environment)
+                wait(settled, "entire original editor chord released")
+                for field in ("first", "editor"):
+                    for event in ("Press", "Release"):
+                        name = f"{field}F7{event}"
+                        assert state()["keys"].get(name, 0) == old_keys.get(name, 0)
+                publish("Exact manual translation")
+                chord()
+                wait(
+                    lambda: state()["first"]["text"] == "Exact manual translation" and settled(),
+                    "new source capture and new chord accept the exact manual translation",
+                )
+                native.call("describe")
+                assert state()["first"]["changes"] == before_changes + 1
+                assert (
+                    len([event for event in native.events if event.get("event") == "accepted"])
+                    == accepted_before + 1
+                )
+                fixture("undo", field="first")
+                assert state()["first"]["text"] == "Original source"
+                native.call("overlay-hide")
+                result["editor_source_revoke_return_held_release_fresh_accept"] = True
+
+                editor_view()
+                initial_returns = len(returns())
+                releases = state()["keys"].get("editorF7Release", 0)
+                controls = state()["keys"].get("controlPress", 0)
+                run(["xdotool", "keydown", "--delay", "0", "Control_L"], env=environment)
+                try:
+                    wait(
+                        lambda: state()["keys"].get("controlPress", 0) > controls and settled(),
+                        "original editor Ctrl delivered before the actual draft change",
+                    )
+                    fixture("editor-set", text="A changed draft revokes the original command")
+                    run(["xdotool", "keydown", "--delay", "0", "F7"], env=environment)
+                finally:
+                    run(["xdotool", "keyup", "Control_L", "F7"], env=environment)
+                wait(
+                    lambda: state()["keys"].get("editorF7Release", 0) == releases + 1 and settled(),
+                    "changed draft returns the rejected original Fn to normal Qt processing",
+                )
+                assert len(returns()) == initial_returns
+                assert state()["editorFocused"] and state()["first"]["text"] == "Original source"
+                native.call("overlay-hide")
+                result["editor_draft_change_revokes_original_command"] = True
 
                 configure("Tab", "Esc")
                 prepare()

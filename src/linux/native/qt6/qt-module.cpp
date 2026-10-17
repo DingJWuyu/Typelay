@@ -35,6 +35,7 @@
 #include <QVariantAnimation>
 #include <QVBoxLayout>
 #include <QtEndian>
+#include <algorithm>
 #include <cerrno>
 #include <cstring>
 #include <cstdio>
@@ -156,6 +157,25 @@ struct OrderedTicket {
     ulong ctrlTimestamp = 0;
     bool revoked = false;
 };
+// A displayed editor command is independent of source write publication.
+// It may only request Runtime's existing return/exit flow, never carry a plan.
+struct EditorOrderedTicket {
+    quint64 id = 0, connection = 0, input = 0, content = 0;
+    Target *target = nullptr;
+    QPointer<QWidget> source;
+    QPointer<QFrame> card;
+    QPointer<QPlainTextEdit> editor;
+    QPointer<QTextDocument> document;
+    QPointer<QObject> provider;
+    QJsonObject view;
+    QJsonValue generation;
+    TypeLayFcitxQtStateV1 before;
+    qint64 revision = 0, until = 0;
+    int documentRevision = 0;
+    quint32 ctrlScan = 0;
+    ulong ctrlTimestamp = 0;
+    bool revoked = false;
+};
 struct OrderedWriteContext {
     std::shared_ptr<OrderedTicket> ticket;
     bool mutationStarted = false;
@@ -169,6 +189,7 @@ public:
         qApp->installEventFilter(this);
         connect(qApp, &QApplication::focusChanged, this, [this](QWidget *old, QWidget *current) {
             ++focusGeneration_;
+            revokeEditorOrdered();
             for (auto *widget : {old, current}) if (auto *target = discover(widget)) invalidate(target, false, true);
             syncOverlay();
         });
@@ -188,6 +209,7 @@ public:
         connectPeer();
     }
     ~Native() override {
+        revokeEditorOrdered();
         revokeOrdered();
         if (fd_ >= 0) ::close(fd_);
         qDeleteAll(targets_);
@@ -241,6 +263,16 @@ public:
                 orderedBinding(shortcutConfiguration_.value("accept")) ? accept : 0u,
                 orderedBinding(shortcutConfiguration_.value("exit")) ? exit : 0u)));
     }
+    bool editorProvider(QObject *field) const {
+        if (!orderedConfigured()) return sessionProvider(field);
+        const QPointer<QObject> owner = field ? field->property(ProviderProperty).value<QObject *>() : nullptr;
+        auto *editorRoute = owner ? qobject_cast<TypeLayFcitxQtEditorOrderedProviderV1 *>(owner.data()) : nullptr;
+        return sessionProvider(field) && editorRoute && editorRoute->supportsEditorOrderedKeys(field,
+            orderedBinding(shortcutConfiguration_.value("accept"))
+                ? sessionSymbol(sessionKey(shortcutConfiguration_.value("accept"), true)) : 0u,
+            orderedBinding(shortcutConfiguration_.value("exit"))
+                ? sessionSymbol(sessionKey(shortcutConfiguration_.value("exit"), false)) : 0u);
+    }
     QJsonObject sessionBindings(Target *target) const {
         // Source focus moves into our editor without retaining an IME proof on
         // the source. Keep only the same-generation key-route confirmation from
@@ -258,7 +290,8 @@ public:
         return {{"generation", shortcutConfiguration_.value("generation")},
             {"accept", shortcutConfiguration_.value("accept")}, {"exit", shortcutConfiguration_.value("exit")},
             {"sourceReady", enabled && (sourceRoute || editorRoute)},
-            {"editorReady", enabled && !orderedConfigured() && (editing ? editorRoute : sourceRoute)}};
+            {"editorReady", enabled && (editing ? editorRoute && editorProvider(editor_)
+                : sourceRoute && editorProvider(target ? target->field.data() : nullptr))}};
     }
     bool viewCurrent(Target *target, const QJsonObject &data) const {
         const auto view = data.value("view").toObject();
@@ -367,9 +400,10 @@ public:
 
     bool beginOrdered(QObject *actual, quint64 id, const QEvent *input,
         const TypeLayFcitxQtStateV1 *before, TypeLayFcitxQtOrderedGrantV1 *grant) override {
-        if (!onThread() || handlingKey_ || ordered_ || !id || !before || !grant || !input
+        if (!onThread() || handlingKey_ || ordered_ || editorOrdered_ || !id || !before || !grant || !input
             || input->type() != QEvent::KeyPress || !orderedConfigured()) return false;
         const auto *key = static_cast<const QKeyEvent *>(input);
+        if (actual == editor_) return beginEditorOrdered(id, key, before, grant);
         auto *target = targets_.value(actual, nullptr);
         const auto current = publication_;
         if (!target || target != focused() || current.isEmpty() || !clear(*before)
@@ -407,6 +441,7 @@ public:
     }
     bool decideOrdered(QObject *actual, quint64 id, const QEvent *input,
         const TypeLayFcitxQtStateV1 *current) override {
+        if (editorOrdered_) return decideEditorOrdered(actual, id, input, current);
         const auto ticket = ordered_;
         if (!onThread() || handlingKey_ || !ticket || ticket->id != id || ticket->revoked
             || !current || !input || input->type() != QEvent::KeyPress) return false;
@@ -452,6 +487,7 @@ public:
     }
     void retireOrdered(quint64 ticket) override {
         if (ordered_ && ordered_->id == ticket) ordered_.reset();
+        if (editorOrdered_ && editorOrdered_->id == ticket) editorOrdered_.reset();
     }
 
 signals:
@@ -460,6 +496,9 @@ signals:
 private slots:
     void providerChanged(QObject *field, uint causes) {
         auto *target = targets_.value(field, nullptr);
+        const bool editorPrefix = causes == (TlQtModifier | TlQtOrderedPrefix) && editorOrdered_
+            && editorOrdered_->editor == field && editorOrdered_->provider == sender();
+        if (!editorPrefix) revokeEditorOrdered();
         if (causes == (TlQtModifier | TlQtOrderedPrefix) && ordered_
             && ordered_->target == target && ordered_->provider == sender()) loseProof();
         else clearPermit();
@@ -711,7 +750,9 @@ private:
         if (owner && !providers_.contains(owner)) {
             providers_.insert(owner);
             connect(owner, SIGNAL(typelayStateChangedV1(QObject*,uint)), this, SLOT(providerChanged(QObject*,uint)), Qt::DirectConnection);
-            connect(owner, &QObject::destroyed, this, [this, owner] { providers_.remove(owner); clearPermit(); });
+            connect(owner, &QObject::destroyed, this, [this, owner] {
+                providers_.remove(owner); revokeEditorOrdered(); clearPermit();
+            });
 
         }
         return owner ? capability : nullptr;
@@ -853,6 +894,7 @@ private:
     }
     void invalidate(Target *target, bool textChanged, bool focusChanged) {
         if (!target || !target->field) return;
+        if (editorOrdered_ && editorOrdered_->target == target) revokeEditorOrdered();
         cancelShortcut(target, focusChanged ? "NotSourceFocus" : textChanged ? "SourceChanged" : "EpochChanged");
         if (focusChanged) shortcutAuthority_ = {};
         if (focusChanged) ++target->focus;
@@ -891,6 +933,91 @@ private:
         ticket->revoked = true;
         auto *provider = ticket->provider ? qobject_cast<TypeLayFcitxQtOrderedProviderV1 *>(ticket->provider.data()) : nullptr;
         if (provider) provider->cancelOrdered(ticket->id);
+    }
+    void revokeEditorOrdered() {
+        const auto ticket = std::move(editorOrdered_);
+        if (!ticket) return;
+        ticket->revoked = true;
+        auto *provider = ticket->provider ? qobject_cast<TypeLayFcitxQtOrderedProviderV1 *>(ticket->provider.data()) : nullptr;
+        if (provider) provider->cancelOrdered(ticket->id);
+    }
+    bool editorOrderedCurrent(const std::shared_ptr<EditorOrderedTicket> &ticket) const {
+        return ticket && !ticket->revoked && editorOrdered_ == ticket && fd_ >= 0
+            && ticket->connection == connectionGeneration_ && ticket->target && ticket->source
+            && ticket->card && ticket->editor && ticket->document && ticket->provider
+            && overlayTarget_ == ticket->target && ticket->target->field == ticket->source
+            && card_ == ticket->card && editor_ == ticket->editor
+            && ticket->editor->document() == ticket->document
+            && ticket->document->revision() == ticket->documentRevision
+            && overlayRevision_ == ticket->revision && overlayView_ == ticket->view
+            && overlayGeneration_ == ticket->generation && sessionCurrent(ticket->generation)
+            && ticket->target->input == ticket->input && ticket->target->content == ticket->content
+            && metadataMatches(ticket->target, overlayAuthority_) && overlayActive() && !paused()
+            && ticket->editor->hasFocus() && QGuiApplication::focusObject() == ticket->editor
+            && !ticket->editor->isReadOnly() && !composing_ && now() < ticket->until
+            && overlaySourceProvider_ == ticket->provider && ticket->target->provider == ticket->provider
+            && ticket->editor->property(ProviderProperty).value<QObject *>() == ticket->provider
+            && sessionBindings(ticket->target).value("editorReady").toBool()
+            && ticket->view.value("viewContext").toObject().value("canEdit").toBool()
+            && ticket->view.value("presentation").toObject().value("editorOwnsText").toBool();
+    }
+    bool beginEditorOrdered(quint64 id, const QKeyEvent *key, const TypeLayFcitxQtStateV1 *before,
+        TypeLayFcitxQtOrderedGrantV1 *grant) {
+        if (!overlayTarget_ || !editor_ || !card_ || !clear(*before)
+            || !key->nativeScanCode() || key->isAutoRepeat() || key->key() != Qt::Key_Control
+            || (key->modifiers() & ~Qt::ControlModifier) || !validText(editor_->toPlainText())) return false;
+        auto ticket = std::make_shared<EditorOrderedTicket>();
+        ticket->id = id;
+        ticket->connection = connectionGeneration_;
+        ticket->target = overlayTarget_;
+        ticket->source = overlayTarget_->field;
+        ticket->card = card_;
+        ticket->editor = editor_;
+        ticket->document = editor_->document();
+        ticket->documentRevision = ticket->document->revision();
+        ticket->provider = editor_->property(ProviderProperty).value<QObject *>();
+        ticket->view = overlayView_;
+        ticket->generation = overlayGeneration_;
+        ticket->revision = overlayRevision_;
+        ticket->input = overlayTarget_->input;
+        ticket->content = overlayTarget_->content;
+        ticket->before = *before;
+        ticket->ctrlScan = key->nativeScanCode();
+        ticket->ctrlTimestamp = key->timestamp();
+        ticket->until = std::min(overlayUntil_, now() + 150);
+        editorOrdered_ = ticket;
+        auto *provider = ticket->provider ? qobject_cast<TypeLayFcitxQtV1 *>(ticket->provider.data()) : nullptr;
+        if (!editorOrderedCurrent(ticket) || !provider || !provider->validateLocal(ticket->editor, before)
+            || !editorOrderedCurrent(ticket)) { revokeEditorOrdered(); return false; }
+        *grant = {};
+        grant->accept = sessionSymbol(sessionKey(shortcutConfiguration_.value("accept"), true));
+        grant->exit = sessionSymbol(sessionKey(shortcutConfiguration_.value("exit"), false));
+        if (orderedBinding(shortcutConfiguration_.value("accept"))) grant->acceptUntil = ticket->until;
+        if (orderedBinding(shortcutConfiguration_.value("exit"))) grant->exitUntil = ticket->until;
+        return true;
+    }
+    bool decideEditorOrdered(QObject *actual, quint64 id, const QEvent *input,
+        const TypeLayFcitxQtStateV1 *current) {
+        const auto ticket = editorOrdered_;
+        if (!onThread() || handlingKey_ || !ticket || ticket->id != id || ticket->editor != actual
+            || !input || input->type() != QEvent::KeyPress || !current || !clear(*current)) return false;
+        const auto *key = static_cast<const QKeyEvent *>(input);
+        const bool accept = orderedBinding(shortcutConfiguration_.value("accept"))
+            && key->key() == sessionKey(shortcutConfiguration_.value("accept"), true);
+        const bool exit = orderedBinding(shortcutConfiguration_.value("exit"))
+            && key->key() == sessionKey(shortcutConfiguration_.value("exit"), false);
+        if ((!accept && !exit) || key->isAutoRepeat() || key->modifiers() != Qt::ControlModifier
+            || !editorOrderedCurrent(ticket) || !validText(ticket->editor->toPlainText())) return false;
+        QScopedValueRollback<bool> handling(handlingKey_, true);
+        auto *provider = qobject_cast<TypeLayFcitxQtOrderedProviderV1 *>(ticket->provider.data());
+        if (!provider || !provider->validateOrdered(actual, id, &ticket->before, current)
+            || !editorOrderedCurrent(ticket) || !provider->claimOrdered(actual, id, &ticket->before, current)) return false;
+        // Claim fixes the original Fn pair before any host/focus callback. This
+        // message cannot write; Runtime must return and freshly capture the source.
+        loseProof();
+        sendEvent("ui", {{"target", ticket->target->id}, {"operation", exit ? "escape" : "return"},
+            {"revision", ticket->revision}, {"generation", ticket->generation}});
+        return true;
     }
     void clearPermit() { revokeOrdered(); loseProof(); }
     bool orderedLive(const std::shared_ptr<OrderedTicket> &ticket) const {
@@ -1319,6 +1446,7 @@ private:
         disconnect(&overlayMotion_, nullptr, this, nullptr);
     }
     void hideOverlay() {
+        revokeEditorOrdered();
         stopOverlayMotion();
         if (!card_) return;
         // deleteLater does not clear the live editor until a later event turn.
@@ -1560,6 +1688,7 @@ private:
         layout->addWidget(editor_);
         connect(editor_, &QPlainTextEdit::textChanged, this, [this] {
             if (settingText_ || !editor_ || editor_->isReadOnly()) return;
+            revokeEditorOrdered();
             const auto value = editor_->toPlainText();
             if (validText(value)) ui("draft", value);
             else if (hint_) hint_->setText(QStringLiteral("译文超过 8192 字符限制，请缩短后再返回"));
@@ -1647,6 +1776,7 @@ private:
                     && geometry(target) == motionGeometry_ && data.value("generation") == overlayGeneration_
                     && view == overlayView_ && data.value("theme").toString(QStringLiteral("system")) == overlayTheme_;
                 if (!card_ || overlayTarget_ != target) { hideOverlay(); createOverlay(target); }
+                if (overlayRevision_ != integer(data, "revision", 0) || overlayView_ != view) revokeEditorOrdered();
                 if (overlayRevision_ != integer(data, "revision", 0)) pendingResume_ = false;
                 overlayView_ = view; overlayAuthority_ = basis; overlayGeneration_ = data.value("generation");
                 if (focused() == target && sessionProvider(target->field)) overlaySourceProvider_ = target->provider;
@@ -1732,12 +1862,25 @@ private:
         if (!onThread()) return false;
         if (object == qApp && event->type() == QEvent::ApplicationPaletteChange) refreshSystemTheme();
         if (editor_ && (object == editor_ || object == editor_->viewport())) {
+            if (event->type() == QEvent::KeyPress) {
+                const auto *key = static_cast<QKeyEvent *>(event);
+                const bool prefix = editorOrdered_ && editorOrdered_->editor == object
+                    && editorOrdered_->provider == editor_->property(ProviderProperty).value<QObject *>()
+                    && key->key() == Qt::Key_Control && !key->isAutoRepeat()
+                    && key->nativeScanCode() == editorOrdered_->ctrlScan
+                    && key->timestamp() == editorOrdered_->ctrlTimestamp;
+                if (!prefix) revokeEditorOrdered();
+            } else if (event->type() == QEvent::InputMethod || event->type() == QEvent::MouseButtonPress
+                || event->type() == QEvent::Wheel || event->type() == QEvent::TouchBegin
+                || event->type() == QEvent::FocusOut || event->type() == QEvent::Hide
+                || event->type() == QEvent::EnabledChange || event->type() == QEvent::ReadOnlyChange) revokeEditorOrdered();
             if (object == editor_ && event->type() == QEvent::DynamicPropertyChange
                 && static_cast<QDynamicPropertyChangeEvent *>(event)->propertyName() == ProviderProperty
                 && editor_->property(ProviderProperty).value<QObject *>() != overlaySourceProvider_) {
                 // A lost/replaced editor route cannot revive from a later property
                 // restore. Only a newly verified source route can authorize it again.
                 overlaySourceProvider_ = nullptr;
+                revokeEditorOrdered();
                 clearPermit();
             }
             if (event->type() == QEvent::MouseButtonPress && editor_->isReadOnly() && overlayActive()) {
@@ -1846,12 +1989,12 @@ private:
         if (op.startsWith("overlay-")) respond(id, overlayCommand(op, target, data));
         else if (op == "describe") respondObject(id, describe(target));
         else if (op == "capture") respondObject(id, capture(target, data.value("authority").toObject()));
-        else if (op == "direct") respond(id, write(target, data, true));
+        else if (op == "direct") { revokeEditorOrdered(); respond(id, write(target, data, true)); }
         else if (op == "return") returnSource(target, data.value("authority").toObject(), data.value("generation"), id);
-        else if (op == "quarantine") { ++authorizationGeneration_; if (target) target->quarantined = true; cancelShortcut(); clearPermit(); respond(id); }
+        else if (op == "quarantine") { revokeEditorOrdered(); ++authorizationGeneration_; if (target) target->quarantined = true; cancelShortcut(); clearPermit(); respond(id); }
         else if (op == "revoke") {
             ++authorizationGeneration_; clearPermit();
-            if (integer(data, "shortcuts", 0)) { cancelShortcut(); shortcutAuthority_ = {}; }
+            if (integer(data, "shortcuts", 0)) { revokeEditorOrdered(); cancelShortcut(); shortcutAuthority_ = {}; }
             respond(id);
         }
         else if (op == "publish") {
@@ -2023,6 +2166,7 @@ private:
     QString overlayTheme_ = QStringLiteral("system");
     std::optional<ShortcutRequest> pendingShortcut_;
     std::shared_ptr<OrderedTicket> ordered_;
+    std::shared_ptr<EditorOrderedTicket> editorOrdered_;
     quint64 shortcutSequence_ = 0;
     qint64 shortcutStartedAt_ = -1;
     quint64 connectionGeneration_ = 0, returnGeneration_ = 0, authorizationGeneration_ = 0, focusGeneration_ = 0;

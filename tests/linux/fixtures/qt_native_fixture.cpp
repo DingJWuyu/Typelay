@@ -149,10 +149,11 @@ public:
             else if (object == plain) plainPreedit = composing;
             else if (object->objectName() == QStringLiteral("typelay-editor")) editorPreedit = composing;
         }
-        if (object != first && object != second && object != plain) return false;
+        const bool editor = object->objectName() == QStringLiteral("typelay-editor");
+        if (object != first && object != second && object != plain && !editor) return false;
         if (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut) {
             const QString focusName = (object == first ? QStringLiteral("first")
-                : object == second ? QStringLiteral("second") : QStringLiteral("plain"))
+                : object == second ? QStringLiteral("second") : editor ? QStringLiteral("editor") : QStringLiteral("plain"))
                 + (event->type() == QEvent::FocusIn ? QStringLiteral("FocusIn") : QStringLiteral("FocusOut"));
             counts.insert(focusName, counts.value(focusName).toInt() + 1);
         }
@@ -169,7 +170,7 @@ public:
             }
         }
         const QString name = (object == first ? QStringLiteral("first")
-            : object == second ? QStringLiteral("second") : QStringLiteral("plain"))
+            : object == second ? QStringLiteral("second") : editor ? QStringLiteral("editor") : QStringLiteral("plain"))
             + (key->key() == Qt::Key_Tab ? QStringLiteral("Tab") : QStringLiteral("Key"))
             + (event->type() == QEvent::KeyPress ? QStringLiteral("Press") : QStringLiteral("Release"));
         counts.insert(name, counts.value(name).toInt() + 1);
@@ -180,7 +181,7 @@ public:
         }
         if (key->key() >= Qt::Key_F1 && key->key() <= Qt::Key_F24) {
             const QString functionName = (object == first ? QStringLiteral("first")
-                : object == second ? QStringLiteral("second") : QStringLiteral("plain"))
+                : object == second ? QStringLiteral("second") : editor ? QStringLiteral("editor") : QStringLiteral("plain"))
                 + QStringLiteral("F") + QString::number(key->key() - Qt::Key_F1 + 1)
                 + (event->type() == QEvent::KeyPress ? QStringLiteral("Press") : QStringLiteral("Release"));
             counts.insert(functionName, counts.value(functionName).toInt() + 1);

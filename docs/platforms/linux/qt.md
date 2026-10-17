@@ -28,7 +28,11 @@ Qt 6.11.2 与固定 Fcitx Qt 5.1.15 的隔离 Wayland/niri 链路已有实际模
 
 ## 输入法与写回边界
 
-Ctrl+功能键的首阶段实现使用独立有序控制能力：在 Ctrl 提交输入法前固定已有资格和原截止，等待真实前序处理退休后才裁决原功能键；后读仅核对原源，不能建立替代许可。真实输入法输出、目标或配置变化撤销资格；已开始选区变更的失败不补发原键。有限队列取消后恢复 Qt 原生事件语义，不承诺跨应用回调的原子顺序。共享配置与主机候选已接通 Ctrl+F1–F24 的规范表达，但设置下拉尚未开放这些选项；已保存组合仅回显，Qt 源输入路径须通过原生确认，编辑能力保持关闭，未确认相应能力的后端不启用此绑定。接受和退出暂须使用不同主键，属于当前实现限制。[实际 Qt 6.11.2 检查](https://github.com/DingJWuyu/Typelay/actions/runs/39012096907)已通过真实主机与本地模型的源框 Ctrl+F7 接受、重复与先释放修饰键、精确一次写入及原生撤销、Ctrl+F8 退出，并核验编辑入口关闭。独立 provider/consumer 回归通过原截止、资格变化撤销、同候选续发的原计划回执与默认 Tab；本轮真实设置回显已保存组合、禁用该组合选项并恢复 Tab/Esc，随后默认 Tab 接受与原生撤销也通过。[后续检查](https://github.com/DingJWuyu/Typelay/actions/runs/39013453807)的 Ctrl+F8 退出未通过，稳定性仍待处理。上述使用软件输入，不代表物理键或实际输入法验收。
+Ctrl+功能键的首阶段实现使用独立有序控制能力：在 Ctrl 提交输入法前固定已有资格和原截止，等待真实前序处理退休后才裁决原功能键；后读仅核对原源，不能建立替代许可。真实输入法输出、目标或配置变化撤销资格；已开始选区变更的失败不补发原键。有限队列取消后恢复 Qt 原生事件语义，不承诺跨应用回调的原子顺序。共享配置与主机候选已接通 Ctrl+F1–F24 的规范表达，但设置下拉尚未开放这些选项；已保存组合仅回显，Qt 源输入路径须通过原生确认，组合编辑另须实际 provider 声明独立 `TypeLayFcitxQtEditorOrderedProviderV1` 能力；旧 provider 的组合编辑保持关闭，未确认相应能力的后端不启用此绑定。接受和退出暂须使用不同主键，属于当前实现限制。[实际 Qt 6.11.2 检查](https://github.com/DingJWuyu/Typelay/actions/runs/39012096907)已通过真实主机与本地模型的源框 Ctrl+F7 接受、重复与先释放修饰键、精确一次写入及原生撤销、Ctrl+F8 退出，并核验编辑入口关闭。独立 provider/consumer 回归通过原截止、资格变化撤销、同候选续发的原计划回执与默认 Tab；本轮真实设置回显已保存组合、禁用该组合选项并恢复 Tab/Esc，随后默认 Tab 接受与原生撤销也通过。[后续检查](https://github.com/DingJWuyu/Typelay/actions/runs/39013453807)的 Ctrl+F8 退出未通过，稳定性仍待处理。上述使用软件输入，不代表物理键或实际输入法验收。
+
+组合编辑复用原有 provider 的有序 Ctrl 前缀和 Fn claim，consumer 只冻结当前显示 token、revision、配置、源/编辑器/文档身份及草稿版本，形成无写入计划的返回/退出命令。该票在原 Ctrl 入场时固定截止为原显示截止与 150ms 上限中的较早值；显示续租、Fn 到达和新源 publication 均不续票。宿主每次编辑 tick 的 source-only revoke 只撤源写资格，真正的配置、草稿、输入法、焦点、provider 或生命周期变化仍撤命令。第一组合只请求 Runtime 回源；原 Ctrl/Fn scan 配对跨回源与 ticket retirement 保留，整组实际释放后才允许新组合建立资格。新源 capture 和新 permit 才能接受精确人工稿，仍遵守原 100ms 接受与 150ms 退出期限。拒绝继续走普通 Qt/Fcitx 处理，已 claim 的 Fn 不重放。
+
+新增组合编辑回归位于现有 `qt_cooperative/run.py` 和 `qt_desktop.py`：受控 host 检查 source-only revoke 不误撤、首次零写回源、原 held 配对、新源新按接受及一次真实草稿变更撤销；生产宿主/真实模型检查手工编辑、首次零写、整组释放后精确一次接受与原生 undo，并保留默认键回归。新增路径尚待对应提交的实际 Qt 构建与桌面执行，不能沿用上面的源框结果宣称通过。
 
 合作 Fcitx Qt provider 使用 QtCore-only、版本化 IID，在实际焦点 QObject 上发布自身。消费者经 `qobject_cast` 验证接口并使用弱生命周期引用。`inspect` 读取真实 context、在途请求、输出与字段代次；`validateLocal` 只能验证同一次观察，不能自行建立 Clear；`prepareCaret` 后仍须重新观察与核对原目标。
 
