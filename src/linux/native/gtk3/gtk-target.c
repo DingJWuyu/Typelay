@@ -62,7 +62,11 @@ static void im_invalidated(Target *target, guint causes) {
 }
 static void im_changed(GtkIMContext *context, guint causes, gpointer data) {
     Target *target = data;
-    if (context == target->im_context) im_invalidated(target, causes);
+    if (context != target->im_context) return;
+    if (tl_ordered_transition(target)) {
+        target->ime_known = FALSE;
+        tl_drop_publication();
+    } else im_invalidated(target, causes);
 }
 static gboolean bind_context(Target *target) {
     GtkIMContext *context = published_context(target);
@@ -92,6 +96,83 @@ static gboolean bind_context(Target *target) {
         im_invalidated(target, TL_FCITX_CHANGE_BINDING);
     }
     return target->im_context != NULL;
+}
+static const TlFcitxPrefixV1 *prefix_capability(GtkIMContext *context) {
+    const TlFcitxPrefixV1 *value = context
+        ? g_object_get_data(G_OBJECT(context), TL_FCITX_PREFIX_V1) : NULL;
+    return value && value->size >= sizeof *value && value->version == TL_FCITX_ABI_V1
+        && value->supports && value->begin && value->is_transition && value->finish
+        && value->validate && value->prepare_caret && value->cancel ? value : NULL;
+}
+gboolean tl_prefix_supported(Target *target) {
+    if (!standard_entry(target) || !bind_context(target)) return FALSE;
+    GtkIMContext *context = g_object_ref(target->im_context);
+    GtkWidget *widget = g_object_ref(target->widget);
+    const TlFcitxPrefixV1 *cap = prefix_capability(context);
+    gboolean ready = cap && cap->supports(context, widget);
+    g_object_unref(context); g_object_unref(widget);
+    return ready && !target->dead && target->im_context == context;
+}
+gboolean tl_prefix_begin(Target *target, guint64 id, const GdkEvent *event) {
+    if (!tl_prefix_supported(target)) return FALSE;
+    GtkIMContext *context = g_object_ref(target->im_context);
+    GtkWidget *widget = g_object_ref(target->widget);
+    const TlFcitxPrefixV1 *cap = prefix_capability(context);
+    gboolean ready = cap && cap->begin(context, widget, id, event, &target->im_state);
+    g_object_unref(context); g_object_unref(widget);
+    return ready && !target->dead && target->im_context == context;
+}
+gboolean tl_prefix_transition(Target *target, guint64 id) {
+    if (!target || target->dead || !target->im_context) return FALSE;
+    GtkIMContext *context = g_object_ref(target->im_context);
+    const TlFcitxPrefixV1 *cap = prefix_capability(context);
+    gboolean transition = cap && cap->is_transition(context, id);
+    g_object_unref(context);
+    return transition && !target->dead && target->im_context == context;
+}
+gboolean tl_prefix_validate(Target *target, guint64 id, const TlFcitxStateV1 *before,
+    const TlFcitxStateV1 *current) {
+    if (!standard_entry(target) || !target->im_context) return FALSE;
+    GtkIMContext *context = g_object_ref(target->im_context);
+    GtkWidget *widget = g_object_ref(target->widget);
+    const TlFcitxPrefixV1 *cap = prefix_capability(context);
+    gboolean valid = cap && cap->validate(context, widget, id, before, current);
+    g_object_unref(context); g_object_unref(widget);
+    return valid && !target->dead && target->im_context == context;
+}
+gboolean tl_prefix_finish(Target *target, guint64 id) {
+    if (!standard_entry(target) || !target->im_context || target->im_probing) return FALSE;
+    GtkIMContext *context = g_object_ref(target->im_context);
+    GtkWidget *widget = g_object_ref(target->widget);
+    const TlFcitxPrefixV1 *cap = prefix_capability(context);
+    TlFcitxStateV1 state = {.size = sizeof state, .version = TL_FCITX_ABI_V1};
+    target->im_probing = TRUE;
+    gboolean ready = cap && cap->finish(context, widget, id, &state);
+    target->im_probing = FALSE;
+    g_object_unref(context); g_object_unref(widget);
+    if (!ready || target->dead || target->im_context != context) return FALSE;
+    target->im_state = state;
+    target->im_observed = target->ime_known = TRUE;
+    target->composing = FALSE;
+    return TRUE;
+}
+gboolean tl_prefix_prepare(Target *target, guint64 id, const TlFcitxStateV1 *current) {
+    if (!standard_entry(target) || !target->im_context) return FALSE;
+    GtkIMContext *context = g_object_ref(target->im_context);
+    GtkWidget *widget = g_object_ref(target->widget);
+    const TlFcitxPrefixV1 *cap = prefix_capability(context);
+    gboolean ready = cap && cap->prepare_caret(context, widget, id, current);
+    g_object_unref(context); g_object_unref(widget);
+    return ready && !target->dead && target->im_context == context;
+}
+void tl_prefix_cancel(Target *target, GtkIMContext *identity, guint64 id) {
+    /* The saved identity is never dereferenced after its existing weak binding
+       has gone. No new long-lived provider/widget reference or lifecycle hook. */
+    if (!target || target->dead || !identity || target->im_context != identity) return;
+    GtkIMContext *context = g_object_ref(target->im_context);
+    const TlFcitxPrefixV1 *cap = prefix_capability(context);
+    if (cap) cap->cancel(context, id);
+    g_object_unref(context);
 }
 static gboolean same_state(const TlFcitxStateV1 *a, const TlFcitxStateV1 *b) {
     return a->context_generation == b->context_generation && a->epoch == b->epoch
@@ -154,7 +235,10 @@ static gboolean inspect_ime(Target *target) {
             causes |= TL_FCITX_CHANGE_BINDING;
         if (target->im_state.input_epoch != state.input_epoch) causes |= TL_FCITX_CHANGE_INPUT;
         if ((target->im_state.flags ^ state.flags) & TL_FCITX_FOCUSED) causes |= TL_FCITX_CHANGE_FOCUS;
-        im_invalidated(target, causes);
+        if (tl_ordered_observation(target, &state)) {
+            target->ime_known = FALSE;
+            tl_drop_publication();
+        } else im_invalidated(target, causes);
     }
     target->im_state = state;
     target->im_observed = TRUE;
@@ -729,7 +813,7 @@ static gboolean entry_focus_init(Target *target, gboolean background, EntryFocus
 }
 #include "../common/gtk-textbuffer-write.inc"
 
-JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
+static JsonObject *write_source(Target *target, JsonObject *request, gboolean direct, OrderedTicket *ticket) {
     JsonObject *plan = tl_object(request, "plan"), *basis = tl_object(request, "authority");
     JsonObject *approved = direct ? tl_object(request, "approved") : basis;
     JsonObject *expected = tl_object(plan, "expected");
@@ -751,7 +835,8 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
         return receipt("RejectedBeforeMutation", "StaleObservation");
     if (!tl_metadata_matches(target, approved) || !tl_metadata_matches(target, basis))
         return receipt("RejectedBeforeMutation", "Sensitive");
-    if (direct_entry ? !direct_authority_matches(target, basis, approved) : !stamp_matches(target, basis))
+    if (ticket ? !tl_ordered_check(ticket, target, TRUE, TRUE)
+        : direct_entry ? !direct_authority_matches(target, basis, approved) : !stamp_matches(target, basis))
         return receipt("RejectedBeforeMutation", "EpochChanged");
     if ((gint64)target->content_revision != tl_integer(basis, "contentRevision", -1))
         return receipt("RejectedBeforeMutation", "SourceChanged");
@@ -837,7 +922,8 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
         GtkIMContext *context = g_object_ref(target->im_context);
         const TlFcitxCapabilityV1 *capability = im_capability(context);
         target->im_probing = TRUE;
-        gboolean prepared = capability && capability->prepare_caret(context, widget, &state);
+        gboolean prepared = ticket ? tl_ordered_prepare(ticket, target, &state)
+            : capability && capability->prepare_caret(context, widget, &state);
         target->im_probing = FALSE;
         const char *preparation_failure = NULL;
         gboolean ready = write_check(prepared, "caret-reset", &preparation_failure)
@@ -845,8 +931,12 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
             && write_check(!target->quarantined, "quarantined", &preparation_failure)
             && write_check(target->buffer == buffer, "buffer", &preparation_failure)
             && write_check(target->im_context == context, "im-context", &preparation_failure)
+            && write_check(!ticket || tl_ordered_check(ticket, target, TRUE, FALSE),
+                "ticket", &preparation_failure)
             && write_check(inspect_ime(target) && write_ime_clear(target, direct_entry),
                 "im-unclear", &preparation_failure)
+            && write_check(!ticket || tl_ordered_check(ticket, target, TRUE, TRUE),
+                "ticket-proof", &preparation_failure)
             && write_check(target->im_state.context_generation == state.context_generation,
                 "im-context", &preparation_failure)
             && write_check(target->im_state.input_epoch == state.input_epoch
@@ -886,7 +976,8 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
             return receipt("RejectedBeforeMutation", tl_now() > until ? "StaleObservation" : "ImeUnclear");
         }
     }
-    tl_clear_permit();
+    if (ticket) tl_drop_publication();
+    else tl_clear_permit();
     if (!tl_configuration_current(generation)
         || (!direct && !tl_session_matches(tl_object(basis, "sessionBindings")))) {
         g_object_unref(buffer); g_object_unref(widget); g_free(after_delete); g_free(text);
@@ -906,6 +997,10 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
         g_object_unref(buffer); g_object_unref(widget); g_free(after_delete); g_free(text);
         return receipt("RejectedBeforeMutation", "EpochChanged");
     }
+    if (ticket && !tl_ordered_claim(ticket, target)) {
+        g_object_unref(buffer); g_object_unref(widget); g_free(after_delete); g_free(text);
+        return receipt("RejectedBeforeMutation", "EpochChanged");
+    }
     target->mutating = TRUE;
     /* GtkEditable has a pre-mutation insert signal. Standard GtkEntryBuffer
        mutates storage before notifying the application, making callback changes
@@ -916,7 +1011,9 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     if (!target->dead) g_object_get(widget, "selection-bound", &after_bound, NULL);
     guint64 expected_storage = storage + (to > from ? 1u : 0u);
     const char *failure = NULL, *phase = "delete";
-    gboolean intermediate = write_check(tl_configuration_current(generation)
+    gboolean intermediate = write_check(!ticket || tl_ordered_check(ticket, target, FALSE, TRUE),
+            "ticket", &failure)
+        && write_check(tl_configuration_current(generation)
             && (direct || tl_session_matches(tl_object(basis, "sessionBindings"))),
             "generation", &failure)
         && write_check(removed == (guint)(to - from), "delete-count", &failure)
@@ -943,7 +1040,8 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
         expected_storage++;
         gint inserted_bound = -1;
         if (!target->dead) g_object_get(widget, "selection-bound", &inserted_bound, NULL);
-        if (write_check(!target->dead, "destroyed", &failure)
+        if (write_check(!ticket || tl_ordered_check(ticket, target, FALSE, TRUE), "ticket", &failure)
+            && write_check(!target->dead, "destroyed", &failure)
             && write_check(!target->quarantined, "quarantined", &failure)
             && write_check(target->buffer == buffer, "buffer", &failure)
             && write_check(target->storage_revision == expected_storage, "storage-revision", &failure)
@@ -963,7 +1061,9 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
             gtk_editable_set_position(GTK_EDITABLE(widget), from + replacement_chars);
         }
     }
-    gboolean clear = positioned && write_check(validate_ime_locally(target, &state), "im-local", &failure)
+    gboolean clear = positioned
+        && write_check(!ticket || tl_ordered_check(ticket, target, FALSE, TRUE), "ticket", &failure)
+        && write_check(validate_ime_locally(target, &state), "im-local", &failure)
         && write_check(!target->quarantined, "quarantined", &failure)
         && write_check(write_ime_clear(target, direct_entry), "im-unclear", &failure)
         && write_check(same_state(&state, &target->im_state), stamp_difference(&state, &target->im_state), &failure)
@@ -972,7 +1072,9 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
         && write_check(target->buffer == buffer && target->storage_revision == expected_storage, "storage-revision", &failure)
         && write_check(tl_metadata_matches(target, approved), "metadata", &failure);
     char *after = clear ? read_text(target, &start, &end) : NULL;
-    gboolean verified = clear && write_check(after && strcmp(after, result) == 0, "body", &failure)
+    gboolean verified = clear
+        && write_check(!ticket || tl_ordered_check(ticket, target, FALSE, TRUE), "ticket", &failure)
+        && write_check(after && strcmp(after, result) == 0, "body", &failure)
         && write_check(start == caret && end == caret, "selection", &failure)
         && write_check(tl_configuration_current(generation)
             && (direct || tl_session_matches(tl_object(basis, "sessionBindings"))), "generation", &failure);
@@ -997,6 +1099,14 @@ JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
     } else target->quarantined = TRUE;
     g_free(after_delete); g_free(after); g_free(text); g_object_unref(buffer); g_object_unref(widget);
     return reply;
+}
+JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct) {
+    return write_source(target, request, direct, NULL);
+}
+JsonObject *tl_write_ordered(Target *target, JsonObject *request, OrderedTicket *ticket) {
+    if (!ticket || !standard_entry(target) || !tl_ordered_check(ticket, target, TRUE, FALSE))
+        return receipt("RejectedBeforeMutation", "EpochChanged");
+    return write_source(target, request, FALSE, ticket);
 }
 static gboolean return_authorized(Target *target, JsonObject *basis) {
     JsonObject *stamp = tl_object(basis, "contextStamp");

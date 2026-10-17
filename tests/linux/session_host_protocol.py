@@ -1179,6 +1179,74 @@ while True:
         self.assertFalse(upgraded["editable"])
         self.assertFalse(upgraded["canAccept"])
 
+    async def test_control_source_acknowledgement_does_not_grant_editor_capability(self):
+        # Protocol/capability evidence only. The real GtkEntry route is exercised
+        # by desktop_e2e with its production provider, host and model.
+        self.assertTrue(
+            (await self.ask("saveSettingsDraft", self.draft("Ctrl+F7", "Ctrl+F8")))["saved"]
+        )
+        target = {"backend": "linux-gtk3", "value": "test-field", "lifetime": str(uuid.uuid4())}
+        acknowledgement = {
+            "target": target,
+            "generation": self.latest("shortcuts")["generation"],
+            "bindings": {"accept": "Ctrl+F7", "exit": "Ctrl+F8"},
+            "sourceReady": True,
+            "editorReady": False,
+        }
+        await self.send(
+            {
+                "event": "state",
+                "data": {
+                    "ready": True,
+                    "nativeReady": True,
+                    "target": target,
+                    "focus": "Source",
+                    "userEpoch": 1,
+                    "sourceUserEpoch": 1,
+                    "foregroundEpoch": 1,
+                    "windowEpoch": 1,
+                    "contentEpoch": 1,
+                    "sessionShortcuts": acknowledgement,
+                },
+            }
+        )
+
+        def capture(operation, context):
+            self.assertEqual(operation, "capture")
+            self.assertEqual(context["sessionShortcuts"]["bindings"], acknowledgement["bindings"])
+            return {
+                "focus": "Source",
+                "application": "fixture",
+                "sessionShortcuts": acknowledgement,
+                "userEpoch": 1,
+                "foregroundEpoch": 1,
+                "snapshot": {
+                    "target": target,
+                    "text": "",
+                    "selection": {"start": 0, "end": 0},
+                    "bounds": {"x": 0, "y": 0, "width": 100, "height": 20},
+                    "multiline": False,
+                    "access": "Supported",
+                    "ime": "Clear",
+                    "inputEpoch": 1,
+                    "focusEpoch": 1,
+                    "observedAtMs": time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1_000_000,
+                    "writeSupported": True,
+                    "directWriteSupported": True,
+                },
+            }
+
+        self.input_reply = capture
+        self.assertTrue(await self.ask("start"))
+        rendered = (await self.receive_until(lambda value: value.get("event") == "render"))["data"]
+        self.assertFalse(rendered["viewContext"]["canEdit"])
+        self.assertFalse(rendered["editable"])
+        self.assertEqual(
+            await self.ask("beginEdit", rendered["viewContext"]["token"]),
+            {"allowed": False, "token": None},
+        )
+        self.assertEqual((await self.ask("sessionShortcutSettings"))["acceptKey"], "Ctrl+F7")
+
     async def test_malformed_binding_acknowledgement_cannot_be_restored_to_default_authority(self):
         self.assertTrue((await self.ask("saveSettingsDraft", self.draft()))["saved"])
         target = {"backend": "linux-gtk3", "value": "test-field", "lifetime": str(uuid.uuid4())}

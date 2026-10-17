@@ -518,8 +518,8 @@ def install(home, data, cache):
         uv("python", "install", PYTHON, "--no-bin")
         python = Path(
             uv("python", "find", PYTHON, "--managed-python", "--no-python-downloads", capture=True)
-        )
-        if not python.resolve().is_relative_to(version):
+        ).resolve(strict=True)
+        if not python.is_relative_to(version):
             raise ValueError("python-installation-path")
         venv = version / "runtime/venv"
         uv("venv", venv, "--python", python, "--no-python-downloads")

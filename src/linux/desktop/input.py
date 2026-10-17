@@ -1729,7 +1729,7 @@ class Input:
 
     def configure_peer(self, peer):
         configuration = self.shortcut_config
-        if peer.backend != "qt6" and any(
+        if peer.backend not in ("qt6", "gtk3") and any(
             isinstance(configuration.get(name), str) and configuration[name].startswith("Ctrl+")
             for name in ("accept", "exit")
         ):

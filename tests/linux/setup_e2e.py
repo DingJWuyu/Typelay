@@ -1391,12 +1391,29 @@ class InstallationFailureTests(unittest.TestCase):
                 if arguments[0] != "uv":
                     self.assertIn("--self-check", arguments)
                     output = worker_result
+                elif arguments[1:3] == ["python", "install"]:
+                    python = Path(options["env"]["UV_PYTHON_INSTALL_DIR"])
+                    interpreter = python / "cpython-3.13.16-linux-x86_64-gnu/bin/python3.13"
+                    interpreter.parent.mkdir(parents=True)
+                    interpreter.write_bytes(b"controlled interpreter")
+                    (python / "cpython-3.13-linux-x86_64-gnu").symlink_to(
+                        interpreter.parent.parent.name
+                    )
+                elif arguments[1] == "venv":
+                    entry = Path(arguments[2]) / "bin/python"
+                    entry.parent.mkdir(parents=True)
+                    # uv preserves the supplied interpreter path in this link,
+                    # including a managed Python alias in an ancestor directory.
+                    entry.symlink_to(arguments[arguments.index("--python") + 1])
                 elif arguments[1:3] == ["pip", "compile"]:
                     lock = Path(arguments[arguments.index("--output-file") + 1])
                     lock.parent.mkdir(parents=True, exist_ok=True)
                     lock.write_text("controlled dependency lock")
                 if arguments[1:3] == ["python", "find"]:
-                    output = (options["env"]["UV_PYTHON_INSTALL_DIR"] + "/python").encode()
+                    output = (
+                        options["env"]["UV_PYTHON_INSTALL_DIR"]
+                        + "/cpython-3.13-linux-x86_64-gnu/bin/python3.13"
+                    ).encode()
                 return SimpleNamespace(
                     communicate=lambda **_: (output, None),
                     returncode=returncode,
@@ -1471,6 +1488,10 @@ class InstallationFailureTests(unittest.TestCase):
                     if line.startswith(setup.PREPARED_PREFIX)
                 )
                 candidate = current.parent / prepared
+                self.assertEqual(
+                    Path(os.readlink(candidate / "runtime/venv/bin/python")),
+                    candidate / "runtime/python/cpython-3.13.16-linux-x86_64-gnu/bin/python3.13",
+                )
                 self.assertTrue((candidate / "self-check.json").is_file())
                 self.assertEqual(
                     json.loads((candidate / "activation.json").read_text()),

@@ -282,7 +282,7 @@ def run(arguments):
         )
         control_keys = (
             {name: prepare_key(resources, name) for name in ("Control_L", "F7", "F8")}
-            if arguments.desktop_scope == "qt"
+            if arguments.desktop_scope in ("all", "gtk", "qt")
             else {}
         )
 
@@ -1045,6 +1045,116 @@ def run(arguments):
                         evidence.append(
                             "Wayland GTK keyboard-us: actual typed source, CPU translation, one configured acceptance key, verified write and retained focus"
                         )
+
+                        if not gtk4:
+                            # Saved settings go through the production host. The
+                            # public menu remains closed until other routes catch up.
+                            ordinary_pair = (
+                                settings.get("AcceptShortcut", "Tab"),
+                                settings.get("ExitShortcut", "Esc"),
+                            )
+                            stop()
+                            settings.update(AcceptShortcut="Ctrl+F7", ExitShortcut="Ctrl+F8")
+                            start()
+                            request({"Action": {"FocusWindow": {"id": window["id"]}}})
+                            enter_source(typed_source)
+                            acknowledgement = status()["input"]["sessionShortcuts"]
+                            assert acknowledgement["bindings"] == {
+                                "accept": "Ctrl+F7",
+                                "exit": "Ctrl+F8",
+                            }
+                            assert (
+                                acknowledgement["sourceReady"]
+                                and not acknowledgement["editorReady"]
+                            )
+                            candidate = gtk_state()["candidate"]["text"]
+                            before = gtk_state()
+                            offset, dispatch_offset = trace_checkpoint(), key_trace_checkpoint()
+                            wait_for(ready_to_accept, "GTK Ctrl acceptance was not ready")
+                            send_control_key("F7", repeat=True)
+                            wait_for(
+                                lambda: gtk_state()["first"] == candidate
+                                and verified_write(offset),
+                                "GTK Ctrl+F7 did not verify the real model candidate exactly once",
+                            )
+                            observed_key(dispatch_offset, "function", "release", True)
+                            accepted = gtk_state()
+                            assert accepted["focus"] == "fixture-first"
+                            assert accepted["second"] == before["second"]
+                            assert accepted["functionKeys"][6] == before["functionKeys"][6]
+                            for name in ("insertions", "deletions"):
+                                assert (
+                                    accepted["firstEntry"][name] == before["firstEntry"][name] + 1
+                                )
+                            enter_source("Please keep this message private.")
+                            before_exit = gtk_state()
+                            offset, dispatch_offset = trace_checkpoint(), key_trace_checkpoint()
+                            wait_for(ready_to_accept, "GTK Ctrl exit was not ready")
+                            send_control_key("F8")
+                            wait_for(
+                                lambda: not status().get("overlayVisible")
+                                and status().get("viewState") is None,
+                                "GTK Ctrl+F8 did not exit the original session",
+                            )
+                            observed_key(dispatch_offset, "function", "release", True)
+                            exited = gtk_state()
+                            assert exited["first"] == before_exit["first"]
+                            assert exited["functionKeys"][7] == before_exit["functionKeys"][7]
+                            assert not new_write_outcomes(offset)
+                            enter_source(typed_source)
+                            before_target = gtk_state()
+                            offset, dispatch_offset = trace_checkpoint(), key_trace_checkpoint()
+                            wait_for(ready_to_accept, "GTK target-change control was not ready")
+                            try:
+                                control_keys["Control_L"](True)
+                                click_entry("second")
+                                control_keys["F7"](True)
+                            finally:
+                                control_keys["Control_L"](False)
+                                control_keys["F7"](False)
+                            observed_key(dispatch_offset, "function", "release", False)
+                            rejected = gtk_state()
+                            assert rejected["first"] == before_target["first"]
+                            assert rejected["second"] == before_target["second"]
+                            assert (
+                                rejected["functionKeys"][6]["down"]
+                                == before_target["functionKeys"][6]["down"] + 1
+                            )
+                            assert (
+                                rejected["functionKeys"][6]["up"]
+                                == before_target["functionKeys"][6]["up"] + 1
+                            )
+                            assert not new_write_outcomes(offset)
+                            (arguments.output / "gtk-control-source.json").write_text(
+                                json.dumps(
+                                    {
+                                        "bindings": acknowledgement,
+                                        "accepted": accepted,
+                                        "exited": exited,
+                                        "targetChanged": rejected,
+                                    },
+                                    indent=2,
+                                )
+                                + "\n"
+                            )
+                            stop()
+                            settings.update(
+                                AcceptShortcut=ordinary_pair[0], ExitShortcut=ordinary_pair[1]
+                            )
+                            start()
+                            request({"Action": {"FocusWindow": {"id": window["id"]}}})
+                            click_entry("first")
+                            enter_source(typed_source)
+                            offset = trace_checkpoint()
+                            key(accept_key)
+                            wait_for(
+                                lambda: translated(gtk_state()["first"]) and verified_write(offset),
+                                "ordinary GTK acceptance did not recover after Ctrl configuration",
+                            )
+                            evidence.append(
+                                "Wayland GtkEntry: saved Ctrl+Fn source-only capability, one verified model write, "
+                                "repeat/release ownership, independent exit, target-change refusal, restored ordinary acceptance"
+                            )
 
                         def check_overlay_motion(draft):
                             from support.gtk_accessibility import Atspi, named

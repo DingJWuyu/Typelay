@@ -70,3 +70,29 @@ typedef struct {
     gboolean (*prepare_caret)(GtkIMContext *context, GtkWidget *expected_widget,
         const TlFcitxStateV1 *baseline);
 } TlFcitxCapabilityV1;
+
+/* Optional GTK3 source-control prefix cooperation. This separate handshake
+ * leaves the existing table and ordinary keys unchanged. One ticket owns one
+ * real Ctrl down, never an event copy or a replay queue. */
+#define TL_FCITX_PREFIX_V1 "typelay.fcitx.prefix.v1"
+typedef struct {
+    guint32 size;
+    guint32 version;
+    gboolean (*supports)(GtkIMContext *context, GtkWidget *expected_widget);
+    gboolean (*begin)(GtkIMContext *context, GtkWidget *expected_widget, guint64 id,
+        const GdkEvent *original, const TlFcitxStateV1 *before);
+    /* Only the exact ticket-owned submit/reset notification stack, never a
+     * generic cause0 notification, RPC callback or real output. */
+    gboolean (*is_transition)(GtkIMContext *context, guint64 id);
+    /* Called after the original Ctrl gtk_main_do_event has returned. */
+    gboolean (*finish)(GtkIMContext *context, GtkWidget *expected_widget, guint64 id,
+        TlFcitxStateV1 *current);
+    gboolean (*validate)(GtkIMContext *context, GtkWidget *expected_widget, guint64 id,
+        const TlFcitxStateV1 *before, const TlFcitxStateV1 *current);
+    /* At most one already-authorized caret preparation. Only its own inactive
+     * reset notification may advance local epoch; actual output cancels. The
+     * caller must inspect again and check its frozen source and deadline. */
+    gboolean (*prepare_caret)(GtkIMContext *context, GtkWidget *expected_widget, guint64 id,
+        const TlFcitxStateV1 *current);
+    void (*cancel)(GtkIMContext *context, guint64 id);
+} TlFcitxPrefixV1;

@@ -7,6 +7,7 @@
 #define TL_MAX_TEXT 8192
 
 typedef struct Target Target;
+typedef struct OrderedTicket OrderedTicket;
 /* Diagnostics only. Unknown/short-circuited observations remain omitted. */
 typedef struct {
     const char *reason;
@@ -52,6 +53,22 @@ void tl_discover(GtkWidget *widget, gboolean before_input);
 JsonObject *tl_describe(Target *target);
 JsonObject *tl_capture(Target *target, JsonObject *authority, CaptureFailure *failure, JsonObject **continuity);
 JsonObject *tl_write(Target *target, JsonObject *request, gboolean direct);
+JsonObject *tl_write_ordered(Target *target, JsonObject *request, OrderedTicket *ticket);
+gboolean tl_prefix_supported(Target *target);
+gboolean tl_prefix_begin(Target *target, guint64 id, const GdkEvent *event);
+gboolean tl_prefix_finish(Target *target, guint64 id);
+gboolean tl_prefix_transition(Target *target, guint64 id);
+gboolean tl_prefix_validate(Target *target, guint64 id, const TlFcitxStateV1 *before,
+    const TlFcitxStateV1 *current);
+gboolean tl_prefix_prepare(Target *target, guint64 id, const TlFcitxStateV1 *current);
+void tl_prefix_cancel(Target *target, GtkIMContext *identity, guint64 id);
+/* Private frozen-ticket checks. Proof loss is distinct from explicit revoke. */
+gboolean tl_ordered_transition(Target *target);
+gboolean tl_ordered_observation(Target *target, const TlFcitxStateV1 *current);
+gboolean tl_ordered_check(OrderedTicket *ticket, Target *target, gboolean source, gboolean proof);
+gboolean tl_ordered_prepare(OrderedTicket *ticket, Target *target, const TlFcitxStateV1 *state);
+gboolean tl_ordered_claim(OrderedTicket *ticket, Target *target);
+void tl_drop_publication(void);
 gboolean tl_return(Target *target, JsonObject *authority);
 gboolean tl_metadata_matches(Target *target, JsonObject *authority);
 gboolean tl_ime_clear(Target *target);
