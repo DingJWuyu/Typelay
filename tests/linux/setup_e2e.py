@@ -1875,7 +1875,12 @@ class PresentationProcessTests(unittest.TestCase):
             )
             executable.chmod(0o700)
             current = home / "data/components/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-            current.mkdir(parents=True)
+            # Reach the intended missing-uv failure after validating prior install intent.
+            (current / "models").mkdir(parents=True)
+            (current / "models/installed.json").write_text(
+                json.dumps({"schema": 1, "directions": ["zh_en", "en_zh"]})
+            )
+            (current / "activation.json").write_text(json.dumps({"schema": 1, "previous": None}))
             (current.parent / "current").symlink_to("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             process = subprocess.Popen(
                 [
