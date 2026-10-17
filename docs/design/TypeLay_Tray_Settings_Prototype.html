@@ -1646,7 +1646,7 @@ dialog p {
                   可用按键与作用范围
                 </summary>
                 <div class="details-body">
-                  接受和退出可使用默认 Tab / Esc 或不同的无修饰 F1–F24。按需快捷键使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1–F24 的组合，暂不支持 F12；自动模式下不启用这两个按需快捷键。
+                  接受和退出可使用默认 Tab / Esc、F1–F24 或 Ctrl+F1–F24，两操作须使用不同主键。按需快捷键使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1–F24 的组合，暂不支持 F12；自动模式下不启用这两个按需快捷键。
                 </div>
               </details>
             </div>
@@ -2040,7 +2040,9 @@ dialog p {
     },
     draftMessage = '';
   for (let i = 1; i <= 24; i++) {
-    for (const id of ['acceptShortcut', 'exitShortcut']) $(id).add(new Option('F' + i, 'F' + i));
+    for (const prefix of ['', 'Ctrl+']) {
+      for (const id of ['acceptShortcut', 'exitShortcut']) $(id).add(new Option(prefix + 'F' + i, prefix + 'F' + i));
+    }
   }
   function dirty() {
     return fields.some(id => $(id).value !== saved[id]);
@@ -2146,16 +2148,27 @@ dialog p {
     const key = parts.pop();
     return parts.length > 0 && parts.every(x => ['Ctrl', 'Alt', 'Shift'].includes(x)) && new Set(parts).size === parts.length && parts.some(x => x === 'Ctrl' || x === 'Alt') && /^(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4]))$/.test(key) && key !== 'F12';
   }
+  function shortcutIdentity(value) {
+    const parts = value.replace(/\s+/g, '').split('+');
+    const key = parts.pop();
+    return [...parts.sort(), key].join('+');
+  }
   function saveDraft() {
     const wake = $('wakeShortcut').value,
       direct = $('directShortcut').value;
-    if (!validDemand(wake) || !validDemand(direct) || wake.replace(/\s/g, '') === direct.replace(/\s/g, '')) {
+    if (!validDemand(wake) || !validDemand(direct)) {
       draftMessage = '未保存：唤醒与直接替换需使用不同的 Ctrl / Alt 组合键；暂不支持 F12。';
       renderDraft();
       return;
     }
-    if ($('acceptShortcut').value === $('exitShortcut').value) {
-      draftMessage = '未保存：接受与退出不能使用相同按键。';
+    const accept = $('acceptShortcut').value, exit = $('exitShortcut').value;
+    if (accept.split('+').pop() === exit.split('+').pop()) {
+      draftMessage = '未保存：接受与退出须使用不同主键。';
+      renderDraft();
+      return;
+    }
+    if (new Set([wake, direct, accept, exit].map(shortcutIdentity)).size !== 4) {
+      draftMessage = '未保存：四个操作须使用不同快捷键。';
       renderDraft();
       return;
     }
@@ -2239,7 +2252,7 @@ dialog p {
       ? '安装接入组件…' : state.connection === 'conflict' ? '处理输入法冲突…' : '重新检查';
     $('previewCapability').textContent = connected ? '可用' : '未确认';
     const linux = state.platform === 'linux';
-    const automaticPractice = linux || state.mode === 'Automatic' && saved.acceptShortcut === 'Tab';
+    const automaticPractice = linux || state.mode === 'Automatic';
     $('practiceTitle').textContent = automaticPractice ? '试一试翻译与编辑' : '试一试按需翻译';
     $('practiceDescription').textContent = automaticPractice ? '在自有练习框体验自动翻译、接受与修改。' : '在练习输入框体验唤醒和直接替换。';
     $('registeredApplicationRow').hidden = !linux || state.integration !== 'ready';
@@ -2454,7 +2467,7 @@ dialog p {
   };
   $('browserGuide').onclick = () => confirmAction('连接浏览器输入框', '在浏览器扩展管理页启用 TypeLay 接入组件，并由你确认所需权限。随后重新打开页面，在输入框中检查连接。此演示不会安装扩展。', '知道了', () => {}, '关闭');
   all('[data-practice]').forEach(b => b.onclick = () => {
-    const automatic = state.platform === 'linux' || (state.mode === 'Automatic' && saved.acceptShortcut === 'Tab');
+    const automatic = state.platform === 'linux' || state.mode === 'Automatic';
     const mode = automatic ? 'Automatic' : 'OnDemand';
     const go = () => {
       if (state.mode !== mode && !saveNow({mode})) return;

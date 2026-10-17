@@ -141,14 +141,14 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
                 Assert.Contains(Key.F7, down);
                 Assert.Contains(Key.F7, up);
                 Assert.False(hook.TryRead(out _));
-                // A shared Ctrl chord keeps ordinary third-party actions disabled,
-                // without releasing the earlier consumed physical press.
+                // Ctrl keeps ordinary source writing closed while unmodified exit
+                // remains available, without releasing the earlier consumed press.
                 Configure("F8", "F7");
                 Publish();
                 Send(0x77, true);
                 Assert.NotNull((await Notice("accept")).Permit);
                 Configure("Ctrl+F8", "Esc");
-                Assert.True(hook.CanInterceptAcceptance);
+                Assert.False(hook.CanInterceptAcceptance);
                 Assert.False(hook.UsesUnmodifiedSessionKeys);
                 Assert.True(hook.HasSessionConfiguration(new(hook.CommandGeneration,
                     SessionShortcutBindings.Restore("Ctrl+F8", "Esc"))));
@@ -170,9 +170,10 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
                 Send(0x77, true);
                 Send(0x77, false);
                 await SourceBarrier();
-                Assert.Equal(exitDown + 1, down.Count(key => key == Key.Escape));
+                Assert.Equal(exitDown, down.Count(key => key == Key.Escape));
                 Assert.Equal(functionDown + 1, down.Count(key => key == Key.F8));
                 Assert.Equal(1, up.Count(key => key == Key.F8));
+                Assert.Equal(hook.CommandGeneration, (await Notice("escape")).CommandGeneration);
                 Assert.False(hook.TryRead(out _));
                 Configure("Tab", "Esc");
                 Assert.True(hook.CanInterceptAcceptance);
@@ -236,6 +237,118 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
             }
         });
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task OrdinaryControlExitUsesOneOriginalLeaseAndKeepsItsRelease(bool automation) => desktop.RunAsync(async () =>
+    {
+        const string original = "Ordinary exit never writes the source";
+        var input = new TextBox { Text = original };
+        var source = new Window { Content = input, Width = 420, Height = 160, Title = "TypeLay ordinary exit pairing" };
+        source.Show();
+        source.Activate();
+        input.Focus();
+        nint hwnd = new WindowInteropHelper(source).Handle;
+        int functionDown = 0, functionUp = 0, controlUp = 0;
+        input.PreviewKeyDown += (_, args) => { if (args.Key == Key.F8) functionDown++; };
+        input.PreviewKeyUp += (_, args) =>
+        {
+            if (args.Key == Key.F8)
+                functionUp++;
+            if (args.Key == Key.LeftCtrl)
+                controlUp++;
+        };
+        using var hook = new KeyboardHook(allowInjectedInput: automation);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        bool held = false;
+        try
+        {
+            await Until(() => hook.Ready && Native.GetForegroundWindow() == hwnd && input.IsKeyboardFocused, deadline.Token);
+            Assert.All(new[] { 0x11, 0xA2, 0x77 }, key => Assert.False(Native.GetAsyncKeyState(key) < 0));
+            Configure();
+            var snapshot = Publish();
+            long epoch = hook.UserEpoch, sourceEpoch = hook.SourceUserEpoch;
+            // These are real SendInput events, accepted only by the explicit
+            // automation Hook. The controlled lease proves dispatch, not IME.
+            Send([ScanKey(0x1D, true), ScanKey(0x42, true)]);
+            held = true;
+            await Until(() => hook.UserEpoch == epoch + 1, deadline.Token);
+            Assert.Equal(sourceEpoch + 1, hook.SourceUserEpoch);
+            Assert.False(hook.CanInterceptAcceptance);
+            if (automation)
+            {
+                InputNotice? notice = null;
+                await Until(() => notice is not null || hook.TryRead(out notice), deadline.Token);
+                Assert.Equal("escape", notice!.Kind);
+                Assert.Null(notice.Permit);
+                Assert.Equal(snapshot.Target, notice.Target);
+                Assert.Equal(23, notice.SessionRevision);
+                Assert.Equal(epoch + 1, notice.UserEpoch);
+                Assert.InRange(notice.AcceptedAtMs, snapshot.ObservedAtMs, snapshot.ObservedAtMs + Limits.ObservationMaxAgeMs);
+            }
+            // Retiring or replacing the configuration cannot release the Fn
+            // already consumed by this exact Ctrl group.
+            Configure();
+            Publish();
+            Send([ScanKey(0x42, true), ScanKey(0x42, false)]);
+            // The original Fn has released while Ctrl remains held. A new
+            // independent Fn, its repeat and its up all belong to the app.
+            Send([ScanKey(0x42, true), ScanKey(0x42, true), ScanKey(0x42, false), ScanKey(0x1D, false)]);
+            held = false;
+            await Until(() => controlUp == 1, deadline.Token);
+            Assert.Equal(automation ? 2 : 4, functionDown);
+            Assert.Equal(automation ? 1 : 2, functionUp);
+            Assert.False(hook.TryRead(out _));
+
+            if (automation)
+            {
+                Publish();
+                Send([ScanKey(0x1D, true)]);
+                held = true;
+                await Until(() => hook.UserEpoch == epoch + 2, deadline.Token);
+                Configure(); // A new configuration and capture cannot rescue the old Ctrl.
+                Publish();
+                Send([ScanKey(0x42, true), ScanKey(0x42, false), ScanKey(0x1D, false)]);
+                held = false;
+                await Until(() => controlUp == 2, deadline.Token);
+                Assert.Equal(3, functionDown);
+                Assert.Equal(2, functionUp);
+                Assert.False(hook.TryRead(out _));
+            }
+            Assert.Equal(original, input.Text);
+            Assert.True(input.IsKeyboardFocused);
+        }
+        finally
+        {
+            if (held)
+                Send([ScanKey(0x42, false), ScanKey(0x1D, false)]);
+        }
+        void Configure()
+        {
+            Assert.True(SessionShortcutBindings.TryParse("Ctrl+F7", "Ctrl+F8", out var bindings));
+            hook.ConfigureShortcuts(false, "Ctrl+Shift+F9", "Ctrl+Shift+F10", bindings!, true);
+        }
+        InputSnapshot Publish()
+        {
+            using var process = Process.GetCurrentProcess();
+            long now = WindowsInterruptClock.NowMs;
+            var snapshot = new InputSnapshot(new WindowsTarget(process.Id, process.StartTime.ToUniversalTime().Ticks,
+                (long)hwnd, (long)hwnd, "controlled-hook", "ordinary-source", Guid.NewGuid()),
+                original, new(original.Length, original.Length), new(10, 20, 300, 40), false,
+                FieldAccess.Supported, ImeState.Clear, now, 1, 1, WriteSupported: true);
+            hook.Publish(new(snapshot, hook.UserEpoch, hook.ForegroundEpoch, true, hook.CommandGeneration, 23), null);
+            return snapshot;
+        }
+        static KeyboardInput ScanKey(ushort scan, bool down) => new()
+        {
+            Type = 1,
+            Scan = scan,
+            Flags = down ? 8u : 10u
+        };
+        static void Send(KeyboardInput[] keys) => Assert.Equal((uint)keys.Length, SendInput((uint)keys.Length, keys, Marshal.SizeOf<KeyboardInput>()));
+    });
 
     [Theory]
     [InlineData(false)]

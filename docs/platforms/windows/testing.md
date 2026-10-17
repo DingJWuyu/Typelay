@@ -55,7 +55,7 @@ dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release 
 dotnet test tests/windows/TypeLay.App.Tests/TypeLay.App.Tests.csproj -c Release --no-build --filter 'FullyQualifiedName~SessionShortcutHookTests|FullyQualifiedName~OverlayRenderingTests'
 ```
 
-当前配置合同支持默认 Tab/Esc、无修饰 F1-F24 和已保存的 Ctrl+F1-F24；公开组合选项尚未开放，四键设置共用保存与关闭草稿流程。`SettingsRenderingTests` 验证重复键、写盘失败、后台刷新、切页和关闭保留，并确认保存只合并最新设置中的四个键，不恢复旧工作模式或启用状态。`SetupRenderingTests` 保留当前按需模式的默认 Tab 入口，并核自动模式使用 F8 时不再要求切换模式。任意修饰键组合及完整冲突覆盖尚未完成，不能据此关闭冻结规格 §18 的全部缺口。以上测试使用合成内容、受控会话或显式软件注入，Windows 实际结果须以对应运行记录为准。
+当前配置合同支持默认 Tab/Esc、无修饰 F1-F24 和已保存的 Ctrl+F1-F24；公开组合选项复用四键设置的保存与关闭草稿流程。`SettingsRenderingTests` 验证重复键、写盘失败、后台刷新、切页和关闭保留，并确认保存只合并最新设置中的四个键，不恢复旧工作模式或启用状态。`SetupRenderingTests` 保留当前按需模式的默认 Tab 入口，并核自动模式使用 F8 时不再要求切换模式。普通输入框的组合链另使用独立 NativeFixture、生产 Broker、Hook 与真实模型，检查明确 IME 后的编辑回源保稿、编辑退出和源退出，原框与选区保持且写请求为零；不借自有练习授权。此新增场景待本轮 Windows 实际运行。任意修饰键组合及完整冲突覆盖尚未完成，不能据此关闭冻结规格 §18 的全部缺口。以上测试使用合成内容、受控会话或显式软件注入，Windows 实际结果须以对应运行记录为准。
 
 `QuickPanelRenderingTests` 从快速面板的启用、工作模式、源语言、目标语言及交换控件，以及生产托盘菜单的点击接线进入真实设置保存。临时文件锁阻止写入时，检查已确认设置和磁盘不变、面板保留错误；模型刷新与隐藏重开不能抹去错误。解除文件锁后重新操作原控件应成功并清除错误，不变值的成功保存也须清除错误而不发布配置变化。模式使用原生单选控件，公开 UI Automation 与窗口内实际方向键、空格路径检查选中、单次配置变化及持久化；保存成功、失败回滚后均须保留键盘焦点，解除锁后直接用空格重试。后台刷新与初次渲染不触发保存。明暗主题各一张正常面板及原有窄面板错误截图保存在 `artifacts/test-results/rendering`。[090062a 的 Windows 实跑](https://github.com/DingJWuyu/Typelay/actions/runs/38700885927/job/116308546345)已通过该套件 9 项，包含新增模式渲染、写锁失败恢复和连续键盘操作 3 项；四张明暗正常/错误截图已核对。该证据限于受控 WPF 窗口与软件键注入，不替代物理键盘、输入法及完整桌面验收。
 

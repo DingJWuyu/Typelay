@@ -30,6 +30,7 @@ def run_qt(
     typed,
     send_tab,
     send_control_key,
+    select_session_keys,
     trace_checkpoint,
     new_write_outcomes,
     verified_write,
@@ -479,61 +480,7 @@ def run_qt(
                             "production settings did not select and persist the overlay theme",
                         )
                     if session_keys is not None:
-                        select_settings_page(host_pid, "快捷键")
-                        accept, exit_key = session_keys
-                        for name, key_name, default in (
-                            ("接受译文", accept, "Tab"),
-                            ("退出当前翻译", exit_key, "Esc"),
-                        ):
-                            combo = wait_for(
-                                lambda: named(host_pid, "设置：" + name),
-                                "real session-key combo was not accessible: " + name,
-                            )
-                            saved_key = json.loads(paths.settings.read_text()).get(
-                                "AcceptShortcut" if default == "Tab" else "ExitShortcut", default
-                            )
-                            if saved_key.startswith("Ctrl+"):
-                                selected = Atspi.Selection.get_selected_child(
-                                    combo.get_selection_iface(), 0
-                                )
-                                assert selected and selected.get_name() == saved_key
-
-                                def saved_row_states():
-                                    selected.clear_cache()
-                                    return selected.get_state_set()
-
-                                # GTK exposes the popup item here. Its row
-                                # sensitivity is applied when the popup renders.
-                                action = combo.get_action_iface()
-                                assert action and Atspi.Action.do_action(action, 0)
-                                wait_for(
-                                    lambda: (states := saved_row_states()).contains(
-                                        Atspi.StateType.SHOWING
-                                    )
-                                    and not states.contains(Atspi.StateType.SENSITIVE),
-                                    "saved Ctrl shortcut was not disabled in the real popup",
-                                )
-                                assert Atspi.Action.do_action(action, 0)
-                                wait_for(
-                                    lambda: not saved_row_states().contains(
-                                        Atspi.StateType.SHOWING
-                                    ),
-                                    "session-key popup did not close before the ordinary selection",
-                                )
-                            index = 0 if key_name == default else int(key_name[1:])
-                            assert Atspi.Selection.select_child(combo.get_selection_iface(), index)
-                        save = wait_for(
-                            lambda: named(host_pid, "保存修改"), "session key save was unavailable"
-                        )
-                        assert Atspi.Action.do_action(save.get_action_iface(), 0)
-                        wait_for(
-                            lambda: (settings := json.loads(paths.settings.read_text())).get(
-                                "AcceptShortcut"
-                            )
-                            == accept
-                            and settings.get("ExitShortcut") == exit_key,
-                            "production settings did not persist the session key pair",
-                        )
+                        select_session_keys(paths, host_pid, *session_keys)
                     after_settings = state()
                     for field in ("first", "second"):
                         assert after_settings[field]["text"] == before_settings[field]["text"]
@@ -896,11 +843,7 @@ def run_qt(
                 wait_for(
                     lambda: state()["second"]["text"] == other, "second field was not prepared"
                 )
-                saved_settings = json.loads(Paths(arguments.package).settings.read_text())
-                assert (saved_settings["AcceptShortcut"], saved_settings["ExitShortcut"]) == (
-                    "Ctrl+F7",
-                    "Ctrl+F8",
-                )
+                set_mode(session_keys=("Ctrl+F7", "Ctrl+F8"))
                 control_original = "Please send me the latest report."
                 control_candidate = enter_source(control_original)
                 wait_for(ready_to_accept, "original Qt Ctrl acceptance was not ready")
@@ -1044,11 +987,11 @@ def run_qt(
                     json.dumps(
                         {
                             "realModel": True,
-                            "savedConfigurationLoaded": True,
+                            "publicConfigurationSaved": True,
                             "sourceAcceptRepeatCtrlFirstReleaseAndUndo": True,
                             "sourceExitWithoutWrite": True,
                             "editorReturnHeldReleaseFreshAcceptAndUndo": True,
-                            "savedChordDisplayAndOrdinarySelection": True,
+                            "publicChordSelectionAndDefaultRestore": True,
                             "defaultTabAndUndo": True,
                             "input": "XTest through nested niri; not physical keyboard",
                         },
@@ -1057,10 +1000,10 @@ def run_qt(
                     + "\n"
                 )
                 evidence.append(
-                    "real production host/model saved Ctrl+F7/F8: source acceptance once, "
+                    "real production host/model public Ctrl+F7/F8: source acceptance once, "
                     "Ctrl-first release, repeat, undo and exit; manual editor returns without writing, "
                     "held Fn stays owned and a fresh full chord accepts the exact draft once; real settings "
-                    "display saved chords and restore Tab/Esc; default Tab and undo pass"
+                    "select and save chords, then restore Tab/Esc; default Tab and undo pass"
                 )
                 original = "Please send me the latest report."
                 candidate = enter_source(original)

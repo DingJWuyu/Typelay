@@ -602,7 +602,7 @@ internal sealed class SettingsWindow : Window
         var acceptance = UiTheme.Text(
             _settings.Value.AcceptShortcut.StartsWith("Ctrl+", StringComparison.Ordinal)
                 || _settings.Value.ExitShortcut.StartsWith("Ctrl+", StringComparison.Ordinal)
-                ? "当前组合键仅在 TypeLay 自有练习中可用；普通输入框暂不支持。"
+                ? "使用 Ctrl 会话键时，普通输入框仅支持退出和编辑回源；源内接受写回暂不可用。"
                 : guidance.AcceptanceDescription, 12, true);
         acceptance.Margin = new(0, 8, 0, 0);
         details.Children.Add(acceptance);
@@ -773,7 +773,7 @@ internal sealed class SettingsWindow : Window
         exit.SelectionChanged += (_, _) => ShortcutDraftChanged();
         Row(messages.AcceptLabel, "仅在候选与原文对应、焦点和输入法状态明确时尝试写回。", accept);
         _returnShortcutHint = UiTheme.Text("", 13, bold: true);
-        Row("编辑后返回原输入框", "第一次返回；重新确认焦点后，再按接受键才尝试写回。", _returnShortcutHint);
+        Row("编辑后返回原输入框", "先返回原输入框；能否接受译文仍需通过原输入框的安全检查。", _returnShortcutHint);
         Row(messages.ExitLabel, "不修改原文，不发送、不提交。组合输入时优先交还输入法。", exit);
         Rule();
         var wake = _wakeShortcutInput = ShortcutInput(_shortcutDraft?.Wake ?? _settings.Value.WakeShortcut, "唤醒翻译 UI 快捷键");
@@ -786,7 +786,7 @@ internal sealed class SettingsWindow : Window
         Note("直接替换的当前范围", "Windows x64 中通过运行时校验的原生 Edit 控件支持后台写回。翻译时可以切换焦点，结果仍只写回原输入框；冲突、输入法状态不明或不兼容控件会安全拒写。不会抢回焦点，也不使用实验性 Tab 写回作为后备。结果与失败原因可在托盘快速面板查看。");
         Note("组合键格式", "唤醒与直接替换支持 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24，当前不支持 F12。组合键被其他应用占用时，设置仍保存，但对应命令不会启用。");
         Rule();
-        Note("保留原应用快捷键", "Ctrl / Alt / Shift / Win 与接受或退出键的组合交还原应用。没有有效候选时，接受键不执行写回。");
+        Note("保留原应用快捷键", "仅精确匹配已设置的接受或退出键；其余 Ctrl / Alt / Shift / Win 组合交还原应用。没有有效候选时，接受键不执行写回。");
         RefreshShortcuts();
     }
     private void ShortcutDraftChanged()
@@ -822,7 +822,7 @@ internal sealed class SettingsWindow : Window
         if (_returnShortcutHint is not null)
             _returnShortcutHint.Text = accept.StartsWith("Ctrl+", StringComparison.Ordinal)
                 || (_exitShortcutInput.SelectedItem as string)?.StartsWith("Ctrl+", StringComparison.Ordinal) == true
-                    ? "自有练习：" + accept + " → " + accept : accept + " → " + accept;
+                    ? accept + " 返回原输入框" : accept + " → " + accept;
         RefreshDraftBar();
         _shortcutStatus.Text = ShortcutStatus?.Invoke() ?? "仅在启用 TypeLay 的按需模式下生效。自动模式不注册这两个快捷键。";
     }
@@ -904,21 +904,10 @@ internal sealed class SettingsWindow : Window
     }
     private static void UpdateSessionShortcutInput(ComboBox input, string value, string defaultKey)
     {
-        var choices = new[] { defaultKey }.Concat(SessionShortcutBindings.FunctionKeys).ToList();
-        bool savedOnly = !choices.Contains(value);
-        if (savedOnly)
-            choices.Add(value);
+        var choices = new[] { defaultKey }.Concat(SessionShortcutBindings.FunctionKeys)
+            .Concat(SessionShortcutBindings.FunctionKeys.Select(key => "Ctrl+" + key)).ToList();
         if (!input.Items.Cast<string>().SequenceEqual(choices))
             input.ItemsSource = choices;
-        Style? style = null;
-        if (savedOnly)
-        {
-            style = new Style(typeof(ComboBoxItem), input.TryFindResource(typeof(ComboBoxItem)) as Style);
-            var current = new DataTrigger { Binding = new System.Windows.Data.Binding(), Value = value };
-            current.Setters.Add(new Setter(IsEnabledProperty, false));
-            style.Triggers.Add(current);
-        }
-        input.ItemContainerStyle = style;
         input.SelectedItem = value;
     }
     private static TextBox ShortcutInput(string value, string label)

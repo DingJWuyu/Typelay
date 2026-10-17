@@ -53,8 +53,8 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
             var acknowledgement = result.Snapshot is { } source && context.SessionShortcuts is { } configuration
                 && monitor?.HasSessionConfiguration(configuration) == true
                 ? new SessionShortcutAcknowledgement(source.Target, configuration.Generation, configuration.Bindings,
-                    owned ? returnedDescriptor is not null && evidence is not null || practice!.SourceReady(source.Target) : ordinaryCanIntercept,
-                    owned ? practice!.EditorReady(source.Target) : ordinaryCanIntercept) : null;
+                    owned ? returnedDescriptor is not null && evidence is not null || practice!.SourceReady(source.Target) : true,
+                    owned ? practice!.EditorReady(source.Target) : true) : null;
             var capture = new InputCapture(result.Snapshot, result.Focus, result.Application,
                 result.UserEpoch, result.ForegroundEpoch, acknowledgement, evidence);
             support?.Observe(capture, broker.Available && monitor?.Ready == true,
@@ -90,11 +90,11 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
         return new((await broker.CallAsync(Request("return", context), TimeSpan.FromMilliseconds(800))).Status == "focused");
     }
     private bool SessionConfigurationCurrent(InputContext context) => context.SessionShortcuts is { } configuration
-        && monitor is { CanInterceptAcceptance: true, UsesUnmodifiedSessionKeys: true }
-        && monitor.HasSessionConfiguration(configuration);
+        && monitor?.HasSessionConfiguration(configuration) == true;
     public async Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs)
     {
-        if (practice?.SuppressOwnedWrite(context) == true || !SessionConfigurationCurrent(context))
+        if (practice?.SuppressOwnedWrite(context) == true || !SessionConfigurationCurrent(context)
+            || monitor?.UsesUnmodifiedSessionKeys != true)
             return new(WriteStatus.RejectedBeforeMutation, Denial.EpochChanged);
         var result = await broker.CallAsync(Request("write", context) with
         {

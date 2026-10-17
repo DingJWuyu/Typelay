@@ -96,6 +96,70 @@ def wait_for(predicate, description, timeout=15):
     raise AssertionError(description)
 
 
+def select_session_keys(paths, host_pid, accept, exit_key):
+    """Select and save the real settings controls, shared by desktop scopes."""
+    from support.gtk_accessibility import Atspi, named, select_settings_page
+
+    select_settings_page(host_pid, "快捷键")
+    before = paths.settings.read_bytes()
+    for name, key_name, default in (
+        ("接受译文", accept, "Tab"),
+        ("退出当前翻译", exit_key, "Esc"),
+    ):
+
+        def ready_combo():
+            value = named(host_pid, "设置：" + name)
+            if value is None:
+                return None
+            states = value.get_state_set()
+            return (
+                value
+                if states.contains(Atspi.StateType.SENSITIVE)
+                and states.contains(Atspi.StateType.SHOWING)
+                else None
+            )
+
+        combo = wait_for(ready_combo, "real session-key combo was not ready: " + name)
+        choices = [default] + [
+            f"{prefix}F{number}" for prefix in ("", "Ctrl+") for number in range(1, 25)
+        ]
+        assert Atspi.Selection.select_child(combo.get_selection_iface(), choices.index(key_name))
+        selected = Atspi.Selection.get_selected_child(combo.get_selection_iface(), 0)
+        assert selected and selected.get_name() == key_name
+        action = combo.get_action_iface()
+        assert action and Atspi.Action.do_action(action, 0)
+
+        def row_selectable():
+            selected.clear_cache()
+            states = selected.get_state_set()
+            return states.contains(Atspi.StateType.SHOWING) and states.contains(
+                Atspi.StateType.SENSITIVE
+            )
+
+        wait_for(row_selectable, "session shortcut was not selectable in its real popup")
+        assert Atspi.Action.do_action(action, 0)
+
+        def popup_closed():
+            selected.clear_cache()
+            return not selected.get_state_set().contains(Atspi.StateType.SHOWING)
+
+        wait_for(popup_closed, "session-key popup did not close before saving")
+    assert paths.settings.read_bytes() == before, "session-key draft saved before confirmation"
+    save = wait_for(lambda: named(host_pid, "保存修改"), "session key save was unavailable")
+    assert Atspi.Action.do_action(save.get_action_iface(), 0)
+
+    def saved_pair():
+        saved = json.loads(paths.settings.read_text())
+        save.clear_cache()
+        return (
+            saved.get("AcceptShortcut") == accept
+            and saved.get("ExitShortcut") == exit_key
+            and not save.get_state_set().contains(Atspi.StateType.SHOWING)
+        )
+
+    wait_for(saved_pair, "production settings did not confirm the saved session key pair")
+
+
 def prepare_key(stack, name):
     """Preconnect to XTest; each call delivers one real down or up event."""
     x11 = ctypes.CDLL("libX11.so.6")
@@ -461,11 +525,6 @@ def run(arguments):
         "Mode": 1 if arguments.desktop_scope == "setup" else 0,
     }
 
-    if arguments.desktop_scope == "qt":
-        # The production SettingsStore loads this isolated saved preference.
-        # The real settings UI later selects the ordinary keys again.
-        settings.update(AcceptShortcut="Ctrl+F7", ExitShortcut="Ctrl+F8")
-
     session_bindings = getattr(arguments, "gtk_session_bindings", False)
     accept_key = "Tab"
     gtk_acceptance_phases = []
@@ -550,6 +609,24 @@ def run(arguments):
         assert process.wait(timeout=7) == 0
         process = None
         assert not paths.control.exists() and not paths.native.exists()
+
+    def set_session_keys(accept, exit_key):
+        assert control(paths, "settings") is True
+        settings_window = wait_for(
+            lambda: next(
+                (
+                    item
+                    for item in contents(request("Windows"), "Windows")
+                    if item.get("pid") == process.pid and item.get("title") == "TypeLay 设置"
+                ),
+                None,
+            ),
+            "owned production settings window did not map",
+        )
+        request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
+        select_session_keys(paths, process.pid, accept, exit_key)
+        settings.update(AcceptShortcut=accept, ExitShortcut=exit_key)
+        request({"Action": {"CloseWindow": {"id": settings_window["id"]}}})
 
     def translated(value):
         return bool(value and value != original and re.search(r"[\u3400-\u9fff]", value))
@@ -750,9 +827,7 @@ def run(arguments):
                             settings.get("AcceptShortcut", "Tab"),
                             settings.get("ExitShortcut", "Esc"),
                         )
-                        stop()
-                        settings.update(AcceptShortcut="Ctrl+F7", ExitShortcut="Ctrl+F8")
-                        start()
+                        set_session_keys("Ctrl+F7", "Ctrl+F8")
                         request({"Action": {"FocusWindow": {"id": window["id"]}}})
                         browser_control_source("Please review this draft.")
                         acknowledgement = wait_for(
@@ -1147,11 +1222,7 @@ def run(arguments):
                                 "actual editor click and draft, first pair returns without writing and second independent pair accepts exact selection"
                             )
                             page.evaluate("document.querySelector('#mount').remove()")
-                        stop()
-                        settings.update(
-                            AcceptShortcut=ordinary_pair[0], ExitShortcut=ordinary_pair[1]
-                        )
-                        start()
+                        set_session_keys(*ordinary_pair)
                         request({"Action": {"FocusWindow": {"id": window["id"]}}})
                         browser_control_source("Please send the updated report.")
                         offset = trace_checkpoint()
@@ -1803,15 +1874,13 @@ def run(arguments):
                             "Wayland GTK keyboard-us: actual typed source, CPU translation, one configured acceptance key, verified write and retained focus"
                         )
 
-                        # Saved settings go through the production host. The
-                        # public menu remains closed until other routes catch up.
+                        # Configure the public controls before the next source
+                        # capture; no saved-file injection or host restart.
                         ordinary_pair = (
                             settings.get("AcceptShortcut", "Tab"),
                             settings.get("ExitShortcut", "Esc"),
                         )
-                        stop()
-                        settings.update(AcceptShortcut="Ctrl+F7", ExitShortcut="Ctrl+F8")
-                        start()
+                        set_session_keys("Ctrl+F7", "Ctrl+F8")
                         request({"Action": {"FocusWindow": {"id": window["id"]}}})
                         enter_source(typed_source)
                         acknowledgement = wait_for(
@@ -2049,11 +2118,7 @@ def run(arguments):
                             )
                             + "\n"
                         )
-                        stop()
-                        settings.update(
-                            AcceptShortcut=ordinary_pair[0], ExitShortcut=ordinary_pair[1]
-                        )
-                        start()
+                        set_session_keys(*ordinary_pair)
                         request({"Action": {"FocusWindow": {"id": window["id"]}}})
                         click_entry("first")
                         enter_source(typed_source)
@@ -2064,11 +2129,11 @@ def run(arguments):
                             "ordinary GTK acceptance did not recover after Ctrl configuration",
                         )
                         evidence.append(
-                            "Wayland GtkEntry: saved Ctrl+Fn source-only capability, one verified model write, "
+                            "Wayland GtkEntry: public Ctrl+Fn source capability, one verified model write, "
                             "repeat/release ownership, independent exit, target-change refusal, restored ordinary acceptance"
                         )
                         evidence.append(
-                            f"Wayland GTK{4 if gtk4 else 3} plain TextView: saved Ctrl+Fn, exact real-model multiline selection "
+                            f"Wayland GTK{4 if gtk4 else 3} plain TextView: public Ctrl+Fn, exact real-model multiline selection "
                             "with emoji/outside text retained, one grouped replacement and receipt, repeat/release "
                             "ownership, exit without write, target-change refusal; ordinary keys restored"
                         )
@@ -2543,9 +2608,7 @@ def run(arguments):
                             )
                             return {"returnedSource": editing_source, "accepted": gtk_state()}
 
-                        stop()
-                        settings.update(AcceptShortcut="Ctrl+F7", ExitShortcut="Ctrl+F8")
-                        start()
+                        set_session_keys("Ctrl+F7", "Ctrl+F8")
                         request({"Action": {"FocusWindow": {"id": window["id"]}}})
                         click_entry("first")
                         control_edited = edit_and_accept("Ctrl+F7", hold_return=True)
@@ -2553,11 +2616,7 @@ def run(arguments):
                         (arguments.output / "gtk-control-editor.json").write_text(
                             json.dumps({**control_edited, **control_exited}, indent=2) + "\n"
                         )
-                        stop()
-                        settings.update(
-                            AcceptShortcut=ordinary_pair[0], ExitShortcut=ordinary_pair[1]
-                        )
-                        start()
+                        set_session_keys(*ordinary_pair)
                         request({"Action": {"FocusWindow": {"id": window["id"]}}})
                         click_entry("first")
 
@@ -3679,6 +3738,7 @@ def run(arguments):
                     typed=typed,
                     send_tab=send_tab,
                     send_control_key=send_control_key,
+                    select_session_keys=select_session_keys,
                     trace_checkpoint=trace_checkpoint,
                     new_write_outcomes=new_write_outcomes,
                     verified_write=verified_write,

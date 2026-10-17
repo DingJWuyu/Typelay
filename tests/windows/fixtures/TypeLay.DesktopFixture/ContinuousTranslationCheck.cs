@@ -7,16 +7,19 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using TypeLay.App;
 using TypeLay.Core;
 using TypeLay.Platform.Windows;
 using TypeLay.Runtime;
+using TypeLay.Windows.Contracts;
 using N = TypeLay.Platform.Windows.NativeMethods;
 
 // Explicit, network-using verification mode. Ordinary desktop tests never install models.
 // Uses the real installer/model, production Broker and overlay, with committed text
 // replay and one automation-mode direct shortcut in independent owned stock Edits.
+// Ordinary stock Edit also exercises no-write Ctrl return/exit through the real editor.
 // Also exercises cold ordinary-page discovery and the UIA-primed Chrome
 // new-tab field in both preview modes.
 // This does not simulate physical IME input or qualify unobserved controls.
@@ -52,6 +55,7 @@ internal static partial class ContinuousTranslationCheck
         var ownedFinish = new SceneResult();
         bool OwnedCleanupFailed() => new[] { ownedFirstTab, ownedEditorHandoff, ownedTabReturn, ownedMouseReturn,
             ownedEditedAcceptance, ownedFinish }.Any(scene => scene.CleanupErrors.Count != 0);
+        var ordinaryControls = new SceneResult();
         var continuous = new SceneResult();
         var direct = new SceneResult();
         var practice = new SceneResult();
@@ -87,30 +91,36 @@ internal static partial class ContinuousTranslationCheck
             desktop.CancelAfter(TimeSpan.FromSeconds(90));
             (ownedFirstTab, ownedEditorHandoff, ownedTabReturn, ownedMouseReturn, ownedEditedAcceptance, ownedFinish) = await VerifyOwnedFirstTabAsync(directory, model, desktop.Token);
             if (OwnedCleanupFailed())
+                ordinaryControls = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
+            else if (desktop.IsCancellationRequested)
+                ordinaryControls = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
+            else
+                ordinaryControls = await VerifyOrdinaryControlsAsync(directory, nativeFixture, model, desktop.Token);
+            if (OwnedCleanupFailed() || ordinaryControls.CleanupErrors.Count != 0)
                 continuous = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
             else if (desktop.IsCancellationRequested)
                 continuous = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
             else
                 continuous = await VerifyContinuousAsync(directory, nativeFixture, model, desktop.Token);
-            if (OwnedCleanupFailed() || continuous.CleanupErrors.Count != 0)
+            if (OwnedCleanupFailed() || ordinaryControls.CleanupErrors.Count != 0 || continuous.CleanupErrors.Count != 0)
                 direct = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
             else if (desktop.IsCancellationRequested)
                 direct = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
             else
                 direct = await VerifyDirectAsync(directory, nativeFixture, model, desktop.Token);
-            if (OwnedCleanupFailed() || continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0)
+            if (OwnedCleanupFailed() || ordinaryControls.CleanupErrors.Count != 0 || continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0)
                 practice = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
             else if (desktop.IsCancellationRequested)
                 practice = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
             else
                 practice = await VerifyPracticeAsync(directory, model, desktop.Token);
-            if (OwnedCleanupFailed() || continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0 || practice.CleanupErrors.Count != 0)
+            if (OwnedCleanupFailed() || ordinaryControls.CleanupErrors.Count != 0 || continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0 || practice.CleanupErrors.Count != 0)
                 coldPage = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
             else if (desktop.IsCancellationRequested)
                 coldPage = new SceneResult { Stage = "desktop-budget", Failure = "desktop-deadline" };
             else
                 coldPage = await VerifyColdPageAsync(directory, model, desktop.Token);
-            if (OwnedCleanupFailed() || continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0 || practice.CleanupErrors.Count != 0
+            if (OwnedCleanupFailed() || ordinaryControls.CleanupErrors.Count != 0 || continuous.CleanupErrors.Count != 0 || direct.CleanupErrors.Count != 0 || practice.CleanupErrors.Count != 0
                 || coldPage.CleanupErrors.Count != 0)
                 newTab = new SceneResult { Stage = "previous-scene-cleanup", Failure = "previous-scene-cleanup-failed" };
             else if (desktop.IsCancellationRequested)
@@ -123,6 +133,8 @@ internal static partial class ContinuousTranslationCheck
             RecordFailure(setup, error, "setup-deadline");
             if (ownedFirstTab.Outcome == "not-run" && ownedFirstTab.Failure == "none")
                 ownedFirstTab.Failure = "model-setup-failed";
+            if (ordinaryControls.Outcome == "not-run" && ordinaryControls.Failure == "none")
+                ordinaryControls.Failure = "model-setup-failed";
             if (continuous.Outcome == "not-run" && continuous.Failure == "none")
                 continuous.Failure = "model-setup-failed";
             if (direct.Outcome == "not-run" && direct.Failure == "none")
@@ -136,9 +148,9 @@ internal static partial class ContinuousTranslationCheck
             && ownedFirstTab.Outcome == "verified" && ownedEditorHandoff.Outcome == "verified"
             && ownedTabReturn.Outcome == "verified" && ownedMouseReturn.Outcome == "verified"
             && ownedEditedAcceptance.Outcome == "verified" && ownedFinish.Outcome == "verified"
-            && continuous.Outcome == "passed" && direct.Outcome == "verified"
+            && ordinaryControls.Outcome == "verified" && continuous.Outcome == "passed" && direct.Outcome == "verified"
             && practice.Outcome == "verified" && coldPage.Outcome == "passed" && newTab.Outcome == "passed" && cleanupErrors.Count == 0;
-        var firstFailure = new[] { directionInstallation, setup, ownedFirstTab, ownedEditorHandoff, ownedTabReturn, ownedMouseReturn, ownedEditedAcceptance, ownedFinish, continuous, direct, practice, coldPage, newTab }.FirstOrDefault(result => result.Failure != "none");
+        var firstFailure = new[] { directionInstallation, setup, ownedFirstTab, ownedEditorHandoff, ownedTabReturn, ownedMouseReturn, ownedEditedAcceptance, ownedFinish, ordinaryControls, continuous, direct, practice, coldPage, newTab }.FirstOrDefault(result => result.Failure != "none");
         string failure = firstFailure?.Failure ?? (cleanupErrors.Count == 0 ? "none" : "cleanup-failed");
         string stage = passed ? "complete" : firstFailure?.Stage ?? "cleanup";
         await File.WriteAllTextAsync(Path.Combine(directory, "result.json"), JsonSerializer.Serialize(new
@@ -158,6 +170,7 @@ internal static partial class ContinuousTranslationCheck
             ownedMouseReturn,
             ownedEditedAcceptance,
             ownedFinish,
+            ordinaryControlShortcuts = ordinaryControls,
             continuousPreview = continuous,
             directTranslation = direct,
             onDemandPractice = practice,
@@ -166,7 +179,7 @@ internal static partial class ContinuousTranslationCheck
             sourceBackend = "production-broker-stock-edit-and-chrome",
             physicalIme = false
         }, new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
-        Console.WriteLine($"Continuous translation check: {(passed ? "passed" : "failed")}; owned-first-tab={ownedFirstTab.Outcome}; owned-editor={ownedEditorHandoff.Outcome}; continuous={continuous.Outcome}; direct={direct.Outcome}; practice={practice.Outcome}; coldPage={coldPage.Outcome}; newTab={newTab.Outcome}; stage={stage}; code={failure}.");
+        Console.WriteLine($"Continuous translation check: {(passed ? "passed" : "failed")}; owned-first-tab={ownedFirstTab.Outcome}; owned-editor={ownedEditorHandoff.Outcome}; ordinary-controls={ordinaryControls.Outcome}; continuous={continuous.Outcome}; direct={direct.Outcome}; practice={practice.Outcome}; coldPage={coldPage.Outcome}; newTab={newTab.Outcome}; stage={stage}; code={failure}.");
         return passed ? 0 : 1;
     }
 
@@ -365,6 +378,322 @@ internal static partial class ContinuousTranslationCheck
                 throw new HttpRequestException("direction-model-download-forbidden");
             }
             return base.SendAsync(request, cancellationToken);
+        }
+    }
+
+    private static async Task<SceneResult> VerifyOrdinaryControlsAsync(string directory, string nativeFixture,
+        ModelClient model, CancellationToken cancellation)
+    {
+        var result = new SceneResult { Outcome = "running", Stage = "ordinary-model-idle" };
+        string editorReturnOutcome = "not-run", editorExitOutcome = "not-run", sourceExitOutcome = "not-run";
+        bool candidateReady = false, draftChanged = false, draftRetained = false, freshAfterReturn = false;
+        bool sourceUnchanged = false, selectionPreserved = false, zeroSubmits = false, submitCounterVerified = false;
+        bool editorExitReturned = false, editorExitHidden = false, sourceExitHidden = false;
+        int wakeAttempts = 0, editorClicks = 0;
+        uint firstWakeInputs = 0, secondWakeInputs = 0, returnInputs = 0, editorExitInputs = 0, sourceExitInputs = 0;
+        string? feedbackCode = null;
+        InputSnapshot? firstCapture = null;
+        ChildProcess? native = null;
+        OverlayWindow? overlay = null;
+        SessionController? controller = null;
+        OrdinaryControlBroker? broker = null;
+        try
+        {
+            await UntilAsync(() => { Require(model.Ready, "ordinary-model-unavailable"); return !model.Busy; }, cancellation);
+            const string source = "你好我想确认明天下午的会议时间";
+            result.Stage = "ordinary-start-source";
+            native = StartSource(nativeFixture);
+            using var setupDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
+            setupDeadline.CancelAfter(TimeSpan.FromSeconds(15));
+            var host = await ReadSourceAsync(native, setupDeadline.Token);
+            nint root = (nint)host.RootHwnd;
+            nint field = (nint)host.Fields.Single(item => item.Name == "a").Hwnd;
+            N.SendString(field, N.WM_SETTEXT, source);
+            N.Send(field, N.EM_SETSEL, (nuint)source.Length, (nint)source.Length);
+            TextRange selection = N.ReadSelection(field);
+            Require(selection == new TextRange(source.Length, source.Length), "ordinary-source-selection");
+            Require(N.PostMessage(root, N.FixtureFocus, (nuint)field, 0), "ordinary-source-focus-request");
+            await UntilAsync(() => N.Focused() == (root, field), setupDeadline.Token);
+            var settings = CreateSettings(Path.Combine(directory, "ordinary-controls", "settings.json"), WorkMode.OnDemand);
+            settings.Update(settings.Value with
+            {
+                AcceptShortcut = "Ctrl+F7",
+                ExitShortcut = "Ctrl+F8"
+            });
+            overlay = new OverlayWindow(automationTest: true);
+            broker = new OrdinaryControlBroker();
+            // This is the ordinary production composition. Only software input is
+            // opted in; no PracticeHost, fabricated capture or write permission.
+            controller = WindowsRuntime.CreateSession(settings, model, overlay, automationTest: true, broker: broker);
+            controller.OperationFeedback += feedback => feedbackCode ??= feedback.Code;
+            await controller.StartAsync().WaitAsync(setupDeadline.Token);
+            var editor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
+            TargetId? target = null;
+            void RequireUnchanged(bool sourceFocused)
+            {
+                cancellation.ThrowIfCancellationRequested();
+                Require(model.Ready, "ordinary-model-unavailable");
+                Require(feedbackCode is null, "ordinary-production-feedback");
+                Require(!settings.Value.ExperimentalWriteback && controller.AutomaticPracticeProgress is null
+                    && controller.PracticeProgress is null && broker.WriteRequests == 0, "ordinary-write-or-practice-enabled");
+                sourceUnchanged = N.ReadText(field, Limits.MaxTextUnits) == source;
+                selectionPreserved = N.ReadSelection(field) == selection;
+                zeroSubmits = N.Send(root, N.FixtureSubmitCount) == 0;
+                Require(sourceUnchanged && selectionPreserved && zeroSubmits, "ordinary-source-mutated-or-submitted");
+                if (sourceFocused)
+                    Require(N.Focused() == (root, field), "ordinary-source-focus-changed");
+            }
+            bool FreshSource(int afterCapture, int returns)
+            {
+                RequireUnchanged(true);
+                if (broker.Captures <= afterCapture || broker.LatestCaptureReturnCount != returns
+                    || broker.LatestCapture is not { Focus: FocusMember.Source, Snapshot: { } snapshot })
+                    return false;
+                Require(WindowsTarget.TryDecode(snapshot.Target, out var actual)
+                    && actual.ProcessId == host.ProcessId && actual.RootHwnd == (long)root && actual.ControlHwnd == (long)field,
+                    "ordinary-capture-target-changed");
+                Require(target is null || target == snapshot.Target, "ordinary-capture-lifetime-changed");
+                target = snapshot.Target;
+                return snapshot.Ime == ImeState.Clear && snapshot.IsUsable
+                    && snapshot.Text == source && snapshot.Selection == selection;
+            }
+            bool ReadyPresentation() => VisibleTranslation(overlay, editor) && editor.IsReadOnly
+                && Equals(editor.ToolTip, "点击译文编辑");
+            async Task ClickEditorAsync()
+            {
+                RequireUnchanged(true);
+                var point = editor.PointToScreen(new Point(editor.ActualWidth / 2, Math.Min(20, editor.ActualHeight / 2)));
+                Require(SetOwnedCursorPos((int)Math.Round(point.X), (int)Math.Round(point.Y)), "ordinary-editor-pointer");
+                editorClicks++;
+                SendOwnedClick(result.CleanupErrors);
+                await UntilAsync(() => N.GetForegroundWindow() == overlay.Handle
+                    && ReferenceEquals(Keyboard.FocusedElement, editor) && !editor.IsReadOnly, cancellation);
+                RequireUnchanged(false);
+            }
+
+            result.Stage = "ordinary-clear-capture";
+            await UntilAsync(() => controller.InputAvailable && FreshSource(0, 0), cancellation);
+            Require(!overlay.IsVisible && settings.Value.WakeShortcut == "Ctrl+Shift+F9", "ordinary-on-demand-before-wake");
+            Require(new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x76, 0x77, 0x78 }
+                .All(key => GetAsyncKeyState(key) >= 0), "ordinary-key-already-down");
+            result.Stage = "ordinary-wake-candidate";
+            int beforeWake = broker.Captures;
+            wakeAttempts++;
+            SendDirectShortcut(out firstWakeInputs, result.CleanupErrors, 0x78);
+            await UntilAsync(() => FreshSource(beforeWake, 0) && ReadyPresentation(), cancellation);
+            candidateReady = true;
+            firstCapture = broker.LatestCapture!.Snapshot;
+            string translated = editor.Text;
+
+            editorReturnOutcome = "running";
+            result.Stage = "ordinary-editor-change-draft";
+            await ClickEditorAsync();
+            SendOwnedLetter(0x41, result.CleanupErrors);
+            await UntilAsync(() => editor.Text != translated, cancellation);
+            string draft = editor.Text;
+            draftChanged = draft.Length > 0 && draft != translated;
+            Require(draftChanged, "ordinary-draft-not-changed");
+            RequireUnchanged(false);
+            result.Stage = "ordinary-editor-control-return";
+            int beforeReturn = broker.Captures;
+            SendOrdinaryControlShortcut(0x41, out returnInputs, result.CleanupErrors);
+            await UntilAsync(() => broker.Returns == 1 && N.Focused() == (root, field), cancellation);
+            Require(broker.ReturnTarget == target && broker.ReturnStatus == "focused", "ordinary-return-not-confirmed");
+            // The observed capture must have started after the real Broker return
+            // completed. Runtime must then expose the retained draft as editable.
+            await UntilAsync(() => FreshSource(beforeReturn, 1) && ReadyPresentation() && editor.Text == draft, cancellation);
+            freshAfterReturn = true;
+            draftRetained = editor.Text == draft;
+            editorReturnOutcome = "verified";
+
+            editorExitOutcome = "running";
+            result.Stage = "ordinary-editor-control-exit";
+            await ClickEditorAsync();
+            Require(editor.Text == draft, "ordinary-draft-lost-on-reentry");
+            SendOrdinaryControlShortcut(0x42, out editorExitInputs, result.CleanupErrors);
+            await UntilAsync(() => broker.Returns == 2 && N.Focused() == (root, field) && !overlay.IsVisible, cancellation);
+            editorExitReturned = broker.ReturnTarget == target && broker.ReturnStatus == "focused";
+            Require(editorExitReturned, "ordinary-editor-exit-return-not-confirmed");
+            int afterEditorExit = broker.Captures;
+            await UntilAsync(() =>
+            {
+                Require(!overlay.IsVisible, "ordinary-editor-exit-reopened");
+                return FreshSource(afterEditorExit, 2);
+            }, cancellation);
+            editorExitHidden = true;
+            editorExitOutcome = "verified";
+
+            sourceExitOutcome = "running";
+            result.Stage = "ordinary-source-wake-candidate";
+            int beforeSecondWake = broker.Captures;
+            wakeAttempts++;
+            SendDirectShortcut(out secondWakeInputs, result.CleanupErrors, 0x78);
+            await UntilAsync(() => FreshSource(beforeSecondWake, 2) && ReadyPresentation(), cancellation);
+            result.Stage = "ordinary-source-control-exit";
+            // One complete software chord immediately after real ready UI. Never
+            // wait for a private lease/ACK, renew the deadline or retry the press.
+            SendOrdinaryControlShortcut(0x42, out sourceExitInputs, result.CleanupErrors);
+            await UntilAsync(() => N.Focused() == (root, field) && !overlay.IsVisible, cancellation);
+            int afterSourceExit = broker.Captures;
+            await UntilAsync(() =>
+            {
+                Require(!overlay.IsVisible && broker.Returns == 2, "ordinary-source-exit-reopened-or-returned");
+                return FreshSource(afterSourceExit, 2);
+            }, cancellation);
+            sourceExitHidden = true;
+            sourceExitOutcome = "verified";
+            result.Stage = "ordinary-submit-positive-control";
+            N.Send((nint)host.SubmitButtonHwnd, 0x00F5);
+            submitCounterVerified = N.Send(root, N.FixtureSubmitCount) == 1;
+            Require(submitCounterVerified, "ordinary-submit-positive-control-failed");
+            result.Outcome = "verified";
+            result.Stage = "complete";
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            if (editorReturnOutcome == "running")
+                editorReturnOutcome = "failed";
+            if (editorExitOutcome == "running")
+                editorExitOutcome = "failed";
+            if (sourceExitOutcome == "running")
+                sourceExitOutcome = "failed";
+            RecordFailure(result, error);
+        }
+        finally
+        {
+            Cleanup("ordinary-controller", () => controller?.Dispose(), result.CleanupErrors);
+            if (controller is null)
+                Cleanup("ordinary-broker", () => broker?.Dispose(), result.CleanupErrors);
+            Cleanup("ordinary-overlay", () => overlay?.Close(), result.CleanupErrors);
+            await CleanupSourceAsync(native, result.CleanupErrors, cancellation);
+            CompleteCleanup(result);
+            result.Facts = new
+            {
+                inputKind = "software-input",
+                allowInjectedInput = true,
+                physicalIme = false,
+                experimentalWriteback = false,
+                ordinaryWritebackVerified = false,
+                feedbackCode,
+                candidateReady,
+                firstCapture = firstCapture is null ? null : new
+                {
+                    firstCapture.Ime,
+                    firstCapture.WriteSupported,
+                    firstCapture.DirectWriteSupported
+                },
+                wakeAttempts,
+                firstWakeInputs,
+                secondWakeInputs,
+                editorClicks,
+                editorReturn = new
+                {
+                    outcome = editorReturnOutcome,
+                    inputsInserted = returnInputs,
+                    draftChanged,
+                    freshAfterReturn,
+                    draftRetained
+                },
+                editorExit = new
+                {
+                    outcome = editorExitOutcome,
+                    inputsInserted = editorExitInputs,
+                    returned = editorExitReturned,
+                    hidden = editorExitHidden
+                },
+                sourceExit = new
+                {
+                    outcome = sourceExitOutcome,
+                    inputsInserted = sourceExitInputs,
+                    hidden = sourceExitHidden
+                },
+                sourceUnchanged,
+                selectionPreserved,
+                zeroSubmits,
+                submitCounterVerified,
+                writeRequests = broker?.WriteRequests ?? 0,
+                returns = broker?.Returns ?? 0
+            };
+        }
+        Console.WriteLine($"Ordinary control shortcuts: {result.Outcome}; editor-return={editorReturnOutcome}; editor-exit={editorExitOutcome}; source-exit={sourceExitOutcome}; stage={result.Stage}; code={result.Failure}.");
+        return result;
+    }
+
+    private sealed class OrdinaryControlBroker : IInputBroker
+    {
+        private readonly BrokerClient _inner = new();
+        public bool Available => _inner.Available;
+        public int ProcessId => _inner.ProcessId;
+        public int Captures
+        {
+            get; private set;
+        }
+        public int LatestCaptureReturnCount
+        {
+            get; private set;
+        }
+        public int Returns
+        {
+            get; private set;
+        }
+        public int WriteRequests
+        {
+            get; private set;
+        }
+        public BrokerResponse? LatestCapture
+        {
+            get; private set;
+        }
+        public TargetId? ReturnTarget
+        {
+            get; private set;
+        }
+        public string? ReturnStatus
+        {
+            get; private set;
+        }
+        public Task StartAsync() => _inner.StartAsync();
+        public async Task<BrokerResponse> CallAsync(BrokerRequest request, TimeSpan? timeout = null)
+        {
+            int returnsAtStart = Returns;
+            if (request.Op is "write" or "direct-write")
+                WriteRequests++;
+            var response = await _inner.CallAsync(request, timeout);
+            if (request.Op == "capture")
+            {
+                Captures++;
+                LatestCapture = response;
+                LatestCaptureReturnCount = returnsAtStart;
+            }
+            else if (request.Op == "return")
+            {
+                Returns++;
+                ReturnTarget = request.BoundTarget;
+                ReturnStatus = response.Status;
+            }
+            return response;
+        }
+        public void Dispose() => _inner.Dispose();
+    }
+
+    private static void SendOrdinaryControlShortcut(ushort scan, out uint inserted, List<CleanupError> errors)
+    {
+        KeyboardInput[] input = [new() { Type = 1, Scan = 0x1d, Flags = 8 }, new() { Type = 1, Scan = scan, Flags = 8 },
+            new() { Type = 1, Scan = 0x1d, Flags = 10 }, new() { Type = 1, Scan = scan, Flags = 10 }];
+        inserted = 0;
+        try
+        {
+            inserted = SendInput((uint)input.Length, input, Marshal.SizeOf<KeyboardInput>());
+            Require(inserted == input.Length, "ordinary-control-injection-incomplete");
+        }
+        finally
+        {
+            // Release the whole still-held prefix even when the other release
+            // fails. A cleanup release never retries the requested command.
+            if (inserted is 1 or 2 && SendInput(1, [input[2]], Marshal.SizeOf<KeyboardInput>()) != 1)
+                errors.Add(new("ordinary-control-key", "key-release-incomplete", "Win32", Marshal.GetLastWin32Error()));
+            if (inserted is 2 or 3 && SendInput(1, [input[3]], Marshal.SizeOf<KeyboardInput>()) != 1)
+                errors.Add(new("ordinary-function-key", "key-release-incomplete", "Win32", Marshal.GetLastWin32Error()));
         }
     }
 

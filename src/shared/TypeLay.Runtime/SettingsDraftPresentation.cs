@@ -32,7 +32,7 @@ public static class SettingsDraftPresentation
     public static SessionShortcutMessages SessionShortcuts(TypeLay.Core.SessionShortcutBindings keys) => new(
         "接受译文", keys.Accept, $"{keys.Accept} 接受译文", $"{keys.Accept} 返回原输入框",
         "退出当前翻译", keys.Exit, $"{keys.Exit} 退出当前翻译",
-        "接受默认使用 Tab，退出默认使用 Esc；也可选择无修饰键的 F1-F24。已保存组合键的可用范围由当前输入适配器确认。",
+        "接受默认使用 Tab，退出默认使用 Esc；也可选择 F1-F24 或 Ctrl+F1-F24。接受与退出须使用不同主键；当前输入适配器须确认实际键对。",
         TypeLay.Core.Presentation.From(TypeLay.Core.SessionState.IdleCapsule, false, shortcuts: keys).TabHint);
 }
 

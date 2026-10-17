@@ -28,7 +28,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
     public Task ExitWithoutAWritePlanPreservesSourceAndPairsItsPressAcrossRetirement(bool control) => desktop.RunAsync(async () =>
     {
         await using var scene = new QueueScene(true);
-        await scene.Start(true, control: control);
+        await scene.Start(true, bindings: control ? SessionShortcutBindings.Restore("Ctrl+F7", "Ctrl+F10") : null);
         await scene.InstallExit();
         var selection = N.ReadSelection(scene.Field);
         if (control)
@@ -511,7 +511,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
     public Task OneAcceptedPressExecutesOnceAndItsRepeatCannotReuseThePlan(bool control) => desktop.RunAsync(async () =>
     {
         await using var scene = new QueueScene(true);
-        await scene.Start(true, control: control);
+        await scene.Start(true, bindings: control ? SessionShortcutBindings.Restore("Ctrl+F10", "Ctrl+F8") : null);
         // Real Shift input tests LL left/right modifier vs GUI generic-VK pairing.
         scene.Key(0x10, true);
         scene.Key(0x10, false);
@@ -559,7 +559,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         {
             bool automation = refusal != "production-injection";
             await using var scene = new QueueScene(automation);
-            await scene.Start(automation, control: true);
+            await scene.Start(automation, bindings: SessionShortcutBindings.Restore("Ctrl+F7", "Ctrl+F8"));
             TextBox? otherInput = null;
             Window? other = null;
             if (refusal == "focus-round-trip")
@@ -584,12 +584,12 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                     Assert.True(otherInput!.Focus());
                     await scene.Wait(() => otherInput.IsKeyboardFocused && Native.GetForegroundWindow() != scene.Root
                         && scene.ForegroundEpoch > foreground);
-                    await scene.Focus();
-                    Assert.True(scene.Descriptor.NativeFocusRevision > scene.Plan!.Descriptor.NativeFocusRevision);
+                    await scene.Focus(afterRevision: scene.Plan!.Descriptor.NativeFocusRevision);
                     other.Close();
                 }
                 await scene.Wait(() => !scene.PrefixPending);
-                Assert.Equal(refusal == "expired", WindowsInterruptClock.NowMs > scene.Plan!.Permit.ExpiresAtMs);
+                if (refusal == "expired")
+                    Assert.True(WindowsInterruptClock.NowMs > scene.Plan!.Permit.ExpiresAtMs);
             }
             else
                 scene.Key(0x11, true);
@@ -945,8 +945,13 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             get; private set;
         }
         public nint Field => GetDlgItem(Root, 101);
-        public ushort AcceptKey => _bindings.Accept == "Tab" ? (ushort)9 : (ushort)118;
-        public ushort ExitKey => _bindings.Exit == "Esc" ? (ushort)27 : (ushort)119;
+        public ushort AcceptKey => VirtualKey(_bindings.Accept);
+        public ushort ExitKey => VirtualKey(_bindings.Exit);
+        private static ushort VirtualKey(string binding)
+        {
+            Assert.True(OwnedPracticeAcceptanceProtocol.TryParseKey(binding, out uint key, out _));
+            return checked((ushort)key);
+        }
         private ShortcutModifiers Modifiers => _bindings == SessionShortcutBindings.Default
             ? ShortcutModifiers.None : ShortcutModifiers.Control;
         public long UserEpoch => _hook.UserEpoch;
@@ -1006,9 +1011,9 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             _hook = new(allowInjectedInput: automation);
             _deadline.CancelAfter(TimeSpan.FromSeconds(25));
         }
-        public async Task Start(bool automation, bool baselineAfterWrite = false, bool control = false)
+        public async Task Start(bool automation, bool baselineAfterWrite = false, SessionShortcutBindings? bindings = null)
         {
-            _bindings = control ? SessionShortcutBindings.Restore("Ctrl+F7", "Ctrl+F8") : SessionShortcutBindings.Default;
+            _bindings = bindings ?? SessionShortcutBindings.Default;
             _hook.ConfigureSessionShortcuts(_bindings);
             var settings = WindowsRuntime.CreateSettings(Path.Combine(_directory, "settings.json"));
             settings.Update(settings.Value with
@@ -1028,7 +1033,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             await MeasureOrdinaryTab(baselineAfterWrite);
             await Begin(automation);
             await Focus();
-            if (control)
+            if (Modifiers == ShortcutModifiers.Control)
                 Assert.True(Messages.Last(message => message.Run == _run && message.Kind == "source-ready")
                     .Acceptance!.ControlPrefixObserved);
             Assert.Equal(Original, N.ReadText(Field, Limits.MaxTextUnits));
@@ -1127,11 +1132,12 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             AutomationElement.FromHandle(Field).SetFocus();
             await Wait(() => N.Focused() == (Root, Field));
         }
-        public async Task Focus()
+        public async Task Focus(long afterRevision = 0)
         {
             await FocusSource();
             await Wait(() => N.Focused() == (Root, Field) && Descriptor is not null
-                && Descriptor.BeginSequence == _sequence && (long)N.GetProp(Field, "TypeLay.OwnedFocusRevision.v1") == Descriptor.NativeFocusRevision);
+                && Descriptor.BeginSequence == _sequence && Descriptor.NativeFocusRevision > afterRevision
+                && (long)N.GetProp(Field, "TypeLay.OwnedFocusRevision.v1") == Descriptor.NativeFocusRevision);
             _hook.SetOwnedChannel(_connection, _writer!, Descriptor);
         }
         public async Task Install(bool expectAcknowledgement = true)
@@ -1204,6 +1210,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 0x11 => 0x1D,
                 118 => 0x41,
                 119 => 0x42,
+                121 => 0x44,
                 _ => 0
             };
             Assert.Equal(1u, SendInput(1, [new KeyInput

@@ -219,7 +219,7 @@ internal static partial class Program
                 if (_window == 0)
                     continue;
                 string? completionKind = null;
-                if (_observeInputCompletion && inputQueue && message.Id is 0x0100 or 0x0101)
+                if (_observeInputCompletion && inputQueue && message.Id is 0x0100 or 0x0101 or 0x0104 or 0x0105)
                 {
                     uint key = (uint)message.WParam;
                     if (_escapeHeld && key == _escapeVirtualKey || key == _exitLease?.VirtualKey || key == 27)
@@ -255,7 +255,7 @@ internal static partial class Program
                     if (_inputCompletions!.Count >= 8)
                         throw new InvalidDataException("practice-input-completion-limit");
                     _inputCompletions.Enqueue(new(completionKind, _connection, _run, _sequence,
-                        InputCompletion: new(checked(++_inputCompletionSequence), message.Id == 0x0100, consumed)));
+                        InputCompletion: new(checked(++_inputCompletionSequence), message.Id is 0x0100 or 0x0104, consumed)));
                 }
                 if (consumed)
                     continue;
@@ -1435,7 +1435,7 @@ internal static partial class Program
                 && witness.VirtualKey == plan.VirtualKey && witness.Modifiers == plan.Modifiers
                 && witness.Modified == (plan.Modifiers != ShortcutModifiers.None)
                 && (!witness.Injected || _allowInjectedInput)
-                && message.Id == 0x0100 && message.Window == _edit!.Handle
+                && message.Id is 0x0100 or 0x0104 && message.Window == _edit!.Handle
                 && (bits & (1UL << 29)) == 0 && ExactModifiers(plan.Modifiers)
                 && witness.Sequence > _installWitnessFloor && witness.Sequence > plan.InstallWitnessSequence
                 && witness.PlanSequence == plan.PlanSequence
@@ -1554,7 +1554,7 @@ internal static partial class Program
             && witness.VirtualKey == lease.VirtualKey && witness.Modifiers == lease.Modifiers
             && witness.Modified == (lease.Modifiers != ShortcutModifiers.None)
             && (!witness.Injected || _allowInjectedInput)
-            && message.Id == 0x0100 && message.Window == _edit!.Handle && (bits & (1UL << 29)) == 0 && ExactModifiers(lease.Modifiers)
+            && message.Id is 0x0100 or 0x0104 && message.Window == _edit!.Handle && (bits & (1UL << 29)) == 0 && ExactModifiers(lease.Modifiers)
             && witness.ExitLeaseSequence == lease.Sequence
             && witness.Sequence > _exitWitnessFloor && witness.Sequence > lease.InstallWitnessSequence
             && witness.NativeFocusRevision == lease.Descriptor.NativeFocusRevision

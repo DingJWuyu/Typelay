@@ -23,6 +23,7 @@ internal static class WindowsRuntime
         PracticeHost? practice = null)
     {
         var monitor = new KeyboardHook(automationTest, overlay.Handle);
+        overlay.ConfigureOrdinaryInput(monitor);
         practice?.Initialize(settings, monitor, automationTest);
         practice?.InitializeEditing(overlay);
         broker ??= new BrokerClient();

@@ -49,16 +49,18 @@ internal sealed partial class KeyboardHook : IInputMonitor
     public long WindowEpoch => Interlocked.Read(ref _windowEpoch);
     private volatile bool _ready;
     public bool Ready => _ready;
-    public bool CanInterceptAcceptance => CanInterceptOwnedSessionKeys;
+    public bool CanInterceptAcceptance => CanInterceptOwnedSessionKeys && (UsesUnmodifiedSessionKeys
+        || Volatile.Read(ref _ownedChannel) is { } channel && OwnedFocus(channel.Descriptor));
     internal bool CanInterceptOwnedSessionKeys => Ready && _sessionEnabled && Volatile.Read(ref _sessionKeys).Supported;
     internal bool UsesUnmodifiedSessionKeys => Volatile.Read(ref _sessionKeys) is
     { Supported: true, AcceptModifiers: ShortcutModifiers.None, ExitModifiers: ShortcutModifiers.None };
     public string ShortcutStatus => _hotkeys.Status;
-    // Shared preferences may express chords whose ownership this hook has not
-    // implemented. Such a pair must not advertise either session action.
+    // Decode the exact supported pair. Source writing and no-write session
+    // commands advertise separate capabilities.
     internal void ConfigureSessionShortcuts(SessionShortcutBindings bindings)
     {
         RevokeOwnedPrefix();
+        InvalidateOrdinaryChord();
         _gate.Revoke();
         _ownedGate.Revoke();
         Interlocked.Exchange(ref _lease, null);
@@ -71,6 +73,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     }
 
     internal bool HasSessionConfiguration(SessionShortcutConfiguration configuration) => CanInterceptOwnedSessionKeys
+        && (UsesUnmodifiedSessionKeys || ShortcutsReady)
         && configuration.Generation == CommandGeneration
         && configuration.Bindings == Volatile.Read(ref _sessionKeys).Bindings;
     public void ConfigureShortcuts(bool enabled, string wake, string direct, SessionShortcutBindings sessionBindings, bool sessionEnabled)
@@ -118,6 +121,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             _gate.Revoke();
             _ownedGate.Revoke();
             RevokeOwnedPrefix();
+            InvalidateOrdinaryChord();
             if (ev == 3)
                 ObserveEditorForeground(window);
         };
@@ -131,6 +135,15 @@ internal sealed partial class KeyboardHook : IInputMonitor
             Revoke();
             return;
         }
+        if (Volatile.Read(ref _ordinaryChord) is { Source: { } original } chord
+            && (original.Observation.Source with
+            {
+                ObservedAtMs = lease.Source.ObservedAtMs,
+                Bounds = lease.Source.Bounds
+            } != lease.Source
+                || lease.CommandGeneration != original.Observation.CommandGeneration
+                || lease.SessionRevision != original.Observation.SessionRevision || !lease.EscapeAllowed))
+            Interlocked.Exchange(ref chord.Invalid, 1);
         Interlocked.Exchange(ref _lease, new(lease, (nint)target.RootHwnd));
         if (_ownedPracticeTarget?.Invoke(lease.Source.Target) == true)
         {
@@ -153,6 +166,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     }
     public void SetShortcuts(RegisteredShortcut[] shortcuts)
     {
+        InvalidateOrdinaryChord();
         var configuration = new ShortcutConfiguration(Guid.NewGuid(), shortcuts);
         Interlocked.Exchange(ref _shortcuts, configuration);
         var old = Interlocked.Exchange(ref _shortcutLease, null);
@@ -164,6 +178,9 @@ internal sealed partial class KeyboardHook : IInputMonitor
     public void Revoke()
     {
         _gate.Revoke();
+        // The editor's normal Tick retires source writing, not its local command.
+        if (Volatile.Read(ref _ordinaryChord)?.Source is not null)
+            InvalidateOrdinaryChord();
         Interlocked.Exchange(ref _lease, null);
         _revokeOwned?.Invoke();
         if (Interlocked.Exchange(ref _shortcutLease, null) is { } old)
@@ -292,6 +309,150 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 Native.UnhookWinEvent(focus);
         }
     }
+    private sealed record OrdinaryEditor(SessionViewToken Token);
+    private sealed class OrdinaryFunction(Native.KeyData input, long receivedAt)
+    {
+        public Native.KeyData Input { get; } = input;
+        public long ReceivedAt { get; } = receivedAt;
+        public int Released, Claimed;
+    }
+    // Only one real Ctrl group. It can end a session or return its editor, never
+    // authorize source writing. Original release ownership survives retirement.
+    private sealed class OrdinaryChord(Native.KeyData control, HookLease? source, OrdinaryEditor? editor,
+        Guid generation, long userEpoch, long sourceEpoch, long foregroundEpoch, long windowEpoch, long contentEpoch)
+    {
+        public Native.KeyData Control { get; } = control;
+        public HookLease? Source { get; } = source;
+        public OrdinaryEditor? Editor { get; } = editor;
+        public Guid Generation { get; } = generation;
+        public long UserEpoch { get; } = userEpoch;
+        public long SourceEpoch { get; } = sourceEpoch;
+        public long ForegroundEpoch { get; } = foregroundEpoch;
+        public long WindowEpoch { get; } = windowEpoch;
+        public long ContentEpoch { get; } = contentEpoch;
+        public OrdinaryFunction? Function;
+        public int Invalid, ControlReleased;
+    }
+    private OrdinaryEditor? _ordinaryEditor;
+    private OrdinaryChord? _ordinaryChord;
+    internal void SetOrdinaryEditor(SessionViewToken? token)
+    {
+        var current = Volatile.Read(ref _ordinaryEditor);
+        if (current?.Token == token)
+            return;
+        Interlocked.Exchange(ref _ordinaryEditor, token is null ? null : new(token));
+        InvalidateOrdinaryChord(editorOnly: true);
+    }
+    internal void InvalidateOrdinaryEditorInput() => InvalidateOrdinaryChord(editorOnly: true);
+    private void InvalidateOrdinaryChord(bool editorOnly = false)
+    {
+        if (Volatile.Read(ref _ordinaryChord) is { } chord && (!editorOnly || chord.Editor is not null))
+            Interlocked.Exchange(ref chord.Invalid, 1);
+    }
+    private static bool SameOrdinaryPress(Native.KeyData first, Native.KeyData next) => first.Key == next.Key
+        && first.Scan == next.Scan && (first.Flags & 0x13) == (next.Flags & 0x13);
+    private bool OrdinaryChordCurrent(OrdinaryChord chord, long now) => Volatile.Read(ref chord.Invalid) == 0
+        && _sessionEnabled && ShortcutsReady && chord.Generation == CommandGeneration && chord.UserEpoch == UserEpoch
+        && chord.SourceEpoch == SourceUserEpoch && chord.ForegroundEpoch == ForegroundEpoch
+        && chord.WindowEpoch == WindowEpoch
+        && (chord.Editor is { } editor ? ReferenceEquals(editor, Volatile.Read(ref _ordinaryEditor))
+            && editor.Token.CommandGeneration == CommandGeneration && Native.GetForegroundWindow() == _editorHwnd
+            : chord.Source is { } source && Native.GetForegroundWindow() == source.RootHwnd
+                && now >= source.Observation.Source.ObservedAtMs
+                && now - source.Observation.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs);
+    private bool PairOrdinaryChord(Native.KeyData input, bool down, bool repeated)
+    {
+        var chord = Volatile.Read(ref _ordinaryChord);
+        if (chord is null)
+            return false;
+        var function = Volatile.Read(ref chord.Function);
+        bool control = SameOrdinaryPress(chord.Control, input);
+        bool action = function is not null && SameOrdinaryPress(function.Input, input);
+        bool actionReleased = function is not null && Volatile.Read(ref function.Released) != 0;
+        // A new press after the original up never inherits that press's claim,
+        // even if its old GUI down is still queued or Ctrl remains held.
+        if (down && !repeated && (control && Volatile.Read(ref chord.ControlReleased) != 0 || action && actionReleased))
+            Interlocked.Exchange(ref chord.Invalid, 1);
+        if (control && !down)
+            Interlocked.Exchange(ref chord.ControlReleased, 1);
+        if (action && !down)
+            Interlocked.Exchange(ref function!.Released, 1);
+        bool consumed = action && !actionReleased && (repeated || !down) && Volatile.Read(ref function!.Claimed) != 0;
+        bool released = Volatile.Read(ref chord.ControlReleased) != 0
+            && (function is null || Volatile.Read(ref function.Released) != 0);
+        if (released && (function is null || Volatile.Read(ref function.Claimed) != 0 || down && !repeated))
+            Interlocked.CompareExchange(ref _ordinaryChord, null, chord);
+        return consumed;
+    }
+    private int ObserveOrdinaryChord(Native.KeyData input, bool down, bool repeated, bool injected, long now,
+        HookLease? source, bool fresh, SessionKeys keys)
+    {
+        var chord = Volatile.Read(ref _ordinaryChord);
+        if (down && !repeated && ShortcutsReady && ControlKey(input.Key) && CurrentModifiers == ShortcutModifiers.Control
+            && !OtherKeyHeld(input.Key) && chord is null && (!injected || _allowInjectedInput)
+            && input.Scan is > 0 and <= 255)
+        {
+            var editor = Volatile.Read(ref _ordinaryEditor);
+            if (editor is not null && Native.GetForegroundWindow() == _editorHwnd
+                && editor.Token.CommandGeneration == CommandGeneration
+                && (keys.AcceptModifiers == ShortcutModifiers.Control || keys.ExitModifiers == ShortcutModifiers.Control))
+                source = null;
+            else
+            {
+                editor = null;
+                if (!fresh || source is null || Native.GetForegroundWindow() != source.RootHwnd
+                    || !source.Observation.EscapeAllowed || source.Observation.Source.Ime != ImeState.Clear
+                    || keys.ExitModifiers != ShortcutModifiers.Control)
+                    return 0;
+            }
+            // Ordinary Ctrl still advances both source epochs below, or only U
+            // inside the editor. No old permit or input version is preserved.
+            Interlocked.Exchange(ref _ordinaryChord, new(input, source, editor, CommandGeneration,
+                UserEpoch + 1, SourceUserEpoch + (editor is null ? 1 : 0), ForegroundEpoch, WindowEpoch, ContentEpoch));
+            return 0;
+        }
+        if (chord is null)
+            return 0;
+        var function = Volatile.Read(ref chord.Function);
+        if (SameOrdinaryPress(chord.Control, input)
+            || function is not null && SameOrdinaryPress(function.Input, input))
+            return 0;
+        bool configured = input.Key == keys.Exit && keys.ExitModifiers == ShortcutModifiers.Control
+            || chord.Editor is not null && input.Key == keys.Accept && keys.AcceptModifiers == ShortcutModifiers.Control;
+        if (!down || repeated || !configured || function is not null || Volatile.Read(ref chord.ControlReleased) != 0
+            || CurrentModifiers != ShortcutModifiers.Control || ContentEpoch != chord.ContentEpoch + 1
+            || !SameInputOrigin(chord.Control, input) || input.Scan is 0 or > 255 || !OrdinaryChordCurrent(chord, now))
+        {
+            Interlocked.Exchange(ref chord.Invalid, 1);
+            return 0;
+        }
+        function = new(input, now);
+        Volatile.Write(ref chord.Function, function);
+        if (chord.Editor is not null)
+            return -1; // The actual WPF message must claim this original Fn.
+        Interlocked.Exchange(ref function.Claimed, 1);
+        _gate.Revoke();
+        var lease = chord.Source!.Observation;
+        _notices.Enqueue(new("escape", AcceptedAtMs: now, UserEpoch: UserEpoch, ForegroundEpoch: ForegroundEpoch,
+            CommandGeneration: chord.Generation, Target: lease.Source.Target, SessionRevision: lease.SessionRevision));
+        return 1;
+    }
+    private static bool SameInputOrigin(Native.KeyData first, Native.KeyData next) => (first.Flags & 0x12) == (next.Flags & 0x12);
+    internal bool ClaimOrdinaryEditorKey(SessionViewToken token, uint key, uint timestamp, uint scan, bool extended)
+    {
+        var chord = Volatile.Read(ref _ordinaryChord);
+        var function = chord is null ? null : Volatile.Read(ref chord.Function);
+        long now = WindowsInterruptClock.NowMs;
+        if (chord?.Editor?.Token != token || function is null || function.Input.Key != key
+            || function.Input.Time != timestamp || function.Input.Scan != scan || ((function.Input.Flags & 1) != 0) != extended
+            || now < function.ReceivedAt || now - function.ReceivedAt > 500 || !OrdinaryChordCurrent(chord, now))
+            return false;
+        return Interlocked.CompareExchange(ref function.Claimed, 1, 0) == 0;
+    }
+    internal bool OrdinaryGroupPending => Volatile.Read(ref _ordinaryChord) is { } chord
+        && (Volatile.Read(ref chord.ControlReleased) == 0
+            || Volatile.Read(ref chord.Function) is { } function && Volatile.Read(ref function.Released) == 0);
+
     private bool Modified => _keys[0x10] || _keys[0x11] || _keys[0x12] || _keys[0xA0] || _keys[0xA1]
         || _keys[0xA2] || _keys[0xA3] || _keys[0xA4] || _keys[0xA5] || _keys[0x5B] || _keys[0x5C];
     private nint OnKey(int code, nint wParam, nint lParam)
@@ -315,14 +476,19 @@ internal sealed partial class KeyboardHook : IInputMonitor
         long now = WindowsInterruptClock.NowMs;
         ObserveReturnKey(data, down, repeated, injected, now);
         var sessionKeys = Volatile.Read(ref _sessionKeys);
-        bool fresh = _sessionEnabled && UsesUnmodifiedSessionKeys && sessionKeys.Supported && lease is not null && lease.CommandGeneration == CommandGeneration && lease.UserEpoch == UserEpoch && lease.ForegroundEpoch == ForegroundEpoch
+        bool fresh = _sessionEnabled && sessionKeys.Supported && lease is not null && lease.CommandGeneration == CommandGeneration && lease.UserEpoch == UserEpoch && lease.ForegroundEpoch == ForegroundEpoch
             && now >= lease.Source.ObservedAtMs && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
         bool source = fresh && Native.GetForegroundWindow() == (nint)binding!.RootHwnd;
+        if (PairOrdinaryChord(data, down, repeated))
+            return 1;
         if (ObserveOwnedKey(data, down, repeated, injected, now, sessionKeys.Accept))
             return Native.CallNextHookEx(_hook, code, wParam, lParam);
+        int ordinary = ObserveOrdinaryChord(data, down, repeated, injected, now, binding, fresh, sessionKeys);
+        if (ordinary != 0)
+            return ordinary > 0 ? 1 : Native.CallNextHookEx(_hook, code, wParam, lParam);
         var decision = _gate.ProcessAcceptanceKey(new(data.Key, down, repeated, data.Key == sessionKeys.Accept && UsesUnmodifiedSessionKeys),
             new(lease?.Source.Target, source, lease?.Source.Ime ?? ImeState.Unknown,
-                Modified, injected, fresh, lease?.Source.InputEpoch ?? -1, lease?.Source.FocusEpoch ?? -1, now));
+                Modified, injected, fresh && UsesUnmodifiedSessionKeys, lease?.Source.InputEpoch ?? -1, lease?.Source.FocusEpoch ?? -1, now));
         if (decision.Permit is not null)
             _notices.Enqueue(new("accept", decision.Permit, now, UserEpoch, ForegroundEpoch,
                 CommandGeneration: lease!.CommandGeneration, SessionRevision: lease.SessionRevision));
@@ -343,6 +509,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
         {
             _escapeKeyDown = data.Key;
             _escapeConsumed = source && (!injected || _allowInjectedInput) && !Modified
+                && sessionKeys.ExitModifiers == ShortcutModifiers.None && Volatile.Read(ref _ordinaryChord) is null
                 && lease!.Source.Ime == ImeState.Clear && lease.EscapeAllowed;
             if (_escapeConsumed)
             {
@@ -472,6 +639,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             if (message != 0x200 || _mouseButtons != 0)
             {
                 RevokeOwnedPrefix();
+                InvalidateOrdinaryChord();
                 Interlocked.Increment(ref _contentEpoch);
             }
             if (message is 0x202 or 0x205 or 0x208 or 0x20C)

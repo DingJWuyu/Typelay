@@ -116,7 +116,7 @@ public sealed class SettingsDraftPresentationTests
     }
 
     [Fact]
-    public void SharedSessionLabelsFollowTheConfiguredKeysAndExplainTheFirstSlice()
+    public void SharedSessionLabelsDescribeConfigurableFunctionChords()
     {
         Assert.True(TypeLay.Core.SessionShortcutBindings.TryParse("F12", "F7", out var keys));
         var view = SettingsDraftPresentation.SessionShortcuts(keys!);
@@ -124,8 +124,9 @@ public sealed class SettingsDraftPresentationTests
         Assert.Equal("F12 接受译文", view.AcceptHint);
         Assert.Equal("F12 返回原输入框", view.ReturnHint);
         Assert.Equal("F7 退出当前翻译", view.ExitHint);
-        Assert.Contains("已保存组合键", view.ScopeNote);
-        Assert.Contains("当前输入适配器确认", view.ScopeNote);
+        Assert.Contains("Ctrl+F1-F24", view.ScopeNote);
+        Assert.Contains("不同主键", view.ScopeNote);
+        Assert.Contains("当前输入适配器", view.ScopeNote);
         var defaults = SettingsDraftPresentation.SessionShortcuts(TypeLay.Core.SessionShortcutBindings.Default);
         Assert.Equal("Tab", defaults.AcceptKey);
         Assert.Equal("Esc", defaults.ExitKey);

@@ -30,6 +30,7 @@ internal sealed class OverlayWindow : Window, ISessionView
     private SessionShortcutMessages _shortcutMessages = SettingsDraftPresentation.SessionShortcuts(SessionShortcutBindings.Default);
     private SessionViewContext? _viewContext;
     private PracticeHost? _ownedEditorHost;
+    private KeyboardHook? _ordinaryInput;
     private OwnedEditorControl? _ownedEditor;
     private bool _ownedActivationRequested, _ownedAppActive, _ownedRootActive, _ownedFocusAcquired;
     private bool _ownedReturning, _ownedReturnInvoking, _ownedReturnAppLeft, _ownedReturnRootLeft, _ownedReturnFocusLost, _ownedReturnReported;
@@ -232,9 +233,19 @@ internal sealed class OverlayWindow : Window, ISessionView
         };
         AddHandler(Keyboard.GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OwnedKeyboardFocusGained), handledEventsToo: true);
         AddHandler(Keyboard.LostKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OwnedKeyboardFocusLost), handledEventsToo: true);
-        _editor.TextChanged += (_, _) => { if (_editing && _viewContext?.CanEdit == true && !_rendering) DraftChanged?.Invoke(_editor.Text); };
+        _editor.TextChanged += (_, _) =>
+        {
+            if (_editing && !_rendering)
+            {
+                _ordinaryInput?.InvalidateOrdinaryEditorInput();
+                if (_viewContext?.CanEdit == true)
+                    DraftChanged?.Invoke(_editor.Text);
+            }
+        };
+        _editor.LostKeyboardFocus += (_, _) => _ordinaryInput?.SetOrdinaryEditor(null);
         _editor.GotKeyboardFocus += (_, _) =>
         {
+            PublishOrdinaryEditor();
             // Key-up can go to the source after a return. Reconcile on re-entry,
             // and remember any key held before the editor acquired focus.
             _pressedShortcutKeys.RemoveWhere(key => !Keyboard.IsKeyDown(key));
@@ -248,16 +259,28 @@ internal sealed class OverlayWindow : Window, ISessionView
             Key key = ShortcutEventKey(e);
             if (key is not (Key.Tab or Key.Escape) && (key < Key.F1 || key > Key.F24))
                 return;
+            bool ordinaryControl = _ownedEditor is null && Keyboard.Modifiers == ModifierKeys.Control
+                && (key == _acceptKey && _acceptModifiers == ModifierKeys.Control
+                    || key == _exitKey && _exitModifiers == ModifierKeys.Control);
+            if (ordinaryControl && !e.IsRepeat)
+            {
+                if (!ClaimOrdinaryEditorKey(e, key))
+                    return;
+            }
             if (!_pressedShortcutKeys.Add(key) || e.IsRepeat)
             {
                 if (_consumedShortcutKeys.Contains(key))
                     e.Handled = true;
                 return;
             }
-            if (_composing || e.Key == Key.ImeProcessed || _viewContext is not { } context
-                || _ownedEditor is null && (_acceptModifiers != ModifierKeys.None || _exitModifiers != ModifierKeys.None))
+            if (_composing || e.Key == Key.ImeProcessed || _viewContext is not { } context)
                 return;
             ModifierKeys modifiers = Keyboard.Modifiers;
+            bool configured = key == _acceptKey && modifiers == _acceptModifiers
+                || key == _exitKey && modifiers == _exitModifiers;
+            if (_ownedEditor is null && configured && modifiers != ModifierKeys.Control
+                && _ordinaryInput?.OrdinaryGroupPending == true)
+                return;
             if (key == _acceptKey && modifiers == _acceptModifiers && _editing && context.CanEdit)
             {
                 _consumedShortcutKeys.Add(key);
@@ -284,9 +307,23 @@ internal sealed class OverlayWindow : Window, ISessionView
             if (_consumedShortcutKeys.Remove(key))
                 e.Handled = true;
         };
-        TextCompositionManager.AddPreviewTextInputStartHandler(_editor, (_, _) => _composing = true);
-        TextCompositionManager.AddPreviewTextInputUpdateHandler(_editor, (_, e) => _composing = !string.IsNullOrEmpty(e.TextComposition.CompositionText));
-        TextCompositionManager.AddPreviewTextInputHandler(_editor, (_, _) => _composing = false);
+        TextCompositionManager.AddPreviewTextInputStartHandler(_editor, (_, _) =>
+        {
+            _ordinaryInput?.SetOrdinaryEditor(null);
+            _composing = true;
+        });
+        TextCompositionManager.AddPreviewTextInputUpdateHandler(_editor, (_, e) =>
+        {
+            _ordinaryInput?.SetOrdinaryEditor(null);
+            _composing = !string.IsNullOrEmpty(e.TextComposition.CompositionText);
+            PublishOrdinaryEditor();
+        });
+        TextCompositionManager.AddPreviewTextInputHandler(_editor, (_, _) =>
+        {
+            _ordinaryInput?.SetOrdinaryEditor(null);
+            _composing = false;
+            PublishOrdinaryEditor();
+        });
         _editor.ContextMenu = null;
         Grid.SetRow(_editor, 1);
         _surface.Children.Add(_editor);
@@ -391,6 +428,30 @@ internal sealed class OverlayWindow : Window, ISessionView
         _ => input.Key
     };
     internal void ConfigureOwnedEditing(PracticeHost practice) => _ownedEditorHost = practice;
+    internal void ConfigureOrdinaryInput(KeyboardHook input) => _ordinaryInput = input;
+    private void PublishOrdinaryEditor() => _ordinaryInput?.SetOrdinaryEditor(
+        _ownedEditor is null && _editing && !_composing && _editor.IsKeyboardFocused
+            && _viewContext is { CanEdit: true } context ? context.Token : null);
+
+    private bool ClaimOrdinaryEditorKey(KeyEventArgs input, Key key)
+    {
+        // ProcessKeyAction scopes this original MSG around WPF's ReportInput.
+        var message = ComponentDispatcher.CurrentKeyboardMessage;
+        long bits = message.lParam.ToInt64();
+        uint virtualKey = (uint)KeyInterop.VirtualKeyFromKey(key), scan = (uint)(bits >> 16) & 255;
+        if (message.hwnd != _hwnd || message.message is not (0x100 or 0x104) || message.wParam != (nint)virtualKey
+            || message.time != input.Timestamp || (bits & 0xe0000000L) != 0 || scan == 0)
+            return false;
+        // A real new down retires the old WPF mirror even when admission fails.
+        // The Hook still owns the old physical pair; a synthetic routed event
+        // cannot clear it or make this new press inherit its consumed state.
+        _pressedShortcutKeys.Remove(key);
+        _consumedShortcutKeys.Remove(key);
+        return !_composing && input.Key != Key.ImeProcessed && _editing && _editor.IsKeyboardFocused
+            && _viewContext is { CanEdit: true } context
+            && _ordinaryInput?.ClaimOrdinaryEditorKey(context.Token, virtualKey, unchecked((uint)message.time),
+                scan, (bits & 0x01000000) != 0) == true;
+    }
 
     private nint WindowMessage(nint hwnd, int msg, nint wp, nint lp, ref bool handled)
     {
@@ -865,7 +926,11 @@ internal sealed class OverlayWindow : Window, ISessionView
                 uiMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds - textMs;
             positionTiming = Position(source.Target, source.Bounds, idle, trace);
         }
-        finally { _rendering = false; }
+        finally
+        {
+            _rendering = false;
+            PublishOrdinaryEditor();
+        }
         if (trace)
             TraceRender(atMs, Stopwatch.GetElapsedTime(started).TotalMilliseconds, uiMs, textMs, positionTiming);
     }
@@ -1092,6 +1157,7 @@ internal sealed class OverlayWindow : Window, ISessionView
     }
     private void ClearSessionContent()
     {
+        _ordinaryInput?.SetOrdinaryEditor(null);
         InvalidateOwnedEditor(OwnedEditorReason.UiHidden);
         CancelHeightTransition();
         _heightAnchor = null;

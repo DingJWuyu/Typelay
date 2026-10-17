@@ -875,6 +875,10 @@ class ApplicationSupportPane:
 
 
 class Settings:
+    function_keys = tuple(
+        f"{prefix}F{number}" for prefix in ("", "Ctrl+") for number in range(1, 25)
+    )
+
     def __init__(
         self,
         host,
@@ -1058,7 +1062,7 @@ class Settings:
         self.controls = {}
         self.control_labels = {}
         self.theme_options = {}
-        function_keys = [(f"F{index}", f"F{index}") for index in range(1, 25)]
+        function_keys = [(value, value) for value in self.function_keys]
         rows = [
             ("enabled", "启用 TypeLay", True),
             ("mode", "工作模式", [("Automatic", "自动模式"), ("OnDemand", "按需模式")]),
@@ -1170,20 +1174,6 @@ class Settings:
                 widget = Gtk.ComboBoxText()
                 for identity, title in choices:
                     widget.append(identity, title)
-                if key in ("acceptShortcut", "exitShortcut"):
-                    # Only an already-saved chord is displayed. The staged UI
-                    # still offers ordinary keys, including a path back to them.
-                    for cell in widget.get_cells():
-                        widget.set_cell_data_func(
-                            cell,
-                            lambda _layout,
-                            renderer,
-                            model,
-                            iterator,
-                            _data=None: renderer.set_property(
-                                "sensitive", not model.get_value(iterator, 1).startswith("Ctrl+")
-                            ),
-                        )
                 if key in ("source", "target", "acceptShortcut", "exitShortcut"):
                     widget.set_sensitive(False)
             else:
@@ -1439,14 +1429,7 @@ class Settings:
         self.mode_description.set_tooltip_text(value["modeDescription"])
         self.mode_description.get_accessible().set_description(value["modeDescription"])
         self.controls["mode"].set_tooltip_text(value["modeDescription"])
-        control_session = self.value and any(
-            self.value[key].startswith("Ctrl+") for key in ("acceptShortcut", "exitShortcut")
-        )
-        self.acceptance_description.set_text(
-            "已保存组合键仅用于合作 Qt6 的原输入框接受和退出；当前不支持译文编辑。"
-            if control_session
-            else value["acceptanceDescription"]
-        )
+        self.acceptance_description.set_text(value["acceptanceDescription"])
 
     def configure(self, value):
         first = self.value is None
@@ -1463,7 +1446,7 @@ class Settings:
                 elif isinstance(widget, Gtk.ComboBoxText):
                     if key in ("acceptShortcut", "exitShortcut"):
                         default = "Tab" if key == "acceptShortcut" else "Esc"
-                        choices = [default] + [f"F{number}" for number in range(1, 25)]
+                        choices = [default, *self.function_keys]
                         if value[key] not in choices:
                             choices.append(value[key])
                         if [row[1] for row in widget.get_model()] != choices:

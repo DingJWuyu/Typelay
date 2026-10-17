@@ -780,8 +780,8 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             Assert.Equal(SessionState.ReturningToSource, session.State);
             Assert.Equal("A manual draft", session.Draft);
             Assert.Equal("Source text", input.Text);
-            Assert.True(SessionShortcutBindings.TryParse("Ctrl+F8", "Esc", out var unsupported));
-            overlay.ConfigureSessionShortcuts(unsupported!);
+            Assert.True(SessionShortcutBindings.TryParse("Ctrl+F8", "Ctrl+F7", out var control));
+            overlay.ConfigureSessionShortcuts(control!);
             Assert.False(EditorKey(editor, Key.Escape, Keyboard.PreviewKeyDownEvent).Handled);
             Assert.False(EditorKey(editor, Key.Escape, Keyboard.PreviewKeyUpEvent).Handled);
             Assert.False(EditorKey(editor, Key.F8, Keyboard.PreviewKeyDownEvent).Handled);
@@ -989,6 +989,129 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             Assert.Equal("Source text", input.Text);
         });
     }
+
+    [Fact]
+    public Task FailedOrdinaryControlReturnAllowsTheNextReleasedPressWithoutRefocusing() => desktop.RunAsync(async () =>
+    {
+        var (_, input, source) = OpenSource();
+        var settings = new UserSettings(Theme: "light");
+        var session = Ready(source, "A locally editable draft");
+        var bindings = SessionShortcutBindings.Restore("Ctrl+F10", "Ctrl+F8");
+        var overlay = new OverlayWindow(automationTest: true);
+        using var hook = new KeyboardHook(allowInjectedInput: true, editorHwnd: overlay.Handle);
+        hook.ConfigureShortcuts(false, "Ctrl+Shift+F9", "Ctrl+Shift+F10", bindings, true);
+        overlay.ConfigureOrdinaryInput(hook);
+        overlay.ConfigureSessionShortcuts(bindings);
+        var context = new SessionViewContext(new(source.Target, hook.CommandGeneration, 1), bindings, true);
+        int returns = 0, focusLost = 0, controlReleases = 0;
+        overlay.BeginEditing = _ => session.BeginEdit();
+        overlay.ReturnRequested = token =>
+        {
+            Assert.Equal(context.Token, token);
+            returns++;
+            // Controlled failed return isolates the actual Hook/WPF boundary;
+            // no source provider, model or physical IME claim is made here.
+            Assert.True(session.RequestSourceReturn());
+            context = context with
+            {
+                Token = context.Token with
+                {
+                    Revision = context.Token.Revision + 1
+                }
+            };
+            overlay.Render(session, settings, false, context: context);
+            session.CancelSourceReturn();
+            overlay.ResumeEditor();
+            overlay.Render(session, settings, false, context: context);
+        };
+        overlay.Render(session, settings, false, context: context);
+        overlay.UpdateLayout();
+        var editor = Descendants(overlay).OfType<TextBox>().Single();
+        editor.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
+        {
+            RoutedEvent = Mouse.PreviewMouseDownEvent
+        });
+        editor.LostKeyboardFocus += (_, _) => focusLost++;
+        editor.PreviewKeyUp += (_, args) => { if (args.Key == Key.LeftCtrl) controlReleases++; };
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        await Wait(() => hook.ShortcutsReady && editor.IsKeyboardFocused);
+        Assert.All(new[] { Key.F10, Key.LeftCtrl }, key => Assert.False(Native.GetAsyncKeyState(KeyInterop.VirtualKeyFromKey(key)) < 0));
+        bool held = false;
+        try
+        {
+            for (int attempt = 1; attempt <= 2; attempt++)
+            {
+                var received = new TaskCompletionSource<KeyEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
+                KeyEventHandler observe = (_, args) => { if ((args.Key == Key.System ? args.SystemKey : args.Key) == Key.F10) received.TrySetResult(args); };
+                editor.AddHandler(Keyboard.PreviewKeyDownEvent, observe, handledEventsToo: true);
+                try
+                {
+                    Send([Scan(0x1D, true), Scan(0x44, true)]);
+                    held = true;
+                    var down = await received.Task.WaitAsync(deadline.Token);
+                    Assert.False(down.IsRepeat);
+                    Assert.True(down.Handled);
+                    Assert.Equal(attempt, returns);
+                    // Release only after the real WPF consumer claimed down.
+                    // The Hook consumes Fn up, leaving the old WPF mirror.
+                    Send([Scan(0x44, false), Scan(0x1D, false)]);
+                    held = false;
+                    await Wait(() => controlReleases == attempt);
+                    Assert.True(editor.IsKeyboardFocused);
+                    Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
+                    Assert.Equal(0, focusLost);
+                    Assert.Equal(SessionState.EditingTranslation, session.State);
+                }
+                finally { editor.RemoveHandler(Keyboard.PreviewKeyDownEvent, observe); }
+            }
+            context = context with
+            {
+                CanEdit = false
+            };
+            overlay.Render(session, settings, false, context: context);
+            var rejected = new List<KeyEventArgs>();
+            KeyEventHandler observeRejected = (_, args) => { if ((args.Key == Key.System ? args.SystemKey : args.Key) == Key.F10) rejected.Add(args); };
+            editor.AddHandler(Keyboard.PreviewKeyDownEvent, observeRejected, handledEventsToo: true);
+            editor.AddHandler(Keyboard.PreviewKeyUpEvent, observeRejected, handledEventsToo: true);
+            try
+            {
+                // This next independent group has no editable token. Its first
+                // down, repeat and up must not inherit the old consumed mirror.
+                Send([Scan(0x1D, true), Scan(0x44, true), Scan(0x44, true), Scan(0x44, false), Scan(0x1D, false)]);
+                await Wait(() => controlReleases == 3);
+                Assert.Equal(3, rejected.Count);
+                Assert.All(rejected, args => Assert.False(args.Handled));
+                Assert.False(rejected[0].IsRepeat);
+                Assert.True(rejected[1].IsRepeat);
+                Assert.Equal(2, returns);
+            }
+            finally
+            {
+                editor.RemoveHandler(Keyboard.PreviewKeyDownEvent, observeRejected);
+                editor.RemoveHandler(Keyboard.PreviewKeyUpEvent, observeRejected);
+            }
+            Assert.Equal("Source text", input.Text);
+            Assert.Equal("A locally editable draft", editor.Text);
+        }
+        finally
+        {
+            if (held)
+                Send([Scan(0x44, false), Scan(0x1D, false)]);
+        }
+        async Task Wait(Func<bool> condition)
+        {
+            while (!condition())
+                await Task.Delay(10, deadline.Token);
+        }
+        static KeyboardInput Scan(ushort scan, bool down) => new()
+        {
+            Type = 1,
+            Scan = scan,
+            Flags = down ? 8u : 10u
+        };
+        static void Send(KeyboardInput[] input) => Assert.Equal((uint)input.Length, SendInput((uint)input.Length, input, Marshal.SizeOf<KeyboardInput>()));
+    });
 
     [Fact]
     public async Task HeldEditorShortcutsDoNotChangeActionAfterRebindingOrReleasingModifiers()
@@ -1722,6 +1845,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
     {
         [FieldOffset(0)] public uint Type;
         [FieldOffset(8)] public ushort Key;
+        [FieldOffset(10)] public ushort Scan;
         [FieldOffset(12)] public uint Flags;
     }
 
