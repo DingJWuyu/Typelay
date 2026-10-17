@@ -53,6 +53,9 @@ void tl_overlay_acceptance(void) {
     g_free(hint_text); g_free(exit_text); g_free(generation);
 }
 gboolean tl_overlay_bindings_ready(Target *target) {
+    JsonObject *bindings = tl_object(tl_object(overlay.view, "viewContext"), "bindings");
+    if (g_str_has_prefix(text_or_empty(bindings, "accept"), "Ctrl+")
+        || g_str_has_prefix(text_or_empty(bindings, "exit"), "Ctrl+")) return FALSE;
     return target && !target->dead && overlay.target == target && overlay.popover && overlay.text
         && tl_configuration_current(overlay.generation) && tl_view_context_matches(target, overlay.view)
         && tl_controller_attached(overlay.text, "typelay-session-controller");

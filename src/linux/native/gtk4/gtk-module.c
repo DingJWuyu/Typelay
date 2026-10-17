@@ -26,6 +26,26 @@ static struct { guint keycode; guint64 sequence; gboolean consumed; } held_keys[
 static guint64 held_sequence, configuration_sequence;
 static gboolean configuring, held_overflow;
 static gboolean initialized;
+struct OrderedTicket {
+    guint refs;
+    guint64 id, connection, configuration, content, input, focus, storage;
+    guint keycode, time, claim_keycode;
+    guint64 claim_sequence;
+    gint64 accept_until, exit_until;
+    Target *target;
+    GtkWidget *widget, *client; /* Existing weak Target owns identities, never references. */
+    GObject *buffer;
+    GtkIMContext *context;
+    TlFcitxStateV1 before;
+    JsonObject *publication;
+    gboolean finished, finishing, revoked, claimed, deciding;
+};
+static OrderedTicket *ordered;
+static guint64 ordered_sequence;
+static void ordered_revoke(void);
+static void ordered_begin(GdkEvent *event);
+static gboolean same_ordered_publication(JsonObject *next);
+
 static guint64 connection_generation, return_generation, shortcut_sequence;
 static gint64 shortcut_started_at = -1;
 static GQueue consumed_ids = G_QUEUE_INIT;
@@ -77,7 +97,8 @@ static gboolean boolean(JsonObject *object, const char *member) {
 }
 static guint session_key(const char *value, gboolean accept) {
     if (g_strcmp0(value, accept ? "Tab" : "Esc") == 0) return accept ? GDK_KEY_Tab : GDK_KEY_Escape;
-    /* Canonical only: no aliases, leading zeros, modifiers or unknown keys. */
+    /* Only canonical Ctrl+Fn is added; no aliases or other modifiers. */
+    if (value && g_str_has_prefix(value, "Ctrl+")) value += 5;
     for (guint index = 1; index <= 24; index++) {
         char canonical[4];
         g_snprintf(canonical, sizeof canonical, "F%u", index);
@@ -85,6 +106,11 @@ static guint session_key(const char *value, gboolean accept) {
     }
     return 0;
 }
+static gboolean control_binding(gboolean accept) {
+    const char *value = tl_string(shortcut_configuration, accept ? "accept" : "exit");
+    return value && g_str_has_prefix(value, "Ctrl+");
+}
+static gboolean control_pair(void) { return control_binding(TRUE) || control_binding(FALSE); }
 static gboolean valid_pair(void) {
     guint accept = session_key(tl_string(shortcut_configuration, "accept"), TRUE);
     guint exit = session_key(tl_string(shortcut_configuration, "exit"), FALSE);
@@ -118,11 +144,12 @@ JsonObject *tl_session_bindings(Target *target) {
     json_object_set_string_member(bindings, "exit", tl_string(shortcut_configuration, "exit"));
     GtkWidget *top = target && !target->dead ? GTK_WIDGET(gtk_widget_get_root(target->widget)) : NULL;
     gboolean source = initialized && target && !target->dead && GTK_IS_WINDOW(top)
-        && tl_controller_attached(top, "typelay-gtk4-controller") && boolean(shortcut_configuration, "sessionEnabled");
+        && tl_controller_attached(top, "typelay-gtk4-controller") && boolean(shortcut_configuration, "sessionEnabled")
+        && (!control_pair() || tl_prefix_supported(target));
     json_object_set_boolean_member(bindings, "sourceReady", source);
     /* Read-only rendering can create the editor before its separate capability
        is confirmed. Never infer an installed editor from a source hook/hello. */
-    json_object_set_boolean_member(bindings, "editorReady", source && tl_overlay_bindings_ready(target));
+    json_object_set_boolean_member(bindings, "editorReady", source && !control_pair() && tl_overlay_bindings_ready(target));
     return bindings;
 }
 gboolean tl_view_context_matches(Target *target, JsonObject *view) {
@@ -159,11 +186,33 @@ static void trace_publication(const char *stage) {
         " present=%d remainingMs=%" G_GINT64_FORMAT "\n", stage, now,
         publication != NULL, permit ? until - now : -1);
 }
-void tl_clear_permit(void) {
+void tl_drop_publication(void) {
     if (publication) trace_publication("clear");
     if (publication_timer) { g_source_remove(publication_timer); publication_timer = 0; }
     if (publication) { json_object_unref(publication); publication = NULL; }
     tl_overlay_acceptance();
+}
+static OrderedTicket *ordered_ref(OrderedTicket *ticket) {
+    if (ticket) ticket->refs++;
+    return ticket;
+}
+static void ordered_unref(OrderedTicket *ticket) {
+    if (ticket && --ticket->refs == 0) {
+        json_object_unref(ticket->publication);
+        g_free(ticket);
+    }
+}
+static void ordered_revoke(void) {
+    OrderedTicket *ticket = ordered;
+    if (!ticket) return;
+    ordered = NULL; /* Reentrant cancellation cannot restore this ticket. */
+    ticket->revoked = TRUE;
+    tl_prefix_cancel(ticket->target, ticket->context, ticket->id);
+    ordered_unref(ticket);
+}
+void tl_clear_permit(void) {
+    ordered_revoke();
+    tl_drop_publication();
 }
 static void clear_shortcut(void) {
     if (shortcut_authority) { json_object_unref(shortcut_authority); shortcut_authority = NULL; }
@@ -326,6 +375,156 @@ static const char *publication_failure(Target *target, JsonObject *current) {
     gint64 now = tl_now(), until = tl_integer(permit, "expiresAtMs", 0);
     if (now >= until || until - now > 100) return "stale";
     return publication == current ? NULL : "not-published";
+}
+static gboolean ordered_live(OrderedTicket *ticket, Target *target) {
+    return ticket && ordered == ticket && !ticket->revoked && target == ticket->target
+        && target && !target->dead && !target->quarantined && target == tl_focused()
+        && target->widget == ticket->widget && target->client == ticket->client && target->buffer == ticket->buffer
+        && tl_controller_attached(GTK_WIDGET(gtk_widget_get_root(target->widget)), "typelay-gtk4-controller")
+        && target->im_context == ticket->context && connection >= 0
+        && connection_generation == ticket->connection && configuration_sequence == ticket->configuration
+        && tl_configuration_current(tl_string(ticket->publication, "generation"))
+        && tl_session_matches(tl_object(tl_object(ticket->publication, "authority"), "sessionBindings"));
+}
+gboolean tl_ordered_check(OrderedTicket *ticket, Target *target, gboolean source, gboolean proof) {
+    if (!ordered_live(ticket, target)) return FALSE;
+    if (source && (target->content_revision != ticket->content || target->input_revision != ticket->input
+        || target->focus_revision != ticket->focus || target->storage_revision != ticket->storage
+        || !tl_metadata_matches(target, tl_object(ticket->publication, "authority")))) return FALSE;
+    if (proof && (!ticket->finished || !tl_prefix_validate(target, ticket->id,
+        &ticket->before, &target->im_state))) return FALSE;
+    return ordered_live(ticket, target);
+}
+guint64 tl_ordered_pending_id(Target *target) {
+    return ordered && ordered->target == target && !ordered->finished ? ordered->id : 0;
+}
+gboolean tl_ordered_finish(Target *target, guint64 id, TlFcitxStateV1 *fresh) {
+    OrderedTicket *ticket = ordered_ref(ordered);
+    gboolean ready = ticket && ticket->id == id && !ticket->finished && !ticket->finishing
+        && tl_ordered_check(ticket, target, TRUE, FALSE);
+    if (ready) {
+        ticket->finishing = TRUE;
+        ready = tl_prefix_finish(target, id, fresh)
+            && tl_ordered_check(ticket, target, TRUE, FALSE);
+        if (ready) {
+            ticket->finished = TRUE;
+            ready = tl_prefix_validate(target, id, &ticket->before, fresh)
+                && tl_ordered_check(ticket, target, TRUE, FALSE);
+        }
+        ticket->finishing = FALSE;
+    }
+    if (!ready) {
+        if (target) target->ime_known = FALSE;
+        if (ordered == ticket) tl_clear_permit();
+    }
+    ordered_unref(ticket);
+    return ready;
+}
+gboolean tl_ordered_transition(Target *target) {
+    return ordered_live(ordered, target) && tl_prefix_transition(target, ordered->id);
+}
+gboolean tl_ordered_observation(Target *target, const TlFcitxStateV1 *current) {
+    OrderedTicket *ticket = ordered_ref(ordered);
+    gboolean valid = tl_ordered_check(ticket, target, TRUE, FALSE) && ticket->finished
+        && tl_prefix_validate(target, ticket->id, &ticket->before, current)
+        && ordered_live(ticket, target);
+    ordered_unref(ticket);
+    return valid;
+}
+gboolean tl_ordered_prepare(OrderedTicket *ticket, Target *target, const TlFcitxStateV1 *state) {
+    return tl_ordered_check(ticket, target, TRUE, TRUE) && tl_now() < ticket->accept_until
+        && tl_prefix_prepare(target, ticket->id, state) && ordered_live(ticket, target);
+}
+gboolean tl_ordered_claim(OrderedTicket *ticket, Target *target) {
+    if (!tl_ordered_check(ticket, target, TRUE, TRUE) || ticket->claimed || !ticket->deciding
+        || tl_now() >= (ticket->claim_keycode ? ticket->accept_until : 0)) return FALSE;
+    for (guint index = 0; index < G_N_ELEMENTS(held_keys); index++) {
+        if (held_keys[index].keycode == ticket->claim_keycode
+            && held_keys[index].sequence == ticket->claim_sequence && !held_keys[index].consumed) {
+            ticket->claimed = held_keys[index].consumed = TRUE;
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+static gboolean original_source_matches(Target *target, JsonObject *current) {
+    JsonObject *basis = tl_object(current, "authority"), *stamp = tl_object(basis, "contextStamp");
+    return target && !target->dead && !target->mutating && !target->quarantined
+        && target == tl_focused() && target->ime_known && !target->composing && stamp
+        && tl_session_matches(tl_object(basis, "sessionBindings"))
+        && tl_configuration_current(tl_string(current, "generation"))
+        && g_strcmp0(target->id, tl_string(current, "target")) == 0
+        && g_strcmp0(target->id, tl_string(basis, "target")) == 0
+        && (gint64)target->content_revision == tl_integer(basis, "contentRevision", -1)
+        && (gint64)target->input_revision == tl_integer(basis, "inputRevision", -1)
+        && (gint64)target->focus_revision == tl_integer(basis, "focusRevision", -1)
+        && (gint64)target->im_state.context_generation == tl_integer(stamp, "context", -1)
+        && (gint64)target->im_state.epoch == tl_integer(stamp, "epoch", -1)
+        && (gint64)target->im_state.input_epoch == tl_integer(stamp, "input", -1)
+        && (gint64)target->im_state.server_serial == tl_integer(stamp, "server", -1)
+        && (gint64)target->im_state.applied_serial == tl_integer(stamp, "applied", -1)
+        && (gint64)target->im_state.flags == tl_integer(stamp, "flags", -1)
+        && tl_metadata_matches(target, basis);
+}
+static gint64 exit_deadline(JsonObject *current) {
+    JsonObject *lease = tl_object(current, "lease");
+    gint64 observed = tl_integer(tl_object(lease, "source"), "observedAtMs", -1), now = tl_now();
+    return boolean(lease, "escapeAllowed") && observed >= 0 && observed <= now && now - observed <= 150
+        && tl_integer(lease, "sessionRevision", -1) >= 0
+        && g_strcmp0(tl_string(lease, "commandGeneration"), tl_string(current, "generation")) == 0
+        ? observed + 150 : 0;
+}
+static void ordered_begin(GdkEvent *event) {
+    if (ordered || !control_pair() || !tl_session_keyval(TRUE) || held_overflow
+        || ordered_sequence == G_MAXUINT64 || g_main_depth() != 1) return;
+    Target *target = tl_focused();
+    JsonObject *current = publication ? json_object_ref(publication) : NULL;
+    if (!current) return;
+    if (!tl_prefix_supported(target) || !tl_ime_clear(target) || publication != current
+        || !original_source_matches(target, current) || publication != current) {
+        json_object_unref(current); return;
+    }
+    gint64 accept = control_binding(TRUE) && !publication_failure(target, current)
+        ? tl_integer(tl_object(current, "permit"), "expiresAtMs", 0) : 0;
+    gint64 exit = control_binding(FALSE) ? exit_deadline(current) : 0;
+    if (!accept && !exit) { json_object_unref(current); return; }
+    OrderedTicket *ticket = g_new0(OrderedTicket, 1);
+    *ticket = (OrderedTicket){.refs = 1, .id = ++ordered_sequence,
+        .connection = connection_generation, .configuration = configuration_sequence,
+        .content = target->content_revision, .input = target->input_revision,
+        .focus = target->focus_revision, .storage = target->storage_revision,
+        .target = target, .widget = target->widget, .client = target->client, .buffer = target->buffer,
+        .context = target->im_context, .before = target->im_state, .publication = current,
+        .keycode = gdk_key_event_get_keycode(event), .time = gdk_event_get_time(event),
+        .accept_until = accept, .exit_until = exit};
+    ordered = ticket; /* Reserve before invoking any provider/application code. */
+    ordered_ref(ticket);
+    if (!tl_prefix_begin(target, ticket->id, event) || !ordered_live(ticket, target)) {
+        if (ordered == ticket) tl_clear_permit();
+    }
+    ordered_unref(ticket);
+}
+static void normalize_ordered_publication(JsonObject *value) {
+    JsonObject *basis = tl_object(value, "authority"), *stamp = tl_object(basis, "contextStamp");
+    JsonObject *permit = tl_object(value, "permit"), *plan = tl_object(permit, "plan");
+    JsonObject *expected = tl_object(plan, "expected"), *source = tl_object(tl_object(value, "lease"), "source");
+    if (basis) json_object_remove_member(basis, "observedAtMs");
+    if (stamp) json_object_remove_member(stamp, "epoch");
+    if (permit) { json_object_remove_member(permit, "observedAtMs"); json_object_remove_member(permit, "expiresAtMs"); }
+    if (plan) json_object_remove_member(plan, "id");
+    if (expected) json_object_remove_member(expected, "observedAtMs");
+    if (source) json_object_remove_member(source, "observedAtMs");
+}
+static gboolean same_ordered_publication(JsonObject *next) {
+    if (!ordered || ordered->revoked || !next) return FALSE;
+    JsonNode *old = json_node_new(JSON_NODE_OBJECT), *next_node = json_node_new(JSON_NODE_OBJECT);
+    json_node_take_object(old, tl_copy(ordered->publication));
+    json_node_take_object(next_node, tl_copy(next));
+    normalize_ordered_publication(json_node_get_object(old));
+    normalize_ordered_publication(json_node_get_object(next_node));
+    gboolean same = json_node_equal(old, next_node);
+    json_node_free(old); json_node_free(next_node);
+    return same; /* Retention only, never a new grant or a replaced source stamp. */
 }
 gboolean tl_acceptance_ready(Target *target) {
     JsonObject *current = publication ? json_object_ref(publication) : NULL;
@@ -517,7 +716,8 @@ static void command(JsonObject *frame) {
         respond(id, NULL);
     } else if (strcmp(operation, "publish") == 0) {
         AcceptanceTiming timing = {.entered_at = tl_now()};
-        tl_clear_permit();
+        if (same_ordered_publication(data)) tl_drop_publication();
+        else tl_clear_permit();
         JsonObject *basis = tl_object(data, "authority");
         if (target && target == tl_focused() && tl_metadata_matches(target, basis)
             && tl_configuration_current(tl_string(data, "generation"))
@@ -832,6 +1032,8 @@ static gboolean acceptance_event(const KeyEvent *event, gint64 entered_at) {
     gboolean is_accept = event->keyval == tl_session_keyval(TRUE);
     gboolean is_exit = event->keyval == tl_session_keyval(FALSE);
     if (!is_accept && !is_exit) return FALSE;
+    if ((is_accept && control_binding(TRUE)) || (is_exit && control_binding(FALSE))
+        || (control_pair() && !tl_prefix_supported(tl_focused()))) return FALSE;
     gboolean consumed = FALSE;
     Target *target = tl_focused();
     JsonObject *current = publication ? json_object_ref(publication) : NULL;
@@ -918,6 +1120,65 @@ static gboolean acceptance_event(const KeyEvent *event, gint64 entered_at) {
     g_free(plan_id);
     return consumed;
 }
+static gboolean ordered_acceptance(const KeyEvent *event, guint64 sequence) {
+    gboolean accept = event->keyval == tl_session_keyval(TRUE) && control_binding(TRUE);
+    gboolean exit = event->keyval == tl_session_keyval(FALSE) && control_binding(FALSE);
+    guint modifiers = event->state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK | GDK_HYPER_MASK | GDK_META_MASK);
+    if ((!accept && !exit) || modifiers != GDK_CONTROL_MASK || !event->physical) return FALSE;
+    OrderedTicket *ticket = ordered_ref(ordered);
+    if (!ticket) return FALSE;
+    gboolean consumed = FALSE;
+    if (ticket->deciding || !tl_ordered_check(ticket, ticket->target, TRUE, FALSE)
+        || !tl_ime_clear(ticket->target) || !tl_ordered_check(ticket, ticket->target, TRUE, TRUE)) goto finished;
+    gint64 until = accept ? ticket->accept_until : ticket->exit_until;
+    if (!until || tl_now() >= until) goto finished;
+    ticket->deciding = TRUE;
+    ticket->claim_keycode = event->hardware_keycode;
+    ticket->claim_sequence = sequence;
+    if (exit) {
+        /* Same original pair claim, but the independent exit clock is not an
+           acceptance extension. No writer sees or changes accept_until. */
+        if (!tl_ordered_check(ticket, ticket->target, TRUE, TRUE) || tl_now() >= ticket->exit_until)
+            goto finished;
+        for (guint index = 0; index < G_N_ELEMENTS(held_keys); index++) {
+            if (held_keys[index].keycode != ticket->claim_keycode
+                || held_keys[index].sequence != sequence || held_keys[index].consumed) continue;
+            held_keys[index].consumed = ticket->claimed = TRUE;
+            JsonObject *message = json_object_new(), *lease = tl_object(ticket->publication, "lease");
+            json_object_set_string_member(message, "target", ticket->target->id);
+            json_object_set_string_member(message, "generation", tl_string(ticket->publication, "generation"));
+            json_object_set_int_member(message, "sessionRevision", tl_integer(lease, "sessionRevision", -1));
+            tl_send_event("escape", message);
+            break;
+        }
+    } else {
+        JsonObject *permit = tl_object(ticket->publication, "permit"), *plan = tl_object(permit, "plan");
+        const char *id = tl_string(plan, "id");
+        if (!id || already_consumed(id)) goto finished;
+        JsonObject *request = json_object_new();
+        json_object_set_string_member(request, "generation", tl_string(ticket->publication, "generation"));
+        json_object_set_object_member(request, "plan", tl_copy(plan));
+        json_object_set_object_member(request, "authority", tl_copy(tl_object(ticket->publication, "authority")));
+        json_object_set_int_member(request, "expiresAtMs", ticket->accept_until);
+        remember(id);
+        gint64 accepted = tl_now();
+        tl_drop_publication();
+        JsonObject *reply = tl_write_ordered(ticket->target, request, ticket);
+        json_object_unref(request);
+        if (ticket->claimed) {
+            JsonObject *message = json_object_new();
+            json_object_set_string_member(message, "planId", id);
+            json_object_set_int_member(message, "acceptedAtMs", accepted);
+            json_object_set_object_member(message, "receipt", reply);
+            tl_send_event("accepted", message);
+        } else json_object_unref(reply);
+    }
+finished:
+    consumed = ticket->claimed;
+    if (ordered == ticket) tl_clear_permit();
+    ordered_unref(ticket);
+    return consumed;
+}
 /* Bounded diagnostics for the finite session-key candidates only. This
    observes dispatch decisions; it never changes ownership or sends a key. */
 static void trace_session_key(guint keyval, const char *phase, gboolean consumed) {
@@ -956,19 +1217,25 @@ gboolean tl_dispatch_key(GdkEvent *event) {
         if (!held_keys[index].keycode && empty < 0) empty = (gint)index;
     }
     gboolean candidate = keyval == GDK_KEY_Tab || keyval == GDK_KEY_ISO_Left_Tab
-        || keyval == GDK_KEY_Escape || (keyval >= GDK_KEY_F1 && keyval <= GDK_KEY_F24);
+        || keyval == GDK_KEY_Escape || (keyval >= GDK_KEY_F1 && keyval <= GDK_KEY_F24)
+        || keyval == GDK_KEY_Control_L || keyval == GDK_KEY_Control_R;
     if (!candidate) return shortcut_event(&key);
     if (!down || held_overflow) return FALSE;
     /* Saturation must never turn an untracked held press into a fresh command
        when another slot is released. Remain fail-closed for this module lifetime. */
-    if (empty < 0) { held_overflow = TRUE; return FALSE; }
+    if (empty < 0) { held_overflow = TRUE; tl_clear_permit(); return FALSE; }
     guint64 sequence = ++held_sequence;
     held_keys[empty].keycode = keycode;
     held_keys[empty].sequence = sequence;
     held_keys[empty].consumed = FALSE;
-    gboolean consumed = tl_overlay_key(keyval, state) || shortcut_event(&key) || acceptance_event(&key, entered_at);
+    if (keyval == GDK_KEY_Control_L || keyval == GDK_KEY_Control_R) {
+        ordered_begin(event);
+        return FALSE; /* The original Ctrl continues to GtkText/TextView once. */
+    }
+    gboolean consumed = (!control_pair() && tl_overlay_key(keyval, state)) || shortcut_event(&key)
+        || ordered_acceptance(&key, sequence) || acceptance_event(&key, entered_at);
     if (held_keys[empty].keycode == keycode && held_keys[empty].sequence == sequence)
-        held_keys[empty].consumed = consumed;
+        held_keys[empty].consumed = held_keys[empty].consumed || consumed;
     trace_session_key(keyval, "press", consumed);
     return consumed;
 }
@@ -991,7 +1258,12 @@ static gboolean dispatch(GtkEventControllerLegacy *controller, GdkEvent *event, 
     GtkWidget *top = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller));
     if (target && GTK_WIDGET(gtk_widget_get_root(target->widget)) != top) return FALSE;
     if (type == GDK_KEY_PRESS || type == GDK_KEY_RELEASE) {
-        if (type == GDK_KEY_PRESS && target) tl_invalidate(target, FALSE, FALSE);
+        if (type == GDK_KEY_PRESS && target) {
+            gboolean prefix = ordered_live(ordered, target) && !ordered->finished
+                && ordered->keycode == gdk_key_event_get_keycode(event)
+                && ordered->time == gdk_event_get_time(event);
+            if (!prefix) tl_invalidate(target, FALSE, FALSE);
+        }
     } else if (type == GDK_BUTTON_PRESS || type == GDK_SCROLL || type == GDK_TOUCH_BEGIN) {
         GtkWidget *receiver = NULL;
         double x, y, offset_x, offset_y;

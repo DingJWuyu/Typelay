@@ -71,7 +71,7 @@ typedef struct {
         const TlFcitxStateV1 *baseline);
 } TlFcitxCapabilityV1;
 
-/* Optional GTK3 source-control prefix cooperation. This separate handshake
+/* Optional GTK source-control prefix cooperation. This separate handshake
  * leaves the existing table and ordinary keys unchanged. One ticket owns one
  * real Ctrl down, never an event copy or a replay queue. */
 #define TL_FCITX_PREFIX_V1 "typelay.fcitx.prefix.v1"
@@ -84,7 +84,9 @@ typedef struct {
     /* Only the exact ticket-owned submit/reset notification stack, never a
      * generic cause0 notification, RPC callback or real output. */
     gboolean (*is_transition)(GtkIMContext *context, guint64 id);
-    /* Called after the original Ctrl gtk_main_do_event has returned. */
+    /* Outside the original Ctrl IM callback, after its real sync batch and
+     * fallback have finished. GTK4 defers this to the next existing inspect;
+     * the returned fresh state replaces that inspect, never adds a probe. */
     gboolean (*finish)(GtkIMContext *context, GtkWidget *expected_widget, guint64 id,
         TlFcitxStateV1 *current);
     gboolean (*validate)(GtkIMContext *context, GtkWidget *expected_widget, guint64 id,
