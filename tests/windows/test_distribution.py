@@ -233,6 +233,8 @@ class DistributionTests(unittest.TestCase):
                     "Returning": None,
                     "MouseReturn": None,
                     "Completion": None,
+                    "Exit": None,
+                    "ExitResult": None,
                 }
                 process.stdin.write(frame(command))
                 process.stdin.flush()
@@ -293,6 +295,8 @@ class DistributionTests(unittest.TestCase):
                         "Returning": None,
                         "MouseReturn": None,
                         "Completion": None,
+                        "Exit": None,
+                        "ExitResult": None,
                     }
                 ],
             )

@@ -34,11 +34,22 @@ internal sealed partial class KeyboardHook
     private Func<OwnedPracticeReturnRequest?>? _pendingPracticeReturn;
     public OwnedPracticeReturnRequest? PendingPracticeReturn => _pendingPracticeReturn?.Invoke();
     internal sealed record ReturnInput(Guid EditorIntent, OwnedReturnKind Kind, long Sequence,
-        long ReceivedAtMs, int X, int Y, bool Injected, bool Released)
+        long ReceivedAtMs, int X, int Y, bool Injected, bool Released, OwnedReturnKeyPress? KeyPress = null)
     {
         public long ExpiresAtMs => checked(ReceivedAtMs + 500);
     }
     private ReturnInput? _returnInput;
+    private void ReplaceReturnInput(ReturnInput? next)
+    {
+        var previous = Interlocked.Exchange(ref _returnInput, next);
+        if (previous is { Kind: OwnedReturnKind.Escape }
+            && (next is null || next.Kind != OwnedReturnKind.Escape || next.Sequence != previous.Sequence
+                || next.EditorIntent != previous.EditorIntent || next.Released)
+            && _escapeKeyDown == 27 && !_escapeConsumed)
+            _escapeKeyDown = null;
+        // Only this editor press's unconsumed generic copy is retired here.
+        // A consumed global press keeps its own matching release obligation.
+    }
     internal bool BeginOwnedReturnInput(OwnedReturnKind kind, OwnedCaptureDescriptor descriptor, out ReturnInput? input)
     {
         input = Volatile.Read(ref _returnInput);
@@ -55,18 +66,34 @@ internal sealed partial class KeyboardHook
     private void ObserveReturnKey(Native.KeyData data, bool down, bool repeated, bool injected, long now)
     {
         var current = Volatile.Read(ref _returnInput);
+        if (current is { Kind: OwnedReturnKind.Escape, Released: false, KeyPress: { } press }
+            && data.Key == 27 && press.ScanCode == data.Scan && press.Extended == ((data.Flags & 1) != 0)
+            && press.Injected == injected && (!down || repeated))
+        {
+            if (!down)
+                ReplaceReturnInput(current with
+                {
+                    Released = true
+                });
+            return; // The same held press never creates a new intent or deadline.
+        }
         if (!down && data.Key == 9 && current is { Kind: OwnedReturnKind.Tab, Released: false }
             && current.Injected == injected)
         {
-            Interlocked.Exchange(ref _returnInput, current with
+            ReplaceReturnInput(current with
             {
                 Released = true
             });
             return;
         }
-        Interlocked.Exchange(ref _returnInput, down && data.Key == 9 && !repeated && !Modified
+        var keys = Volatile.Read(ref _sessionKeys);
+        bool exit = data.Key == 27 && _sessionEnabled && keys.Supported && keys.Exit == 27
+            && (!injected || _allowInjectedInput) && data.Scan is > 0 and <= 255;
+        ReplaceReturnInput(down && (data.Key == 9 || exit) && !repeated && !Modified
             && Volatile.Read(ref _editorForeground) is { Invalid: 0 } editor
-            ? new(editor.Intent, OwnedReturnKind.Tab, EditorInputSequence, now, 0, 0, injected, false) : null);
+            ? new(editor.Intent, exit ? OwnedReturnKind.Escape : OwnedReturnKind.Tab,
+                EditorInputSequence, now, 0, 0, injected, false,
+                exit ? new(data.Scan, (data.Flags & 1) != 0, injected) : null) : null);
     }
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(Native.Point point);
 
@@ -187,7 +214,7 @@ internal sealed partial class KeyboardHook
             _seenEditorPress = true;
             Interlocked.Exchange(ref _editorPress, unambiguous && _mouseButtons == 0 && !Modified
                 ? new(sequence, data.Time, receivedAtMs, data.Point.X, data.Point.Y, injected, false) : null);
-            Interlocked.Exchange(ref _returnInput, unambiguous && _mouseButtons == 0 && !Modified
+            ReplaceReturnInput(unambiguous && _mouseButtons == 0 && !Modified
                 && Volatile.Read(ref _editorForeground) is { Invalid: 0 } editor
                 ? new(editor.Intent, OwnedReturnKind.Mouse, sequence, receivedAtMs, data.Point.X, data.Point.Y, injected, false) : null);
             return;
@@ -197,12 +224,12 @@ internal sealed partial class KeyboardHook
         var returning = Volatile.Read(ref _returnInput);
         if (message == 0x202 && _mouseButtons == 1 && returning is { Kind: OwnedReturnKind.Mouse, Released: false }
             && returning.Injected == injected)
-            Interlocked.Exchange(ref _returnInput, returning with
+            ReplaceReturnInput(returning with
             {
                 Released = true
             });
         else if (message != 0x200)
-            Interlocked.Exchange(ref _returnInput, null);
+            ReplaceReturnInput(null);
         if (message == 0x202 && _mouseButtons == 1 && press is { Released: false }
             && press.Sequence == EditorInputSequence && press.Injected == injected
             && press.X == data.Point.X && press.Y == data.Point.Y

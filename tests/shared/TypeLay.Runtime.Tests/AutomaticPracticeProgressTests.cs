@@ -1,3 +1,4 @@
+using System.Text.Json;
 using TypeLay.Core;
 using Xunit;
 
@@ -178,6 +179,177 @@ public sealed class AutomaticPracticeProgressTests
         CompleteAcceptance(s);
         Assert.True(s.Controller.AutomaticPracticeProgress.Completed);
         Assert.Equal("personally edited translation", s.Source.Text);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void EditorEscapeWaitsForTheVerifiedReturnThenHidesWithoutGrantingAcceptanceOrEndingPractice(bool serializedReturn)
+    {
+        using var s = new SessionScenario();
+        var original = Bind(s);
+        OwnedPracticeReturn? beforeSerialization = null;
+        s.Service.ReturnEvidence = evidence =>
+        {
+            beforeSerialization = evidence;
+            return serializedReturn
+                ? JsonSerializer.Deserialize<InputReturn>(JsonSerializer.Serialize(new InputReturn(true, evidence)))!.Practice
+                : evidence;
+        };
+        s.ReadyCandidate();
+        CompleteAcceptance(s);
+        NewSource(s);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("discard this manual draft");
+        s.View.PrearmedEditorExit = s.View.Token;
+        s.View.EscapeRequested!(s.View.Token);
+        if (serializedReturn)
+        {
+            var returned = Assert.IsType<OwnedPracticeReturn>(s.Service.ReturnedPractice);
+            Assert.NotSame(beforeSerialization, returned);
+            Assert.Equal(beforeSerialization!.Binding, returned.Binding);
+            Assert.NotSame(beforeSerialization.Binding, returned.Binding);
+        }
+        Assert.Equal(SessionState.ReturningToSource, s.View.State);
+        Assert.True(s.Controller.AutomaticPracticeProgress!.AwaitingFreshSource);
+        Assert.Null(s.Input.Permit);
+        s.Tick();
+        Assert.Null(s.Input.Permit);
+        bool rebound = false;
+        s.Controller.AutomaticPracticeProgressChanged += progress =>
+        {
+            if (!rebound && progress is { AwaitingFreshSource: false })
+            {
+                rebound = true;
+                Assert.False(s.View.Visible);
+                Assert.False(progress.ReturnedToSource);
+                Assert.Null(s.Input.Permit);
+            }
+        };
+        BindReturned(s);
+        Assert.True(rebound);
+        Assert.Equal(original.RunId, s.Controller.AutomaticPracticeProgress!.RunId);
+        Assert.True(s.Controller.AutomaticPracticeProgress.AcceptanceCompleted);
+        Assert.False(s.Controller.AutomaticPracticeProgress.ReturnedToSource);
+        Assert.False(s.Controller.AutomaticPracticeProgress.Completed);
+        Assert.Equal(SessionState.NoSession, s.View.State);
+        Assert.False(s.View.Visible);
+        s.Tick();
+        Assert.False(s.View.Visible);
+        Assert.Null(s.Input.Permit);
+        Assert.Equal("second source", s.Source.Text);
+        Assert.Empty(s.Service.Writes);
+        s.Source = s.Source with
+        {
+            Text = "third source",
+            Selection = new(12, 12),
+            InputEpoch = s.Source.InputEpoch + 1
+        };
+        s.Input.UserEpoch++;
+        s.Input.SourceUserEpoch++;
+        s.ReadyCandidate();
+        Assert.True(s.View.Visible);
+        Assert.Equal(original.RunId, s.Controller.AutomaticPracticeProgress.RunId);
+        Assert.Equal("translated", s.View.Preview);
+    }
+
+    [Fact]
+    public void EditorEscapeWithoutPrearmKeepsTheExistingReturnWhenTheAdapterAdvancesUserEpoch()
+    {
+        using var s = new SessionScenario();
+        var original = Bind(s);
+        s.ReadyCandidate();
+        CompleteAcceptance(s);
+        NewSource(s);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("personally edited translation");
+        Assert.False(s.View.IsEditorExitPrearmed(s.View.Token));
+        s.View.EscapeRequested!(s.View.Token);
+        Assert.Equal(SessionState.ReturningToSource, s.View.State);
+        // The adapter observes its normal focus-return input epoch before the
+        // fresh source capture. It has not opted into an editor-exit pre-arm.
+        s.Input.UserEpoch++;
+        s.Tick();
+        BindReturned(s);
+        Assert.Equal(original.RunId, s.Controller.AutomaticPracticeProgress!.RunId);
+        Assert.True(s.Controller.AutomaticPracticeProgress.ReturnedToSource);
+        Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+        Assert.True(s.View.Visible);
+        Assert.Equal("personally edited translation", s.Input.Permit!.Plan.Replacement);
+        Assert.Equal("second source", s.Source.Text);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void EditorEscapeCannotHideANewSessionWhenItsReturnArrivesAfterSettingsChanged()
+    {
+        using var s = new SessionScenario();
+        Bind(s);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        var pending = s.Service.PendingReturn = new();
+        s.View.PrearmedEditorExit = s.View.Token;
+        s.View.EscapeRequested!(s.View.Token);
+        s.Settings.Update(s.Settings.Value with
+        {
+            Theme = "light"
+        });
+        pending.SetResult(true);
+        s.Tick();
+        Assert.Null(s.Controller.AutomaticPracticeProgress);
+        s.ReadyCandidate();
+        Assert.True(s.View.Visible);
+        var returned = Assert.IsType<OwnedPracticeReturn>(s.Service.ReturnedPractice);
+        Assert.False(s.Controller.BindAutomaticPractice(returned.Binding with
+        {
+            NativeFocusRevision = returned.NativeFocusRevision,
+            CommandGeneration = s.Input.CommandGeneration
+        }));
+        Assert.True(s.View.Visible);
+        Assert.Equal("translated", s.View.Preview);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void EditorEscapeCannotRecreateItsIntentAfterAReturnProgressCallbackChangesTarget()
+    {
+        using var s = new SessionScenario();
+        Bind(s);
+        s.ReadyCandidate();
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        bool changed = false;
+        s.Controller.AutomaticPracticeProgressChanged += progress =>
+        {
+            if (!changed && progress is { AwaitingFreshSource: true })
+            {
+                changed = true;
+                s.FocusAnotherField();
+                s.Tick();
+            }
+        };
+        s.View.PrearmedEditorExit = s.View.Token;
+        s.View.EscapeRequested!(s.View.Token);
+        Assert.True(changed);
+        Assert.Null(s.Controller.AutomaticPracticeProgress);
+        s.ReadyCandidate();
+        Assert.True(s.View.Visible);
+        Assert.Equal("other", s.Source.Text);
+        var returned = Assert.IsType<OwnedPracticeReturn>(s.Service.ReturnedPractice);
+        Assert.False(s.Controller.BindAutomaticPractice(returned.Binding with
+        {
+            NativeFocusRevision = returned.NativeFocusRevision,
+            CommandGeneration = s.Input.CommandGeneration
+        }));
+        Assert.True(s.View.Visible);
+        Assert.Null(s.Input.Permit);
         Assert.Empty(s.Service.Writes);
     }
 

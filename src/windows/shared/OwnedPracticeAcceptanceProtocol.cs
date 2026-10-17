@@ -32,7 +32,7 @@ internal readonly record struct OwnedKeyWitness(long Sequence, long PlanSequence
 
 internal static class OwnedPracticeAcceptanceProtocol
 {
-    public const int Version = 2;
+    public const int Version = 3;
     // Three bounded UTF-16 strings, each escaped to at most six JSON bytes/unit;
     // target metadata is bounded to 4096 units, plus 8192 bytes for fixed fields.
     public const int BodyBytes = 8 + (3 * Limits.MaxTextUnits + 4096) * 6 + 8192;

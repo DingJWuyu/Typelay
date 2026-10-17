@@ -1122,7 +1122,7 @@ public sealed partial class SessionController : IDisposable
         Render();
         return true;
     }
-    private async Task<bool> ReturnFromEditor()
+    private async Task<bool> ReturnFromEditor(PendingEditorExit? exit = null)
     {
         if (_returningToSource || _overlay.EditingComposition || !_session.RequestSourceReturn() || _session.Current is not { } source)
             return false;
@@ -1152,6 +1152,24 @@ public sealed partial class SessionController : IDisposable
             {
                 StopSession("practice-return-unproven");
                 return false;
+            }
+            if (exit is not null)
+            {
+                // Rotation/progress callbacks may have cancelled this attempt. Only
+                // the original object can receive its one verified continuation.
+                if (!ReferenceEquals(_pendingEditorExit, exit) || !EditorExitInputCurrent(exit)
+                    || request is null || !ReferenceEquals(request.Binding, exit.Binding)
+                    || request.Token != exit.ReturningToken || result.Practice is not { } returned
+                    || !ReferenceEquals(_awaitingPracticeReturn, returned) || _generation != generation + 1
+                    || _hook.CommandGeneration == request.Binding.CommandGeneration
+                    || _session.State != SessionState.ReturningToSource
+                    || AutomaticPracticeProgress is not { AwaitingFreshSource: true } progress
+                    || progress.RunId != exit.Binding.RunId || progress.CommandGeneration != _hook.CommandGeneration
+                    || _awaitingPracticeWindowEpoch != _hook.WindowEpoch
+                    || _hook.GetFocus(exit.Binding.Target) != FocusMember.Source)
+                    return false;
+                exit.Confirmation = new(returned, _generation, _hook.CommandGeneration,
+                    _hook.WindowEpoch, _hook.ForegroundEpoch);
             }
             _nextCapture = 0;
             return true;
@@ -1235,6 +1253,18 @@ public sealed partial class SessionController : IDisposable
             return;
         if (_session.State == SessionState.EditingTranslation)
         {
+            if (_ownedPractice is { } binding
+                && _overlay.IsEditorExitPrearmed(new(binding.Target, _hook.CommandGeneration, _generation)))
+            {
+                if (_pendingEditorExit is not null)
+                    return;
+                var exit = new PendingEditorExit(binding, new(binding.Target, _hook.CommandGeneration, _generation + 1),
+                    _configurationRevision, _hook.UserEpoch, _hook.SourceUserEpoch);
+                _pendingEditorExit = exit;
+                if (!await ReturnFromEditor(exit) && ReferenceEquals(_pendingEditorExit, exit))
+                    _pendingEditorExit = null;
+                return; // BindAutomaticPractice consumes this exit after fresh Core confirmation.
+            }
             long expectedGeneration = _generation + 1;
             if (!await ReturnFromEditor() || _disposed || _generation != expectedGeneration)
                 return;

@@ -519,7 +519,13 @@
     if (records.length && overlay?.paused && !pauseCurrent(overlay.field, overlay.authority, true)) hide();
     for (const record of records) {
       if (record.type === "attributes") {
-        if (ordered && (record.target === ordered.field.element || record.target.contains(ordered.field.element))) retireOrdered();
+        // ProseMirror selection updates can write the unchanged root class.
+        // Check every record: a real change followed by restoration still revokes.
+        const unchangedWriteClass = mutating && ordered?.claimed && ordered.field.richText
+          && record.target === ordered.field.element && record.attributeNamespace === null
+          && record.attributeName === "class" && record.oldValue === record.target.getAttribute("class");
+        if (ordered && !unchangedWriteClass
+          && (record.target === ordered.field.element || record.target.contains(ordered.field.element))) retireOrdered();
         if (editorControl && (record.target === editorControl.field.element
           || record.target.contains(editorControl.field.element))) retireEditorControl();
         continue;
@@ -547,7 +553,7 @@
     }
   }
   const observer = new MutationObserver(mutations);
-  observer.observe(document, {subtree: true, childList: true, characterData: true, attributes: true});
+  observer.observe(document, {subtree: true, childList: true, characterData: true, attributes: true, attributeOldValue: true});
   function drainMutations() { mutations(observer.takeRecords()); }
   const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
   function cancelMotion(current) {

@@ -62,6 +62,9 @@ public interface ISessionView
     void RenderPaused(PauseAnchor anchor, long revision);
     void HideQuietly();
     void ResumeEditor();
+    // True only during the exact editor-exit callback after the adapter has
+    // pre-armed its owned return. It grants no capture or write authority.
+    bool IsEditorExitPrearmed(SessionViewToken token) => false;
 }
 
 public interface ITranslationService

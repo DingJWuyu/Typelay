@@ -38,7 +38,7 @@ internal static partial class Program
     private static OwnedExitLease? _exitLease;
     private static SessionViewToken? _exitCompletedToken;
     private static long _exitSequence, _exitWitnessFloor;
-    private static bool _escapeHeld, _escapeConsumed, _escapeExtended;
+    private static bool _escapeHeld, _escapeConsumed, _escapeExtended, _escapeInjected;
     private static uint _escapeScanCode;
     private static OwnedEditorControl? _editorFence;
     private static EditorHandoff _editorHandoff;
@@ -809,9 +809,10 @@ internal static partial class Program
                 || control.ReturningToken.Target != editor.AdmittedToken.Target
                 || control.ReturningToken.CommandGeneration != editor.AdmittedToken.CommandGeneration
                 || control.ReturningToken.Revision != editor.AdmittedToken.Revision + 1
+                || control.Kind == OwnedReturnKind.Escape && control.KeyPress is { Injected: true } && !_allowInjectedInput
                 || acceptance.WitnessBytes != OwnedPracticeAcceptanceProtocol.WitnessBytes)
                 throw new InvalidDataException("practice-return-fence");
-            if (control.Kind == OwnedReturnKind.Tab && _returnState == SourceReturnState.None)
+            if (control.Kind is OwnedReturnKind.Tab or OwnedReturnKind.Escape && _returnState == SourceReturnState.None)
                 ArmSourceReturn(control.Kind, control.ExpiresAtMs);
             else if (_returnState == SourceReturnState.None || control.Kind != _returnKind)
                 throw new InvalidDataException("practice-return-intent");
@@ -833,6 +834,16 @@ internal static partial class Program
             _witness = new(_witnessMapping);
             _witnessFailed = false;
             _lastWitnessAcknowledged = _installWitnessFloor = 0;
+            if (control.Kind == OwnedReturnKind.Escape)
+            {
+                var press = control.KeyPress ?? throw new InvalidDataException("practice-return-key");
+                // WPF already consumed this original down. Only its remaining
+                // repeat/up belongs here; this fence is never an exit lease.
+                _escapeHeld = _escapeConsumed = true;
+                _escapeScanCode = press.ScanCode;
+                _escapeExtended = press.Extended;
+                _escapeInjected = press.Injected;
+            }
             WriteReply(new("return-fenced", _connection, _run, _sequence,
                 Returning: control with
                 {
@@ -1241,11 +1252,12 @@ internal static partial class Program
         bool down, bool repeated, bool extended, ulong bits)
     {
         if (!down || _escapeHeld && repeated)
-            return PairEscapePress(ref message, down);
+            return PairEscapePress(ref message, down, witness.Injected);
         _escapeHeld = true;
         _escapeConsumed = false;
         _escapeScanCode = witness.ScanCode;
         _escapeExtended = extended;
+        _escapeInjected = witness.Injected;
         var lease = _exitLease;
         _exitLease = null; // One press, even when refused. Repeats never retry.
         _planActive = false;
@@ -1287,9 +1299,9 @@ internal static partial class Program
         && _editorFence is null && lease.Descriptor == Descriptor() && SourceFocused()
         && Volatile.Read(ref _disconnected) == 0 && !_closePending && !_sendRestart && PendingControls.IsEmpty;
 
-    private static bool PairEscapePress(ref Native.Message message, bool down)
+    private static bool PairEscapePress(ref Native.Message message, bool down, bool? injected = null)
     {
-        if (!_escapeHeld || message.WParam != 27)
+        if (!_escapeHeld || message.WParam != 27 || injected is { } origin && origin != _escapeInjected)
             return false;
         ulong bits = unchecked((ulong)(long)message.LParam);
         if (((bits >> 16) & 0xff) != _escapeScanCode || ((bits & (1UL << 24)) != 0) != _escapeExtended)

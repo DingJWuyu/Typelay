@@ -7,6 +7,22 @@ public sealed partial class SessionController
     private OwnedPracticeBinding? _ownedPractice;
     private OwnedPracticeBinding? _awaitingPractice;
     private OwnedPracticeReturn? _awaitingPracticeReturn;
+    private sealed record ConfirmedEditorExit(OwnedPracticeReturn Returned, long Generation,
+        Guid CommandGeneration, long WindowEpoch, long ForegroundEpoch);
+    private sealed class PendingEditorExit(OwnedPracticeBinding binding, SessionViewToken returningToken,
+        long configurationRevision, long userEpoch, long sourceUserEpoch)
+    {
+        public OwnedPracticeBinding Binding { get; } = binding;
+        public SessionViewToken ReturningToken { get; } = returningToken;
+        public long ConfigurationRevision { get; } = configurationRevision;
+        public long UserEpoch { get; } = userEpoch;
+        public long SourceUserEpoch { get; } = sourceUserEpoch;
+        public ConfirmedEditorExit? Confirmation
+        {
+            get; set;
+        }
+    }
+    private PendingEditorExit? _pendingEditorExit;
     private OwnedSourceEvidence? _freshPracticeEvidence;
     private long _awaitingPracticeWindowEpoch;
     private bool _awaitingForegroundExpired;
@@ -95,11 +111,37 @@ public sealed partial class SessionController
             || returnedShortcuts.Generation != binding.CommandGeneration || returnedShortcuts.Target != binding.Target
             || _hook.GetFocus(binding.Target) != FocusMember.Source))
             return false;
+        var exit = returned ? _pendingEditorExit : null;
+        var exitSource = _session.Current;
+        var exitEvidence = _freshPracticeEvidence;
+        if (exit is not null)
+        {
+            // Consume before revoke/render can synchronously cancel or replace this
+            // return. A callback can reject this exit, never recreate its intent.
+            _pendingEditorExit = null;
+            if (exit.Confirmation is not { } confirmed || !EditorExitCurrent(exit, confirmed.Generation))
+                return false;
+        }
         // A pre-binding capture/model job may still be pending. It cannot gain
         // authority or lesson credit merely because registration subsequently won.
-        _generation++;
+        long boundGeneration = ++_generation;
         RevokeInput("practice-bound");
         _permitUntil = 0;
+        if (exit is not null)
+        {
+            if (!EditorExitCurrent(exit, boundGeneration) || !ReferenceEquals(AutomaticPracticeProgress, progress)
+                || !ReferenceEquals(_freshPracticeEvidence, exitEvidence) || !ReferenceEquals(_session.Current, exitSource)
+                || _session.State != SessionState.EditedTranslationPending)
+                return false;
+            // The normal fresh capture and Core confirmation have completed. Hide
+            // before binding/progress callbacks can expose a new acceptance permit.
+            _session.Escape();
+            _overlay.HideQuietly();
+            if (!EditorExitCurrent(exit, boundGeneration) || !ReferenceEquals(AutomaticPracticeProgress, progress)
+                || !ReferenceEquals(_freshPracticeEvidence, exitEvidence) || !ReferenceEquals(_session.Current, exitSource)
+                || _session.State != SessionState.NoSession)
+                return false;
+        }
         if (!returned)
             _session.LeaveFamily();
         _nextCapture = 0;
@@ -114,10 +156,23 @@ public sealed partial class SessionController
             ConnectionId = binding.ConnectionId,
             AwaitingFreshSource = false
         });
-        if (returned)
+        if (returned && exit is null)
             ObserveAutomaticReturn();
         return true;
     }
+
+    private bool EditorExitInputCurrent(PendingEditorExit exit) => !_disposed
+        && exit.ConfigurationRevision == _configurationRevision && _settings.Value.Enabled
+        && _settings.Value.Mode == WorkMode.Automatic && _hook.Ready && _broker.Available
+        && exit.Binding.ConnectionId == _hook.ConnectionId && _session.Current?.Target == exit.Binding.Target
+        && exit.UserEpoch == _hook.UserEpoch && exit.SourceUserEpoch == _hook.SourceUserEpoch;
+
+    private bool EditorExitCurrent(PendingEditorExit exit, long generation) => EditorExitInputCurrent(exit)
+        && exit.Confirmation is { } confirmed && _generation == generation
+        && ReferenceEquals(_awaitingPracticeReturn, confirmed.Returned)
+        && confirmed.Returned.Binding == exit.Binding && confirmed.Returned.Token == exit.ReturningToken
+        && confirmed.CommandGeneration == _hook.CommandGeneration && confirmed.WindowEpoch == _hook.WindowEpoch
+        && confirmed.ForegroundEpoch == _hook.ForegroundEpoch && _hook.GetFocus(exit.Binding.Target) == FocusMember.Source;
 
     public bool EndAutomaticPractice(Guid runId)
     {
@@ -267,6 +322,7 @@ public sealed partial class SessionController
 
     private void RetireAutomaticPractice(bool rotateConfiguration = true)
     {
+        _pendingEditorExit = null;
         if (AutomaticPracticeProgress is not { } progress)
             return;
         _lastRetiredAutomaticRun = progress.RunId;

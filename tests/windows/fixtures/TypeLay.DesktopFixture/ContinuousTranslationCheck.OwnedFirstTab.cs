@@ -331,7 +331,7 @@ internal static partial class ContinuousTranslationCheck
     {
         var result = new SceneResult { Outcome = "running", Stage = "owned-editor-new-sentence" };
         bool freshPreview = false, acquired = false, handoffComplete = false, sourceUnchanged = false, selectionPreserved = false;
-        bool draftChanged = false, noAdditionalWrite = false, tutorialIncomplete = false;
+        bool draftChanged = false, noAdditionalWrite = false, tutorialIncomplete = false, editorEscapeAndResumeVerified = false;
         int injectedClicks = 0;
         try
         {
@@ -383,6 +383,9 @@ internal static partial class ContinuousTranslationCheck
                 && !settings.Value.OnboardingComplete && !settings.Value.ExperimentalWriteback;
             Require(draftChanged && handoffComplete && sourceUnchanged && selectionPreserved && noAdditionalWrite && tutorialIncomplete,
                 "owned-editor-draft-source-or-progress");
+            await VerifyOwnedEditorEscapeAndResumeAsync(result, root, field, host, overlay, editor,
+                controller, monitor, input, cancellation);
+            editorEscapeAndResumeVerified = true;
             result.Outcome = "verified";
             result.Stage = "complete";
         }
@@ -403,10 +406,76 @@ internal static partial class ContinuousTranslationCheck
             sourceUnchanged,
             selectionPreserved,
             noAdditionalWrite,
-            tutorialIncomplete
+            tutorialIncomplete,
+            editorEscapeAndResumeVerified
         };
         CompleteCleanup(result);
         return result;
+    }
+
+    private static async Task VerifyOwnedEditorEscapeAndResumeAsync(SceneResult result, nint root, nint field,
+        PracticeHost host, OverlayWindow overlay, TextBox editor, SessionController controller,
+        AcceptanceMonitor monitor, AcceptanceInput input, CancellationToken cancellation)
+    {
+        var progress = controller.AutomaticPracticeProgress!;
+        string source = N.ReadText(field, Limits.MaxTextUnits);
+        var selection = N.ReadSelection(field);
+        int returns = input.Returns.Count;
+        bool held = false;
+        try
+        {
+            result.Stage = "owned-editor-escape-return";
+            Require(SendInput(1, [new() { Type = 1, Key = 27 }], Marshal.SizeOf<KeyboardInput>()) == 1,
+                "owned-editor-escape-down");
+            held = true;
+            await UntilAsync(() => N.Focused() == (root, field) && !overlay.IsVisible
+                && controller.AutomaticPracticeProgress is { AwaitingFreshSource: false } current
+                && current.RunId == progress.RunId && current.CommandGeneration != progress.CommandGeneration,
+                cancellation);
+            Require(input.Returns.Count == returns + 1
+                && input.Returns[returns] is { Request.PracticeReturn: { } request, Result: { Returned: true, Practice: { } evidence } }
+                && request.Binding.RunId == progress.RunId && evidence.Binding == request.Binding && evidence.Token == request.Token
+                && N.ReadText(field, Limits.MaxTextUnits) == source && N.ReadSelection(field) == selection
+                && monitor.Completed.Count == 1 && input.ForegroundWrites == 0 && input.DirectWrites == 0
+                && controller.AutomaticPracticeProgress is { Completed: false, ReturnedToSource: false },
+                "owned-editor-escape-proof");
+            result.Stage = "owned-editor-escape-held-release";
+            KeyboardInput[] remainder = [new() { Type = 1, Key = 27 }, new() { Type = 1, Key = 27, Flags = 2 }];
+            uint inserted = SendInput(2, remainder, Marshal.SizeOf<KeyboardInput>());
+            if (inserted == 2)
+                held = false;
+            Require(inserted == 2, "owned-editor-escape-release");
+            // This later original key is the queue barrier: it can produce this
+            // capture only after the preceding Esc repeat/up was dispatched.
+            SendOwnedLetter(0x42, result.CleanupErrors);
+            string lowerSource = source[..selection.Start] + "b" + source[selection.End..];
+            string upperSource = source[..selection.Start] + "B" + source[selection.End..];
+            result.Stage = "owned-editor-escape-resume-preview";
+            await UntilAsync(() => N.Focused() == (root, field) && input.LastCapture?.Snapshot?.Text is { } captured
+                && (captured == lowerSource || captured == upperSource)
+                && VisibleTranslation(overlay, editor) && Equals(editor.ToolTip, "点击译文编辑"), cancellation);
+            string changedSource = input.LastCapture!.Snapshot!.Text;
+            Require(controller.AutomaticPracticeProgress?.RunId == progress.RunId
+                && N.IsWindowVisible(root) && monitor.Completed.Count == 1
+                && input.ForegroundWrites == 0 && input.DirectWrites == 0, "owned-editor-escape-retired-run");
+            var target = input.LastCapture!.Snapshot!.Target;
+            string translated = editor.Text;
+            var point = editor.PointToScreen(new Point(editor.ActualWidth / 2, Math.Min(20, editor.ActualHeight / 2)));
+            Require(SetOwnedCursorPos((int)Math.Round(point.X), (int)Math.Round(point.Y)), "owned-editor-escape-resume-pointer");
+            SendOwnedClick(result.CleanupErrors);
+            await UntilAsync(() => host.EditorHandoffComplete(target) && ReferenceEquals(Keyboard.FocusedElement, editor)
+                && !editor.IsReadOnly, cancellation);
+            SendOwnedLetter(0x41, result.CleanupErrors);
+            await UntilAsync(() => editor.Text != translated && controller.AutomaticPracticeProgress?.DraftChanged == true,
+                cancellation);
+            Require(N.ReadText(field, Limits.MaxTextUnits) == changedSource && monitor.Completed.Count == 1
+                && input.ForegroundWrites == 0 && input.DirectWrites == 0, "owned-editor-escape-resume-wrote-source");
+        }
+        finally
+        {
+            if (held && SendInput(1, [new() { Type = 1, Key = 27, Flags = 2 }], Marshal.SizeOf<KeyboardInput>()) != 1)
+                result.CleanupErrors.Add(new("owned-editor-escape", "key-release-incomplete", "Win32", Marshal.GetLastWin32Error()));
+        }
     }
 
     private static bool OwnedAcceptanceVisible(OverlayWindow overlay) => Descendants(overlay).OfType<TextBlock>()

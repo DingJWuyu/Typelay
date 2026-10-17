@@ -225,6 +225,92 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
         });
     }
 
+    [Fact]
+    public Task RetiredEditorEscapeDoesNotSuppressTheNextOrdinarySourceEscape() => desktop.RunAsync(async () =>
+    {
+        var input = new TextBox { Text = "controlled return source" };
+        var source = new Window { Content = input, Width = 420, Height = 160, Title = "TypeLay return key pairing" };
+        source.Show();
+        source.Activate();
+        input.Focus();
+        nint hwnd = new WindowInteropHelper(source).Handle;
+        int escapeDown = 0, escapeUp = 0, barrierUp = 0;
+        input.PreviewKeyDown += (_, args) => { if (args.Key == Key.Escape) escapeDown++; };
+        input.PreviewKeyUp += (_, args) =>
+        {
+            if (args.Key == Key.Escape)
+                escapeUp++;
+            if (args.Key == Key.F12)
+                barrierUp++;
+        };
+        using var hook = new KeyboardHook(allowInjectedInput: true);
+        using var process = Process.GetCurrentProcess();
+        using var mapping = OwnedPracticeAcceptanceProtocol.CreateWitness(process.Handle);
+        var writer = new OwnedWitnessWriter(mapping);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(10));
+        var held = new HashSet<ushort>();
+        Guid intent = Guid.NewGuid();
+        try
+        {
+            await Until(() => hook.ShortcutsReady && Native.GetForegroundWindow() == hwnd && input.IsKeyboardFocused, deadline.Token);
+            Assert.All(new[] { 27, 0x7B, 0x10, 0x11, 0x12, 0x5B, 0x5C }, key => Assert.False(Native.GetAsyncKeyState(key) < 0));
+            hook.ConfigureShortcuts(false, "Ctrl+Shift+F9", "Ctrl+Shift+F10", SessionShortcutBindings.Default, true);
+            hook.BeginOwnedEditorForeground(intent, hwnd, hwnd, _ => { });
+            Send(27, true);
+            await Until(() => escapeDown == 1, deadline.Token);
+            Assert.False(hook.TryRead(out _));
+
+            // The stopped reader isolates the real Hook's owned-source early
+            // return. Controlled metadata grants no native field or write authority.
+            Assert.True(writer.Stop());
+            var descriptor = new OwnedCaptureDescriptor(process.Id, process.StartTime.ToUniversalTime().Ticks,
+                (long)hwnd, (long)hwnd, 1, 1, 1, 1);
+            hook.SetOwnedChannel(Guid.NewGuid(), writer, descriptor);
+            Send(0x7B, true); // Another actual input retires the return intent while Esc is held.
+            Send(0x7B, false);
+            Send(27, false);
+            await Until(() => barrierUp == 1 && escapeUp == 1, deadline.Token);
+            hook.EndOwnedEditorForeground(intent);
+            hook.ClearOwnedChannel();
+            long now = WindowsInterruptClock.NowMs;
+            var snapshot = new InputSnapshot(new WindowsTarget(process.Id, process.StartTime.ToUniversalTime().Ticks,
+                (long)hwnd, (long)hwnd, "controlled-hook", "ordinary-source", Guid.NewGuid()),
+                input.Text, new(input.Text.Length, input.Text.Length), new(10, 20, 300, 40), false,
+                FieldAccess.Supported, ImeState.Clear, now, 1, 1);
+            hook.Publish(new(snapshot, hook.UserEpoch, hook.ForegroundEpoch, true, hook.CommandGeneration, 23), null);
+            Send(27, true);
+            Send(27, false);
+            InputNotice? notice = null;
+            await Until(() => notice is not null || hook.TryRead(out notice), deadline.Token);
+            Assert.Equal("escape", notice!.Kind);
+            Assert.Equal(snapshot.Target, notice.Target);
+            Assert.Equal(23, notice.SessionRevision);
+            Send(0x7B, true);
+            Send(0x7B, false);
+            await Until(() => barrierUp == 2, deadline.Token);
+            Assert.Equal(1, escapeDown);
+            Assert.Equal(1, escapeUp);
+            Assert.False(hook.TryRead(out _));
+            Assert.Equal("controlled return source", input.Text);
+        }
+        finally
+        {
+            hook.EndOwnedEditorForeground(intent);
+            hook.ClearOwnedChannel();
+            foreach (ushort key in held.ToArray())
+                Send(key, false);
+        }
+        void Send(ushort key, bool down)
+        {
+            Assert.Equal(1u, SendInput(1, [new KeyboardInput { Type = 1, Key = key, Flags = down ? 0u : 2u }], Marshal.SizeOf<KeyboardInput>()));
+            if (down)
+                held.Add(key);
+            else
+                held.Remove(key);
+        }
+    });
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

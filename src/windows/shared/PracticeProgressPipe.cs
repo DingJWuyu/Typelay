@@ -31,13 +31,15 @@ internal sealed record OwnedEditorControl(Guid Intent, OwnedCaptureDescriptor De
 
 internal enum OwnedReturnKind
 {
-    Tab, Mouse
+    Tab, Mouse, Escape
 }
+
+internal sealed record OwnedReturnKeyPress(uint ScanCode, bool Extended, bool Injected);
 
 // One return attempt carries only identities. Its new witness is not a permit.
 internal sealed record OwnedReturnControl(Guid Intent, Guid EditorIntent, OwnedReturnKind Kind,
     SessionViewToken ReturningToken, long ExpiresAtMs, long InputSequence,
-    long SourceEventSequence = 0, OwnedCaptureDescriptor? Descriptor = null);
+    long SourceEventSequence = 0, OwnedCaptureDescriptor? Descriptor = null, OwnedReturnKeyPress? KeyPress = null);
 internal sealed record OwnedReturnMouse(Guid EditorIntent, long SourceEventSequence, int X, int Y);
 internal sealed record OwnedPracticeCompletion(OwnedPracticeBinding Binding, long FinalProgressRevision);
 
@@ -156,6 +158,9 @@ internal static class PracticeProgressPipe
                 || token.CommandGeneration == Guid.Empty || token.Revision < 0 || token.Target.Lifetime == Guid.Empty
                 || !WindowsTarget.TryDecode(token.Target, out _)
                 || returned.ExpiresAtMs <= 0 || returned.InputSequence <= 0
+                || (returned.Kind == OwnedReturnKind.Escape
+                    ? returned.KeyPress is not { ScanCode: > 0 and <= 255 }
+                    : returned.KeyPress is not null)
                 || (message.Kind is "return-fence" or "return-resume" or "return-cancel"
                     ? returned.SourceEventSequence != 0 : returned.SourceEventSequence <= 0)
                 || (message.Kind == "source-returned" ? returned.Descriptor is not { IsValid: true } : returned.Descriptor is not null)

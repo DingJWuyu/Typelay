@@ -453,6 +453,11 @@ internal sealed class SessionScenario : IDisposable
         {
             get; set;
         }
+        public SessionViewToken? PrearmedEditorExit
+        {
+            get; set;
+        }
+        public bool IsEditorExitPrearmed(SessionViewToken token) => PrearmedEditorExit == token;
         public bool Visible
         {
             get; private set;

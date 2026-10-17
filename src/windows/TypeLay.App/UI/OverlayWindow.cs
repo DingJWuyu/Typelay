@@ -33,6 +33,7 @@ internal sealed class OverlayWindow : Window, ISessionView
     private bool _ownedActivationRequested, _ownedAppActive, _ownedRootActive, _ownedFocusAcquired;
     private bool _ownedReturning, _ownedReturnInvoking, _ownedReturnAppLeft, _ownedReturnRootLeft, _ownedReturnFocusLost, _ownedReturnReported;
     private SessionViewToken? _ownedReturningToken;
+    private bool _ownedExitInvoking;
     private TargetId? _returnedDraftTarget;
     private SessionViewToken? _pressedExitToken;
     private bool _exitPressPending;
@@ -92,6 +93,9 @@ internal sealed class OverlayWindow : Window, ISessionView
         get; set;
     }
     public bool EditingComposition => _composing;
+    public bool IsEditorExitPrearmed(SessionViewToken token) => _ownedExitInvoking && _ownedReturnInvoking
+        && _ownedReturning && !_composing && _ownedEditor is { } owned
+        && owned.AdmittedToken == token && _viewContext?.Token == token;
     public void Configure(UserSettings settings)
     {
         _measurementKey = null;
@@ -260,7 +264,10 @@ internal sealed class OverlayWindow : Window, ISessionView
             {
                 _consumedShortcutKeys.Add(key);
                 e.Handled = true;
-                EscapeRequested?.Invoke(context.Token);
+                if (_ownedEditor is { } owned)
+                    RequestOwnedReturn(owned, OwnedReturnKind.Escape);
+                else
+                    EscapeRequested?.Invoke(context.Token);
             }
         };
         _editor.PreviewKeyUp += (_, e) =>
@@ -613,7 +620,7 @@ internal sealed class OverlayWindow : Window, ISessionView
     {
         if (_ownedEditor != control || _ownedReturning || !_ownedFocusAcquired || !_editing || _composing
             || _viewContext is not { CanEdit: true } context || context.Token != control.AdmittedToken
-            || kind == OwnedReturnKind.Tab && !OwnsEditorFocus(control)
+            || kind is OwnedReturnKind.Tab or OwnedReturnKind.Escape && !OwnsEditorFocus(control)
             || _ownedEditorHost?.BeginOwnedReturn(context.Token, kind) != true)
         {
             InvalidateOwnedEditor(OwnedEditorReason.UiRender);
@@ -625,11 +632,15 @@ internal sealed class OverlayWindow : Window, ISessionView
         // Keep the real focus until Windows delivers its departure. Clearing
         // Focusable here would manufacture the very loss being acknowledged.
         _ownedReturnInvoking = true;
+        _ownedExitInvoking = kind == OwnedReturnKind.Escape;
         try
         {
-            ReturnRequested?.Invoke(context.Token);
+            if (kind == OwnedReturnKind.Escape)
+                EscapeRequested?.Invoke(context.Token);
+            else
+                ReturnRequested?.Invoke(context.Token);
         }
-        finally { _ownedReturnInvoking = false; }
+        finally { _ownedExitInvoking = _ownedReturnInvoking = false; }
         if (_ownedEditor != control || _ownedReturningToken is null)
         {
             InvalidateOwnedEditor(OwnedEditorReason.UiRender);

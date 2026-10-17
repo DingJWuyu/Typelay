@@ -61,9 +61,9 @@ public sealed class PracticeProgressPipeTests
         var plan = Guid.NewGuid();
         var descriptor = new OwnedCaptureDescriptor(120, 630000000000000000, 501, 502, 121, 41, 7, 1);
         Assert.False(new OwnedAcceptanceControl().ObserveInputCompletion);
-        Assert.Equal(2, new OwnedAcceptanceControl().Version);
+        Assert.Equal(3, new OwnedAcceptanceControl().Version);
         await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(new MemoryStream(),
-            new("begin-auto", connection, run, 1, Acceptance: new(Version: 1)), TestContext.Current.CancellationToken));
+            new("begin-auto", connection, run, 1, Acceptance: new(Version: 2)), TestContext.Current.CancellationToken));
         PracticeMessage[] messages =
         [
             new("begin", connection, run, 1, Acceptance: new(ObserveInputCompletion: true)),
@@ -190,6 +190,33 @@ public sealed class PracticeProgressPipeTests
                 TestContext.Current.CancellationToken));
             Assert.Equal(0, stream.Length);
         }
+    }
+
+    [Fact]
+    public async Task EditorEscapeReturnCarriesOnlyItsOriginalPhysicalPress()
+    {
+        var target = new WindowsTarget(120, 630000000000000000, 501, 502,
+            "win32-edit-transaction-v2", "1.2.3", Guid.NewGuid()).Id;
+        var control = new OwnedReturnControl(Guid.NewGuid(), Guid.NewGuid(), OwnedReturnKind.Escape,
+            new(target, Guid.NewGuid(), 12), 900, 21, KeyPress: new(1, false, true));
+        var message = new PracticeMessage("return-fence", Guid.NewGuid(), Guid.NewGuid(), 1,
+            Returning: control, Acceptance: new(WitnessHandle: 601,
+                WitnessBytes: OwnedPracticeAcceptanceProtocol.WitnessBytes));
+        using var stream = new MemoryStream();
+        await PracticeProgressPipe.WriteAsync(stream, message, TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        Assert.Equal(message, await PracticeProgressPipe.ReadAsync(stream, TestContext.Current.CancellationToken));
+        foreach (var invalid in new[]
+        {
+            control with { KeyPress = null },
+            control with { KeyPress = new(0, false, true) },
+            control with { Kind = OwnedReturnKind.Mouse }
+        })
+            await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(new MemoryStream(),
+                message with
+                {
+                    Returning = invalid
+                }, TestContext.Current.CancellationToken));
     }
 
     [Theory]

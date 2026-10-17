@@ -133,6 +133,9 @@ class EditorProbe(unittest.TestCase):
     def test_control_claim_cannot_be_downgraded_after_page_reentry(self):
         self.production_acceptance(control=True, kind="reentrant-guarded")
 
+    def test_control_claim_is_quarantined_after_class_change_and_restore(self):
+        self.production_acceptance(control=True, kind="class-roundtrip")
+
     def production_acceptance(self, *, control=False, kind="guarded"):
         self.isolated(browser_e2e.TRANSPORT + "\n" + CONTENT.read_text())
         self.isolated("fixtureCommand({id: 1, op: 'configure-shortcuts', data: fixtureBindings})")
@@ -142,6 +145,18 @@ class EditorProbe(unittest.TestCase):
                 "{...fixtureBindings, accept: 'Ctrl+F7', exit: 'Ctrl+F8'}})"
             )
         self.page.evaluate("kind => window.editorProbeSetup(kind)", kind)
+        if kind == "class-roundtrip":
+            self.page.evaluate("""() => {
+              const root = document.querySelector('#editor-source');
+              window.originalControlClass = root.getAttribute('class');
+              window.controlClassChanged = false;
+              root.editor.on('transaction', ({transaction}) => {
+                if (!transaction.docChanged) return;
+                root.classList.add('cm-editor');
+                root.classList.remove('cm-editor');
+                window.controlClassChanged = true;
+              });
+            }""")
         self.page.evaluate("""() => {
           window.controlKeys = [];
           for (const type of ['keydown', 'keyup']) window.addEventListener(type, event => {
@@ -230,9 +245,18 @@ class EditorProbe(unittest.TestCase):
         accepted = self.isolated("fixtureMessages.filter(message => message.event === 'accepted')")
         self.assertEqual(len(accepted), 1)
         self.assertEqual(accepted[0]["data"]["planId"], plan["id"])
-        if kind == "reentrant-guarded":
+        if kind in ("reentrant-guarded", "class-roundtrip"):
             self.assertEqual(accepted[0]["data"]["receipt"]["status"], "OutcomeUnknown")
-            self.assertEqual(result["after"], NEW_SOURCE)
+            self.assertEqual(
+                result["after"], NEW_SOURCE if kind == "reentrant-guarded" else TRANSLATED
+            )
+            if kind == "class-roundtrip":
+                self.assertTrue(self.page.evaluate("controlClassChanged"))
+                self.assertTrue(
+                    self.page.evaluate(
+                        "document.querySelector('#editor-source').getAttribute('class') === originalControlClass"
+                    )
+                )
             self.assertTrue(result["preserved"])
             self.assertTrue(result["updateRestored"])
             self.assertFalse(

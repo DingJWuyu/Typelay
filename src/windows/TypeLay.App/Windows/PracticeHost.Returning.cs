@@ -34,7 +34,7 @@ internal sealed partial class PracticeHost
             || displayed != editor.Control.AdmittedToken || !EditorIdentityCurrent(editor)
             || _lastOwnedBinding is not { } binding || binding.Target != displayed.Target
             || binding.CommandGeneration != displayed.CommandGeneration || _monitor is null
-            || kind == OwnedReturnKind.Tab && !OwnsEditorFocus(displayed.Target)
+            || kind is OwnedReturnKind.Tab or OwnedReturnKind.Escape && !OwnsEditorFocus(displayed.Target)
             || !_monitor.BeginOwnedReturnInput(kind, editor.Control.Descriptor, out var input)
             || input is null || input.EditorIntent != editor.Control.Intent)
             return false;
@@ -59,7 +59,7 @@ internal sealed partial class PracticeHost
             return;
         }
         pending.Control = new(pending.Intent, editorIntent, pending.Input.Kind, token,
-            pending.Input.ExpiresAtMs, pending.Input.Sequence);
+            pending.Input.ExpiresAtMs, pending.Input.Sequence, KeyPress: pending.Input.KeyPress);
         TraceReturn(pending, "Admitted");
     }
 
@@ -246,7 +246,7 @@ internal sealed partial class PracticeHost
             attempt.ReplacementMapping = null;
             _witnessWriter = new(_witnessMapping);
             _monitor!.SetOwnedChannel(_connection, _witnessWriter, attempt.Editor.Control.Descriptor);
-            if (expected.Kind == OwnedReturnKind.Tab)
+            if (expected.Kind is OwnedReturnKind.Tab or OwnedReturnKind.Escape)
                 Native.SetForegroundWindow((nint)attempt.Editor.Control.Descriptor.RootHwnd);
             // Foreground activation can synchronously dispatch UI cancellation.
             // It must not enqueue a resume behind that cancellation/retirement.
