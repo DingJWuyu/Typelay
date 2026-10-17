@@ -13,6 +13,47 @@ namespace TypeLay.App.Tests;
 public sealed class PracticeProgressPipeTests
 {
     [Fact]
+    public async Task DefaultExitFramesCarryAnIndependentBoundedLeaseWithoutAWritePlan()
+    {
+        var descriptor = new OwnedCaptureDescriptor(120, 630000000000000000, 501, 502, 121, 41, 7, 1);
+        var target = new WindowsTarget(120, 630000000000000000, 501, 502,
+            "win32-edit-transaction-v2", "1.2.3", Guid.NewGuid()).Id;
+        var lease = new OwnedExitLease(1, descriptor, new(target, Guid.NewGuid(), 4), 5, 6, 1000, 1150, 8);
+        Guid connection = Guid.NewGuid(), run = Guid.NewGuid();
+        PracticeMessage[] messages =
+        [
+            new("exit-install", connection, run, 1, Exit: new(1, lease)),
+            new("exit-installed", connection, run, 1, Exit: new(1)),
+            new("exit-completed", connection, run, 1, ExitResult: new(1, 9, 1050)),
+            new("exit-clear", connection, run, 1, Exit: new(2))
+        ];
+        using var stream = new MemoryStream();
+        foreach (var message in messages)
+            await PracticeProgressPipe.WriteAsync(stream, message, TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        foreach (var message in messages)
+            Assert.Equal(message, await PracticeProgressPipe.ReadAsync(stream, TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(new MemoryStream(),
+            messages[0] with
+            {
+                Exit = new(1, lease with
+                {
+                    ExpiresAtMs = 1151
+                })
+            }, TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(new MemoryStream(),
+            messages[0] with
+            {
+                Acceptance = new()
+            }, TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(new MemoryStream(),
+            messages[2] with
+            {
+                ExitResult = new(1, 0, 1050)
+            }, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task OwnedAcceptanceControlFramesRetainTheirExactPlanWitnessAndFieldIdentity()
     {
         var connection = Guid.NewGuid();
@@ -20,6 +61,9 @@ public sealed class PracticeProgressPipeTests
         var plan = Guid.NewGuid();
         var descriptor = new OwnedCaptureDescriptor(120, 630000000000000000, 501, 502, 121, 41, 7, 1);
         Assert.False(new OwnedAcceptanceControl().ObserveInputCompletion);
+        Assert.Equal(2, new OwnedAcceptanceControl().Version);
+        await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(new MemoryStream(),
+            new("begin-auto", connection, run, 1, Acceptance: new(Version: 1)), TestContext.Current.CancellationToken));
         PracticeMessage[] messages =
         [
             new("begin", connection, run, 1, Acceptance: new(ObserveInputCompletion: true)),

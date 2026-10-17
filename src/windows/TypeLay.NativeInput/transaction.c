@@ -132,12 +132,11 @@ static int ime(HANDLE hwnd) {
     ImmReleaseContext(hwnd, context);
     return bytes == 0 ? 1 : bytes > 0 ? 2 : 0;
 }
-static WNDPROC qualify(Transaction *tx) {
-    HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd;
+static WNDPROC qualify_field(HANDLE hwnd, HANDLE root, uint32_t process, uint32_t thread, int32_t *multiline) {
     uint32_t pid = 0;
-    if (tx->pid != GetCurrentProcessId() || tx->thread != GetCurrentThreadId()
-        || GetWindowThreadProcessId(hwnd, &pid) != tx->thread || pid != tx->pid
-        || GetAncestor(hwnd, 2) != (HANDLE)(uintptr_t)tx->root
+    if (process != GetCurrentProcessId() || thread != GetCurrentThreadId()
+        || GetWindowThreadProcessId(hwnd, &pid) != thread || pid != process
+        || GetAncestor(hwnd, 2) != root
         || !IsWindowUnicode(hwnd) || !IsWindowEnabled(hwnd)) return 0;
     WCHAR name[32];
     if (GetClassNameW(hwnd, name, 32) != 4 || !equal(name, (const WCHAR *)L"Edit", 4)) return 0;
@@ -150,8 +149,12 @@ static WNDPROC qualify(Transaction *tx) {
         || GetClassLongPtrW(hwnd, -24) != (intptr_t)proc) return 0;
     intptr_t style = GetWindowLongPtrW(hwnd, -16);
     if ((style & (0x8 | 0x10 | 0x20 | 0x800 | 0x2000)) || CallWindowProcW(proc, hwnd, 0xd2, 0, 0)) return 0;
-    tx->multiline = (style & 4) != 0;
+    if (multiline) *multiline = (style & 4) != 0;
     return proc;
+}
+static WNDPROC qualify(Transaction *tx) {
+    return qualify_field((HANDLE)(uintptr_t)tx->hwnd, (HANDLE)(uintptr_t)tx->root,
+        tx->pid, tx->thread, &tx->multiline);
 }
 __declspec(dllexport) uint32_t TypeLayOwnedEditVersion(void) { return 2; }
 __declspec(dllexport) int TypeLayOwnedEditControl(HANDLE hwnd, uint32_t operation, uint64_t seed) {
@@ -219,6 +222,29 @@ __declspec(dllexport) uint64_t TypeLayOwnedFocusRevision(HANDLE hwnd, uint32_t o
 }
 static int owned_focus_current(uint64_t expected) {
     return !expected || (owned.focus_revision == expected && !owned.retired);
+}
+// Local GUI-only exit qualification reads no body or selection and performs no
+// Edit mutation. IMM may reenter; repeat the exact lifetime/focus/deadline gate.
+static int owned_exit_current(HANDLE hwnd, HANDLE root, uint64_t cookie, uint64_t revision, int64_t expires) {
+    uint64_t now;
+    uint32_t pid = 0, thread = GetCurrentThreadId();
+    QueryInterruptTimePrecise(&now);
+    return expires > 0 && now / 10000 <= (uint64_t)expires
+        && owned.hwnd == hwnd && owned.thread == thread && !owned.retired && owned.automatic
+        && cookie && owned.cookie == cookie && revision && owned.focus_revision == revision
+        && (uint64_t)(uintptr_t)GetPropW(hwnd, property) == cookie
+        && (uint64_t)(uintptr_t)GetPropW(hwnd, focus_property) == revision
+        && GetParent(hwnd) == root && GetWindowThreadProcessId(root, &pid) == thread && pid == GetCurrentProcessId()
+        && IsWindowVisible(hwnd) && IsWindowVisible(root) && IsWindowEnabled(root) && !IsIconic(root)
+        && GetForegroundWindow() == root && GetFocus() == hwnd;
+}
+__declspec(dllexport) int TypeLayOwnedEditCanExit(HANDLE hwnd, HANDLE root, uint64_t cookie,
+    uint64_t revision, int64_t expires) {
+    if (!owned_exit_current(hwnd, root, cookie, revision, expires)
+        || !qualify_field(hwnd, root, GetCurrentProcessId(), GetCurrentThreadId(), 0)
+        || !owned_exit_current(hwnd, root, cookie, revision, expires) || ime(hwnd) != 1) return 0;
+    return qualify_field(hwnd, root, GetCurrentProcessId(), GetCurrentThreadId(), 0)
+        && owned_exit_current(hwnd, root, cookie, revision, expires);
 }
 static int client_bounds(HANDLE hwnd, Rect *bounds) {
     Rect client;

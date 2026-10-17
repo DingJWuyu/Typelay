@@ -5,6 +5,7 @@
   "use strict";
   const REQUEST = "typelay-editor-request", RESPONSE = "typelay-editor-response";
   const CHECK = "typelay-editor-check", CHECK_RESULT = "typelay-editor-check-result";
+  const CLAIM = "typelay-editor-claim", CLAIM_RESULT = "typelay-editor-claim-result";
   const textValue = Object.getOwnPropertyDescriptor(Node.prototype, "textContent").get;
   const pending = new WeakSet();
   const monotonic = performance.now.bind(performance);
@@ -48,10 +49,12 @@
     if (!element.isConnected || length(element) > 8192) return null;
     return textValue.call(element);
   }
-  function invoke(element, op, data, finalGuard) {
+  function invoke(element, op, data, finalGuard, beforeAttempt) {
     if (root(element) !== element || pending.has(element)) return null;
     const id = crypto.randomUUID();
     let responses = 0, result = null, guardCalled = false, guardAllowed = false;
+    const requiresClaim = op === "replace" && typeof beforeAttempt === "function";
+    let claimCalled = false, claimAllowed = false, invalidPhase = false;
     const receive = event => {
       if (event.target !== element || typeof event.detail !== "string" || event.detail.length > 40000) return;
       try {
@@ -60,16 +63,32 @@
         responses++; result = reply.result;
       } catch (_) { /* Replies are page-controlled data. */ }
     };
+    const claim = event => {
+      if (event.target !== element || typeof event.detail !== "string" || event.detail.length > 256) return;
+      let message;
+      try { message = JSON.parse(event.detail); } catch (_) { return; }
+      if (message.id !== id) return;
+      let allowed = false;
+      if (requiresClaim && !claimCalled && !guardCalled && responses === 0 && !invalidPhase) {
+        claimCalled = true;
+        try { allowed = beforeAttempt() === true; } catch (_) { allowed = false; }
+        claimAllowed = allowed;
+      } else invalidPhase = true;
+      if (!allowed) event.preventDefault();
+      element.dispatchEvent(new CustomEvent(CLAIM_RESULT, {bubbles: true, detail: JSON.stringify({id, allowed})}));
+    };
     const verify = event => {
       if (event.target !== element || typeof event.detail !== "string" || event.detail.length > 256) return;
       let message;
       try { message = JSON.parse(event.detail); } catch (_) { return; }
       if (message.id !== id) return;
       let allowed = false;
-      if (!guardCalled && op === "replace" && typeof finalGuard === "function") {
+      if (!guardCalled && op === "replace" && typeof finalGuard === "function"
+        && (!requiresClaim || claimAllowed) && !invalidPhase && responses === 0) {
         guardCalled = true;
         try { allowed = finalGuard() === true; } catch (_) { allowed = false; }
       }
+      if (!allowed) invalidPhase = true;
       guardAllowed = allowed;
       if (!allowed) event.preventDefault();
       element.dispatchEvent(new CustomEvent(CHECK_RESULT, {bubbles: true, detail: JSON.stringify({id, allowed})}));
@@ -77,12 +96,13 @@
     pending.add(element);
     window.addEventListener(RESPONSE, receive, true);
     window.addEventListener(CHECK, verify, true);
+    window.addEventListener(CLAIM, claim, true);
     try {
-      element.dispatchEvent(new CustomEvent(REQUEST, {bubbles: true, detail: JSON.stringify({id, op, data})}));
+      element.dispatchEvent(new CustomEvent(REQUEST, {bubbles: true, detail: JSON.stringify({id, op, data: op === "replace" ? {...data, requiresClaim} : data})}));
       if (responses !== 1) return op === "replace" ? {status: "OutcomeUnknown", reason: "UnknownOutcome"} : null;
       if (op === "replace" && result?.status === "Applied") {
         const selected = domSelection(element);
-        if (!guardCalled || !guardAllowed || read(element) !== result.text
+        if (invalidPhase || requiresClaim && !claimAllowed || !guardCalled || !guardAllowed || read(element) !== result.text
           || document.activeElement === element && (!selected || selected.start !== result.selection?.start || selected.end !== result.selection?.end)) {
           return {status: "OutcomeUnknown", reason: "UnknownOutcome"};
         }
@@ -92,9 +112,11 @@
       pending.delete(element);
       window.removeEventListener(RESPONSE, receive, true);
       window.removeEventListener(CHECK, verify, true);
+      window.removeEventListener(CLAIM, claim, true);
     }
   }
   globalThis.TypeLayEditorBridge = Object.freeze({
+    orderedClaim: 1,
     root,
     selectionIdentity(element) {
       const selected = document.getSelection();
@@ -117,14 +139,14 @@
         || document.activeElement === element && (!selected || selected.start !== result.selection.start || selected.end !== result.selection.end)) return null;
       return result;
     },
-    replace(element, data, finalGuard) {
+    replace(element, data, finalGuard, beforeAttempt) {
       const remaining = data?.expiresAtPerformanceMs - monotonic();
       const wallRemaining = data?.expiresAtWallMs - wallNow();
       if (!Number.isFinite(remaining) || remaining < 0 || remaining > 250
         || !Number.isFinite(wallRemaining) || wallRemaining < 0 || wallRemaining > 250) {
         return {status: "RejectedBeforeMutation", reason: "StaleObservation"};
       }
-      return invoke(element, "replace", data, finalGuard);
+      return invoke(element, "replace", data, finalGuard, beforeAttempt);
     },
   });
 })();

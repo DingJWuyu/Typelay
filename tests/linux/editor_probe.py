@@ -125,9 +125,29 @@ class EditorProbe(unittest.TestCase):
         return {**before, **receipt, **result, **history}
 
     def test_production_capture_publish_and_single_tab_acceptance(self):
+        self.production_acceptance()
+
+    def test_control_acceptance_preserves_marks_and_consumes_one_press(self):
+        self.production_acceptance(control=True)
+
+    def test_control_claim_cannot_be_downgraded_after_page_reentry(self):
+        self.production_acceptance(control=True, kind="reentrant-guarded")
+
+    def production_acceptance(self, *, control=False, kind="guarded"):
         self.isolated(browser_e2e.TRANSPORT + "\n" + CONTENT.read_text())
         self.isolated("fixtureCommand({id: 1, op: 'configure-shortcuts', data: fixtureBindings})")
-        self.page.evaluate("window.editorProbeSetup('guarded')")
+        if control:
+            self.isolated(
+                "fixtureCommand({id: 2, op: 'configure-shortcuts', data: "
+                "{...fixtureBindings, accept: 'Ctrl+F7', exit: 'Ctrl+F8'}})"
+            )
+        self.page.evaluate("kind => window.editorProbeSetup(kind)", kind)
+        self.page.evaluate("""() => {
+          window.controlKeys = [];
+          for (const type of ['keydown', 'keyup']) window.addEventListener(type, event => {
+            if (event.key === 'F7') controlKeys.push([type, event.key]);
+          });
+        }""")
         # DOM focus alone does not activate a real Chromium window. Establish
         # the actual keyboard destination before the one trusted IME observation.
         self.page.bring_to_front()
@@ -180,6 +200,9 @@ class EditorProbe(unittest.TestCase):
         })()""")
         snapshot = captured["snapshot"]
         self.assertIsNotNone(snapshot, json.dumps(captured["diagnostic"], sort_keys=True))
+        if control:
+            self.assertTrue(snapshot["sessionBindings"]["sourceReady"])
+            self.assertTrue(snapshot["sessionBindings"]["editorReady"])
         plan = browser_e2e.BrowserContract.plan(snapshot, "bonjour", {"start": 7, "end": 12})
         plan["resultText"] = "Before bonjour world after untouched"
         plan["caret"] = 14
@@ -192,8 +215,34 @@ class EditorProbe(unittest.TestCase):
                 "lease": {"source": {"observedAtMs": snapshot["observedAtMs"]}},
             },
         )
-        self.page.keyboard.press("Tab")
+        if control:
+            try:
+                self.page.keyboard.down("Control")
+                self.page.keyboard.down("F7")
+                self.page.keyboard.down("F7")
+            finally:
+                self.page.keyboard.up("Control")
+                self.page.keyboard.up("F7")
+            self.assertEqual(self.page.evaluate("controlKeys"), [])
+        else:
+            self.page.keyboard.press("Tab")
         result = self.page.evaluate("window.editorProbeInspect()")
+        accepted = self.isolated("fixtureMessages.filter(message => message.event === 'accepted')")
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(accepted[0]["data"]["planId"], plan["id"])
+        if kind == "reentrant-guarded":
+            self.assertEqual(accepted[0]["data"]["receipt"]["status"], "OutcomeUnknown")
+            self.assertEqual(result["after"], NEW_SOURCE)
+            self.assertTrue(result["preserved"])
+            self.assertTrue(result["updateRestored"])
+            self.assertFalse(
+                self.isolated("""(() => {
+              const described = fixtureCommand({id: 20, op: 'describe', data: {}});
+              return fixtureCommand({id: 21, op: 'capture', data: {
+                target: described.target, authority: described.authority}})?.writeSupported;
+            })()""")
+            )
+            return
         self.assertEqual(result["after"], TRANSLATED)
         self.assertTrue(result["preserved"])
         self.assertTrue(result["updateRestored"])

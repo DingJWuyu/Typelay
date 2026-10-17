@@ -35,6 +35,11 @@ internal static partial class Program
     private static OwnedMapping? _witnessMapping, _resultMapping;
     private static OwnedWitnessReader? _witness;
     private static OwnedAcceptancePlan? _plan;
+    private static OwnedExitLease? _exitLease;
+    private static SessionViewToken? _exitCompletedToken;
+    private static long _exitSequence, _exitWitnessFloor;
+    private static bool _escapeHeld, _escapeConsumed, _escapeExtended;
+    private static uint _escapeScanCode;
     private static OwnedEditorControl? _editorFence;
     private static EditorHandoff _editorHandoff;
     private static bool _editorAppLeft;
@@ -210,12 +215,12 @@ internal static partial class Program
                 // model sessions emit nothing; no input authority is changed.
                 // The original MSG has completed its decision and, if passed,
                 // its normal dispatch before this content-free notification.
-                if (_observeInputCompletion && inputQueue && message.WParam == 9
+                if (_observeInputCompletion && inputQueue && message.WParam is 9 or 27
                     && message.Id is 0x0100 or 0x0101)
                 {
                     if (_inputCompletions!.Count >= 8)
                         throw new InvalidDataException("practice-input-completion-limit");
-                    _inputCompletions.Enqueue(new("test-tab-dispatched", _connection, _run, _sequence,
+                    _inputCompletions.Enqueue(new(message.WParam == 9 ? "test-tab-dispatched" : "test-exit-dispatched", _connection, _run, _sequence,
                         InputCompletion: new(checked(++_inputCompletionSequence), message.Id == 0x0100, consumed)));
                 }
                 if (consumed)
@@ -415,6 +420,7 @@ internal static partial class Program
                     _run = message.Run;
                     _sequence = message.Sequence;
                     _retired = false;
+                    _exitCompletedToken = null;
                     _progressConnected = true;
                     _restartPending = false;
                     _progress = null;
@@ -459,7 +465,7 @@ internal static partial class Program
                     Reply("retired");
                 }
                 else if (message.Run == _run && message.Sequence == _sequence
-                    && (!_retired || message.Kind is "revoke-plan" or "release-plan"))
+                    && (!_retired || message.Kind is "revoke-plan" or "release-plan" or "exit-clear"))
                 {
                     switch (message.Kind)
                     {
@@ -501,6 +507,10 @@ internal static partial class Program
                             if (_returnControl != cancelledReturn)
                                 throw new InvalidDataException("practice-return-order");
                             InvalidateSourceReturn(EditorReason.Cancel);
+                            break;
+                        case "exit-install" when _automatic:
+                        case "exit-clear" when _automatic:
+                            ApplyExitControl(message);
                             break;
                         case "install" when _automatic:
                             InstallPlan(message.Acceptance ?? throw new InvalidDataException("practice-install-missing"));
@@ -1049,6 +1059,7 @@ internal static partial class Program
 
     private static void CloseWitness()
     {
+        _exitLease = null;
         _witness = null;
         _witnessMapping?.Dispose();
         _witnessMapping = null;
@@ -1067,6 +1078,7 @@ internal static partial class Program
 
     private static void InvalidateFocus()
     {
+        _exitLease = null;
         _planActive = false;
         if (_owned is not null && _owned.AdvanceFocusRevision() == 0)
             Interlocked.Exchange(ref _disconnected, 1);
@@ -1078,9 +1090,9 @@ internal static partial class Program
         if (!down && message.Id is not (0x0101 or 0x0105))
             return false;
         if (!_automatic || _witnessFailed)
-            return false;
+            return inputQueue && PairEscapePress(ref message, down);
         if (_witness is null)
-            return inputQueue && PairRetiredPress(ref message, down);
+            return inputQueue && (PairEscapePress(ref message, down) || PairRetiredPress(ref message, down));
         if (!inputQueue)
         {
             // Neither posted messages nor a fallback retrieval can establish
@@ -1093,6 +1105,8 @@ internal static partial class Program
         {
             if (!_witness.TryRead(out var witness))
             {
+                if (_escapeHeld && message.WParam == 27)
+                    return PairEscapePress(ref message, down);
                 if (_tabHeld)
                     return PairRetiredPress(ref message, down);
                 if (_plan is not null)
@@ -1121,8 +1135,10 @@ internal static partial class Program
             if (!tupleMatches)
             {
                 FailWitness();
-                return false;
+                return PairEscapePress(ref message, down);
             }
+            if (message.WParam == 27)
+                return ProcessExit(ref message, witness, down, repeated, extended, bits);
             if (message.WParam != 9)
             {
                 _planActive = false;
@@ -1198,6 +1214,93 @@ internal static partial class Program
             _tabConsumed = accepted;
             return accepted;
         }
+    }
+
+    private static void ApplyExitControl(PracticeMessage message)
+    {
+        var control = message.Exit ?? throw new InvalidDataException("practice-exit-missing");
+        if (control.Sequence <= _exitSequence)
+            throw new InvalidDataException("practice-exit-order");
+        _exitSequence = control.Sequence;
+        _exitLease = null;
+        if (message.Kind == "exit-clear")
+            return;
+        var lease = control.Lease!;
+        long now = WindowsInterruptClock.NowMs;
+        if (!_retired && !_witnessFailed && _witness is not null && _editorFence is null
+            && lease.Descriptor == Descriptor() && lease.Token != _exitCompletedToken
+            && now >= lease.ObservedAtMs && now <= lease.ExpiresAtMs)
+        {
+            _exitLease = lease;
+            _exitWitnessFloor = _witness.Sequence;
+        }
+        WriteReply(new("exit-installed", _connection, _run, _sequence, Exit: new(control.Sequence)));
+    }
+
+    private static bool ProcessExit(ref Native.Message message, OwnedKeyWitness witness,
+        bool down, bool repeated, bool extended, ulong bits)
+    {
+        if (!down || _escapeHeld && repeated)
+            return PairEscapePress(ref message, down);
+        _escapeHeld = true;
+        _escapeConsumed = false;
+        _escapeScanCode = witness.ScanCode;
+        _escapeExtended = extended;
+        var lease = _exitLease;
+        _exitLease = null; // One press, even when refused. Repeats never retry.
+        _planActive = false;
+        long now = WindowsInterruptClock.NowMs;
+        if (lease is null || _retired || repeated || witness.Modified || witness.Injected && !_allowInjectedInput
+            || message.Id != 0x0100 || message.Window != _edit!.Handle || (bits & (1UL << 29)) != 0 || ModifiersDown()
+            || witness.ExitLeaseSequence != lease.Sequence
+            || witness.Sequence <= _exitWitnessFloor || witness.Sequence <= lease.InstallWitnessSequence
+            || witness.NativeFocusRevision != lease.Descriptor.NativeFocusRevision
+            || witness.UserEpoch != lease.UserEpoch || witness.ForegroundEpoch != lease.ForegroundEpoch
+            || witness.ObservedAtMs < lease.ObservedAtMs || witness.ObservedAtMs > lease.ExpiresAtMs
+            || now < witness.ObservedAtMs || now > lease.ExpiresAtMs
+            || !ExitContextCurrent(lease) || !_owned!.CanExit(lease.Descriptor, lease.ExpiresAtMs)
+            || !ExitContextCurrent(lease) || ModifiersDown())
+            return false;
+        now = WindowsInterruptClock.NowMs;
+        if (now < witness.ObservedAtMs || now > lease.ExpiresAtMs)
+            return false;
+        // Claim before stdio. Retirement, failed delivery and old ticket replay
+        // cannot turn this same physical down/repeat/up into a dialog Cancel.
+        _escapeConsumed = true;
+        _exitCompletedToken = lease.Token;
+        _planActive = false;
+        try
+        {
+            WriteReply(new("exit-completed", _connection, _run, _sequence,
+                ExitResult: new(lease.Sequence, witness.Sequence, now)));
+        }
+        catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException
+            or ArgumentException or OverflowException)
+        {
+            Interlocked.Exchange(ref _disconnected, 1);
+        }
+        return true;
+    }
+
+    private static bool ExitContextCurrent(OwnedExitLease lease) => !_retired && !_witnessFailed
+        && _exitSequence == lease.Sequence && lease.Token != _exitCompletedToken && _witness is not null
+        && _editorFence is null && lease.Descriptor == Descriptor() && SourceFocused()
+        && Volatile.Read(ref _disconnected) == 0 && !_closePending && !_sendRestart && PendingControls.IsEmpty;
+
+    private static bool PairEscapePress(ref Native.Message message, bool down)
+    {
+        if (!_escapeHeld || message.WParam != 27)
+            return false;
+        ulong bits = unchecked((ulong)(long)message.LParam);
+        if (((bits >> 16) & 0xff) != _escapeScanCode || ((bits & (1UL << 24)) != 0) != _escapeExtended)
+            return false;
+        bool consume = _escapeConsumed;
+        if (!down || (bits & (1UL << 30)) == 0)
+        {
+            _escapeHeld = _escapeConsumed = false;
+            return !down && consume;
+        }
+        return consume;
     }
 
     private static bool PairRetiredPress(ref Native.Message message, bool down)

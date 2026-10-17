@@ -26,6 +26,8 @@ internal sealed partial class KeyboardHook
     private OwnedChannel? _ownedChannel;
     private OwnedSource? _ownedSource;
     private OwnedInstalled? _ownedInstalled;
+    private sealed record OwnedExitInstallation(OwnedExitLease Lease, Guid Run, Guid Connection);
+    private OwnedExitInstallation? _ownedExit;
     private long _ownedAttemptSequence;
     private Func<TargetId, bool>? _ownedEditorFocus;
     private Func<TargetId, bool>? _ownedReturnFocus;
@@ -304,6 +306,7 @@ internal sealed partial class KeyboardHook
     {
         Interlocked.Exchange(ref _editorForeground, null);
         RevokeOwnedPlan();
+        RevokeOwnedExit();
         Interlocked.Exchange(ref _ownedSource, null);
         Interlocked.Exchange(ref _ownedChannel, null);
     }
@@ -313,6 +316,40 @@ internal sealed partial class KeyboardHook
             CommandGeneration: lease.CommandGeneration, CompletedReceipt: result.Receipt,
             SessionRevision: lease.SessionRevision, PracticeRunId: lease.PracticeRunId,
             PracticeConnectionId: lease.PracticeConnectionId));
+    }
+    internal void InstallOwnedExit(OwnedExitLease lease, Guid run, Guid connection) =>
+        Interlocked.Exchange(ref _ownedExit, new(lease, run, connection));
+    internal void RevokeOwnedExit() => Interlocked.Exchange(ref _ownedExit, null);
+
+    // This is only the LL witness basis. The source GUI still independently
+    // matches the installed sequence, original MSG and live native IME gate.
+    internal OwnedExitLease? CurrentOwnedExit(long now)
+    {
+        var installed = Volatile.Read(ref _ownedExit);
+        var channel = Volatile.Read(ref _ownedChannel);
+        var observation = Volatile.Read(ref _lease)?.Observation;
+        var keys = Volatile.Read(ref _sessionKeys);
+        if (!_sessionEnabled || !keys.Supported || keys.Exit != 27 || installed is null || observation is null
+            || channel is null || channel.Writer.Poisoned || channel.Connection != installed.Connection
+            || observation.PracticeRunId != installed.Run || observation.PracticeConnectionId != installed.Connection
+            || !observation.EscapeAllowed || observation.Source.Ime != ImeState.Clear
+            || observation.CommandGeneration != CommandGeneration || observation.UserEpoch != UserEpoch
+            || observation.ForegroundEpoch != ForegroundEpoch || now < observation.Source.ObservedAtMs
+            || now - observation.Source.ObservedAtMs > Limits.ObservationMaxAgeMs)
+            return null;
+        var lease = installed.Lease;
+        return lease.Token.Target == observation.Source.Target && lease.Token.CommandGeneration == observation.CommandGeneration
+            && lease.Token.Revision == observation.SessionRevision && lease.UserEpoch == observation.UserEpoch
+            && lease.ForegroundEpoch == observation.ForegroundEpoch && lease.Descriptor == channel.Descriptor
+            && observation.Source.FocusEpoch == lease.Descriptor.NativeFocusRevision && OwnedFocus(lease.Descriptor)
+            && now >= lease.ObservedAtMs && now <= lease.ExpiresAtMs ? lease : null;
+    }
+
+    internal void CompleteOwnedExit(OwnedExitLease lease, OwnedExitResult result)
+    {
+        _notices.Enqueue(new("escape", AcceptedAtMs: result.AcceptedAtMs, UserEpoch: lease.UserEpoch,
+            ForegroundEpoch: lease.ForegroundEpoch, CommandGeneration: lease.Token.CommandGeneration,
+            Target: lease.Token.Target, SessionRevision: lease.Token.Revision));
     }
     private bool ObserveOwnedKey(Native.KeyData data, bool down, bool repeated, bool injected, long now, uint acceptanceKey)
     {
@@ -350,12 +387,20 @@ internal sealed partial class KeyboardHook
                     lease?.Source.InputEpoch ?? -1, lease?.Source.FocusEpoch ?? -1, now));
             if (!channel.Writer.Publish(new(0, installed?.Sequence ?? 0, data.Time, data.Key, data.Scan,
                     data.Flags, down, repeated, Modified, injected, decision.Permit is not null,
-                    now, UserEpoch, ForegroundEpoch, WindowEpoch, channel.Descriptor.NativeFocusRevision)))
+                    now, UserEpoch, ForegroundEpoch, WindowEpoch, channel.Descriptor.NativeFocusRevision,
+                    down && data.Key == 27 && !repeated && !Modified && (!injected || _allowInjectedInput)
+                        ? CurrentOwnedExit(now)?.Sequence ?? 0 : 0)))
                 RevokeOwnedPlan();
             if (down && data.Key != acceptanceKey)
             {
-                Interlocked.Increment(ref _userEpoch);
-                Interlocked.Increment(ref _sourceUserEpoch);
+                // Default unmodified Esc has the ordinary exit key's epoch
+                // semantics. Its FIFO witness still grants nothing; the source
+                // GUI alone can claim the independent, original exit lease.
+                if (data.Key != 27 || Volatile.Read(ref _sessionKeys).Exit != 27 || Modified)
+                {
+                    Interlocked.Increment(ref _userEpoch);
+                    Interlocked.Increment(ref _sourceUserEpoch);
+                }
                 RevokeOwnedPlan();
             }
             // The GUI must receive the original key before it decides. A positive

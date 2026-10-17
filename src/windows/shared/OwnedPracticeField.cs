@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using TypeLay.Windows.Contracts;
 
 namespace TypeLay.Windows;
 
@@ -12,6 +13,7 @@ internal sealed class OwnedPracticeField
     private readonly Control _control;
     private readonly Focus _focus;
     private readonly Execute _execute;
+    private readonly ExitGate _canExit;
 
     public OwnedPracticeField(nint field, string libraryPath)
     {
@@ -28,6 +30,8 @@ internal sealed class OwnedPracticeField
             NativeLibrary.GetExport(_library, "TypeLayOwnedFocusRevision"));
         _execute = Marshal.GetDelegateForFunctionPointer<Execute>(
             NativeLibrary.GetExport(_library, "TypeLayOwnedEditTryExecute"));
+        _canExit = Marshal.GetDelegateForFunctionPointer<ExitGate>(
+            NativeLibrary.GetExport(_library, "TypeLayOwnedEditCanExit"));
         _field = field;
         // Monotonic lifetimes within this process cannot repeat. Overflow refuses
         // a new run; no remote operation can choose or reinstall an old value.
@@ -57,6 +61,11 @@ internal sealed class OwnedPracticeField
         }
     }
 
+    public bool CanExit(OwnedCaptureDescriptor descriptor, long expiresAtMs) =>
+        descriptor.ControlHwnd == (long)_field
+        && _canExit(_field, (nint)descriptor.RootHwnd, descriptor.NativeCookie,
+            (ulong)descriptor.NativeFocusRevision, expiresAtMs) == 1;
+
     public void Begin(bool automatic = false) => Apply(automatic ? 4u : 2u);
     public void Retire() => Apply(3);
     private void Apply(uint operation)
@@ -68,5 +77,6 @@ internal sealed class OwnedPracticeField
     [UnmanagedFunctionPointer(CallingConvention.Winapi)] private delegate uint Version();
     [UnmanagedFunctionPointer(CallingConvention.Winapi)] private delegate ulong Focus(nint field, uint operation);
     [UnmanagedFunctionPointer(CallingConvention.Winapi)] private delegate int Execute(nint transaction, uint bytes, ulong expectedFocusRevision);
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)] private delegate int ExitGate(nint field, nint root, ulong cookie, ulong focusRevision, long expiresAtMs);
     [UnmanagedFunctionPointer(CallingConvention.Winapi)] private delegate int Control(nint field, uint operation, ulong seed);
 }

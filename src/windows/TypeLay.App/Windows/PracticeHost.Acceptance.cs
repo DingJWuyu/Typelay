@@ -16,6 +16,9 @@ internal sealed partial class PracticeHost
     private OwnedMapping? _witnessMapping;
     private OwnedWitnessWriter? _witnessWriter;
     private long _planSequence, _lastWitnessSequence;
+    private long _exitSequence, _exitRetiredThrough;
+    private readonly Dictionary<long, OwnedExitLease> _exitLeases = [];
+    private OwnedExitLease? _latestExit;
     private TaskCompletionSource<bool>? _retirement;
     private sealed class RetirementEvidence(OwnedPracticeBinding binding, IChildProcess child)
     {
@@ -217,11 +220,12 @@ internal sealed partial class PracticeHost
     internal void PublishAcceptance(InputLease lease, AcceptancePermit? permit)
     {
         _dispatcher.VerifyAccess();
+        PublishExit(lease);
         if (permit is null || !SourceReady(lease.Source.Target) || lease.PracticeRunId != _runId
             || lease.PracticeConnectionId != _connection || _monitor is null
             || lease.CommandGeneration != _monitor.CommandGeneration)
         {
-            RevokeAcceptance();
+            RevokeAcceptance(revokeExit: false);
             return;
         }
         if (_acceptance is { } current && SameAcceptanceOperation(current.Plan.Permit.Plan, permit.Plan))
@@ -254,6 +258,100 @@ internal sealed partial class PracticeHost
         else if (_acceptance.State is "install" or "installed")
             RevokeCurrentAcceptance();
     }
+    private void PublishExit(InputLease observation)
+    {
+        long now = WindowsInterruptClock.NowMs;
+        if (observation.PracticeRunId != _runId || observation.PracticeConnectionId != _connection
+            || !observation.EscapeAllowed || observation.Source.Ime != ImeState.Clear
+            || observation.Source.FocusEpoch != _descriptor?.NativeFocusRevision
+            || observation.CommandGeneration != _monitor?.CommandGeneration
+            || observation.UserEpoch != _monitor?.UserEpoch || observation.ForegroundEpoch != _monitor?.ForegroundEpoch
+            || _settings?.Value.ExitShortcut != "Esc" || !SourceReady(observation.Source.Target)
+            || !ExitConnectionCurrent() || now < observation.Source.ObservedAtMs
+            || now - observation.Source.ObservedAtMs > Limits.ObservationMaxAgeMs)
+        {
+            RevokeExit();
+            return;
+        }
+        var token = new SessionViewToken(observation.Source.Target, observation.CommandGeneration, observation.SessionRevision);
+        if (_latestExit is { } current)
+        {
+            if (current.Token != token || current.Descriptor != _descriptor
+                || current.UserEpoch != observation.UserEpoch || current.ForegroundEpoch != observation.ForegroundEpoch)
+                RevokeExit();
+            else if (now <= current.ExpiresAtMs)
+                return; // Fresh capture cannot extend an already issued lease.
+        }
+        // Keep bounded original leases for a result overtaken by later captures.
+        // Exhaustion discards only the oldest authority, never renews its window.
+        if (_exitLeases.Count == 16)
+        {
+            long oldest = _exitLeases.Keys.Min();
+            _exitLeases.Remove(oldest);
+            _exitRetiredThrough = Math.Max(_exitRetiredThrough, oldest);
+        }
+        var lease = new OwnedExitLease(checked(++_exitSequence), _descriptor!, token,
+            observation.UserEpoch, observation.ForegroundEpoch, observation.Source.ObservedAtMs,
+            checked(observation.Source.ObservedAtMs + Limits.ObservationMaxAgeMs), _witnessWriter!.Sequence);
+        _latestExit = lease;
+        _exitLeases.Add(lease.Sequence, lease);
+        Enqueue(new("exit-install", _connection, _runId, _sequence, Exit: new(lease.Sequence, lease)));
+    }
+
+    private bool ExitConnectionCurrent() => !_disposed && !_disconnecting && _nativeActive && _pending is null
+        && !_editorSealed && _communication is { IsCancellationRequested: false }
+        && _monitor is { ShortcutsReady: true, CanInterceptAcceptance: true };
+
+    private bool ExitBasisCurrent(OwnedExitLease lease) => ExitConnectionCurrent() && _descriptor == lease.Descriptor
+        && _latestExit?.Token == lease.Token && _settings?.Value.ExitShortcut == "Esc" && SourceReady(lease.Token.Target)
+        && lease.Token.CommandGeneration == _monitor!.CommandGeneration
+        && lease.UserEpoch == _monitor.UserEpoch && lease.ForegroundEpoch == _monitor.ForegroundEpoch;
+
+    private void RevokeExit(bool sendControl = true)
+    {
+        _monitor?.RevokeOwnedExit();
+        if (_latestExit is null && _exitLeases.Count == 0)
+            return;
+        _latestExit = null;
+        _exitLeases.Clear();
+        _exitRetiredThrough = checked(++_exitSequence);
+        if (sendControl && !_disconnecting && _child is not null && _communication is { IsCancellationRequested: false })
+            Enqueue(new("exit-clear", _connection, _runId, _sequence, Exit: new(_exitSequence)));
+    }
+
+    private bool HandleExitMessage(PracticeMessage message)
+    {
+        if (message.Kind == "exit-installed")
+        {
+            long sequence = message.Exit!.Sequence;
+            if (sequence > _exitRetiredThrough)
+            {
+                if (!_exitLeases.TryGetValue(sequence, out var installed))
+                    throw new InvalidDataException("practice-exit-install-identity");
+                if (_latestExit == installed && ExitBasisCurrent(installed))
+                    _monitor!.InstallOwnedExit(installed, _runId, _connection);
+            }
+            return true; // Acknowledgement is not an input result.
+        }
+        if (message.Kind != "exit-completed")
+            return false;
+        var result = message.ExitResult!;
+        if (result.LeaseSequence <= _exitRetiredThrough)
+            return true;
+        if (!_exitLeases.Remove(result.LeaseSequence, out var lease)
+            || result.WitnessSequence <= lease.InstallWitnessSequence
+            || result.WitnessSequence > (_witnessWriter?.Sequence ?? _lastWitnessSequence)
+            || result.AcceptedAtMs < lease.ObservedAtMs || result.AcceptedAtMs > lease.ExpiresAtMs)
+            throw new InvalidDataException("practice-exit-result-identity");
+        // Current identity still matters, but delivery does not change the
+        // original GUI decision's time or substitute a new displayed token.
+        bool current = ExitBasisCurrent(lease);
+        RevokeAcceptance();
+        if (current)
+            _monitor!.CompleteOwnedExit(lease, result);
+        return true;
+    }
+
     private static bool SameAcceptanceOperation(WritePlan original, WritePlan proposed) => original with
     {
         Id = proposed.Id,
@@ -296,6 +394,8 @@ internal sealed partial class PracticeHost
     {
         _dispatcher.VerifyAccess();
         PollOwnedReturn();
+        if (_latestExit is { } exit && !ExitBasisCurrent(exit))
+            RevokeExit();
         if (_acceptance is not { } current)
         {
             if (_nextAcceptance is { ReplacesPlanSequence: > 0 })
@@ -308,7 +408,7 @@ internal sealed partial class PracticeHost
         {
             // A late predecessor attempt forbids this unconsumed successor.
             // Only the current plan's own attempt may await its original receipt.
-            RevokeAcceptance();
+            RevokeAcceptance(revokeExit: false);
             return;
         }
         long now = WindowsInterruptClock.NowMs;
@@ -316,7 +416,7 @@ internal sealed partial class PracticeHost
         {
             _nextAcceptance = null;
             if (now > current.Plan.Permit.ExpiresAtMs)
-                RevokeAcceptance();
+                RevokeAcceptance(revokeExit: false);
             return;
         }
         if (_nextAcceptance is { ReplacesPlanSequence: > 0 } next)
@@ -336,10 +436,13 @@ internal sealed partial class PracticeHost
         // No receipt is guaranteed for every refused edge. With no valid
         // candidate, clean up at the original deadline even after dropping next.
         if (now > current.Plan.Permit.ExpiresAtMs)
-            RevokeAcceptance();
+            RevokeAcceptance(revokeExit: false);
     }
-    internal void RevokeAcceptance()
+    internal void RevokeAcceptance() => RevokeAcceptance(revokeExit: true);
+    private void RevokeAcceptance(bool revokeExit)
     {
+        if (revokeExit)
+            RevokeExit();
         _nextAcceptance = null;
         _monitor?.RevokeOwnedPlan();
         if (_acceptance is { State: "install" or "installed" })
@@ -437,7 +540,7 @@ internal sealed partial class PracticeHost
     }
     private bool HandleAcceptanceMessage(PracticeMessage message)
     {
-        if (HandleReturnMessage(message) || HandleEditingMessage(message))
+        if (HandleExitMessage(message) || HandleReturnMessage(message) || HandleEditingMessage(message))
             return true;
         if (message.Kind == "source-ready")
         {
@@ -557,6 +660,7 @@ internal sealed partial class PracticeHost
     private void AbandonAcceptance()
     {
         _disconnecting = true;
+        RevokeExit(sendControl: false);
         CancelEditorAttempt(sendControl: false);
         ReleaseReturnMapping(confirmed: false);
         _monitor?.ClearOwnedChannel();

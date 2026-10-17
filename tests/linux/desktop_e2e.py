@@ -920,6 +920,178 @@ def run(arguments):
                             "Wayland Chromium editor: real candidate click and manual draft, first Ctrl+Fn returns with zero writes, "
                             "held repeat/release ownership, second complete pair verifies the exact draft and editor exit leaves source unchanged"
                         )
+                        if arguments.editor_bundle:
+                            # Use the existing Tiptap fixture and the same real candidate
+                            # accessibility/click path in this extension/model window.
+                            page.evaluate("""() => {
+                              const mount = document.createElement('div'); mount.id = 'mount';
+                              mount.style.cssText = 'margin:80px;width:500px';
+                              document.body.prepend(mount);
+                              window.richControlKeys = [];
+                              for (const type of ['keydown', 'keyup']) window.addEventListener(type, event => {
+                                if (['F7', 'F8'].includes(event.key)) richControlKeys.push([type, event.key]);
+                              });
+                            }""")
+                            page.add_script_tag(content=arguments.editor_bundle.read_text())
+
+                            def rich_control_state():
+                                return page.evaluate("""() => ({...editorProbeInspect(),
+                                  keys: [...richControlKeys], focus: document.activeElement.id})""")
+
+                            def rich_control_source():
+                                page.evaluate("editorProbeSetup('guarded')")
+                                key("Shift_L")
+                                wait_for(ready_to_accept, "rich Ctrl source did not become ready")
+                                return rich_control_state()
+
+                            before_rich = rich_control_source()
+                            acknowledgement = wait_for(
+                                lambda: status().get("input", {}).get("sessionShortcuts"),
+                                "rich field did not acknowledge source/editor Ctrl bindings",
+                            )
+                            assert acknowledgement == {
+                                "bindings": {"accept": "Ctrl+F7", "exit": "Ctrl+F8"},
+                                "sourceReady": True,
+                                "editorReady": True,
+                            }
+                            checkpoint = trace_checkpoint()
+                            wait_for(ready_to_accept, "rich source Ctrl permit was not current")
+                            send_control_key("F7", repeat=True)
+                            accepted_rich = wait_for(
+                                lambda: current
+                                if translated((current := rich_control_state())["domAfter"])
+                                and verified_write(checkpoint)
+                                else None,
+                                "rich Ctrl+F7 did not accept one actual model transaction",
+                            )
+                            assert accepted_rich["preserved"] and accepted_rich["updateRestored"]
+                            assert accepted_rich["domAfter"].startswith("Before ")
+                            assert accepted_rich["domAfter"].endswith(" world after untouched")
+                            assert "<strong>" in accepted_rich["after"]
+                            assert "<em>untouched</em>" in accepted_rich["after"]
+                            assert accepted_rich["keys"] == before_rich["keys"]
+                            assert accepted_rich["focus"] == "editor-source"
+                            assert len(new_write_outcomes(checkpoint)) == 1
+                            assert (
+                                page.evaluate("editorProbeHistory().undone") == before_rich["after"]
+                            )
+                            before_rich_exit = rich_control_source()
+                            checkpoint = trace_checkpoint()
+                            wait_for(ready_to_accept, "rich Ctrl exit was not current")
+                            send_control_key("F8")
+                            wait_for(
+                                lambda: not status().get("overlayVisible")
+                                and status().get("viewState") is None,
+                                "rich source Ctrl+F8 did not exit",
+                            )
+                            exited_rich = rich_control_state()
+                            assert exited_rich == before_rich_exit
+                            assert not new_write_outcomes(checkpoint)
+
+                            def edit_rich_candidate(*, exit_editor=False):
+                                before = rich_control_source()
+                                candidate = wait_for(
+                                    browser_editor, "rich candidate was not accessible"
+                                )
+                                quad = editor_cdp.send(
+                                    "DOM.getBoxModel",
+                                    {"backendNodeId": candidate["backendDOMNodeId"]},
+                                )["model"]["border"]
+                                page.mouse.click(sum(quad[::2]) / 4, sum(quad[1::2]) / 4)
+                                wait_for(
+                                    lambda: view("EditingTranslation")
+                                    and any(
+                                        item.get("name") == "focused"
+                                        and item.get("value", {}).get("value")
+                                        for item in (browser_editor() or {}).get("properties", [])
+                                    ),
+                                    "rich candidate click did not focus the TypeLay editor",
+                                )
+                                draft = "Manual rich candidate."
+                                key("ctrl+a")
+                                typed(draft)
+                                wait_for(
+                                    lambda: (browser_editor() or {}).get("value", {}).get("value")
+                                    == draft,
+                                    "rich source editor lost its typed draft",
+                                )
+                                checkpoint = trace_checkpoint()
+                                if exit_editor:
+                                    send_control_key("F8", repeat=True)
+                                    wait_for(
+                                        lambda: not status().get("overlayVisible")
+                                        and status().get("viewState") is None
+                                        and rich_control_state()["focus"] == "editor-source",
+                                        "rich translation editor Ctrl+F8 did not return and exit",
+                                    )
+                                    exited = rich_control_state()
+                                    assert exited == before
+                                    assert not new_write_outcomes(checkpoint)
+                                    return exited
+                                try:
+                                    control_keys["Control_L"](True)
+                                    control_keys["F7"](True)
+                                    wait_for(
+                                        lambda: rich_control_state()["focus"] == "editor-source"
+                                        and ready_to_accept("EditedTranslationPending"),
+                                        "first rich editor Ctrl+F7 did not return with a new source permit",
+                                    )
+                                    assert rich_control_state() == before
+                                    assert not new_write_outcomes(checkpoint)
+                                    control_keys["F7"](True)
+                                finally:
+                                    control_keys["Control_L"](False)
+                                    control_keys["F7"](False)
+                                returned = rich_control_state()
+                                assert returned == before
+                                assert not new_write_outcomes(checkpoint)
+                                wait_for(
+                                    lambda: ready_to_accept("EditedTranslationPending"),
+                                    "rich manual draft did not retain a fresh permit after release",
+                                )
+                                checkpoint = trace_checkpoint()
+                                send_control_key("F7")
+                                accepted = wait_for(
+                                    lambda: current
+                                    if (current := rich_control_state())["domAfter"]
+                                    == "Before Manual rich candidate. world after untouched"
+                                    and verified_write(checkpoint)
+                                    else None,
+                                    "second independent rich Ctrl+F7 did not accept the exact selected draft",
+                                )
+                                assert len(new_write_outcomes(checkpoint)) == 1
+                                assert accepted["after"] == (
+                                    "<p>Before <strong>Manual rich candidate. world</strong> after <em>untouched</em></p>"
+                                )
+                                assert accepted["preserved"] and accepted["updateRestored"]
+                                assert (
+                                    accepted["focus"] == "editor-source"
+                                    and accepted["keys"] == before["keys"]
+                                )
+                                assert (
+                                    page.evaluate("editorProbeHistory().undone") == before["after"]
+                                )
+                                return {"returned": returned, "accepted": accepted}
+
+                            rich_edited = edit_rich_candidate()
+                            rich_editor_exit = edit_rich_candidate(exit_editor=True)
+                            (arguments.output / "browser-rich-control.json").write_text(
+                                json.dumps(
+                                    {
+                                        "accepted": accepted_rich,
+                                        "exited": exited_rich,
+                                        "editor": rich_edited,
+                                        "editorExit": rich_editor_exit,
+                                    },
+                                    indent=2,
+                                )
+                                + "\n"
+                            )
+                            evidence.append(
+                                "Wayland Chromium Tiptap: real-model Ctrl acceptance with marks/undo, zero-write exit, "
+                                "actual editor click and draft, first pair returns without writing and second independent pair accepts exact selection"
+                            )
+                            page.evaluate("document.querySelector('#mount').remove()")
                         stop()
                         settings.update(
                             AcceptShortcut=ordinary_pair[0], ExitShortcut=ordinary_pair[1]

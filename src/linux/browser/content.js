@@ -45,7 +45,8 @@
   const controlBinding = action => typeof configuration?.[action] === "string" && configuration[action].startsWith("Ctrl+");
   const controlPair = () => controlBinding("accept") || controlBinding("exit");
   const sourceConfigured = field => sessionConfigured() && (!controlPair()
-    || !!field && !field.richText && allowedElement(field.element) && !field.dead);
+    || !!field && (field.richText ? rich?.orderedClaim === 1 && field.richControlSupported === true
+      && rich.root(field.element) === field.element : allowedElement(field.element)) && !field.dead);
   function sessionBindings(field) {
     const source = sourceConfigured(field);
     return {generation: configuration?.generation ?? null, accept: configuration?.accept ?? null,
@@ -241,9 +242,17 @@
   }
   function metadata(field, domOnly = false) {
     const element = field.element;
-    if (field.dead || !(field.richText ? rich?.root(element) === element
-      && (mutating || domOnly || rich.probe(element)?.supported === true) : allowedElement(element))
+    if (field.dead || !(field.richText ? rich?.root(element) === element : allowedElement(element))
       || element.getRootNode() !== document || !element.isConnected) return null;
+    if (field.richText && !mutating && !domOnly) {
+      // Reuse this metadata probe, never start another bridge request while a
+      // replace is pending. Old bridge/MAIN pairs retain their ordinary keys.
+      const capability = rich.probe(element);
+      const supported = capability?.supported === true && capability.orderedClaim === 1 && rich.orderedClaim === 1;
+      if (field.richControlSupported && !supported) { retireOrdered(); retireEditorControl(); }
+      field.richControlSupported = supported;
+      if (capability?.supported !== true) return null;
+    }
     let ancestors = "";
     let parent = element.parentElement;
     for (let depth = 0; parent && depth < 8; depth++, parent = parent.parentElement) {
@@ -396,7 +405,7 @@
     if (!validText(result) || result !== plan.resultText || plan.caret !== start + replacement.length
       || element.maxLength >= 0 && result.length > element.maxLength) return rejection("BadPlan");
     if (ticket && !orderedCurrent(ticket, true)) return rejection("EpochChanged");
-    if (field.richText) return writeRich(field, request, direct, text, start, end, result, applied);
+    if (field.richText) return writeRich(field, request, direct, text, start, end, result, applied, ticket);
     if (!liveDeadline(request)) return rejection("StaleObservation");
     if (!sessionCurrent(request.generation) || configuration !== applied) return rejection("EpochChanged");
     publication = null;
@@ -431,7 +440,7 @@
       mutating = false; ownInputEvent = null;
     }
   }
-  function writeRich(field, request, direct, text, start, end, result, applied) {
+  function writeRich(field, request, direct, text, start, end, result, applied, ticket) {
     const basis = request.authority, approval = direct ? request.approved : basis;
     const plan = request.plan;
     const guard = () => {
@@ -443,20 +452,24 @@
         && field.content === basis.contentRevision && read(field) === text
         && (direct || focused(field) && field.input === basis.inputRevision && field.focus === basis.focusRevision
           && current?.start === plan.expected.selection?.start && current?.end === plan.expected.selection?.end)
-        && sessionCurrent(request.generation) && configuration === applied;
+        && sessionCurrent(request.generation) && configuration === applied
+        && (!ticket || orderedCurrent(ticket, true));
     };
     if (!guard() || !field.richVersion) return rejection("SourceChanged");
     publication = shortcut = null;
     mutating = true;
     try {
-      const receipt = rich.replace(field.element, {version: field.richVersion, expectedText: text,
+      const receipt = rich.replace(field.element, {version: ticket ? ticket.richVersion : field.richVersion, expectedText: text,
         selection: plan.expected.selection, start, end, replacement: plan.replacement, direct,
         expiresAtPerformanceMs: request.expiresAtPerformanceMs,
-        expiresAtWallMs: request.expiresAtWallMs}, guard);
+        expiresAtWallMs: request.expiresAtWallMs}, guard, ticket ? () => guard() && claimOrdered(ticket) : undefined);
       drainMutations();
-      if (receipt?.status === "RejectedBeforeMutation") return rejection(receipt.reason || "SourceChanged");
+      // Local ownership cannot be downgraded by a page-controlled receipt after
+      // the attempt was claimed, even if the page reports zero mutation.
+      if (receipt?.status === "RejectedBeforeMutation" && !ticket?.claimed) return rejection(receipt.reason || "SourceChanged");
       const current = selection(field);
-      if (receipt?.status !== "Applied" || field.dead || field.ime !== "Clear" || !approved(field, approval)
+      if (receipt?.status !== "Applied" || ticket && (!ticket.claimed || !orderedCurrent(ticket, false) || !liveDeadline(ticket.accept))
+        || field.dead || field.ime !== "Clear" || !approved(field, approval)
         || read(field) !== result || field.content !== basis.contentRevision || (!direct && !focused(field))
         || current?.start !== plan.caret || current?.end !== plan.caret) {
         field.quarantined = true;
@@ -1040,8 +1053,11 @@
     const current = ticket.overlay, field = ticket.field;
     if (fields.get(field.element) !== field || field.dead || field.quarantined
       || field.ime !== "Clear" || !approved(field, ticket.authority)) return false;
-    const selected = selection(field);
-    return current.viewIdentity === ticket.viewIdentity && current.editing && current.editable
+    const model = field.richText ? rich.capture(field.element) : null;
+    const selected = model?.selection || selection(field);
+    return (!field.richText || model?.version === ticket.richVersion && model.text === ticket.source
+        && field.richVersion === ticket.richVersion)
+      && current.viewIdentity === ticket.viewIdentity && current.editing && current.editable
       && !current.paused && !current.composing && !current.editor.readOnly
       && current.editor === ticket.editor && current.editor.value === ticket.draft
       && document.visibilityState === "visible" && document.hasFocus()
@@ -1049,7 +1065,9 @@
       && current.shadow.activeElement === ticket.editor
       && field.content === ticket.content && field.input === ticket.input && field.focus === ticket.focus
       && read(field) === ticket.source && selected?.start === ticket.selection.start
-      && selected?.end === ticket.selection.end && editorControl === ticket;
+      && selected?.end === ticket.selection.end && editorControl === ticket
+      && configuration === ticket.configuration && liveDeadline(ticket)
+      && field.ime === "Clear" && approved(field, ticket.authority, true) && sourceConfigured(field);
   }
   function beginEditorControl(event, press) {
     if (!controlPair() || !overlay || !["ControlLeft", "ControlRight"].includes(event.code)
@@ -1059,15 +1077,18 @@
     drainMutations();
     const current = overlay, field = current?.field;
     if (!current || !field || field.dead || field.quarantined || field.ime !== "Clear"
-      || !approved(field, current.authority) || !liveDeadline(current)) return;
+      || !liveDeadline(current)) return;
     const ticket = {overlay: current, field, editor: current.editor, configuration,
       viewIdentity: current.viewIdentity, revision: current.revision, generation: current.generation,
       authority: current.authority, content: field.content, input: field.input, focus: field.focus,
-      source: read(field), selection: selection(field), draft: current.editor.value,
+      source: read(field), selection: null, richVersion: field.richVersion, draft: current.editor.value,
       controlCode: event.code, controlPress: press,
       expiresAtPerformanceMs: current.expiresAtPerformanceMs, expiresAtWallMs: current.expiresAtWallMs};
     editorControl = ticket;
-    if (!editorControlCurrent(ticket)) retireEditorControl();
+    const selected = selection(field);
+    if (editorControl !== ticket) return;
+    ticket.selection = selected;
+    if (!selected || !editorControlCurrent(ticket)) retireEditorControl();
   }
   function editorControlKey(event, press) {
     const ticket = editorControl;
@@ -1097,19 +1118,20 @@
     };
     return normalize(ordered.publication) === normalize(next);
   }
-  function orderedCurrent(ticket, source) {
+  function orderedCurrent(ticket, source, domOnly = false) {
     if (!ticket || ordered !== ticket || ticket.revoked || !alive || configuration !== ticket.configuration
       || !sessionCurrent(ticket.publication.generation) || !sourceConfigured(ticket.field) || !clockValid()) return false;
     const field = ticket.field, basis = ticket.publication.authority;
     if (fields.get(field.element) !== field || field.dead || field.quarantined || field.ime !== "Clear"
-      || !focused(field) || !approved(field, basis) || field.input !== basis.inputRevision
+      || field.richText && field.richVersion !== ticket.richVersion
+      || !focused(field) || !approved(field, basis, domOnly) || field.input !== basis.inputRevision
       || field.focus !== basis.focusRevision) return false;
     if (source) {
       const selected = selection(field);
       if (field.content !== basis.contentRevision || read(field) !== ticket.source.text
         || selected?.start !== ticket.source.selection.start || selected?.end !== ticket.source.selection.end) return false;
     }
-    return ordered === ticket && !ticket.revoked && configuration === ticket.configuration;
+    return ordered === ticket && !ticket.revoked && configuration === ticket.configuration && sourceConfigured(field);
   }
   function beginOrdered(event, field, press) {
     if (!controlPair() || !sourceConfigured(field) || !["ControlLeft", "ControlRight"].includes(event.code)
@@ -1127,7 +1149,7 @@
       && lease.source.target?.value === field.id && lease.source.text === source.text
       && lease.source.selection?.start === source.selection.start && lease.source.selection?.end === source.selection.end
       ? lease.source.observedAtMs + 150 : NaN;
-    const ticket = {publication: current, configuration, field, source,
+    const ticket = {publication: current, configuration, field, source, richVersion: field.richVersion,
       controlCode: event.code, controlPress: press, revoked: false, claimed: false,
       accept: {expiresAtPerformanceMs: current.expiresAtPerformanceMs, expiresAtWallMs: current.expiresAtWallMs},
       exit: {expiresAtPerformanceMs: exitAt - clock.upper, expiresAtWallMs: exitAt - clock.upperWall}};
@@ -1150,6 +1172,17 @@
     if ((!accept && !exit) || !ticket || ticket.claimed || field !== ticket.field
       || held.get(ticket.controlCode) !== ticket.controlPress || !orderedCurrent(ticket, true)
       || !liveDeadline(accept ? ticket.accept : ticket.exit)) return false;
+    // Compare with the original Ctrl model version. A fresh query is evidence,
+    // never a replacement authority or a new ticket after page callbacks.
+    if (field.richText) {
+      const model = rich.capture(field.element);
+      if (!model || model.version !== ticket.richVersion || model.text !== ticket.source.text
+        || model.selection.start !== ticket.source.selection.start || model.selection.end !== ticket.source.selection.end
+        || !orderedCurrent(ticket, true, true) || !liveDeadline(accept ? ticket.accept : ticket.exit)) {
+        if (ordered === ticket) retireOrdered();
+        return false;
+      }
+    }
     ticket.event = event; ticket.press = press;
     const current = ticket.publication;
     if (exit) {

@@ -819,7 +819,7 @@ public sealed partial class SessionController : IDisposable
                 && _session.State is not (SessionState.NoSession or SessionState.Paused or SessionState.OutcomeUnknown);
             RememberAutomaticPermit(practiceBinding, permit);
             _hook.Publish(new(snapshot, request.UserEpoch, request.ForegroundEpoch, escape, _hook.CommandGeneration, _generation,
-                permit is null ? null : practiceBinding?.RunId, permit is null ? null : practiceBinding?.ConnectionId), permit);
+                practiceBinding?.RunId, practiceBinding?.ConnectionId), permit);
             if (result.Focus == FocusMember.Source)
             {
                 _hook.PublishShortcut(new(snapshot, contentEpoch, request.ForegroundEpoch));

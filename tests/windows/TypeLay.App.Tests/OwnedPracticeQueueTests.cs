@@ -22,6 +22,216 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
 {
+    [Fact]
+    public Task DefaultEscWithoutAWritePlanPreservesSourceAndPairsItsPressAcrossRetirement() => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(true);
+        await scene.Start(true);
+        await scene.InstallExit();
+        var selection = N.ReadSelection(scene.Field);
+        scene.Key(27, true);
+        await scene.Wait(() => scene.Messages.Any(message => message.Kind == "exit-completed"));
+        var result = Assert.Single(scene.Messages, message => message.Kind == "exit-completed").ExitResult!;
+        Assert.Equal(scene.ExitLease!.Sequence, result.LeaseSequence);
+        Assert.InRange(result.AcceptedAtMs, scene.ExitLease.ObservedAtMs, scene.ExitLease.ExpiresAtMs);
+        Assert.True(result.WitnessSequence > scene.ExitLease.InstallWitnessSequence);
+        var edge = Assert.Single(scene.Audit(), witness => witness.VirtualKey == 27 && witness.Down);
+        Assert.Equal(scene.ExitLease.Sequence, edge.ExitLeaseSequence);
+        Assert.False(edge.Eligible); // Exit never overwrites the native write witness.
+        await scene.Retire(release: false);
+        scene.Key(27, true);
+        scene.Key(27, false);
+        await scene.WaitExitInput(3);
+        Assert.All(scene.ExitInputs, completion => Assert.True(completion.Consumed));
+        Assert.Single(scene.Messages, message => message.Kind == "exit-completed");
+        Assert.Equal(0, scene.Receipts);
+        Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+        Assert.Equal(selection, N.ReadSelection(scene.Field));
+        Assert.Equal((scene.Root, scene.Field), N.Focused());
+    });
+
+    [Theory]
+    [InlineData("production-injection")]
+    [InlineData("expired")]
+    [InlineData("old-binding")]
+    [InlineData("configuration")]
+    public Task DefaultEscRefusesInjectedProductionInputAndOldTickets(string refusal) => desktop.RunAsync(async () =>
+    {
+        bool automation = refusal != "production-injection";
+        await using var scene = new QueueScene(automation);
+        await scene.Start(automation);
+        await scene.InstallExit(oldBinding: refusal == "old-binding");
+        if (refusal == "configuration")
+            scene.ChangeConfiguration();
+        if (refusal == "expired")
+            await scene.Wait(() => WindowsInterruptClock.NowMs > scene.ExitLease!.ExpiresAtMs);
+        scene.Key(27, true);
+        scene.Key(27, false);
+        // Refusal preserves the real dialog's ordinary Cancel behavior rather
+        // than manufacturing a positive exit or swallowing the original Esc.
+        await scene.WaitClosed();
+        Assert.DoesNotContain(scene.Messages, message => message.Kind is "exit-completed" or "receipt");
+    });
+
+    [Fact]
+    public Task RealDefaultEscEndsTheRuntimeSessionWithoutClosingOrWritingThePractice() => desktop.RunAsync(async () =>
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(25));
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-owned-exit-" + Guid.NewGuid().ToString("N"));
+        string path = Path.Combine(directory, "settings.json");
+        ChildProcess? child = null;
+        var overlay = new OverlayWindow();
+        bool down = false;
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(path);
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.Automatic,
+                ExperimentalWriteback = false
+            });
+            using var host = new PracticeHost(info => child = new ChildProcess(info));
+            using var hook = new KeyboardHook(allowInjectedInput: true);
+            host.Initialize(settings, hook, allowInjectedInput: true);
+            host.InitializeEditing(overlay);
+            using var input = new WindowsInputService(new BrokerClient(), overlay.Handle, monitor: hook, practice: host);
+            var loop = new ManualPracticeLoop();
+            var view = new ExitSessionView();
+            using var model = WindowsRuntime.CreateModel(); // No inference or write permit is needed for Esc.
+            using var controller = new SessionController(settings, model, view, hook, input, loop,
+                host.RetireAutomaticAsync, host.ConfirmRetiredAutomaticAsync);
+            host.Bind(controller);
+            await controller.StartAsync().WaitAsync(deadline.Token);
+            host.Open(path);
+            // Observe the same original installed lease that the production LL
+            // callback will witness. The model stays unstarted and permit null.
+            await Until(() => view.Token is { } token && hook.CurrentOwnedExit(WindowsInterruptClock.NowMs)?.Token == token);
+            Assert.False(model.Ready);
+            Assert.False(view.CanAccept);
+            var descriptor = host.CaptureDescriptor!;
+            nint root = (nint)descriptor.RootHwnd, field = (nint)descriptor.ControlHwnd;
+            string original = N.ReadText(field, Limits.MaxTextUnits);
+            var selection = N.ReadSelection(field);
+            var exit = hook.CurrentOwnedExit(WindowsInterruptClock.NowMs)!;
+            var source = new InputSnapshot(exit.Token.Target, original, selection, new(10, 20, 300, 40), false,
+                FieldAccess.Supported, ImeState.Clear, WindowsInterruptClock.NowMs, hook.UserEpoch, descriptor.NativeFocusRevision);
+            host.PublishAcceptance(new(source, hook.UserEpoch, hook.ForegroundEpoch, true,
+                hook.CommandGeneration, exit.Token.Revision, Guid.NewGuid(), Guid.NewGuid()), null);
+            Assert.Null(hook.CurrentOwnedExit(WindowsInterruptClock.NowMs));
+            await Until(() => view.Token is { } currentToken && hook.CurrentOwnedExit(WindowsInterruptClock.NowMs)?.Token == currentToken);
+            Assert.False(view.CanAccept);
+            long userEpoch = hook.UserEpoch;
+            Assert.Equal((root, field), N.Focused());
+            Key(true);
+            await Until(() => view.Hidden);
+            Key(true); // A held repeat cannot restart or close the lesson.
+            Key(false);
+            await Until(() => view.State == SessionState.NoSession);
+            Assert.Equal(userEpoch, hook.UserEpoch);
+            Assert.False(child!.Process.HasExited);
+            Assert.True(host.IsAutomatic);
+            Assert.Equal(original, N.ReadText(field, Limits.MaxTextUnits));
+            Assert.Equal(selection, N.ReadSelection(field));
+            Assert.Equal((root, field), N.Focused());
+            Assert.False(settings.Value.ExperimentalWriteback);
+
+            void Key(bool pressed)
+            {
+                Assert.Equal(1u, SendInput(1, [new KeyInput { Type = 1, Key = 27, Flags = pressed ? 0u : 2u }], Marshal.SizeOf<KeyInput>()));
+                down = pressed;
+            }
+            async Task Until(Func<bool> condition)
+            {
+                while (!condition())
+                {
+                    if (child is not null)
+                        Assert.False(child.Process.HasExited);
+                    loop.Advance();
+                    host.PollAcceptance();
+                    await Task.Delay(1, deadline.Token);
+                }
+            }
+        }
+        finally
+        {
+            if (down)
+                Assert.Equal(1u, SendInput(1, [new KeyInput { Type = 1, Key = 27, Flags = 2 }], Marshal.SizeOf<KeyInput>()));
+            overlay.Close();
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    });
+
+    // Observe the controller's real public presentation contract. Source HWND,
+    // LL input, broker capture, native IME gate and host pipe stay production.
+    private sealed class ExitSessionView : ISessionView
+    {
+        public Func<SessionViewToken, bool>? BeginEditing
+        {
+            get; set;
+        }
+        public Action<string>? DraftChanged
+        {
+            get; set;
+        }
+        public Action<SessionViewToken>? ReturnRequested
+        {
+            get; set;
+        }
+        public Action<SessionViewToken>? EscapeRequested
+        {
+            get; set;
+        }
+        public Action? RegenerateRequested
+        {
+            get; set;
+        }
+        public Action? ExcludeRequested
+        {
+            get; set;
+        }
+        public Action<long>? ResumeRequested
+        {
+            get; set;
+        }
+        public bool EditingComposition => false;
+        public SessionViewToken? Token
+        {
+            get; private set;
+        }
+        public bool CanAccept
+        {
+            get; private set;
+        }
+        public bool Hidden
+        {
+            get; private set;
+        }
+        public SessionState State
+        {
+            get; private set;
+        }
+        public void Configure(UserSettings settings)
+        {
+        }
+        public void Render(Session session, UserSettings settings, bool canAccept, string? statusOverride = null, SessionViewContext? context = null)
+        {
+            State = session.State;
+            Token = context?.Token;
+            CanAccept = canAccept;
+            if (session.State != SessionState.NoSession)
+                Hidden = false;
+        }
+        public void RenderPaused(PauseAnchor anchor, long revision)
+        {
+        }
+        public void HideQuietly() => Hidden = true;
+        public void ResumeEditor()
+        {
+        }
+    }
+
     [Theory]
     [InlineData("process")]
     [InlineData("start")]
@@ -508,7 +718,8 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
     private sealed class ManualPracticeLoop : ISessionLoop
     {
         public long NowMs => WindowsInterruptClock.NowMs;
-        public event Action? Tick { add { } remove { } }
+        public event Action? Tick;
+        public void Advance() => Tick?.Invoke();
         public void Start()
         {
         }
@@ -637,7 +848,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         private readonly KeyboardHook _hook;
         private readonly Guid _connection = Guid.NewGuid();
         private Guid _run;
-        private long _sequence, _planSequence, _consumed;
+        private long _sequence, _planSequence, _consumed, _exitSequence;
         private ChildProcess? _child;
         private OwnedMapping? _witness, _planMapping, _result;
         private OwnedWitnessWriter? _writer;
@@ -662,6 +873,37 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             get; private set;
         }
         public List<PracticeMessage> Messages { get; } = [];
+        public OwnedExitLease? ExitLease
+        {
+            get; private set;
+        }
+        public PracticeInputCompletion[] ExitInputs => Messages.Where(message => message.Kind == "test-exit-dispatched")
+            .Select(message => message.InputCompletion!).ToArray();
+        public Task WaitExitInput(int count) => Wait(() => ExitInputs.Length >= count);
+        public async Task WaitClosed()
+        {
+            await _child!.Process.WaitForExitAsync(_deadline.Token);
+            await _pump!.WaitAsync(_deadline.Token);
+        }
+        public void ChangeConfiguration() => _hook.SetShortcuts([]);
+        public async Task InstallExit(bool oldBinding = false)
+        {
+            long now = WindowsInterruptClock.NowMs;
+            var target = new WindowsTarget(Descriptor.ProcessId, Descriptor.ProcessStartUtcTicks, Descriptor.RootHwnd,
+                Descriptor.ControlHwnd, "win32-edit-transaction-v2", "controlled-owned-exit", Guid.NewGuid());
+            ExitLease = new(++_exitSequence, Descriptor, new(target, _hook.CommandGeneration, 1),
+                _hook.UserEpoch, _hook.ForegroundEpoch, now, now + Limits.ObservationMaxAgeMs, _writer!.Sequence);
+            await PracticeProgressPipe.WriteAsync(_child!.Process.StandardInput.BaseStream,
+                new("exit-install", _connection, _run, _sequence, Exit: new(ExitLease.Sequence, ExitLease)), _deadline.Token);
+            await Wait(() => Messages.Any(message => message.Kind == "exit-installed" && message.Exit?.Sequence == ExitLease.Sequence));
+            var snapshot = new InputSnapshot(target, N.ReadText(Field, Limits.MaxTextUnits), N.ReadSelection(Field),
+                new(10, 20, 300, 40), false, FieldAccess.Supported, ImeState.Clear, now,
+                _hook.UserEpoch, Descriptor.NativeFocusRevision);
+            _hook.Publish(new(snapshot, _hook.UserEpoch, _hook.ForegroundEpoch, true, _hook.CommandGeneration,
+                1, oldBinding ? Guid.NewGuid() : _run, _connection), null);
+            _hook.InstallOwnedExit(ExitLease, _run, _connection);
+            Assert.True(WindowsInterruptClock.NowMs <= ExitLease.ExpiresAtMs, "Installation exceeded the original 150 ms observation window.");
+        }
         public int Receipts => Messages.Count(message => message.Kind == "receipt");
         private InputLease? _planLease;
         public long ContentEpoch => _hook.ContentEpoch;

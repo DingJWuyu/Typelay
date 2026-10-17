@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using TypeLay.Core;
 using TypeLay.Runtime;
 using TypeLay.Windows.Contracts;
 
@@ -12,7 +13,15 @@ internal sealed record PracticeMessage(string Kind, Guid Connection, Guid Run, l
     OnDemandPracticeProgress? Progress = null, OwnedAcceptanceControl? Acceptance = null,
     AutomaticPracticeProgress? AutomaticProgress = null, PracticeInputCompletion? InputCompletion = null,
     OwnedEditorControl? Editing = null, OwnedReturnControl? Returning = null,
-    OwnedReturnMouse? MouseReturn = null, OwnedPracticeCompletion? Completion = null);
+    OwnedReturnMouse? MouseReturn = null, OwnedPracticeCompletion? Completion = null,
+    OwnedExitControl? Exit = null, OwnedExitResult? ExitResult = null);
+
+// Body-free authority for one default source Esc. The original observation
+// bounds its lifetime; neither installation nor a result can renew it.
+internal sealed record OwnedExitLease(long Sequence, OwnedCaptureDescriptor Descriptor, SessionViewToken Token,
+    long UserEpoch, long ForegroundEpoch, long ObservedAtMs, long ExpiresAtMs, long InstallWitnessSequence);
+internal sealed record OwnedExitControl(long Sequence, OwnedExitLease? Lease = null);
+internal sealed record OwnedExitResult(long LeaseSequence, long WitnessSequence, long AcceptedAtMs);
 
 // Fixed metadata for one source-to-editor attempt. No draft/source body or write
 // permit crosses this pipe. Only the source GUI advances SourceEventSequence.
@@ -82,16 +91,42 @@ internal static class PracticeProgressPipe
                 or "return-fence" or "return-fenced" or "return-resume" or "source-returned"
                 or "return-invalid" or "return-cancel" or "mouse-intent"
                 or "finish" or "finish-saved" or "finish-retry" or "finish-denied" or "completion-clear"
-                or "test-tab-dispatched" or "edit-fence" or "edit-fenced" or "edit-left" or "edit-invalid" or "edit-cancel")
+                or "exit-install" or "exit-installed" or "exit-clear" or "exit-completed"
+                or "test-tab-dispatched" or "test-exit-dispatched" or "edit-fence" or "edit-fenced" or "edit-left" or "edit-invalid" or "edit-cancel")
             || (message.Kind == "progress" ? message.Progress?.RunId != message.Run : message.Progress is not null))
             throw new InvalidDataException("practice-progress-message");
         if (message.Acceptance is { Version: not OwnedPracticeAcceptanceProtocol.Version }
             || (message.Kind == "auto-progress" ? message.AutomaticProgress?.RunId != message.Run : message.AutomaticProgress is not null))
             throw new InvalidDataException("practice-progress-acceptance");
-        if (message.Kind == "test-tab-dispatched"
+        if (message.Kind is "test-tab-dispatched" or "test-exit-dispatched"
             ? message.InputCompletion is not { Sequence: > 0 } || message.Acceptance is not null
             : message.InputCompletion is not null)
             throw new InvalidDataException("practice-input-completion");
+        bool exiting = message.Kind is "exit-install" or "exit-installed" or "exit-clear" or "exit-completed";
+        if (exiting)
+        {
+            if (message.Acceptance is not null || message.Progress is not null || message.AutomaticProgress is not null
+                || message.InputCompletion is not null || message.Editing is not null || message.Returning is not null
+                || message.MouseReturn is not null || message.Completion is not null
+                || (message.Kind == "exit-completed"
+                    ? message.Exit is not null || message.ExitResult is not { LeaseSequence: > 0, WitnessSequence: > 0, AcceptedAtMs: > 0 }
+                    : message.Exit is not { Sequence: > 0 } || message.ExitResult is not null)
+                || (message.Kind == "exit-install" ? message.Exit?.Lease is null : message.Exit?.Lease is not null))
+                throw new InvalidDataException("practice-exit-control");
+            if (message.Exit?.Lease is { } exit
+                && (exit.Sequence != message.Exit.Sequence || exit.Descriptor is not { IsValid: true }
+                    || exit.Token is not { } token || token.CommandGeneration == Guid.Empty || token.Revision < 0
+                    || exit.UserEpoch < 0 || exit.ForegroundEpoch < 0 || exit.InstallWitnessSequence < 0
+                    || exit.ObservedAtMs <= 0 || exit.ExpiresAtMs < exit.ObservedAtMs
+                    || exit.ExpiresAtMs - exit.ObservedAtMs > Limits.ObservationMaxAgeMs
+                    || !WindowsTarget.TryDecode(token.Target, out var target) || target.Lifetime == Guid.Empty
+                    || target.ProcessId != exit.Descriptor.ProcessId || target.ProcessStartUtcTicks != exit.Descriptor.ProcessStartUtcTicks
+                    || target.RootHwnd != exit.Descriptor.RootHwnd || target.ControlHwnd != exit.Descriptor.ControlHwnd
+                    || target.Provider != "win32-edit-transaction-v2"))
+                throw new InvalidDataException("practice-exit-identity");
+        }
+        else if (message.Exit is not null || message.ExitResult is not null)
+            throw new InvalidDataException("practice-exit-control");
         bool editing = message.Kind is "edit-fence" or "edit-fenced" or "edit-left" or "edit-invalid" or "edit-cancel";
         if (editing)
         {

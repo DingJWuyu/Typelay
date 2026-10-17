@@ -12,7 +12,7 @@ namespace TypeLay.Windows;
 internal sealed record OwnedAcceptanceControl(Guid PlanId = default, long PlanSequence = 0,
     long PlanHandle = 0, int PlanBytes = 0, long ResultHandle = 0, int ResultBytes = 0,
     long WitnessHandle = 0, int WitnessBytes = 0, OwnedCaptureDescriptor? Descriptor = null,
-    long WitnessSequence = 0, bool AllowInjectedInput = false, int Version = 1,
+    long WitnessSequence = 0, bool AllowInjectedInput = false, int Version = OwnedPracticeAcceptanceProtocol.Version,
     bool ObserveInputCompletion = false);
 
 internal sealed record OwnedAcceptancePlan(Guid Connection, Guid Run, long PlanSequence,
@@ -23,15 +23,16 @@ internal sealed record OwnedAcceptanceResult(Guid Connection, Guid Run, long Pla
 
 // All input, including rejected, injected and repeated edges, occupies one FIFO
 // position. Eligible means the original already-installed plan passed the LL
-// checks, never that a posted window message may execute it.
+// checks, never that a posted window message may execute it. ExitLeaseSequence
+// independently names a current no-write lease; it never sets Eligible.
 internal readonly record struct OwnedKeyWitness(long Sequence, long PlanSequence, uint MessageTime,
     uint VirtualKey, uint ScanCode, uint NativeFlags, bool Down, bool Repeated, bool Modified,
     bool Injected, bool Eligible, long ObservedAtMs, long UserEpoch, long ForegroundEpoch,
-    long WindowEpoch, long NativeFocusRevision);
+    long WindowEpoch, long NativeFocusRevision, long ExitLeaseSequence = 0);
 
 internal static class OwnedPracticeAcceptanceProtocol
 {
-    public const int Version = 1;
+    public const int Version = 2;
     // Three bounded UTF-16 strings, each escaped to at most six JSON bytes/unit;
     // target metadata is bounded to 4096 units, plus 8192 bytes for fixed fields.
     public const int BodyBytes = 8 + (3 * Limits.MaxTextUnits + 4096) * 6 + 8192;
@@ -293,6 +294,7 @@ internal sealed class OwnedWitnessWriter(OwnedMapping mapping)
         mapping.WriteInt64(offset + 56, witness.ForegroundEpoch);
         mapping.WriteInt64(offset + 64, witness.WindowEpoch);
         mapping.WriteInt64(offset + 72, witness.NativeFocusRevision);
+        mapping.WriteInt64(offset + 80, witness.ExitLeaseSequence);
         Thread.MemoryBarrier();
         mapping.WriteInt64(offset, sequence);
         Thread.MemoryBarrier();
@@ -334,7 +336,7 @@ internal sealed class OwnedWitnessReader(OwnedMapping mapping)
             (uint)mapping.ReadInt32(offset + 20), (uint)mapping.ReadInt32(offset + 24), (uint)mapping.ReadInt32(offset + 28),
             (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, (flags & 8) != 0, (flags & 16) != 0,
             mapping.ReadInt64(offset + 40), mapping.ReadInt64(offset + 48), mapping.ReadInt64(offset + 56),
-            mapping.ReadInt64(offset + 64), mapping.ReadInt64(offset + 72));
+            mapping.ReadInt64(offset + 64), mapping.ReadInt64(offset + 72), mapping.ReadInt64(offset + 80));
         Thread.MemoryBarrier();
         if (mapping.ReadInt64(offset) != sequence || Poisoned)
             throw new InvalidDataException("practice-witness-order");

@@ -6,6 +6,7 @@
   "use strict";
   const REQUEST = "typelay-editor-request", RESPONSE = "typelay-editor-response";
   const CHECK = "typelay-editor-check", CHECK_RESULT = "typelay-editor-check-result";
+  const CLAIM = "typelay-editor-claim", CLAIM_RESULT = "typelay-editor-claim-result";
   const snapshots = new WeakMap();
   const busy = new WeakSet();
   let serial = 0;
@@ -68,7 +69,7 @@
     if (!valid(text) || !range || text !== root.textContent) return null;
     return {text, selection: range, version: version(root, current)};
   }
-  function check(root, id) {
+  function check(root, id, type = CHECK, response = CHECK_RESULT) {
     let count = 0, allowed = false;
     const receive = event => {
       if (event.target !== root || typeof event.detail !== "string" || event.detail.length > 256) return;
@@ -78,12 +79,12 @@
         count++; allowed = result.allowed === true;
       } catch (_) { /* An invalid page message does not authorize a write. */ }
     };
-    window.addEventListener(CHECK_RESULT, receive, true);
+    window.addEventListener(response, receive, true);
     try {
-      const event = new CustomEvent(CHECK, {bubbles: true, cancelable: true, detail: JSON.stringify({id})});
+      const event = new CustomEvent(type, {bubbles: true, cancelable: true, detail: JSON.stringify({id})});
       root.dispatchEvent(event);
       return count === 1 && allowed && !event.defaultPrevented;
-    } finally { window.removeEventListener(CHECK_RESULT, receive, true); }
+    } finally { window.removeEventListener(response, receive, true); }
   }
   function replace(root, current, data, id) {
     const remaining = data.expiresAtPerformanceMs - monotonic();
@@ -103,7 +104,7 @@
     const {editor, view, state} = current;
     const selected = document.getSelection(), active = document.activeElement;
     const anchor = selected && [selected.anchorNode, selected.anchorOffset, selected.focusNode, selected.focusOffset];
-    const transaction = state.tr.insertText(replacement, start + 1, end + 1);
+    let transaction = null, registrationStarted = false;
     const originalUpdate = view.updateState;
     const originalDescriptor = Object.getOwnPropertyDescriptor(view, "updateState");
     const mutations = new MutationObserver(() => {});
@@ -159,7 +160,14 @@
       checked = true;
     };
     try {
+      // The page-visible claim exchange precedes any transaction construction or
+      // listener registration. Recheck the frozen source without another event.
+      if (data.requiresClaim && (!unchanged() || !check(root, id, CLAIM, CLAIM_RESULT) || !unchanged())) {
+        return rejected("SourceChanged");
+      }
+      transaction = state.tr.insertText(replacement, start + 1, end + 1);
       view.updateState = wrappedUpdate;
+      registrationStarted = true;
       editor.on("beforeTransaction", guard);
       view.dispatch(transaction);
       const after = target(root);
@@ -179,7 +187,7 @@
     } finally {
       wrapperActive = false;
       mutations.disconnect();
-      try { editor.off("beforeTransaction", guard); }
+      try { if (registrationStarted) editor.off("beforeTransaction", guard); }
       finally {
         // Do not overwrite a method the application deliberately replaced.
         // Even if the page freezes the view, any remaining wrapper is inert.
@@ -210,7 +218,7 @@
     try {
       const current = target(root);
       if (current) {
-        if (request.op === "probe") result = {kind: "tiptap", supported: true};
+        if (request.op === "probe") result = {kind: "tiptap", supported: true, orderedClaim: 1};
         else if (request.op === "selection") result = selection(current);
         else if (request.op === "capture") result = capture(root, current);
         else result = replace(root, current, request.data || {}, request.id);
