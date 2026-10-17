@@ -31,11 +31,14 @@ internal static class Program
         Forms.NotifyIcon? tray = null;
         Drawing.Icon? icon = null;
         bool disposed = false;
+        using var startup = new CancellationTokenSource();
         void Dispose()
         {
             if (disposed)
                 return;
             disposed = true;
+            startup.Cancel();
+            settingsWindow?.CancelPreparation();
             session?.Dispose();
             model?.Dispose();
             practiceHost?.Dispose();
@@ -149,7 +152,16 @@ internal static class Program
             if (!model.Installed)
                 window.ShowStartupPage();
             await session.StartAsync();
-            await model.StartAsync();
+            if (disposed)
+                return;
+            try
+            {
+                await WindowsRuntime.StartModelAsync(model, startup.Token);
+            }
+            catch (OperationCanceledException) when (startup.IsCancellationRequested) { return; }
+            catch (ModelSetupException failure) { window.ReportSetupFailure(failure); }
+            if (disposed)
+                return;
             TrayStatus();
             if (!model.Ready || !settings.Value.OnboardingComplete)
                 window.ShowStartupPage();

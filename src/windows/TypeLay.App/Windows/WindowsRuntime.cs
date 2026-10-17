@@ -12,8 +12,11 @@ internal static class WindowsRuntime
         path ?? Path.Combine(AppPaths.Data, "settings.json"), SetStartup,
         app => Path.GetFileNameWithoutExtension(app).Trim().ToLowerInvariant());
 
-    public static ModelClient CreateModel() => new(new(AppPaths.Python, AppPaths.Worker, AppPaths.Models),
+    public static ModelClient CreateModel() => new(AppPaths.ModelPaths,
         info => new ChildProcess(info));
+
+    public static Task StartModelAsync(ModelClient model, CancellationToken ct) =>
+        new ModelInstallationStore(AppPaths.Data, AppPaths.Worker).StartModelAsync(model, ct);
 
     public static SessionController CreateSession(SettingsStore settings, ModelClient model, OverlayWindow overlay,
         bool automationTest = false, IInputBroker? broker = null, WindowsApplicationSupport? support = null,

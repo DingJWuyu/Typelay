@@ -40,6 +40,7 @@
 #include <cstdio>
 #include <limits>
 #include <optional>
+#include <memory>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -145,9 +146,24 @@ struct ShortcutRequest {
     qint64 until = 0;
 };
 
-class Native final : public QObject, public TypeLayFcitxQtControlV1 {
+struct OrderedTicket {
+    quint64 id = 0, authorization = 0, connection = 0, selection = 0;
+    Target *target = nullptr;
+    QPointer<QObject> provider;
+    QJsonObject publication;
+    TypeLayFcitxQtStateV1 before;
+    quint32 ctrlScan = 0;
+    ulong ctrlTimestamp = 0;
+    bool revoked = false;
+};
+struct OrderedWriteContext {
+    std::shared_ptr<OrderedTicket> ticket;
+    bool mutationStarted = false;
+};
+
+class Native final : public QObject, public TypeLayFcitxQtControlV1, public TypeLayFcitxQtOrderedControlV1 {
     Q_OBJECT
-    Q_INTERFACES(TypeLayFcitxQtControlV1)
+    Q_INTERFACES(TypeLayFcitxQtControlV1 TypeLayFcitxQtOrderedControlV1)
 public:
     explicit Native(QObject *parent) : QObject(parent) {
         qApp->installEventFilter(this);
@@ -172,6 +188,7 @@ public:
         connectPeer();
     }
     ~Native() override {
+        revokeOrdered();
         if (fd_ >= 0) ::close(fd_);
         qDeleteAll(targets_);
         qDeleteAll(retired_);
@@ -179,13 +196,21 @@ public:
 
     static int sessionKey(const QJsonValue &value, bool accept) {
         if (!value.isString()) return 0;
-        const auto name = value.toString();
-        if (name == (accept ? QStringLiteral("Tab") : QStringLiteral("Esc")))
+        auto name = value.toString();
+        const bool ordered = name.startsWith(QStringLiteral("Ctrl+"));
+        if (ordered) name.remove(0, 5);
+        if (!ordered && name == (accept ? QStringLiteral("Tab") : QStringLiteral("Esc")))
             return accept ? Qt::Key_Tab : Qt::Key_Escape;
         bool number = false;
         const int index = name.mid(1).toInt(&number);
         return name.startsWith('F') && number && index >= 1 && index <= 24
             && name == QStringLiteral("F") + QString::number(index) ? Qt::Key_F1 + index - 1 : 0;
+    }
+    static bool orderedBinding(const QJsonValue &value) {
+        return value.isString() && value.toString().startsWith(QStringLiteral("Ctrl+"));
+    }
+    bool orderedConfigured() const {
+        return orderedBinding(shortcutConfiguration_.value("accept")) || orderedBinding(shortcutConfiguration_.value("exit"));
     }
     static quint32 sessionSymbol(int key) {
         return key == Qt::Key_Tab ? 0xff09u : key == Qt::Key_Escape ? 0xff1bu
@@ -208,9 +233,13 @@ public:
             return false;
         const QPointer<QObject> owner = field->property(ProviderProperty).value<QObject *>();
         auto *keys = owner ? qobject_cast<TypeLayFcitxQtControlKeysV1 *>(owner.data()) : nullptr;
-        return keys && owner->thread() == thread() && keys->supportsControlKeys(field,
-            sessionSymbol(sessionKey(shortcutConfiguration_.value("accept"), true)),
-            sessionSymbol(sessionKey(shortcutConfiguration_.value("exit"), false)));
+        const auto accept = sessionSymbol(sessionKey(shortcutConfiguration_.value("accept"), true));
+        const auto exit = sessionSymbol(sessionKey(shortcutConfiguration_.value("exit"), false));
+        auto *ordered = owner ? qobject_cast<TypeLayFcitxQtOrderedProviderV1 *>(owner.data()) : nullptr;
+        return keys && owner->thread() == thread() && keys->supportsControlKeys(field, accept, exit)
+            && (!orderedConfigured() || (ordered && ordered->supportsOrderedKeys(field,
+                orderedBinding(shortcutConfiguration_.value("accept")) ? accept : 0u,
+                orderedBinding(shortcutConfiguration_.value("exit")) ? exit : 0u)));
     }
     QJsonObject sessionBindings(Target *target) const {
         // Source focus moves into our editor without retaining an IME proof on
@@ -229,7 +258,7 @@ public:
         return {{"generation", shortcutConfiguration_.value("generation")},
             {"accept", shortcutConfiguration_.value("accept")}, {"exit", shortcutConfiguration_.value("exit")},
             {"sourceReady", enabled && (sourceRoute || editorRoute)},
-            {"editorReady", enabled && (editing ? editorRoute : sourceRoute)}};
+            {"editorReady", enabled && !orderedConfigured() && (editing ? editorRoute : sourceRoute)}};
     }
     bool viewCurrent(Target *target, const QJsonObject &data) const {
         const auto view = data.value("view").toObject();
@@ -263,6 +292,8 @@ public:
         const auto shortcut = shortcutKind(event);
         if (shortcut.isEmpty() && (event->modifiers() != Qt::NoModifier
             || (event->key() != acceptKey && event->key() != exitKey)
+            || (event->key() == acceptKey && orderedBinding(shortcutConfiguration_.value("accept")))
+            || (event->key() == exitKey && orderedBinding(shortcutConfiguration_.value("exit")))
             || !sessionCurrent(generation) || !sessionProvider(actualField))) return false;
         QScopedValueRollback<bool> handling(handlingKey_, true);
         if (!shortcut.isEmpty()) return queueShortcut(shortcut, discover(qobject_cast<QWidget *>(actualField)),
@@ -334,13 +365,104 @@ public:
         return true;
     }
 
+    bool beginOrdered(QObject *actual, quint64 id, const QEvent *input,
+        const TypeLayFcitxQtStateV1 *before, TypeLayFcitxQtOrderedGrantV1 *grant) override {
+        if (!onThread() || handlingKey_ || ordered_ || !id || !before || !grant || !input
+            || input->type() != QEvent::KeyPress || !orderedConfigured()) return false;
+        const auto *key = static_cast<const QKeyEvent *>(input);
+        auto *target = targets_.value(actual, nullptr);
+        const auto current = publication_;
+        if (!target || target != focused() || current.isEmpty() || !clear(*before)
+            || current.value("authority").toObject().value("contextStamp").toObject() != stamp(*before)
+            || !sessionCurrent(current.value("generation")) || !sessionProvider(actual)
+            || !authorityMatches(target, current.value("authority").toObject(), true)) return false;
+        auto ticket = std::make_shared<OrderedTicket>();
+        ticket->id = id;
+        ticket->target = target;
+        ticket->provider = target->provider;
+        ticket->publication = current;
+        ticket->before = *before;
+        ticket->authorization = authorizationGeneration_;
+        ticket->connection = connectionGeneration_;
+        ticket->selection = target->selection;
+        ticket->ctrlScan = key->nativeScanCode();
+        ticket->ctrlTimestamp = key->timestamp();
+        ordered_ = ticket;
+        *grant = {};
+        grant->accept = sessionSymbol(sessionKey(shortcutConfiguration_.value("accept"), true));
+        grant->exit = sessionSymbol(sessionKey(shortcutConfiguration_.value("exit"), false));
+        if (orderedBinding(shortcutConfiguration_.value("accept")) && ready(target, current))
+            grant->acceptUntil = integer(current.value("permit").toObject(), "expiresAtMs", 0);
+        const auto lease = current.value("lease").toObject();
+        const auto observed = integer(lease.value("source").toObject(), "observedAtMs", 0);
+        const auto age = now() - observed;
+        if (orderedBinding(shortcutConfiguration_.value("exit")) && lease.value("escapeAllowed").toBool()
+            && age >= 0 && age < 150) grant->exitUntil = observed + 150;
+        if (ordered_ != ticket || ticket->revoked || publication_ != current
+            || ticket->authorization != authorizationGeneration_ || ticket->connection != connectionGeneration_
+            || (grant->acceptUntil <= now() && grant->exitUntil <= now())) {
+            revokeOrdered(); return false;
+        }
+        return true;
+    }
+    bool decideOrdered(QObject *actual, quint64 id, const QEvent *input,
+        const TypeLayFcitxQtStateV1 *current) override {
+        const auto ticket = ordered_;
+        if (!onThread() || handlingKey_ || !ticket || ticket->id != id || ticket->revoked
+            || !current || !input || input->type() != QEvent::KeyPress) return false;
+        const auto *key = static_cast<const QKeyEvent *>(input);
+        auto *target = ticket->target;
+        if (!target || target->field != actual || target != focused() || key->isAutoRepeat()
+            || key->modifiers() != Qt::ControlModifier || target->selection != ticket->selection) return false;
+        target->state = *current;
+        target->observed = true;
+        if (!orderedValid(ticket)) return false;
+        QScopedValueRollback<bool> handling(handlingKey_, true);
+        const auto publication = ticket->publication;
+        const auto generation = publication.value("generation");
+        const auto basis = publication.value("authority").toObject();
+        const auto exit = shortcutConfiguration_.value("exit");
+        if (orderedBinding(exit) && key->key() == sessionKey(exit, false)) {
+            const auto lease = publication.value("lease").toObject();
+            const auto age = now() - integer(lease.value("source").toObject(), "observedAtMs");
+            if (!lease.value("escapeAllowed").toBool() || age < 0 || age >= 150 || !orderedValid(ticket)) return false;
+            auto *provider = qobject_cast<TypeLayFcitxQtOrderedProviderV1 *>(ticket->provider.data());
+            if (!provider || !provider->claimOrdered(target->field, id, &ticket->before, &target->state)) return false;
+            loseProof(); // Execution take, not an external revoke.
+            sendEvent("escape", {{"target", target->id}, {"generation", generation},
+                {"sessionRevision", lease.value("sessionRevision")}});
+            return true;
+        }
+        const auto accept = shortcutConfiguration_.value("accept");
+        const auto permit = publication.value("permit").toObject();
+        const auto plan = permit.value("plan").toObject();
+        const auto planId = plan.value("id").toString();
+        if (!orderedBinding(accept) || key->key() != sessionKey(accept, true)
+            || planId.isEmpty() || consumed_.contains(planId) || now() >= integer(permit, "expiresAtMs", 0)) return false;
+        consumed_.append(planId);
+        while (consumed_.size() > 128) consumed_.removeFirst();
+        const auto accepted = now();
+        loseProof();
+        OrderedWriteContext context{ticket, false};
+        const auto result = write(target, {{"plan", plan}, {"authority", basis},
+            {"expiresAtMs", permit.value("expiresAtMs")}, {"generation", generation}}, false, &context);
+        if (result.value("status").toString() == "RejectedBeforeMutation" && !context.mutationStarted) return false;
+        sendEvent("accepted", {{"planId", planId}, {"acceptedAtMs", accepted}, {"receipt", result}});
+        return true;
+    }
+    void retireOrdered(quint64 ticket) override {
+        if (ordered_ && ordered_->id == ticket) ordered_.reset();
+    }
+
 signals:
     void shortcutStateChangedV1(const QString &state, quint64 id);
 
 private slots:
     void providerChanged(QObject *field, uint causes) {
         auto *target = targets_.value(field, nullptr);
-        clearPermit();
+        if (causes == (TlQtModifier | TlQtOrderedPrefix) && ordered_
+            && ordered_->target == target && ordered_->provider == sender()) loseProof();
+        else clearPermit();
         if (!target || sender() != target->provider) return;
         if (causes & TlQtBinding) shortcutAuthority_ = {};
         if (causes & (TlQtInput | TlQtBinding)) invalidate(target, false, false);
@@ -623,9 +745,18 @@ private:
         const bool valid = capability->inspect(field, &state) && field && owner && target->provider == owner
             && field->property(ProviderProperty).value<QObject *>() == owner
             && state.size == sizeof state && state.version == 1u && (state.flags & ~(TlQtKnown | TlQtFocused | TlQtPending | TlQtComposing | TlQtDetached)) == 0;
-        if (!valid) { clearPermit(); return false; }
+        if (!valid) {
+            if (ordered_ && ordered_->target == target && ordered_->provider == owner) loseProof();
+            else clearPermit();
+            return false;
+        }
         if (target->observed && stamp(target->state) != stamp(state)) {
-            clearPermit();
+            const auto &before = ordered_ ? ordered_->before : target->state;
+            if (ordered_ && ordered_->target == target && ordered_->provider == owner
+                && state.contextGeneration == before.contextGeneration && state.fieldGeneration == before.fieldGeneration
+                && state.inputEpoch == before.inputEpoch && state.serverSerial == before.serverSerial
+                && state.appliedSerial == before.appliedSerial) loseProof();
+            else clearPermit();
             if (target->state.contextGeneration != state.contextGeneration
                 || target->state.fieldGeneration != state.fieldGeneration) shortcutAuthority_ = {};
             if (target->state.contextGeneration != state.contextGeneration
@@ -753,7 +884,50 @@ private:
         return {{"ready", allowed}, {"planId", allowed ? permit.value("plan").toObject().value("id") : QJsonValue()},
             {"readyUntilHostMs", allowed ? permit.value("expiresAtMs") : QJsonValue()}};
     }
-    void clearPermit() { publication_ = {}; refreshHint(); }
+    void loseProof() { publication_ = {}; refreshHint(); }
+    void revokeOrdered() {
+        const auto ticket = std::move(ordered_);
+        if (!ticket) return;
+        ticket->revoked = true;
+        auto *provider = ticket->provider ? qobject_cast<TypeLayFcitxQtOrderedProviderV1 *>(ticket->provider.data()) : nullptr;
+        if (provider) provider->cancelOrdered(ticket->id);
+    }
+    void clearPermit() { revokeOrdered(); loseProof(); }
+    bool orderedLive(const std::shared_ptr<OrderedTicket> &ticket) const {
+        return ticket && !ticket->revoked && ordered_ == ticket && ticket->target && ticket->provider
+            && fd_ >= 0 && ticket->authorization == authorizationGeneration_
+            && ticket->connection == connectionGeneration_ && ticket->target->provider == ticket->provider
+            && sessionCurrent(ticket->publication.value("generation"));
+    }
+    bool orderedContinuity(const std::shared_ptr<OrderedTicket> &ticket) {
+        if (!orderedLive(ticket)) return false;
+        auto *provider = qobject_cast<TypeLayFcitxQtOrderedProviderV1 *>(ticket->provider.data());
+        return provider && provider->validateOrdered(ticket->target->field, ticket->id,
+            &ticket->before, &ticket->target->state);
+    }
+    bool orderedValid(const std::shared_ptr<OrderedTicket> &ticket) {
+        return orderedLive(ticket)
+            && sourceAuthorityMatches(ticket->target, ticket->publication.value("authority").toObject(), true)
+            && orderedContinuity(ticket);
+    }
+    bool sameOrderedPublication(const QJsonObject &next) const {
+        if (!ordered_) return false;
+        auto previous = ordered_->publication;
+        auto incoming = next;
+        // Only expiry/observation renewal of the exact same candidate can coexist
+        // with a frozen ticket. It never replaces that ticket's original clock.
+        for (auto *object : {&previous, &incoming}) {
+            auto authority = object->value("authority").toObject();
+            authority.remove("observedAtMs"); authority.remove("contextStamp");
+            object->insert("authority", authority);
+            auto permit = object->value("permit").toObject();
+            permit.remove("expiresAtMs"); object->insert("permit", permit);
+            auto lease = object->value("lease").toObject();
+            auto source = lease.value("source").toObject(); source.remove("observedAtMs");
+            lease.insert("source", source); object->insert("lease", lease);
+        }
+        return previous == incoming;
+    }
     QString shortcutKind(const QKeyEvent *event) const {
         if (!shortcutConfiguration_.value("enabled").toBool()) return {};
         const auto modifiers = event->modifiers();
@@ -912,7 +1086,8 @@ private:
             {"native", read}, {"acceptedAtMs", now()}});
         return fd_ >= 0;
     }
-    QJsonObject write(Target *target, const QJsonObject &request, bool direct) {
+    QJsonObject write(Target *target, const QJsonObject &request, bool direct,
+                      OrderedWriteContext *ordered = nullptr) {
         // Sample existing operations only; emit their timings with the final
         // outcome, never add an IM request or logging between safety checks.
         const qint64 writeStarted = now();
@@ -925,6 +1100,10 @@ private:
         auto reject = [&](const char *phase, const char *reason) {
             traceGate(phase, target, basis, integer(request, "expiresAtMs", 0), reason,
                 writeStarted, inspectMs, prepareMs, selectionMs);
+            if (ordered && ordered->mutationStarted) {
+                if (target) target->quarantined = true;
+                return receipt("OutcomeUnknown", "UnknownOutcome");
+            }
             return receipt("RejectedBeforeMutation", reason);
         };
         traceGate("write-enter", target, basis, integer(request, "expiresAtMs", 0));
@@ -950,7 +1129,7 @@ private:
             ? sourceAuthorityMatches(target, basis, !directLine) && authorityMatches(target, approved, !background)
                 && integer(approved, "focusRevision") == qint64(target->focus)
                 && approvedAge >= 0 && approvedAge <= 150
-            : authorityMatches(target, basis, true);
+            : ordered ? orderedValid(ordered->ticket) : authorityMatches(target, basis, true);
         if (!metadataMatches(target, approved) || !authorized || !sessionCurrent(generation)
             || authorizationGeneration_ != authorization || !sessionProvider(target->field))
             return reject("write-authority", "EpochChanged");
@@ -1014,7 +1193,7 @@ private:
                 && target->storage == storage && target->content == content
                 && metadataMatches(target, basis) && metadataMatches(target, approved)
                 && target->document == document && target->documentGeneration == documentGeneration
-                && body(target) == captured;
+                && body(target) == captured && (!ordered || orderedLive(ordered->ticket));
         };
         auto *capability = qobject_cast<TypeLayFcitxQtV1 *>(provider);
         if (!capability || !local(target, initialState))
@@ -1034,11 +1213,18 @@ private:
         if (!unchanged() || !inspect(target) || !clearForWrite(target, direct)
             || target->state.contextGeneration != initialState.contextGeneration
             || target->state.fieldGeneration != initialState.fieldGeneration
-            || target->state.inputEpoch != initialState.inputEpoch || !unchanged())
+            || target->state.inputEpoch != initialState.inputEpoch || !unchanged()
+            || (ordered && !orderedValid(ordered->ticket)))
             return reject("write-after-prepare", "EpochChanged");
         const auto baseline = target->state;
         QScopedValueRollback<bool> mutation(target->mutating, true);
         const qint64 selectionStarted = now();
+        if (ordered) {
+            auto *control = provider ? qobject_cast<TypeLayFcitxQtOrderedProviderV1 *>(provider.data()) : nullptr;
+            if (!orderedValid(ordered->ticket) || !control || !control->claimOrdered(field, ordered->ticket->id,
+                &ordered->ticket->before, &target->state)) return reject("write-ordered-claim", "EpochChanged");
+            ordered->mutationStarted = true; // Selection itself is observable application state.
+        }
         if (auto *line = target->line()) line->setSelection(int(from), int(to - from));
         else {
             QTextCursor cursor(document);
@@ -1061,7 +1247,8 @@ private:
                 && focusUnchanged() && target->input == input && target->focus == focus
                 && metadataMatches(target, basis) && metadataMatches(target, approved)
                 && target->storage == storage + 1 && target->content == content + 1
-                && body(target) == std::optional<QString>(result) && local(target, baseline);
+                && body(target) == std::optional<QString>(result) && local(target, baseline)
+                && (!ordered || orderedContinuity(ordered->ticket));
         };
         if (auto *line = target->line()) line->insert(replacement);
         else {
@@ -1579,7 +1766,11 @@ private:
             if (empty) clearPermit();
             else invalidate(target, false, false);
         } else if (type == QEvent::KeyPress) {
-            if (modifierKey(static_cast<QKeyEvent *>(event)->key())) clearPermit();
+            const auto *key = static_cast<QKeyEvent *>(event);
+            if (ordered_ && ordered_->target == target && key->key() == Qt::Key_Control
+                && key->nativeScanCode() == ordered_->ctrlScan && key->timestamp() == ordered_->ctrlTimestamp
+                && !key->isAutoRepeat()) loseProof();
+            else if (modifierKey(key->key())) clearPermit();
             else invalidate(target, false, false);
         } else if (type == QEvent::MouseButtonPress || type == QEvent::Wheel
             || type == QEvent::TouchBegin) invalidate(target, false, false);
@@ -1657,8 +1848,9 @@ private:
         }
         else if (op == "publish") {
             if (!sessionCurrent(data.value("generation"))) { respond(id, QJsonObject{{"published", false}}); return; }
-            ++authorizationGeneration_;
-            clearPermit();
+            const bool renewal = sameOrderedPublication(data);
+            if (!renewal) { ++authorizationGeneration_; clearPermit(); }
+            else loseProof();
             if (target && sessionCurrent(data.value("generation")) && focused() == target
                 && metadataMatches(target, data.value("authority").toObject()) && inspect(target) && clear(target->state)
                 && sessionCurrent(data.value("generation")) && sessionProvider(target->field)) publication_ = data;
@@ -1674,7 +1866,7 @@ private:
             shortcutConfiguration_ = data;
             cancelShortcut();
             shortcutAuthority_ = {};
-            QVariantList keys;
+            QVariantList keys, orderedKeys;
             if (data.value("enabled").toBool()) for (const auto *kind : {"wake", "direct"}) {
                 const auto symbol = integer(data.value(QLatin1String(kind)).toObject(), "keyval", 0);
                 if (symbol > 0 && symbol <= std::numeric_limits<quint32>::max()) {
@@ -1686,8 +1878,12 @@ private:
             if (sessionCurrent(data.value("generation"))) {
                 keys.append(sessionSymbol(sessionKey(data.value("accept"), true)));
                 keys.append(sessionSymbol(sessionKey(data.value("exit"), false)));
+                for (const auto *action : {"accept", "exit"})
+                    if (orderedBinding(data.value(QLatin1String(action))))
+                        orderedKeys.append(sessionSymbol(sessionKey(data.value(QLatin1String(action)), qstrcmp(action, "accept") == 0)));
             }
             qApp->setProperty(TypeLayFcitxQtControlKeysPropertyV1, keys);
+            qApp->setProperty(TypeLayFcitxQtOrderedKeysPropertyV1, orderedKeys);
             respond(id);
         } else if (op == "publish-shortcut") {
             shortcutAuthority_ = {};
@@ -1731,7 +1927,8 @@ private:
         if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
         outgoing_.clear(); incoming_.clear();
         shortcutAuthority_ = {}; shortcutConfiguration_ = {};
-        qApp->setProperty("typelay.fcitx.qt.control-keys.v1", QVariantList{});
+        qApp->setProperty(TypeLayFcitxQtControlKeysPropertyV1, QVariantList{});
+        qApp->setProperty(TypeLayFcitxQtOrderedKeysPropertyV1, QVariantList{});
         hideOverlay(); clearPermit();
     }
     void connectPeer() {
@@ -1817,6 +2014,7 @@ private:
     QJsonObject publication_, overlayView_, overlayAuthority_, shortcutConfiguration_, shortcutAuthority_;
     QString overlayTheme_ = QStringLiteral("system");
     std::optional<ShortcutRequest> pendingShortcut_;
+    std::shared_ptr<OrderedTicket> ordered_;
     quint64 shortcutSequence_ = 0;
     qint64 shortcutStartedAt_ = -1;
     quint64 connectionGeneration_ = 0, returnGeneration_ = 0, authorizationGeneration_ = 0, focusGeneration_ = 0;

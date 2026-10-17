@@ -28,6 +28,8 @@ Qt 6.11.2 与固定 Fcitx Qt 5.1.15 的隔离 Wayland/niri 链路已有实际模
 
 ## 输入法与写回边界
 
+Ctrl+功能键的首阶段实现使用独立有序控制能力：在 Ctrl 提交输入法前固定已有资格和原截止，等待真实前序处理退休后才裁决原功能键；后读仅核对原源，不能建立替代许可。真实输入法输出、目标或配置变化撤销资格；已开始选区变更的失败不补发原键。有限队列取消后恢复 Qt 原生事件语义，不承诺跨应用回调的原子顺序。此阶段仅接 Qt provider、consumer 与原生回归，全局组合键设置和其它后端尚未开放，真实 Qt 构建与按键验收仍待本轮验证。
+
 合作 Fcitx Qt provider 使用 QtCore-only、版本化 IID，在实际焦点 QObject 上发布自身。消费者经 `qobject_cast` 验证接口并使用弱生命周期引用。`inspect` 读取真实 context、在途请求、输出与字段代次；`validateLocal` 只能验证同一次观察，不能自行建立 Clear；`prepareCaret` 后仍须重新观察与核对原目标。
 
 Fcitx 按键请求继续异步发出；完成处理增加 provider 内部 FIFO，按真实请求顺序处理已收到 `finished` 的 watcher，运行原有结果、fallback 与转发逻辑。后一个回复先到不能越过尚未完成的前一个请求。请求在 watcher 实际销毁前仍计为 pending，转发事件也必须等 Qt 的真实事件分发结束才 ACK；不以队列空闲猜测或提前读取 `isFinished()` 建立 Clear。

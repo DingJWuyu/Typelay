@@ -35,6 +35,7 @@
 #include <cstdio>
 #include <fcntl.h>
 #include <time.h>
+#include <utility>
 #include <unistd.h>
 
 qint64 observedAtMs() {
@@ -53,8 +54,9 @@ public:
     QHash<QObject *, OverlayObject> overlayObjects;
     quint64 overlayInstance = 0, overlayEventCount = 0;
     QJsonObject counts;
+    quint64 commandSequence = 0;
     bool firstPreedit = false, secondPreedit = false, plainPreedit = false, editorPreedit = false;
-    QString shortcutState, commandQueuedAction, commandDispatchedAction;
+    QString shortcutState, commandQueuedAction, commandDispatchedAction, controlAction;
     quint64 shortcutId = 0, shortcutActionCount = 0, shortcutActionId = 0, focusTransitions = 0;
     void applyCommandAction(QString &action) {
         const auto operation = action;
@@ -156,17 +158,34 @@ public:
         }
         if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease) return false;
         const auto *key = static_cast<QKeyEvent *>(event);
+        if (object == first && key->key() == Qt::Key_Control && event->type() == QEvent::KeyPress) {
+            const auto action = std::exchange(controlAction, QString());
+            if (action == "rewrite") first->setText(QStringLiteral("Application changed this field"));
+            else if (action == "focus-second") second->setFocus();
+            else if (action == "select") first->setSelection(0, 1);
+            else if (action == "empty-ime") {
+                QInputMethodEvent input;
+                QCoreApplication::sendEvent(first, &input);
+            }
+        }
         const QString name = (object == first ? QStringLiteral("first")
             : object == second ? QStringLiteral("second") : QStringLiteral("plain"))
             + (key->key() == Qt::Key_Tab ? QStringLiteral("Tab") : QStringLiteral("Key"))
             + (event->type() == QEvent::KeyPress ? QStringLiteral("Press") : QStringLiteral("Release"));
         counts.insert(name, counts.value(name).toInt() + 1);
+        if (key->key() == Qt::Key_Control) {
+            const auto controlName = QStringLiteral("control")
+                + (event->type() == QEvent::KeyPress ? QStringLiteral("Press") : QStringLiteral("Release"));
+            counts.insert(controlName, counts.value(controlName).toInt() + 1);
+        }
         if (key->key() >= Qt::Key_F1 && key->key() <= Qt::Key_F24) {
             const QString functionName = (object == first ? QStringLiteral("first")
                 : object == second ? QStringLiteral("second") : QStringLiteral("plain"))
                 + QStringLiteral("F") + QString::number(key->key() - Qt::Key_F1 + 1)
                 + (event->type() == QEvent::KeyPress ? QStringLiteral("Press") : QStringLiteral("Release"));
             counts.insert(functionName, counts.value(functionName).toInt() + 1);
+            counts.insert(functionName + QStringLiteral("Timestamp"), qint64(key->timestamp()));
+            counts.insert(functionName + QStringLiteral("ObservedAtMs"), observedAtMs());
         }
         return false;
     }
@@ -380,6 +399,7 @@ int main(int argc, char **argv) {
             {"animationDuration", overlay ? overlay->style()->styleHint(QStyle::SH_Widget_Animation_Duration, nullptr, overlay) : -1},
             {"fullscreen", window.isFullScreen()}, {"width", window.width()}, {"height", window.height()},
             {"scale", window.devicePixelRatioF()}, {"keys", observer.counts},
+            {"commandSequence", qint64(observer.commandSequence)},
             {"focusTransitions", qint64(observer.focusTransitions)}, {"firstChangeContext", firstChangeContext},
             {"shortcutState", observer.shortcutState}, {"shortcutId", qint64(observer.shortcutId)},
             {"shortcutActionCount", qint64(observer.shortcutActionCount)},
@@ -420,7 +440,7 @@ int main(int argc, char **argv) {
         // Read the actual provider's optional research counters without issuing
         // another IM RPC that could perturb the consumer's short-lived proof.
         for (const auto *name : {"tlqtPendingDbus", "tlqtPendingForward", "tlqtOutputDepth", "tlqtEngine", "tlqtRetired", "tlqtKeyReplies",
-                                 "tlqtEditorProgrammaticSets", "tlqtEditorOwnedRenderSkips"}) {
+                                 "tlqtEditorProgrammaticSets", "tlqtEditorOwnedRenderSkips", "tlqtDelayedCompletion"}) {
             const auto value = qApp->property(name);
             state.insert(QLatin1String(name), value.isValid() ? QJsonValue::fromVariant(value) : QJsonValue());
         }
@@ -589,6 +609,7 @@ int main(int argc, char **argv) {
             else if (op == "on-text") textAction = command.value("action").toString();
             else if (op == "on-command-queued") observer.commandQueuedAction = command.value("action").toString();
             else if (op == "on-command-dispatched") observer.commandDispatchedAction = command.value("action").toString();
+            else if (op == "on-control") observer.controlAction = command.value("action").toString();
             else if (op == "editor-provider") {
                 auto *editor = window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"));
                 if (editor) {
@@ -607,6 +628,7 @@ int main(int argc, char **argv) {
                 window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"))->setPlainText(command.value("text").toString());
             else if (op == "fullscreen") { if (command.value("enabled").toBool()) window.showFullScreen(); else window.showNormal(); }
             else if (op == "quit") app.quit();
+            ++observer.commandSequence;
             publish();
         }
     });

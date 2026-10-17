@@ -112,6 +112,15 @@ public:
         counts_.insert("dynamicF12F24Keys", check(0xffc9u, 0xffd5u));
         counts_.insert("dynamicSameKeyPair", check(0xffbeu, 0xffbeu));
         counts_.insert("dynamicWrongField", capability && capability->supportsControlKeys(root_, 0xffbeu, 0xffd5u));
+        auto *ordered = owner ? qobject_cast<TypeLayFcitxQtOrderedProviderV1 *>(owner) : nullptr;
+        const auto oldOrdered = qApp->property(TypeLayFcitxQtOrderedKeysPropertyV1);
+        qApp->setProperty(TypeLayFcitxQtOrderedKeysPropertyV1, QVariantList{quint32(0xffc4)});
+        counts_.insert("orderedIncompletePair", ordered && ordered->supportsOrderedKeys(first_, 0xffc4u, 0xffc5u));
+        counts_.insert("orderedMixedPair", ordered && ordered->supportsOrderedKeys(first_, 0xffc4u, 0u));
+        qApp->setProperty(TypeLayFcitxQtOrderedKeysPropertyV1, QVariantList{quint32(0xffc4), quint32(0xffc5)});
+        counts_.insert("orderedInstalledPair", ordered && ordered->supportsOrderedKeys(first_, 0xffc4u, 0xffc5u));
+        counts_.insert("orderedWrongField", ordered && ordered->supportsOrderedKeys(root_, 0xffc4u, 0xffc5u));
+        qApp->setProperty(TypeLayFcitxQtOrderedKeysPropertyV1, oldOrdered);
         qApp->setProperty(TypeLayFcitxQtControlKeysPropertyV1, previous);
         increment("controlKeyProbeCount");
     }

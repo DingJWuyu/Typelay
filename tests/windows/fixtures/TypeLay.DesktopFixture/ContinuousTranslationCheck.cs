@@ -60,12 +60,13 @@ internal static partial class ContinuousTranslationCheck
         try
         {
             string data = Path.Combine(directory, "data");
-            await new ModelInstaller(data, worker).InstallAsync(new SetupLog(), all.Token);
-            setup.Stage = "start-model";
-            model = new ModelClient(new(Path.Combine(data, "runtime", "python", "tools", "python.exe"),
-                worker, Path.Combine(data, "models")), info => new ChildProcess(info));
-            await model.StartAsync().WaitAsync(all.Token);
-            Require(model.Ready, "model-not-ready");
+            using (var prepared = await new ModelInstaller(data, worker).PrepareAsync(new SetupLog(), all.Token))
+            {
+                setup.Stage = "start-model";
+                model = new ModelClient(prepared.Paths, info => new ChildProcess(info));
+                Require(await model.ReloadAsync(prepared.Paths, prepared.Publish, all.Token), "model-not-ready");
+                prepared.Complete();
+            }
             ready = true;
             setup.Stage = "initialize-desktop";
             UiTheme.Initialize("light");

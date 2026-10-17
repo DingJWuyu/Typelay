@@ -26,6 +26,8 @@ Windows 轮询、debounce、许可与执行期限不因分层改变。Hook 回�
 
 Windows 部署根包含 TypeLay.exe、app/、worker/、bootstrap/、README 与第三方声明。AppPaths.Home 由启动脚本指向整个发行根；Broker、App 与独立原生练习宿主 TypeLay.Practice 放在同一个 app/。练习宿主只提供普通 stock Edit 与共同操作说明；翻译和写入仍由正式 App/Broker 处理，不设置输入法状态或绕过权限。开机启动指向发行根 TypeLay.exe。App 的安装流程在用户同意后准备运行时与模型，Windows wheel 选择不进入共享安装器。
 
+组件准备在数据根内建立独立代，完成原双向模型自检后，由长期持有的 ModelClient 对候选进程进行一次真实握手；原子发布活动指针与接管同一连接后才报告成功。准备失败不覆盖仍可用的旧运行时，候选失败不恢复旧连接已失效的健康状态；旧请求的迟到结果不能修改新连接。启动只尝试指针指定的活动代和明确上一代，回退也须实际加载并确认指针恢复；没有指针时兼容原固定目录，不扫描目录猜版本。提交结果未确认时保留可能被引用的文件。当前仍安装完整中英双向、使用原库存格式，按方向选择尚未开放；新安装事务的 Windows 实包与中断恢复验收仍待本轮验证。
+
 ## 暂停时的最小观测
 
 暂停使用独立的 `observe-pause` Broker 操作；返回 `PauseAnchor`，不构造 `InputSnapshot`，不读取值、正文、选区或光标，也不调用原生 Edit 采集和 IME 组合正文接口。元数据须确认真实前台元素、进程/字段寿命、可编辑属性、可见边界及非敏感/非排除状态；ComboBox 与正常预览一致，需要 ValuePattern 和明确可编辑的 TextPattern。未知状态没有弱入口。

@@ -1,4 +1,4 @@
-// Isolated feasibility test. Qt private ABI, Qt 6.8.2 only in this local build.
+// Isolated Qt private-ABI delivery test, compiled against the pinned SDK.
 #include <QApplication>
 #include <QAbstractEventDispatcher>
 #include <QLineEdit>
@@ -37,6 +37,9 @@ public:
             (event->type() == QEvent::KeyPress || event->type() == QEvent::ContextMenu)) {
             require(state->pending > 0, "pending covers actual widget callback");
             ++state->delivered;
+            if (event->type() == QEvent::KeyPress && state->delivered <= 2)
+                require(static_cast<QKeyEvent *>(event)->timestamp() == ulong(state->delivered),
+                        "queued native key preserves its original timestamp");
             // Exercise the previously missed processEvents reentry boundary.
             QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents);
             require(state->pending > 0, "pending survives nested processEvents");

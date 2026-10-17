@@ -15,9 +15,7 @@ internal sealed record DownloadLock(string Name, string Version, string Url, str
 internal sealed class ModelInstaller
 {
     private readonly string _data, _worker, _cache, _localPackages;
-    private string Runtime => Path.Combine(_data, "runtime");
-    private string Models => Path.Combine(_data, "models");
-    private string Python => Path.Combine(Runtime, "python", "tools", "python.exe");
+    private string? _sourceModels;
 
     public ModelInstaller() : this(AppPaths.Data, AppPaths.Worker) { }
     internal ModelInstaller(string data, string worker, HttpMessageHandler? handler = null,
@@ -54,19 +52,29 @@ internal sealed class ModelInstaller
 
     private static string DefaultLocalPackages => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "share", "argos-translate", "packages");
-    public static bool HasReusableLocalModels => ModelCatalog.Directions.All(
-        direction => FindLocalPackage(direction, AppPaths.Models, DefaultLocalPackages) is not null);
-
-    public async Task InstallAsync(IProgress<SetupProgress> progress, CancellationToken ct)
+    public static bool HasReusableLocalModels
     {
-        string staging = Path.Combine(_data, "staging", Guid.NewGuid().ToString("N"));
+        get
+        {
+            var paths = AppPaths.ModelPaths;
+            return ModelCatalog.Directions.All(direction => FindLocalPackage(direction, paths.Models, DefaultLocalPackages) is not null);
+        }
+    }
+
+    public async Task<ModelInstallationStore.PreparedInstallation> PrepareAsync(IProgress<SetupProgress> progress, CancellationToken ct)
+    {
+        ModelInstallationStore.Lease? lease = null;
+        ModelInstallationStore.PreparedInstallation? prepared = null;
+        bool complete = false;
         var stage = ModelSetupStage.Prepare;
         try
         {
             ct.ThrowIfCancellationRequested();
+            lease = await new ModelInstallationStore(_data, _worker).AcquireAsync(ct);
+            _sourceModels = lease.ActivePaths.Models;
+            prepared = lease.Prepare();
+            string staging = prepared.Root;
             Directory.CreateDirectory(_cache);
-            Directory.CreateDirectory(Runtime);
-            Directory.CreateDirectory(staging);
             stage = ModelSetupStage.Runtime;
             const string pythonVersion = "3.13.16";
             progress.Report(new("读取 CPython 官方包元数据"));
@@ -93,13 +101,12 @@ internal sealed class ModelInstaller
                 File.Delete(pythonZip);
                 throw new InvalidDataException("python-integrity");
             }
-            string pythonStage = Path.Combine(staging, "python");
+            string pythonStage = Path.Combine(staging, "runtime", "python");
             progress.Report(new("准备私有运行组件"));
             await Task.Run(() => Extract(pythonZip, pythonStage, stage, ct), ct);
             if (!File.Exists(Path.Combine(pythonStage, "tools", "python.exe")))
                 throw new InvalidDataException("python-layout");
-            string pythonTarget = Path.Combine(Runtime, "python");
-            Promote(pythonStage, pythonTarget);
+            string pythonTarget = pythonStage;
             _locks.Add(new("python", pythonVersion, pythonUrl, await Hash(pythonZip, ct)));
             string site = Path.Combine(pythonTarget, "tools", "Lib", "site-packages");
             Directory.CreateDirectory(site);
@@ -167,6 +174,7 @@ internal sealed class ModelInstaller
                 foreach (string file in Directory.GetFiles(package))
                     File.Copy(file, Path.Combine(dest, Path.GetFileName(file)), true);
                 _locks.Add(new("argos-" + pair, direction.Version, modelUrl, await Hash(archive, ct)));
+                Directory.Delete(extraction, recursive: true);
             }
             stage = ModelSetupStage.ModelVerify;
             progress.Report(new("校验模型并执行真实 CPU 翻译自检"));
@@ -186,7 +194,7 @@ internal sealed class ModelInstaller
                 dependencies = _locks
             }, new JsonSerializerOptions { WriteIndented = true }), ct);
             stage = ModelSetupStage.SelfCheck;
-            var start = new ProcessStartInfo(Python)
+            var start = new ProcessStartInfo(prepared.Paths.Python)
             {
                 UseShellExecute = false,
                 CreateNoWindow = true,
@@ -209,15 +217,15 @@ internal sealed class ModelInstaller
                 if (child.Process.ExitCode != 0 || result.Length > 16384)
                     throw new InvalidDataException("cpu-self-check-failed");
                 using var check = JsonDocument.Parse(result);
-                if (check.RootElement.GetProperty("status").GetString() != "passed")
+                if (!PassedSelfCheck(check.RootElement))
                     throw new InvalidDataException("cpu-self-check-failed");
-                await File.WriteAllTextAsync(Path.Combine(_data, "setup-self-check.json"), result, ct);
+                await File.WriteAllTextAsync(Path.Combine(staging, "setup-self-check.json"), result, ct);
             }
-            stage = ModelSetupStage.Activate;
-            Promote(modelStage, Models);
-            await File.WriteAllTextAsync(Path.Combine(_data, "dependency-lock.json"),
+            await File.WriteAllTextAsync(Path.Combine(staging, "dependency-lock.json"),
                 JsonSerializer.Serialize(_locks, new JsonSerializerOptions { WriteIndented = true }), ct);
-            progress.Report(new("模型已安装并通过本机 CPU 自检"));
+            progress.Report(new("模型已通过本机 CPU 自检，正在等待启动"));
+            complete = true;
+            return prepared;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception error) when (error is not OutOfMemoryException)
@@ -227,13 +235,11 @@ internal sealed class ModelInstaller
         finally
         {
             _http.Dispose();
-            try
+            if (!complete)
             {
-                if (Directory.Exists(staging))
-                    Directory.Delete(staging, true);
+                prepared?.Dispose();
+                lease?.Dispose();
             }
-            catch (IOException) { }
-            catch (UnauthorizedAccessException) { }
         }
     }
     private static string? FindLocalPackage(ModelDirection direction, string models, string localPackages)
@@ -275,7 +281,7 @@ internal sealed class ModelInstaller
     }
     private async Task<bool> TryStageLocalModel(ModelDirection direction, string destination, IProgress<SetupProgress> progress, CancellationToken ct)
     {
-        string? source = FindLocalPackage(direction, Models, _localPackages);
+        string? source = FindLocalPackage(direction, _sourceModels!, _localPackages);
         if (source is null)
             return false;
         progress.Report(new($"复用本机{direction.SourceName} → {direction.TargetName} 模型"));
@@ -302,26 +308,14 @@ internal sealed class ModelInstaller
             return false;
         }
     }
-    // The new directory is complete before its name becomes the active installation.
-    private static void Promote(string stage, string target)
+    private static bool PassedSelfCheck(JsonElement check)
     {
-        string previous = target + ".previous";
-        if (Directory.Exists(previous))
-            Directory.Delete(previous, true);
-        bool hadPrevious = Directory.Exists(target);
-        if (hadPrevious)
-            Directory.Move(target, previous);
-        try
-        {
-            Directory.Move(stage, target);
-        }
-        catch { if (hadPrevious && !Directory.Exists(target)) Directory.Move(previous, target); throw; }
-        try
-        {
-            if (hadPrevious)
-                Directory.Delete(previous, true);
-        }
-        catch (IOException) { }
+        if (check.GetProperty("status").GetString() != "passed" || check.GetProperty("device").GetString() != "cpu")
+            return false;
+        var results = check.GetProperty("results").EnumerateArray().ToArray();
+        return ModelCatalog.IsCompleteDirectionSet(results.Select(result => result.GetProperty("direction").GetString()!).ToArray())
+            && results.All(result => result.GetProperty("status").GetString() == "translated"
+                && result.GetProperty("nonempty").GetBoolean() && result.GetProperty("differs").GetBoolean());
     }
     private async Task<JsonDocument> Json(Uri uri, CancellationToken ct)
     {

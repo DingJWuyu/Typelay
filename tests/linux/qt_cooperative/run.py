@@ -297,6 +297,397 @@ def stock_sync(out, env, children):
     return result
 
 
+def ordered_controls(out, env, children, delay_finished=False):
+    """Real provider + consumer, synthetic host permits; no model/UI claim."""
+    import hashlib
+    import socket
+
+    sys.path.insert(0, str(ROOT / "tests/linux"))
+    from native_e2e import Native, plan
+    from wire import now_ms
+
+    identity = env.get("WAYLAND_DISPLAY", "") + "\n" + env.get("NIRI_SOCKET", "")
+    directory = (
+        Path(env["XDG_RUNTIME_DIR"])
+        / "typelay"
+        / hashlib.sha256(identity.encode()).hexdigest()[:16]
+    )
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = directory / "native.sock"
+    mode = "ordered-delayed" if delay_finished else "ordered"
+    state_path = out / f"{mode}-native-state.json"
+    state_path.unlink(missing_ok=True)
+    result = {
+        "scope": "real Qt provider/consumer, controlled host protocol and XTest; no model or physical keyboard"
+    }
+    with (
+        socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server,
+        (out / f"{mode}-native.log").open("w") as log,
+    ):
+        server.bind(str(path))
+        path.chmod(0o600)
+        server.listen(1)
+        server.settimeout(10)
+        environment = env | {
+            "QT_PLUGIN_PATH": f"{out / 'plugins'}:{out / 'native/qt6'}",
+            "QT_QPA_GENERIC_PLUGINS": "typelay",
+            "TYPELAY_FCITX_COOPERATIVE": "1",
+            "TYPELAY_QT_NATIVE_STATE": str(state_path),
+            "TYPELAY_TRACE": "1",
+            "FCITX_QT_USE_SYNC": "0",
+        }
+        environment.pop("TYPELAY_DESKTOP", None)
+        if delay_finished:
+            environment["TYPELAY_QT_DELAY_FIRST_FINISHED"] = "1"
+        else:
+            environment.pop("TYPELAY_QT_DELAY_FIRST_FINISHED", None)
+        client = subprocess.Popen(
+            [str(out / "native/qt-native-fixture")],
+            stdin=subprocess.PIPE,
+            text=True,
+            env=environment,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+        )
+        children.append(client)
+        connection, _ = server.accept()
+        with connection:
+            native = Native(connection)
+
+            def state():
+                try:
+                    return json.loads(state_path.read_text())
+                except (FileNotFoundError, json.JSONDecodeError):
+                    return {}
+
+            def fixture(operation, **data):
+                before = state().get("commandSequence", 0)
+                client.stdin.write(json.dumps({"op": operation, **data}) + "\n")
+                client.stdin.flush()
+                wait(
+                    lambda: state().get("commandSequence", 0) > before,
+                    "fixture command acknowledged",
+                )
+
+            def settled():
+                value = state()
+                return all(
+                    value.get(name) == 0
+                    for name in ("tlqtPendingDbus", "tlqtPendingForward", "tlqtOutputDepth")
+                )
+
+            window = wait(
+                lambda: subprocess.run(
+                    [
+                        "xdotool",
+                        "search",
+                        "--onlyvisible",
+                        "--pid",
+                        str(client.pid),
+                        "--name",
+                        "^TypeLay Qt native fixture$",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    env=environment,
+                ).stdout.strip(),
+                "actual native Qt window",
+            )
+            assert len(window.splitlines()) == 1
+            run(["xdotool", "windowfocus", "--sync", window], env=environment)
+            run(["fcitx5-remote", "-o"], env=environment)
+            run(["fcitx5-remote", "-s", "keyboard-us"], env=environment)
+            wait(
+                lambda: state().get("tlqtEngine") == "keyboard-us" and settled(),
+                "native keyboard engine",
+            )
+            generation = "ordered-contract"
+
+            def configure(accept="Ctrl+F7", exit="Ctrl+F8"):
+                native.call(
+                    "configure-shortcuts",
+                    {
+                        "generation": generation,
+                        "enabled": False,
+                        "sessionEnabled": True,
+                        "accept": accept,
+                        "exit": exit,
+                    },
+                )
+
+            def publish():
+                wait(settled, "genuine IM retirement before original publication")
+                description = native.describe()
+                captured = native.call(
+                    "capture",
+                    {"target": description["target"], "authority": description["authority"]},
+                )
+                assert captured and captured["writeSupported"] and captured["ime"] == "Clear"
+                source = {
+                    "target": {
+                        "backend": "linux-qt6",
+                        "value": captured["target"],
+                        "lifetime": native.hello["lifetime"],
+                    },
+                    "text": captured["text"],
+                    "selection": captured["selection"],
+                }
+                replacement = plan(source, "Translated result")
+                value = {
+                    "target": captured["target"],
+                    "generation": generation,
+                    "authority": captured["authority"],
+                    "permit": {"plan": replacement, "expiresAtMs": now_ms() + 100},
+                    "lease": {
+                        "source": {"observedAtMs": captured["observedAtMs"]},
+                        "escapeAllowed": True,
+                        "sessionRevision": 1,
+                    },
+                }
+                assert native.call("publish", value)["published"]
+                return value
+
+            def chord(symbol="F7", repeat=False):
+                # One input batch, no wait for Ctrl's IM completion. Release Ctrl
+                # first and optionally repeat Fn while its original pair is held.
+                command = [
+                    "xdotool",
+                    "keydown",
+                    "--delay",
+                    "0",
+                    "Control_L",
+                    "keydown",
+                    "--delay",
+                    "0",
+                    symbol,
+                ]
+                if repeat:
+                    command += ["keydown", "--delay", "0", symbol]
+                command += ["keyup", "--delay", "0", "Control_L", "keyup", "--delay", "0", symbol]
+                run(command, env=environment)
+
+            def prepare(text="Original source"):
+                fixture("focus", field="first")
+                fixture("set", field="first", text=text)
+                wait(
+                    lambda: state().get("first", {}).get("focused") and settled(),
+                    "original source focus",
+                )
+
+            configure()
+            prepare()
+            bindings = native.describe()["sessionBindings"]
+            assert bindings["sourceReady"] and not bindings["editorReady"]
+            if delay_finished:
+                publication = publish()
+                chord()
+                assert now_ms() < publication["permit"]["expiresAtMs"], (
+                    "input did not reach the original lease window"
+                )
+                wait(
+                    lambda: state().get("keys", {}).get("firstF7Release", 0) == 1 and settled(),
+                    "queued Fn survives original deadline and is delivered once",
+                )
+                native.describe()
+                assert state()["tlqtDelayedCompletion"] == 1
+                assert state()["first"]["text"] == "Original source"
+                assert state()["keys"]["firstF7Press"] == 1
+                assert (
+                    state()["keys"]["firstF7PressObservedAtMs"]
+                    >= publication["permit"]["expiresAtMs"]
+                )
+                assert not [event for event in native.events if event.get("event") == "accepted"]
+                result["queued_fn_original_deadline_passes_pair"] = True
+            else:
+                before = state()["first"]["changes"]
+                publication = publish()
+                chord(repeat=True)
+                wait(
+                    lambda: state().get("first", {}).get("text") == "Translated result"
+                    and settled(),
+                    "rapid Ctrl Fn writes once after actual original Ctrl retirement",
+                )
+                native.describe()  # Drain actual protocol outcomes.
+                accepted = [event for event in native.events if event.get("event") == "accepted"]
+                assert len(accepted) == 1 and accepted[0]["data"]["receipt"]["status"] == "Verified"
+                assert state()["first"]["changes"] == before + 1
+                assert not state()["keys"].get("firstF7Press") and not state()["keys"].get(
+                    "firstF7Release"
+                )
+                assert (
+                    state()["keys"].get("controlPress", 0) > 0
+                    and state()["keys"].get("controlRelease", 0) > 0
+                )
+                fixture("undo", field="first")
+                assert state()["first"]["text"] == "Original source"
+                result["rapid_accept_repeat_ctrl_first_release_and_undo"] = True
+
+                releases = state()["keys"].get("controlRelease", 0)
+                publish()
+                chord("F8")
+                wait(
+                    lambda: state().get("keys", {}).get("controlRelease", 0) > releases
+                    and settled(),
+                    "exit original key retirement",
+                )
+                native.describe()
+                assert (
+                    len([event for event in native.events if event.get("event") == "escape"]) == 1
+                )
+                assert state()["first"]["text"] == "Original source"
+                assert not state()["keys"].get("firstF8Press") and not state()["keys"].get(
+                    "firstF8Release"
+                )
+                result["original_exit_lease"] = True
+
+                for action in ("rewrite", "select", "focus-second", "empty-ime"):
+                    prepare()
+                    fixture("on-control", action=action)
+                    before = sum(
+                        state()["keys"].get(f"{field}F7Release", 0) for field in ("first", "second")
+                    )
+                    publish()
+                    chord()
+                    wait(
+                        lambda: sum(
+                            state().get("keys", {}).get(f"{field}F7Release", 0)
+                            for field in ("first", "second")
+                        )
+                        == before + 1
+                        and settled(),
+                        f"{action} revokes original ticket and passes Fn pair",
+                    )
+                    native.describe()
+                    assert (
+                        len([event for event in native.events if event.get("event") == "accepted"])
+                        == 1
+                    )
+                    assert state()["first"]["text"] == (
+                        "Application changed this field"
+                        if action == "rewrite"
+                        else "Original source"
+                    )
+                result["source_selection_focus_and_empty_ime_revoke"] = True
+
+                prepare()
+                publication = publish()
+                run(["xdotool", "keydown", "--delay", "0", "Control_L"], env=environment)
+                wait(
+                    lambda: now_ms() > publication["permit"]["expiresAtMs"],
+                    "original acceptance deadline expires",
+                )
+                before = state()["keys"].get("firstF7Release", 0)
+                run(
+                    [
+                        "xdotool",
+                        "keydown",
+                        "--delay",
+                        "0",
+                        "F7",
+                        "keyup",
+                        "--delay",
+                        "0",
+                        "Control_L",
+                        "keyup",
+                        "--delay",
+                        "0",
+                        "F7",
+                    ],
+                    env=environment,
+                )
+                wait(
+                    lambda: state().get("keys", {}).get("firstF7Release", 0) == before + 1
+                    and settled(),
+                    "old accept deadline passes original Fn despite longer exit lease",
+                )
+                assert state()["first"]["text"] == "Original source"
+                assert state()["keys"]["firstF7ReleaseTimestamp"] > 0
+                result["accept_deadline_not_extended_by_exit"] = True
+
+                prepare()
+                publish()
+                run(["xdotool", "keydown", "--delay", "0", "Control_L"], env=environment)
+                native.call("revoke")
+                before = state()["keys"].get("firstF7Release", 0)
+                run(
+                    [
+                        "xdotool",
+                        "keydown",
+                        "--delay",
+                        "0",
+                        "F7",
+                        "keyup",
+                        "--delay",
+                        "0",
+                        "Control_L",
+                        "keyup",
+                        "--delay",
+                        "0",
+                        "F7",
+                    ],
+                    env=environment,
+                )
+                wait(
+                    lambda: state().get("keys", {}).get("firstF7Release", 0) == before + 1
+                    and settled(),
+                    "explicit revoke is not revived by the original prefix",
+                )
+                assert state()["first"]["text"] == "Original source"
+                result["explicit_revoke_passes_pair"] = True
+
+                configure("Tab", "Esc")
+                prepare()
+                publish()
+                run(["xdotool", "key", "--delay", "0", "Tab"], env=environment)
+                wait(
+                    lambda: state().get("first", {}).get("text") == "Translated result"
+                    and settled(),
+                    "default unmodified Tab still writes",
+                )
+                fixture("undo", field="first")
+                assert state()["first"]["text"] == "Original source"
+                result["default_tab_regression"] = True
+
+            # Ordinary widget callbacks after claim can revoke through real focus
+            # changes. Selection and body mutation both consume the physical Fn;
+            # an uncertain write must not be reported Verified or replayed.
+            configure()
+            prepare()
+            phase = "on-text" if delay_finished else "on-selection"
+            fixture(phase, action="focus-second")
+            old_keys = state()["keys"]
+            releases = old_keys.get("controlRelease", 0)
+            native.describe()
+            accepted_before = len(
+                [event for event in native.events if event.get("event") == "accepted"]
+            )
+            publish()
+            chord()
+            wait(
+                lambda: state().get("second", {}).get("focused")
+                and state().get("keys", {}).get("controlRelease", 0) > releases
+                and settled(),
+                "claimed Fn retains ownership after application callback revokes",
+            )
+            native.describe()
+            accepted = [event for event in native.events if event.get("event") == "accepted"]
+            assert len(accepted) == accepted_before + 1
+            assert accepted[-1]["data"]["receipt"]["status"] == "OutcomeUnknown"
+            for field in ("first", "second"):
+                for event in ("Press", "Release"):
+                    name = f"{field}F7{event}"
+                    assert state()["keys"].get(name, 0) == old_keys.get(name, 0)
+            assert state()["first"]["text"] == (
+                "Translated result" if delay_finished else "Original source"
+            )
+            result[f"{phase}_revoke_consumes_with_unknown_outcome"] = True
+            fixture("quit")
+            assert client.wait(timeout=10) == 0
+    path.unlink(missing_ok=True)
+    (out / f"{mode}-result.json").write_text(json.dumps(result, indent=2) + "\n")
+    return result
+
+
 def session(out, fcitx, forced_sync_diagnostic=False):
     children = []
     with tempfile.TemporaryDirectory(prefix="typelay-qt-research-") as temporary:
@@ -520,6 +911,10 @@ def session(out, fcitx, forced_sync_diagnostic=False):
                             assert not keys["dynamicKeysWithoutInstallation"]
                             assert not keys["dynamicUninstalledFunctionKeys"]
                             assert not keys["dynamicSameKeyPair"] and not keys["dynamicWrongField"]
+                            assert keys["orderedMixedPair"] and keys["orderedInstalledPair"]
+                            assert (
+                                not keys["orderedIncompletePair"] and not keys["orderedWrongField"]
+                            )
                         generation, contexts = s["tlqtBindingEpoch"], s["tlqtContexts"]
                         client.stdin.write("focus2\n")
                         client.stdin.flush()
@@ -630,6 +1025,10 @@ def session(out, fcitx, forced_sync_diagnostic=False):
                         client.stdin.write("quit\n")
                         client.stdin.flush()
                         assert client.wait(timeout=10) == 0
+                results["ordered"] = ordered_controls(out, env, children)
+                results["ordered_delayed"] = ordered_controls(
+                    out, env, children, delay_finished=True
+                )
                 if "error" in baseline:
                     raise RuntimeError(
                         "Unmodified sync diagnostic infrastructure failed: " + baseline["error"]

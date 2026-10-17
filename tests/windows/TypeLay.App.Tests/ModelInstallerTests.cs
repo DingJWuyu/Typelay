@@ -16,11 +16,28 @@ namespace TypeLay.App.Tests;
 public sealed class ModelInstallerTests
 {
     [Fact]
+    public async Task FailedCpuCheckLeavesThePreviousRuntimeAndInventoryUntouched()
+    {
+        using var files = new SetupFiles();
+        string python = Path.Combine(files.Root, "runtime", "python", "tools", "python.exe");
+        string inventory = Path.Combine(files.Root, "models", "installed.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(python)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(inventory)!);
+        File.WriteAllText(python, "previous-runtime");
+        File.WriteAllText(inventory, "previous-inventory");
+        await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(files.Responses(ModelArchive),
+            startProcess: files.Child("exit /b 7")).PrepareAsync(NoProgress, TestContext.Current.CancellationToken));
+        Assert.Equal("previous-runtime", File.ReadAllText(python));
+        Assert.Equal("previous-inventory", File.ReadAllText(inventory));
+        files.AssertChildrenExited();
+    }
+
+    [Fact]
     public async Task HttpTimeoutIsNetworkFailureRatherThanUserCancellation()
     {
         using var files = new SetupFiles();
         var installer = files.Installer(new WaitingHandler(), downloadTimeout: TimeSpan.FromMilliseconds(50));
-        var error = await Assert.ThrowsAsync<ModelSetupException>(() => installer.InstallAsync(NoProgress,
+        var error = await Assert.ThrowsAsync<ModelSetupException>(() => installer.PrepareAsync(NoProgress,
             TestContext.Current.CancellationToken));
         Assert.Equal(SetupFailureCategory.Network, error.Category);
         Assert.Equal(ModelSetupStage.Runtime, error.Stage);
@@ -32,7 +49,7 @@ public sealed class ModelInstallerTests
         using var files = new SetupFiles();
         using var cancel = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         var waiting = new WaitingHandler();
-        var install = files.Installer(waiting).InstallAsync(NoProgress, cancel.Token);
+        var install = files.Installer(waiting).PrepareAsync(NoProgress, cancel.Token);
         await waiting.Started.Task.WaitAsync(TestContext.Current.CancellationToken);
         cancel.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => install);
@@ -43,7 +60,7 @@ public sealed class ModelInstallerTests
     {
         using var files = new SetupFiles();
         var installer = files.Installer(new ResponseHandler(_ => throw new HttpRequestException("private server response")));
-        var error = await Assert.ThrowsAsync<ModelSetupException>(() => installer.InstallAsync(NoProgress,
+        var error = await Assert.ThrowsAsync<ModelSetupException>(() => installer.PrepareAsync(NoProgress,
             TestContext.Current.CancellationToken));
         Assert.Equal(SetupFailureCategory.Network, error.Category);
         Assert.DoesNotContain("private server response", error.ToString());
@@ -57,7 +74,7 @@ public sealed class ModelInstallerTests
         {
             Headers = { Location = uri }
         });
-        var error = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(handler).InstallAsync(NoProgress,
+        var error = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(handler).PrepareAsync(NoProgress,
             TestContext.Current.CancellationToken));
         Assert.Equal(SetupFailureCategory.Network, error.Category);
     }
@@ -68,7 +85,7 @@ public sealed class ModelInstallerTests
         using var files = new SetupFiles();
         File.WriteAllText(Path.Combine(files.Root, "downloads"), "not a directory");
         var error = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(new ResponseHandler(_ =>
-            throw new InvalidOperationException("HTTP must not be reached"))).InstallAsync(NoProgress,
+            throw new InvalidOperationException("HTTP must not be reached"))).PrepareAsync(NoProgress,
             TestContext.Current.CancellationToken));
         Assert.Equal(SetupFailureCategory.Unknown, error.Category);
         Assert.Equal(ModelSetupStage.Prepare, error.Stage);
@@ -98,7 +115,7 @@ public sealed class ModelInstallerTests
         File.WriteAllBytes(files.CachedModel("en_zh"), untouched);
         byte[] broken = ModelArchive("zh_en", defect);
         var first = files.Responses(pair => pair == "zh_en" ? broken : ModelArchive(pair));
-        var error = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(first).InstallAsync(NoProgress,
+        var error = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(first).PrepareAsync(NoProgress,
             TestContext.Current.CancellationToken));
         Assert.Equal(SetupFailureCategory.Integrity, error.Category);
         Assert.Equal(ModelSetupStage.ModelVerify, error.Stage);
@@ -110,7 +127,7 @@ public sealed class ModelInstallerTests
         // The controlled child deliberately fails: these tiny packages never prove model inference.
         var retry = files.Responses(ModelArchive);
         var retryError = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(retry,
-            startProcess: files.Child("exit /b 7")).InstallAsync(NoProgress, TestContext.Current.CancellationToken));
+            startProcess: files.Child("exit /b 7")).PrepareAsync(NoProgress, TestContext.Current.CancellationToken));
         Assert.Equal(SetupFailureCategory.Runtime, retryError.Category);
         Assert.Equal(ModelSetupStage.SelfCheck, retryError.Stage);
         Assert.Contains("/v1/translate-zh_en-1_9.argosmodel", retry.Requests);
@@ -124,13 +141,14 @@ public sealed class ModelInstallerTests
     [InlineData("{}")]
     [InlineData("{\"status\":false}")]
     [InlineData("{\"status\":\"failed\"}")]
+    [InlineData("{\"status\":\"passed\"}")]
     [InlineData("set /p wait=")]
     public async Task FailedCpuCheckIsRuntimeFailureAndKeepsCompletedArchives(string command)
     {
         using var files = new SetupFiles();
         var installer = files.Installer(files.Responses(ModelArchive), startProcess: files.Child(command),
             selfCheckTimeout: command == "set /p wait=" ? TimeSpan.FromMilliseconds(100) : TimeSpan.FromSeconds(5));
-        var error = await Assert.ThrowsAsync<ModelSetupException>(() => installer.InstallAsync(NoProgress,
+        var error = await Assert.ThrowsAsync<ModelSetupException>(() => installer.PrepareAsync(NoProgress,
             TestContext.Current.CancellationToken));
         Assert.Equal(SetupFailureCategory.Runtime, error.Category);
         Assert.Equal(ModelSetupStage.SelfCheck, error.Stage);
@@ -141,14 +159,15 @@ public sealed class ModelInstallerTests
     }
 
     [Fact]
-    public async Task SuccessfulCheckActivatesAnInventoryWithBothInstalledDirections()
+    public async Task SuccessfulCheckPreparesBothDirectionsWithoutPublishing()
     {
         using var files = new SetupFiles();
         // The controlled external check exercises activation, not real model inference.
         var installer = files.Installer(files.Responses(ModelArchive),
-            startProcess: files.Child("{\"status\":\"passed\"}"));
-        await installer.InstallAsync(NoProgress, TestContext.Current.CancellationToken);
-        using var inventory = JsonDocument.Parse(File.ReadAllText(Path.Combine(files.Root, "models", "installed.json")));
+            startProcess: files.Child("{\"status\":\"passed\",\"device\":\"cpu\",\"results\":[{\"direction\":\"zh_en\",\"status\":\"translated\",\"nonempty\":true,\"differs\":true},{\"direction\":\"en_zh\",\"status\":\"translated\",\"nonempty\":true,\"differs\":true}]}"));
+        using var prepared = await installer.PrepareAsync(NoProgress, TestContext.Current.CancellationToken);
+        Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
+        using var inventory = JsonDocument.Parse(File.ReadAllText(Path.Combine(prepared.Paths.Models, "installed.json")));
         Assert.Equal(1, inventory.RootElement.GetProperty("schema").GetInt32());
         Assert.Equal(new[] { "zh_en", "en_zh" }, inventory.RootElement.GetProperty("directions")
             .EnumerateArray().Select(value => value.GetString()).ToArray());
@@ -157,7 +176,7 @@ public sealed class ModelInstallerTests
             string relative = entry.GetProperty("path").GetString()!;
             string expected = entry.GetProperty("sha256").GetString()!;
             string actual = Convert.ToHexString(SHA256.HashData(
-                File.ReadAllBytes(Path.Combine(files.Root, "models", relative)))).ToLowerInvariant();
+                File.ReadAllBytes(Path.Combine(prepared.Paths.Models, relative)))).ToLowerInvariant();
             Assert.Equal(expected, actual);
         });
         files.AssertChildrenExited();
@@ -173,7 +192,7 @@ public sealed class ModelInstallerTests
         using (var locked = new FileStream(files.CachedModel("zh_en"), FileMode.Open, FileAccess.Read, FileShare.None))
         {
             var error = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(files.Responses(ModelArchive))
-                .InstallAsync(NoProgress, TestContext.Current.CancellationToken));
+                .PrepareAsync(NoProgress, TestContext.Current.CancellationToken));
             Assert.Equal(SetupFailureCategory.Permission, error.Category);
             Assert.Equal(ModelSetupStage.ModelExtract, error.Stage);
         }
@@ -193,7 +212,7 @@ public sealed class ModelInstallerTests
             for (int attempt = 0; attempt < 2; attempt++)
             {
                 var error = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(files.Responses(ModelArchive))
-                    .InstallAsync(NoProgress, TestContext.Current.CancellationToken));
+                    .PrepareAsync(NoProgress, TestContext.Current.CancellationToken));
                 Assert.Equal(SetupFailureCategory.Integrity, error.Category);
                 Assert.Equal(ModelSetupStage.ModelVerify, error.Stage);
                 Assert.Equal(SetupFailureCategory.Permission, error.RecoveryFailureCategory);
@@ -207,16 +226,25 @@ public sealed class ModelInstallerTests
     [InlineData(112, SetupFailureCategory.DiskSpace)]
     [InlineData(39, SetupFailureCategory.DiskSpace)]
     [InlineData(5, SetupFailureCategory.Permission)]
-    public async Task OperatingSystemStartupFailureKeepsGoodArchives(int errorCode, SetupFailureCategory category)
+    public async Task OperatingSystemStartupFailurePreservesPreviousInstallationAndGoodArchives(int errorCode, SetupFailureCategory category)
     {
         using var files = new SetupFiles();
+        string python = Path.Combine(files.Root, "runtime", "python", "tools", "python.exe");
+        string inventory = Path.Combine(files.Root, "models", "installed.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(python)!);
+        Directory.CreateDirectory(Path.GetDirectoryName(inventory)!);
+        File.WriteAllText(python, "previous-runtime");
+        File.WriteAllText(inventory, "previous-inventory");
         var installer = files.Installer(files.Responses(ModelArchive),
             startProcess: _ => throw new Win32Exception(errorCode, "private system error"));
-        var error = await Assert.ThrowsAsync<ModelSetupException>(() => installer.InstallAsync(NoProgress,
+        var error = await Assert.ThrowsAsync<ModelSetupException>(() => installer.PrepareAsync(NoProgress,
             TestContext.Current.CancellationToken));
         Assert.Equal(category, error.Category);
         Assert.Equal(ModelSetupStage.SelfCheck, error.Stage);
         Assert.DoesNotContain("private system error", error.ToString());
+        Assert.Equal("previous-runtime", File.ReadAllText(python));
+        Assert.Equal("previous-inventory", File.ReadAllText(inventory));
+        Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
         Assert.True(File.Exists(files.CachedModel("zh_en")));
         Assert.True(File.Exists(files.CachedModel("en_zh")));
     }
@@ -233,7 +261,7 @@ public sealed class ModelInstallerTests
             cancel.Cancel();
             return child;
         });
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => installer.InstallAsync(NoProgress, cancel.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => installer.PrepareAsync(NoProgress, cancel.Token));
         Assert.True(File.Exists(files.CachedModel("zh_en")));
         Assert.True(File.Exists(files.CachedModel("en_zh")));
         files.AssertChildrenExited();
@@ -250,7 +278,7 @@ public sealed class ModelInstallerTests
                 cancel.Cancel();
         });
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => files.Installer(files.Responses(ModelArchive))
-            .InstallAsync(progress, cancel.Token));
+            .PrepareAsync(progress, cancel.Token));
         Assert.True(File.Exists(files.CachedModel("zh_en")));
         Assert.True(File.Exists(files.CachedModel("en_zh")));
     }

@@ -15,13 +15,16 @@
 +#include <typeinfo>
  #include <QWindow>
  #include <qnamespace.h>
-@@ -22,4 +27,5 @@
+@@ -22,4 +27,8 @@
  
  #include <cerrno>
 +#include <cstdio>
++#include <time.h>
++#include <algorithm>
++#include <limits>
  #include <csignal>
  #include <unistd.h>
-@@ -42,4 +48,76 @@
+@@ -42,4 +51,99 @@
  
  namespace {
 +
@@ -41,6 +44,25 @@
 +// Private counters are authority; public diagnostic properties are never trusted.
 +int tlPendingDbus = 0, tlPendingForward = 0, tlOutputDepth = 0;
 +quint64 tlQueueEpoch = 0;
++QPointer<QObject> tlQueueReceiver;
++qint64 tlNow() {
++    timespec value{};
++    return clock_gettime(CLOCK_BOOTTIME, &value) == 0
++        ? qint64(value.tv_sec) * 1000 + value.tv_nsec / 1000000
++        : std::numeric_limits<qint64>::max();
++}
++std::unique_ptr<QKeyEvent> tlCopyKey(const QKeyEvent &event) {
++#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
++    auto copy = std::make_unique<QKeyEvent>(event.type(), event.key(), event.modifiers(),
++        event.nativeScanCode(), event.nativeVirtualKey(), event.nativeModifiers(),
++        event.text(), event.isAutoRepeat(), event.count(), event.device());
++#else
++    auto copy = std::make_unique<QKeyEvent>(event);
++#endif
++    copy->setTimestamp(event.timestamp());
++    return copy;
++}
++
 +// Diagnostic identity only: never participates in authorization or queue ordering.
 +struct TlOrder { quint64 id = 0, timestamp = 0; bool release = false; };
 +quint64 tlNextOrder = 0;
@@ -67,6 +89,10 @@
 +    if (qstrcmp(name, "tlqtPendingForward") == 0) tlPendingForward += delta;
 +    if (qstrcmp(name, "tlqtOutputDepth") == 0) tlOutputDepth += delta;
 +    if (delta) ++tlQueueEpoch;
++    // A retirement only schedules work. Never decide from a destructor, before
++    // the remaining destruction slots have decremented their real counters.
++    if (delta < 0 && tlQueueReceiver)
++        QMetaObject::invokeMethod(tlQueueReceiver, "tlSchedule", Qt::DirectConnection);
 +    qApp->setProperty(name, qApp->property(name).toInt() + delta);
 +}
 +struct TlScope {
@@ -98,15 +124,20 @@
 +}
  
  template <typename T>
-@@ -266,4 +344,7 @@
+@@ -266,4 +370,12 @@
                             : nullptr) {
      registerFcitxQtDBusTypes();
 +    if (tlCooperate()) {
 +        qApp->installEventFilter(this);
++        tlQueueReceiver = this;
++        tlOrderedDeadline_.setSingleShot(true);
++        connect(&tlOrderedDeadline_, &QTimer::timeout, this, [this] {
++            cancelOrdered(tlOrdered_.id);
++        });
 +    }
      watcher_->setWatchPortal(true);
  
-@@ -271,4 +356,8 @@
+@@ -271,4 +383,8 @@
      // to event loop to ensure event dispatcher is avaiable.
      QTimer::singleShot(0, this, [this]() {
 +        for (const char *name : {"tlqtPendingDbus", "tlqtPendingForward", "tlqtRetired",
@@ -115,18 +146,47 @@
 +            tlCount(name, 0);
          watcher_->watch();
          fcitx4Watcher_->watch();
-@@ -277,4 +366,5 @@
- 
+@@ -278,4 +394,33 @@
  QFcitxPlatformInputContext::~QFcitxPlatformInputContext() {
-+    tlBind(nullptr);
      destroy_ = true;
++    // Only unsubmitted copies belong to us. In-flight watchers keep upstream
++    // cleanup semantics: replaying them could duplicate real IM output.
++    if (tlQueueReceiver == this) tlQueueReceiver.clear();
++    tlOrdered_.cancelled = true;
++    tlOrderedDeadline_.stop();
++    tlRetireOrdered();
++    const auto handoff = [this](const TlDeferred &item) {
++        const auto &key = *item.event;
++        const bool consumed = tlHeldControlKeys_.value(key.nativeScanCode(), false);
++        if (key.type() == QEvent::KeyRelease && !key.isAutoRepeat()) tlHeldControlKeys_.remove(key.nativeScanCode());
++        if (item.window && !consumed) {
++            tlEnqueue(new QWindowSystemInterfacePrivate::KeyEvent(item.window,
++                key.timestamp(), key.type(), key.key(), key.modifiers(),
++                key.nativeScanCode(), key.nativeVirtualKey(), key.nativeModifiers(),
++                key.text(), key.isAutoRepeat(), key.count()));
++        }
++    };
++    // The Decide call may outlive us. Hand its unclaimed down off first, then
++    // its queued followers, and mark it before any callback can return.
++    if (tlDecision_ && !tlDecision_->handed) {
++        tlDecision_->handed = true;
++        if (!tlDecision_->claimed) handoff(tlDecision_->original);
++    }
++    while (!tlDeferred_.empty()) {
++        auto item = std::move(tlDeferred_.front());
++        tlDeferred_.pop_front();
++        handoff(item);
++    }
++    tlBind(nullptr);
      watcher_->unwatch();
-@@ -349,4 +439,13 @@
+     fcitx4Watcher_->unwatch();
+@@ -349,4 +494,14 @@
          return false;
      }
 +    TlScope output("tlqtOutputDepth");
 +    if (tlCooperate()) {
 +        const uint cause = (!commitPreedit_.isEmpty() || !preedit_.isEmpty()) ? TlQtInput : 0u;
++        cancelOrdered(tlOrdered_.id);
 +        ++tlEpoch_;
 +        tlProofObject_.clear();
 +        if (cause && tlFields_.contains(input)) ++tlFields_[input].inputEpoch;
@@ -135,13 +195,13 @@
 +    }
      QInputMethodEvent e;
      if (!commitPreedit_.isEmpty()) {
-@@ -365,4 +464,5 @@
+@@ -365,4 +520,5 @@
  
  void QFcitxPlatformInputContext::reset() {
 +    if (tlCooperate()) tlChanged(0);
      commitPreedit();
      if (auto *proxy = validIC()) {
-@@ -522,4 +622,12 @@
+@@ -522,4 +678,12 @@
      }
  
 +    QPointer<QFcitxPlatformInputContext> focusSelf(this);
@@ -154,7 +214,7 @@
 +        focusObjectWrapper() != realFocusObject || previousFocus != lastObject_) return;
      auto *proxy = validICByWindow(lastWindow_);
      commitPreedit(lastObject_);
-@@ -534,4 +642,10 @@
+@@ -534,4 +698,10 @@
      lastWindow_ = window;
      lastObject_ = realFocusObject;
 +    tlBind(realFocusObject, detached.source.data());
@@ -165,25 +225,25 @@
 +    }
      // Always create IC Data for window.
      if (window) {
-@@ -544,4 +658,5 @@
+@@ -544,4 +714,5 @@
          lastWindow_ = nullptr;
          lastObject_ = nullptr;
 +        tlFinishDetach(std::move(detached));
          return;
      }
-@@ -562,4 +677,5 @@
+@@ -562,4 +733,5 @@
  
      updateInputPanelVisible();
 +    tlFinishDetach(std::move(detached));
  }
  
-@@ -640,4 +756,5 @@
+@@ -640,4 +812,5 @@
  
      if (proxy->isValid() && !uuid.isEmpty()) {
 +        tlCount("tlqtContexts", 1);
          QWindow *window = focusWindowWrapper();
  #ifdef ENABLE_X11
-@@ -690,4 +807,8 @@
+@@ -690,4 +863,8 @@
  
  void QFcitxPlatformInputContext::commitString(const QString &str) {
 +    TlScope output("tlqtOutputDepth");
@@ -192,7 +252,7 @@
 +    if (tlTraceLine()) std::fprintf(stderr, "tlqt-output-commit\n");
      cursorPos_ = 0;
      preeditList_.clear();
-@@ -705,4 +826,12 @@
+@@ -705,4 +882,12 @@
  void QFcitxPlatformInputContext::updateFormattedPreedit(
      const FcitxQtFormattedPreeditList &preeditList, int cursorPos) {
 +    TlScope output("tlqtOutputDepth");
@@ -205,14 +265,14 @@
 +    if (tlTraceLine()) std::fprintf(stderr, "tlqt-output-preedit\n");
      QObject *input = qGuiApp->focusObject();
      if (!input) {
-@@ -792,4 +921,6 @@
+@@ -792,4 +977,6 @@
  void QFcitxPlatformInputContext::deleteSurroundingText(int offset,
                                                         unsigned int _nchar) {
 +    TlScope output("tlqtOutputDepth");
 +    if (tlCooperate()) tlChanged(TlQtInput);
      QObject *input = qGuiApp->focusObject();
      if (!input) {
-@@ -852,4 +983,9 @@
+@@ -852,4 +1039,9 @@
  void QFcitxPlatformInputContext::forwardKey(unsigned int keyval,
                                              unsigned int state, bool type) {
 +    TlScope output("tlqtOutputDepth");
@@ -222,7 +282,7 @@
 +
      auto *proxy = qobject_cast<HybridInputContext *>(sender());
      if (!proxy) {
-@@ -873,5 +1009,10 @@
+@@ -873,5 +1065,10 @@
                                                   const QString &langCode) {
      Q_UNUSED(name);
 -    Q_UNUSED(uniqueName);
@@ -234,13 +294,13 @@
 +    if (tlProbe()) qApp->setProperty("tlqtEngine", uniqueName);
      QLocale newLocale(langCode);
      if (locale_ != newLocale) {
-@@ -882,4 +1023,5 @@
+@@ -882,4 +1079,5 @@
  
  void QFcitxPlatformInputContext::serverSideFocusOut() {
 +    if (tlCooperate()) tlChanged(TlQtFocus);
      if (lastObject_ == focusObjectWrapper()) {
          commitPreedit();
-@@ -1044,4 +1186,7 @@
+@@ -1044,4 +1242,7 @@
      ulong time = keyEvent.timestamp();
      // copied from QXcbKeyboard::handleKeyEvent()
 +    const bool trackedAsync = tlProbe() &&
@@ -248,7 +308,7 @@
 +    TlScope forwarding("tlqtPendingForward");
      if (type == QEvent::KeyPress && qtcode == Qt::Key_Menu) {
          QPoint globalPos;
-@@ -1051,10 +1196,22 @@
+@@ -1051,13 +1252,42 @@
              pos = window->mapFromGlobal(globalPos);
          }
 -        QWindowSystemInterface::handleContextMenuEvent(window, false, pos,
@@ -269,7 +329,7 @@
 +    if (trackedAsync) {
 +        tlEnqueue(new TlQueued<QWindowSystemInterfacePrivate::KeyEvent>(
 +            window, time, type, qtcode, modifiers, code, sym, state,
-+            string, isAutoRepeat, ushort(1)));
++            string, isAutoRepeat, ushort(keyEvent.count())));
 +    } else {
 +        QWindowSystemInterface::handleExtendedKeyEvent(window, time, type, qtcode,
 +                                                       modifiers, code, sym, state,
@@ -277,14 +337,33 @@
 +    }
  }
  
-@@ -1067,4 +1224,6 @@
+ bool QFcitxPlatformInputContext::filterEvent(const QEvent *event) {
++    if (tlCooperate() && (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease)) {
++        const auto *key = static_cast<const QKeyEvent *>(event);
++        QPointer<QFcitxPlatformInputContext> alive(this);
++        if (tlOrderedKey(key)) return true;
++        if (!alive) return false;
++        if (tlControlKey(key)) return true;
++        if (!alive) return false;
++        const bool prefix = tlOrdered_.id && !tlOrdered_.cancelled && !tlOrdered_.submitted
++            && key->key() == Qt::Key_Control && key->nativeScanCode() == tlOrdered_.ctrlScan
++            && key->timestamp() == tlOrdered_.ctrlTimestamp;
++        if (prefix) tlOrdered_.submitted = true;
++        return tlOriginalFilter(event, prefix);
++    }
++    return tlOriginalFilter(event);
++}
++
++bool QFcitxPlatformInputContext::tlOriginalFilter(const QEvent *event, bool prefix) {
+     do {
+         if (event->type() != QEvent::KeyPress &&
+@@ -1067,4 +1297,5 @@
  
          const auto *keyEvent = static_cast<const QKeyEvent *>(event);
-+        if (tlCooperate() && tlControlKey(keyEvent)) return true;
-+        if (tlCooperate()) tlChanged(tlKeyCause(keyEvent->key()));
++        if (tlCooperate()) tlChanged(tlKeyCause(keyEvent->key()) | (prefix ? TlQtOrderedPrefix : 0u));
          quint32 keyval = keyEvent->nativeVirtualKey();
          quint32 keycode = keyEvent->nativeScanCode();
-@@ -1100,4 +1259,14 @@
+@@ -1100,4 +1331,14 @@
              stateToFcitx |= (1U << 31);
          }
 +        if (tlProbe() && syncMode_) {
@@ -299,7 +378,7 @@
 +        TlScope submitting("tlqtPendingDbus");
          auto reply = proxy->processKeyEvent(keyval, keycode, stateToFcitx,
                                              isRelease, keyEvent->timestamp());
-@@ -1105,8 +1274,17 @@
+@@ -1105,8 +1346,17 @@
          if (Q_UNLIKELY(syncMode_)) {
              reply.waitForFinished();
 +            tlCount("tlqtSyncReplies", 1);
@@ -318,14 +397,14 @@
 +                if (fallback) {
                      return true;
                  }
-@@ -1118,6 +1296,18 @@
+@@ -1118,6 +1368,18 @@
          auto *watcher = new ProcessKeyWatcher(*keyEvent, focusWindowWrapper(),
                                                reply, proxy);
 +        watcher->setProperty("tlOrderId", QVariant::fromValue(submitted.id));
 +        watcher->setProperty("tlOrderTimestamp", QVariant::fromValue(submitted.timestamp));
 +        tlKeyQueue_.push_back(watcher);
 +        connect(watcher, &QObject::destroyed, this, [this] {
-+            if (!destroy_) tlDrainKeys();
++            if (!destroy_) tlSchedule();
 +        });
 +        tlCount("tlqtPendingDbus", 1);
 +        connect(watcher, &QObject::destroyed, qApp, [] {
@@ -338,7 +417,7 @@
 +        });
          return true;
  
-@@ -1128,5 +1318,48 @@
+@@ -1128,5 +1390,59 @@
  void QFcitxPlatformInputContext::processKeyEventFinished(
      QDBusPendingCallWatcher *w) {
 +    tlCount("tlqtKeyReplies", 1);
@@ -361,7 +440,18 @@
 +        tlDelayedFinished_.clear();
 +        tlCount("tlqtDelayedCompletion", 1);
 +    }
-+    tlDrainKeys();
++    tlSchedule();
++}
++
++void QFcitxPlatformInputContext::tlSchedule() {
++    if (destroy_ || tlScheduled_) return;
++    tlScheduled_ = true;
++    QTimer::singleShot(0, this, [this] {
++        tlScheduled_ = false;
++        QPointer<QFcitxPlatformInputContext> alive(this);
++        tlDrainKeys();
++        if (alive) tlAdvanceOrdered();
++    });
 +}
 +
 +void QFcitxPlatformInputContext::tlDrainKeys() {
@@ -387,19 +477,33 @@
 +    tlOrderTrace("reply", order, int(watcher->isError()));
      bool filtered = false;
  
-@@ -1159,4 +1392,5 @@
+@@ -1159,4 +1475,5 @@
      }
  
 +    tlOrderTrace("decision", order, int(filtered));
      if (!filtered) {
          forwardEvent(window, keyEvent);
-@@ -1306,3 +1540,339 @@
+@@ -1167,9 +1484,5 @@
+                 proxy->property("icData").value<void *>());
+ #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+-            data.event = std::make_unique<QKeyEvent>(
+-                keyEvent.type(), keyEvent.key(), keyEvent.modifiers(),
+-                keyEvent.nativeScanCode(), keyEvent.nativeVirtualKey(),
+-                keyEvent.nativeModifiers(), keyEvent.text(),
+-                keyEvent.isAutoRepeat(), keyEvent.count(), keyEvent.device());
++            data.event = tlCopyKey(keyEvent);
+ #else
+             data.event = std::make_unique<QKeyEvent>(keyEvent);
+@@ -1306,3 +1619,567 @@
  }
  
 +// TypeLay 2026-10-12: exact-object cooperation for the original async IM path.
 +void QFcitxPlatformInputContext::tlChanged(quint32 causes) {
++    if (tlOrdered_.id && causes != (TlQtModifier | TlQtOrderedPrefix)) cancelOrdered(tlOrdered_.id);
 +    if (causes & TlQtBinding) tlRevokeDetached(TlQtBinding);
 +    ++tlEpoch_;
++    if (causes == (TlQtModifier | TlQtOrderedPrefix) && !tlOrdered_.cancelled)
++        tlOrdered_.epoch = tlEpoch_;
 +    tlProofObject_.clear();
 +    if (tlBound_ && (causes & TlQtInput)) ++tlFields_[tlBound_].inputEpoch;
 +    Q_EMIT typelayStateChangedV1(tlBound_, causes);
@@ -414,6 +518,7 @@
 +        if (!tlFields_.contains(actual)) {
 +            tlFields_.insert(actual, {++tlNextGeneration_, 0});
 +            connect(actual, &QObject::destroyed, this, [this, actual]() {
++                if (tlOrdered_.actual == actual) cancelOrdered(tlOrdered_.id);
 +                tlFields_.remove(actual);
 +                if (!tlDetached_.source || !tlDetached_.destination)
 +                    tlRevokeDetached(TlQtBinding);
@@ -663,6 +768,222 @@
 +    return accept != exit && available(accept) && available(exit);
 +}
 +
++bool QFcitxPlatformInputContext::supportsOrderedKeys(QObject *actual, quint32 accept, quint32 exit) const {
++    if (!tlCooperate() || syncMode_ || destroy_ || !actual || (!accept && !exit) ||
++        QThread::currentThread() != thread() ||
++        actual->property(TypeLayFcitxQtProviderPropertyV1).value<QObject *>() != this) return false;
++    const auto keys = qApp->property(TypeLayFcitxQtOrderedKeysPropertyV1).toList();
++    const auto installed = [&](quint32 symbol) {
++        if (!symbol) return true; // This action is plain, not an ordered route.
++        if (symbol < 0xffbeu || symbol > 0xffd5u) return false;
++        for (const auto &key : keys)
++            if (key.metaType() == QMetaType::fromType<uint>() && key.toUInt() == symbol) return true;
++        return false;
++    };
++    return installed(accept) && installed(exit);
++}
++
++void QFcitxPlatformInputContext::tlDeadline(qint64 until) {
++    tlOrdered_.until = until;
++    tlOrderedDeadline_.start(int(std::clamp<qint64>(until - tlNow(), 0, 150)));
++}
++
++void QFcitxPlatformInputContext::cancelOrdered(quint64 ticket) {
++    if (!ticket || ticket != tlOrdered_.id || tlOrdered_.cancelled) return;
++    tlOrdered_.cancelled = true;
++    tlOrderedDeadline_.stop();
++    tlSchedule(); // Permission is gone now; original events are not discarded.
++}
++
++void QFcitxPlatformInputContext::tlRetireOrdered() {
++    const auto previous = tlOrdered_;
++    tlOrdered_ = {};
++    tlOrderedDeadline_.stop();
++    if (previous.consumer) {
++        auto *control = qobject_cast<TypeLayFcitxQtOrderedControlV1 *>(previous.consumer.data());
++        if (control) control->retireOrdered(previous.id);
++    }
++}
++
++bool QFcitxPlatformInputContext::validateOrdered(QObject *actual, quint64 ticket,
++    const TypeLayFcitxQtStateV1 *before, const TypeLayFcitxQtStateV1 *current) {
++    const auto &saved = tlOrdered_.before;
++    return before && current && ticket && ticket == tlOrdered_.id && tlOrdered_.deciding &&
++        !tlOrdered_.cancelled && actual == tlOrdered_.actual && tlNow() < tlOrdered_.until &&
++        tlOrdered_.consumer && qApp->property(TypeLayFcitxQtConsumerPropertyV1).value<QObject *>() == tlOrdered_.consumer &&
++        before->size == sizeof(*before) && before->version == 1 &&
++        before->contextGeneration == saved.contextGeneration && before->fieldGeneration == saved.fieldGeneration &&
++        before->epoch == saved.epoch && before->inputEpoch == saved.inputEpoch &&
++        before->serverSerial == saved.serverSerial && before->appliedSerial == saved.appliedSerial &&
++        before->flags == saved.flags && current->epoch == tlOrdered_.epoch &&
++        current->contextGeneration == saved.contextGeneration && current->fieldGeneration == saved.fieldGeneration &&
++        current->inputEpoch == saved.inputEpoch && current->serverSerial == saved.serverSerial &&
++        current->appliedSerial == saved.appliedSerial && validateLocal(actual, current);
++}
++
++bool QFcitxPlatformInputContext::claimOrdered(QObject *actual, quint64 ticket,
++    const TypeLayFcitxQtStateV1 *before, const TypeLayFcitxQtStateV1 *current) {
++    if (!validateOrdered(actual, ticket, before, current) || tlOrdered_.claimed) return false;
++    tlOrdered_.claimed = true;
++    if (tlDecision_) tlDecision_->claimed = true;
++    tlHeldControlKeys_.insert(tlOrdered_.scan, true);
++    return true;
++}
++
++bool QFcitxPlatformInputContext::tlOrderedKey(const QKeyEvent *key) {
++    if (tlOrderedDraining_ || syncMode_ || destroy_) return false;
++    if (tlOrdered_.deciding) {
++        if (key->nativeScanCode() != tlOrdered_.scan) { cancelOrdered(tlOrdered_.id); return false; }
++        // One additional original (the deciding Fn) lives on the caller stack.
++        if (tlDeferred_.size() < 63) {
++            tlDeferred_.push_back({tlCopyKey(*key), focusWindowWrapper()});
++            return true;
++        }
++        cancelOrdered(tlOrdered_.id);
++        if (!tlOrdered_.claimed) return false; // claim now cannot succeed.
++        if (key->type() == QEvent::KeyRelease && !key->isAutoRepeat()) tlOrdered_.releasedDuringDecision = true;
++        return true; // Already consumed; no additional event copy is necessary.
++    }
++    const bool down = key->type() == QEvent::KeyPress && !key->isAutoRepeat();
++    const auto scan = key->nativeScanCode();
++    QPointer<QFcitxPlatformInputContext> alive(this);
++    if (tlOrdered_.id) {
++        if (tlNow() >= tlOrdered_.until) cancelOrdered(tlOrdered_.id);
++        if (tlOrdered_.cancelled) {
++            tlPassDeferred();
++            return false;
++        }
++        if (!tlDeferred_.empty()) {
++            if (tlDeferred_.size() >= 64) {
++                cancelOrdered(tlOrdered_.id);
++                // Keep the triggering original on its native stack. Reentrant
++                // application input follows upstream semantics, not a new FIFO.
++                tlPassDeferred();
++                return false;
++            }
++            tlDeferred_.push_back({tlCopyKey(*key), focusWindowWrapper()});
++            return true; // Transport ownership only, not a TypeLay consumption.
++        }
++        const auto &grant = tlOrdered_.grant;
++        const quint32 symbol = key->nativeVirtualKey();
++        const qint64 until = symbol == grant.accept ? grant.acceptUntil
++            : symbol == grant.exit ? grant.exitUntil : 0;
++        if (down && scan && key->modifiers() == Qt::ControlModifier && until > tlNow() &&
++            key->key() >= Qt::Key_F1 && key->key() <= Qt::Key_F24 &&
++            !tlHeldControlKeys_.contains(scan) && tlHeldControlKeys_.size() < 64 &&
++            supportsOrderedKeys(tlOrdered_.actual, symbol, 0u)) {
++            tlOrdered_.scan = scan;
++            tlHeldControlKeys_.insert(scan, false);
++            tlDeferred_.push_back({tlCopyKey(*key), focusWindowWrapper()});
++            tlDeadline(until); // The selected original deadline, never now + lease.
++            tlSchedule();
++            return true;
++        }
++        cancelOrdered(tlOrdered_.id);
++        tlPassDeferred();
++        return false;
++    }
++    if (!down || !scan || key->key() != Qt::Key_Control ||
++        (key->modifiers() & ~Qt::ControlModifier) || tlPendingDbus || tlPendingForward || tlOutputDepth)
++        return false;
++    QPointer<QObject> actual(focusObjectWrapper());
++    QPointer<QObject> consumer(qApp->property(TypeLayFcitxQtConsumerPropertyV1).value<QObject *>());
++    auto *control = consumer ? qobject_cast<TypeLayFcitxQtOrderedControlV1 *>(consumer.data()) : nullptr;
++    if (!control || !actual || actual != tlBound_ ||
++        qApp->property(TypeLayFcitxQtOrderedKeysPropertyV1).toList().isEmpty()) return false;
++    TypeLayFcitxQtStateV1 before;
++    if (!inspect(actual, &before) || !alive || !actual || !consumer || !validateLocal(actual, &before)) return false;
++    const auto id = ++tlNextTicket_;
++    tlOrdered_.id = id; // Reserve before the consumer can reenter/revoke.
++    tlOrdered_.actual = actual;
++    tlOrdered_.consumer = consumer;
++    tlOrdered_.before = before;
++    tlOrdered_.epoch = before.epoch;
++    tlOrdered_.ctrlScan = scan;
++    tlOrdered_.ctrlTimestamp = key->timestamp();
++    TypeLayFcitxQtOrderedGrantV1 grant;
++    const bool accepted = control->beginOrdered(actual, id, key, &before, &grant);
++    if (!alive) return false;
++    if (!accepted || !actual || !consumer || tlOrdered_.id != id || tlOrdered_.cancelled ||
++        actual != tlBound_ || !validateLocal(actual, &before) ||
++        !supportsOrderedKeys(actual, grant.acceptUntil ? grant.accept : 0u, grant.exitUntil ? grant.exit : 0u)) {
++        cancelOrdered(id);
++        tlRetireOrdered();
++        return false;
++    }
++    tlOrdered_.grant = grant;
++    tlDeadline(std::max(grant.acceptUntil, grant.exitUntil));
++    return false; // Original Ctrl is always handled by the original provider.
++}
++
++void QFcitxPlatformInputContext::tlPassDeferred() {
++    if (tlOrderedDraining_ || tlOrdered_.deciding) return;
++    tlOrderedDraining_ = true;
++    QPointer<QFcitxPlatformInputContext> alive(this);
++    tlRetireOrdered();
++    if (!alive) return;
++    while (!tlDeferred_.empty()) {
++        auto item = std::move(tlDeferred_.front());
++        tlDeferred_.pop_front();
++        const auto &key = *item.event;
++        if (key.type() == QEvent::KeyPress && !tlHeldControlKeys_.contains(key.nativeScanCode())
++            && tlHeldControlKeys_.size() < 64 && (key.key() == Qt::Key_Tab || key.key() == Qt::Key_Escape
++                || (key.key() >= Qt::Key_F1 && key.key() <= Qt::Key_F24)))
++            tlHeldControlKeys_.insert(key.nativeScanCode(), false);
++        const auto held = tlHeldControlKeys_.constFind(key.nativeScanCode());
++        const bool consumed = held != tlHeldControlKeys_.cend() && *held;
++        if (key.type() == QEvent::KeyRelease && !key.isAutoRepeat()) tlHeldControlKeys_.remove(key.nativeScanCode());
++        if (consumed || !item.window) continue;
++        // No recursive public filter: preserve upstream IM queries and fallback.
++        // Their application reentry retains normal Qt semantics after revocation.
++        const bool filtered = tlOriginalFilter(item.event.get());
++        if (!alive) return;
++        if (!filtered && item.window) forwardEvent(item.window, key);
++        if (!alive) return;
++    }
++    tlOrderedDraining_ = false;
++}
++
++void QFcitxPlatformInputContext::tlAdvanceOrdered() {
++    if (!tlOrdered_.id || tlOrderedDraining_ || tlOrdered_.deciding || destroy_) return;
++    if (tlNow() >= tlOrdered_.until) cancelOrdered(tlOrdered_.id);
++    if (tlOrdered_.cancelled) { tlPassDeferred(); return; }
++    if (tlDeferred_.empty() || tlPendingDbus || tlPendingForward || tlOutputDepth || !tlKeyQueue_.empty()) return;
++    const auto id = tlOrdered_.id;
++    QPointer<QFcitxPlatformInputContext> alive(this);
++    QPointer<QObject> actual = tlOrdered_.actual, consumer = tlOrdered_.consumer;
++    auto *control = consumer ? qobject_cast<TypeLayFcitxQtOrderedControlV1 *>(consumer.data()) : nullptr;
++    TypeLayFcitxQtStateV1 current;
++    if (!control || !actual || !inspect(actual, &current)) {
++        if (alive) { cancelOrdered(id); tlPassDeferred(); }
++        return;
++    }
++    if (!alive) return;
++    tlOrdered_.deciding = true;
++    if (!validateOrdered(actual, id, &tlOrdered_.before, &current)) {
++        tlOrdered_.deciding = false;
++        cancelOrdered(id); tlPassDeferred(); return;
++    }
++    // Keep the Fn node alive across callbacks; the queue is not drained/replaced
++    // while deciding. A reentrant revoke may reject, but cannot replay this Fn.
++    const auto scan = tlOrdered_.scan;
++    auto decision = std::make_shared<TlDecision>();
++    decision->original = std::move(tlDeferred_.front());
++    tlDeferred_.pop_front();
++    tlDecision_ = decision;
++    const bool consumed = control->decideOrdered(actual, id, decision->original.event.get(), &current);
++    if (!alive) return; // Destructor handed off unclaimed originals exactly once.
++    tlDecision_.reset();
++    tlOrdered_.deciding = false;
++    const bool owned = consumed || decision->claimed;
++    const bool released = tlOrdered_.releasedDuringDecision;
++    if (owned) tlHeldControlKeys_.insert(scan, true);
++    else tlDeferred_.push_front(std::move(decision->original));
++    tlOrdered_.cancelled = true;
++    tlPassDeferred();
++    if (alive && released) tlHeldControlKeys_.remove(scan);
++}
++
 +bool QFcitxPlatformInputContext::tlControlKey(const QKeyEvent *event) {
 +    const bool release = event->type() == QEvent::KeyRelease;
 +    bool traceCandidate = event->key() == Qt::Key_Tab || event->key() == Qt::Key_Escape;
@@ -693,6 +1014,7 @@
 +    if (release || event->isAutoRepeat()) { trace("precheck", 0); return false; }
 +    const bool sessionCandidate = event->key() >= Qt::Key_F1 && event->key() <= Qt::Key_F24;
 +    if (!traceCandidate && !sessionCandidate) return false;
++    if (tlHeldControlKeys_.size() >= 64) return false;
 +    tlHeldControlKeys_.insert(scan, false);
 +    if (tlControl_) { trace("precheck", 0); return false; }
 +    bool candidate = event->modifiers() == Qt::NoModifier &&
@@ -727,8 +1049,15 @@
 +            tlRevokeDetached(TlQtFocus);
 +    }
 +    if (tlCooperate() && tlPendingForward && object == tlBound_ &&
-+        (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease))
-+        tlChanged(tlKeyCause(static_cast<QKeyEvent *>(event)->key()));
++        (event->type() == QEvent::KeyPress || event->type() == QEvent::KeyRelease)) {
++        const auto *key = static_cast<QKeyEvent *>(event);
++        const bool prefix = tlOrdered_.id && !tlOrdered_.cancelled && tlOrdered_.submitted
++            && !tlOrdered_.replayed && event->type() == QEvent::KeyPress
++            && key->key() == Qt::Key_Control && key->nativeScanCode() == tlOrdered_.ctrlScan
++            && key->timestamp() == tlOrdered_.ctrlTimestamp;
++        if (prefix) tlOrdered_.replayed = true;
++        tlChanged(tlKeyCause(key->key()) | (prefix ? TlQtOrderedPrefix : 0u));
++    }
 +    return QPlatformInputContext::eventFilter(object, event);
 +}
 +
@@ -741,41 +1070,84 @@
 +// TypeLay 2026-10-12: versioned exact-object cooperation for the original IM.
  #ifndef QFCITXPLATFORMINPUTCONTEXT_H
  #define QFCITXPLATFORMINPUTCONTEXT_H
-@@ -12,4 +13,6 @@
+@@ -12,4 +13,7 @@
  #include "fcitxqtwatcher.h"
  #include "hybridinputcontext.h"
 +#include "typelay-fcitx-qt-v1.h"
 +#include <QHash>
++#include <QTimer>
  #include <QDBusConnection>
  #include <QDBusPendingCallWatcher>
-@@ -21,4 +24,5 @@
+@@ -21,4 +25,5 @@
  #include <QWindow>
  #include <memory>
 +#include <deque>
  #include <qpa/qplatforminputcontext.h>
  #include <unordered_map>
-@@ -104,7 +108,14 @@
+@@ -68,6 +73,10 @@
+                  event.nativeScanCode(), event.nativeVirtualKey(),
+                  event.nativeModifiers(), event.text(), event.isAutoRepeat(),
+-                 event.count()),
+-          window_(window) {}
++                 event.count()
++#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
++                 , event.device()
++#endif
++                 ),
++          window_(window) { event_.setTimestamp(event.timestamp()); }
+ 
+     const QKeyEvent &keyEvent() { return event_; }
+@@ -104,7 +113,19 @@
  };
  
 -class QFcitxPlatformInputContext : public QPlatformInputContext {
 +class QFcitxPlatformInputContext : public QPlatformInputContext, public TypeLayFcitxQtV1,
-+                                   public TypeLayFcitxQtControlKeysV1 {
++                                   public TypeLayFcitxQtControlKeysV1, public TypeLayFcitxQtOrderedProviderV1 {
      Q_OBJECT
-+    Q_INTERFACES(TypeLayFcitxQtV1 TypeLayFcitxQtControlKeysV1)
++    Q_INTERFACES(TypeLayFcitxQtV1 TypeLayFcitxQtControlKeysV1 TypeLayFcitxQtOrderedProviderV1)
  public:
 +    bool inspect(QObject *, TypeLayFcitxQtStateV1 *) override;
 +    bool validateLocal(QObject *, const TypeLayFcitxQtStateV1 *) override;
 +    bool prepareCaret(QObject *, const TypeLayFcitxQtStateV1 *) override;
 +    bool supportsControlKeys(QObject *, quint32 accept, quint32 exit) const override;
++    bool supportsOrderedKeys(QObject *, quint32 accept, quint32 exit) const override;
++    void cancelOrdered(quint64 ticket) override;
++    bool validateOrdered(QObject *, quint64, const TypeLayFcitxQtStateV1 *, const TypeLayFcitxQtStateV1 *) override;
++    bool claimOrdered(QObject *, quint64, const TypeLayFcitxQtStateV1 *, const TypeLayFcitxQtStateV1 *) override;
++    Q_INVOKABLE void tlSchedule();
 +    bool eventFilter(QObject *, QEvent *) override;
      QFcitxPlatformInputContext();
      ~QFcitxPlatformInputContext() override;
-@@ -160,4 +169,45 @@
+@@ -160,4 +181,69 @@
      void processKeyEventFinished(QDBusPendingCallWatcher *);
  
 +Q_SIGNALS:
 +    void typelayStateChangedV1(QObject *actual, uint causes);
 +private:
++    struct TlOrdered {
++        quint64 id = 0, epoch = 0;
++        QPointer<QObject> actual, consumer;
++        TypeLayFcitxQtStateV1 before;
++        TypeLayFcitxQtOrderedGrantV1 grant;
++        quint32 ctrlScan = 0, scan = 0;
++        ulong ctrlTimestamp = 0;
++        qint64 until = 0;
++        bool cancelled = false, submitted = false, replayed = false, deciding = false;
++        bool claimed = false, releasedDuringDecision = false;
++    } tlOrdered_;
++    struct TlDeferred { std::unique_ptr<QKeyEvent> event; QPointer<QWindow> window; };
++    struct TlDecision { TlDeferred original; bool claimed = false, handed = false; };
++    std::shared_ptr<TlDecision> tlDecision_;
++    std::deque<TlDeferred> tlDeferred_;
++    quint64 tlNextTicket_ = 0;
++    QTimer tlOrderedDeadline_;
++    bool tlScheduled_ = false, tlOrderedDraining_ = false;
++    bool tlOriginalFilter(const QEvent *, bool prefix = false);
++    bool tlOrderedKey(const QKeyEvent *);
++    void tlAdvanceOrdered();
++    void tlPassDeferred();
++    void tlRetireOrdered();
++    void tlDeadline(qint64 until);
 +    std::deque<QPointer<ProcessKeyWatcher>> tlKeyQueue_;
 +    QPointer<ProcessKeyWatcher> tlDelayedFinished_;
 +    bool tlDrainingKeys_ = false;

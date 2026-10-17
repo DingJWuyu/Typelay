@@ -1160,8 +1160,6 @@ internal sealed class SettingsWindow : Window
     {
         if (_install is not null)
             return;
-        SessionMustEnd?.Invoke();
-        _model.Dispose();
         using var operation = new CancellationTokenSource();
         _install = operation;
         _setupFailure = null;
@@ -1187,15 +1185,16 @@ internal sealed class SettingsWindow : Window
                         _progress.Value = 100.0 * update.Downloaded / update.Total.Value;
                 }
             });
-            await _createInstaller().InstallAsync(progress, operation.Token);
+            using var prepared = await _createInstaller().PrepareAsync(progress, operation.Token);
             acceptingProgress = false;
             operation.Token.ThrowIfCancellationRequested();
+            SessionMustEnd?.Invoke();
             _startingModel = true;
             _setupStatus = "正在启动本地翻译…";
             RefreshPreparation();
-            await _model.StartAsync();
-            if (_model.Ready)
+            if (await _model.ReloadAsync(prepared.Paths, prepared.Publish, operation.Token))
             {
+                prepared.Complete();
                 await SaveAsync(_settings.Value with
                 {
                     OnboardingComplete = true
@@ -1217,6 +1216,12 @@ internal sealed class SettingsWindow : Window
             SetupFailed(SetupFailureCategory.Unknown, "Preparation");
         }
         finally { acceptingProgress = false; _startingModel = false; _install = null; RefreshPreparation(); }
+    }
+    internal void CancelPreparation() => _install?.Cancel();
+    internal void ReportSetupFailure(ModelSetupException failure)
+    {
+        SetupFailed(failure.Category, failure.Stage.ToString(), failure.RecoveryFailureCategory);
+        RefreshPreparation();
     }
     private void SetupFailed(SetupFailureCategory category, string stage, SetupFailureCategory? recovery = null)
     {

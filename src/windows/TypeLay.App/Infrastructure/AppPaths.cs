@@ -1,13 +1,12 @@
 using System.Diagnostics;
+using TypeLay.Runtime;
 namespace TypeLay.App;
 
 internal static class AppPaths
 {
     public static string Home => Environment.GetEnvironmentVariable("TYPELAY_HOME") ?? AppContext.BaseDirectory;
     public static string Data { get; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "TypeLay");
-    public static string Runtime => Path.Combine(Data, "runtime");
-    public static string Python => Path.Combine(Runtime, "python", "tools", "python.exe");
-    public static string Models => Path.Combine(Data, "models");
+    public static ModelRuntimePaths ModelPaths => new ModelInstallationStore(Data, Worker).InitialPaths();
     public static string DotNet => Environment.GetEnvironmentVariable("TYPELAY_DOTNET") ?? "dotnet";
     public static string Worker => Path.Combine(Home, "worker", "run_worker.py");
     public static ProcessStartInfo Child(string assembly)

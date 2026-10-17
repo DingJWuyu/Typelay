@@ -11,13 +11,17 @@ inline constexpr char TypeLayFcitxQtConsumerPropertyV1[] = "typelay.fcitx.qt.con
 
 // QVariantList of uint native/XKB keyvals from the consumer's host configuration.
 inline constexpr char TypeLayFcitxQtControlKeysPropertyV1[] = "typelay.fcitx.qt.control-keys.v1";
+// Only installed Ctrl+Fn symbols. This advertises routing, never permission.
+inline constexpr char TypeLayFcitxQtOrderedKeysPropertyV1[] = "typelay.fcitx.qt.ordered-keys.v1";
 
 enum TypeLayFcitxQtFlagV1 : quint32 {
     TlQtKnown = 1u, TlQtFocused = 2u, TlQtPending = 4u, TlQtComposing = 8u,
     TlQtDetached = 16u
 };
 enum TypeLayFcitxQtCauseV1 : quint32 {
-    TlQtInput = 1u, TlQtFocus = 2u, TlQtBinding = 4u, TlQtModifier = 8u
+    TlQtInput = 1u, TlQtFocus = 2u, TlQtBinding = 4u, TlQtModifier = 8u,
+    // Only the exact original Ctrl submission/replay, not ForwardKey(Control).
+    TlQtOrderedPrefix = 16u
 };
 struct TypeLayFcitxQtStateV1 {
     quint32 size = sizeof(TypeLayFcitxQtStateV1);
@@ -69,4 +73,42 @@ public:
 };
 #define TypeLayFcitxQtControlV1_iid "org.typelay.FcitxQtControl/1.0"
 Q_DECLARE_INTERFACE(TypeLayFcitxQtControlV1, TypeLayFcitxQtControlV1_iid)
+
+struct TypeLayFcitxQtOrderedGrantV1 {
+    quint32 accept = 0, exit = 0;
+    // Existing CLOCK_BOOTTIME deadlines, independently frozen before Ctrl.
+    qint64 acceptUntil = 0, exitUntil = 0;
+};
+class TypeLayFcitxQtOrderedProviderV1 {
+public:
+    virtual ~TypeLayFcitxQtOrderedProviderV1() = default;
+    // Zero marks a plain action. Every nonzero symbol must be installed.
+    virtual bool supportsOrderedKeys(QObject *actual, quint32 accept, quint32 exit) const = 0;
+    virtual void cancelOrdered(quint64 ticket) = 0;
+    // Private, synchronous Decide-stack proof. Fresh inspect alone is not proof
+    // of continuity; the original source authority must remain unchanged.
+    virtual bool validateOrdered(QObject *actual, quint64 ticket,
+        const TypeLayFcitxQtStateV1 *before, const TypeLayFcitxQtStateV1 *current) = 0;
+    // Called immediately before the first possible mutation (including selection)
+    // or exit dispatch. On success this physical Fn pair cannot be replayed.
+    virtual bool claimOrdered(QObject *actual, quint64 ticket,
+        const TypeLayFcitxQtStateV1 *before, const TypeLayFcitxQtStateV1 *current) = 0;
+};
+#define TypeLayFcitxQtOrderedProviderV1_iid "org.typelay.FcitxQtOrderedProvider/1.0"
+Q_DECLARE_INTERFACE(TypeLayFcitxQtOrderedProviderV1, TypeLayFcitxQtOrderedProviderV1_iid)
+
+class TypeLayFcitxQtOrderedControlV1 {
+public:
+    virtual ~TypeLayFcitxQtOrderedControlV1() = default;
+    // The provider reserves ticket before this call. Neither side retains event
+    // pointers. True freezes an existing grant; it does not consume Ctrl.
+    virtual bool beginOrdered(QObject *actual, quint64 ticket, const QEvent *ctrl,
+        const TypeLayFcitxQtStateV1 *before, TypeLayFcitxQtOrderedGrantV1 *grant) = 0;
+    virtual bool decideOrdered(QObject *actual, quint64 ticket, const QEvent *key,
+        const TypeLayFcitxQtStateV1 *current) = 0;
+    // Retirement must not call cancelOrdered back or release held scan ownership.
+    virtual void retireOrdered(quint64 ticket) = 0;
+};
+#define TypeLayFcitxQtOrderedControlV1_iid "org.typelay.FcitxQtOrderedControl/1.0"
+Q_DECLARE_INTERFACE(TypeLayFcitxQtOrderedControlV1, TypeLayFcitxQtOrderedControlV1_iid)
 #endif
