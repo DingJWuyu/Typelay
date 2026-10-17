@@ -185,7 +185,7 @@ internal static partial class BrowserCooperationCheck
                 await cdp.OpenPageAsync(server.Url, ct);
                 await FocusPageAsync(cdp, windows, ct);
                 setup.Stage = "discover-loaded-extension-and-register";
-                extensionId = await cdp.ExtensionIdAsync(ct);
+                extensionId = await cdp.ExtensionIdAsync(Path.Combine(extension, "manifest.json"), ct);
                 registrationAbsent = false;
                 using (var before = JsonDocument.Parse(await HostCommandAsync(host, ["status"], ct)))
                     Require(!before.RootElement.GetProperty("registered").GetBoolean(), "preexisting-host-registration");
@@ -396,6 +396,7 @@ internal static partial class BrowserCooperationCheck
             browser = "Chrome for Testing",
             extensionDistribution = "unpacked-development-validation-not-store-install",
             extensionId,
+            extensionDiscovery = cdp?.Discovery,
             modelSource = "same-run-verified-installation",
             realModelPreviewObserved = modelPreviewObserved,
             noModelDownloads = true,

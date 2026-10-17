@@ -20,7 +20,10 @@ internal static class Program
             if (!OperatingSystem.IsWindows())
                 throw new InvalidOperationException("windows-required");
             string executable = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "TypeLay.BrowserHost.exe"));
-            if (!string.Equals(Environment.ProcessPath, executable, StringComparison.OrdinalIgnoreCase))
+            // GetModuleFileName can preserve the launcher's 8.3 spelling. Compare the
+            // same normalization used for the installed path and pipe-peer image paths.
+            if (Environment.ProcessPath is not { } processPath
+                || !string.Equals(Path.GetFullPath(processPath), executable, StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("native-apphost-required");
             var registration = new BrowserRegistration(executable);
             if (native)

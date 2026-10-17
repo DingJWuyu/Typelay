@@ -165,6 +165,46 @@ class DistributionTests(unittest.TestCase):
                 self.assertEqual(result.stdout, b"")
                 self.assertNotIn(b"unexpected", result.stderr)
 
+    @unittest.skipUnless(sys.platform == "win32", "Packaged Windows executable")
+    def test_browser_host_help_accepts_the_same_executable_through_its_short_path(self):
+        host = (self.home / "app/TypeLay.BrowserHost.exe").resolve()
+        normal = subprocess.run(
+            [str(host), "--help"], cwd=self.temporary.name, capture_output=True, timeout=10
+        )
+        self.assertEqual(normal.returncode, 0, normal.stderr.decode(errors="replace"))
+        self.assertIn(b"register --extension-id", normal.stdout)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetShortPathNameW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_ulong]
+        kernel32.GetShortPathNameW.restype = ctypes.c_ulong
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = kernel32.GetShortPathNameW(str(host), buffer, len(buffer))
+        self.assertGreater(length, 0, "Windows could not resolve the existing executable path.")
+        self.assertLess(length, len(buffer))
+        alias = buffer.value
+        if alias.casefold() == str(host).casefold():
+            self.skipTest("This Windows volume provides no distinct 8.3 alias for the host.")
+        self.assertTrue(os.path.samefile(alias, host))
+        result = subprocess.run(
+            [alias, "--help"], cwd=self.temporary.name, capture_output=True, timeout=10
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+        self.assertEqual(result.stdout, normal.stdout)
+        self.assertEqual(result.stderr, b"")
+
+    @unittest.skipUnless(sys.platform == "win32", "Packaged Windows executable")
+    def test_browser_host_rejects_a_different_executable_at_the_same_installation(self):
+        host = self.home / "app/TypeLay.BrowserHost.exe"
+        other = host.with_name("Other.TypeLay.BrowserHost.exe")
+        with other.open("xb") as output:
+            self.addCleanup(other.unlink)
+            output.write(host.read_bytes())
+        self.assertFalse(os.path.samefile(host, other))
+        result = subprocess.run(
+            [str(other), "--help"], cwd=self.temporary.name, capture_output=True, timeout=10
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, b"")
+
     @unittest.skipUnless(
         os.environ.get("TYPELAY_BROWSER_REGISTRATION_E2E") == "1",
         "Native-host registration requires an explicitly isolated Windows account.",
@@ -221,7 +261,8 @@ class DistributionTests(unittest.TestCase):
         command("register", "--extension-id", extension)
         original = manifest.read_bytes()
         metadata = json.loads(original)
-        self.assertEqual(metadata["path"], str(host))
+        self.assertTrue(Path(metadata["path"]).is_absolute())
+        self.assertTrue(os.path.samefile(metadata["path"], host))
         self.assertEqual(metadata["allowed_origins"], [origin])
         self.assertEqual(
             json.loads(command("status").stdout), {"registered": True, "origin": origin}

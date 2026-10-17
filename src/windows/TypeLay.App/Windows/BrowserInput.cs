@@ -277,8 +277,8 @@ internal sealed partial class BrowserInput : IDisposable
             Revoke(true); // OS foreground transitions revoke page tickets too.
         }
         while (_hook.TryReadBrowserPress(out var press))
-        if (press is not null)
-            _ = TriggerAsync(press);
+            if (press is not null)
+                _ = TriggerAsync(press);
         long now = WindowsInterruptClock.NowMs;
         if (_editorTransition is { } transition && !transition.Completion.Task.IsCompleted && now > transition.Deadline)
             CancelEditorTransition();

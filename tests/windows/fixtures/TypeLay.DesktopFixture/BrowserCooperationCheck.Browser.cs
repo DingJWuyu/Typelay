@@ -10,6 +10,7 @@ internal static partial class BrowserCooperationCheck
     private sealed record PageState(string A, string B, string Focus, bool PageFocused, int AStart, int AEnd,
         int BStart, int BEnd, int Replacements, int Submits, int DirectKeys, int PreviewMounts);
     private sealed record Preview(bool Visible, string Text, string Hint);
+    private sealed record ExtensionDiscovery(int Targets, int ServiceWorkers, int Candidates, int MetadataRead, int MatchingManifests);
     private sealed class PageServer : IAsyncDisposable
     {
         private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
@@ -102,12 +103,14 @@ internal static partial class BrowserCooperationCheck
         }
     }
     // Only this fixture's owned CfT endpoint is used. CDP drives/observes synthetic
-    // page UI; it never writes extension state, native messages or product permits.
+    // page UI and reads public extension metadata; it never writes extension state,
+    // native messages or product permits.
     private sealed class Cdp : IDisposable
     {
         private readonly ClientWebSocket _socket = new();
         private int _nextId;
         private string? _page;
+        public ExtensionDiscovery Discovery { get; private set; } = new(0, 0, 0, 0, 0);
         private static readonly JsonSerializerOptions ReadJson = new() { PropertyNameCaseInsensitive = true };
         public static async Task<Cdp> ConnectAsync(string profile, CancellationToken ct)
         {
@@ -135,25 +138,78 @@ internal static partial class BrowserCooperationCheck
             }
             catch { cdp.Dispose(); throw; }
         }
-        public async Task<string> ExtensionIdAsync(CancellationToken ct)
+        public async Task<string> ExtensionIdAsync(string manifestPath, CancellationToken ct)
         {
+            using var expected = JsonDocument.Parse(await File.ReadAllTextAsync(manifestPath, ct));
             while (true)
             {
                 var targets = (await CallAsync("Target.getTargets", new
                 {
                 }, null, ct)).GetProperty("targetInfos");
-                var ids = targets.EnumerateArray().Where(target => target.GetProperty("type").GetString() == "service_worker")
-                    .Select(target => target.GetProperty("url").GetString()).OfType<string>()
-                    .Where(url => url.StartsWith("chrome-extension://", StringComparison.Ordinal) && url.EndsWith("/background.js", StringComparison.Ordinal))
-                    .Select(url => new Uri(url).Host).Distinct().ToArray();
-                Require(ids.Length <= 1, "loaded-extension-ambiguous");
-                if (ids.Length == 1)
+                var workers = targets.EnumerateArray().Where(target => target.GetProperty("type").GetString() == "service_worker").ToArray();
+                var candidates = workers.Where(target => target.GetProperty("url").GetString() is { } url
+                    && url.StartsWith("chrome-extension://", StringComparison.Ordinal)
+                    && url.EndsWith("/background.js", StringComparison.Ordinal)).ToArray();
+                Discovery = new(targets.GetArrayLength(), workers.Length, candidates.Length, 0, 0);
+                Require(candidates.Length <= 32, "loaded-extension-candidate-limit");
+                if (candidates.Length == 0)
                 {
-                    Require(ids[0].Length == 32 && ids[0].All(c => c is >= 'a' and <= 'p'), "loaded-extension-id-invalid");
-                    return ids[0];
+                    // Retain the original bounded startup observation, not a retry of
+                    // a failed metadata match or any product command.
+                    await Task.Delay(40, ct);
+                    continue;
                 }
-                await Task.Delay(40, ct);
+                var matches = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var candidate in candidates)
+                {
+                    var metadata = await ExtensionMetadataAsync(candidate.GetProperty("targetId").GetString()!, ct);
+                    Discovery = Discovery with
+                    {
+                        MetadataRead = Discovery.MetadataRead + 1
+                    };
+                    string? id = metadata.GetProperty("id").GetString();
+                    Require(id is { Length: 32 } && id.All(c => c is >= 'a' and <= 'p')
+                        && id == new Uri(candidate.GetProperty("url").GetString()!).Host, "loaded-extension-id-invalid");
+                    // background.js is a common filename, including in other Chrome
+                    // extensions. Only the full shipped manifest identifies ours.
+                    if (JsonElement.DeepEquals(metadata.GetProperty("manifest"), expected.RootElement))
+                        matches.Add(id!);
+                    Discovery = Discovery with
+                    {
+                        MatchingManifests = matches.Count
+                    };
+                }
+                Require(matches.Count != 0, "loaded-extension-manifest-not-found");
+                Require(matches.Count == 1, "loaded-extension-manifest-ambiguous");
+                return matches.Single();
             }
+        }
+        private async Task<JsonElement> ExtensionMetadataAsync(string targetId, CancellationToken ct)
+        {
+            var attach = await CallAsync("Target.attachToTarget", new
+            {
+                targetId,
+                flatten = true
+            }, null, ct);
+            string session = attach.GetProperty("sessionId").GetString() ?? throw new Failure("extension-metadata-session-missing");
+            // Read only Chrome's public extension identity/manifest API in this
+            // disposable profile. Never inspect ports, state, ACKs or page content.
+            var response = await CallAsync("Runtime.evaluate", new
+            {
+                expression = "({id: chrome.runtime.id, manifest: chrome.runtime.getManifest()})",
+                returnByValue = true,
+                awaitPromise = false
+            }, session, ct);
+            Require(!response.TryGetProperty("exceptionDetails", out _)
+                && response.GetProperty("result").TryGetProperty("value", out _), "extension-metadata-unavailable");
+            var metadata = response.GetProperty("result").GetProperty("value").Clone();
+            // Successful discovery must not leave a debugger attached during the
+            // product scenarios. On failure the caller closes the owned browser/CDP.
+            await CallAsync("Target.detachFromTarget", new
+            {
+                sessionId = session
+            }, null, ct);
+            return metadata;
         }
         public async Task OpenPageAsync(string url, CancellationToken ct)
         {
