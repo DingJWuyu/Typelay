@@ -39,6 +39,8 @@ internal sealed class SettingsWindow : Window
     private bool HasDraft => _shortcutDraft is not null || _exclusionDraft is not null;
     private TextBox? _wakeShortcutInput, _directShortcutInput;
     private ComboBox? _acceptShortcutInput, _exitShortcutInput;
+    private LanguagePicker? _sourceLanguage, _targetLanguage;
+    private Button? _swapLanguages;
     private TextBlock? _returnShortcutHint;
     private TextBlock? _shortcutStatus;
     private Window? _closeDialog;
@@ -287,6 +289,12 @@ internal sealed class SettingsWindow : Window
             RefreshShortcuts();
             return;
         }
+        if (_page == "language" && _renderedPage == _page)
+        {
+            RefreshLanguages();
+            RefreshDraftBar();
+            return;
+        }
         _renderedPage = _page;
         _nav.Children.Clear();
         foreach (var (key, title) in new[] { ("general", "⌂  常规"), ("language", "文  语言"), ("shortcuts", "⌨  快捷键"),
@@ -315,6 +323,8 @@ internal sealed class SettingsWindow : Window
         string? focusedToggle = Keyboard.FocusedElement is ToggleButton focused && focused.IsDescendantOf(this)
             ? AutomationProperties.GetName(focused) : null;
         _content.Children.Clear();
+        _sourceLanguage = _targetLanguage = null;
+        _swapLanguages = null;
         _themeChoices.Clear();
         _progress = null;
         _progressLabel = null;
@@ -720,44 +730,24 @@ internal sealed class SettingsWindow : Window
     private void Languages()
     {
         Heading("语言", "Auto 只用于源语言，目标语言始终明确指定。");
-        Row("源语言", "Auto 使用本地语言检测。当前提供中文与英文模型。", LanguageCombo(true, _settings.Value, async value => await SaveAsync(value)));
-        Row("目标语言", "选择希望写回的语言。", LanguageCombo(false, _settings.Value, async value => await SaveAsync(value)));
-        var swap = UiTheme.Button("交换", async () => await SaveAsync(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
-        swap.IsEnabled = _settings.Value.Source != "auto";
-        Row("交换语言", "只改变语言配置，不修改当前原文或译文。", swap);
+        _sourceLanguage = new(true, _settings.Value.Source,
+            async code => await SaveAsync(_settings.Value with { Source = code }));
+        _targetLanguage = new(false, _settings.Value.Target,
+            async code => await SaveAsync(_settings.Value with { Target = code }));
+        Row("源语言", "Auto 使用本地语言检测。当前提供中文与英文模型。", _sourceLanguage);
+        Row("目标语言", "选择希望写回的语言。", _targetLanguage);
+        _swapLanguages = UiTheme.Button("交换", async () => await SaveAsync(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
+        Row("交换语言", "只改变语言配置，不修改当前原文或译文。", _swapLanguages);
         Rule();
         Note("当前支持范围", "中文 ⇄ English。其他语言方向、下载选择器和更多语言模型尚未开放，界面不会把未安装的模型标成可用。");
+        RefreshLanguages();
     }
-    internal static ComboBox LanguageCombo(bool source, UserSettings settings, Action<UserSettings> save)
+    private void RefreshLanguages()
     {
-        var options = (source ? ModelCatalog.SourceChoices : ModelCatalog.TargetChoices)
-            .Select(choice => new LanguageChoice(choice.Code, choice.Label)).ToList();
-        var combo = new ComboBox
-        {
-            ItemsSource = options,
-            MinWidth = 126,
-            IsEditable = true,
-            IsTextSearchEnabled = true,
-            StaysOpenOnEdit = true,
-            SelectedItem = options.First(o => o.Code == (source ? settings.Source : settings.Target))
-        };
-        combo.SelectionChanged += (_, _) =>
-        {
-            if (combo.SelectedItem is LanguageChoice choice)
-                save(source ? settings with
-                {
-                    Source = choice.Code
-                } : settings with
-                {
-                    Target = choice.Code
-                });
-        };
-        combo.LostKeyboardFocus += (_, _) => { if (combo.SelectedItem is LanguageChoice choice) combo.Text = choice.Label; };
-        return combo;
-    }
-    private sealed record LanguageChoice(string Code, string Label)
-    {
-        public override string ToString() => Label;
+        _sourceLanguage?.Synchronize(_settings.Value.Source);
+        _targetLanguage?.Synchronize(_settings.Value.Target);
+        if (_swapLanguages is not null)
+            _swapLanguages.IsEnabled = _settings.Value.Source != "auto";
     }
     private void Shortcuts()
     {

@@ -18,6 +18,9 @@ internal sealed class QuickPanel : Window
     private readonly SessionController _session;
     private readonly Action _showSettings, _quit;
     private readonly StackPanel _body = new();
+    private readonly StackPanel _languages = new() { Margin = new(14, 13, 14, 13) };
+    private readonly LanguagePicker _sourceLanguage, _targetLanguage;
+    private readonly Button _swapLanguages;
     private readonly List<RadioButton> _modeChoices = [];
     private bool _saveFailed, _saving;
     public QuickPanel(SettingsStore settings, ModelClient model, SessionController session, Action showSettings, Action quit)
@@ -43,6 +46,19 @@ internal sealed class QuickPanel : Window
         outer.Effect = new DropShadowEffect { BlurRadius = 24, ShadowDepth = 5, Opacity = .18 };
         _body.SizeChanged += (_, _) => _body.Clip = new RectangleGeometry(new Rect(0, 0, _body.ActualWidth, _body.ActualHeight), 17, 17);
         Content = outer;
+        _sourceLanguage = new(true, _settings.Value.Source,
+            async code => await SaveAsync(_settings.Value with { Source = code }))
+        {
+            MinWidth = 0
+        };
+        _targetLanguage = new(false, _settings.Value.Target,
+            async code => await SaveAsync(_settings.Value with { Target = code }))
+        {
+            MinWidth = 0
+        };
+        _swapLanguages = UiTheme.Button("⇄", async () => await SaveAsync(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
+        BuildLanguages();
+        _body.Children.Add(_languages);
         Deactivated += (_, _) => Hide();
         Closing += (_, e) => { e.Cancel = true; Hide(); };
         _settings.Changed += Refresh;
@@ -145,7 +161,11 @@ internal sealed class QuickPanel : Window
         }
         string? focusedMode = Keyboard.FocusedElement is RadioButton focused && _modeChoices.Contains(focused)
             ? AutomationProperties.GetName(focused) : null;
-        _body.Children.Clear();
+        // The editable pickers and their parent stay mounted while status and
+        // settings notifications update the rest of the panel.
+        for (int index = _body.Children.Count - 1; index >= 0; index--)
+            if (!ReferenceEquals(_body.Children[index], _languages))
+                _body.Children.RemoveAt(index);
         _modeChoices.Clear();
         var header = new Grid { Height = 60, Margin = new(15, 0, 15, 0) };
         header.ColumnDefinitions.Add(new()
@@ -177,7 +197,7 @@ internal sealed class QuickPanel : Window
         header.Children.Add(toggle);
         var headBorder = UiTheme.Border(header, 0);
         headBorder.BorderThickness = new(0, 0, 0, 1);
-        _body.Children.Add(headBorder);
+        _body.Children.Insert(0, headBorder);
         var modes = new StackPanel { Margin = new(14, 13, 14, 0) };
         var modeLabel = UiTheme.Text("工作模式", 12, true);
         modeLabel.Margin = new(0, 0, 0, 7);
@@ -213,35 +233,10 @@ internal sealed class QuickPanel : Window
             choices.Children.Add(choice);
         }
         modes.Children.Add(UiTheme.Border(choices, 8, "Panel2", 3));
-        _body.Children.Add(modes);
-        var languages = new StackPanel { Margin = new(14, 13, 14, 13) };
-        var label = UiTheme.Text("翻译方向", 12, true);
-        label.Margin = new(0, 0, 0, 7);
-        languages.Children.Add(label);
-        var row = new Grid();
-        row.ColumnDefinitions.Add(new());
-        row.ColumnDefinitions.Add(new()
-        {
-            Width = new(38)
-        });
-        row.ColumnDefinitions.Add(new());
-        var source = SettingsWindow.LanguageCombo(true, _settings.Value,
-            async value => await SaveAsync(_settings.Value with { Source = value.Source }));
-        source.MinWidth = 0;
-        row.Children.Add(source);
-        var swap = UiTheme.Button("⇄", async () => await SaveAsync(_settings.Value with { Source = _settings.Value.Target, Target = _settings.Value.Source }));
-        swap.IsEnabled = _settings.Value.Source != "auto";
-        swap.BorderThickness = new(0);
-        swap.Padding = new(0);
-        Grid.SetColumn(swap, 1);
-        row.Children.Add(swap);
-        var target = SettingsWindow.LanguageCombo(false, _settings.Value,
-            async value => await SaveAsync(_settings.Value with { Target = value.Target }));
-        target.MinWidth = 0;
-        Grid.SetColumn(target, 2);
-        row.Children.Add(target);
-        languages.Children.Add(row);
-        _body.Children.Add(languages);
+        _body.Children.Insert(1, modes);
+        _sourceLanguage.Synchronize(_settings.Value.Source);
+        _targetLanguage.Synchronize(_settings.Value.Target);
+        _swapLanguages.IsEnabled = _settings.Value.Source != "auto";
         if (_saveFailed)
         {
             var error = UiTheme.Text(SettingsDraftPresentation.SaveUnconfirmedMessage, 11.5);
@@ -293,4 +288,26 @@ internal sealed class QuickPanel : Window
         if (focusedMode is not null)
             _modeChoices.Single(choice => AutomationProperties.GetName(choice) == focusedMode).Focus();
     }
+    private void BuildLanguages()
+    {
+        var label = UiTheme.Text("翻译方向", 12, true);
+        label.Margin = new(0, 0, 0, 7);
+        _languages.Children.Add(label);
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new());
+        row.ColumnDefinitions.Add(new()
+        {
+            Width = new(38)
+        });
+        row.ColumnDefinitions.Add(new());
+        row.Children.Add(_sourceLanguage);
+        _swapLanguages.BorderThickness = new(0);
+        _swapLanguages.Padding = new(0);
+        Grid.SetColumn(_swapLanguages, 1);
+        row.Children.Add(_swapLanguages);
+        Grid.SetColumn(_targetLanguage, 2);
+        row.Children.Add(_targetLanguage);
+        _languages.Children.Add(row);
+    }
+
 }
