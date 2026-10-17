@@ -470,6 +470,8 @@ internal sealed class OverlayWindow : Window, ISessionView
     {
         // ProcessKeyAction scopes this original MSG around WPF's ReportInput.
         // The routed event may use WPF's cached time; the raw MSG is matched to LL below.
+        // Consuming the old Fn up can leave Win32's previous-down bit set. The
+        // original LL press and exact MSG claim below establish new-press identity.
         var message = ComponentDispatcher.CurrentKeyboardMessage;
         long bits = message.lParam.ToInt64();
         messageFlags = (int)((bits >> 29) & 7);
@@ -477,11 +479,11 @@ internal sealed class OverlayWindow : Window, ISessionView
         refusal = message.hwnd != _hwnd ? "message-window"
             : message.message is not (0x100 or 0x104) ? "message-kind"
             : message.wParam != (nint)virtualKey ? "message-key"
-            : (bits & 0xe0000000L) != 0 ? "message-flags"
+            : (bits & 0xa0000000L) != 0 ? "message-flags"
             : scan == 0 ? "message-scan" : null;
         if (refusal is not null)
             return false;
-        // A real new down retires the old WPF mirror even when admission fails.
+        // A candidate down retires the old WPF mirror even when admission fails.
         // The Hook still owns the old physical pair; a synthetic routed event
         // cannot clear it or make this new press inherit its consumed state.
         _pressedShortcutKeys.Remove(key);
