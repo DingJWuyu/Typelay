@@ -17,6 +17,18 @@
   const MAX_TEXT = 8192;
   let commandOwner = null, preparedCommandOwner = null, commandPolicy = null, commandOwnerTimer = null;
   let nextSourceCommandId = 0;
+  let ownerDiagnostic = null, lastOwnerDiagnostic = null;
+  function startOwnerDiagnostic(data, stage) {
+    ownerDiagnostic = data.traceOwner === true ? {stage, firstReason: "Ready"} : null;
+    if (ownerDiagnostic) lastOwnerDiagnostic = ownerDiagnostic;
+  }
+  function ownerCheck(value, reason) {
+    if (!value && ownerDiagnostic?.firstReason === "Ready") {
+      ownerDiagnostic.firstReason = reason;
+      ownerDiagnostic.lastClockReason = lastClockReason;
+    }
+    return value;
+  }
   let counter = 0, publication = null, shortcut = null, configuration = null, hintTimer = null, ordered = null, editorControl = null;
   let clock = null, commandClock = null, lastHostStamp = NaN, alive = true, overlay = null, mutating = false, ownInputEvent = null;
   // Cache native methods in the extension's isolated world, never invoke a
@@ -109,6 +121,7 @@
   const diagnostics = () => ({captureCounts: {...captureCounts}, lastCaptureReason, lastClockReason,
     authorityAgeMs: boundedMetric(authorityAgeMs), hostAgeMs: boundedMetric(hostAgeMs),
     timerTickMs: boundedMetric(timerTickMs), timerProbeMs: boundedMetric(timerProbeMs),
+    ...(lastOwnerDiagnostic ? {owner: lastOwnerDiagnostic} : {}),
     clockWidthMs: boundedMetric(clock ? clock.upper - clock.lower : NaN),
     clockAgeMs: boundedMetric(clock ? monoNow() - clock.mono : NaN)});
   function noteCapture(reason) {
@@ -209,6 +222,7 @@
     send("command-owner", {ownerId: data.ownerId, generation: data.generation,
       grantSequence: data.grantSequence, expiresAtMs: data.expiresAtMs, state,
       wake: bindings?.wake, direct: bindings?.direct,
+      ...(data.traceOwner === true ? {diagnostic: ownerDiagnostic || {stage: "Retire", firstReason: "Lifecycle"}} : {}),
       ...(policy ? {target: policy.field.id, policyToken: policy.authority.token} : {})});
   }
   function retireCommandOwner(notify = true) {
@@ -235,10 +249,14 @@
   }
   function commandPolicyProof(field, basis) {
     drainMutations();
-    return !!field && !field.richText && !field.dead && !field.quarantined && focused(field)
-      && basis?.target === field.id && approved(field, basis) && !!issued(field, basis)
-      && Number.isSafeInteger(basis.observedAtMs) && basis.observedAtMs >= 0
-      && Number.isFinite(now(true)) && now(true) <= basis.observedAtMs + 150;
+    return ownerCheck(!!field, "FieldMissing") && ownerCheck(!field.richText, "RichField")
+      && ownerCheck(!field.dead, "FieldDead") && ownerCheck(!field.quarantined, "FieldQuarantined")
+      && ownerCheck(focused(field), "NotFocused") && ownerCheck(basis?.target === field.id, "TargetMismatch")
+      && ownerCheck(approved(field, basis), "Metadata") && ownerCheck(!!issued(field, basis), "AuthorityMissing")
+      && ownerCheck(Number.isSafeInteger(basis.observedAtMs), "PolicyTimeInvalid")
+      && ownerCheck(basis.observedAtMs >= 0, "PolicyTimeInvalid")
+      && ownerCheck(Number.isFinite(now(true)), "ClockUnavailable")
+      && ownerCheck(now(true) <= basis.observedAtMs + 150, "PolicyExpired");
   }
   function storeCommandPolicy(field, basis) {
     commandPolicy = {field, authority: basis, expiresAtMs: basis.observedAtMs + 150};
@@ -983,30 +1001,40 @@
     switch (message.op) {
       case "describe": return describe(field);
       case "prepare-command-owner": {
-        if (!ownerIdValid(data.ownerId) || !commandConfigured(data.generation) || commandOwnerCurrent()
-          || !field || field.richText || !focused(field)) return null;
+        startOwnerDiagnostic(data, "Prepare");
+        if (!ownerCheck(ownerIdValid(data.ownerId), "OwnerId")
+          || !ownerCheck(commandConfigured(data.generation), "Configuration")
+          || !ownerCheck(!commandOwnerCurrent(), "AlreadyActive") || !ownerCheck(!!field, "FieldMissing")
+          || !ownerCheck(!field.richText, "RichField") || !ownerCheck(focused(field), "NotFocused")) return null;
         const result = describe(field);
-        if (!result || !commandConfigured(data.generation)) return null;
+        if (!ownerCheck(!!result, "DescribeUnavailable") || !ownerCheck(commandConfigured(data.generation), "Configuration")) return null;
         preparedCommandOwner = {ownerId: data.ownerId, generation: data.generation, field, configuration};
         return {...result, ownerId: data.ownerId, commandLocalVersion: 1,
           wake: configuration.wake, direct: configuration.direct};
       }
       case "activate-command-owner": {
+        startOwnerDiagnostic(data, "Activate");
         const prepared = preparedCommandOwner;
         preparedCommandOwner = null; // Every attempted activation consumes its preparation.
-        const valid = !!prepared && prepared.ownerId === data.ownerId && prepared.generation === data.generation
-          && prepared.configuration === configuration && prepared.field === field && data.target === field?.id
-          && commandConfigured(data.generation) && grantValid(data.grantSequence) && !commandOwner
-          && !!field && !field.richText && focused(field) && approved(field, data.authority)
-          && calibrate(field, data.authority) && commandPolicyProof(field, data.authority)
-          && Number.isSafeInteger(data.expiresAtMs) && Number.isSafeInteger(data.releasedAtMs)
-          && data.releasedAtMs >= 0 && data.releasedAtMs <= commandClock.boottimeMs
-          && [...held.values()].every(press => Number.isSafeInteger(press.latestObservedUpperMs)
-            && press.latestObservedUpperMs <= data.releasedAtMs);
+        const valid = ownerCheck(!!prepared, "PreparationMissing") && ownerCheck(prepared.ownerId === data.ownerId, "OwnerMismatch")
+          && ownerCheck(prepared.generation === data.generation, "GenerationMismatch")
+          && ownerCheck(prepared.configuration === configuration, "ConfigurationChanged")
+          && ownerCheck(prepared.field === field, "FieldMismatch") && ownerCheck(data.target === field?.id, "TargetMismatch")
+          && ownerCheck(commandConfigured(data.generation), "Configuration") && ownerCheck(grantValid(data.grantSequence), "GrantSequence")
+          && ownerCheck(!commandOwner, "AlreadyActive") && ownerCheck(!!field, "FieldMissing")
+          && ownerCheck(!field.richText, "RichField") && ownerCheck(focused(field), "NotFocused")
+          && ownerCheck(approved(field, data.authority), "Metadata") && ownerCheck(calibrate(field, data.authority), "Calibration")
+          && ownerCheck(commandPolicyProof(field, data.authority), "PolicyProof")
+          && ownerCheck(Number.isSafeInteger(data.expiresAtMs), "ExpiryInvalid")
+          && ownerCheck(Number.isSafeInteger(data.releasedAtMs), "ReleaseInvalid")
+          && ownerCheck(data.releasedAtMs >= 0, "ReleaseNegative")
+          && ownerCheck(data.releasedAtMs <= commandClock.boottimeMs, "ReleaseFuture")
+          && ownerCheck([...held.values()].every(press => Number.isSafeInteger(press.latestObservedUpperMs)
+            && press.latestObservedUpperMs <= data.releasedAtMs), "KeysHeld");
         const expiresAtPerformanceMs = valid ? deadline(data.expiresAtMs, 800) : NaN;
         const candidate = {...data, configuration, expiresAtPerformanceMs,
           expiresAtWallMs: data.expiresAtMs - clock?.upperWall, activateMono: monoNow()};
-        if (!valid || !liveDeadline(candidate)) {
+        if (!valid || !ownerCheck(liveDeadline(candidate), "Deadline")) {
           if (commandOwner?.ownerId === data.ownerId) retireCommandOwner(false);
           commandOwnerAck(data, "rejected"); return null;
         }
@@ -1020,22 +1048,27 @@
         return null;
       }
       case "renew-command-owner": {
+        startOwnerDiagnostic(data, "Renew");
         const current = commandOwner;
-        if (!current || data.documentToken !== documentId || data.ownerId !== current.ownerId
-          || data.generation !== current.generation || !commandOwnerCurrent() || !grantValid(data.grantSequence)
-          || data.grantSequence <= current.grantSequence || !Number.isSafeInteger(data.expiresAtMs)) {
+        if (!ownerCheck(!!current, "OwnerMissing") || !ownerCheck(data.documentToken === documentId, "DocumentMismatch")
+          || !ownerCheck(data.ownerId === current.ownerId, "OwnerMismatch")
+          || !ownerCheck(data.generation === current.generation, "GenerationMismatch")
+          || !ownerCheck(commandOwnerCurrent(), "OwnerExpired") || !ownerCheck(grantValid(data.grantSequence), "GrantSequence")
+          || !ownerCheck(data.grantSequence > current.grantSequence, "GrantNotIncreasing")
+          || !ownerCheck(Number.isSafeInteger(data.expiresAtMs), "ExpiryInvalid")) {
           if (commandOwner?.ownerId === data.ownerId) retireCommandOwner(false);
           commandOwnerAck(data, "rejected"); return null;
         }
         const candidate = {...current, grantSequence: data.grantSequence, expiresAtMs: data.expiresAtMs,
-          expiresAtPerformanceMs: deadline(data.expiresAtMs, 800), expiresAtWallMs: data.expiresAtMs - clock.upperWall};
-        if (!liveDeadline(candidate)) { retireCommandOwner(false); commandOwnerAck(data, "rejected"); return null; }
+          traceOwner: data.traceOwner === true, expiresAtPerformanceMs: deadline(data.expiresAtMs, 800), expiresAtWallMs: data.expiresAtMs - clock.upperWall};
+        if (!ownerCheck(liveDeadline(candidate), "Deadline")) { retireCommandOwner(false); commandOwnerAck(data, "rejected"); return null; }
         commandOwner = candidate;
         armCommandOwnerExpiry();
         commandOwnerAck(candidate, "active");
         return null;
       }
       case "deactivate-command-owner":
+        startOwnerDiagnostic(data, "Retire");
         if (data.documentToken === documentId && commandOwner?.ownerId === data.ownerId
           && commandOwner.generation === data.generation) retireCommandOwner(false);
         if (data.documentToken === documentId && preparedCommandOwner?.ownerId === data.ownerId
@@ -1043,11 +1076,15 @@
         commandOwnerAck(data, "retired");
         return null;
       case "approve-command-policy":
+        startOwnerDiagnostic(data, "Policy");
         commandPolicy = null;
-        if (commandOwnerCurrent() && data.ownerId === commandOwner.ownerId && data.generation === commandOwner.generation
-          && data.target === field?.id && !!field && !field.richText && focused(field)
-          && approved(field, data.authority) && calibrate(field, data.authority) && commandPolicyProof(field, data.authority)
-          && commandOwnerCurrent()) storeCommandPolicy(field, data.authority);
+        if (ownerCheck(commandOwnerCurrent(), "OwnerExpired") && ownerCheck(data.ownerId === commandOwner.ownerId, "OwnerMismatch")
+          && ownerCheck(data.generation === commandOwner.generation, "GenerationMismatch")
+          && ownerCheck(data.target === field?.id, "TargetMismatch") && ownerCheck(!!field, "FieldMissing")
+          && ownerCheck(!field.richText, "RichField") && ownerCheck(focused(field), "NotFocused")
+          && ownerCheck(approved(field, data.authority), "Metadata") && ownerCheck(calibrate(field, data.authority), "Calibration")
+          && ownerCheck(commandPolicyProof(field, data.authority), "PolicyProof")
+          && ownerCheck(commandOwnerCurrent(), "OwnerExpired")) storeCommandPolicy(field, data.authority);
         return commandPolicy ? {applied: true, ownerId: data.ownerId, generation: data.generation,
           target: field.id, policyToken: commandPolicy.authority.token, wake: configuration.wake,
           direct: configuration.direct} : {applied: false};
@@ -1217,6 +1254,7 @@
     const captureStarted = configuration?.trace && message.op === "capture"
       && Number.isInteger(traceRound) && traceRound > 0 && traceRound < 2147483648 ? monoNow() : null;
     let result = null;
+    ownerDiagnostic = null;
     try {
       if (synced || message.op === "configure-shortcuts") result = command(message);
       else {
@@ -1224,8 +1262,10 @@
         retireCommandOwner(); retireOrdered(); publication = shortcut = null; hide();
       }
     }
-    catch (_) { retireCommandOwner(); retireOrdered(); publication = shortcut = null; hide(); }
+    catch (_) { retireCommandOwner(); retireOrdered(); publication = shortcut = null; hide();
+      ownerCheck(false, "Exception"); }
     commandClock = null;
+    ownerDiagnostic = null;
     if (captureStarted !== null && result) {
       const elapsed = monoNow() - captureStarted;
       if (Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= 10000)

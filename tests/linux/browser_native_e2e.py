@@ -233,7 +233,8 @@ class NativeBrowserContract(unittest.TestCase):
                                 current_route["documentId"], original_route["documentId"]
                             )
                             self.assertEqual(
-                                current["sessionBindings"], original["sessionBindings"]
+                                current["sessionBindings"],
+                                {**original["sessionBindings"], "target": current["target"]},
                             )
                             snapshot = self.request(
                                 connection,

@@ -32,6 +32,7 @@ internal static class Program
         Forms.NotifyIcon? tray = null;
         Drawing.Icon? icon = null;
         bool disposed = false;
+        string? trayTracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
         using var startup = new CancellationTokenSource();
         void Dispose()
         {
@@ -149,7 +150,9 @@ internal static class Program
                     : !session.InputAvailable ? session.ConnectionStatus
                     : settings.Value.Mode == WorkMode.OnDemand ? session.ShortcutStatus : model.Status;
                 string text = "TypeLay · " + status + (automationTest ? " · 自动化测试" : "");
-                tray.Text = text.Length > 63 ? text[..63] : text;
+                string trayText = text.Length > 63 ? text[..63] : text;
+                tray.Text = trayText;
+                BrowserInput.TraceTrayStatus(trayTracePath, trayText);
                 toggle.Text = settings.Value.Enabled ? "暂停 TypeLay" : "启用 TypeLay";
             }
             settings.Changed += TrayStatus;

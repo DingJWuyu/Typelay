@@ -229,7 +229,7 @@ internal static partial class BrowserCooperationCheck
             await Phase(direct, "wait-public-command-ready", 30, async ct =>
             {
                 await FocusCommandFieldAsync(cdp!, windows!, ct);
-                await WaitPublicCommandReadyAsync(ct);
+                await WaitPublicCommandReadyAsync(fixtureTrace, ct);
                 direct.Stage = "single-f10-selection";
                 await PrepareInputAsync(cdp!, windows!, "Keep [", "] unchanged", selectSource: true, ct);
                 long offset = TraceLength(trace);
@@ -248,7 +248,7 @@ internal static partial class BrowserCooperationCheck
             await Phase(background, "wait-public-command-ready", 30, async ct =>
             {
                 await FocusCommandFieldAsync(cdp!, windows!, ct);
-                await WaitPublicCommandReadyAsync(ct);
+                await WaitPublicCommandReadyAsync(fixtureTrace, ct);
                 background.Stage = "single-f10-full-text";
                 await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
                 long offset = TraceLength(trace);

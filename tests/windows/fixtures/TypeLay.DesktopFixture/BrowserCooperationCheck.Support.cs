@@ -116,30 +116,83 @@ internal static partial class BrowserCooperationCheck
         var state = await cdp.StateAsync("", ct);
         Require(state.PageFocused && state.Focus == "a", "source-focus-precondition");
     }
-    private static async Task WaitPublicCommandReadyAsync(CancellationToken ct)
+    private static int _publicCommandTraceCount;
+    private static (int ShellCount, bool Visible, int KnownLabels, int VisibleLabels)? _lastPublicCommandTrace;
+    private static async Task WaitPublicCommandReadyAsync(string tracePath, CancellationToken ct)
     {
         // This is the shipped tray's exact accessible label, including the
         // visible automation marker. It is read before normal typing/selection,
         // never after those actions to wait for a private source observation.
         const string ready = "TypeLay · 浏览器快捷键已就绪。 · 自动化测试";
+        string[] labels = [ready,
+            "TypeLay · 浏览器快捷键尚未就绪，请返回受支持的输入框。 · 自动化测试",
+            "TypeLay · 浏览器快捷键连接中。 · 自动化测试",
+            "TypeLay · 两个快捷键已启用；操作不会切换工作模式。 · 自动化测试",
+            "TypeLay · 快捷键输入观察未就绪，当前不会执行按需命令。 · 自动化测试",
+            "TypeLay · 已暂停 · 自动化测试"];
         try
         {
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
-                bool visible = await Task.Run(() =>
+                var observed = await Task.Run(() =>
                 {
                     var trays = AutomationElement.RootElement.FindAll(TreeScope.Children,
                         new OrCondition(new PropertyCondition(AutomationElement.ClassNameProperty, "Shell_TrayWnd"),
                             new PropertyCondition(AutomationElement.ClassNameProperty, "Shell_SecondaryTrayWnd")));
+                    // Preserve the original public Ready query and its early success.
                     foreach (AutomationElement tray in trays)
                         if (tray.FindFirst(TreeScope.Descendants, new AndCondition(
                             new PropertyCondition(AutomationElement.NameProperty, ready),
                             new PropertyCondition(AutomationElement.IsOffscreenProperty, false))) is not null)
-                            return true;
-                    return false;
+                            return (ShellCount: trays.Count, Visible: true, KnownLabels: 1, VisibleLabels: 1);
+                    int known = 0, visible = 0;
+                    if (_publicCommandTraceCount < 32)
+                    {
+                        try
+                        {
+                            // Only exact product-owned literals enter this diagnostic
+                            // query. No other tray names or dynamic statuses are read.
+                            var condition = new OrCondition(labels.Select(label =>
+                                (Condition)new PropertyCondition(AutomationElement.NameProperty, label)).ToArray());
+                            foreach (AutomationElement tray in trays)
+                                foreach (AutomationElement item in tray.FindAll(TreeScope.Descendants, condition))
+                                {
+                                    int index = Array.IndexOf(labels, item.Current.Name);
+                                    if (index < 0)
+                                        continue;
+                                    known |= 1 << index;
+                                    if (!item.Current.IsOffscreen)
+                                        visible |= 1 << index;
+                                }
+                        }
+                        catch (Exception error) when (error is not OutOfMemoryException) { known = visible = -1; }
+                    }
+                    return (ShellCount: trays.Count, Visible: false, KnownLabels: known, VisibleLabels: visible);
                 }, ct).WaitAsync(ct);
-                if (visible)
+                if (_publicCommandTraceCount < 32 && _lastPublicCommandTrace != observed)
+                {
+                    _lastPublicCommandTrace = observed;
+                    _publicCommandTraceCount++;
+                    try
+                    {
+                        File.AppendAllText(tracePath, JsonSerializer.Serialize(new
+                        {
+                            operation = "public-command-label",
+                            shellCount = Math.Min(observed.ShellCount, 16),
+                            readyVisible = observed.Visible,
+                            knownLabels = observed.KnownLabels,
+                            visibleLabels = observed.VisibleLabels,
+                            // Bit 0 Ready, 1 NotReady, 2 Connecting, 3 NativeReady,
+                            // 4 InputNotReady, 5 Paused; -1 means diagnostic unavailable.
+                            exactReadyFound = observed.KnownLabels < 0 ? (bool?)null : (observed.KnownLabels & 1) != 0,
+                            exactReadyOffscreen = observed.KnownLabels < 0 || (observed.KnownLabels & 1) == 0 ? (bool?)null
+                                : (observed.VisibleLabels & 1) == 0
+                        }) + Environment.NewLine);
+                    }
+                    catch (Exception error) when (error is not OutOfMemoryException) { }
+                }
+                if (observed.Visible)
                     return;
                 await Task.Delay(40, ct);
             }

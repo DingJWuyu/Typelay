@@ -100,12 +100,34 @@ internal sealed partial class BrowserInput
     private bool _commandsEnabled, _ownerRefreshRequested = true, _registrationDeferred, _restorationAttempted;
     private string[]? _commandExcluded;
     private BrowserCommandKey? _wake, _direct;
-    internal string? CommandStatus => _registrationDeferred || OwnsForeground
-        ? _commandOwner is { Active: true, ReadyPolicy: { } policy } owner
-            && owner.RetiredAt == long.MaxValue && OwnerForeground(owner) && policy.ExpiresAt >= WindowsInterruptClock.NowMs
-            ? "浏览器快捷键已就绪。"
-            : "浏览器快捷键尚未就绪，请返回受支持的输入框。"
-        : null;
+    internal string? CommandStatus
+    {
+        get
+        {
+            if (!(_registrationDeferred || OwnsForeground))
+            {
+                TraceOwner(OwnerStage.Status, OwnerReason.Native);
+                return null;
+            }
+            var owner = _commandOwner;
+            OwnerReason reason;
+            long? now = null;
+            if (owner is not { Active: true, ReadyPolicy: { } policy })
+                reason = OwnerReason.PolicyUnavailable;
+            else if (owner.RetiredAt != long.MaxValue)
+                reason = OwnerReason.Retired;
+            else if (!OwnerForeground(owner, out reason))
+            {
+            }
+            else
+            {
+                now = WindowsInterruptClock.NowMs;
+                reason = policy.ExpiresAt >= now ? OwnerReason.Ready : OwnerReason.PolicyExpired;
+            }
+            TraceOwner(OwnerStage.Status, reason, owner, now);
+            return reason == OwnerReason.Ready ? "浏览器快捷键已就绪。" : "浏览器快捷键尚未就绪，请返回受支持的输入框。";
+        }
+    }
     private static BrowserCommandKey? CommandKey(string text)
     {
         if (!TranslationShortcut.TryParse(text, out var chord))
@@ -132,10 +154,19 @@ internal sealed partial class BrowserInput
         _ownerRefreshRequested = true;
         _restorationAttempted = false;
     }
-    private bool OwnerForeground(CommandOwner owner) => owner.Peer.Alive && owner.Generation == _hook.CommandGeneration
-        && owner.WindowEpoch == _hook.WindowEpoch && owner.Root != 0 && owner.Root == ForegroundRoot()
-        && _active.GetValueOrDefault(owner.Peer.ConnectionId) == owner.Route;
-    private void RetireCommandOwner()
+    private bool OwnerForeground(CommandOwner owner) => OwnerForeground(owner, out _);
+    private bool OwnerForeground(CommandOwner owner, out OwnerReason reason)
+    {
+        reason = !owner.Peer.Alive ? OwnerReason.PeerDisconnected
+            : owner.Generation != _hook.CommandGeneration ? OwnerReason.GenerationChanged
+            : owner.WindowEpoch != _hook.WindowEpoch ? OwnerReason.WindowChanged
+            : owner.Root == 0 ? OwnerReason.RootMissing
+            : owner.Root != ForegroundRoot() ? OwnerReason.RootChanged
+            : _active.GetValueOrDefault(owner.Peer.ConnectionId) != owner.Route ? OwnerReason.DocumentChanged
+            : OwnerReason.Ready;
+        return reason == OwnerReason.Ready;
+    }
+    private void RetireCommandOwner(OwnerReason reason = OwnerReason.Lifecycle)
     {
         if (_commandOwner is not { } owner)
             return;
@@ -150,10 +181,12 @@ internal sealed partial class BrowserInput
                 documentToken = owner.Route.DocumentToken,
                 ownerId = owner.Id,
                 generation = owner.Generation,
-                grantSequence = owner.GrantSequence
+                grantSequence = owner.GrantSequence,
+                traceOwner = TraceEnabled
             });
         else if (owner.MaxIssuedExpiry == 0)
             owner.RetirementAcknowledged = true;
+        TraceOwner(OwnerStage.Retire, reason, owner, owner.RetiredAt);
     }
     private void PollCommandOwner(long now)
     {
@@ -166,10 +199,23 @@ internal sealed partial class BrowserInput
         _retiredCommandOwners.RemoveAll(owner => now > Math.Max(owner.MaxIssuedExpiry, owner.RetiredAt) + Limits.ObservationMaxAgeMs);
         if (_commandOwner is { } current)
         {
-            if (!OwnerForeground(current) || !_commandsEnabled || !_sessionEnabled
-                || !current.Active && now > current.EstablishUntil
-                || current.Active && (now > current.MaxIssuedExpiry || current.PendingGrant != 0 && now - current.LastGrantAt > 200))
-                RetireCommandOwner();
+            OwnerReason reason;
+            if (!OwnerForeground(current, out reason))
+            {
+            }
+            else if (!_commandsEnabled)
+                reason = OwnerReason.CommandsDisabled;
+            else if (!_sessionEnabled)
+                reason = OwnerReason.SessionDisabled;
+            else if (!current.Active && now > current.EstablishUntil)
+                reason = OwnerReason.EstablishExpired;
+            else if (current.Active)
+                reason = now > current.MaxIssuedExpiry ? OwnerReason.GrantExpired
+                    : current.PendingGrant != 0 && now - current.LastGrantAt > 200 ? OwnerReason.AckExpired : OwnerReason.Ready;
+            else
+                reason = OwnerReason.Ready;
+            if (reason != OwnerReason.Ready)
+                RetireCommandOwner(reason);
             else if (current.Prepared && !current.Active && current.MaxIssuedExpiry == 0 && _hook.CommandsReleased)
                 ActivateCommandOwner(current, now);
             else if (current.Active && current.PendingGrant == 0 && now - current.LastGrantAt >= 200)
@@ -178,12 +224,27 @@ internal sealed partial class BrowserInput
         if (_commandOwner is not null)
             return;
         bool safelyRetired = _retiredCommandOwners.All(owner => owner.RetirementAcknowledged || now > owner.MaxIssuedExpiry);
-        if (!safelyRetired || !_hook.CommandsReleased)
-            return;
-        if (_ownerRefreshRequested && _commandsEnabled && _sessionEnabled && _commandExcluded is not null
-            && _retiredCommandOwners.Count < 4 && _wake is not null && _direct is not null)
+        if (!safelyRetired)
         {
-            var peer = ForegroundPeer(out _);
+            TraceOwner(OwnerStage.Candidate, OwnerReason.RetirementPending, now: now);
+            return;
+        }
+        bool released = _hook.CommandsReleased;
+        if (!released)
+        {
+            TraceOwner(OwnerStage.Candidate, OwnerReason.KeysHeld, now: now, released: released);
+            return;
+        }
+        var candidateReason = !_ownerRefreshRequested ? OwnerReason.NoRefresh
+            : !_commandsEnabled ? OwnerReason.CommandsDisabled
+            : !_sessionEnabled ? OwnerReason.SessionDisabled
+            : _commandExcluded is null ? OwnerReason.PolicyContextMissing
+            : _retiredCommandOwners.Count >= 4 ? OwnerReason.RetiredLimit
+            : _wake is null ? OwnerReason.WakeMissing
+            : _direct is null ? OwnerReason.DirectMissing : OwnerReason.Ready;
+        if (candidateReason == OwnerReason.Ready)
+        {
+            var peer = ForegroundPeer(out int candidateCount);
             if (peer is not null && _active.TryGetValue(peer.ConnectionId, out var route))
             {
                 _ownerRefreshRequested = false;
@@ -192,15 +253,21 @@ internal sealed partial class BrowserInput
                 owner.Direct = _direct;
                 _commandOwner = owner;
                 _ = PrepareCommandOwnerAsync(owner);
+                TraceOwner(OwnerStage.Candidate, OwnerReason.Started, owner, now, released);
                 return;
             }
+            candidateReason = peer is null ? candidateCount == 0 ? OwnerReason.PeerMissing : OwnerReason.PeerAmbiguous
+                : OwnerReason.DocumentMissing;
         }
         if (_registrationDeferred && !_restorationAttempted)
         {
             _restorationAttempted = true;
-            if (_hook.RestoreCommandRegistration())
+            bool restored = _hook.RestoreCommandRegistration();
+            if (restored)
                 _registrationDeferred = false;
+            TraceOwner(OwnerStage.Restore, restored ? OwnerReason.Ready : OwnerReason.RestoreFailed, now: now);
         }
+        TraceOwner(OwnerStage.Candidate, candidateReason, now: now, released: released);
     }
     private async Task PrepareCommandOwnerAsync(CommandOwner owner)
     {
@@ -208,38 +275,77 @@ internal sealed partial class BrowserInput
         {
             documentToken = owner.Route.DocumentToken,
             ownerId = owner.Id,
-            generation = owner.Generation
+            generation = owner.Generation,
+            traceOwner = TraceEnabled
         }, (int)Math.Max(1, owner.EstablishUntil - WindowsInterruptClock.NowMs));
         if (_commandOwner != owner)
-            return;
-        if (!OwnerForeground(owner) || WindowsInterruptClock.NowMs > owner.EstablishUntil
-            || reply?.Route != owner.Route || String(reply.Data, "ownerId") != owner.Id
-            || Number(reply.Data, "commandLocalVersion") != 1
-            || !CommandKeyMatches(reply.Data, "wake", _wake) || !CommandKeyMatches(reply.Data, "direct", _direct)
-            || !Approved(owner.Peer, reply, _commandExcluded!, out _, out _, out _, out _)
-            || !Boolean(reply.Data, "focused"))
         {
-            RetireCommandOwner();
+            TraceOwner(OwnerStage.Prepare, OwnerReason.Replaced, owner);
+            return;
+        }
+        OwnerReason reason;
+        long? now = null;
+        if (!OwnerForeground(owner, out reason))
+        {
+        }
+        else if ((now = WindowsInterruptClock.NowMs) > owner.EstablishUntil)
+            reason = OwnerReason.EstablishExpired;
+        else if (reply?.Route != owner.Route)
+            reason = reply is null ? OwnerReason.ReplyMissing : OwnerReason.RouteMismatch;
+        else if (String(reply.Data, "ownerId") != owner.Id)
+            reason = OwnerReason.OwnerMismatch;
+        else if (Number(reply.Data, "commandLocalVersion") != 1)
+            reason = OwnerReason.VersionMismatch;
+        else if (!CommandKeyMatches(reply.Data, "wake", _wake))
+            reason = OwnerReason.WakeMismatch;
+        else if (!CommandKeyMatches(reply.Data, "direct", _direct))
+            reason = OwnerReason.DirectMismatch;
+        else if (!Approved(owner.Peer, reply, _commandExcluded!, out _, out _, out _, out _, ObservationStage.OwnerPrepare))
+            reason = OwnerReason.ApprovalRejected;
+        else if (!Boolean(reply.Data, "focused"))
+            reason = OwnerReason.SourceNotFocused;
+        else
+            reason = OwnerReason.Ready;
+        if (reason != OwnerReason.Ready)
+        {
+            RetireCommandOwner(reason);
+            TraceOwner(OwnerStage.Prepare, reason, owner, now);
             return;
         }
         owner.Preparation = reply;
         owner.Prepared = true;
-        if (_hook.CommandsReleased)
+        bool released = _hook.CommandsReleased;
+        if (released)
             ActivateCommandOwner(owner, WindowsInterruptClock.NowMs);
+        TraceOwner(OwnerStage.Prepare, OwnerReason.Ready, owner, now, released);
     }
     private void ActivateCommandOwner(CommandOwner owner, long now)
     {
-        if (owner.Preparation is not { } reply || !OwnerForeground(owner) || now > owner.EstablishUntil
-            || !_hook.CommandsReleased)
+        OwnerReason reason;
+        bool? released = null;
+        if (owner.Preparation is not { } reply)
+            reason = OwnerReason.PreparationMissing;
+        else if (!OwnerForeground(owner, out reason))
         {
-            RetireCommandOwner();
+        }
+        else if (now > owner.EstablishUntil)
+            reason = OwnerReason.EstablishExpired;
+        else if (!(released = _hook.CommandsReleased).Value)
+            reason = OwnerReason.KeysHeld;
+        else
+            reason = OwnerReason.Ready;
+        if (reason != OwnerReason.Ready)
+        {
+            RetireCommandOwner(reason);
+            TraceOwner(OwnerStage.Activate, reason, owner, now, released);
             return;
         }
-        var authority = reply.Data.GetProperty("authority").Clone();
+        var authority = owner.Preparation!.Data.GetProperty("authority").Clone();
         long expiry = Number(authority, "observedAtMs") + Limits.ObservationMaxAgeMs;
         if (now > expiry)
         {
-            RetireCommandOwner();
+            RetireCommandOwner(OwnerReason.PolicyExpired);
+            TraceOwner(OwnerStage.Activate, OwnerReason.PolicyExpired, owner, now, released);
             return;
         }
         var target = new TargetId("windows-browser", String(authority, "target")!, owner.Peer.ConnectionId);
@@ -249,12 +355,17 @@ internal sealed partial class BrowserInput
         _restorationAttempted = false;
         if (!suspended)
         {
-            RetireCommandOwner();
+            RetireCommandOwner(OwnerReason.SuspendFailed);
+            TraceOwner(OwnerStage.Activate, OwnerReason.SuspendFailed, owner, now, released);
             return;
         }
         // A native press racing the release remains owned until its real up.
-        if (!_hook.CommandsReleased)
+        released = _hook.CommandsReleased;
+        if (!released.Value)
+        {
+            TraceOwner(OwnerStage.Activate, OwnerReason.KeysHeld, owner, now, released);
             return;
+        }
         owner.PendingPolicy = new(target, authority, _commandExcluded!.ToArray(), expiry);
         owner.Policies.Add(owner.PendingPolicy);
         SendOwnerGrant(owner, true, now);
@@ -278,7 +389,8 @@ internal sealed partial class BrowserInput
                 grantSequence = sequence,
                 expiresAtMs = expiry,
                 authority = policy.Authority,
-                releasedAtMs = _hook.CommandsReleasedAt
+                releasedAtMs = _hook.CommandsReleasedAt,
+                traceOwner = TraceEnabled
             });
         }
         else
@@ -288,42 +400,76 @@ internal sealed partial class BrowserInput
                 ownerId = owner.Id,
                 generation = owner.Generation,
                 grantSequence = sequence,
-                expiresAtMs = expiry
+                expiresAtMs = expiry,
+                traceOwner = TraceEnabled
             });
+        TraceOwner(activate ? OwnerStage.Activate : OwnerStage.Renew, OwnerReason.Sent, owner, now);
     }
     private void OwnerAcknowledged(BrowserPeer peer, BrowserRoute route, JsonElement data)
     {
         string? id = String(data, "ownerId");
         var owner = _retiredCommandOwners.Append(_commandOwner).OfType<CommandOwner>()
             .FirstOrDefault(item => item.Peer == peer && item.Route == route && item.Id == id);
-        if (owner is null || String(data, "generation") != owner.Generation.ToString()
-            || !CommandKeyMatches(data, "wake", owner.Wake) || !CommandKeyMatches(data, "direct", owner.Direct))
+        var stage = owner is { EverActive: true } ? OwnerStage.RenewAck : OwnerStage.InitialAck;
+        var reason = owner is null ? OwnerReason.OwnerMissing
+            : String(data, "generation") != owner.Generation.ToString() ? OwnerReason.GenerationMismatch
+            : !CommandKeyMatches(data, "wake", owner.Wake) ? OwnerReason.WakeMismatch
+            : !CommandKeyMatches(data, "direct", owner.Direct) ? OwnerReason.DirectMismatch : OwnerReason.Ready;
+        if (reason != OwnerReason.Ready)
+        {
+            TraceOwner(stage, reason, owner, page: data);
             return;
+        }
         long sequence = Number(data, "grantSequence");
-        if (sequence != owner.GrantSequence)
+        if (sequence != owner!.GrantSequence)
+        {
+            TraceOwner(stage, OwnerReason.GrantMismatch, owner, page: data);
             return;
+        }
         if (String(data, "state") == "retired")
         {
             owner.RetirementAcknowledged = true;
             if (_commandOwner == owner)
-                RetireCommandOwner();
+                RetireCommandOwner(OwnerReason.PageRetired);
+            TraceOwner(OwnerStage.RetireAck, OwnerReason.Ready, owner, page: data);
             return;
         }
         if (_commandOwner != owner || owner.RetiredAt != long.MaxValue)
-            return;
-        long now = WindowsInterruptClock.NowMs;
-        if (String(data, "state") != "active" || sequence != owner.PendingGrant
-            || now - owner.LastGrantAt > 200 || !owner.EverActive && now > owner.EstablishUntil
-            || !owner.Grants.TryGetValue(sequence, out long expiry) || Number(data, "expiresAtMs") != expiry
-            || now > expiry || !OwnerForeground(owner))
         {
-            RetireCommandOwner();
+            TraceOwner(stage, OwnerReason.Retired, owner, page: data);
+            return;
+        }
+        long now = WindowsInterruptClock.NowMs;
+        if (String(data, "state") != "active")
+            reason = OwnerReason.PageNotActive;
+        else if (sequence != owner.PendingGrant)
+            reason = OwnerReason.PendingGrantMismatch;
+        else if (now - owner.LastGrantAt > 200)
+            reason = OwnerReason.AckExpired;
+        else if (!owner.EverActive && now > owner.EstablishUntil)
+            reason = OwnerReason.EstablishExpired;
+        else if (!owner.Grants.TryGetValue(sequence, out long expiry))
+            reason = OwnerReason.GrantMissing;
+        else if (Number(data, "expiresAtMs") != expiry)
+            reason = OwnerReason.ExpiryMismatch;
+        else if (now > expiry)
+            reason = OwnerReason.GrantExpired;
+        else if (!OwnerForeground(owner, out reason))
+        {
+        }
+        else
+            reason = OwnerReason.Ready;
+        if (reason != OwnerReason.Ready)
+        {
+            RetireCommandOwner(reason);
+            TraceOwner(stage, reason, owner, now, page: data);
             return;
         }
         var policy = owner.Policies.FindLast(item => item.Token == String(data, "policyToken") && item.Target.Value == String(data, "target"));
         if (!owner.EverActive && (policy is null || owner.PendingPolicy != policy))
         {
-            RetireCommandOwner();
+            RetireCommandOwner(OwnerReason.PolicyAckMismatch);
+            TraceOwner(stage, OwnerReason.PolicyAckMismatch, owner, now, page: data);
             return;
         }
         owner.Active = true;
@@ -331,21 +477,49 @@ internal sealed partial class BrowserInput
         owner.PendingGrant = 0;
         if (policy is not null && owner.PendingPolicy == policy)
             owner.ReadyPolicy = policy;
+        TraceOwner(stage, OwnerReason.Ready, owner, now, page: data);
     }
     private void ApproveCommandPolicy(BrowserPeer peer, BrowserReply description, TargetId target, JsonElement authority, string[] excluded)
     {
-        if (_commandOwner is not { Active: true } owner || owner.Peer != peer || owner.Route != description.Route
-            || !OwnerForeground(owner) || !Boolean(description.Data, "focused") || owner.Policies.Count >= 16)
+        var owner = _commandOwner;
+        OwnerReason reason;
+        if (owner is not { Active: true })
+            reason = OwnerReason.NotActive;
+        else if (owner.Peer != peer)
+            reason = OwnerReason.PeerMismatch;
+        else if (owner.Route != description.Route)
+            reason = OwnerReason.RouteMismatch;
+        else if (!OwnerForeground(owner, out reason))
+        {
+        }
+        else if (!Boolean(description.Data, "focused"))
+            reason = OwnerReason.SourceNotFocused;
+        else if (owner.Policies.Count >= 16)
+            reason = OwnerReason.PolicyLimit;
+        else
+            reason = OwnerReason.Ready;
+        if (reason != OwnerReason.Ready)
+        {
+            TraceOwner(OwnerStage.Policy, reason, owner);
             return;
+        }
         long expiry = Number(authority, "observedAtMs") + Limits.ObservationMaxAgeMs;
-        if (WindowsInterruptClock.NowMs > expiry)
+        long now = WindowsInterruptClock.NowMs;
+        if (now > expiry)
+        {
+            TraceOwner(OwnerStage.Policy, OwnerReason.PolicyExpired, owner, now);
             return;
+        }
         var policy = new CommandPolicy(target, authority.Clone(), excluded.ToArray(), expiry);
-        if (owner.Policies.Any(item => item.Token == policy.Token))
+        if (owner!.Policies.Any(item => item.Token == policy.Token))
+        {
+            TraceOwner(OwnerStage.Policy, OwnerReason.PolicyDuplicate, owner, now);
             return;
+        }
         owner.Policies.Add(policy);
         owner.PendingPolicy = policy;
         _ = ApproveCommandPolicyAsync(owner, policy);
+        TraceOwner(OwnerStage.Policy, OwnerReason.Sent, owner, now);
     }
     private async Task ApproveCommandPolicyAsync(CommandOwner owner, CommandPolicy policy)
     {
@@ -354,15 +528,41 @@ internal sealed partial class BrowserInput
             target = policy.Target.Value,
             ownerId = owner.Id,
             generation = owner.Generation,
-            authority = policy.Authority
+            authority = policy.Authority,
+            traceOwner = TraceEnabled
         }, (int)Math.Max(1, policy.ExpiresAt - WindowsInterruptClock.NowMs));
-        if (_commandOwner == owner && owner.PendingPolicy == policy && OwnerForeground(owner) && reply?.Route == owner.Route
-            && Boolean(reply.Data, "applied") && String(reply.Data, "ownerId") == owner.Id
-            && String(reply.Data, "generation") == owner.Generation.ToString()
-            && String(reply.Data, "target") == policy.Target.Value && String(reply.Data, "policyToken") == policy.Token
-            && CommandKeyMatches(reply.Data, "wake", _wake) && CommandKeyMatches(reply.Data, "direct", _direct)
-            && WindowsInterruptClock.NowMs <= policy.ExpiresAt)
+        OwnerReason reason;
+        long? now = null;
+        if (_commandOwner != owner)
+            reason = OwnerReason.Replaced;
+        else if (owner.PendingPolicy != policy)
+            reason = OwnerReason.PolicyReplaced;
+        else if (!OwnerForeground(owner, out reason))
+        {
+        }
+        else if (reply?.Route != owner.Route)
+            reason = reply is null ? OwnerReason.ReplyMissing : OwnerReason.RouteMismatch;
+        else if (!Boolean(reply.Data, "applied"))
+            reason = OwnerReason.PageNotApplied;
+        else if (String(reply.Data, "ownerId") != owner.Id)
+            reason = OwnerReason.OwnerMismatch;
+        else if (String(reply.Data, "generation") != owner.Generation.ToString())
+            reason = OwnerReason.GenerationMismatch;
+        else if (String(reply.Data, "target") != policy.Target.Value)
+            reason = OwnerReason.TargetMismatch;
+        else if (String(reply.Data, "policyToken") != policy.Token)
+            reason = OwnerReason.PolicyAckMismatch;
+        else if (!CommandKeyMatches(reply.Data, "wake", _wake))
+            reason = OwnerReason.WakeMismatch;
+        else if (!CommandKeyMatches(reply.Data, "direct", _direct))
+            reason = OwnerReason.DirectMismatch;
+        else if ((now = WindowsInterruptClock.NowMs) > policy.ExpiresAt)
+            reason = OwnerReason.PolicyExpired;
+        else
+            reason = OwnerReason.Ready;
+        if (reason == OwnerReason.Ready)
             owner.ReadyPolicy = policy;
+        TraceOwner(OwnerStage.PolicyAck, reason, owner, now, page: reply?.Data ?? default);
     }
     private void SourceCommand(BrowserPeer peer, BrowserRoute route, JsonElement data)
     {
