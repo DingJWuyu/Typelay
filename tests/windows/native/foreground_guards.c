@@ -14,7 +14,8 @@ enum Scenario {
     FocusChangedAfterSelection,
     SelectionChangedAfterSelection,
     AuthorizationExpiredAfterSelection,
-    OwnedFocusRoundTripAfterSelection
+    OwnedFocusRoundTripAfterSelection,
+    InputContextChangedAfterSelection
 };
 enum {
     SourceWindow = 1, RootWindow = 2, OtherField = 3,
@@ -32,8 +33,10 @@ static struct {
     HANDLE foreground, focus;
     uint64_t coarse_ms, precise_100ns, cookie, focus_revision;
     int start, end, length;
-    int set_calls, replace_calls, text_reads, injected_changes, boundary_checked, invalid_call;
+    int set_calls, replace_calls, text_reads, length_reads, selection_reads, injected_changes, boundary_checked, invalid_call;
     int composition_bytes, fail_focus_property;
+    HANDLE input_context, keyboard_layout;
+    int context_gets, context_releases, layout_reads, change_input_at_limit, change_input_at_release, release_failure;
     int capture_fault, capture_boundary, password, disabled;
     int hidden, root_disabled, minimized, clipped, bad_parent, root_hidden, rectangle_failure;
     intptr_t style;
@@ -109,8 +112,13 @@ static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
     require_source(hwnd);
     switch (message) {
     case GetPasswordChar: return field.password;
-    case GetLimitText: return MAX_UNITS;
-    case GetTextLength: return field.length;
+    case GetLimitText:
+        if (field.change_input_at_limit) {
+            field.keyboard_layout = handle(6);
+            field.injected_changes++;
+        }
+        return MAX_UNITS;
+    case GetTextLength: field.length_reads++; return field.length;
     case GetText:
         field.text_reads++;
         require(wp > (WPARAM)field.length && lp != 0);
@@ -118,6 +126,7 @@ static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
         copy((void *)lp, field.text, ((size_t)field.length + 1) * sizeof(WCHAR));
         return field.length;
     case GetSelection:
+        field.selection_reads++;
         require(wp != 0 && lp != 0);
         if (wp && lp) {
             *(int32_t *)wp = field.start;
@@ -156,6 +165,10 @@ static LRESULT stock_edit(HANDLE hwnd, uint32_t message, WPARAM wp, LPARAM lp) {
             // Only the original precise-clock authorization expires. The
             // transaction's independent 500ms coarse budget remains fresh.
             field.precise_100ns = 10010000;
+            field.injected_changes++;
+            break;
+        case InputContextChangedAfterSelection:
+            field.input_context = handle(6);
             field.injected_changes++;
             break;
         case OwnedFocusRoundTripAfterSelection:
@@ -283,23 +296,43 @@ LRESULT CallWindowProcW(WNDPROC proc, HANDLE hwnd, uint32_t message, WPARAM wp, 
     require(proc == stock_edit);
     return stock_edit(hwnd, message, wp, lp);
 }
-HANDLE ImmGetContext(HANDLE hwnd) { require_source(hwnd); return handle(4); }
+HANDLE GetKeyboardLayout(uint32_t thread) {
+    require(thread == ThreadId);
+    field.layout_reads++;
+    return field.keyboard_layout;
+}
+HANDLE ImmGetContext(HANDLE hwnd) {
+    require_source(hwnd);
+    if (field.input_context) field.context_gets++;
+    return field.input_context;
+}
 int32_t ImmGetCompositionStringW(HANDLE context, uint32_t index, void *buffer, uint32_t bytes) {
-    require(context == handle(4) && index == 8 && buffer == 0 && bytes == 0);
+    require(context == field.input_context && index == 8 && buffer == 0 && bytes == 0);
     return field.composition_bytes;
 }
 int ImmReleaseContext(HANDLE hwnd, HANDLE context) {
     require_source(hwnd);
-    require(context == handle(4));
+    require(context == field.input_context);
+    field.context_releases++;
+    if (field.change_input_at_release) {
+        field.change_input_at_release = 0;
+        field.input_context = handle(6);
+        field.injected_changes++;
+    }
     change_capture_state(1);
-    return 1;
+    return !field.release_failure;
 }
 
 static void prepare_transaction(enum Scenario scenario) {
     wipe(&request, sizeof(request));
     field.scenario = scenario;
     field.set_calls = field.replace_calls = field.text_reads = field.injected_changes = field.boundary_checked = 0;
+    field.length_reads = field.selection_reads = 0;
     field.composition_bytes = 0;
+    field.input_context = handle(4);
+    field.keyboard_layout = handle(5);
+    field.context_gets = field.context_releases = field.layout_reads = 0;
+    field.change_input_at_limit = field.change_input_at_release = field.release_failure = 0;
     field.capture_fault = field.capture_boundary = field.password = field.disabled = 0;
     field.hidden = field.root_disabled = field.minimized = field.clipped = field.bad_parent = 0;
     field.root_hidden = field.rectangle_failure = 0;
@@ -516,6 +549,86 @@ static int owned_capture_rechecks_dynamic_qualification_around_reading(void) {
     }
     return 1;
 }
+static int owned_input_probe_is_body_free_and_requires_current_clear_identity(void) {
+    HANDLE hwnd = handle(SourceWindow), root = handle(RootWindow);
+    uint64_t revision = TypeLayOwnedFocusRevision(hwnd, 0);
+    OwnedInputContext context;
+    prepare_transaction(Unchanged);
+    if (!TypeLayOwnedEditTryProbeInputContext(hwnd, root, ProcessId, ThreadId, field.cookie, revision, 1000, &context)
+        || context.ime_context != 4 || context.keyboard_layout != 5
+        || !field.context_gets || field.context_gets != field.context_releases
+        || field.text_reads || field.length_reads || field.selection_reads
+        || field.set_calls || field.replace_calls || field.invalid_call) return 0;
+    for (int fault = 0; fault < 8; fault++) {
+        prepare_transaction(Unchanged);
+        switch (fault) {
+        case 0: field.input_context = 0; break;
+        case 1: field.keyboard_layout = 0; break;
+        case 2: field.composition_bytes = 2; break;
+        case 3: field.composition_bytes = -1; break;
+        case 4: field.change_input_at_release = 1; break;
+        case 5: field.precise_100ns = 10010000; break;
+        case 6: field.release_failure = 1; break;
+        case 7: field.capture_boundary = 1; field.capture_fault = 4; break;
+        }
+        context.ime_context = context.keyboard_layout = UINT64_MAX;
+        if (TypeLayOwnedEditTryProbeInputContext(hwnd, root, ProcessId, ThreadId, field.cookie, revision, 1000, &context)
+            || context.ime_context || context.keyboard_layout
+            || field.context_gets != field.context_releases || field.text_reads
+            || field.length_reads || field.selection_reads || field.set_calls || field.replace_calls || field.invalid_call) return 0;
+    }
+    prepare_transaction(Unchanged);
+    if (TypeLayOwnedEditTryProbeInputContext(hwnd, root, ProcessId + 1, ThreadId, field.cookie, revision, 1000, &context)
+        || TypeLayOwnedEditTryProbeInputContext(hwnd, root, ProcessId, ThreadId + 1, field.cookie, revision, 1000, &context)
+        || field.context_gets || field.text_reads || field.length_reads || field.selection_reads
+        || field.set_calls || field.replace_calls) return 0;
+    field.keyboard_layout = 0; // The existing exit entry does not gain an identity requirement.
+    return TypeLayOwnedEditCanExit(hwnd, root, field.cookie, revision, 1000)
+        && !field.layout_reads && !field.text_reads && !field.length_reads && !field.selection_reads
+        && !field.set_calls && !field.replace_calls;
+}
+static int owned_input_identity_is_rechecked_inside_acceptance(void) {
+    HANDLE hwnd = handle(SourceWindow), root = handle(RootWindow);
+    uint64_t revision = TypeLayOwnedFocusRevision(hwnd, 0);
+    for (int fault = 0; fault < 4; fault++) {
+        prepare_transaction(Unchanged);
+        OwnedInputContext context;
+        if (!TypeLayOwnedEditTryProbeInputContext(hwnd, root, ProcessId, ThreadId, field.cookie, revision, 1000, &context)) return 0;
+        switch (fault) {
+        case 0: field.input_context = handle(6); break;
+        case 1: field.keyboard_layout = handle(6); break;
+        case 2: field.change_input_at_limit = 1; break;
+        case 3: field.change_input_at_release = 1; break;
+        }
+        if (TypeLayOwnedEditTryExecuteWithInputContext(&request, sizeof(request), revision,
+                context.ime_context, context.keyboard_layout)
+            || request.status != 2 || field.set_calls || field.replace_calls
+            || field.start != 12 || field.end != 12 || !equal(field.text, initial_text, 13)
+            || field.context_gets != field.context_releases || field.invalid_call) return 0;
+        if (TypeLayOwnedEditCanExitWithInputContext(hwnd, root, ProcessId, ThreadId, field.cookie, revision, 1000,
+                context.ime_context, context.keyboard_layout)) return 0;
+    }
+    return 1;
+}
+static int accepted_input_context_change_cannot_reach_text_mutation(void) {
+    prepare_transaction(InputContextChangedAfterSelection);
+    HANDLE hwnd = handle(SourceWindow), root = handle(RootWindow);
+    uint64_t revision = TypeLayOwnedFocusRevision(hwnd, 0);
+    OwnedInputContext context;
+    if (!TypeLayOwnedEditTryProbeInputContext(hwnd, root, ProcessId, ThreadId, field.cookie, revision, 1000, &context)
+        || TypeLayOwnedEditTryExecuteWithInputContext(&request, sizeof(request), revision,
+            context.ime_context, context.keyboard_layout) != 1
+        || request.status != 2 || !reached_selection_boundary(1) || field.replace_calls
+        || !equal(field.text, initial_text, 13) || field.context_gets != field.context_releases) return 0;
+    prepare_transaction(Unchanged);
+    if (!TypeLayOwnedEditTryProbeInputContext(hwnd, root, ProcessId, ThreadId, field.cookie, revision, 1000, &context)
+        || !TypeLayOwnedEditCanExitWithInputContext(hwnd, root, ProcessId, ThreadId, field.cookie, revision, 1000,
+            context.ime_context, context.keyboard_layout)) return 0;
+    return TypeLayOwnedEditTryExecuteWithInputContext(&request, sizeof(request), revision,
+            context.ime_context, context.keyboard_layout) == 1
+        && request.status == 1 && field.replace_calls == 1 && equal(field.text, written_text, 15)
+        && field.context_gets == field.context_releases && !field.invalid_call;
+}
 static int failed_focus_mirror_permanently_retires_owned_authority(void) {
     HANDLE hwnd = handle(SourceWindow);
     prepare_transaction(Unchanged);
@@ -547,6 +660,9 @@ static int run_checks(void) {
     if (!accepted_owned_focus_round_trip_keeps_the_real_rejection()) return 8;
     if (!owned_capture_rechecks_the_exact_focus_revision_before_reading()) return 11;
     if (!owned_capture_rechecks_dynamic_qualification_around_reading()) return 13;
+    if (!owned_input_probe_is_body_free_and_requires_current_clear_identity()) return 14;
+    if (!owned_input_identity_is_rechecked_inside_acceptance()) return 15;
+    if (!accepted_input_context_change_cannot_reach_text_mutation()) return 16;
     if (!failed_focus_mirror_permanently_retires_owned_authority()) return 9;
     return 0;
 }

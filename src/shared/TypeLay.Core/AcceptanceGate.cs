@@ -4,10 +4,12 @@ public sealed record AcceptancePermit(WritePlan Plan, long InputEpoch, long Focu
     long ObservedAtMs, long ExpiresAtMs);
 
 public readonly record struct GateContext(TargetId? Target, bool SourceFocused, ImeState Ime,
-    bool Modified, bool Injected, bool ProviderLeaseFresh, long InputEpoch, long FocusEpoch, long NowMs);
+    bool Modified, bool Injected, bool ProviderLeaseFresh, long InputEpoch, long FocusEpoch, long NowMs,
+    ShortcutModifiers Modifiers = ShortcutModifiers.None);
 
 // PhysicalKey is only an opaque pairing identity; it never grants permission.
-public readonly record struct AcceptanceKeyInput(uint PhysicalKey, bool Down, bool Repeated, bool BindingMatches);
+public readonly record struct AcceptanceKeyInput(uint PhysicalKey, bool Down, bool Repeated, bool BindingMatches,
+    ShortcutModifiers ExpectedModifiers = ShortcutModifiers.None);
 public readonly record struct AcceptanceDecision(bool Consume, AcceptancePermit? Permit);
 
 /// <summary>
@@ -65,8 +67,11 @@ public sealed class AcceptanceGate
             return new(false, null);
         _physicalKeyDown = input.PhysicalKey;
         var permit = Interlocked.Exchange(ref _permit, null);
+        bool modifiersMatch = input.ExpectedModifiers is ShortcutModifiers.None or ShortcutModifiers.Control
+            && context.Modified == (context.Modifiers != ShortcutModifiers.None)
+            && context.Modifiers == input.ExpectedModifiers;
         bool valid = permit is not null && context.SourceFocused && context.ProviderLeaseFresh
-            && !context.Modified && context.Ime == ImeState.Clear
+            && modifiersMatch && context.Ime == ImeState.Clear
             && context.Target == permit.Plan.Expected.Target
             && context.InputEpoch == permit.InputEpoch && context.FocusEpoch == permit.FocusEpoch
             && context.NowMs >= permit.ObservedAtMs && context.NowMs <= permit.ExpiresAtMs;

@@ -135,6 +135,87 @@ public sealed class AcceptanceBehaviorTests
     }
 
     [Fact]
+    public void ConfiguredControlChordKeepsItsPressAcrossRebindingAndModifierRelease()
+    {
+        var (gate, permit, context) = NewGate();
+        var chord = new AcceptanceKeyInput(118, true, false, true, ShortcutModifiers.Control);
+        gate.Publish(permit);
+        Assert.Equal(permit, gate.ProcessAcceptanceKey(chord, context with
+        {
+            Modified = true,
+            Modifiers = ShortcutModifiers.Control
+        }).Permit);
+        gate.Revoke();
+        var releasedControl = context with
+        {
+            SourceFocused = false,
+            NowMs = 9000
+        };
+        var rebound = chord with
+        {
+            Repeated = true,
+            BindingMatches = false,
+            ExpectedModifiers = ShortcutModifiers.None
+        };
+        var repeat = gate.ProcessAcceptanceKey(rebound, releasedControl);
+        Assert.True(repeat.Consume);
+        Assert.Null(repeat.Permit);
+        Assert.True(gate.ProcessAcceptanceKey(rebound with
+        {
+            Down = false
+        }, releasedControl).Consume);
+        Assert.False(gate.ProcessAcceptanceKey(rebound with
+        {
+            Down = false
+        }, releasedControl).Consume);
+    }
+
+    [Fact]
+    public void DefaultAcceptanceStillPassesThroughModifiedKeysIncludingLegacySnapshots()
+    {
+        var (gate, permit, context) = NewGate();
+        foreach (var modifiers in new[] { ShortcutModifiers.None, ShortcutModifiers.Control })
+        {
+            var modified = context with
+            {
+                Modified = true,
+                Modifiers = modifiers
+            };
+            gate.Publish(permit);
+            Assert.False(gate.ProcessAcceptanceKey(new(9, true, false, true), modified).Consume);
+            Assert.False(gate.ProcessAcceptanceKey(new(9, false, false, true), modified).Consume);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, ShortcutModifiers.Control, ShortcutModifiers.Control)]
+    [InlineData(true, ShortcutModifiers.None, ShortcutModifiers.Control)]
+    [InlineData(false, ShortcutModifiers.None, ShortcutModifiers.Control)]
+    [InlineData(true, ShortcutModifiers.Control | ShortcutModifiers.Alt, ShortcutModifiers.Control)]
+    [InlineData(true, ShortcutModifiers.Control | ShortcutModifiers.Shift, ShortcutModifiers.Control)]
+    [InlineData(true, ShortcutModifiers.Control | (ShortcutModifiers)8, ShortcutModifiers.Control)]
+    [InlineData(true, ShortcutModifiers.Alt, ShortcutModifiers.Alt)]
+    public void AChordRequiresAnExactSupportedModifierAndAConsistentSnapshot(bool modified,
+        ShortcutModifiers observed, ShortcutModifiers expected)
+    {
+        var (gate, permit, context) = NewGate();
+        gate.Publish(permit);
+        var chord = new AcceptanceKeyInput(118, true, false, true, expected);
+        var snapshot = context with
+        {
+            Modified = modified,
+            Modifiers = observed
+        };
+        var decision = gate.ProcessAcceptanceKey(chord, snapshot);
+        Assert.False(decision.Consume);
+        Assert.Null(decision.Permit);
+        Assert.False(gate.ProcessAcceptanceKey(chord with
+        {
+            Down = false
+        }, snapshot).Consume);
+    }
+
+    [Fact]
     public void OldConsumedKeyKeepsItsReleaseAcrossRebindingAndFocusLoss()
     {
         var (gate, permit, context) = NewGate();

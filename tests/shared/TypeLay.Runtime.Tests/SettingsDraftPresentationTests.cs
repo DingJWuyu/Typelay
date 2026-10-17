@@ -66,6 +66,7 @@ public sealed class SettingsDraftPresentationTests
     [Theory]
     [InlineData("Ctrl+K", "ctrl+k", "F8", "F7", ShortcutDraftError.InvalidOnDemandBindings)]
     [InlineData("Ctrl+K", "Alt+F8", "F8", "f8", ShortcutDraftError.InvalidSessionBindings)]
+    [InlineData("Ctrl+K", "Alt+F8", "Ctrl+F7", "F7", ShortcutDraftError.InvalidSessionBindings)]
     public void InvalidShortcutDraftHasNoPartialResultAndKeepsTheInput(string wake, string direct,
         string accept, string exit, ShortcutDraftError expected)
     {
@@ -75,6 +76,33 @@ public sealed class SettingsDraftPresentationTests
         Assert.Equal(expected, error);
         Assert.Equal(accept, draft.Accept);
         Assert.NotEmpty(SettingsDraftPresentation.ShortcutErrorMessage(error));
+    }
+
+    [Theory]
+    [InlineData("ctrl+f7", "Alt+F8", "CTRL+F7", "Ctrl+F8")]
+    [InlineData("Ctrl+K", "ctrl+f8", "Ctrl+F7", "CTRL+F8")]
+    public void ASessionChordCannotAlsoBeAWakeOrDirectCommand(string wake, string direct,
+        string accept, string exit)
+    {
+        var draft = new ShortcutSettingsDraft(wake, direct, accept, exit);
+        Assert.False(draft.TryApply(new UserSettings(), out var result, out var error));
+        Assert.Null(result);
+        Assert.Equal(ShortcutDraftError.ConflictingBindings, error);
+        Assert.Contains("唤醒、直接替换、接受与退出", SettingsDraftPresentation.ShortcutErrorMessage(error));
+        Assert.Equal(accept, draft.Accept);
+        Assert.Equal(exit, draft.Exit);
+    }
+
+    [Fact]
+    public void DistinctModifiersMayShareAMainKeyAcrossCommandAndSessionRoles()
+    {
+        var draft = new ShortcutSettingsDraft("shift+ctrl+f7", "alt+f8", "ctrl+f7", "f8");
+        Assert.True(draft.TryApply(new UserSettings(), out var result, out var error));
+        Assert.Equal(ShortcutDraftError.None, error);
+        Assert.Equal("Ctrl+Shift+F7", result!.WakeShortcut);
+        Assert.Equal("Alt+F8", result.DirectShortcut);
+        Assert.Equal("Ctrl+F7", result.AcceptShortcut);
+        Assert.Equal("F8", result.ExitShortcut);
     }
 
     [Fact]

@@ -10,6 +10,7 @@ using System.Windows.Media;
 using System.Windows.Media.Effects;
 using Microsoft.Win32;
 using TypeLay.Core;
+using TypeLay.Windows;
 namespace TypeLay.App;
 
 internal sealed class SettingsWindow : Window
@@ -591,8 +592,7 @@ internal sealed class SettingsWindow : Window
                 });
         }));
         Rule();
-        Row("第一次使用？", _settings.Value.AcceptShortcut == "Tab" ? ""
-            : "完整练习目前只支持无修饰 Tab。你的快捷键保持不变，仍可进行按需翻译练习。",
+        Row("第一次使用？", "",
             UiTheme.Button(PracticeEntryView().StartLabel, StartPractice));
         _practiceStatus = UiTheme.Text("", 12, true);
         _content.Children.Add(_practiceStatus);
@@ -602,7 +602,7 @@ internal sealed class SettingsWindow : Window
         var acceptance = UiTheme.Text(
             _settings.Value.AcceptShortcut.StartsWith("Ctrl+", StringComparison.Ordinal)
                 || _settings.Value.ExitShortcut.StartsWith("Ctrl+", StringComparison.Ordinal)
-                ? "当前组合键在 Windows 不可用，请在快捷键中选择普通键。"
+                ? "当前组合键仅在 TypeLay 自有练习中可用；普通输入框暂不支持。"
                 : guidance.AcceptanceDescription, 12, true);
         acceptance.Margin = new(0, 8, 0, 0);
         details.Children.Add(acceptance);
@@ -692,7 +692,9 @@ internal sealed class SettingsWindow : Window
                 view.Title, MessageBoxButton.OK, MessageBoxImage.Information);
         }
     }
-    private bool UsesAutomaticPractice => _settings.Value.Mode == WorkMode.Automatic && _settings.Value.AcceptShortcut == "Tab";
+    private bool UsesAutomaticPractice => _settings.Value.Mode == WorkMode.Automatic
+        && OwnedPracticeAcceptanceProtocol.TryParseKey(_settings.Value.AcceptShortcut, out _, out _)
+        && OwnedPracticeAcceptanceProtocol.TryParseKey(_settings.Value.ExitShortcut, out _, out _);
     private OnDemandPracticeView PracticeEntryView() => UsesAutomaticPractice
         ? AutomaticPracticeEntryView() : OnDemandPracticePresentation.Create(_settings.Value);
     private OnDemandPracticeView AutomaticPracticeEntryView()
@@ -820,7 +822,7 @@ internal sealed class SettingsWindow : Window
         if (_returnShortcutHint is not null)
             _returnShortcutHint.Text = accept.StartsWith("Ctrl+", StringComparison.Ordinal)
                 || (_exitShortcutInput.SelectedItem as string)?.StartsWith("Ctrl+", StringComparison.Ordinal) == true
-                    ? "当前组合键在 Windows 不可用；请选择普通键。" : accept + " → " + accept;
+                    ? "自有练习：" + accept + " → " + accept : accept + " → " + accept;
         RefreshDraftBar();
         _shortcutStatus.Text = ShortcutStatus?.Invoke() ?? "仅在启用 TypeLay 的按需模式下生效。自动模式不注册这两个快捷键。";
     }

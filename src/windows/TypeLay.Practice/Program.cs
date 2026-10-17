@@ -39,7 +39,7 @@ internal static partial class Program
     private static SessionViewToken? _exitCompletedToken;
     private static long _exitSequence, _exitWitnessFloor;
     private static bool _escapeHeld, _escapeConsumed, _escapeExtended, _escapeInjected;
-    private static uint _escapeScanCode;
+    private static uint _escapeScanCode, _escapeVirtualKey = 27;
     private static OwnedEditorControl? _editorFence;
     private static EditorHandoff _editorHandoff;
     private static bool _editorAppLeft;
@@ -87,8 +87,16 @@ internal static partial class Program
     private static bool _observeInputCompletion;
     private static long _inputCompletionSequence;
     private static Queue<PracticeMessage>? _inputCompletions;
-    private static bool _tabHeld, _tabConsumed, _tabExtended;
-    private static uint _tabScanCode;
+    private static bool _tabHeld, _tabConsumed, _tabExtended, _tabInjected;
+    private static uint _tabScanCode, _tabVirtualKey = 9;
+    private static long _guiInputRevision;
+    private static nint _inputObservation;
+    private static readonly Native.HookProc InputObservation = ObserveDispatchedInput;
+    private static PrefixAttempt? _prefixDispatch, _prefixProof;
+    private static OwnedPrefixResult? _prefixTicket;
+    private static bool _prefixControlDispatched;
+    private sealed record PrefixAttempt(OwnedKeyWitness Witness, OwnedAcceptancePlan? Plan, OwnedExitLease? ExitLease,
+        OwnedCaptureDescriptor? Descriptor, long ExpiresAtMs, long InputRevision, OwnedInputContext Context, bool Qualified);
     private static readonly long ProcessStartUtcTicks = Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks;
     private static long _sequence;
     private static bool _retired = true, _closePending, _sendRestart;
@@ -145,7 +153,12 @@ internal static partial class Program
             _edit = Add("Edit", presentation.SampleText,
                 0x00010000 | 0x00200000 | 0x0004 | 0x0040 | 0x1000, EditId, 0x0200);
             if (_connection != Guid.Empty)
+            {
                 _owned = new OwnedPracticeField(_edit.Handle, Path.Combine(AppContext.BaseDirectory, "TypeLay.NativeInput.dll"));
+                // Passive observation on this GUI thread only. Failure disables
+                // Ctrl-prefix proof; the stock Edit and ordinary bindings remain.
+                _inputObservation = Native.SetWindowsHookExW(4, InputObservation, 0, Native.GetCurrentThreadId());
+            }
             _preview = Add("Static", presentation.PreviewStep, id: PreviewId);
             _replace = Add("Static", presentation.ReplaceStep, id: ReplaceId);
             _progressNotice = Add("Static", presentation.ProgressNotice, id: ProgressId);
@@ -205,22 +218,36 @@ internal static partial class Program
                     return _exitCode;
                 if (_window == 0)
                     continue;
+                string? completionKind = null;
+                if (_observeInputCompletion && inputQueue && message.Id is 0x0100 or 0x0101)
+                {
+                    uint key = (uint)message.WParam;
+                    if (_escapeHeld && key == _escapeVirtualKey || key == _exitLease?.VirtualKey || key == 27)
+                        completionKind = "test-exit-dispatched";
+                    else if (_tabHeld && key == _tabVirtualKey || key == _plan?.VirtualKey || key == 9)
+                        completionKind = "test-tab-dispatched";
+                }
                 bool consumed = ProcessInput(ref message, inputQueue);
+                var prefixDispatch = _prefixDispatch;
                 if (!consumed && !Native.IsDialogMessageW(_window, ref message))
                 {
                     Native.TranslateMessage(ref message);
                     Native.DispatchMessageW(ref message);
                 }
+                // IsDialogMessage may itself dispatch the original key. The
+                // local observer, not which API returned, proves that exact
+                // Ctrl reached its ordinary source procedure exactly once.
+                if (prefixDispatch is not null)
+                    CompletePrefixDispatch(prefixDispatch, !consumed);
                 // Only the queue fixture opts in. Ordinary production and real
                 // model sessions emit nothing; no input authority is changed.
                 // The original MSG has completed its decision and, if passed,
                 // its normal dispatch before this content-free notification.
-                if (_observeInputCompletion && inputQueue && message.WParam is 9 or 27
-                    && message.Id is 0x0100 or 0x0101)
+                if (completionKind is not null)
                 {
                     if (_inputCompletions!.Count >= 8)
                         throw new InvalidDataException("practice-input-completion-limit");
-                    _inputCompletions.Enqueue(new(message.WParam == 9 ? "test-tab-dispatched" : "test-exit-dispatched", _connection, _run, _sequence,
+                    _inputCompletions.Enqueue(new(completionKind, _connection, _run, _sequence,
                         InputCompletion: new(checked(++_inputCompletionSequence), message.Id == 0x0100, consumed)));
                 }
                 if (consumed)
@@ -237,6 +264,7 @@ internal static partial class Program
         finally
         {
             ReleaseAcceptance();
+            StopInputObservation();
             if (_window != 0)
                 Native.DestroyWindow(_window);
             if (_bodyFont != 0)
@@ -517,6 +545,7 @@ internal static partial class Program
                             break;
                         case "revoke-plan" when _automatic:
                             RequirePlan(message.Acceptance);
+                            ClearPrefixProof();
                             _planActive = false;
                             Reply("revoked-plan", PlanControl());
                             break;
@@ -584,7 +613,7 @@ internal static partial class Program
                 if (revision > 0 && revision != _sourceReadyRevision)
                 {
                     _sourceReadyRevision = revision;
-                    Reply("source-ready", new(Descriptor: Descriptor()));
+                    Reply("source-ready", new(Descriptor: Descriptor(), ControlPrefixObserved: _inputObservation != 0));
                 }
             }
             FlushCompletionRequest();
@@ -646,6 +675,7 @@ internal static partial class Program
             QueueEditorTrace(control.Intent, EditorEvent.FenceRejected, EditorReason.Fence);
             throw new InvalidDataException("practice-editor-fence");
         }
+        ClearPrefixProof();
         _planActive = false;
         // Each admitted editor intent has its own bounded evidence budget.
         // Already queued records retain their original intent and order.
@@ -841,8 +871,19 @@ internal static partial class Program
                 // repeat/up belongs here; this fence is never an exit lease.
                 _escapeHeld = _escapeConsumed = true;
                 _escapeScanCode = press.ScanCode;
+                _escapeVirtualKey = press.VirtualKey;
                 _escapeExtended = press.Extended;
                 _escapeInjected = press.Injected;
+            }
+            else if (control.Kind == OwnedReturnKind.Tab && control.KeyPress is { } acceptancePress)
+            {
+                // The editor consumed this acceptance/return down. This is
+                // only its exact remaining press, never a source write permit.
+                _tabHeld = _tabConsumed = true;
+                _tabVirtualKey = acceptancePress.VirtualKey;
+                _tabScanCode = acceptancePress.ScanCode;
+                _tabExtended = acceptancePress.Extended;
+                _tabInjected = acceptancePress.Injected;
             }
             WriteReply(new("return-fenced", _connection, _run, _sequence,
                 Returning: control with
@@ -1015,6 +1056,7 @@ internal static partial class Program
             || target.Provider != "win32-edit-transaction-v2" || target.Lifetime == Guid.Empty
             || WriteSafety.Validate(plan.Permit.Plan, plan.Permit.Plan.Expected, WindowsInterruptClock.NowMs) != Denial.None)
             throw new InvalidDataException("practice-install-identity");
+        ClearPrefixProof();
         _plan = plan;
         _lastPlanSequence = plan.PlanSequence;
         _installWitnessFloor = _witness.Sequence;
@@ -1036,6 +1078,7 @@ internal static partial class Program
 
     private static void ReleasePlan()
     {
+        ClearPrefixProof();
         _planActive = false;
         _plan = null;
         _resultMapping?.Dispose();
@@ -1047,6 +1090,7 @@ internal static partial class Program
 
     private static void ClearEditorHandoff()
     {
+        ClearPrefixProof();
         _editorFence = null;
         _editorHandoff = EditorHandoff.None;
         _editorAppLeft = false;
@@ -1070,6 +1114,8 @@ internal static partial class Program
 
     private static void CloseWitness()
     {
+        ClearPrefixProof();
+        _prefixTicket = null;
         _exitLease = null;
         _witness = null;
         _witnessMapping?.Dispose();
@@ -1089,10 +1135,183 @@ internal static partial class Program
 
     private static void InvalidateFocus()
     {
+        InvalidateGuiInput();
         _exitLease = null;
         _planActive = false;
         if (_owned is not null && _owned.AdvanceFocusRevision() == 0)
             Interlocked.Exchange(ref _disconnected, 1);
+    }
+
+    private static void ClearPrefixProof() => _prefixProof = null;
+
+    private static void InvalidateGuiInput(bool retirePlan = true)
+    {
+        _guiInputRevision = checked(_guiInputRevision + 1);
+        ClearPrefixProof();
+        if (retirePlan)
+            _planActive = false;
+    }
+
+    private static void StopInputObservation()
+    {
+        nint hook = _inputObservation;
+        _inputObservation = 0;
+        ClearPrefixProof();
+        if (hook != 0)
+            Native.UnhookWindowsHookEx(hook);
+    }
+
+    private static nint ObserveDispatchedInput(int code, nuint wParam, nint lParam)
+    {
+        try
+        {
+            if (code >= 0 && _inputObservation != 0 && !_retired && _edit is { } edit && _owned is not null)
+            {
+                var message = Marshal.PtrToStructure<Native.CallMessage>(lParam);
+                bool source = message.Window == edit.Handle, root = message.Window == _window;
+                bool input = message.Id is >= 0x0100 and <= 0x0109 or >= 0x0200 and <= 0x020e
+                    or >= 0x00a0 and <= 0x00ad or 0x00ff;
+                bool imeOrLanguage = message.Id is 0x0050 or 0x0051 or >= 0x010d and <= 0x010f
+                    or >= 0x0281 and <= 0x0291;
+                bool sourceMutation = source && message.Id is 0x000c or 0x00b1 or 0x00c2 or 0x00c7;
+                bool changed = root && message.Id == 0x0111 && message.LParam == edit.Handle
+                    && (message.WParam & 0xffff) == EditId && ((message.WParam >> 16) & 0xffff) is 0x0300 or 0x0400;
+                if ((source || root) && (input || imeOrLanguage || sourceMutation || changed))
+                {
+                    ulong bits = unchecked((ulong)(long)message.LParam);
+                    var prefix = _prefixDispatch;
+                    bool originalControl = prefix is not null && !_prefixControlDispatched && source
+                        && message.Id == 0x0100 && message.WParam == 0x11
+                        && ((bits >> 16) & 0xff) == prefix.Witness.ScanCode
+                        && ((bits & (1UL << 24)) != 0) == ((prefix.Witness.NativeFlags & 1) != 0)
+                        && (bits & ((1UL << 29) | (1UL << 30) | (1UL << 31))) == 0 && (bits & 0xffff) == 1;
+                    if (originalControl)
+                    {
+                        // Count the real original Ctrl once. A second matching
+                        // message, nested key, IME edge or content notification
+                        // changes the revision again and permanently breaks proof.
+                        _prefixControlDispatched = true;
+                        _guiInputRevision = checked(_guiInputRevision + 1);
+                        ClearPrefixProof();
+                    }
+                    else
+                    {
+                        // Plain hover did not revoke the default LL plan before
+                        // prefix observation. It still invalidates a live proof;
+                        // dragging and every other input retain their old gates.
+                        // Non-client wParam is a hit-test value, not button flags.
+                        bool hover = message.Id == 0x00a0 || message.Id == 0x0200 && (message.WParam & 0x0073) == 0;
+                        InvalidateGuiInput(!hover || _prefixDispatch is not null || _prefixProof is not null);
+                    }
+                }
+            }
+        }
+        catch
+        {
+            ClearPrefixProof();
+            _planActive = false;
+            Interlocked.Exchange(ref _disconnected, 1);
+        }
+        return Native.CallNextHookEx(0, code, wParam, lParam);
+    }
+
+    private static void BeginPrefixDispatch(ref Native.Message message, OwnedKeyWitness witness, ulong bits)
+    {
+        ClearPrefixProof();
+        _prefixTicket = new(witness.PrefixSequence, witness.PlanSequence, witness.ExitLeaseSequence, false);
+        _prefixControlDispatched = false;
+        var plan = witness.PlanSequence > 0 && _plan is { } installed && installed.PlanSequence == witness.PlanSequence
+            && !_planReported ? installed : null;
+        var exit = witness.ExitLeaseSequence > 0 && _exitLease is { } lease && lease.Sequence == witness.ExitLeaseSequence ? lease : null;
+        var descriptor = plan?.Descriptor ?? exit?.Descriptor;
+        long expires = Math.Max(plan?.Permit.ExpiresAtMs ?? 0, exit?.ExpiresAtMs ?? 0);
+        long revision = _guiInputRevision, now = WindowsInterruptClock.NowMs;
+        OwnedInputContext context = default;
+        bool qualified = _inputObservation != 0 && !_retired && !_witnessFailed && _editorFence is null
+            && message.Window == _edit!.Handle && message.Id == 0x0100 && (bits & (1UL << 29)) == 0
+            && witness.Modifiers == ShortcutModifiers.Control && witness.Modified
+            && (!witness.Injected || _allowInjectedInput) && ExactModifiers(ShortcutModifiers.Control)
+            && (witness.PlanSequence == 0 || plan is { Modifiers: ShortcutModifiers.Control })
+            && (witness.ExitLeaseSequence == 0 || exit is { Modifiers: ShortcutModifiers.Control })
+            && descriptor is not null && (plan is null || exit is null || plan.Descriptor == exit.Descriptor)
+            && descriptor == Descriptor() && SourceFocused() && now >= witness.ObservedAtMs && now <= expires
+            && witness.NativeFocusRevision == descriptor.NativeFocusRevision
+            && (PrefixPlanCurrent(witness, plan) || PrefixExitCurrent(witness, exit))
+            && Volatile.Read(ref _disconnected) == 0 && !_closePending && !_sendRestart && PendingControls.IsEmpty
+            && _owned!.TryProbeInputContext(descriptor, expires, out context)
+            && revision == _guiInputRevision && ExactModifiers(ShortcutModifiers.Control);
+        _prefixDispatch = new(witness, plan, exit, descriptor, expires, revision, context, qualified);
+        if (!qualified)
+            _planActive = false;
+    }
+
+    private static bool PrefixPlanCurrent(OwnedKeyWitness witness, OwnedAcceptancePlan? plan) => plan is not null
+        && _plan == plan && _planActive && !_planReported && witness.PlanSequence == plan.PlanSequence
+        && witness.Sequence > _installWitnessFloor && witness.Sequence > plan.InstallWitnessSequence
+        && witness.UserEpoch == plan.UserEpoch && witness.ForegroundEpoch == plan.ForegroundEpoch
+        && witness.ObservedAtMs >= plan.Permit.ObservedAtMs && witness.ObservedAtMs <= plan.Permit.ExpiresAtMs
+        && WindowsInterruptClock.NowMs <= plan.Permit.ExpiresAtMs;
+
+    private static bool PrefixExitCurrent(OwnedKeyWitness witness, OwnedExitLease? lease) => lease is not null
+        && _exitLease == lease && _exitSequence == lease.Sequence && witness.ExitLeaseSequence == lease.Sequence
+        && witness.Sequence > _exitWitnessFloor && witness.Sequence > lease.InstallWitnessSequence
+        && witness.UserEpoch == lease.UserEpoch && witness.ForegroundEpoch == lease.ForegroundEpoch
+        && witness.ObservedAtMs >= lease.ObservedAtMs && witness.ObservedAtMs <= lease.ExpiresAtMs
+        && WindowsInterruptClock.NowMs <= lease.ExpiresAtMs;
+
+    private static bool PrefixCurrent(PrefixAttempt prefix, long revision) => _inputObservation != 0
+        && !_retired && !_witnessFailed && _editorFence is null && _witness is not null && !_witness.Poisoned
+        && prefix.Descriptor is not null && prefix.Descriptor == Descriptor() && SourceFocused()
+        && prefix.InputRevision < revision && _guiInputRevision == revision
+        && (prefix.Plan is null || _plan == prefix.Plan && !_planReported)
+        && (prefix.ExitLease is null || _exitLease == prefix.ExitLease && _exitSequence == prefix.ExitLease.Sequence)
+        && Volatile.Read(ref _disconnected) == 0 && !_closePending && !_sendRestart && PendingControls.IsEmpty
+        && WindowsInterruptClock.NowMs <= prefix.ExpiresAtMs && ExactModifiers(ShortcutModifiers.Control);
+
+    private static void CompletePrefixDispatch(PrefixAttempt prefix, bool dispatched)
+    {
+        _prefixDispatch = null;
+        long revision = checked(prefix.InputRevision + 1);
+        bool processed = dispatched && _prefixControlDispatched && prefix.Qualified && PrefixCurrent(prefix, revision)
+            && (PrefixPlanCurrent(prefix.Witness, prefix.Plan) || PrefixExitCurrent(prefix.Witness, prefix.ExitLease))
+            && _owned!.TryProbeInputContext(prefix.Descriptor!, prefix.ExpiresAtMs, out var after)
+            && after == prefix.Context && PrefixCurrent(prefix, revision);
+        _prefixProof = processed ? prefix : null;
+        if (!processed)
+            _planActive = false;
+        WriteReply(new("prefix-processed", _connection, _run, _sequence,
+            PrefixResult: new(prefix.Witness.PrefixSequence, prefix.Witness.PlanSequence, prefix.Witness.ExitLeaseSequence, processed)));
+    }
+
+    private static bool TryUsePrefix(OwnedKeyWitness witness, long planSequence, long exitSequence,
+        out OwnedInputContext? context)
+    {
+        context = null;
+        var prefix = _prefixProof;
+        if (prefix is null || witness.PrefixSequence != prefix.Witness.Sequence
+            || witness.Modifiers != ShortcutModifiers.Control
+            || planSequence > 0 && prefix.Witness.PlanSequence != planSequence
+            || exitSequence > 0 && prefix.Witness.ExitLeaseSequence != exitSequence
+            || planSequence > 0 && !PrefixPlanCurrent(prefix.Witness, prefix.Plan)
+            || exitSequence > 0 && !PrefixExitCurrent(prefix.Witness, prefix.ExitLease)
+            || !PrefixCurrent(prefix, checked(prefix.InputRevision + 1))
+            || !_owned!.TryProbeInputContext(prefix.Descriptor!, prefix.ExpiresAtMs, out var current)
+            || current != prefix.Context || !PrefixCurrent(prefix, checked(prefix.InputRevision + 1)))
+            return false;
+        context = current;
+        return true;
+    }
+
+    private static bool ExactModifiers(ShortcutModifiers expected)
+    {
+        ShortcutModifiers current = ShortcutModifiers.None;
+        if ((Native.GetKeyState(0x10) & 0x8000) != 0)
+            current |= ShortcutModifiers.Shift;
+        if ((Native.GetKeyState(0x11) & 0x8000) != 0)
+            current |= ShortcutModifiers.Control;
+        if ((Native.GetKeyState(0x12) & 0x8000) != 0)
+            current |= ShortcutModifiers.Alt;
+        return current == expected && (Native.GetKeyState(0x5b) & 0x8000) == 0 && (Native.GetKeyState(0x5c) & 0x8000) == 0;
     }
 
     private static bool ProcessInput(ref Native.Message message, bool inputQueue)
@@ -1101,13 +1320,12 @@ internal static partial class Program
         if (!down && message.Id is not (0x0101 or 0x0105))
             return false;
         if (!_automatic || _witnessFailed)
-            return inputQueue && PairEscapePress(ref message, down);
+            return inputQueue && (PairEscapePress(ref message, down) || PairRetiredPress(ref message, down));
         if (_witness is null)
             return inputQueue && (PairEscapePress(ref message, down) || PairRetiredPress(ref message, down));
         if (!inputQueue)
         {
-            // Neither posted messages nor a fallback retrieval can establish
-            // physical ownership or consume an outstanding physical key release.
+            ClearPrefixProof();
             _planActive = false;
             return false;
         }
@@ -1116,20 +1334,19 @@ internal static partial class Program
         {
             if (!_witness.TryRead(out var witness))
             {
-                if (_escapeHeld && message.WParam == 27)
+                if (_escapeHeld && message.WParam == _escapeVirtualKey)
                     return PairEscapePress(ref message, down);
-                if (_tabHeld)
+                if (_tabHeld && message.WParam == _tabVirtualKey)
                     return PairRetiredPress(ref message, down);
-                if (_plan is not null)
+                if (_plan is not null || _prefixProof is not null)
                     FailWitness();
                 return false;
             }
             ulong bits = unchecked((ulong)(long)message.LParam);
             bool extended = (bits & (1UL << 24)) != 0;
             bool repeated = down && (bits & (1UL << 30)) != 0;
-            // LL input distinguishes left/right modifiers; WM_KEY* uses the
-            // generic modifier VK. Scan code and extended bit still identify the
-            // exact physical key; this does not relax their FIFO comparison.
+            // WM_KEY* normalizes modifier VKs. Their scan/extended/FIFO identity
+            // remains exact, including the Ctrl that must pass to the stock Edit.
             uint messageKey = witness.VirtualKey switch
             {
                 0xa0 or 0xa1 => 0x10,
@@ -1145,49 +1362,61 @@ internal static partial class Program
                 && witness.Injected == ((witness.NativeFlags & 0x12) != 0);
             if (!tupleMatches)
             {
+                ReportRejectedEligible(witness);
+                ReportRejectedExit(witness);
                 FailWitness();
-                return PairEscapePress(ref message, down);
+                return false;
             }
-            if (message.WParam == 27)
-                return ProcessExit(ref message, witness, down, repeated, extended, bits);
-            if (message.WParam != 9)
+            if (_escapeHeld && message.WParam == _escapeVirtualKey && (!down || repeated))
+                return PairEscapePress(ref message, down, witness.Injected);
+            if (_tabHeld && message.WParam == _tabVirtualKey && (!down || repeated))
+                return PairRetiredPress(ref message, down, witness.Injected);
+            if (messageKey == 0x11 && down && !repeated && witness.PrefixSequence == witness.Sequence
+                && witness.PrefixSequence > 0 && (witness.PlanSequence > 0 || witness.ExitLeaseSequence > 0))
             {
+                BeginPrefixDispatch(ref message, witness, bits);
+                return false; // Ctrl is always the original ordinary input.
+            }
+            if (messageKey == _exitLease?.VirtualKey || messageKey == 27)
+                return ProcessExit(ref message, witness, down, repeated, extended, bits);
+            if (messageKey != _plan?.VirtualKey && messageKey != 9)
+            {
+                ReportRejectedEligible(witness);
+                ReportRejectedExit(witness);
+                ClearPrefixProof();
                 _planActive = false;
                 return false;
             }
             if (!down)
+                return PairRetiredPress(ref message, down, witness.Injected);
+            // A held decision belongs to its old physical key even if settings
+            // or a new plan bind another Fn before the original release arrives.
+            if (_tabHeld && (messageKey != _tabVirtualKey || witness.ScanCode != _tabScanCode
+                || extended != _tabExtended || witness.Injected != _tabInjected))
             {
-                bool consume = _tabHeld && _tabConsumed && witness.ScanCode == _tabScanCode
-                    && extended == _tabExtended;
-                _tabHeld = _tabConsumed = false;
-                return consume;
-            }
-            if (_tabHeld)
-            {
-                if (repeated && witness.ScanCode == _tabScanCode && extended == _tabExtended)
-                    return _tabConsumed;
-                // A release may have reached another window. A fresh down is
-                // a new press; it must not inherit the old consume decision.
-                _tabHeld = _tabConsumed = false;
-                if (repeated)
-                {
-                    _planActive = false;
-                    return false;
-                }
+                ReportRejectedEligible(witness);
+                return false;
             }
             _tabHeld = true;
             _tabConsumed = false;
+            _tabVirtualKey = messageKey;
             _tabScanCode = witness.ScanCode;
             _tabExtended = extended;
+            _tabInjected = witness.Injected;
             var plan = _plan;
             if (_retired || plan is null || !_planActive || _planReported || _transaction is null || _resultMapping is null)
+            {
+                ReportRejectedEligible(witness);
                 return false;
-            _planActive = false; // One attempt; rejection must not be resurrected by a repeat.
+            }
+            OwnedInputContext? expectedInput = null;
             long now = WindowsInterruptClock.NowMs;
-            bool qualified = !repeated && witness.Eligible && !witness.Modified
+            bool qualified = !repeated && witness.Eligible
+                && witness.VirtualKey == plan.VirtualKey && witness.Modifiers == plan.Modifiers
+                && witness.Modified == (plan.Modifiers != ShortcutModifiers.None)
                 && (!witness.Injected || _allowInjectedInput)
                 && message.Id == 0x0100 && message.Window == _edit!.Handle
-                && (bits & (1UL << 29)) == 0 && !ModifiersDown()
+                && (bits & (1UL << 29)) == 0 && ExactModifiers(plan.Modifiers)
                 && witness.Sequence > _installWitnessFloor && witness.Sequence > plan.InstallWitnessSequence
                 && witness.PlanSequence == plan.PlanSequence
                 && witness.NativeFocusRevision == plan.Descriptor.NativeFocusRevision
@@ -1196,34 +1425,66 @@ internal static partial class Program
                 && witness.ObservedAtMs >= plan.Permit.ObservedAtMs && witness.ObservedAtMs <= plan.Permit.ExpiresAtMs
                 && now >= witness.ObservedAtMs && now <= plan.Permit.ExpiresAtMs
                 && SourceFocused() && Volatile.Read(ref _disconnected) == 0
-                && !_closePending && !_sendRestart && PendingControls.IsEmpty;
+                && !_closePending && !_sendRestart && PendingControls.IsEmpty
+                && (plan.Modifiers == ShortcutModifiers.None && witness.PrefixSequence == 0
+                    || plan.Modifiers == ShortcutModifiers.Control && TryUsePrefix(witness, plan.PlanSequence, 0, out expectedInput));
+            _planActive = false; // One attempt; neither a repeat nor equal final state restores it.
+            ClearPrefixProof();
             WriteReceipt receipt;
             if (!qualified)
                 receipt = new(WriteStatus.RejectedBeforeMutation, Denial.EpochChanged);
             else
             {
                 BinaryPrimitives.WriteUInt64LittleEndian(_transaction.AsSpan(48), Native.GetTickCount64() + 500);
-                accepted = _owned!.TryExecute(_transaction, plan.Descriptor.NativeFocusRevision);
+                accepted = _owned!.TryExecute(_transaction, plan.Descriptor.NativeFocusRevision, expectedInput);
                 receipt = ReadReceipt(plan, _transaction);
             }
             _tabConsumed = accepted;
-            _planReported = true;
-            var result = new OwnedAcceptanceResult(_connection, _run, plan.PlanSequence, plan.Permit.Plan.Id,
-                witness.Sequence, accepted ? witness.ObservedAtMs : 0, receipt);
-            OwnedPracticeAcceptanceProtocol.WriteResult(_resultMapping, result);
-            Reply("receipt", PlanControl(witness.Sequence));
+            PublishReceipt(plan, witness, accepted, receipt);
             return accepted;
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException
             or ArgumentException or OverflowException)
         {
+            ClearPrefixProof();
             _planActive = false;
             Interlocked.Exchange(ref _disconnected, 1);
-            // If native crossed its acceptance point, failure to return a receipt
-            // is unknown to the parent. Passing the original Tab would be a second
-            // action; keep that press consumed and never attempt another write.
             _tabConsumed = accepted;
             return accepted;
+        }
+    }
+
+    private static void PublishReceipt(OwnedAcceptancePlan plan, OwnedKeyWitness witness, bool accepted, WriteReceipt receipt)
+    {
+        _planReported = true;
+        var result = new OwnedAcceptanceResult(_connection, _run, plan.PlanSequence, plan.Permit.Plan.Id,
+            witness.Sequence, accepted ? witness.ObservedAtMs : 0, receipt);
+        OwnedPracticeAcceptanceProtocol.WriteResult(_resultMapping!, result);
+        Reply("receipt", PlanControl(witness.Sequence));
+    }
+
+    private static void ReportRejectedEligible(OwnedKeyWitness witness)
+    {
+        if (witness.Eligible && _plan is { } plan && witness.PlanSequence == plan.PlanSequence
+            && !_planReported && _resultMapping is not null)
+        {
+            _planActive = false;
+            ClearPrefixProof();
+            PublishReceipt(plan, witness, false, new(WriteStatus.RejectedBeforeMutation, Denial.EpochChanged));
+        }
+    }
+
+    private static void ReportRejectedExit(OwnedKeyWitness witness)
+    {
+        if (witness.ExitLeaseSequence > 0 && _prefixTicket is { } ticket && witness.PrefixSequence == ticket.PrefixSequence)
+        {
+            if (_exitLease?.Sequence == witness.ExitLeaseSequence)
+                _exitLease = null;
+            ClearPrefixProof();
+            WriteReply(new("prefix-processed", _connection, _run, _sequence, PrefixResult: ticket with
+            {
+                Processed = false
+            }));
         }
     }
 
@@ -1232,6 +1493,7 @@ internal static partial class Program
         var control = message.Exit ?? throw new InvalidDataException("practice-exit-missing");
         if (control.Sequence <= _exitSequence)
             throw new InvalidDataException("practice-exit-order");
+        ClearPrefixProof();
         _exitSequence = control.Sequence;
         _exitLease = null;
         if (message.Kind == "exit-clear")
@@ -1253,34 +1515,52 @@ internal static partial class Program
     {
         if (!down || _escapeHeld && repeated)
             return PairEscapePress(ref message, down, witness.Injected);
+        if (_escapeHeld && ((uint)message.WParam != _escapeVirtualKey || witness.ScanCode != _escapeScanCode
+            || extended != _escapeExtended || witness.Injected != _escapeInjected))
+        {
+            ReportRejectedExit(witness);
+            return false;
+        }
         _escapeHeld = true;
         _escapeConsumed = false;
+        _escapeVirtualKey = (uint)message.WParam;
         _escapeScanCode = witness.ScanCode;
         _escapeExtended = extended;
         _escapeInjected = witness.Injected;
         var lease = _exitLease;
+        OwnedInputContext? expectedInput = null;
+        long now = WindowsInterruptClock.NowMs;
+        bool qualified = lease is not null && !_retired && !repeated
+            && witness.VirtualKey == lease.VirtualKey && witness.Modifiers == lease.Modifiers
+            && witness.Modified == (lease.Modifiers != ShortcutModifiers.None)
+            && (!witness.Injected || _allowInjectedInput)
+            && message.Id == 0x0100 && message.Window == _edit!.Handle && (bits & (1UL << 29)) == 0 && ExactModifiers(lease.Modifiers)
+            && witness.ExitLeaseSequence == lease.Sequence
+            && witness.Sequence > _exitWitnessFloor && witness.Sequence > lease.InstallWitnessSequence
+            && witness.NativeFocusRevision == lease.Descriptor.NativeFocusRevision
+            && witness.UserEpoch == lease.UserEpoch && witness.ForegroundEpoch == lease.ForegroundEpoch
+            && witness.ObservedAtMs >= lease.ObservedAtMs && witness.ObservedAtMs <= lease.ExpiresAtMs
+            && now >= witness.ObservedAtMs && now <= lease.ExpiresAtMs
+            && ExitContextCurrent(lease)
+            && (lease.Modifiers == ShortcutModifiers.None && witness.PrefixSequence == 0
+                || lease.Modifiers == ShortcutModifiers.Control && TryUsePrefix(witness, 0, lease.Sequence, out expectedInput))
+            && _owned!.CanExit(lease.Descriptor, lease.ExpiresAtMs, expectedInput)
+            && ExitContextCurrent(lease) && ExactModifiers(lease.Modifiers);
         _exitLease = null; // One press, even when refused. Repeats never retry.
         _planActive = false;
-        long now = WindowsInterruptClock.NowMs;
-        if (lease is null || _retired || repeated || witness.Modified || witness.Injected && !_allowInjectedInput
-            || message.Id != 0x0100 || message.Window != _edit!.Handle || (bits & (1UL << 29)) != 0 || ModifiersDown()
-            || witness.ExitLeaseSequence != lease.Sequence
-            || witness.Sequence <= _exitWitnessFloor || witness.Sequence <= lease.InstallWitnessSequence
-            || witness.NativeFocusRevision != lease.Descriptor.NativeFocusRevision
-            || witness.UserEpoch != lease.UserEpoch || witness.ForegroundEpoch != lease.ForegroundEpoch
-            || witness.ObservedAtMs < lease.ObservedAtMs || witness.ObservedAtMs > lease.ExpiresAtMs
-            || now < witness.ObservedAtMs || now > lease.ExpiresAtMs
-            || !ExitContextCurrent(lease) || !_owned!.CanExit(lease.Descriptor, lease.ExpiresAtMs)
-            || !ExitContextCurrent(lease) || ModifiersDown())
-            return false;
+        ClearPrefixProof();
         now = WindowsInterruptClock.NowMs;
-        if (now < witness.ObservedAtMs || now > lease.ExpiresAtMs)
+        if (!qualified || lease is null || now < witness.ObservedAtMs || now > lease.ExpiresAtMs)
+        {
+            if (_prefixTicket is { } ticket && witness.PrefixSequence == ticket.PrefixSequence)
+                WriteReply(new("prefix-processed", _connection, _run, _sequence, PrefixResult: ticket with
+                {
+                    Processed = false
+                }));
             return false;
-        // Claim before stdio. Retirement, failed delivery and old ticket replay
-        // cannot turn this same physical down/repeat/up into a dialog Cancel.
+        }
         _escapeConsumed = true;
         _exitCompletedToken = lease.Token;
-        _planActive = false;
         try
         {
             WriteReply(new("exit-completed", _connection, _run, _sequence,
@@ -1301,7 +1581,7 @@ internal static partial class Program
 
     private static bool PairEscapePress(ref Native.Message message, bool down, bool? injected = null)
     {
-        if (!_escapeHeld || message.WParam != 27 || injected is { } origin && origin != _escapeInjected)
+        if (!_escapeHeld || message.WParam != _escapeVirtualKey || injected is { } origin && origin != _escapeInjected)
             return false;
         ulong bits = unchecked((ulong)(long)message.LParam);
         if (((bits >> 16) & 0xff) != _escapeScanCode || ((bits & (1UL << 24)) != 0) != _escapeExtended)
@@ -1315,9 +1595,9 @@ internal static partial class Program
         return consume;
     }
 
-    private static bool PairRetiredPress(ref Native.Message message, bool down)
+    private static bool PairRetiredPress(ref Native.Message message, bool down, bool? injected = null)
     {
-        if (!_tabHeld || message.WParam != 9)
+        if (!_tabHeld || message.WParam != _tabVirtualKey || injected is { } origin && origin != _tabInjected)
             return false;
         ulong bits = unchecked((ulong)(long)message.LParam);
         if (((bits >> 16) & 0xff) != _tabScanCode || ((bits & (1UL << 24)) != 0) != _tabExtended)
@@ -1334,15 +1614,11 @@ internal static partial class Program
         return consume;
     }
 
-    private static bool ModifiersDown() => (Native.GetKeyState(0x10) & 0x8000) != 0
-        || (Native.GetKeyState(0x11) & 0x8000) != 0 || (Native.GetKeyState(0x12) & 0x8000) != 0
-        || (Native.GetKeyState(0x5b) & 0x8000) != 0 || (Native.GetKeyState(0x5c) & 0x8000) != 0;
-
     private static void FailWitness()
     {
+        ClearPrefixProof();
         _witnessFailed = true;
         _planActive = false;
-        _tabHeld = _tabConsumed = false;
         Reply("witness-failed");
     }
 
@@ -1399,6 +1675,7 @@ internal static partial class Program
 
     private static void RestartPractice()
     {
+        InvalidateGuiInput();
         ResetCompletion();
         InvalidateEditorHandoff(EditorReason.Restart);
         _planActive = false;
@@ -1411,6 +1688,7 @@ internal static partial class Program
 
     private static void ClosePractice()
     {
+        InvalidateGuiInput();
         ResetCompletion();
         InvalidateEditorHandoff(EditorReason.Close);
         _planActive = false;
@@ -1607,6 +1885,7 @@ internal static partial class Program
                     // Wake only; the outer loop owns control consumption.
                     return 0;
                 case 0x0002: // WM_DESTROY, including partial construction.
+                    StopInputObservation();
                     Native.KillTimer(window, 1);
                     _window = 0;
                     Native.PostQuitMessage(_exitCode);
@@ -1737,6 +2016,15 @@ internal static partial class Program
     private static class Native
     {
         internal delegate nint WindowProc(nint window, uint message, nuint wParam, nint lParam);
+        internal delegate nint HookProc(int code, nuint wParam, nint lParam);
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct CallMessage
+        {
+            public nint LParam;
+            public nuint WParam;
+            public uint Id;
+            public nint Window;
+        }
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         internal struct WindowClass
@@ -1800,6 +2088,9 @@ internal static partial class Program
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern nint LoadCursorW(nint instance, nint resource);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern bool PeekMessageW(out Message message, nint window, uint minimum, uint maximum, uint remove);
         [DllImport("user32.dll")] internal static extern uint MsgWaitForMultipleObjectsEx(uint count, nint handles, uint milliseconds, uint wakeMask, uint flags);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern nint SetWindowsHookExW(int kind, HookProc callback, nint module, uint thread);
+        [DllImport("user32.dll")] internal static extern bool UnhookWindowsHookEx(nint hook);
+        [DllImport("user32.dll")] internal static extern nint CallNextHookEx(nint hook, int code, nuint wParam, nint lParam);
         [DllImport("user32.dll")] internal static extern nint GetFocus();
         [DllImport("user32.dll")] internal static extern uint GetMessagePos();
         [DllImport("user32.dll")] internal static extern nint WindowFromPoint(Point point);

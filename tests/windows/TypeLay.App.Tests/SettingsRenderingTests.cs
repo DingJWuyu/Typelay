@@ -934,7 +934,7 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
             Assert.Equal("Ctrl+F7", accept.SelectedItem);
             Assert.Equal("Ctrl+F8", exit.SelectedItem);
             Assert.Single(accept.Items.Cast<string>(), value => value.StartsWith("Ctrl+", StringComparison.Ordinal));
-            Assert.Contains(Descendants(window).OfType<TextBlock>(), value => value.Text.Contains("Windows 不可用", StringComparison.Ordinal));
+            Assert.Contains(Descendants(window).OfType<TextBlock>(), value => value.Text == "自有练习：Ctrl+F7 → Ctrl+F7");
             accept.IsDropDownOpen = true;
             window.UpdateLayout();
             var saved = Assert.IsType<ComboBoxItem>(accept.ItemContainerGenerator.ContainerFromItem("Ctrl+F7"));

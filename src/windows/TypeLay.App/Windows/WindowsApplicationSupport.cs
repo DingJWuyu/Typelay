@@ -157,6 +157,12 @@ internal sealed class WindowsApplicationSupport
             _canIntercept = ready && monitor.CanInterceptAcceptance;
         }
 
+        // These rows describe ordinary applications, not the exact owned
+        // practice ACK used by WindowsInputService and the controller.
+        bool ordinaryKeys = OwnedPracticeAcceptanceProtocol.TryParseKey(settings.AcceptShortcut, out _, out var acceptModifiers)
+            && acceptModifiers == ShortcutModifiers.None
+            && OwnedPracticeAcceptanceProtocol.TryParseKey(settings.ExitShortcut, out _, out var exitModifiers)
+            && exitModifiers == ShortcutModifiers.None;
         ApplicationSupportFact Fact(string id)
         {
             bool detected = id == "desktop-text" || _observations.ContainsKey(id) || Installed(id);
@@ -189,7 +195,7 @@ internal sealed class WindowsApplicationSupport
                 {
                     var capabilities = observed.Capabilities with
                     {
-                        TabAccept = observed.Capabilities.TabAccept && _canIntercept && settings.ExperimentalWriteback
+                        TabAccept = observed.Capabilities.TabAccept && _canIntercept && ordinaryKeys && settings.ExperimentalWriteback
                     };
                     return new(id, capabilities.Preview ? ApplicationSupportState.Connected : ApplicationSupportState.BuiltInAvailable,
                         observed.Reason, capabilities, [ApplicationSupportAction.Refresh, ApplicationSupportAction.OpenInstructions],

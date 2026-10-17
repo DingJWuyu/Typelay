@@ -85,6 +85,7 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
             input.PreviewKeyDown += (_, args) => down.Add(args.Key);
             input.PreviewKeyUp += (_, args) => up.Add(args.Key);
             using var hook = new KeyboardHook(allowInjectedInput: true);
+            var support = new WindowsApplicationSupport();
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(10));
             var pressed = new HashSet<ushort>();
@@ -140,17 +141,27 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
                 Assert.Contains(Key.F7, down);
                 Assert.Contains(Key.F7, up);
                 Assert.False(hook.TryRead(out _));
-                // Loading a shared Ctrl chord disables both Windows actions,
+                // A shared Ctrl chord keeps ordinary third-party actions disabled,
                 // without releasing the earlier consumed physical press.
                 Configure("F8", "F7");
                 Publish();
                 Send(0x77, true);
                 Assert.NotNull((await Notice("accept")).Permit);
                 Configure("Ctrl+F8", "Esc");
-                Assert.False(hook.CanInterceptAcceptance);
-                Assert.False(hook.HasSessionConfiguration(new(hook.CommandGeneration,
+                Assert.True(hook.CanInterceptAcceptance);
+                Assert.False(hook.UsesUnmodifiedSessionKeys);
+                Assert.True(hook.HasSessionConfiguration(new(hook.CommandGeneration,
                     SessionShortcutBindings.Restore("Ctrl+F8", "Esc"))));
                 Publish();
+                // The controlled snapshot tests capability presentation only;
+                // the real Hook test below still proves ordinary input passes.
+                var ordinarySettings = new UserSettings(ExperimentalWriteback: true);
+                Assert.True(support.Read(ordinarySettings).Rows.Single(row => row.Id == "desktop-text").Capabilities.TabAccept);
+                Assert.False(support.Read(ordinarySettings with
+                {
+                    AcceptShortcut = "Ctrl+F8"
+                })
+                    .Rows.Single(row => row.Id == "desktop-text").Capabilities.TabAccept);
                 int exitDown = down.Count(key => key == Key.Escape);
                 int functionDown = down.Count(key => key == Key.F8);
                 Send(0x77, false);
@@ -191,6 +202,7 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
                     (long)hwnd, (long)hwnd, "controlled-hook", "owned-source", Guid.NewGuid()),
                     input.Text, new(input.Text.Length, input.Text.Length), new(10, 20, 300, 40), false,
                     FieldAccess.Supported, ImeState.Clear, now, 1, 1, WriteSupported: true);
+                support.Observe(new(snapshot, FocusMember.Source), true, true, now, support.CheckGeneration);
                 var plan = new WritePlan(Guid.NewGuid(), Guid.NewGuid(), 1, snapshot, null, "Result", "Result", 6);
                 hook.Publish(new(snapshot, hook.UserEpoch, hook.ForegroundEpoch, true, hook.CommandGeneration, 23),
                     new(plan, 1, 1, now, now + Limits.PermitMaxAgeMs));
@@ -225,8 +237,10 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
         });
     }
 
-    [Fact]
-    public Task RetiredEditorEscapeDoesNotSuppressTheNextOrdinarySourceEscape() => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task RetiredEditorExitDoesNotSuppressTheNextOrdinarySourceExit(bool control) => desktop.RunAsync(async () =>
     {
         var input = new TextBox { Text = "controlled return source" };
         var source = new Window { Content = input, Width = 420, Height = 160, Title = "TypeLay return key pairing" };
@@ -234,11 +248,13 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
         source.Activate();
         input.Focus();
         nint hwnd = new WindowInteropHelper(source).Handle;
+        ushort exitKey = control ? (ushort)0x77 : (ushort)27;
+        Key wpfExit = control ? Key.F8 : Key.Escape;
         int escapeDown = 0, escapeUp = 0, barrierUp = 0;
-        input.PreviewKeyDown += (_, args) => { if (args.Key == Key.Escape) escapeDown++; };
+        input.PreviewKeyDown += (_, args) => { if (args.Key == wpfExit) escapeDown++; };
         input.PreviewKeyUp += (_, args) =>
         {
-            if (args.Key == Key.Escape)
+            if (args.Key == wpfExit)
                 escapeUp++;
             if (args.Key == Key.F12)
                 barrierUp++;
@@ -255,40 +271,48 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
         {
             await Until(() => hook.ShortcutsReady && Native.GetForegroundWindow() == hwnd && input.IsKeyboardFocused, deadline.Token);
             Assert.All(new[] { 27, 0x7B, 0x10, 0x11, 0x12, 0x5B, 0x5C }, key => Assert.False(Native.GetAsyncKeyState(key) < 0));
-            hook.ConfigureShortcuts(false, "Ctrl+Shift+F9", "Ctrl+Shift+F10", SessionShortcutBindings.Default, true);
+            hook.ConfigureShortcuts(false, "Ctrl+Shift+F9", "Ctrl+Shift+F10",
+                control ? SessionShortcutBindings.Restore("Ctrl+F7", "Ctrl+F8") : SessionShortcutBindings.Default, true);
             hook.BeginOwnedEditorForeground(intent, hwnd, hwnd, _ => { });
             var descriptor = new OwnedCaptureDescriptor(process.Id, process.StartTime.ToUniversalTime().Ticks,
                 (long)hwnd, (long)hwnd, 1, 1, 1, 1);
-            Send(27, true);
+            if (control)
+                Send(0x11, true);
+            Send(exitKey, true);
             await Until(() => escapeDown == 1, deadline.Token);
             Assert.True(hook.BeginOwnedReturnInput(OwnedReturnKind.Escape, descriptor, out var returning),
-                "The original scan-code Esc must reach the production return-input admission.");
+                "The original scan-code exit must reach the production return-input admission.");
             Assert.NotNull(returning);
             Assert.Equal(intent, returning.EditorIntent);
             Assert.Equal(hook.EditorInputSequence, returning.Sequence);
             Assert.True(returning.Sequence > 0);
             Assert.False(returning.Released);
-            Assert.Equal(new OwnedReturnKeyPress(1, false, true), returning.KeyPress);
+            Assert.Equal(new OwnedReturnKeyPress(control ? 0x42u : 1u, false, true, exitKey,
+                control ? ShortcutModifiers.Control : ShortcutModifiers.None), returning.KeyPress);
             Assert.False(hook.TryRead(out _));
 
             // The stopped reader isolates the real Hook's owned-source early
             // return. Controlled metadata grants no native field or write authority.
             Assert.True(writer.Stop());
             hook.SetOwnedChannel(Guid.NewGuid(), writer, descriptor);
+            if (control)
+                Send(0x11, false);
             Send(0x7B, true); // Another actual input retires the return intent while Esc is held.
             Send(0x7B, false);
-            Send(27, false);
+            Send(exitKey, false);
             await Until(() => barrierUp == 1 && escapeUp == 1, deadline.Token);
             hook.EndOwnedEditorForeground(intent);
             hook.ClearOwnedChannel();
+            hook.ConfigureShortcuts(false, "Ctrl+Shift+F9", "Ctrl+Shift+F10",
+                SessionShortcutBindings.Restore("Tab", control ? "F8" : "Esc"), true);
             long now = WindowsInterruptClock.NowMs;
             var snapshot = new InputSnapshot(new WindowsTarget(process.Id, process.StartTime.ToUniversalTime().Ticks,
                 (long)hwnd, (long)hwnd, "controlled-hook", "ordinary-source", Guid.NewGuid()),
                 input.Text, new(input.Text.Length, input.Text.Length), new(10, 20, 300, 40), false,
                 FieldAccess.Supported, ImeState.Clear, now, 1, 1);
             hook.Publish(new(snapshot, hook.UserEpoch, hook.ForegroundEpoch, true, hook.CommandGeneration, 23), null);
-            Send(27, true);
-            Send(27, false);
+            Send(exitKey, true);
+            Send(exitKey, false);
             InputNotice? notice = null;
             await Until(() => notice is not null || hook.TryRead(out notice), deadline.Token);
             Assert.Equal("escape", notice!.Kind);
@@ -311,14 +335,21 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
         }
         void Send(ushort key, bool down)
         {
-            // Only this Esc fixture needs the real scan identity carried by the
-            // production return fence. SendInput itself supplies the injected flag.
+            // Real scan identities cross the production return fence.
+            // SendInput itself supplies the injected flag.
+            ushort scan = key switch
+            {
+                27 => 1,
+                0x11 => 0x1d,
+                0x77 => 0x42,
+                _ => 0
+            };
             var edge = new KeyboardInput
             {
                 Type = 1,
                 Key = key,
-                Scan = key == 27 ? (ushort)1 : (ushort)0,
-                Flags = (key == 27 ? 8u : 0u) | (down ? 0u : 2u)
+                Scan = scan,
+                Flags = (scan != 0 ? 8u : 0u) | (down ? 0u : 2u)
             };
             Assert.Equal(1u, SendInput(1, [edge], Marshal.SizeOf<KeyboardInput>()));
             if (down)

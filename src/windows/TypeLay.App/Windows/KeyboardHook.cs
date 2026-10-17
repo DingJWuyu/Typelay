@@ -32,7 +32,8 @@ internal sealed partial class KeyboardHook : IInputMonitor
     private nint _hook, _mouseHook;
     private uint _threadId;
     private readonly bool[] _keys = new bool[256];
-    private sealed record SessionKeys(uint Accept, uint Exit, SessionShortcutBindings Bindings)
+    private sealed record SessionKeys(uint Accept, uint Exit, SessionShortcutBindings Bindings,
+        ShortcutModifiers AcceptModifiers = ShortcutModifiers.None, ShortcutModifiers ExitModifiers = ShortcutModifiers.None)
     {
         public bool Supported => Accept != 0 && Exit != 0;
     }
@@ -48,37 +49,44 @@ internal sealed partial class KeyboardHook : IInputMonitor
     public long WindowEpoch => Interlocked.Read(ref _windowEpoch);
     private volatile bool _ready;
     public bool Ready => _ready;
-    public bool CanInterceptAcceptance => Ready && _sessionEnabled && Volatile.Read(ref _sessionKeys).Supported;
+    public bool CanInterceptAcceptance => CanInterceptOwnedSessionKeys;
+    internal bool CanInterceptOwnedSessionKeys => Ready && _sessionEnabled && Volatile.Read(ref _sessionKeys).Supported;
+    internal bool UsesUnmodifiedSessionKeys => Volatile.Read(ref _sessionKeys) is
+    { Supported: true, AcceptModifiers: ShortcutModifiers.None, ExitModifiers: ShortcutModifiers.None };
     public string ShortcutStatus => _hotkeys.Status;
     // Shared preferences may express chords whose ownership this hook has not
     // implemented. Such a pair must not advertise either session action.
     internal void ConfigureSessionShortcuts(SessionShortcutBindings bindings)
     {
-        static uint Key(string value) => value switch
-        {
-            "Tab" => 9,
-            "Esc" => 27,
-            _ => SessionShortcutBindings.FunctionKeys.Contains(value)
-                && uint.TryParse(value.AsSpan(1), out uint number) ? 0x6Fu + number : 0
-        };
+        RevokeOwnedPrefix();
         _gate.Revoke();
         _ownedGate.Revoke();
         Interlocked.Exchange(ref _lease, null);
-        uint accept = Key(bindings.Accept), exit = Key(bindings.Exit);
-        Interlocked.Exchange(ref _sessionKeys, new(accept != 0 && exit != 0 ? accept : 0,
-            accept != 0 && exit != 0 ? exit : 0, bindings));
+        bool supported = OwnedPracticeAcceptanceProtocol.TryParseKey(bindings.Accept, out uint accept, out var acceptModifiers)
+            && OwnedPracticeAcceptanceProtocol.TryParseKey(bindings.Exit, out _, out _);
+        OwnedPracticeAcceptanceProtocol.TryParseKey(bindings.Exit, out uint exit, out var exitModifiers);
+        Interlocked.Exchange(ref _sessionKeys, new(supported ? accept : 0, supported ? exit : 0,
+            bindings, acceptModifiers, exitModifiers));
         // Outstanding consumed key releases remain owned by their original press.
     }
 
-    internal bool HasSessionConfiguration(SessionShortcutConfiguration configuration) => CanInterceptAcceptance
+    internal bool HasSessionConfiguration(SessionShortcutConfiguration configuration) => CanInterceptOwnedSessionKeys
         && configuration.Generation == CommandGeneration
         && configuration.Bindings == Volatile.Read(ref _sessionKeys).Bindings;
     public void ConfigureShortcuts(bool enabled, string wake, string direct, SessionShortcutBindings sessionBindings, bool sessionEnabled)
     {
         SetShortcuts([]);
         ConfigureSessionShortcuts(sessionBindings);
-        _sessionEnabled = sessionEnabled;
-        _hotkeys.Configure(enabled, wake, direct);
+        // Persisted settings also pass this boundary: conflicting roles cannot
+        // invoke a command before the session-key consumer sees the same press.
+        var chords = new HashSet<string>(StringComparer.Ordinal);
+        bool distinct = SessionShortcutBindings.TryParse(sessionBindings.Accept, sessionBindings.Exit, out var normalized)
+            && TranslationShortcut.TryParse(wake, out var wakeChord)
+            && TranslationShortcut.TryParse(direct, out var directChord)
+            && chords.Add(wakeChord!.ToString()) && chords.Add(directChord!.ToString())
+            && chords.Add(normalized!.Accept) && chords.Add(normalized.Exit);
+        _sessionEnabled = sessionEnabled && distinct;
+        _hotkeys.Configure(enabled && distinct, wake, direct);
         SetShortcuts(_hotkeys.Bindings);
     }
     public FocusMember GetFocus(TargetId target)
@@ -109,6 +117,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
             Interlocked.Increment(ref _foregroundEpoch);
             _gate.Revoke();
             _ownedGate.Revoke();
+            RevokeOwnedPrefix();
             if (ev == 3)
                 ObserveEditorForeground(window);
         };
@@ -306,12 +315,12 @@ internal sealed partial class KeyboardHook : IInputMonitor
         long now = WindowsInterruptClock.NowMs;
         ObserveReturnKey(data, down, repeated, injected, now);
         var sessionKeys = Volatile.Read(ref _sessionKeys);
-        bool fresh = _sessionEnabled && sessionKeys.Supported && lease is not null && lease.CommandGeneration == CommandGeneration && lease.UserEpoch == UserEpoch && lease.ForegroundEpoch == ForegroundEpoch
+        bool fresh = _sessionEnabled && UsesUnmodifiedSessionKeys && sessionKeys.Supported && lease is not null && lease.CommandGeneration == CommandGeneration && lease.UserEpoch == UserEpoch && lease.ForegroundEpoch == ForegroundEpoch
             && now >= lease.Source.ObservedAtMs && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
         bool source = fresh && Native.GetForegroundWindow() == (nint)binding!.RootHwnd;
         if (ObserveOwnedKey(data, down, repeated, injected, now, sessionKeys.Accept))
             return Native.CallNextHookEx(_hook, code, wParam, lParam);
-        var decision = _gate.ProcessAcceptanceKey(new(data.Key, down, repeated, data.Key == sessionKeys.Accept),
+        var decision = _gate.ProcessAcceptanceKey(new(data.Key, down, repeated, data.Key == sessionKeys.Accept && UsesUnmodifiedSessionKeys),
             new(lease?.Source.Target, source, lease?.Source.Ime ?? ImeState.Unknown,
                 Modified, injected, fresh, lease?.Source.InputEpoch ?? -1, lease?.Source.FocusEpoch ?? -1, now));
         if (decision.Permit is not null)
@@ -364,7 +373,8 @@ internal sealed partial class KeyboardHook : IInputMonitor
     private ShortcutModifiers CurrentModifiers =>
         (_keys[0x11] || _keys[0xA2] || _keys[0xA3] ? ShortcutModifiers.Control : ShortcutModifiers.None)
         | (_keys[0x12] || _keys[0xA4] || _keys[0xA5] ? ShortcutModifiers.Alt : ShortcutModifiers.None)
-        | (_keys[0x10] || _keys[0xA0] || _keys[0xA1] ? ShortcutModifiers.Shift : ShortcutModifiers.None);
+        | (_keys[0x10] || _keys[0xA0] || _keys[0xA1] ? ShortcutModifiers.Shift : ShortcutModifiers.None)
+        | (_keys[0x5B] || _keys[0x5C] ? (ShortcutModifiers)8 : ShortcutModifiers.None);
     private void TryInvokeShortcut(uint key, bool repeated, bool injected)
     {
         if (repeated || injected && !_allowInjectedInput || _keys[0x5B] || _keys[0x5C])
@@ -460,7 +470,10 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 _mouseButtons++;
             // A drag changes the selection even without a UIA focus event.
             if (message != 0x200 || _mouseButtons != 0)
+            {
+                RevokeOwnedPrefix();
                 Interlocked.Increment(ref _contentEpoch);
+            }
             if (message is 0x202 or 0x205 or 0x208 or 0x20C)
                 _mouseButtons = _mouseButtons > 0 ? _mouseButtons - 1 : 0;
         }

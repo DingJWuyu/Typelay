@@ -79,8 +79,9 @@ internal sealed partial class PracticeHost : IDisposable
             start.ArgumentList.Add(_connection.ToString("N"));
         }
         _automatic = _settings?.Value.Mode == WorkMode.Automatic;
-        if (_automatic && _settings?.Value.AcceptShortcut != "Tab")
-            throw new InvalidOperationException("practice-tab-binding-required");
+        if (_automatic && (!OwnedPracticeAcceptanceProtocol.TryParseKey(_settings!.Value.AcceptShortcut, out _, out _)
+            || !OwnedPracticeAcceptanceProtocol.TryParseKey(_settings.Value.ExitShortcut, out _, out _)))
+            throw new InvalidOperationException("practice-session-bindings-unsupported");
         var child = _start(start);
         _child = child;
         child.Process.Exited += (_, _) =>
@@ -353,7 +354,7 @@ internal sealed partial class PracticeHost : IDisposable
                     if (_automatic)
                     {
                         if (message.Acceptance?.Descriptor is { } descriptor)
-                            AcceptDescriptor(descriptor);
+                            AcceptDescriptor(descriptor, controlPrefixObserved: false);
                         if (!_session!.BeginAutomaticPractice(_runId))
                             RetireRun(false, OwnedRetirementReason.BeginRejected);
                     }

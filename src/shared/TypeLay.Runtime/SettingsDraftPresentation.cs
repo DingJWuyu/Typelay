@@ -25,6 +25,7 @@ public static class SettingsDraftPresentation
     {
         ShortcutDraftError.InvalidOnDemandBindings => "唤醒与直接替换请使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，暂不支持 F12；两个快捷键不能相同。",
         ShortcutDraftError.InvalidSessionBindings => "接受与退出请选择有效且不同的主键。",
+        ShortcutDraftError.ConflictingBindings => "唤醒、直接替换、接受与退出不能使用相同的快捷键组合。草稿仍保留。",
         _ => Create().InvalidMessage
     };
 
@@ -37,7 +38,7 @@ public static class SettingsDraftPresentation
 
 public enum ShortcutDraftError
 {
-    None, InvalidOnDemandBindings, InvalidSessionBindings
+    None, InvalidOnDemandBindings, InvalidSessionBindings, ConflictingBindings
 }
 
 // Immutable settings text, not a second persistence flow. The caller supplies
@@ -53,16 +54,23 @@ public sealed record ShortcutSettingsDraft(string Wake, string Direct, string Ac
         settings = null;
         error = ShortcutDraftError.InvalidOnDemandBindings;
         if (!TypeLay.Core.TranslationShortcut.TryParse(Wake, out var wake)
-            || !TypeLay.Core.TranslationShortcut.TryParse(Direct, out var direct) || wake == direct)
+            || !TypeLay.Core.TranslationShortcut.TryParse(Direct, out var direct))
+            return false;
+        // Both parsers produce the same canonical spelling for a key and its modifiers.
+        var chords = new HashSet<string>(StringComparer.Ordinal) { wake!.ToString() };
+        if (!chords.Add(direct!.ToString()))
             return false;
         error = ShortcutDraftError.InvalidSessionBindings;
         if (!TypeLay.Core.SessionShortcutBindings.TryParse(Accept, Exit, out var sessionKeys))
             return false;
+        error = ShortcutDraftError.ConflictingBindings;
+        if (!chords.Add(sessionKeys!.Accept) || !chords.Add(sessionKeys.Exit))
+            return false;
         settings = latest with
         {
-            WakeShortcut = wake!.ToString(),
-            DirectShortcut = direct!.ToString(),
-            AcceptShortcut = sessionKeys!.Accept,
+            WakeShortcut = wake.ToString(),
+            DirectShortcut = direct.ToString(),
+            AcceptShortcut = sessionKeys.Accept,
             ExitShortcut = sessionKeys.Exit
         };
         error = ShortcutDraftError.None;

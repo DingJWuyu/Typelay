@@ -137,6 +137,12 @@ class EditorProbe(unittest.TestCase):
         self.production_acceptance(control=True, kind="class-roundtrip")
 
     def test_rich_editor_draft_survives_source_blur_but_not_new_policy_class(self):
+        self.rich_editor_return()
+
+    def test_rich_editor_return_rejects_selection_change_and_restore_during_focus(self):
+        self.rich_editor_return(selection_change=True)
+
+    def rich_editor_return(self, *, selection_change=False):
         self.isolated(browser_e2e.TRANSPORT + "\n" + CONTENT.read_text())
         self.isolated("""fixtureCommand({id: 1, op: 'configure-shortcuts', data:
           {...fixtureBindings, accept: 'Ctrl+F7', exit: 'Ctrl+F8'}})""")
@@ -214,8 +220,44 @@ class EditorProbe(unittest.TestCase):
             )
         )
         self.assertEqual(self.page.evaluate("editorProbeInspect().after"), INITIAL)
+        if selection_change:
+            self.page.locator("#editor-source").evaluate("""root => {
+              root.addEventListener('focus', () => {
+                const editor = root.editor, original = editor.state.selection;
+                editor.commands.setTextSelection(1);
+                editor.view.dispatch(editor.state.tr.setSelection(original));
+              }, {once: true});
+            }""")
+        self.page.keyboard.press("Control+F7")
+        self.assertTrue(
+            self.isolated("""fixtureMessages.some(message => message.event === 'ui'
+              && message.data.operation === 'return')""")
+        )
+        returned = self.isolated("""fixtureCommand({id: 8, op: 'return', data: {
+          target: fixtureRichView.target, authority: fixtureRichView.authority}})""")
+        self.assertEqual(returned, {"returned": not selection_change})
+        self.assertEqual(self.page.evaluate("editorProbeInspect().after"), INITIAL)
+        self.assertEqual(
+            self.page.evaluate("editorProbeInspect().selection"), {"from": 8, "to": 13}
+        )
+        self.assertEqual(
+            self.isolated("fixtureMessages.filter(message => message.event === 'accepted')"), []
+        )
+        if selection_change:
+            return
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "editor-source")
+        observed = self.isolated("""(() => {
+          const described = fixtureCommand({id: 9, op: 'describe'});
+          const captured = fixtureCommand({id: 10, op: 'capture', data: {
+            target: described?.target, authority: described?.authority}});
+          return captured && {originalInput: fixtureRichView.authority.inputRevision,
+            returnedInput: captured.authority.inputRevision, selection: captured.selection};
+        })()""")
+        self.assertIsNotNone(observed)
+        self.assertEqual(observed["originalInput"], observed["returnedInput"])
+        self.assertEqual(observed["selection"], {"start": 7, "end": 12})
         self.page.locator("#editor-source").evaluate("root => root.classList.add('terminal')")
-        self.isolated("""fixtureCommand({id: 8, op: 'overlay-renew', data: {
+        self.isolated("""fixtureCommand({id: 11, op: 'overlay-renew', data: {
           target: fixtureRichView.target, authority: fixtureRichView.authority}})""")
         self.assertIsNone(editor())
         self.assertEqual(self.page.evaluate("editorProbeInspect().after"), INITIAL)

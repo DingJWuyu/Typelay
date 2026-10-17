@@ -28,6 +28,7 @@ API HANDLE GetAncestor(HANDLE, uint32_t);
 API HANDLE GetParent(HANDLE);
 API HANDLE GetForegroundWindow(void);
 API HANDLE GetFocus(void);
+API HANDLE GetKeyboardLayout(uint32_t);
 API int IsWindowUnicode(HANDLE);
 API int IsWindowEnabled(HANDLE);
 API int IsWindowVisible(HANDLE);
@@ -156,7 +157,8 @@ static WNDPROC qualify(Transaction *tx) {
     return qualify_field((HANDLE)(uintptr_t)tx->hwnd, (HANDLE)(uintptr_t)tx->root,
         tx->pid, tx->thread, &tx->multiline);
 }
-__declspec(dllexport) uint32_t TypeLayOwnedEditVersion(void) { return 2; }
+// Separate from the unchanged v2 transaction layout and owned-capture wire.
+__declspec(dllexport) uint32_t TypeLayOwnedEditVersion(void) { return 3; }
 __declspec(dllexport) int TypeLayOwnedEditControl(HANDLE hwnd, uint32_t operation, uint64_t seed) {
     uint32_t pid = 0;
     uint32_t thread = GetCurrentThreadId();
@@ -246,6 +248,59 @@ __declspec(dllexport) int TypeLayOwnedEditCanExit(HANDLE hwnd, HANDLE root, uint
     return qualify_field(hwnd, root, GetCurrentProcessId(), GetCurrentThreadId(), 0)
         && owned_exit_current(hwnd, root, cookie, revision, expires);
 }
+// Current local input identity only. These released handle values are compared
+// as scalars, never retained as usable IMM handles. Equal samples do not prove
+// that an input method/context was not switched away and back between samples.
+typedef struct { uint64_t ime_context, keyboard_layout; } OwnedInputContext;
+_Static_assert(sizeof(OwnedInputContext) == 16, "Owned input-context layout");
+static int read_input_context(HANDLE hwnd, OwnedInputContext *result) {
+    HANDLE layout = GetKeyboardLayout(GetCurrentThreadId());
+    if (!layout) return 0;
+    HANDLE context = ImmGetContext(hwnd);
+    if (!context) return 0;
+    int32_t bytes = ImmGetCompositionStringW(context, 8, 0, 0);
+    int released = ImmReleaseContext(hwnd, context);
+    if (!released || bytes != 0 || GetKeyboardLayout(GetCurrentThreadId()) != layout) return 0;
+    // IMM can reenter. Retrieve the associated context again after querying and
+    // releasing it rather than returning an identity captured before that call.
+    HANDLE current = ImmGetContext(hwnd);
+    if (!current) return 0;
+    bytes = ImmGetCompositionStringW(current, 8, 0, 0);
+    released = ImmReleaseContext(hwnd, current);
+    if (!released || bytes != 0 || current != context || GetKeyboardLayout(GetCurrentThreadId()) != layout) return 0;
+    result->ime_context = (uint64_t)(uintptr_t)current;
+    result->keyboard_layout = (uint64_t)(uintptr_t)layout;
+    return 1;
+}
+__declspec(dllexport) int TypeLayOwnedEditTryProbeInputContext(HANDLE hwnd, HANDLE root,
+    uint32_t process, uint32_t thread, uint64_t cookie, uint64_t revision, int64_t expires,
+    OwnedInputContext *result) {
+    if (!result) return 0;
+    result->ime_context = result->keyboard_layout = 0;
+    OwnedInputContext current;
+    if (process != GetCurrentProcessId() || thread != GetCurrentThreadId()
+        || !owned_exit_current(hwnd, root, cookie, revision, expires)
+        || !qualify_field(hwnd, root, process, thread, 0)
+        || !owned_exit_current(hwnd, root, cookie, revision, expires)
+        || !read_input_context(hwnd, &current)
+        || !qualify_field(hwnd, root, process, thread, 0)
+        || !owned_exit_current(hwnd, root, cookie, revision, expires)) return 0;
+    *result = current;
+    return 1;
+}
+__declspec(dllexport) int TypeLayOwnedEditCanExitWithInputContext(HANDLE hwnd, HANDLE root,
+    uint32_t process, uint32_t thread, uint64_t cookie, uint64_t revision, int64_t expires,
+    uint64_t expected_context, uint64_t expected_layout) {
+    OwnedInputContext current;
+    return expected_context && expected_layout
+        && TypeLayOwnedEditTryProbeInputContext(hwnd, root, process, thread, cookie, revision, expires, &current)
+        && current.ime_context == expected_context && current.keyboard_layout == expected_layout;
+}
+static int owned_input_current(const Transaction *tx, uint64_t revision, const OwnedInputContext *expected) {
+    return !expected || TypeLayOwnedEditCanExitWithInputContext((HANDLE)(uintptr_t)tx->hwnd,
+        (HANDLE)(uintptr_t)tx->root, tx->pid, tx->thread, tx->cookie, revision,
+        tx->authorization_deadline_ms, expected->ime_context, expected->keyboard_layout);
+}
 static int client_bounds(HANDLE hwnd, Rect *bounds) {
     Rect client;
     if (!GetClientRect(hwnd, &client) || client.right <= client.left || client.bottom <= client.top) return 0;
@@ -280,7 +335,22 @@ static int read_text(Transaction *tx, WNDPROC proc) {
     CallWindowProcW(proc, hwnd, 0xb0, (WPARAM)&tx->selection_start, (LPARAM)&tx->selection_end);
     return (int)read + 1;
 }
-static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accepted) {
+static int owned_input_preflight(Transaction *tx, WNDPROC proc, uint64_t revision,
+    const OwnedInputContext *expected, int32_t start, int32_t end) {
+    if (!expected) return 1;
+    if (!owned_input_current(tx, revision, expected)) { tx->reason = 9; return 0; }
+    // The IMM query above may reenter. Recheck the whole source and selection
+    // afterwards, before either selection mutation or the actual replacement.
+    if (read_text(tx, proc) - 1 != tx->length || !equal(tx->observed, tx->expected, tx->length)
+        || tx->selection_start != start || tx->selection_end != end) { tx->reason = 3; return 0; }
+    if (!qualify(tx) || !owned_current(tx) || !owned_focus_current(revision)
+        || !owned_exit_current((HANDLE)(uintptr_t)tx->hwnd, (HANDLE)(uintptr_t)tx->root,
+            tx->cookie, revision, tx->authorization_deadline_ms)) { tx->reason = 10; return 0; }
+    if (GetTickCount64() > tx->deadline) { tx->reason = 14; return 0; }
+    return 1;
+}
+static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accepted,
+    const OwnedInputContext *expected_input) {
     tx->status = 2; tx->reason = 6; // RejectedBeforeMutation / Unsupported.
     if (tx->version != VERSION || !tx->cookie || GetTickCount64() > tx->deadline) return;
     HANDLE hwnd = (HANDLE)(uintptr_t)tx->hwnd;
@@ -304,6 +374,7 @@ static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accep
     if (cookie != tx->cookie) { tx->reason = 2; return; }
     tx->ime = ime(hwnd);
     if (tx->ime != 1) { tx->reason = 9; return; }
+    if (!owned_input_current(tx, focus_revision, expected_input)) { tx->reason = 9; return; }
     // IMM may reenter. Qualification and visibility must still hold afterwards,
     // immediately before the first source-body read.
     if (tx->op == 6 && !owned_capture_current(tx, focus_revision)) { tx->reason = 10; return; }
@@ -339,6 +410,8 @@ static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accep
     if (foreground && !foreground_source(tx)) { tx->reason = 10; return; }
     if (tx->op == 5 && !authorization_current(tx)) { tx->reason = 14; return; }
     if (!owned_focus_current(focus_revision)) { tx->reason = 10; return; }
+    if (!owned_input_preflight(tx, proc, focus_revision, expected_input,
+        tx->expected_selection_start, tx->expected_selection_end)) return;
     // This is the only owned acceptance point. Everything above is a read-only
     // preflight. The caller has removed its single-use local plan; only a true
     // return may consume the original queue message, even if selection callbacks
@@ -355,6 +428,7 @@ static void execute_guarded(Transaction *tx, uint64_t focus_revision, int *accep
     if (foreground && !foreground_source(tx)) { tx->reason = 10; return; }
     if (tx->op == 5 && !authorization_current(tx)) { tx->reason = 14; return; }
     if (!owned_focus_current(focus_revision)) { tx->reason = 10; return; }
+    if (!owned_input_preflight(tx, proc, focus_revision, expected_input, tx->start, tx->end)) return;
     tx->status = 3; tx->reason = 20; // Unknown once mutation starts; never retry.
     CallWindowProcW(proc, hwnd, 0xc2, 1, (LPARAM)tx->replacement); // EM_REPLACESEL, undo enabled.
     if (!owned_focus_current(focus_revision) || !owned_current(tx) || !qualify(tx) || (uint64_t)(uintptr_t)GetPropW(hwnd, property) != tx->cookie) return;
@@ -374,7 +448,7 @@ static void execute(Transaction *tx) {
     if (tx->op < 1 || tx->op > 5) { tx->status = 2; tx->reason = 6; return; }
     if (owned.hwnd == (HANDLE)(uintptr_t)tx->hwnd && owned.automatic
         && (tx->op == 2 || tx->op == 5)) { tx->status = 2; tx->reason = 6; return; }
-    execute_guarded(tx, 0, 0);
+    execute_guarded(tx, 0, 0, 0);
 }
 
 __declspec(dllexport) uint32_t TypeLayOwnedCaptureVersion(void) { return 2; }
@@ -388,15 +462,15 @@ static void execute_owned_capture(Transaction *tx) {
         || owned.retired || !owned.automatic || tx->cookie != owned.cookie || !owned_focus_current(revision)) {
         tx->status = 2; tx->reason = 2; return;
     }
-    execute_guarded(tx, revision, 0);
+    execute_guarded(tx, revision, 0, 0);
 }
 
 // Local-only entry: the independent practice GUI owns this private buffer. The
 // remote v2 wire cannot opt into it or select another process, field or operation.
 // Return 0 means preflight refusal with no selection/text change; return 1 means
 // accepted and tx.status is the real execution result (including unknown).
-__declspec(dllexport) int TypeLayOwnedEditTryExecute(Transaction *tx, uint32_t bytes,
-    uint64_t expected_focus_revision) {
+static int try_execute_owned(Transaction *tx, uint32_t bytes, uint64_t expected_focus_revision,
+    const OwnedInputContext *expected_input) {
     if (!tx || bytes != sizeof(Transaction)) return 0;
     if (tx->status || tx->op != 5 || !expected_focus_revision
         || !owned.hwnd || owned.hwnd != (HANDLE)(uintptr_t)tx->hwnd
@@ -406,8 +480,17 @@ __declspec(dllexport) int TypeLayOwnedEditTryExecute(Transaction *tx, uint32_t b
         return 0;
     }
     int accepted = 0;
-    execute_guarded(tx, expected_focus_revision, &accepted);
+    execute_guarded(tx, expected_focus_revision, &accepted, expected_input);
     return accepted;
+}
+__declspec(dllexport) int TypeLayOwnedEditTryExecute(Transaction *tx, uint32_t bytes,
+    uint64_t expected_focus_revision) {
+    return try_execute_owned(tx, bytes, expected_focus_revision, 0);
+}
+__declspec(dllexport) int TypeLayOwnedEditTryExecuteWithInputContext(Transaction *tx, uint32_t bytes,
+    uint64_t expected_focus_revision, uint64_t expected_context, uint64_t expected_layout) {
+    const OwnedInputContext expected = {expected_context, expected_layout};
+    return try_execute_owned(tx, bytes, expected_focus_revision, &expected);
 }
 __declspec(dllexport) LRESULT TypeLayCallWndProc(int code, WPARAM wp, LPARAM lp) {
     if (code >= 0) {

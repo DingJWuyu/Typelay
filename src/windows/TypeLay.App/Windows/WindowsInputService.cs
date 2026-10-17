@@ -47,17 +47,18 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
             var evidence = owned ? returnedDescriptor is not null
                 ? practice!.ObserveReturnCapture(context, result.Snapshot, result.Focus, startedAt)
                 : practice!.ObserveAutomaticTarget(result.Snapshot, result.Focus, startedAt) : null;
+            bool ordinaryCanIntercept = monitor is { CanInterceptAcceptance: true, UsesUnmodifiedSessionKeys: true };
             // The local hook and WPF editor apply the same process-local configuration.
             // A stale capture cannot acknowledge a replacement configuration.
             var acknowledgement = result.Snapshot is { } source && context.SessionShortcuts is { } configuration
                 && monitor?.HasSessionConfiguration(configuration) == true
                 ? new SessionShortcutAcknowledgement(source.Target, configuration.Generation, configuration.Bindings,
-                    owned ? returnedDescriptor is not null && evidence is not null || practice!.SourceReady(source.Target) : monitor.CanInterceptAcceptance,
-                    owned ? practice!.EditorReady(source.Target) : monitor.CanInterceptAcceptance) : null;
+                    owned ? returnedDescriptor is not null && evidence is not null || practice!.SourceReady(source.Target) : ordinaryCanIntercept,
+                    owned ? practice!.EditorReady(source.Target) : ordinaryCanIntercept) : null;
             var capture = new InputCapture(result.Snapshot, result.Focus, result.Application,
                 result.UserEpoch, result.ForegroundEpoch, acknowledgement, evidence);
             support?.Observe(capture, broker.Available && monitor?.Ready == true,
-                monitor?.CanInterceptAcceptance == true, startedAt, checkGeneration);
+                owned ? acknowledgement?.SourceReady == true : ordinaryCanIntercept, startedAt, checkGeneration);
             // Metadata reaches the owned practice before Runtime publishes the shortcut lease.
             if (!owned)
                 practice?.ObserveTarget(capture.Snapshot?.Target, capture.Focus,
@@ -89,7 +90,8 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
         return new((await broker.CallAsync(Request("return", context), TimeSpan.FromMilliseconds(800))).Status == "focused");
     }
     private bool SessionConfigurationCurrent(InputContext context) => context.SessionShortcuts is { } configuration
-        && monitor?.HasSessionConfiguration(configuration) == true;
+        && monitor is { CanInterceptAcceptance: true, UsesUnmodifiedSessionKeys: true }
+        && monitor.HasSessionConfiguration(configuration);
     public async Task<WriteReceipt> WriteAsync(WritePlan plan, InputContext context, long expiresAtMs)
     {
         if (practice?.SuppressOwnedWrite(context) == true || !SessionConfigurationCurrent(context))

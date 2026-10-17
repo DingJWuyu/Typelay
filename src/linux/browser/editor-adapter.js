@@ -69,6 +69,36 @@
     if (!valid(text) || !range || text !== root.textContent) return null;
     return {text, selection: range, version: version(root, current)};
   }
+  function focus(root, current, data) {
+    const {editor, view, state} = current, selected = selection(current);
+    if (view.composing || typeof view.focus !== "function" || !selected
+      || data.version !== version(root, current) || data.selection?.start !== selected.start
+      || data.selection?.end !== selected.end) return {focused: false};
+    let interrupted = false, registered = false;
+    const changed = ({transaction}) => {
+      if (transaction.docChanged || transaction.selectionSet) interrupted = true;
+    };
+    const unchanged = () => {
+      const next = target(root);
+      return !interrupted && next?.editor === editor && next.view === view
+        && next.state.doc === state.doc && next.state.selection === state.selection
+        && !view.composing;
+    };
+    let focused = false;
+    try {
+      registered = true;
+      editor.on("beforeTransaction", changed);
+      if (unchanged()) {
+        // EditorView.focus restores the model selection synchronously. DOM
+        // focus alone leaves ProseMirror's delayed selection repair in charge.
+        view.focus();
+        focused = unchanged() && document.activeElement === root;
+      }
+    } finally {
+      if (registered) editor.off("beforeTransaction", changed);
+    }
+    return {focused: focused && unchanged() && document.activeElement === root};
+  }
   function check(root, id, type = CHECK, response = CHECK_RESULT) {
     let count = 0, allowed = false;
     const receive = event => {
@@ -212,15 +242,16 @@
     if (!(root instanceof HTMLElement) || busy.has(root) || typeof event.detail !== "string" || event.detail.length > 40000) return;
     let request;
     try { request = JSON.parse(event.detail); } catch (_) { return; }
-    if (typeof request.id !== "string" || request.id.length > 64 || !["probe", "capture", "selection", "replace"].includes(request.op)) return;
+    if (typeof request.id !== "string" || request.id.length > 64 || !["probe", "capture", "selection", "focus", "replace"].includes(request.op)) return;
     busy.add(root);
     let result = null;
     try {
       const current = target(root);
       if (current) {
-        if (request.op === "probe") result = {kind: "tiptap", supported: true, orderedClaim: 1};
+        if (request.op === "probe") result = {kind: "tiptap", supported: true, orderedClaim: 1, modelFocus: 1};
         else if (request.op === "selection") result = selection(current);
         else if (request.op === "capture") result = capture(root, current);
+        else if (request.op === "focus") result = focus(root, current, request.data || {});
         else result = replace(root, current, request.data || {}, request.id);
       }
     } catch (_) { result = request.op === "replace" ? unknown() : null; }

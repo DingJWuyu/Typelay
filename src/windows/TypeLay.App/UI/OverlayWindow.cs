@@ -26,6 +26,7 @@ internal sealed class OverlayWindow : Window, ISessionView
     private readonly HashSet<Key> _pressedShortcutKeys = [];
     private readonly HashSet<Key> _consumedShortcutKeys = [];
     private Key _acceptKey = Key.Tab, _exitKey = Key.Escape;
+    private ModifierKeys _acceptModifiers, _exitModifiers;
     private SessionShortcutMessages _shortcutMessages = SettingsDraftPresentation.SessionShortcuts(SessionShortcutBindings.Default);
     private SessionViewContext? _viewContext;
     private PracticeHost? _ownedEditorHost;
@@ -105,11 +106,16 @@ internal sealed class OverlayWindow : Window, ISessionView
     {
         if (_shortcutMessages.AcceptKey == bindings.Accept && _shortcutMessages.ExitKey == bindings.Exit)
             return;
-        static Key EditorKey(string value) => value == "Esc" ? Key.Escape
-            : Enum.TryParse(value, out Key key) && (key == Key.Tab || key is >= Key.F1 and <= Key.F24)
-                ? key : Key.None;
-        _acceptKey = EditorKey(bindings.Accept);
-        _exitKey = EditorKey(bindings.Exit);
+        static Key EditorKey(string value, out ModifierKeys modifiers)
+        {
+            modifiers = ModifierKeys.None;
+            if (!OwnedPracticeAcceptanceProtocol.TryParseKey(value, out uint key, out var parsed))
+                return Key.None;
+            modifiers = parsed == ShortcutModifiers.Control ? ModifierKeys.Control : ModifierKeys.None;
+            return KeyInterop.KeyFromVirtualKey((int)key);
+        }
+        _acceptKey = EditorKey(bindings.Accept, out _acceptModifiers);
+        _exitKey = EditorKey(bindings.Exit, out _exitModifiers);
         if (_acceptKey == Key.None || _exitKey == Key.None)
             _acceptKey = _exitKey = Key.None;
         _shortcutMessages = SettingsDraftPresentation.SessionShortcuts(bindings);
@@ -248,10 +254,11 @@ internal sealed class OverlayWindow : Window, ISessionView
                     e.Handled = true;
                 return;
             }
-            if (_composing || e.Key == Key.ImeProcessed || Keyboard.Modifiers != ModifierKeys.None
-                || _viewContext is not { } context)
+            if (_composing || e.Key == Key.ImeProcessed || _viewContext is not { } context
+                || _ownedEditor is null && (_acceptModifiers != ModifierKeys.None || _exitModifiers != ModifierKeys.None))
                 return;
-            if (key == _acceptKey && _editing && context.CanEdit)
+            ModifierKeys modifiers = Keyboard.Modifiers;
+            if (key == _acceptKey && modifiers == _acceptModifiers && _editing && context.CanEdit)
             {
                 _consumedShortcutKeys.Add(key);
                 e.Handled = true;
@@ -260,7 +267,7 @@ internal sealed class OverlayWindow : Window, ISessionView
                 else
                     ReturnRequested?.Invoke(context.Token);
             }
-            else if (key == _exitKey && _editing)
+            else if (key == _exitKey && modifiers == _exitModifiers && _editing)
             {
                 _consumedShortcutKeys.Add(key);
                 e.Handled = true;

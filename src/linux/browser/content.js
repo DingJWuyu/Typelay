@@ -47,10 +47,12 @@
   const sourceConfigured = field => sessionConfigured() && (!controlPair()
     || !!field && (field.richText ? rich?.orderedClaim === 1 && field.richControlSupported === true
       && rich.root(field.element) === field.element : allowedElement(field.element)) && !field.dead);
+  const editorConfigured = field => sourceConfigured(field) && (!field?.richText
+    || rich?.modelFocus === 1 && field.richFocusSupported === true);
   function sessionBindings(field) {
     const source = sourceConfigured(field);
     return {generation: configuration?.generation ?? null, accept: configuration?.accept ?? null,
-      exit: configuration?.exit ?? null, sourceReady: source, editorReady: source};
+      exit: configuration?.exit ?? null, sourceReady: source, editorReady: editorConfigured(field)};
   }
   function sessionKey(event, action) {
     return sessionConfigured() && event.ctrlKey === controlBinding(action)
@@ -251,6 +253,9 @@
       const supported = capability?.supported === true && capability.orderedClaim === 1 && rich.orderedClaim === 1;
       if (field.richControlSupported && !supported) { retireOrdered(); retireEditorControl(); }
       field.richControlSupported = supported;
+      const canFocus = capability?.supported === true && capability.modelFocus === 1 && rich.modelFocus === 1;
+      if (field.richFocusSupported && !canFocus) retireEditorControl();
+      field.richFocusSupported = canFocus;
       if (capability?.supported !== true) return null;
     }
     let ancestors = "";
@@ -379,6 +384,8 @@
     if (field.ime !== "Clear") return noteCapture("ime");
     if (!issued(field, basis) || !clockValid()) return noteCapture(lastClockReason);
     if (requireFocused && !focused(field) || configuration !== applied) return noteCapture("postcheck");
+    if (captured) field.richCapture = {version: captured.version, selection: {...captured.selection},
+      inputRevision: field.input, contentRevision: field.content};
     noteCapture("supported");
     return {...result, diagnostics: diagnostics(), text, selection: selected,
       ime: field.ime, observedAtMs: now(), writeSupported: !field.quarantined && sourceConfigured(field)};
@@ -829,7 +836,7 @@
     overlay.language.hidden = paused;
     overlay.panel.classList.toggle("paused", paused);
     overlay.renewed = data.expiresAtMs - 800;
-    overlay.editable = !paused && sourceConfigured(field) && view.editable && view.viewContext?.canEdit === true;
+    overlay.editable = !paused && editorConfigured(field) && view.editable && view.viewContext?.canEdit === true;
     overlay.editor.dataset.editable = String(!!overlay.editable);
     overlay.editor.title = overlay.editable
       ? view.presentation.editorOwnsText ? "编辑译文" : "点击译文以编辑" : "";
@@ -936,10 +943,28 @@
       }
       case "quarantine": retireOrdered(); retireEditorControl(); if (field) field.quarantined = true; publication = null; return null;
       case "return": {
-        if (!sourceConfigured(field)) return {returned: false};
+        if (!editorConfigured(field)) return {returned: false};
         if (!sessionCurrent(data.generation) || !field || !approved(field, data.authority)
           || field.content !== data.authority.contentRevision || field.ime !== "Clear"
           || !document.hasFocus() || overlay?.composing || !sessionCurrent(data.generation)) return {returned: false};
+        if (field.richText) {
+          // The last successful source capture owns this model bookmark. Never
+          // capture again here or substitute the current selection for it.
+          const basis = field.richCapture, applied = configuration, previousFocus = field.focus;
+          const wasFocused = focused(field);
+          if (!editorConfigured(field) || !basis || basis.version !== field.richVersion
+            || basis.inputRevision !== data.authority.inputRevision || field.input !== basis.inputRevision
+            || basis.contentRevision !== data.authority.contentRevision) return {returned: false};
+          const returned = rich.focus(field.element, basis);
+          const approvedReturn = returned && approved(field, data.authority);
+          drainMutations();
+          return {returned: approvedReturn && alive && !field.dead && configuration === applied
+            && field.richCapture === basis && field.richVersion === basis.version
+            && field.content === basis.contentRevision && field.input === basis.inputRevision
+            && field.focus === previousFocus + (wasFocused ? 0 : 1)
+            && field.ime === "Clear" && !overlay?.composing
+            && editorConfigured(field) && sessionCurrent(data.generation) && focused(field)};
+        }
         field.element.focus({preventScroll: true});
         return {returned: sessionCurrent(data.generation) && focused(field)};
       }
@@ -960,7 +985,7 @@
         } else hide();
         return null;
       case "overlay-edit":
-        if (sourceConfigured(field) && overlay?.field === field && overlayCurrent(data) && overlay.editable && !overlay.paused
+        if (editorConfigured(field) && overlay?.field === field && overlayCurrent(data) && overlay.editable && !overlay.paused
           && data.allowed === true && document.hasFocus() && field.ime === "Clear") {
           overlay.editing = true; overlay.editor.readOnly = false; overlay.editor.focus({preventScroll: true});
         }
@@ -1059,7 +1084,7 @@
   function editorControlCurrent(ticket) {
     if (!ticket || editorControl !== ticket || !alive || overlay !== ticket.overlay
       || configuration !== ticket.configuration || !sessionCurrent(ticket.generation)
-      || !sourceConfigured(ticket.field) || !liveDeadline(ticket)) return false;
+      || !editorConfigured(ticket.field) || !liveDeadline(ticket)) return false;
     const current = ticket.overlay, field = ticket.field;
     if (fields.get(field.element) !== field || field.dead || field.quarantined
       || field.ime !== "Clear" || !approved(field, ticket.authority)) return false;
@@ -1077,11 +1102,11 @@
       && read(field) === ticket.source && selected?.start === ticket.selection.start
       && selected?.end === ticket.selection.end && editorControl === ticket
       && configuration === ticket.configuration && liveDeadline(ticket)
-      && field.ime === "Clear" && approved(field, ticket.authority, true) && sourceConfigured(field);
+      && field.ime === "Clear" && approved(field, ticket.authority, true) && editorConfigured(field);
   }
   function beginEditorControl(event, press) {
     if (!controlPair() || !overlay || !["ControlLeft", "ControlRight"].includes(event.code)
-      || event.altKey || event.shiftKey || event.metaKey || !sourceConfigured(overlay.field)
+      || event.altKey || event.shiftKey || event.metaKey || !editorConfigured(overlay.field)
       || [...held.values()].some(value => value.consumed)
       || [...held.keys()].some(code => code !== event.code && ["ControlLeft", "ControlRight"].includes(code))) return;
     drainMutations();

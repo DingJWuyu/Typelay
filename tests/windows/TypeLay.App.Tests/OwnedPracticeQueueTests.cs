@@ -22,26 +22,33 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
 {
-    [Fact]
-    public Task DefaultEscWithoutAWritePlanPreservesSourceAndPairsItsPressAcrossRetirement() => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task ExitWithoutAWritePlanPreservesSourceAndPairsItsPressAcrossRetirement(bool control) => desktop.RunAsync(async () =>
     {
         await using var scene = new QueueScene(true);
-        await scene.Start(true);
+        await scene.Start(true, control: control);
         await scene.InstallExit();
         var selection = N.ReadSelection(scene.Field);
-        scene.Key(27, true);
+        if (control)
+            await scene.PressControlPrefix();
+        scene.Key(scene.ExitKey, true);
         await scene.Wait(() => scene.Messages.Any(message => message.Kind == "exit-completed"));
         var result = Assert.Single(scene.Messages, message => message.Kind == "exit-completed").ExitResult!;
         Assert.Equal(scene.ExitLease!.Sequence, result.LeaseSequence);
         Assert.InRange(result.AcceptedAtMs, scene.ExitLease.ObservedAtMs, scene.ExitLease.ExpiresAtMs);
         Assert.True(result.WitnessSequence > scene.ExitLease.InstallWitnessSequence);
-        var edge = Assert.Single(scene.Audit(), witness => witness.VirtualKey == 27 && witness.Down);
+        var edge = Assert.Single(scene.Audit(), witness => witness.VirtualKey == scene.ExitKey && witness.Down);
         Assert.Equal(scene.ExitLease.Sequence, edge.ExitLeaseSequence);
+        Assert.Equal(scene.ExitLease.Modifiers, edge.Modifiers);
         Assert.False(edge.Eligible); // Exit never overwrites the native write witness.
         await scene.Retire(release: false);
-        scene.Key(27, true);
-        scene.Key(27, false);
+        scene.Key(scene.ExitKey, true);
+        scene.Key(scene.ExitKey, false);
         await scene.WaitExitInput(3);
+        if (control)
+            scene.Key(0x11, false);
         Assert.All(scene.ExitInputs, completion => Assert.True(completion.Consumed));
         Assert.Single(scene.Messages, message => message.Kind == "exit-completed");
         Assert.Equal(0, scene.Receipts);
@@ -498,36 +505,111 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         Assert.False(edges[1].Eligible);
     });
 
-    [Fact]
-    public Task OneAcceptedPressExecutesOnceAndItsRepeatCannotReuseThePlan() => desktop.RunAsync(async () =>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task OneAcceptedPressExecutesOnceAndItsRepeatCannotReuseThePlan(bool control) => desktop.RunAsync(async () =>
     {
         await using var scene = new QueueScene(true);
-        await scene.Start(true);
+        await scene.Start(true, control: control);
         // Real Shift input tests LL left/right modifier vs GUI generic-VK pairing.
         scene.Key(0x10, true);
         scene.Key(0x10, false);
         await scene.WaitConsumed(2);
         await scene.Install();
-        scene.Key(9, true);
+        long originalUserEpoch = scene.UserEpoch;
+        if (!control)
+        {
+            // Actual source-thread hover dispatch must not revoke the default
+            // installed plan. These software messages do not claim physical input.
+            N.Send(scene.Field, 0x0200, 0, (nint)((12 << 16) | 12));
+            N.Send(scene.Root, 0x00a0, 2, 0); // HTCAPTION is not a mouse-button mask.
+        }
+        if (control)
+            await scene.PressControlPrefix();
+        scene.Key(scene.AcceptKey, true);
         await scene.Wait(() => scene.Receipts == 1);
         await scene.WaitInput((true, true));
-        scene.Key(9, true);
-        scene.Key(9, false);
-        await scene.WaitConsumed(5);
+        scene.Key(scene.AcceptKey, true);
+        scene.Key(scene.AcceptKey, false);
         await scene.WaitInput((true, true), (true, true), (false, true));
+        if (control)
+            scene.Key(0x11, false);
+        await scene.WaitConsumed(control ? 7 : 5);
         Assert.Equal(1, scene.Receipts);
         var result = scene.Result();
         Assert.Equal(WriteStatus.Verified, result.Receipt.Status);
         Assert.True(result.AcceptedAtMs > 0);
         Assert.Equal(scene.Plan!.Permit.Plan.Id, result.PlanId);
-        Assert.Equal(3, result.WitnessSequence);
+        Assert.Equal(control ? 4 : 3, result.WitnessSequence);
+        Assert.Equal(originalUserEpoch, scene.UserEpoch);
         Assert.Equal(QueueScene.Replacement, N.ReadText(scene.Field, Limits.MaxTextUnits));
         Assert.Equal((scene.Root, scene.Field), N.Focused());
         Assert.Equal(new TextRange(QueueScene.Replacement.Length, QueueScene.Replacement.Length), N.ReadSelection(scene.Field));
-        Assert.True(scene.Audit()[3].Repeated);
+        Assert.True(scene.Audit()[control ? 4 : 3].Repeated);
         Assert.DoesNotContain(scene.Messages, message => message.Kind == "witness-failed");
         Assert.NotEqual((nuint)0, N.Send(scene.Field, 0x00C7));
         Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+    });
+
+    [Fact]
+    public Task AControlPrefixCannotRescueAnInvalidOriginalTicket() => desktop.RunAsync(async () =>
+    {
+        foreach (string refusal in new[] { "production-injection", "expired", "configuration", "focus-round-trip" })
+        {
+            bool automation = refusal != "production-injection";
+            await using var scene = new QueueScene(automation);
+            await scene.Start(automation, control: true);
+            TextBox? otherInput = null;
+            Window? other = null;
+            if (refusal == "focus-round-trip")
+            {
+                otherInput = new TextBox();
+                other = new Window { Content = otherInput, ShowActivated = false, Width = 320, Height = 140 };
+                other.Show(); // Prepare the other real window before the original 100 ms ticket.
+                await scene.Focus();
+            }
+            await scene.Install();
+            long originalUserEpoch = scene.UserEpoch;
+            var selection = N.ReadSelection(scene.Field);
+            if (automation)
+            {
+                await scene.PressControlPrefix();
+                if (refusal == "configuration")
+                    scene.ChangeConfiguration();
+                if (other is not null)
+                {
+                    long foreground = scene.ForegroundEpoch;
+                    Assert.True(other.Activate());
+                    Assert.True(otherInput!.Focus());
+                    await scene.Wait(() => otherInput.IsKeyboardFocused && Native.GetForegroundWindow() != scene.Root
+                        && scene.ForegroundEpoch > foreground);
+                    await scene.Focus();
+                    Assert.True(scene.Descriptor.NativeFocusRevision > scene.Plan!.Descriptor.NativeFocusRevision);
+                    other.Close();
+                }
+                await scene.Wait(() => !scene.PrefixPending);
+                Assert.Equal(refusal == "expired", WindowsInterruptClock.NowMs > scene.Plan!.Permit.ExpiresAtMs);
+            }
+            else
+                scene.Key(0x11, true);
+            scene.Key(scene.AcceptKey, true);
+            scene.Key(scene.AcceptKey, false);
+            await scene.WaitInput((true, false), (false, false));
+            scene.Key(0x11, false);
+            await scene.WaitConsumed(4);
+            Assert.Equal(originalUserEpoch + 1, scene.UserEpoch);
+            Assert.InRange(scene.Receipts, 0, 1);
+            if (scene.Receipts == 1)
+            {
+                Assert.Equal(WriteStatus.RejectedBeforeMutation, scene.Result().Receipt.Status);
+                Assert.Equal(0, scene.Result().AcceptedAtMs);
+            }
+            Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+            Assert.Equal(selection, N.ReadSelection(scene.Field));
+            Assert.Equal((scene.Root, scene.Field), N.Focused());
+            Assert.DoesNotContain(scene.Messages, message => message.Kind is "exit-completed" or "witness-failed");
+        }
     });
 
     [Theory]
@@ -855,6 +937,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         private Task? _pump;
         private Exception? _pipeError;
         private readonly HashSet<ushort> _pressed = [];
+        private SessionShortcutBindings _bindings = SessionShortcutBindings.Default;
         private sealed record SourceState(string Text, TextRange Selection, (nint Root, nint Control) Focus);
         private SourceState? _ordinaryDown, _ordinaryPress, _ordinaryRepeat;
         public nint Root
@@ -862,6 +945,13 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             get; private set;
         }
         public nint Field => GetDlgItem(Root, 101);
+        public ushort AcceptKey => _bindings.Accept == "Tab" ? (ushort)9 : (ushort)118;
+        public ushort ExitKey => _bindings.Exit == "Esc" ? (ushort)27 : (ushort)119;
+        private ShortcutModifiers Modifiers => _bindings == SessionShortcutBindings.Default
+            ? ShortcutModifiers.None : ShortcutModifiers.Control;
+        public long UserEpoch => _hook.UserEpoch;
+        public long ForegroundEpoch => _hook.ForegroundEpoch;
+        public bool PrefixPending => _hook.OwnedPrefixPending;
         public string Original { get; private set; } = "";
         public OwnedCaptureDescriptor Descriptor { get; private set; } = null!;
         public OwnedAcceptancePlan? Plan
@@ -892,7 +982,8 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             var target = new WindowsTarget(Descriptor.ProcessId, Descriptor.ProcessStartUtcTicks, Descriptor.RootHwnd,
                 Descriptor.ControlHwnd, "win32-edit-transaction-v2", "controlled-owned-exit", Guid.NewGuid());
             ExitLease = new(++_exitSequence, Descriptor, new(target, _hook.CommandGeneration, 1),
-                _hook.UserEpoch, _hook.ForegroundEpoch, now, now + Limits.ObservationMaxAgeMs, _writer!.Sequence);
+                _hook.UserEpoch, _hook.ForegroundEpoch, now, now + Limits.ObservationMaxAgeMs, _writer!.Sequence,
+                ExitKey, Modifiers);
             await PracticeProgressPipe.WriteAsync(_child!.Process.StandardInput.BaseStream,
                 new("exit-install", _connection, _run, _sequence, Exit: new(ExitLease.Sequence, ExitLease)), _deadline.Token);
             await Wait(() => Messages.Any(message => message.Kind == "exit-installed" && message.Exit?.Sequence == ExitLease.Sequence));
@@ -915,13 +1006,17 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             _hook = new(allowInjectedInput: automation);
             _deadline.CancelAfter(TimeSpan.FromSeconds(25));
         }
-        public async Task Start(bool automation, bool baselineAfterWrite = false)
+        public async Task Start(bool automation, bool baselineAfterWrite = false, bool control = false)
         {
+            _bindings = control ? SessionShortcutBindings.Restore("Ctrl+F7", "Ctrl+F8") : SessionShortcutBindings.Default;
+            _hook.ConfigureSessionShortcuts(_bindings);
             var settings = WindowsRuntime.CreateSettings(Path.Combine(_directory, "settings.json"));
             settings.Update(settings.Value with
             {
                 Mode = WorkMode.Automatic,
-                ExperimentalWriteback = false
+                ExperimentalWriteback = false,
+                AcceptShortcut = _bindings.Accept,
+                ExitShortcut = _bindings.Exit
             });
             var start = AppPaths.Child("TypeLay.Practice");
             foreach (string argument in new[] { "--settings", Path.Combine(_directory, "settings.json"), "--progress", _connection.ToString("N") })
@@ -933,10 +1028,28 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             await MeasureOrdinaryTab(baselineAfterWrite);
             await Begin(automation);
             await Focus();
+            if (control)
+                Assert.True(Messages.Last(message => message.Run == _run && message.Kind == "source-ready")
+                    .Acceptance!.ControlPrefixObserved);
             Assert.Equal(Original, N.ReadText(Field, Limits.MaxTextUnits));
             Assert.Equal(N.ReadSelection(Field).Start, N.ReadSelection(Field).End);
         }
         private SourceState ReadState() => new(N.ReadText(Field, Limits.MaxTextUnits), N.ReadSelection(Field), N.Focused());
+        public async Task PressControlPrefix()
+        {
+            Key(0x11, true);
+            await Wait(() => Messages.Any(message => message.Kind == "prefix-processed"));
+            var prefix = Assert.Single(Messages, message => message.Kind == "prefix-processed").PrefixResult!;
+            Assert.True(prefix.Processed);
+            Assert.Equal(Plan?.PlanSequence ?? 0, prefix.PlanSequence);
+            Assert.Equal(ExitLease?.Sequence ?? 0, prefix.ExitLeaseSequence);
+            var edge = Assert.Single(Audit(), witness => witness.Sequence == prefix.PrefixSequence);
+            Assert.Equal(0xA2u, edge.VirtualKey);
+            Assert.Equal(0x1Du, edge.ScanCode);
+            Assert.True(edge.Down);
+            Assert.False(edge.Eligible);
+            Assert.Equal(ShortcutModifiers.Control, edge.Modifiers);
+        }
         public async Task WaitInput(params (bool Down, bool Consumed)[] expected)
         {
             PracticeInputCompletion[] Completed() => Messages.Where(message => message.Kind == "test-tab-dispatched"
@@ -1033,7 +1146,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             var lease = new InputLease(snapshot, _hook.UserEpoch, _hook.ForegroundEpoch, true, _hook.CommandGeneration, 1, _run, _connection);
             _planLease = lease;
             Plan = new(_connection, _run, ++_planSequence, Descriptor, permit, lease.UserEpoch, lease.ForegroundEpoch,
-                lease.CommandGeneration, lease.SessionRevision, _writer!.Sequence);
+                lease.CommandGeneration, lease.SessionRevision, _writer!.Sequence, AcceptKey, Modifiers);
             _planMapping = OwnedPracticeAcceptanceProtocol.CreatePlan(_child!.Process.Handle, Plan);
             _result = OwnedPracticeAcceptanceProtocol.CreateResult(_child.Process.Handle);
             InstallControl = new(write.Id, Plan.PlanSequence, _planMapping.RemoteHandle, _planMapping.Length, _result.RemoteHandle, _result.Length);
@@ -1086,7 +1199,18 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         }
         public void Key(ushort key, bool down)
         {
-            Assert.Equal(1u, SendInput(1, [new KeyInput { Type = 1, Key = key, Flags = down ? 0u : 2u }], Marshal.SizeOf<KeyInput>()));
+            ushort scan = key switch
+            {
+                0x11 => 0x1D,
+                118 => 0x41,
+                119 => 0x42,
+                _ => 0
+            };
+            Assert.Equal(1u, SendInput(1, [new KeyInput
+            {
+                Type = 1, Key = scan == 0 ? key : (ushort)0, ScanCode = scan,
+                Flags = (scan == 0 ? 0u : 8u) | (down ? 0u : 2u)
+            }], Marshal.SizeOf<KeyInput>()));
             if (down)
                 _pressed.Add(key);
             else
@@ -1121,6 +1245,15 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                     Messages.Add(message);
                     if (message.Run == _run && message.Kind == "source-ready")
                         Descriptor = message.Acceptance!.Descriptor!;
+                    if (message.Run == _run && message.Kind == "prefix-processed")
+                        _hook.ObserveOwnedPrefixResult(message.PrefixResult!);
+                    if (message.Run == _run && message.Kind == "receipt")
+                    {
+                        var result = Result();
+                        _hook.CompleteOwnedPrefixAction(result.WitnessSequence, result.AcceptedAtMs > 0);
+                    }
+                    if (message.Run == _run && message.Kind == "exit-completed")
+                        _hook.CompleteOwnedPrefixAction(message.ExitResult!.WitnessSequence, true);
                     if (message.Run == _run && message.Kind == "witness-consumed")
                     {
                         _consumed = message.Acceptance!.WitnessSequence;
@@ -1186,6 +1319,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
     {
         [FieldOffset(0)] public uint Type;
         [FieldOffset(8)] public ushort Key;
+        [FieldOffset(10)] public ushort ScanCode;
         [FieldOffset(12)] public uint Flags;
         [FieldOffset(20)] public uint MouseFlags;
     }

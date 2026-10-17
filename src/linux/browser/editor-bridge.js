@@ -117,6 +117,7 @@
   }
   globalThis.TypeLayEditorBridge = Object.freeze({
     orderedClaim: 1,
+    modelFocus: 1,
     root,
     selectionIdentity(element) {
       const selected = document.getSelection();
@@ -138,6 +139,12 @@
         || result.selection.start < 0 || result.selection.end < result.selection.start || result.selection.end > result.text.length
         || document.activeElement === element && (!selected || selected.start !== result.selection.start || selected.end !== result.selection.end)) return null;
       return result;
+    },
+    focus(element, basis) {
+      const result = invoke(element, "focus", {version: basis.version, selection: basis.selection});
+      const selected = domSelection(element);
+      return result?.focused === true && document.activeElement === element
+        && selected?.start === basis.selection.start && selected?.end === basis.selection.end;
     },
     replace(element, data, finalGuard, beforeAttempt) {
       const remaining = data?.expiresAtPerformanceMs - monotonic();

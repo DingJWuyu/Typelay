@@ -13,6 +13,7 @@ internal sealed partial class PracticeHost
     private KeyboardHook? _monitor;
     private bool _automatic, _allowInjectedInput, _disconnecting, _closedConfirmed;
     private OwnedCaptureDescriptor? _descriptor;
+    private bool _controlPrefixObserved;
     private OwnedMapping? _witnessMapping;
     private OwnedWitnessWriter? _witnessWriter;
     private long _planSequence, _lastWitnessSequence;
@@ -99,8 +100,15 @@ internal sealed partial class PracticeHost
     }
     internal OwnedCaptureDescriptor? CaptureDescriptor => !_editorSealed && IsAutomatic && _nativeActive && _pending is null
         && _descriptor is { } descriptor && DescriptorCurrent(descriptor) ? descriptor : null;
-    internal bool SourceReady(TargetId target) => !_editorSealed && IsAutomatic && _settings?.Value.AcceptShortcut == "Tab" && _target == target && _descriptor is { } descriptor
+    internal bool SourceReady(TargetId target) => !_editorSealed && IsAutomatic && OwnedSessionKeysSupported && _target == target && _descriptor is { } descriptor
         && DescriptorCurrent(descriptor) && KeyboardHook.OwnedFocus(descriptor) && _witnessWriter is { Poisoned: false };
+    private bool OwnedSessionKeysSupported => _settings is not null && _monitor?.CanInterceptOwnedSessionKeys == true
+        && OwnedPracticeAcceptanceProtocol.TryParseKey(_settings.Value.AcceptShortcut, out _, out var acceptModifiers)
+        && OwnedPracticeAcceptanceProtocol.TryParseKey(_settings.Value.ExitShortcut, out _, out var exitModifiers)
+        && (_controlPrefixObserved || acceptModifiers == ShortcutModifiers.None && exitModifiers == ShortcutModifiers.None);
+    private bool CurrentExitBinding(OwnedExitLease lease) => _settings is not null
+        && OwnedPracticeAcceptanceProtocol.TryParseKey(_settings.Value.ExitShortcut, out uint key, out var modifiers)
+        && lease.VirtualKey == key && lease.Modifiers == modifiers;
     private bool DescriptorCurrent(OwnedCaptureDescriptor descriptor, bool checkFocusRevision = true)
     {
         if (_child is null || !descriptor.IsValid || descriptor.BeginSequence > _sequence)
@@ -122,7 +130,7 @@ internal sealed partial class PracticeHost
             return false;
         }
     }
-    private void AcceptDescriptor(OwnedCaptureDescriptor descriptor)
+    private void AcceptDescriptor(OwnedCaptureDescriptor descriptor, bool controlPrefixObserved)
     {
         if (_editorSealed)
             return; // No source-ready may replace the fixed editing basis.
@@ -135,6 +143,7 @@ internal sealed partial class PracticeHost
             || _witnessWriter is null || _monitor is null)
             return;
         _descriptor = descriptor;
+        _controlPrefixObserved = controlPrefixObserved;
         _monitor.SetOwnedChannel(_connection, _witnessWriter, descriptor);
     }
     internal OwnedSourceEvidence? ObserveAutomaticTarget(InputSnapshot? snapshot, FocusMember focus, long startedAt)
@@ -220,6 +229,11 @@ internal sealed partial class PracticeHost
     internal void PublishAcceptance(InputLease lease, AcceptancePermit? permit)
     {
         _dispatcher.VerifyAccess();
+        if (_monitor?.PreserveOwnedPrefix(lease, permit) == true)
+        {
+            _nextAcceptance = null;
+            return; // Keep only the original installed plan/exit and their deadlines.
+        }
         PublishExit(lease);
         if (permit is null || !SourceReady(lease.Source.Target) || lease.PracticeRunId != _runId
             || lease.PracticeConnectionId != _connection || _monitor is null
@@ -266,7 +280,7 @@ internal sealed partial class PracticeHost
             || observation.Source.FocusEpoch != _descriptor?.NativeFocusRevision
             || observation.CommandGeneration != _monitor?.CommandGeneration
             || observation.UserEpoch != _monitor?.UserEpoch || observation.ForegroundEpoch != _monitor?.ForegroundEpoch
-            || _settings?.Value.ExitShortcut != "Esc" || !SourceReady(observation.Source.Target)
+            || !OwnedSessionKeysSupported || !SourceReady(observation.Source.Target)
             || !ExitConnectionCurrent() || now < observation.Source.ObservedAtMs
             || now - observation.Source.ObservedAtMs > Limits.ObservationMaxAgeMs)
         {
@@ -290,9 +304,10 @@ internal sealed partial class PracticeHost
             _exitLeases.Remove(oldest);
             _exitRetiredThrough = Math.Max(_exitRetiredThrough, oldest);
         }
+        OwnedPracticeAcceptanceProtocol.TryParseKey(_settings!.Value.ExitShortcut, out uint exitKey, out var exitModifiers);
         var lease = new OwnedExitLease(checked(++_exitSequence), _descriptor!, token,
             observation.UserEpoch, observation.ForegroundEpoch, observation.Source.ObservedAtMs,
-            checked(observation.Source.ObservedAtMs + Limits.ObservationMaxAgeMs), _witnessWriter!.Sequence);
+            checked(observation.Source.ObservedAtMs + Limits.ObservationMaxAgeMs), _witnessWriter!.Sequence, exitKey, exitModifiers);
         _latestExit = lease;
         _exitLeases.Add(lease.Sequence, lease);
         Enqueue(new("exit-install", _connection, _runId, _sequence, Exit: new(lease.Sequence, lease)));
@@ -300,10 +315,10 @@ internal sealed partial class PracticeHost
 
     private bool ExitConnectionCurrent() => !_disposed && !_disconnecting && _nativeActive && _pending is null
         && !_editorSealed && _communication is { IsCancellationRequested: false }
-        && _monitor is { ShortcutsReady: true, CanInterceptAcceptance: true };
+        && _monitor is { ShortcutsReady: true, CanInterceptOwnedSessionKeys: true };
 
     private bool ExitBasisCurrent(OwnedExitLease lease) => ExitConnectionCurrent() && _descriptor == lease.Descriptor
-        && _latestExit?.Token == lease.Token && _settings?.Value.ExitShortcut == "Esc" && SourceReady(lease.Token.Target)
+        && _latestExit?.Token == lease.Token && CurrentExitBinding(lease) && SourceReady(lease.Token.Target)
         && lease.Token.CommandGeneration == _monitor!.CommandGeneration
         && lease.UserEpoch == _monitor.UserEpoch && lease.ForegroundEpoch == _monitor.ForegroundEpoch;
 
@@ -346,6 +361,7 @@ internal sealed partial class PracticeHost
         // Current identity still matters, but delivery does not change the
         // original GUI decision's time or substitute a new displayed token.
         bool current = ExitBasisCurrent(lease);
+        _monitor?.CompleteOwnedPrefixAction(result.WitnessSequence, current);
         RevokeAcceptance();
         if (current)
             _monitor!.CompleteOwnedExit(lease, result);
@@ -375,7 +391,7 @@ internal sealed partial class PracticeHost
         !_disposed && !_disconnecting && _nativeActive && _pending is null && !_editorSealed
         && _communication is { IsCancellationRequested: false }
         && current.Lease.PracticeRunId == _runId && current.Lease.PracticeConnectionId == _connection
-        && _descriptor == current.Plan.Descriptor && _monitor is { ShortcutsReady: true, CanInterceptAcceptance: true }
+        && _descriptor == current.Plan.Descriptor && _monitor is { ShortcutsReady: true, CanInterceptOwnedSessionKeys: true }
         && current.Lease.CommandGeneration == _monitor.CommandGeneration
         && current.Lease.UserEpoch == _monitor.UserEpoch && current.Lease.ForegroundEpoch == _monitor.ForegroundEpoch
         && SourceReady(current.Lease.Source.Target);
@@ -394,6 +410,7 @@ internal sealed partial class PracticeHost
     {
         _dispatcher.VerifyAccess();
         PollOwnedReturn();
+        _ = _monitor?.OwnedPrefixPending; // Settle a prefix-only timeout even without a write plan.
         if (_latestExit is { } exit && !ExitBasisCurrent(exit))
             RevokeExit();
         if (_acceptance is not { } current)
@@ -412,6 +429,11 @@ internal sealed partial class PracticeHost
             return;
         }
         long now = WindowsInterruptClock.NowMs;
+        if (_monitor?.OwnedPrefixPending == true)
+        {
+            _nextAcceptance = null;
+            return; // GUI FIFO decides at the original deadline, never a renewed ticket.
+        }
         if (attempted)
         {
             _nextAcceptance = null;
@@ -470,9 +492,10 @@ internal sealed partial class PracticeHost
         if (next.ReplacesPlanSequence > 0 && (next.ReplacesPlanSequence != releasedPlanSequence
             || !RenewalCurrent(next.Lease, next.Permit, attemptFloorSequence, next.ContentEpoch)))
             return;
+        OwnedPracticeAcceptanceProtocol.TryParseKey(_settings!.Value.AcceptShortcut, out uint acceptKey, out var acceptModifiers);
         var plan = new OwnedAcceptancePlan(_connection, _runId, checked(++_planSequence), descriptor,
             next.Permit, next.Lease.UserEpoch, next.Lease.ForegroundEpoch, next.Lease.CommandGeneration,
-            next.Lease.SessionRevision, _witnessWriter.Sequence);
+            next.Lease.SessionRevision, _witnessWriter.Sequence, acceptKey, acceptModifiers);
         OwnedMapping? input = null, result = null;
         try
         {
@@ -540,13 +563,18 @@ internal sealed partial class PracticeHost
     }
     private bool HandleAcceptanceMessage(PracticeMessage message)
     {
+        if (message.Kind == "prefix-processed")
+        {
+            _monitor?.ObserveOwnedPrefixResult(message.PrefixResult!);
+            return true;
+        }
         if (HandleExitMessage(message) || HandleReturnMessage(message) || HandleEditingMessage(message))
             return true;
         if (message.Kind == "source-ready")
         {
             if (message.Acceptance?.Descriptor is not { } descriptor)
                 throw new InvalidDataException("practice-source-descriptor");
-            AcceptDescriptor(descriptor);
+            AcceptDescriptor(descriptor, message.Acceptance.ControlPrefixObserved);
             return true;
         }
         if (message.Kind == "witness-failed")
@@ -600,6 +628,7 @@ internal sealed partial class PracticeHost
                 || result.AcceptedAtMs == 0 && result.Receipt.Status != WriteStatus.RejectedBeforeMutation)
                 throw new InvalidDataException("practice-receipt-identity");
             current.Received = true;
+            _monitor?.CompleteOwnedPrefixAction(result.WitnessSequence, result.AcceptedAtMs > 0);
             if (result.AcceptedAtMs > 0)
                 _monitor?.CompleteOwnedAcceptance(current.Lease, current.Plan.Permit, result);
             RevokeAcceptance();

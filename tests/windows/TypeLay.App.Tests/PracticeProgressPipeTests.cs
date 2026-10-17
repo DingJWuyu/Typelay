@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.IO;
 using System.Text;
 using System.Text.Json;
+using TypeLay.Core;
 using TypeLay.Runtime;
 using TypeLay.Windows;
 using TypeLay.Windows.Contracts;
@@ -12,13 +13,16 @@ namespace TypeLay.App.Tests;
 // The production inherited-stdio codec, independent of Win32 focus or inference.
 public sealed class PracticeProgressPipeTests
 {
-    [Fact]
-    public async Task DefaultExitFramesCarryAnIndependentBoundedLeaseWithoutAWritePlan()
+    [Theory]
+    [InlineData(27u, ShortcutModifiers.None)]
+    [InlineData(119u, ShortcutModifiers.Control)]
+    public async Task ExitFramesCarryTheirExactKeyAndIndependentBoundedLeaseWithoutAWritePlan(uint key,
+        ShortcutModifiers modifiers)
     {
         var descriptor = new OwnedCaptureDescriptor(120, 630000000000000000, 501, 502, 121, 41, 7, 1);
         var target = new WindowsTarget(120, 630000000000000000, 501, 502,
             "win32-edit-transaction-v2", "1.2.3", Guid.NewGuid()).Id;
-        var lease = new OwnedExitLease(1, descriptor, new(target, Guid.NewGuid(), 4), 5, 6, 1000, 1150, 8);
+        var lease = new OwnedExitLease(1, descriptor, new(target, Guid.NewGuid(), 4), 5, 6, 1000, 1150, 8, key, modifiers);
         Guid connection = Guid.NewGuid(), run = Guid.NewGuid();
         PracticeMessage[] messages =
         [
@@ -61,9 +65,12 @@ public sealed class PracticeProgressPipeTests
         var plan = Guid.NewGuid();
         var descriptor = new OwnedCaptureDescriptor(120, 630000000000000000, 501, 502, 121, 41, 7, 1);
         Assert.False(new OwnedAcceptanceControl().ObserveInputCompletion);
-        Assert.Equal(3, new OwnedAcceptanceControl().Version);
+        Assert.False(new OwnedAcceptanceControl().ControlPrefixObserved);
+        Assert.Equal(4, new OwnedAcceptanceControl().Version);
         await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(new MemoryStream(),
-            new("begin-auto", connection, run, 1, Acceptance: new(Version: 2)), TestContext.Current.CancellationToken));
+            new("begin-auto", connection, run, 1, Acceptance: new(Version: 3)), TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(new MemoryStream(),
+            new("begin-auto", connection, run, 1, Acceptance: new(ControlPrefixObserved: true)), TestContext.Current.CancellationToken));
         PracticeMessage[] messages =
         [
             new("begin", connection, run, 1, Acceptance: new(ObserveInputCompletion: true)),
@@ -72,6 +79,7 @@ public sealed class PracticeProgressPipeTests
             new("test-tab-dispatched", connection, run, 1, InputCompletion: new(1, true, false)),
             new("test-tab-dispatched", connection, run, 1, InputCompletion: new(2, false, true)),
             new("source-ready", connection, run, 1, Acceptance: new(Descriptor: descriptor)),
+            new("source-ready", connection, run, 1, Acceptance: new(Descriptor: descriptor, ControlPrefixObserved: true)),
             new("install", connection, run, 2, Acceptance: new(plan, 1, 602,
                 OwnedPracticeAcceptanceProtocol.BodyBytes, 603, OwnedPracticeAcceptanceProtocol.BodyBytes)),
             new("installed", connection, run, 2, Acceptance: new(plan, 1, WitnessSequence: 19)),
@@ -192,13 +200,15 @@ public sealed class PracticeProgressPipeTests
         }
     }
 
-    [Fact]
-    public async Task EditorEscapeReturnCarriesOnlyItsOriginalPhysicalPress()
+    [Theory]
+    [InlineData(27u, ShortcutModifiers.None)]
+    [InlineData(119u, ShortcutModifiers.Control)]
+    public async Task EditorExitReturnCarriesOnlyItsOriginalPhysicalPress(uint key, ShortcutModifiers modifiers)
     {
         var target = new WindowsTarget(120, 630000000000000000, 501, 502,
             "win32-edit-transaction-v2", "1.2.3", Guid.NewGuid()).Id;
         var control = new OwnedReturnControl(Guid.NewGuid(), Guid.NewGuid(), OwnedReturnKind.Escape,
-            new(target, Guid.NewGuid(), 12), 900, 21, KeyPress: new(1, false, true));
+            new(target, Guid.NewGuid(), 12), 900, 21, KeyPress: new(1, false, true, key, modifiers));
         var message = new PracticeMessage("return-fence", Guid.NewGuid(), Guid.NewGuid(), 1,
             Returning: control, Acceptance: new(WitnessHandle: 601,
                 WitnessBytes: OwnedPracticeAcceptanceProtocol.WitnessBytes));
@@ -209,7 +219,7 @@ public sealed class PracticeProgressPipeTests
         foreach (var invalid in new[]
         {
             control with { KeyPress = null },
-            control with { KeyPress = new(0, false, true) },
+            control with { KeyPress = control.KeyPress! with { ScanCode = 0 } },
             control with { Kind = OwnedReturnKind.Mouse }
         })
             await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(new MemoryStream(),
@@ -217,6 +227,41 @@ public sealed class PracticeProgressPipeTests
                 {
                     Returning = invalid
                 }, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task PrefixDispatchResultsRetainOriginalSequencesWithoutCarryingAuthority()
+    {
+        var message = new PracticeMessage("prefix-processed", Guid.NewGuid(), Guid.NewGuid(), 1,
+            PrefixResult: new(17, 4, 5, true));
+        using var stream = new MemoryStream();
+        var rejected = message with
+        {
+            PrefixResult = message.PrefixResult! with
+            {
+                Processed = false
+            }
+        };
+        await PracticeProgressPipe.WriteAsync(stream, message, TestContext.Current.CancellationToken);
+        await PracticeProgressPipe.WriteAsync(stream, rejected, TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        Assert.Equal(message, await PracticeProgressPipe.ReadAsync(stream, TestContext.Current.CancellationToken));
+        Assert.Equal(rejected, await PracticeProgressPipe.ReadAsync(stream, TestContext.Current.CancellationToken));
+        PracticeMessage[] invalid =
+        [
+            message with { Acceptance = new(PlanId: Guid.NewGuid(), PlanSequence: 4) },
+            message with { Exit = new(5) },
+            message with { Kind = "installed" },
+            message with { PrefixResult = new(0, 4, 5, true) },
+            message with { PrefixResult = new(17, 0, 0, true) }
+        ];
+        foreach (var mixed in invalid)
+        {
+            using var empty = new MemoryStream();
+            await Assert.ThrowsAsync<InvalidDataException>(() => PracticeProgressPipe.WriteAsync(empty, mixed,
+                TestContext.Current.CancellationToken));
+            Assert.Equal(0, empty.Length);
+        }
     }
 
     [Theory]

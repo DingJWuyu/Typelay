@@ -235,6 +235,7 @@ class DistributionTests(unittest.TestCase):
                     "Completion": None,
                     "Exit": None,
                     "ExitResult": None,
+                    "PrefixResult": None,
                 }
                 process.stdin.write(frame(command))
                 process.stdin.flush()
@@ -297,6 +298,7 @@ class DistributionTests(unittest.TestCase):
                         "Completion": None,
                         "Exit": None,
                         "ExitResult": None,
+                        "PrefixResult": None,
                     }
                 ],
             )

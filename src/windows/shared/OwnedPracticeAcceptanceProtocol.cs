@@ -13,11 +13,12 @@ internal sealed record OwnedAcceptanceControl(Guid PlanId = default, long PlanSe
     long PlanHandle = 0, int PlanBytes = 0, long ResultHandle = 0, int ResultBytes = 0,
     long WitnessHandle = 0, int WitnessBytes = 0, OwnedCaptureDescriptor? Descriptor = null,
     long WitnessSequence = 0, bool AllowInjectedInput = false, int Version = OwnedPracticeAcceptanceProtocol.Version,
-    bool ObserveInputCompletion = false);
+    bool ObserveInputCompletion = false, bool ControlPrefixObserved = false);
 
 internal sealed record OwnedAcceptancePlan(Guid Connection, Guid Run, long PlanSequence,
     OwnedCaptureDescriptor Descriptor, AcceptancePermit Permit, long UserEpoch, long ForegroundEpoch,
-    Guid CommandGeneration, long SessionRevision, long InstallWitnessSequence);
+    Guid CommandGeneration, long SessionRevision, long InstallWitnessSequence,
+    uint VirtualKey = 9, ShortcutModifiers Modifiers = ShortcutModifiers.None);
 internal sealed record OwnedAcceptanceResult(Guid Connection, Guid Run, long PlanSequence, Guid PlanId,
     long WitnessSequence, long AcceptedAtMs, WriteReceipt Receipt);
 
@@ -28,11 +29,12 @@ internal sealed record OwnedAcceptanceResult(Guid Connection, Guid Run, long Pla
 internal readonly record struct OwnedKeyWitness(long Sequence, long PlanSequence, uint MessageTime,
     uint VirtualKey, uint ScanCode, uint NativeFlags, bool Down, bool Repeated, bool Modified,
     bool Injected, bool Eligible, long ObservedAtMs, long UserEpoch, long ForegroundEpoch,
-    long WindowEpoch, long NativeFocusRevision, long ExitLeaseSequence = 0);
+    long WindowEpoch, long NativeFocusRevision, long ExitLeaseSequence = 0,
+    long PrefixSequence = 0, ShortcutModifiers Modifiers = ShortcutModifiers.None);
 
 internal static class OwnedPracticeAcceptanceProtocol
 {
-    public const int Version = 3;
+    public const int Version = 4;
     // Three bounded UTF-16 strings, each escaped to at most six JSON bytes/unit;
     // target metadata is bounded to 4096 units, plus 8192 bytes for fixed fields.
     public const int BodyBytes = 8 + (3 * Limits.MaxTextUnits + 4096) * 6 + 8192;
@@ -43,6 +45,24 @@ internal static class OwnedPracticeAcceptanceProtocol
         MaxDepth = 12,
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
+
+    internal static bool TryParseKey(string text, out uint key, out ShortcutModifiers modifiers)
+    {
+        modifiers = text.StartsWith("Ctrl+", StringComparison.Ordinal) ? ShortcutModifiers.Control : ShortcutModifiers.None;
+        string main = modifiers == ShortcutModifiers.Control ? text[5..] : text;
+        key = main switch
+        {
+            "Tab" => 9,
+            "Esc" => 27,
+            _ => SessionShortcutBindings.FunctionKeys.Contains(main) && uint.TryParse(main.AsSpan(1), out uint number)
+                ? 0x6Fu + number : 0
+        };
+        return ValidKey(key, modifiers);
+    }
+
+    internal static bool ValidKey(uint key, ShortcutModifiers modifiers) =>
+        modifiers == ShortcutModifiers.None && key is 9 or 27
+        || key is >= 0x70 and <= 0x87 && modifiers is ShortcutModifiers.None or ShortcutModifiers.Control;
 
     public static OwnedMapping CreatePlan(nint childProcess, OwnedAcceptancePlan plan)
     {
@@ -109,6 +129,7 @@ internal static class OwnedPracticeAcceptanceProtocol
         var permit = plan.Permit;
         var expected = permit.Plan.Expected;
         if (plan.Connection == Guid.Empty || plan.Run == Guid.Empty || plan.PlanSequence <= 0
+            || !ValidKey(plan.VirtualKey, plan.Modifiers) || plan.VirtualKey == 27
             || plan.CommandGeneration == Guid.Empty || plan.InstallWitnessSequence < 0
             || !plan.Descriptor.IsValid || expected.Target.Value.Length > 4096
             || expected.Target.Backend != "windows" || expected.PreviewText is not null || expected.CommittedPrefix is not null
@@ -295,6 +316,8 @@ internal sealed class OwnedWitnessWriter(OwnedMapping mapping)
         mapping.WriteInt64(offset + 64, witness.WindowEpoch);
         mapping.WriteInt64(offset + 72, witness.NativeFocusRevision);
         mapping.WriteInt64(offset + 80, witness.ExitLeaseSequence);
+        mapping.WriteInt64(offset + 88, witness.PrefixSequence);
+        mapping.WriteInt32(offset + 96, (int)witness.Modifiers);
         Thread.MemoryBarrier();
         mapping.WriteInt64(offset, sequence);
         Thread.MemoryBarrier();
@@ -336,7 +359,8 @@ internal sealed class OwnedWitnessReader(OwnedMapping mapping)
             (uint)mapping.ReadInt32(offset + 20), (uint)mapping.ReadInt32(offset + 24), (uint)mapping.ReadInt32(offset + 28),
             (flags & 1) != 0, (flags & 2) != 0, (flags & 4) != 0, (flags & 8) != 0, (flags & 16) != 0,
             mapping.ReadInt64(offset + 40), mapping.ReadInt64(offset + 48), mapping.ReadInt64(offset + 56),
-            mapping.ReadInt64(offset + 64), mapping.ReadInt64(offset + 72), mapping.ReadInt64(offset + 80));
+            mapping.ReadInt64(offset + 64), mapping.ReadInt64(offset + 72), mapping.ReadInt64(offset + 80),
+            mapping.ReadInt64(offset + 88), (ShortcutModifiers)mapping.ReadInt32(offset + 96));
         Thread.MemoryBarrier();
         if (mapping.ReadInt64(offset) != sequence || Poisoned)
             throw new InvalidDataException("practice-witness-order");

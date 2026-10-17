@@ -15,6 +15,8 @@ using N = TypeLay.Platform.Windows.NativeMethods;
 
 internal static partial class ContinuousTranslationCheck
 {
+    // Examples for this software-input scenario, never product defaults.
+    private const string OwnedAcceptShortcut = "Ctrl+F7", OwnedExitShortcut = "Ctrl+F8";
     private static async Task<(SceneResult FirstTab, SceneResult EditorHandoff, SceneResult TabReturn,
         SceneResult MouseReturn, SceneResult EditedAcceptance, SceneResult Finish)> VerifyOwnedFirstTabAsync(string directory, ModelClient model,
         CancellationToken cancellation)
@@ -48,7 +50,9 @@ internal static partial class ContinuousTranslationCheck
             var settings = CreateSettings(path, WorkMode.Automatic);
             settings.Update(settings.Value with
             {
-                OnboardingComplete = false
+                OnboardingComplete = false,
+                AcceptShortcut = OwnedAcceptShortcut,
+                ExitShortcut = OwnedExitShortcut
             });
             string original = AutomaticPracticePresentation.Create(settings.Value).SampleText;
             host = new PracticeHost(info => child = new ChildProcess(info));
@@ -198,11 +202,11 @@ internal static partial class ContinuousTranslationCheck
             Require(sourceUnchanged && sourceReady && editorReady, "owned-preview-capabilities");
             Require(!settings.Value.ExperimentalWriteback && settings.Value.Mode == WorkMode.Automatic,
                 "owned-global-permission-changed");
-            Require(new[] { 9, 0x10, 0x11, 0x12, 0x5B, 0x5C }.All(key => GetAsyncKeyState(key) >= 0),
+            Require(new[] { 0x76, 0x77, 0x10, 0x11, 0x12, 0x5B, 0x5C }.All(key => GetAsyncKeyState(key) >= 0),
                 "owned-key-already-down");
             result.Stage = "owned-first-tab";
             injectedTabPresses++;
-            SendOwnedTab(result.CleanupErrors);
+            SendOwnedAcceptance(result.CleanupErrors);
             await UntilAsync(() =>
             {
                 Require(feedbackCode is null, "owned-accept-feedback");
@@ -311,6 +315,8 @@ internal static partial class ContinuousTranslationCheck
             {
                 inputKind = "software-input",
                 physicalIme = false,
+                acceptShortcut = OwnedAcceptShortcut,
+                exitShortcut = OwnedExitShortcut,
                 injectedTabPresses,
                 injectedEnterKeys = 0,
                 submitCounterAvailable = false,
@@ -433,13 +439,16 @@ internal static partial class ContinuousTranslationCheck
         string source = N.ReadText(field, Limits.MaxTextUnits);
         var selection = N.ReadSelection(field);
         int returns = input.Returns.Count;
-        bool held = false;
+        bool held = false, controlHeld = false;
         try
         {
             result.Stage = "owned-editor-escape-return";
-            // Scan-code Esc retains the exact original hardware-key identity
-            // through the production return fence and its repeat/release pairing.
-            Require(SendInput(1, [new() { Type = 1, Scan = 1, Flags = 8 }], Marshal.SizeOf<KeyboardInput>()) == 1,
+            // Both original scan-code edges go through the real hook and WPF
+            // editor. The existing pre-arm fence carries this F8 press unchanged.
+            Require(SendInput(1, [new() { Type = 1, Scan = 0x1d, Flags = 8 }], Marshal.SizeOf<KeyboardInput>()) == 1,
+                "owned-editor-control-down");
+            controlHeld = true;
+            Require(SendInput(1, [new() { Type = 1, Scan = 0x42, Flags = 8 }], Marshal.SizeOf<KeyboardInput>()) == 1,
                 "owned-editor-escape-down");
             held = true;
             await UntilAsync(() => N.Focused() == (root, field) && !overlay.IsVisible
@@ -458,7 +467,10 @@ internal static partial class ContinuousTranslationCheck
                 },
                 "owned-editor-escape-proof");
             result.Stage = "owned-editor-escape-held-release";
-            KeyboardInput[] remainder = [new() { Type = 1, Scan = 1, Flags = 8 }, new() { Type = 1, Scan = 1, Flags = 10 }];
+            Require(SendInput(1, [new() { Type = 1, Scan = 0x1d, Flags = 10 }], Marshal.SizeOf<KeyboardInput>()) == 1,
+                "owned-editor-control-release");
+            controlHeld = false;
+            KeyboardInput[] remainder = [new() { Type = 1, Scan = 0x42, Flags = 8 }, new() { Type = 1, Scan = 0x42, Flags = 10 }];
             uint inserted = SendInput(2, remainder, Marshal.SizeOf<KeyboardInput>());
             if (inserted == 2)
                 held = false;
@@ -483,14 +495,16 @@ internal static partial class ContinuousTranslationCheck
         }
         finally
         {
-            if (held && SendInput(1, [new() { Type = 1, Scan = 1, Flags = 10 }], Marshal.SizeOf<KeyboardInput>()) != 1)
+            if (held && SendInput(1, [new() { Type = 1, Scan = 0x42, Flags = 10 }], Marshal.SizeOf<KeyboardInput>()) != 1)
                 result.CleanupErrors.Add(new("owned-editor-escape", "key-release-incomplete", "Win32", Marshal.GetLastWin32Error()));
+            if (controlHeld && SendInput(1, [new() { Type = 1, Scan = 0x1d, Flags = 10 }], Marshal.SizeOf<KeyboardInput>()) != 1)
+                result.CleanupErrors.Add(new("owned-editor-control", "key-release-incomplete", "Win32", Marshal.GetLastWin32Error()));
         }
     }
 
     private static bool OwnedAcceptanceVisible(OverlayWindow overlay) => Descendants(overlay).OfType<TextBlock>()
         .Any(hint => hint.IsVisible && hint.Text == "接受译文" && hint.Parent is StackPanel row
-            && Descendants(row).OfType<TextBlock>().Any(key => key.IsVisible && key.Text == "Tab"));
+            && Descendants(row).OfType<TextBlock>().Any(key => key.IsVisible && key.Text == OwnedAcceptShortcut));
 
     private static async Task<SceneResult> VerifyOwnedReturnAsync(OwnedReturnKind kind, nint root, nint field,
         PracticeHost host, OverlayWindow overlay, TextBox editor, SessionController controller, AcceptanceMonitor monitor,
@@ -500,6 +514,7 @@ internal static partial class ContinuousTranslationCheck
         var result = new SceneResult { Outcome = "running", Stage = prefix };
         bool reenteredDraft = false, sourceUnchanged = false, zeroWrites = false;
         bool draftRetained = false, exactReturn = false, freshBinding = false, naturalCaret = false, sourceFocus = false;
+        bool acceptanceHeld = false, controlHeld = false;
         try
         {
             if (kind == OwnedReturnKind.Tab)
@@ -547,7 +562,14 @@ internal static partial class ContinuousTranslationCheck
             var returnBinding = input.LastCapture?.OwnedSource?.Binding;
             result.Stage = prefix + "-input";
             if (kind == OwnedReturnKind.Tab)
-                SendOwnedTab(result.CleanupErrors);
+            {
+                Require(SendInput(1, [new() { Type = 1, Scan = 0x1d, Flags = 8 }], Marshal.SizeOf<KeyboardInput>()) == 1,
+                    "owned-return-control-down");
+                controlHeld = true;
+                Require(SendInput(1, [new() { Type = 1, Scan = 0x41, Flags = 8 }], Marshal.SizeOf<KeyboardInput>()) == 1,
+                    "owned-return-acceptance-down");
+                acceptanceHeld = true;
+            }
             else
             {
                 Require(N.GetWindowRect(field, out var bounds), "owned-source-mouse-bounds");
@@ -567,6 +589,19 @@ internal static partial class ContinuousTranslationCheck
                     && controller.AutomaticPracticeProgress is { ReturnedToSource: true } returned
                     && returned.CommandGeneration != progress.CommandGeneration && OwnedAcceptanceVisible(overlay);
             }, cancellation);
+            if (kind == OwnedReturnKind.Tab)
+            {
+                // The editor consumed the original F7. Its repeat/up now reach
+                // the fresh source binding and must remain the same owned press.
+                Require(SendInput(1, [new() { Type = 1, Scan = 0x1d, Flags = 10 }], Marshal.SizeOf<KeyboardInput>()) == 1,
+                    "owned-return-control-release");
+                controlHeld = false;
+                KeyboardInput[] remainder = [new() { Type = 1, Scan = 0x41, Flags = 8 }, new() { Type = 1, Scan = 0x41, Flags = 10 }];
+                uint inserted = SendInput(2, remainder, Marshal.SizeOf<KeyboardInput>());
+                if (inserted == 2)
+                    acceptanceHeld = false;
+                Require(inserted == 2, "owned-return-acceptance-release");
+            }
             sourceFocus = N.Focused() == (root, field);
             sourceUnchanged = N.ReadText(field, Limits.MaxTextUnits) == source;
             var afterSelection = N.ReadSelection(field);
@@ -599,6 +634,13 @@ internal static partial class ContinuousTranslationCheck
             result.Stage = "complete";
         }
         catch (Exception error) when (error is not OutOfMemoryException) { RecordFailure(result, error, prefix + "-deadline"); }
+        finally
+        {
+            if (acceptanceHeld && SendInput(1, [new() { Type = 1, Scan = 0x41, Flags = 10 }], Marshal.SizeOf<KeyboardInput>()) != 1)
+                result.CleanupErrors.Add(new("owned-return-acceptance", "key-release-incomplete", "Win32", Marshal.GetLastWin32Error()));
+            if (controlHeld && SendInput(1, [new() { Type = 1, Scan = 0x1d, Flags = 10 }], Marshal.SizeOf<KeyboardInput>()) != 1)
+                result.CleanupErrors.Add(new("owned-return-control", "key-release-incomplete", "Win32", Marshal.GetLastWin32Error()));
+        }
         result.Facts = new
         {
             inputKind = "software-input",
@@ -630,7 +672,7 @@ internal static partial class ContinuousTranslationCheck
             var selection = N.ReadSelection(field);
             Require(progress.ReturnedToSource && progress.DraftChanged && OwnedAcceptanceVisible(overlay)
                 && N.Focused() == (root, field) && monitor.Completed.Count == 1, "owned-edited-not-ready");
-            SendOwnedTab(result.CleanupErrors);
+            SendOwnedAcceptance(result.CleanupErrors);
             await UntilAsync(() => monitor.Completed.Count == 2, cancellation);
             var notice = monitor.Completed[1];
             var permit = notice.Permit!;
@@ -755,14 +797,19 @@ internal static partial class ContinuousTranslationCheck
         throw new CheckFailure("owned-editor-mouse-injection");
     }
 
-    private static void SendOwnedTab(List<CleanupError> errors)
+    private static void SendOwnedAcceptance(List<CleanupError> errors)
     {
-        KeyboardInput[] keys = [new() { Type = 1, Key = 9 }, new() { Type = 1, Key = 9, Flags = 2 }];
-        uint inserted = SendInput(2, keys, Marshal.SizeOf<KeyboardInput>());
-        if (inserted == 2)
+        // One software chord, no retries or private install/ACK timing. Ctrl is
+        // released before F7 so only the original Fn owns its consumed release.
+        KeyboardInput[] keys = [new() { Type = 1, Scan = 0x1d, Flags = 8 }, new() { Type = 1, Scan = 0x41, Flags = 8 },
+            new() { Type = 1, Scan = 0x1d, Flags = 10 }, new() { Type = 1, Scan = 0x41, Flags = 10 }];
+        uint inserted = SendInput(4, keys, Marshal.SizeOf<KeyboardInput>());
+        if (inserted == 4)
             return;
-        if (inserted == 1 && SendInput(1, [keys[1]], Marshal.SizeOf<KeyboardInput>()) != 1)
-            errors.Add(new("owned-key", "key-release-incomplete", "Win32", Marshal.GetLastWin32Error()));
+        if (inserted >= 2 && SendInput(1, [keys[3]], Marshal.SizeOf<KeyboardInput>()) != 1)
+            errors.Add(new("owned-acceptance-key", "key-release-incomplete", "Win32", Marshal.GetLastWin32Error()));
+        if (inserted is 1 or 2 && SendInput(1, [keys[2]], Marshal.SizeOf<KeyboardInput>()) != 1)
+            errors.Add(new("owned-control-key", "key-release-incomplete", "Win32", Marshal.GetLastWin32Error()));
         throw new CheckFailure("owned-key-injection-incomplete");
     }
 

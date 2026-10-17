@@ -38,6 +38,7 @@ def main() -> None:
             "GetParent",
             "GetForegroundWindow",
             "GetFocus",
+            "GetKeyboardLayout",
             "IsWindowUnicode",
             "IsWindowEnabled",
             "IsWindowVisible",

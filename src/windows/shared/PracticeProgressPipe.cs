@@ -14,12 +14,17 @@ internal sealed record PracticeMessage(string Kind, Guid Connection, Guid Run, l
     AutomaticPracticeProgress? AutomaticProgress = null, PracticeInputCompletion? InputCompletion = null,
     OwnedEditorControl? Editing = null, OwnedReturnControl? Returning = null,
     OwnedReturnMouse? MouseReturn = null, OwnedPracticeCompletion? Completion = null,
-    OwnedExitControl? Exit = null, OwnedExitResult? ExitResult = null);
+    OwnedExitControl? Exit = null, OwnedExitResult? ExitResult = null, OwnedPrefixResult? PrefixResult = null);
+
+// This acknowledges dispatch of an original Ctrl. It carries no grant and
+// cannot change the plan/exit lease or either original expiry.
+internal sealed record OwnedPrefixResult(long PrefixSequence, long PlanSequence, long ExitLeaseSequence, bool Processed);
 
 // Body-free authority for one default source Esc. The original observation
 // bounds its lifetime; neither installation nor a result can renew it.
 internal sealed record OwnedExitLease(long Sequence, OwnedCaptureDescriptor Descriptor, SessionViewToken Token,
-    long UserEpoch, long ForegroundEpoch, long ObservedAtMs, long ExpiresAtMs, long InstallWitnessSequence);
+    long UserEpoch, long ForegroundEpoch, long ObservedAtMs, long ExpiresAtMs, long InstallWitnessSequence,
+    uint VirtualKey = 27, ShortcutModifiers Modifiers = ShortcutModifiers.None);
 internal sealed record OwnedExitControl(long Sequence, OwnedExitLease? Lease = null);
 internal sealed record OwnedExitResult(long LeaseSequence, long WitnessSequence, long AcceptedAtMs);
 
@@ -34,7 +39,8 @@ internal enum OwnedReturnKind
     Tab, Mouse, Escape
 }
 
-internal sealed record OwnedReturnKeyPress(uint ScanCode, bool Extended, bool Injected);
+internal sealed record OwnedReturnKeyPress(uint ScanCode, bool Extended, bool Injected,
+    uint VirtualKey = 27, ShortcutModifiers Modifiers = ShortcutModifiers.None);
 
 // One return attempt carries only identities. Its new witness is not a permit.
 internal sealed record OwnedReturnControl(Guid Intent, Guid EditorIntent, OwnedReturnKind Kind,
@@ -93,13 +99,22 @@ internal static class PracticeProgressPipe
                 or "return-fence" or "return-fenced" or "return-resume" or "source-returned"
                 or "return-invalid" or "return-cancel" or "mouse-intent"
                 or "finish" or "finish-saved" or "finish-retry" or "finish-denied" or "completion-clear"
-                or "exit-install" or "exit-installed" or "exit-clear" or "exit-completed"
+                or "exit-install" or "exit-installed" or "exit-clear" or "exit-completed" or "prefix-processed"
                 or "test-tab-dispatched" or "test-exit-dispatched" or "edit-fence" or "edit-fenced" or "edit-left" or "edit-invalid" or "edit-cancel")
             || (message.Kind == "progress" ? message.Progress?.RunId != message.Run : message.Progress is not null))
             throw new InvalidDataException("practice-progress-message");
-        if (message.Acceptance is { Version: not OwnedPracticeAcceptanceProtocol.Version }
+        if (message.Acceptance is { ControlPrefixObserved: true } && message.Kind != "source-ready"
+            || message.Acceptance is { Version: not OwnedPracticeAcceptanceProtocol.Version }
             || (message.Kind == "auto-progress" ? message.AutomaticProgress?.RunId != message.Run : message.AutomaticProgress is not null))
             throw new InvalidDataException("practice-progress-acceptance");
+        if (message.Kind == "prefix-processed"
+            ? message.PrefixResult is not { PrefixSequence: > 0, PlanSequence: >= 0, ExitLeaseSequence: >= 0 } prefix
+                || prefix.PlanSequence == 0 && prefix.ExitLeaseSequence == 0
+                || message.Acceptance is not null || message.Progress is not null || message.AutomaticProgress is not null
+                || message.InputCompletion is not null || message.Editing is not null || message.Returning is not null
+                || message.MouseReturn is not null || message.Completion is not null || message.Exit is not null || message.ExitResult is not null
+            : message.PrefixResult is not null)
+            throw new InvalidDataException("practice-prefix-result");
         if (message.Kind is "test-tab-dispatched" or "test-exit-dispatched"
             ? message.InputCompletion is not { Sequence: > 0 } || message.Acceptance is not null
             : message.InputCompletion is not null)
@@ -117,6 +132,7 @@ internal static class PracticeProgressPipe
                 throw new InvalidDataException("practice-exit-control");
             if (message.Exit?.Lease is { } exit
                 && (exit.Sequence != message.Exit.Sequence || exit.Descriptor is not { IsValid: true }
+                    || !OwnedPracticeAcceptanceProtocol.ValidKey(exit.VirtualKey, exit.Modifiers) || exit.VirtualKey == 9
                     || exit.Token is not { } token || token.CommandGeneration == Guid.Empty || token.Revision < 0
                     || exit.UserEpoch < 0 || exit.ForegroundEpoch < 0 || exit.InstallWitnessSequence < 0
                     || exit.ObservedAtMs <= 0 || exit.ExpiresAtMs < exit.ObservedAtMs
@@ -158,9 +174,11 @@ internal static class PracticeProgressPipe
                 || token.CommandGeneration == Guid.Empty || token.Revision < 0 || token.Target.Lifetime == Guid.Empty
                 || !WindowsTarget.TryDecode(token.Target, out _)
                 || returned.ExpiresAtMs <= 0 || returned.InputSequence <= 0
-                || (returned.Kind == OwnedReturnKind.Escape
-                    ? returned.KeyPress is not { ScanCode: > 0 and <= 255 }
-                    : returned.KeyPress is not null)
+                || (returned.Kind == OwnedReturnKind.Escape ? returned.KeyPress is null : false)
+                || (returned.KeyPress is { } press && (returned.Kind == OwnedReturnKind.Mouse
+                    || press.ScanCode is 0 or > 255 || !OwnedPracticeAcceptanceProtocol.ValidKey(press.VirtualKey, press.Modifiers)
+                    || returned.Kind == OwnedReturnKind.Tab && press.VirtualKey == 27
+                    || returned.Kind == OwnedReturnKind.Escape && press.VirtualKey == 9))
                 || (message.Kind is "return-fence" or "return-resume" or "return-cancel"
                     ? returned.SourceEventSequence != 0 : returned.SourceEventSequence <= 0)
                 || (message.Kind == "source-returned" ? returned.Descriptor is not { IsValid: true } : returned.Descriptor is not null)

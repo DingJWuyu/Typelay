@@ -28,6 +28,149 @@ internal sealed partial class KeyboardHook
     private OwnedInstalled? _ownedInstalled;
     private sealed record OwnedExitInstallation(OwnedExitLease Lease, Guid Run, Guid Connection);
     private OwnedExitInstallation? _ownedExit;
+    // One original Ctrl may provisionally keep an already installed ticket.
+    // Only the source GUI proves its real dispatch. No acknowledgement creates
+    // a new ticket, changes either epoch, or extends either original deadline.
+    private sealed class OwnedPrefix(long sequence, uint controlKey, uint scan, bool extended, bool injected, OwnedInstalled? plan,
+        OwnedExitInstallation? exit, InputLease basis, long sourceEpoch, long contentEpoch, long windowEpoch, long expiresAt)
+    {
+        public long Sequence { get; } = sequence;
+        public uint ControlKey { get; } = controlKey;
+        public bool Injected { get; } = injected;
+        public uint Scan { get; } = scan;
+        public bool Extended { get; } = extended;
+        public OwnedInstalled? Plan { get; } = plan;
+        public OwnedExitInstallation? Exit { get; } = exit;
+        public InputLease Basis { get; } = basis;
+        public long SourceEpoch { get; } = sourceEpoch;
+        public long ContentEpoch { get; } = contentEpoch;
+        public long WindowEpoch { get; } = windowEpoch;
+        public long ExpiresAt { get; } = expiresAt;
+        public long ActionSequence;
+        public uint ActionKey, ActionScan;
+        public bool ActionExtended;
+        public int Settled, Invalid, Processed, ControlReleased, ActionReleased;
+    }
+    private OwnedPrefix? _ownedPrefix;
+    private static bool ControlKey(uint key) => key is 0x11 or 0xa2 or 0xa3;
+    private bool OtherKeyHeld(uint key)
+    {
+        for (uint index = 0; index < _keys.Length; index++)
+            if (index != key && index is not (1 or 2 or 4 or 5 or 6) && _keys[index])
+                return true;
+        return false;
+    }
+    private void RejectOwnedPrefix(OwnedPrefix prefix)
+    {
+        Interlocked.Exchange(ref prefix.Invalid, 1);
+        if (Interlocked.CompareExchange(ref prefix.Settled, 2, 0) == 0)
+        {
+            // The deferred original Ctrl counts once on failure. A later real
+            // key retains its own independent epoch change; equal text cannot
+            // erase either event.
+            Interlocked.Increment(ref _userEpoch);
+            Interlocked.Increment(ref _sourceUserEpoch);
+            _ownedGate.Revoke();
+        }
+    }
+    private void RevokeOwnedPrefix()
+    {
+        if (Volatile.Read(ref _ownedPrefix) is { } prefix)
+            RejectOwnedPrefix(prefix);
+    }
+    private bool OwnedPrefixCurrent(OwnedPrefix prefix, long now, bool actionEdge = false)
+    {
+        bool current = Volatile.Read(ref prefix.Invalid) == 0 && Volatile.Read(ref prefix.Settled) == 0
+            && prefix.Basis.CommandGeneration == CommandGeneration && prefix.Basis.UserEpoch == UserEpoch
+            && prefix.SourceEpoch == SourceUserEpoch && prefix.Basis.ForegroundEpoch == ForegroundEpoch
+            && prefix.WindowEpoch == WindowEpoch
+            // Only the Hook thread compares its raw counter at the Fn edge.
+            // The UI may poll between incrementing that counter and publishing
+            // ActionSequence; that partial callback is not a new input event.
+            && (!actionEdge || ContentEpoch == prefix.ContentEpoch + 1)
+            && _sessionEnabled && ShortcutsReady && ConnectionId == prefix.Basis.PracticeConnectionId
+            && Volatile.Read(ref _ownedChannel) is { } channel && !channel.Writer.Poisoned && OwnedFocus(channel.Descriptor)
+            && now >= prefix.Basis.Source.ObservedAtMs
+            && (now <= prefix.ExpiresAt || Interlocked.Read(ref prefix.ActionSequence) > 0);
+        if (!current)
+            RejectOwnedPrefix(prefix);
+        return current;
+    }
+    internal bool PreserveOwnedPrefix(InputLease observation, AcceptancePermit? permit)
+    {
+        if (Volatile.Read(ref _ownedPrefix) is not { } prefix || Volatile.Read(ref prefix.Settled) != 0)
+            return false;
+        if (Interlocked.Read(ref prefix.ActionSequence) > 0)
+        {
+            // The original Fn may already have executed while its receipt is
+            // in transit. A capture of that write must not turn the earlier
+            // Ctrl into a failed input. Freeze only this issued candidate;
+            // never use the new body/epoch to admit or install another one.
+            bool identity = observation.PracticeRunId == prefix.Basis.PracticeRunId
+                && observation.PracticeConnectionId == prefix.Basis.PracticeConnectionId
+                && observation.Source.Target == prefix.Basis.Source.Target
+                && observation.Source.FocusEpoch == prefix.Basis.Source.FocusEpoch
+                && observation.CommandGeneration == prefix.Basis.CommandGeneration
+                && observation.UserEpoch == prefix.Basis.UserEpoch
+                && observation.ForegroundEpoch == prefix.Basis.ForegroundEpoch;
+            if (identity && OwnedPrefixCurrent(prefix, WindowsInterruptClock.NowMs))
+                return true;
+            RejectOwnedPrefix(prefix);
+            return false;
+        }
+        bool same = prefix.Basis with
+        {
+            Source = prefix.Basis.Source with
+            {
+                ObservedAtMs = observation.Source.ObservedAtMs,
+                Bounds = observation.Source.Bounds
+            }
+        } == observation;
+        if (same && prefix.Plan is { } original && permit is not null)
+            same = original.Permit.Plan with
+            {
+                Id = permit.Plan.Id,
+                Expected = original.Permit.Plan.Expected with
+                {
+                    ObservedAtMs = permit.Plan.Expected.ObservedAtMs,
+                    Bounds = permit.Plan.Expected.Bounds
+                }
+            } == permit.Plan;
+        if (!same || !OwnedPrefixCurrent(prefix, WindowsInterruptClock.NowMs))
+        {
+            RejectOwnedPrefix(prefix);
+            return false;
+        }
+        return true;
+    }
+    internal bool OwnedPrefixPending
+    {
+        get
+        {
+            var prefix = Volatile.Read(ref _ownedPrefix);
+            return prefix is not null && OwnedPrefixCurrent(prefix, WindowsInterruptClock.NowMs);
+        }
+    }
+    internal void ObserveOwnedPrefixResult(OwnedPrefixResult result)
+    {
+        var prefix = Volatile.Read(ref _ownedPrefix);
+        if (prefix is null || prefix.Sequence != result.PrefixSequence
+            || (prefix.Plan?.Sequence ?? 0) != result.PlanSequence || (prefix.Exit?.Lease.Sequence ?? 0) != result.ExitLeaseSequence)
+            return; // Retired results never attach themselves to another press.
+        if (!result.Processed)
+            RejectOwnedPrefix(prefix);
+        else
+            Interlocked.Exchange(ref prefix.Processed, 1); // Dispatch acknowledgement, never authorization.
+    }
+    internal void CompleteOwnedPrefixAction(long witnessSequence, bool accepted)
+    {
+        if (Volatile.Read(ref _ownedPrefix) is not { } prefix || Interlocked.Read(ref prefix.ActionSequence) != witnessSequence)
+            return;
+        if (accepted && Volatile.Read(ref prefix.Processed) != 0 && Volatile.Read(ref prefix.Invalid) == 0)
+            Interlocked.CompareExchange(ref prefix.Settled, 1, 0);
+        else
+            RejectOwnedPrefix(prefix);
+    }
     private long _ownedAttemptSequence;
     private Func<TargetId, bool>? _ownedEditorFocus;
     private Func<TargetId, bool>? _ownedReturnFocus;
@@ -45,7 +188,7 @@ internal sealed partial class KeyboardHook
         if (previous is { Kind: OwnedReturnKind.Escape }
             && (next is null || next.Kind != OwnedReturnKind.Escape || next.Sequence != previous.Sequence
                 || next.EditorIntent != previous.EditorIntent || next.Released)
-            && _escapeKeyDown == 27 && !_escapeConsumed)
+            && _escapeKeyDown == (previous.KeyPress?.VirtualKey ?? 27) && !_escapeConsumed)
             _escapeKeyDown = null;
         // Only this editor press's unconsumed generic copy is retired here.
         // A consumed global press keeps its own matching release obligation.
@@ -66,18 +209,18 @@ internal sealed partial class KeyboardHook
     private void ObserveReturnKey(Native.KeyData data, bool down, bool repeated, bool injected, long now)
     {
         var current = Volatile.Read(ref _returnInput);
-        if (current is { Kind: OwnedReturnKind.Escape, Released: false, KeyPress: { } press }
-            && data.Key == 27 && press.ScanCode == data.Scan && press.Extended == ((data.Flags & 1) != 0)
-            && press.Injected == injected && (!down || repeated))
+        if (current is { Released: false, KeyPress: { } press }
+            && data.Key == press.VirtualKey && press.ScanCode == data.Scan
+            && press.Extended == ((data.Flags & 1) != 0) && press.Injected == injected && (!down || repeated))
         {
             if (!down)
                 ReplaceReturnInput(current with
                 {
                     Released = true
                 });
-            return; // The same held press never creates a new intent or deadline.
+            return; // Repeat/release preserve the original identity and deadline.
         }
-        if (!down && data.Key == 9 && current is { Kind: OwnedReturnKind.Tab, Released: false }
+        if (!down && data.Key == 9 && current is { Kind: OwnedReturnKind.Tab, Released: false, KeyPress: null }
             && current.Injected == injected)
         {
             ReplaceReturnInput(current with
@@ -87,13 +230,21 @@ internal sealed partial class KeyboardHook
             return;
         }
         var keys = Volatile.Read(ref _sessionKeys);
-        bool exit = data.Key == 27 && _sessionEnabled && keys.Supported && keys.Exit == 27
-            && (!injected || _allowInjectedInput) && data.Scan is > 0 and <= 255;
-        ReplaceReturnInput(down && (data.Key == 9 || exit) && !repeated && !Modified
+        bool accept = data.Key == keys.Accept && CurrentModifiers == keys.AcceptModifiers;
+        bool exit = data.Key == keys.Exit && CurrentModifiers == keys.ExitModifiers;
+        bool admitted = _sessionEnabled && keys.Supported && (accept || exit)
+            && (!injected || _allowInjectedInput)
+            && (data.Scan is > 0 and <= 255 || accept && data.Key == 9 && CurrentModifiers == ShortcutModifiers.None);
+        // A modifier release does not replace the already admitted function-key
+        // intent. It still goes unchanged to the application that saw its down.
+        if (!down && ControlKey(data.Key) && current is { KeyPress.Modifiers: ShortcutModifiers.Control }
+            && current.Injected == injected)
+            return;
+        ReplaceReturnInput(down && admitted && !repeated
             && Volatile.Read(ref _editorForeground) is { Invalid: 0 } editor
             ? new(editor.Intent, exit ? OwnedReturnKind.Escape : OwnedReturnKind.Tab,
                 EditorInputSequence, now, 0, 0, injected, false,
-                exit ? new(data.Scan, (data.Flags & 1) != 0, injected) : null) : null);
+                data.Scan > 0 ? new(data.Scan, (data.Flags & 1) != 0, injected, data.Key, CurrentModifiers) : null) : null);
     }
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(Native.Point point);
 
@@ -270,6 +421,7 @@ internal sealed partial class KeyboardHook
     }
     internal void RevokeOwnedPlan()
     {
+        RevokeOwnedPrefix();
         Interlocked.Exchange(ref _ownedInstalled, null);
         _ownedGate.Revoke();
     }
@@ -346,7 +498,11 @@ internal sealed partial class KeyboardHook
     }
     internal void InstallOwnedExit(OwnedExitLease lease, Guid run, Guid connection) =>
         Interlocked.Exchange(ref _ownedExit, new(lease, run, connection));
-    internal void RevokeOwnedExit() => Interlocked.Exchange(ref _ownedExit, null);
+    internal void RevokeOwnedExit()
+    {
+        RevokeOwnedPrefix();
+        Interlocked.Exchange(ref _ownedExit, null);
+    }
 
     // This is only the LL witness basis. The source GUI still independently
     // matches the installed sequence, original MSG and live native IME gate.
@@ -356,7 +512,7 @@ internal sealed partial class KeyboardHook
         var channel = Volatile.Read(ref _ownedChannel);
         var observation = Volatile.Read(ref _lease)?.Observation;
         var keys = Volatile.Read(ref _sessionKeys);
-        if (!_sessionEnabled || !keys.Supported || keys.Exit != 27 || installed is null || observation is null
+        if (!_sessionEnabled || !keys.Supported || installed is null || observation is null
             || channel is null || channel.Writer.Poisoned || channel.Connection != installed.Connection
             || observation.PracticeRunId != installed.Run || observation.PracticeConnectionId != installed.Connection
             || !observation.EscapeAllowed || observation.Source.Ime != ImeState.Clear
@@ -365,7 +521,8 @@ internal sealed partial class KeyboardHook
             || now - observation.Source.ObservedAtMs > Limits.ObservationMaxAgeMs)
             return null;
         var lease = installed.Lease;
-        return lease.Token.Target == observation.Source.Target && lease.Token.CommandGeneration == observation.CommandGeneration
+        return lease.VirtualKey == keys.Exit && lease.Modifiers == keys.ExitModifiers
+            && lease.Token.Target == observation.Source.Target && lease.Token.CommandGeneration == observation.CommandGeneration
             && lease.Token.Revision == observation.SessionRevision && lease.UserEpoch == observation.UserEpoch
             && lease.ForegroundEpoch == observation.ForegroundEpoch && lease.Descriptor == channel.Descriptor
             && observation.Source.FocusEpoch == lease.Descriptor.NativeFocusRevision && OwnedFocus(lease.Descriptor)
@@ -380,22 +537,48 @@ internal sealed partial class KeyboardHook
     }
     private bool ObserveOwnedKey(Native.KeyData data, bool down, bool repeated, bool injected, long now, uint acceptanceKey)
     {
+        var prefix = Volatile.Read(ref _ownedPrefix);
+        bool extended = (data.Flags & 1) != 0;
+        if (prefix is not null && !down && injected == prefix.Injected)
+        {
+            if (data.Key == prefix.ControlKey && data.Scan == prefix.Scan && extended == prefix.Extended)
+            {
+                Interlocked.Exchange(ref prefix.ControlReleased, 1);
+                if (Interlocked.Read(ref prefix.ActionSequence) == 0)
+                    RejectOwnedPrefix(prefix);
+            }
+            if (data.Key == prefix.ActionKey && data.Scan == prefix.ActionScan && extended == prefix.ActionExtended)
+                Interlocked.Exchange(ref prefix.ActionReleased, 1);
+            if (Volatile.Read(ref prefix.ControlReleased) != 0
+                && (Interlocked.Read(ref prefix.ActionSequence) == 0 || Volatile.Read(ref prefix.ActionReleased) != 0))
+            {
+                // Result delivery can trail both releases. Keep an unresolved
+                // candidate until its terminal result; it never admits another Fn.
+                if (Volatile.Read(ref prefix.Settled) != 0)
+                    Interlocked.CompareExchange(ref _ownedPrefix, null, prefix);
+            }
+        }
+        if (prefix is not null && Volatile.Read(ref prefix.Settled) != 0
+            && Volatile.Read(ref prefix.ControlReleased) != 0
+            && (Interlocked.Read(ref prefix.ActionSequence) == 0 || Volatile.Read(ref prefix.ActionReleased) != 0))
+        {
+            Interlocked.CompareExchange(ref _ownedPrefix, null, prefix);
+            prefix = Volatile.Read(ref _ownedPrefix);
+        }
+        var keys = Volatile.Read(ref _sessionKeys);
         var channel = Volatile.Read(ref _ownedChannel);
         if (channel is null || Native.GetForegroundWindow() != (nint)channel.Descriptor.RootHwnd)
         {
-            // Keep physical pairing even when the release goes to another
-            // window. Its decision is never used to consume a global key.
-            _ownedGate.ProcessAcceptanceKey(new(data.Key, down, repeated, data.Key == acceptanceKey),
-                new(null, false, ImeState.Unknown, Modified, injected, false, -1, -1, now));
+            RevokeOwnedPrefix();
+            _ownedGate.ProcessAcceptanceKey(new(data.Key, down, repeated, false),
+                new(null, false, ImeState.Unknown, Modified, injected, false, -1, -1, now, CurrentModifiers));
             return false;
         }
         if (!channel.Writer.TryEnter())
         {
-            // Revocation stops witness publication, not physical key pairing.
-            // In particular the first return Tab's release may reach the source
-            // while the replacement reader is still being installed.
-            _ownedGate.ProcessAcceptanceKey(new(data.Key, down, repeated, data.Key == acceptanceKey),
-                new(null, false, ImeState.Unknown, Modified, injected, false, -1, -1, now));
+            RevokeOwnedPrefix();
+            _ownedGate.ProcessAcceptanceKey(new(data.Key, down, repeated, false),
+                new(null, false, ImeState.Unknown, Modified, injected, false, -1, -1, now, CurrentModifiers));
             return true;
         }
         try
@@ -407,32 +590,79 @@ internal sealed partial class KeyboardHook
                 && lease.CommandGeneration == CommandGeneration && lease.UserEpoch == UserEpoch
                 && lease.ForegroundEpoch == ForegroundEpoch && now >= lease.Source.ObservedAtMs
                 && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs && !channel.Writer.Poisoned;
+            var exit = CurrentOwnedExit(now);
+            long witnessSequence = checked(channel.Writer.Sequence + 1);
+            bool firstControl = down && !repeated && ControlKey(data.Key) && !OtherKeyHeld(data.Key)
+                && CurrentModifiers == ShortcutModifiers.Control
+                && (!injected || _allowInjectedInput) && data.Scan is > 0 and <= 255;
+            bool prefixDown = false;
+            if (firstControl && prefix is null && exact)
+            {
+                var prefixPlan = keys.AcceptModifiers == ShortcutModifiers.Control && fresh
+                    && installed is not null && now <= installed.Permit.ExpiresAtMs ? installed : null;
+                var prefixExit = keys.ExitModifiers == ShortcutModifiers.Control && exit is not null
+                    ? Volatile.Read(ref _ownedExit) : null;
+                var basis = prefixPlan?.Lease ?? Volatile.Read(ref _lease)?.Observation;
+                if ((prefixPlan is not null || prefixExit is not null) && basis is not null)
+                {
+                    long expires = Math.Max(prefixPlan?.Permit.ExpiresAtMs ?? 0, prefixExit?.Lease.ExpiresAtMs ?? 0);
+                    prefix = new(witnessSequence, data.Key, data.Scan, extended, injected, prefixPlan, prefixExit,
+                        basis, SourceUserEpoch, ContentEpoch, WindowEpoch, expires);
+                    Interlocked.Exchange(ref _ownedPrefix, prefix);
+                    prefixDown = true;
+                }
+            }
+            bool chordAction = down && !repeated && prefix is not null && !prefixDown
+                && Interlocked.Read(ref prefix.ActionSequence) == 0 && Volatile.Read(ref prefix.ControlReleased) == 0
+                && CurrentModifiers == ShortcutModifiers.Control && injected == prefix.Injected
+                && (data.Key == keys.Accept && keys.AcceptModifiers == ShortcutModifiers.Control
+                    && prefix.Plan == installed && installed is not null && now <= installed.Permit.ExpiresAtMs
+                    || data.Key == keys.Exit && keys.ExitModifiers == ShortcutModifiers.Control
+                    && prefix.Exit?.Lease == exit && exit is not null)
+                && OwnedPrefixCurrent(prefix, now, actionEdge: true);
+            if (chordAction)
+            {
+                prefix!.ActionKey = data.Key;
+                prefix.ActionScan = data.Scan;
+                prefix.ActionExtended = extended;
+                Interlocked.Exchange(ref prefix.ActionSequence, witnessSequence);
+            }
+            bool samePrefixPress = prefix is not null && injected == prefix.Injected
+                && (data.Key == prefix.ControlKey && data.Scan == prefix.Scan && extended == prefix.Extended
+                    || data.Key == prefix.ActionKey && data.Scan == prefix.ActionScan && extended == prefix.ActionExtended);
+            bool samePrefixRelease = samePrefixPress && !down;
+            bool samePrefixRepeat = samePrefixPress && down && repeated;
+            if (prefix is not null && !prefixDown && !chordAction && !samePrefixRelease && !samePrefixRepeat)
+                RejectOwnedPrefix(prefix);
+            bool acceptBinding = data.Key == acceptanceKey && CurrentModifiers == keys.AcceptModifiers
+                && (keys.AcceptModifiers == ShortcutModifiers.None ? prefix is null : chordAction);
             if (installed is not null && (down && data.Key == acceptanceKey || injected && !_allowInjectedInput))
                 Interlocked.Exchange(ref _ownedAttemptSequence, installed.Sequence);
-            var decision = _ownedGate.ProcessAcceptanceKey(new(data.Key, down, repeated, data.Key == acceptanceKey),
+            // Eligible remains a possible write witness. A fast Fn may precede
+            // the GUI's Ctrl acknowledgement; only that same GUI FIFO can claim.
+            var decision = _ownedGate.ProcessAcceptanceKey(new(data.Key, down, repeated, acceptBinding, keys.AcceptModifiers),
                 new(lease?.Source.Target, exact, lease?.Source.Ime ?? ImeState.Unknown, Modified, injected, fresh,
-                    lease?.Source.InputEpoch ?? -1, lease?.Source.FocusEpoch ?? -1, now));
-            if (!channel.Writer.Publish(new(0, installed?.Sequence ?? 0, data.Time, data.Key, data.Scan,
-                    data.Flags, down, repeated, Modified, injected, decision.Permit is not null,
+                    lease?.Source.InputEpoch ?? -1, lease?.Source.FocusEpoch ?? -1, now, CurrentModifiers));
+            bool exitBinding = down && !repeated && data.Key == keys.Exit && CurrentModifiers == keys.ExitModifiers
+                && (!injected || _allowInjectedInput) && (keys.ExitModifiers == ShortcutModifiers.None ? prefix is null : chordAction);
+            long prefixSequence = prefixDown || chordAction || samePrefixRelease || samePrefixRepeat ? prefix!.Sequence : 0;
+            if (!channel.Writer.Publish(new(0, prefixDown ? prefix!.Plan?.Sequence ?? 0 : installed?.Sequence ?? 0,
+                    data.Time, data.Key, data.Scan, data.Flags, down, repeated, Modified, injected, decision.Permit is not null,
                     now, UserEpoch, ForegroundEpoch, WindowEpoch, channel.Descriptor.NativeFocusRevision,
-                    down && data.Key == 27 && !repeated && !Modified && (!injected || _allowInjectedInput)
-                        ? CurrentOwnedExit(now)?.Sequence ?? 0 : 0)))
+                    prefixDown ? prefix!.Exit?.Lease.Sequence ?? 0 : exitBinding ? exit?.Sequence ?? 0 : 0,
+                    prefixSequence, CurrentModifiers)))
                 RevokeOwnedPlan();
-            if (down && data.Key != acceptanceKey)
+            bool harmlessPrefix = prefixDown || chordAction || samePrefixRelease || samePrefixRepeat;
+            if (down && !harmlessPrefix && data.Key != acceptanceKey)
             {
-                // Default unmodified Esc has the ordinary exit key's epoch
-                // semantics. Its FIFO witness still grants nothing; the source
-                // GUI alone can claim the independent, original exit lease.
-                if (data.Key != 27 || Volatile.Read(ref _sessionKeys).Exit != 27 || Modified)
+                if (!exitBinding)
                 {
                     Interlocked.Increment(ref _userEpoch);
                     Interlocked.Increment(ref _sourceUserEpoch);
                 }
                 RevokeOwnedPlan();
             }
-            // The GUI must receive the original key before it decides. A positive
-            // low-level witness never consumes, reposts or replaces a Windows MSG.
-            return true;
+            return true; // Every original MSG goes to its application unchanged.
         }
         finally { channel.Writer.Exit(); }
     }
