@@ -668,21 +668,18 @@ internal static partial class ContinuousTranslationCheck
         SettingsWindow? window = null;
         OverlayWindow? overlay = null;
         SessionController? controller = null;
-        bool pausedUnchanged = false, cancelledUnchanged = false, modePersisted = false, previewUnchanged = false;
-        bool replaced = false, closePreservedLaterSettings = false, saveFailureVisible = false;
+        bool pausedUnchanged = false, modePersisted = false, previewUnchanged = false;
+        bool replaced = false, closePreservedLaterSettings = false;
         bool previewProgress = false, completedProgress = false, resetProgress = false;
         string? feedbackCode = null;
         try
         {
             await UntilAsync(() => { Require(model.Ready, "model-unavailable"); return !model.Busy; }, cancellation);
             string path = Path.Combine(directory, "practice", "settings.json");
-            var settings = CreateSettings(path, WorkMode.Automatic);
+            var settings = CreateSettings(path, WorkMode.OnDemand);
             settings.Update(settings.Value with
             {
-                OnboardingComplete = false,
-                // This automatic acceptance key uses the existing on-demand
-                // fallback, keeping cancellation and failed-save coverage.
-                AcceptShortcut = "F8"
+                OnboardingComplete = false
             });
             var view = OnDemandPracticePresentation.Create(settings.Value);
             var expected = await model.TranslateTextAsync(view.SampleText, settings.Value.Direction).WaitAsync(cancellation);
@@ -707,35 +704,14 @@ internal static partial class ContinuousTranslationCheck
                 Enabled = false
             });
             window.StartPractice();
-            pausedUnchanged = child is null && !settings.Value.Enabled && settings.Value.Mode == WorkMode.Automatic;
+            pausedUnchanged = child is null && !settings.Value.Enabled && settings.Value.Mode == WorkMode.OnDemand;
             Require(pausedUnchanged, "practice-start-enabled-paused-application");
             settings.Update(settings.Value with
             {
                 Enabled = true
             });
             window.UpdateLayout();
-            result.Stage = "practice-cancel-mode-change";
-            Choose(false);
-            cancelledUnchanged = child is null && WindowsRuntime.CreateSettings(path).Value.Mode == WorkMode.Automatic
-                && !settings.Value.OnboardingComplete;
-            Require(cancelledUnchanged, "practice-cancel-mutated-settings");
-            result.Stage = "practice-hidden-settings-save-failure";
-            Require(window.RequestClose(), "practice-settings-hide");
-            using (var lockedSettings = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
-            {
-                Choose(true);
-                window.UpdateLayout();
-                saveFailureVisible = window.IsVisible && child is null && settings.Value.Mode == WorkMode.Automatic
-                    && Descendants(window).OfType<TextBlock>().Any(text =>
-                        text.IsVisible && text.Text == "设置未保存\n请检查当前用户目录与组织策略。");
-                Require(saveFailureVisible, "practice-settings-failure-not-visible");
-            }
             result.Stage = "practice-current-mode-entry";
-            settings.Update(settings.Value with
-            {
-                Mode = WorkMode.OnDemand,
-                AcceptShortcut = "Tab"
-            });
             window.ShowPage();
             window.UpdateLayout();
             var start = Descendants(window).OfType<Button>().Single(button => Equals(button.Content, "开始练习"));
@@ -815,45 +791,6 @@ internal static partial class ContinuousTranslationCheck
             Require(closePreservedLaterSettings && child.Process.ExitCode == 0, "practice-close-overwrote-settings");
             result.Outcome = "verified";
             result.Stage = "complete";
-
-            void Choose(bool confirm)
-            {
-                var presentation = OnDemandPracticePresentation.Create(settings.Value);
-                var action = Descendants(window).OfType<Button>().Single(button => Equals(button.Content, presentation.StartLabel));
-                Exception? choiceFailure = null;
-                var queued = window.Dispatcher.BeginInvoke(new Action(() =>
-                {
-                    Window? dialog = null;
-                    try
-                    {
-                        dialog = Application.Current.Windows.Cast<Window>().Single(item => item.IsVisible && item.Title == presentation.Title);
-                        dialog.UpdateLayout();
-                        var cancel = Descendants(dialog).OfType<Button>().Single(button => Equals(button.Content, presentation.CancelLabel));
-                        Require(cancel.IsDefault && cancel.IsCancel, "practice-default-not-cancel");
-                        var choice = confirm ? Descendants(dialog).OfType<Button>().Single(button => Equals(button.Content, presentation.StartLabel)) : cancel;
-                        choice.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                    }
-                    catch (Exception error) when (error is not OutOfMemoryException)
-                    {
-                        choiceFailure = error;
-                        if (dialog is not null)
-                            dialog.DialogResult = false;
-                    }
-                }));
-                using var registration = cancellation.Register(() => window.Dispatcher.BeginInvoke(new Action(() =>
-                {
-                    foreach (var dialog in Application.Current.Windows.Cast<Window>().Where(item => item.Title == presentation.Title).ToArray())
-                        dialog.Close();
-                })));
-                try
-                {
-                    action.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                }
-                finally { queued.Abort(); }
-                cancellation.ThrowIfCancellationRequested();
-                if (choiceFailure is not null)
-                    throw choiceFailure;
-            }
         }
         catch (Exception error) when (error is not OutOfMemoryException) { RecordFailure(result, error); }
         finally
@@ -868,8 +805,6 @@ internal static partial class ContinuousTranslationCheck
             {
                 feedbackCode,
                 pausedUnchanged,
-                cancelledUnchanged,
-                saveFailureVisible,
                 modePersisted,
                 previewUnchanged,
                 replaced,

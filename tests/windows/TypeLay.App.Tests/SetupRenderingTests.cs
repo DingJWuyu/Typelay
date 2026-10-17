@@ -237,10 +237,10 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
     });
 
     [Theory]
-    [InlineData(WorkMode.OnDemand, "Tab", false)]
-    [InlineData(WorkMode.Automatic, "F8", true)]
-    public Task ReadyPreparationPreservesOnDemandModeAndConfirmsAutomaticFallback(
-        WorkMode mode, string acceptKey, bool confirmModeChange) => desktop.RunAsync(async () =>
+    [InlineData(WorkMode.OnDemand, "Tab")]
+    [InlineData(WorkMode.Automatic, "F8")]
+    public Task ReadyPreparationPreservesTheSelectedModeAndShortcuts(
+        WorkMode mode, string acceptKey) => desktop.RunAsync(async () =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-ready-ui-" + Guid.NewGuid().ToString("N"));
         SettingsWindow? window = null;
@@ -286,8 +286,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
                 Assert.DoesNotContain(Descendants(window).OfType<TextBlock>(), text => text.Text == "已连接");
             }
             Assert.Equal(acceptKey, settings.Value.AcceptShortcut);
-            var practice = OnDemandPracticePresentation.Create(settings.Value);
-            bool sawConfirmation = false, confirmed = false;
+            bool sawConfirmation = false;
             Exception? confirmationFailure = null;
             // Close an unexpected mode-switch modal so this regression fails
             // at the entry behavior rather than hanging in its nested dispatcher.
@@ -298,19 +297,6 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
                 {
                     dialogs = window.OwnedWindows.Cast<Window>().Where(item => item.IsVisible).ToArray();
                     sawConfirmation = dialogs.Length != 0;
-                    if (!confirmModeChange)
-                        return;
-                    var dialog = Assert.Single(dialogs);
-                    Assert.Equal(practice.Title, dialog.Title);
-                    dialog.UpdateLayout();
-                    Assert.Equal(0, launches);
-                    Assert.Equal(mode, settings.Value.Mode);
-                    Assert.Contains(Descendants(dialog).OfType<TextBlock>(), text => text.Text == practice.ConfirmationText);
-                    var cancel = Assert.Single(Buttons(dialog), button => button.IsDefault);
-                    Assert.Equal(practice.CancelLabel, cancel.Content);
-                    Assert.True(cancel.IsCancel);
-                    Click(dialog, practice.StartLabel);
-                    confirmed = true;
                 }
                 catch (Exception error) { confirmationFailure = error; }
                 finally
@@ -326,12 +312,11 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             finally { confirmation.Abort(); }
             if (confirmationFailure is not null)
                 ExceptionDispatchInfo.Capture(confirmationFailure).Throw();
-            Assert.Equal(confirmModeChange, sawConfirmation);
-            Assert.Equal(confirmModeChange, confirmed);
+            Assert.False(sawConfirmation);
             Assert.Equal(1, launches);
-            Assert.Equal(WorkMode.OnDemand, settings.Value.Mode);
+            Assert.Equal(mode, settings.Value.Mode);
             var persisted = new SettingsStore(Path.Combine(directory, "settings.json")).Value;
-            Assert.Equal(WorkMode.OnDemand, persisted.Mode);
+            Assert.Equal(mode, persisted.Mode);
             Assert.Equal(acceptKey, persisted.AcceptShortcut);
             Assert.False(settings.Value.OnboardingComplete);
             window.ShowPage("translation");

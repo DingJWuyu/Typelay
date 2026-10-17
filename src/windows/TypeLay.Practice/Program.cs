@@ -94,7 +94,7 @@ internal static partial class Program
     private static readonly Native.HookProc InputObservation = ObserveDispatchedInput;
     private static PrefixAttempt? _prefixDispatch, _prefixProof;
     private static OwnedPrefixResult? _prefixTicket;
-    private static bool _prefixControlDispatched;
+    private static bool _prefixControlObserved;
     private sealed record PrefixAttempt(OwnedKeyWitness Witness, OwnedAcceptancePlan? Plan, OwnedExitLease? ExitLease,
         OwnedCaptureDescriptor? Descriptor, long ExpiresAtMs, long InputRevision, OwnedInputContext Context, bool Qualified);
     private static readonly long ProcessStartUtcTicks = Process.GetCurrentProcess().StartTime.ToUniversalTime().Ticks;
@@ -229,16 +229,23 @@ internal static partial class Program
                 }
                 bool consumed = ProcessInput(ref message, inputQueue);
                 var prefixDispatch = _prefixDispatch;
-                if (!consumed && !Native.IsDialogMessageW(_window, ref message))
+                bool processed = false;
+                if (!consumed)
                 {
-                    Native.TranslateMessage(ref message);
-                    Native.DispatchMessageW(ref message);
+                    if (_prefixDispatch is not null || _prefixProof is not null)
+                        ObserveOrdinaryInput(message.Window, message.Id, message.WParam, message.LParam, sent: false);
+                    if (!Native.IsDialogMessageW(_window, ref message))
+                    {
+                        Native.TranslateMessage(ref message);
+                        Native.DispatchMessageW(ref message);
+                    }
+                    // IsDialogMessage either processed the original MSG, or
+                    // DispatchMessage returned after its window procedure.
+                    // A window procedure's LRESULT is not a success boolean.
+                    processed = true;
                 }
-                // IsDialogMessage may itself dispatch the original key. The
-                // local observer, not which API returned, proves that exact
-                // Ctrl reached its ordinary source procedure exactly once.
                 if (prefixDispatch is not null)
-                    CompletePrefixDispatch(prefixDispatch, !consumed);
+                    CompletePrefixDispatch(prefixDispatch, processed);
                 // Only the queue fixture opts in. Ordinary production and real
                 // model sessions emit nothing; no input authority is changed.
                 // The original MSG has completed its decision and, if passed,
@@ -1165,45 +1172,10 @@ internal static partial class Program
     {
         try
         {
-            if (code >= 0 && _inputObservation != 0 && !_retired && _edit is { } edit && _owned is not null)
+            if (code >= 0)
             {
                 var message = Marshal.PtrToStructure<Native.CallMessage>(lParam);
-                bool source = message.Window == edit.Handle, root = message.Window == _window;
-                bool input = message.Id is >= 0x0100 and <= 0x0109 or >= 0x0200 and <= 0x020e
-                    or >= 0x00a0 and <= 0x00ad or 0x00ff;
-                bool imeOrLanguage = message.Id is 0x0050 or 0x0051 or >= 0x010d and <= 0x010f
-                    or >= 0x0281 and <= 0x0291;
-                bool sourceMutation = source && message.Id is 0x000c or 0x00b1 or 0x00c2 or 0x00c7;
-                bool changed = root && message.Id == 0x0111 && message.LParam == edit.Handle
-                    && (message.WParam & 0xffff) == EditId && ((message.WParam >> 16) & 0xffff) is 0x0300 or 0x0400;
-                if ((source || root) && (input || imeOrLanguage || sourceMutation || changed))
-                {
-                    ulong bits = unchecked((ulong)(long)message.LParam);
-                    var prefix = _prefixDispatch;
-                    bool originalControl = prefix is not null && !_prefixControlDispatched && source
-                        && message.Id == 0x0100 && message.WParam == 0x11
-                        && ((bits >> 16) & 0xff) == prefix.Witness.ScanCode
-                        && ((bits & (1UL << 24)) != 0) == ((prefix.Witness.NativeFlags & 1) != 0)
-                        && (bits & ((1UL << 29) | (1UL << 30) | (1UL << 31))) == 0 && (bits & 0xffff) == 1;
-                    if (originalControl)
-                    {
-                        // Count the real original Ctrl once. A second matching
-                        // message, nested key, IME edge or content notification
-                        // changes the revision again and permanently breaks proof.
-                        _prefixControlDispatched = true;
-                        _guiInputRevision = checked(_guiInputRevision + 1);
-                        ClearPrefixProof();
-                    }
-                    else
-                    {
-                        // Plain hover did not revoke the default LL plan before
-                        // prefix observation. It still invalidates a live proof;
-                        // dragging and every other input retain their old gates.
-                        // Non-client wParam is a hit-test value, not button flags.
-                        bool hover = message.Id == 0x00a0 || message.Id == 0x0200 && (message.WParam & 0x0073) == 0;
-                        InvalidateGuiInput(!hover || _prefixDispatch is not null || _prefixProof is not null);
-                    }
-                }
+                ObserveOrdinaryInput(message.Window, message.Id, message.WParam, message.LParam, sent: true);
             }
         }
         catch
@@ -1215,11 +1187,54 @@ internal static partial class Program
         return Native.CallNextHookEx(0, code, wParam, lParam);
     }
 
+    private static void ObserveOrdinaryInput(nint window, uint id, nuint wParam, nint lParam, bool sent)
+    {
+        if (_inputObservation == 0 || _retired || _edit is not { } edit || _owned is null)
+            return;
+        bool source = window == edit.Handle, root = window == _window;
+        bool input = id is >= 0x0100 and <= 0x0109 or >= 0x0200 and <= 0x020e
+            or >= 0x00a0 and <= 0x00ad or 0x00ff;
+        bool imeOrLanguage = id is 0x0050 or 0x0051 or >= 0x010d and <= 0x010f
+            or >= 0x0281 and <= 0x0291;
+        bool sourceMutation = source && id is 0x000c or 0x00b1 or 0x00c2 or 0x00c7;
+        bool changed = root && id == 0x0111 && lParam == edit.Handle
+            && (wParam & 0xffff) == EditId && ((wParam >> 16) & 0xffff) is 0x0300 or 0x0400;
+        if (!(source || root) || !(input || imeOrLanguage || sourceMutation || changed))
+            return;
+        ulong bits = unchecked((ulong)(long)lParam);
+        var prefix = _prefixDispatch;
+        bool originalControl = prefix is not null && source && id == 0x0100 && wParam == 0x11
+            && ((bits >> 16) & 0xff) == prefix.Witness.ScanCode
+            && ((bits & (1UL << 24)) != 0) == ((prefix.Witness.NativeFlags & 1) != 0)
+            && (bits & ((1UL << 29) | (1UL << 30) | (1UL << 31))) == 0 && (bits & 0xffff) == 1;
+        if (originalControl && !sent)
+        {
+            // This exact FIFO MSG is entering ordinary GUI processing. Count
+            // it once here; only the normal API return can complete its proof.
+            _guiInputRevision = checked(_guiInputRevision + 1);
+            ClearPrefixProof();
+            return;
+        }
+        if (originalControl && !_prefixControlObserved)
+        {
+            // Some ordinary processing can also send the same original key.
+            // CWP is only a sent-message observer: ignore at most this one
+            // duplicate, never use its presence as positive processing evidence.
+            _prefixControlObserved = true;
+            return;
+        }
+        // Plain hover did not revoke the default LL plan before prefix
+        // observation. It still invalidates a live proof. Non-client wParam is
+        // a hit-test value, not button flags; actual drags retain the LL gate.
+        bool hover = id == 0x00a0 || id == 0x0200 && (wParam & 0x0073) == 0;
+        InvalidateGuiInput(!hover || _prefixDispatch is not null || _prefixProof is not null);
+    }
+
     private static void BeginPrefixDispatch(ref Native.Message message, OwnedKeyWitness witness, ulong bits)
     {
         ClearPrefixProof();
         _prefixTicket = new(witness.PrefixSequence, witness.PlanSequence, witness.ExitLeaseSequence, false);
-        _prefixControlDispatched = false;
+        _prefixControlObserved = false;
         var plan = witness.PlanSequence > 0 && _plan is { } installed && installed.PlanSequence == witness.PlanSequence
             && !_planReported ? installed : null;
         var exit = witness.ExitLeaseSequence > 0 && _exitLease is { } lease && lease.Sequence == witness.ExitLeaseSequence ? lease : null;
@@ -1270,15 +1285,20 @@ internal static partial class Program
 
     private static void CompletePrefixDispatch(PrefixAttempt prefix, bool dispatched)
     {
-        _prefixDispatch = null;
+        bool sameFrame = ReferenceEquals(_prefixDispatch, prefix);
+        if (sameFrame)
+            _prefixDispatch = null;
         long revision = checked(prefix.InputRevision + 1);
-        bool processed = dispatched && _prefixControlDispatched && prefix.Qualified && PrefixCurrent(prefix, revision)
+        bool processed = dispatched && sameFrame && prefix.Qualified && PrefixCurrent(prefix, revision)
             && (PrefixPlanCurrent(prefix.Witness, prefix.Plan) || PrefixExitCurrent(prefix.Witness, prefix.ExitLease))
             && _owned!.TryProbeInputContext(prefix.Descriptor!, prefix.ExpiresAtMs, out var after)
             && after == prefix.Context && PrefixCurrent(prefix, revision);
-        _prefixProof = processed ? prefix : null;
-        if (!processed)
-            _planActive = false;
+        if (sameFrame)
+        {
+            _prefixProof = processed ? prefix : null;
+            if (!processed)
+                _planActive = false;
+        }
         WriteReply(new("prefix-processed", _connection, _run, _sequence,
             PrefixResult: new(prefix.Witness.PrefixSequence, prefix.Witness.PlanSequence, prefix.Witness.ExitLeaseSequence, processed)));
     }

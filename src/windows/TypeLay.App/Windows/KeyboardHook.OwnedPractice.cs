@@ -655,7 +655,11 @@ internal sealed partial class KeyboardHook
             bool harmlessPrefix = prefixDown || chordAction || samePrefixRelease || samePrefixRepeat;
             if (down && !harmlessPrefix && data.Key != acceptanceKey)
             {
-                if (!exitBinding)
+                bool ordinaryExit = keys.ExitModifiers == ShortcutModifiers.None && data.Key == keys.Exit
+                    && CurrentModifiers == ShortcutModifiers.None && (!injected || _allowInjectedInput);
+                // A repeat of the ordinary exit key keeps its original epoch
+                // semantics, but exitBinding still grants only a first down.
+                if (!exitBinding && !ordinaryExit)
                 {
                     Interlocked.Increment(ref _userEpoch);
                     Interlocked.Increment(ref _sourceUserEpoch);
