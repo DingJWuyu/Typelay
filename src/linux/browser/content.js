@@ -265,7 +265,11 @@
       if (ancestors.length > 4096) return null;
     }
     const attributes = ["autocomplete", "inputmode", "role", "aria-label", "aria-description", "class", "name"]
-      .map(name => element.getAttribute(name) || "").join(" ") + ancestors;
+      // Tiptap's verified root toggles this decoration on real focus/blur.
+      // Policy keeps every other class; raw mutations still revoke live tickets.
+      .map(name => field.richText && name === "class"
+        ? Array.from(element.classList).filter(value => value !== "ProseMirror-focused").join(" ")
+        : element.getAttribute(name) || "").join(" ") + ancestors;
     const labels = Array.from(element.labels || [], label => label.textContent || "").join(" ");
     const result = {process: "", label: labels, automationId: element.id,
       help: element.getAttribute("placeholder") || "", aria: attributes,

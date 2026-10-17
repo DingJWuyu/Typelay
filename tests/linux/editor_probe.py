@@ -136,6 +136,93 @@ class EditorProbe(unittest.TestCase):
     def test_control_claim_is_quarantined_after_class_change_and_restore(self):
         self.production_acceptance(control=True, kind="class-roundtrip")
 
+    def test_rich_editor_draft_survives_source_blur_but_not_new_policy_class(self):
+        self.isolated(browser_e2e.TRANSPORT + "\n" + CONTENT.read_text())
+        self.isolated("""fixtureCommand({id: 1, op: 'configure-shortcuts', data:
+          {...fixtureBindings, accept: 'Ctrl+F7', exit: 'Ctrl+F8'}})""")
+        self.page.evaluate("editorProbeSetup('guarded')")
+        self.page.bring_to_front()
+        self.page.wait_for_function(
+            "document.hasFocus() && document.activeElement.id === 'editor-source'",
+            timeout=5000,
+        )
+        self.page.keyboard.press("Shift")
+        self.assertTrue(
+            self.isolated("""(() => {
+              const described = fixtureCommand({id: 2, op: 'describe'});
+              const source = fixtureCommand({id: 3, op: 'capture', data: {
+                target: described?.target, authority: described?.authority}});
+              if (!source) return false;
+              window.fixtureRichView = {target: source.target, authority: source.authority,
+                revision: 1, view: {state: 'ValidTranslation', text: 'Initial candidate',
+                  editable: true, presentation: {visible: true, editorOwnsText: false}}};
+              return fixtureCommand({id: 4, op: 'overlay-render', data: fixtureRichView})?.visible;
+            })()""")
+        )
+
+        def editor():
+            return next(
+                (
+                    node
+                    for node in self.cdp.send("Accessibility.getFullAXTree")["nodes"]
+                    if not node.get("ignored")
+                    and node.get("name", {}).get("value") == "TypeLay 译文"
+                    and node.get("role", {}).get("value") == "textbox"
+                ),
+                None,
+            )
+
+        candidate = editor()
+        self.assertIsNotNone(candidate)
+        self.assertTrue(
+            self.page.locator("#editor-source").evaluate(
+                "root => root.classList.contains('ProseMirror-focused')"
+            )
+        )
+        border = self.cdp.send("DOM.getBoxModel", {"backendNodeId": candidate["backendDOMNodeId"]})[
+            "model"
+        ]["border"]
+        self.page.mouse.click(sum(border[::2]) / 4, sum(border[1::2]) / 4)
+        self.assertTrue(
+            self.isolated("""fixtureMessages.some(message => message.event === 'ui'
+              && message.data.operation === 'beginEdit')""")
+        )
+        self.isolated("""fixtureRichView.revision = 2;
+          fixtureRichView.view.state = 'EditingTranslation';
+          fixtureRichView.view.presentation.editorOwnsText = true;
+          fixtureCommand({id: 5, op: 'overlay-render', data: fixtureRichView});
+          fixtureCommand({id: 6, op: 'overlay-edit', data: {
+            target: fixtureRichView.target, allowed: true}});""")
+        self.assertFalse(
+            self.page.locator("#editor-source").evaluate(
+                "root => root.classList.contains('ProseMirror-focused')"
+            )
+        )
+        self.page.keyboard.press("Control+A")
+        self.page.keyboard.insert_text("Manual rich candidate.")
+        # Renew the original display authority after the real Tiptap blur.
+        # No source recapture or new write permit can repair this handoff.
+        self.isolated("""fixtureCommand({id: 7, op: 'overlay-renew', data: {
+          target: fixtureRichView.target, authority: fixtureRichView.authority}})""")
+        current = editor()
+        self.assertIsNotNone(current)
+        self.assertEqual(current.get("value", {}).get("value"), "Manual rich candidate.")
+        self.assertTrue(
+            any(
+                item.get("name") == "focused" and item.get("value", {}).get("value")
+                for item in current.get("properties", [])
+            )
+        )
+        self.assertEqual(self.page.evaluate("editorProbeInspect().after"), INITIAL)
+        self.page.locator("#editor-source").evaluate("root => root.classList.add('terminal')")
+        self.isolated("""fixtureCommand({id: 8, op: 'overlay-renew', data: {
+          target: fixtureRichView.target, authority: fixtureRichView.authority}})""")
+        self.assertIsNone(editor())
+        self.assertEqual(self.page.evaluate("editorProbeInspect().after"), INITIAL)
+        self.assertEqual(
+            self.isolated("fixtureMessages.filter(message => message.event === 'accepted')"), []
+        )
+
     def production_acceptance(self, *, control=False, kind="guarded"):
         self.isolated(browser_e2e.TRANSPORT + "\n" + CONTENT.read_text())
         self.isolated("fixtureCommand({id: 1, op: 'configure-shortcuts', data: fixtureBindings})")

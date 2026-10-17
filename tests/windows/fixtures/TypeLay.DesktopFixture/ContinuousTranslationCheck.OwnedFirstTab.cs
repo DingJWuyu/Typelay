@@ -87,8 +87,6 @@ internal static partial class ContinuousTranslationCheck
             var editor = ((Grid)((Border)overlay.Content).Child).Children.OfType<TextBox>().Single();
             result.Stage = "owned-automatic-preview";
             // No F9, reference inference, publish probe, or private install wait.
-            // One Tab follows the current visible candidate and the same public
-            // "Tab 接受译文" cue a user sees, rather than preview completion alone.
             await UntilAsync(() =>
             {
                 Require(feedbackCode is null, "owned-preview-feedback");
@@ -161,12 +159,35 @@ internal static partial class ContinuousTranslationCheck
                 if (visible)
                 {
                     firstPreviewMs ??= elapsed.ElapsedMilliseconds;
-                    result.Stage = "owned-public-acceptance-ready";
+                    result.Stage = "owned-public-editing-ready";
                 }
                 return visible && controller.AutomaticPracticeProgress?.PreviewCompleted == true
-                    && Descendants(overlay).OfType<TextBlock>().Any(hint => hint.IsVisible && hint.Text == "接受译文"
-                        && hint.Parent is StackPanel row && Descendants(row).OfType<TextBlock>()
-                            .Any(key => key.IsVisible && key.Text == "Tab"));
+                    && Equals(editor.ToolTip, "点击译文编辑");
+            }, cancellation);
+            // Editing is available on the first complete preview, before any
+            // source write or tutorial acceptance credit. Preserve this result
+            // independently if the later, single first Tab is safely rejected.
+            editorHandoff = await VerifyOwnedEditorHandoffAsync(root, field, host, overlay, editor, controller,
+                monitor, input, settings, cancellation);
+            activeResult = editorHandoff;
+            if (editorHandoff.Outcome != "verified")
+            {
+                result.Outcome = "not-run";
+                result.Stage = "previous-scene";
+                return (result, editorHandoff, tabReturn, mouseReturn, editedAcceptance, finish);
+            }
+            activeResult = result;
+            result.Stage = "owned-public-acceptance-ready";
+            original = N.ReadText(field, Limits.MaxTextUnits);
+            selection = N.ReadSelection(field);
+            // Esc was followed by real source input. The first source write
+            // uses that new candidate and the same public cue a user sees.
+            await UntilAsync(() =>
+            {
+                Require(feedbackCode is null, "owned-preview-feedback");
+                Require(N.Focused() == (root, field), "owned-preview-focus");
+                return input.LastCapture?.Snapshot?.Text == original && VisibleTranslation(overlay, editor)
+                    && OwnedAcceptanceVisible(overlay);
             }, cancellation);
             acceptanceReadyMs = elapsed.ElapsedMilliseconds;
             string candidate = editor.Text;
@@ -238,20 +259,13 @@ internal static partial class ContinuousTranslationCheck
             settingsPreserved = !persisted.ExperimentalWriteback && !persisted.OnboardingComplete
                 && persisted.Mode == WorkMode.Automatic;
             Require(settingsPreserved, "owned-settings-changed");
-            // Keep the verified first acceptance separate if the later, internal
-            // editor slice fails. Both still contribute to the overall result.
+            // The preview/editor and first acceptance have independent results.
             result.Outcome = "verified";
             result.Stage = "complete";
             firstCompletedReceipts = monitor.Completed.Count;
-            editorHandoff = await VerifyOwnedEditorHandoffAsync(root, field, host, overlay, editor, controller,
-                monitor, input, settings, cancellation);
-            activeResult = editorHandoff;
-            if (editorHandoff.Outcome == "verified")
-            {
-                tabReturn = await VerifyOwnedReturnAsync(OwnedReturnKind.Tab, root, field, host, overlay, editor,
-                    controller, monitor, input, settings, cancellation);
-                activeResult = tabReturn;
-            }
+            tabReturn = await VerifyOwnedReturnAsync(OwnedReturnKind.Tab, root, field, host, overlay, editor,
+                controller, monitor, input, settings, cancellation);
+            activeResult = tabReturn;
             if (tabReturn.Outcome == "verified")
             {
                 mouseReturn = await VerifyOwnedReturnAsync(OwnedReturnKind.Mouse, root, field, host, overlay, editor,
@@ -329,23 +343,19 @@ internal static partial class ContinuousTranslationCheck
         PracticeHost host, OverlayWindow overlay, TextBox editor, SessionController controller, AcceptanceMonitor monitor,
         AcceptanceInput input, SettingsStore settings, CancellationToken cancellation)
     {
-        var result = new SceneResult { Outcome = "running", Stage = "owned-editor-new-sentence" };
+        var result = new SceneResult { Outcome = "running", Stage = "owned-editor-first-preview" };
         bool freshPreview = false, acquired = false, handoffComplete = false, sourceUnchanged = false, selectionPreserved = false;
         bool draftChanged = false, noAdditionalWrite = false, tutorialIncomplete = false, editorEscapeAndResumeVerified = false;
         int injectedClicks = 0;
         try
         {
-            const string second = "请帮我确认明天下午三点的会议安排。";
             Require(N.Focused() == (root, field), "owned-editor-source-focus");
-            // Controlled source input uses the same stock Edit message path as
-            // the existing continuous scene. It is not a TypeLay write permit.
-            N.SendString(field, N.WM_SETTEXT, second);
-            N.Send(field, N.EM_SETSEL, (nuint)second.Length, (nint)second.Length);
+            string source = N.ReadText(field, Limits.MaxTextUnits);
             var selected = N.ReadSelection(field);
             await UntilAsync(() =>
             {
                 Require(N.Focused() == (root, field), "owned-editor-preview-stole-focus");
-                return input.LastCapture?.Snapshot?.Text == second && VisibleTranslation(overlay, editor)
+                return input.LastCapture?.Snapshot?.Text == source && VisibleTranslation(overlay, editor)
                     && Equals(editor.ToolTip, "点击译文编辑");
             }, cancellation);
             freshPreview = true;
@@ -371,19 +381,21 @@ internal static partial class ContinuousTranslationCheck
             if (inserted == 1 && SendInput(1, [change[1]], Marshal.SizeOf<KeyboardInput>()) != 1)
                 result.CleanupErrors.Add(new("owned-editor-key", "key-release-incomplete", "Win32", Marshal.GetLastWin32Error()));
             Require(inserted == 2, "owned-editor-key-injection");
-            await UntilAsync(() => editor.Text != translated
-                && controller.AutomaticPracticeProgress?.DraftChanged == true, cancellation);
-            draftChanged = controller.AutomaticPracticeProgress is { EditingStarted: true, DraftChanged: true };
+            await UntilAsync(() => editor.Text != translated, cancellation);
+            draftChanged = editor.Text != translated;
             handoffComplete = host.EditorHandoffComplete(editorTarget);
-            sourceUnchanged = N.ReadText(field, Limits.MaxTextUnits) == second;
+            sourceUnchanged = N.ReadText(field, Limits.MaxTextUnits) == source;
             selectionPreserved = N.ReadSelection(field) == selected;
-            noAdditionalWrite = monitor.Completed.Count == 1 && input.ForegroundWrites == 0 && input.DirectWrites == 0;
+            noAdditionalWrite = monitor.Completed.Count == 0 && input.ForegroundWrites == 0 && input.DirectWrites == 0;
             tutorialIncomplete = controller.AutomaticPracticeProgress is
-            { Completed: false, ReturnedToSource: false, EditedAcceptanceCompleted: false }
+            {
+                PreviewCompleted: true, AcceptanceCompleted: false, EditingStarted: false, DraftChanged: false,
+                Completed: false, ReturnedToSource: false, EditedAcceptanceCompleted: false
+            }
                 && !settings.Value.OnboardingComplete && !settings.Value.ExperimentalWriteback;
             Require(draftChanged && handoffComplete && sourceUnchanged && selectionPreserved && noAdditionalWrite && tutorialIncomplete,
                 "owned-editor-draft-source-or-progress");
-            await VerifyOwnedEditorEscapeAndResumeAsync(result, root, field, host, overlay, editor,
+            await VerifyOwnedEditorEscapeAndResumeAsync(result, root, field, overlay, editor,
                 controller, monitor, input, cancellation);
             editorEscapeAndResumeVerified = true;
             result.Outcome = "verified";
@@ -414,7 +426,7 @@ internal static partial class ContinuousTranslationCheck
     }
 
     private static async Task VerifyOwnedEditorEscapeAndResumeAsync(SceneResult result, nint root, nint field,
-        PracticeHost host, OverlayWindow overlay, TextBox editor, SessionController controller,
+        OverlayWindow overlay, TextBox editor, SessionController controller,
         AcceptanceMonitor monitor, AcceptanceInput input, CancellationToken cancellation)
     {
         var progress = controller.AutomaticPracticeProgress!;
@@ -438,8 +450,12 @@ internal static partial class ContinuousTranslationCheck
                 && input.Returns[returns] is { Request.PracticeReturn: { } request, Result: { Returned: true, Practice: { } evidence } }
                 && request.Binding.RunId == progress.RunId && evidence.Binding == request.Binding && evidence.Token == request.Token
                 && N.ReadText(field, Limits.MaxTextUnits) == source && N.ReadSelection(field) == selection
-                && monitor.Completed.Count == 1 && input.ForegroundWrites == 0 && input.DirectWrites == 0
-                && controller.AutomaticPracticeProgress is { Completed: false, ReturnedToSource: false },
+                && monitor.Completed.Count == 0 && input.ForegroundWrites == 0 && input.DirectWrites == 0
+                && controller.AutomaticPracticeProgress is
+                {
+                    AcceptanceCompleted: false, EditingStarted: false,
+                    DraftChanged: false, Completed: false, ReturnedToSource: false
+                },
                 "owned-editor-escape-proof");
             result.Stage = "owned-editor-escape-held-release";
             KeyboardInput[] remainder = [new() { Type = 1, Scan = 1, Flags = 8 }, new() { Type = 1, Scan = 1, Flags = 10 }];
@@ -456,22 +472,14 @@ internal static partial class ContinuousTranslationCheck
             await UntilAsync(() => N.Focused() == (root, field) && input.LastCapture?.Snapshot?.Text is { } captured
                 && (captured == lowerSource || captured == upperSource)
                 && VisibleTranslation(overlay, editor) && Equals(editor.ToolTip, "点击译文编辑"), cancellation);
-            string changedSource = input.LastCapture!.Snapshot!.Text;
             Require(controller.AutomaticPracticeProgress?.RunId == progress.RunId
-                && N.IsWindowVisible(root) && monitor.Completed.Count == 1
+                && controller.AutomaticPracticeProgress is
+                {
+                    AcceptanceCompleted: false, EditingStarted: false,
+                    DraftChanged: false, Completed: false, ReturnedToSource: false
+                }
+                && N.IsWindowVisible(root) && monitor.Completed.Count == 0
                 && input.ForegroundWrites == 0 && input.DirectWrites == 0, "owned-editor-escape-retired-run");
-            var target = input.LastCapture!.Snapshot!.Target;
-            string translated = editor.Text;
-            var point = editor.PointToScreen(new Point(editor.ActualWidth / 2, Math.Min(20, editor.ActualHeight / 2)));
-            Require(SetOwnedCursorPos((int)Math.Round(point.X), (int)Math.Round(point.Y)), "owned-editor-escape-resume-pointer");
-            SendOwnedClick(result.CleanupErrors);
-            await UntilAsync(() => host.EditorHandoffComplete(target) && ReferenceEquals(Keyboard.FocusedElement, editor)
-                && !editor.IsReadOnly, cancellation);
-            SendOwnedLetter(0x41, result.CleanupErrors);
-            await UntilAsync(() => editor.Text != translated && controller.AutomaticPracticeProgress?.DraftChanged == true,
-                cancellation);
-            Require(N.ReadText(field, Limits.MaxTextUnits) == changedSource && monitor.Completed.Count == 1
-                && input.ForegroundWrites == 0 && input.DirectWrites == 0, "owned-editor-escape-resume-wrote-source");
         }
         finally
         {
@@ -490,30 +498,50 @@ internal static partial class ContinuousTranslationCheck
     {
         string prefix = kind == OwnedReturnKind.Tab ? "owned-tab-return" : "owned-mouse-return";
         var result = new SceneResult { Outcome = "running", Stage = prefix };
-        bool reenteredDraft = kind == OwnedReturnKind.Tab, sourceUnchanged = false, zeroWrites = false;
+        bool reenteredDraft = false, sourceUnchanged = false, zeroWrites = false;
         bool draftRetained = false, exactReturn = false, freshBinding = false, naturalCaret = false, sourceFocus = false;
         try
         {
+            if (kind == OwnedReturnKind.Tab)
+            {
+                const string second = "请帮我确认明天下午三点的会议安排。";
+                Require(N.Focused() == (root, field), "owned-tab-return-initial-focus");
+                result.Stage = "owned-tab-return-new-sentence";
+                // The tutorial credits editing only after the first accepted
+                // translation. Enter this later draft through the ordinary UI.
+                N.SendString(field, N.WM_SETTEXT, second);
+                N.Send(field, N.EM_SETSEL, (nuint)second.Length, (nint)second.Length);
+                await UntilAsync(() =>
+                {
+                    Require(N.Focused() == (root, field), "owned-tab-return-preview-stole-focus");
+                    return input.LastCapture?.Snapshot?.Text == second && VisibleTranslation(overlay, editor)
+                        && Equals(editor.ToolTip, "点击译文编辑");
+                }, cancellation);
+            }
             var progress = controller.AutomaticPracticeProgress!;
             var target = progress.Target ?? throw new CheckFailure("owned-return-target-missing");
             string source = N.ReadText(field, Limits.MaxTextUnits);
             var beforeSelection = N.ReadSelection(field);
             string draft = editor.Text;
-            if (kind == OwnedReturnKind.Mouse)
+            Require(N.Focused() == (root, field) && editor.IsReadOnly, prefix + "-initial-focus");
+            result.Stage = prefix + "-reenter-draft";
+            var editorPoint = editor.PointToScreen(new Point(editor.ActualWidth / 2, Math.Min(20, editor.ActualHeight / 2)));
+            Require(SetOwnedCursorPos((int)Math.Round(editorPoint.X), (int)Math.Round(editorPoint.Y)), "owned-return-editor-pointer");
+            SendOwnedClick(result.CleanupErrors);
+            await UntilAsync(() => host.EditorHandoffComplete(target) && ReferenceEquals(Keyboard.FocusedElement, editor)
+                && !editor.IsReadOnly, cancellation);
+            reenteredDraft = editor.Text == draft;
+            Require(reenteredDraft, "owned-return-reentry-overwrote-draft");
+            SendOwnedLetter(kind == OwnedReturnKind.Tab ? (ushort)0x41 : (ushort)0x42, result.CleanupErrors);
+            await UntilAsync(() => editor.Text != draft && controller.AutomaticPracticeProgress?.DraftChanged == true, cancellation);
+            draft = editor.Text;
+            Require(controller.AutomaticPracticeProgress is
             {
-                Require(N.Focused() == (root, field) && editor.IsReadOnly, "owned-mouse-return-initial-focus");
-                result.Stage = "owned-mouse-return-reenter-draft";
-                var editorPoint = editor.PointToScreen(new Point(editor.ActualWidth / 2, Math.Min(20, editor.ActualHeight / 2)));
-                Require(SetOwnedCursorPos((int)Math.Round(editorPoint.X), (int)Math.Round(editorPoint.Y)), "owned-return-editor-pointer");
-                SendOwnedClick(result.CleanupErrors);
-                await UntilAsync(() => host.EditorHandoffComplete(target) && ReferenceEquals(Keyboard.FocusedElement, editor)
-                    && !editor.IsReadOnly, cancellation);
-                reenteredDraft = editor.Text == draft;
-                Require(reenteredDraft, "owned-return-reentry-overwrote-draft");
-                SendOwnedLetter(0x42, result.CleanupErrors);
-                await UntilAsync(() => editor.Text != draft && controller.AutomaticPracticeProgress?.DraftChanged == true, cancellation);
-                draft = editor.Text;
-            }
+                AcceptanceCompleted: true, EditingStarted: true,
+                DraftChanged: true, Completed: false
+            } && monitor.Completed.Count == 1
+                && N.ReadText(field, Limits.MaxTextUnits) == source && N.ReadSelection(field) == beforeSelection,
+                prefix + "-draft-source-or-progress");
             progress = controller.AutomaticPracticeProgress!;
             int returnCount = input.Returns.Count;
             var returnBinding = input.LastCapture?.OwnedSource?.Binding;
