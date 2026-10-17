@@ -124,13 +124,14 @@
 +}
  
  template <typename T>
-@@ -266,4 +370,12 @@
+@@ -266,4 +370,13 @@
                             : nullptr) {
      registerFcitxQtDBusTypes();
 +    if (tlCooperate()) {
 +        qApp->installEventFilter(this);
 +        tlQueueReceiver = this;
 +        tlOrderedDeadline_.setSingleShot(true);
++        tlOrderedDeadline_.setTimerType(Qt::PreciseTimer);
 +        connect(&tlOrderedDeadline_, &QTimer::timeout, this, [this] {
 +            cancelOrdered(tlOrdered_.id);
 +        });
