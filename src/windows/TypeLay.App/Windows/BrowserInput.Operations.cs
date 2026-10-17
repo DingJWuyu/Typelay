@@ -18,21 +18,30 @@ internal sealed partial class BrowserInput
     public void Publish(InputLease lease, AcceptancePermit? permit)
     {
         var record = Observation(lease.Source);
-        if (record is null || !ForegroundCurrent(record) || !AcknowledgementCurrent(record)
-            || lease.CommandGeneration != _hook.CommandGeneration)
+        var rejection = ObservationReason.Ready;
+        if (record is null)
+            rejection = ObservationReason.ObservationMissing;
+        else if (!ForegroundCurrent(record))
+            rejection = ObservationReason.ForegroundNotCurrent;
+        else if (!AcknowledgementCurrent(record))
+            rejection = ObservationReason.AcknowledgementNotCurrent;
+        else if (lease.CommandGeneration != _hook.CommandGeneration)
+            rejection = ObservationReason.CommandGenerationChanged;
+        if (rejection != ObservationReason.Ready)
         {
             Revoke();
+            TraceObservation(ObservationStage.Publish, rejection);
             return;
         }
         _lease = lease;
         if (permit is not null)
         {
             // Repeated publication of one plan renews only its actual issued permit.
-            _issued[permit.Plan.Id] = new(record, lease, permit, permit.ExpiresAtMs + 2000);
+            _issued[permit.Plan.Id] = new(record!, lease, permit, permit.ExpiresAtMs + 2000);
             while (_issued.Count > 128)
                 _issued.Remove(_issued.Keys.First());
         }
-        record.Peer.Send("publish", new
+        record!.Peer.Send("publish", new
         {
             target = record.Target.Value,
             authority = record.Authority,
@@ -40,23 +49,36 @@ internal sealed partial class BrowserInput
             lease,
             permit
         });
+        TraceObservation(ObservationStage.Publish, ObservationReason.Ready);
     }
     public void PublishShortcut(ShortcutLease lease)
     {
         var record = Observation(lease.Source);
-        if (record is null || !ForegroundCurrent(record) || !AcknowledgementCurrent(record)
-            || !lease.Source.DirectWriteSupported || _editorFocused)
+        var rejection = ObservationReason.Ready;
+        if (record is null)
+            rejection = ObservationReason.ObservationMissing;
+        else if (!ForegroundCurrent(record))
+            rejection = ObservationReason.ForegroundNotCurrent;
+        else if (!AcknowledgementCurrent(record))
+            rejection = ObservationReason.AcknowledgementNotCurrent;
+        else if (!lease.Source.DirectWriteSupported)
+            rejection = ObservationReason.DirectWriteUnsupported;
+        else if (_editorFocused)
+            rejection = ObservationReason.EditorFocused;
+        if (rejection != ObservationReason.Ready)
         {
             _hook.PublishBrowserShortcut(null);
+            TraceObservation(ObservationStage.Shortcut, rejection);
             return;
         }
-        record.Peer.Send("publish-shortcut", new
+        record!.Peer.Send("publish-shortcut", new
         {
             target = record.Target.Value,
             authority = record.Authority,
             generation = _hook.CommandGeneration
         });
         _hook.PublishBrowserShortcut(new(lease, record.Root, _hook.CommandGeneration, record));
+        TraceObservation(ObservationStage.Shortcut, ObservationReason.Ready);
     }
     private async Task TriggerAsync(BrowserShortcutPress press)
     {
@@ -255,6 +277,7 @@ internal sealed partial class BrowserInput
                 _editorFocused = false;
                 _hook.NotifyBrowserChange(false, true);
                 Revoke(true);
+                TraceObservation(ObservationStage.Lifecycle, ObservationReason.DocumentFocusChanged);
             }
             return;
         }
@@ -266,6 +289,7 @@ internal sealed partial class BrowserInput
             {
                 _hook.NotifyBrowserChange(false, true);
                 Revoke(true);
+                TraceObservation(ObservationStage.Lifecycle, ObservationReason.DocumentClosed);
             }
             foreach (var key in _frozen.Where(item => item.Value.Observation.Peer == peer && item.Value.Observation.Route == route).Select(item => item.Key).ToArray())
                 _frozen.Remove(key);
@@ -291,10 +315,14 @@ internal sealed partial class BrowserInput
                 if (_editorTransition is { } transition && !transition.Completion.Task.IsCompleted
                     && (target != transition.Token.Target.Value || !Boolean(value, "focusChanged") || Boolean(value, "focused")))
                     CancelEditorTransition();
-                _hook.NotifyBrowserChange(Boolean(value, "textChanged") || name == "destroy", Boolean(value, "focusChanged"));
+                bool textChanged = Boolean(value, "textChanged") || name == "destroy";
+                bool focusChanged = Boolean(value, "focusChanged");
+                _hook.NotifyBrowserChange(textChanged, focusChanged);
                 _publication = null;
                 if (name == "destroy")
                     Revoke(true);
+                TraceObservation(ObservationStage.Input, name == "destroy" ? ObservationReason.Destroyed : ObservationReason.InputChanged,
+                    textChanged: textChanged, focusChanged: focusChanged);
             }
             return;
         }

@@ -63,12 +63,13 @@ internal sealed partial class BrowserInput : IDisposable
     }
     public bool OwnsForeground => _server.Peers.Any(peer => peer.BrowserProcessId == ProcessFor(ForegroundRoot()))
         || _current is { } current && current.Root == ForegroundRoot();
-    private BrowserPeer? ForegroundPeer()
+    private BrowserPeer? ForegroundPeer(out int candidateCount)
     {
         uint pid = ProcessFor(ForegroundRoot());
         var candidates = _server.Peers.Where(peer => peer.BrowserProcessId == pid).ToArray();
         // Multiple profiles sharing an OS instance cannot be guessed from PID.
-        return candidates.Length == 1 ? candidates[0] : null;
+        candidateCount = candidates.Length;
+        return candidateCount == 1 ? candidates[0] : null;
     }
     private bool DocumentCurrent(BrowserObservation observation) => observation.Peer.Alive
         && _active.TryGetValue(observation.Peer.ConnectionId, out var route) && route == observation.Route;
@@ -108,6 +109,7 @@ internal sealed partial class BrowserInput : IDisposable
         _hook.PublishBrowserShortcut(null);
         foreach (var peer in _server.Peers)
             peer.Send("configure-shortcuts", _configuration);
+        TraceObservation(ObservationStage.Lifecycle, ObservationReason.Configured);
     }
     public async Task<InputCapture> CaptureAsync(InputContext context)
     {
@@ -119,96 +121,168 @@ internal sealed partial class BrowserInput : IDisposable
             if (remaining <= 0)
             {
                 CancelEditorTransition();
-                return new(null);
+                return CaptureRejected(ObservationReason.EditorDeadline);
             }
             try
             {
                 if (!await transition.Completion.Task.WaitAsync(TimeSpan.FromMilliseconds(Math.Max(1, remaining)))
                     || _editorToken != transition.Token || !_editorFocused)
-                    return new(null);
+                    return CaptureRejected(ObservationReason.EditorAcknowledgement);
             }
             catch (TimeoutException)
             {
                 if (_editorTransition == transition)
                     CancelEditorTransition();
-                return new(null);
+                return CaptureRejected(ObservationReason.EditorTimeout);
             }
         }
         var epochs = _hook.BrowserEpochs;
         nint root = ForegroundRoot();
-        var peer = ForegroundPeer();
-        if (peer is null || !_sessionEnabled || context.SessionShortcuts?.Generation != _configurationGeneration)
-            return new(null);
+        var peer = ForegroundPeer(out int candidateCount);
+        if (peer is null)
+            return CaptureRejected(candidateCount == 0 ? ObservationReason.ForegroundPeerMissing : ObservationReason.ForegroundPeerAmbiguous);
+        if (!_sessionEnabled)
+            return CaptureRejected(ObservationReason.SessionDisabled);
+        if (context.SessionShortcuts?.Generation != _configurationGeneration)
+            return CaptureRejected(ObservationReason.ContextGeneration);
         var bound = context.BoundTarget is { } target && Owns(target) ? Latest(target) : null;
         bool editor = bound is not null && _editorFocused && GetFocus(bound.Target) == FocusMember.Overlay;
         var description = await peer.RequestAsync("describe", editor ? new
         {
             target = bound!.Target.Value
         } : null);
-        if (!Approved(peer, description, context.Excluded, out var authority, out var metadata, out var id, out var ack)
-            || !editor && !Boolean(description!.Data, "focused") || ForegroundRoot() != root
-            || _hook.CommandGeneration != epochs.Generation || _hook.WindowEpoch != epochs.Window || _hook.ForegroundEpoch != epochs.Foreground
-            || !_active.TryGetValue(peer.ConnectionId, out var active) || active != description!.Route)
+        if (!Approved(peer, description, context.Excluded, out var authority, out var metadata, out var id, out var ack,
+            ObservationStage.Describe))
             return new(null);
+        if (!editor && !Boolean(description!.Data, "focused"))
+            return CaptureRejected(ObservationReason.SourceNotFocused, description, editor);
+        if (ForegroundRoot() != root)
+            return CaptureRejected(ObservationReason.ForegroundRootChanged, description, editor);
+        if (_hook.CommandGeneration != epochs.Generation)
+            return CaptureRejected(ObservationReason.CommandGenerationChanged, description, editor);
+        if (_hook.WindowEpoch != epochs.Window)
+            return CaptureRejected(ObservationReason.WindowEpochChanged, description, editor);
+        if (_hook.ForegroundEpoch != epochs.Foreground)
+            return CaptureRejected(ObservationReason.ForegroundEpochChanged, description, editor);
+        if (!_active.TryGetValue(peer.ConnectionId, out var active))
+            return CaptureRejected(ObservationReason.ActiveDocumentMissing, description, editor);
+        if (active != description!.Route)
+            return CaptureRejected(ObservationReason.ActiveDocumentChanged, description, editor);
+        TraceObservation(ObservationStage.Describe, ObservationReason.Ready, description.Data, editor);
         var result = await peer.RequestAsync("capture", new
         {
             target = id.Value,
             authority,
             requireFocused = !editor
         });
-        if (result is null || result.Route != description!.Route || ForegroundRoot() != root
-            || _hook.CommandGeneration != epochs.Generation || _hook.WindowEpoch != epochs.Window || _hook.ForegroundEpoch != epochs.Foreground
-            || !_active.TryGetValue(peer.ConnectionId, out active) || active != result.Route
-            || !Approved(peer, result, context.Excluded, out var capturedAuthority, out metadata, out var capturedId, out ack)
-            || capturedId != id || !SameAuthority(authority, capturedAuthority)
-            || !editor && !Boolean(result.Data, "focused"))
+        if (result is null)
+            return CaptureRejected(ObservationReason.CaptureReplyMissing, editor: editor);
+        if (result.Route != description!.Route)
+            return CaptureRejected(ObservationReason.ReplyRouteChanged, result, editor);
+        if (ForegroundRoot() != root)
+            return CaptureRejected(ObservationReason.ForegroundRootChanged, result, editor);
+        if (_hook.CommandGeneration != epochs.Generation)
+            return CaptureRejected(ObservationReason.CommandGenerationChanged, result, editor);
+        if (_hook.WindowEpoch != epochs.Window)
+            return CaptureRejected(ObservationReason.WindowEpochChanged, result, editor);
+        if (_hook.ForegroundEpoch != epochs.Foreground)
+            return CaptureRejected(ObservationReason.ForegroundEpochChanged, result, editor);
+        if (!_active.TryGetValue(peer.ConnectionId, out active))
+            return CaptureRejected(ObservationReason.ActiveDocumentMissing, result, editor);
+        if (active != result.Route)
+            return CaptureRejected(ObservationReason.ActiveDocumentChanged, result, editor);
+        if (!Approved(peer, result, context.Excluded, out var capturedAuthority, out metadata, out var capturedId, out ack,
+            ObservationStage.Capture))
             return new(null);
-        var snapshot = Snapshot(result.Data, id, metadata!);
+        if (capturedId != id)
+            return CaptureRejected(ObservationReason.TargetChanged, result, editor);
+        if (!SameAuthority(authority, capturedAuthority))
+            return CaptureRejected(ObservationReason.AuthorityChanged, result, editor);
+        if (!editor && !Boolean(result.Data, "focused"))
+            return CaptureRejected(ObservationReason.SourceNotFocused, result, editor);
+        var snapshot = Snapshot(result.Data, id, metadata!, ObservationStage.Snapshot);
         long now = WindowsInterruptClock.NowMs;
-        if (snapshot is null || snapshot.ObservedAtMs > now || now - snapshot.ObservedAtMs > Limits.ObservationMaxAgeMs)
+        if (snapshot is null)
             return new(null);
+        if (snapshot.ObservedAtMs > now)
+            return CaptureRejected(ObservationReason.SnapshotFuture, result, editor, now - snapshot.ObservedAtMs);
+        if (now - snapshot.ObservedAtMs > Limits.ObservationMaxAgeMs)
+            return CaptureRejected(ObservationReason.SnapshotExpired, result, editor, now - snapshot.ObservedAtMs);
         var record = new BrowserObservation(peer, result.Route, capturedAuthority, id, snapshot.ObservedAtMs, root, epochs, ack!);
         Remember(record);
         _current = record;
         RememberPublication(peer, result.Route, result.Data);
+        TraceObservation(ObservationStage.Capture, ObservationReason.Ready, result.Data, editor,
+            observationAgeMs: now - snapshot.ObservedAtMs);
         return new(snapshot, editor ? FocusMember.Overlay : FocusMember.Source, "chrome", epochs.User, epochs.Foreground, ack);
     }
     private bool Approved(BrowserPeer peer, BrowserReply? reply, string[] excluded,
-        out JsonElement authority, out FieldMetadata? metadata, out TargetId id, out SessionShortcutAcknowledgement? acknowledgement)
+        out JsonElement authority, out FieldMetadata? metadata, out TargetId id, out SessionShortcutAcknowledgement? acknowledgement,
+        ObservationStage stage = ObservationStage.None)
     {
         authority = default;
         metadata = null;
         id = default;
         acknowledgement = null;
-        if (reply is null || reply.Data.ValueKind != JsonValueKind.Object || !peer.Alive || !_sessionEnabled)
-            return false;
+        if (reply is null)
+            return ApprovalRejected(stage, ObservationReason.ReplyMissing);
+        if (reply.Data.ValueKind != JsonValueKind.Object)
+            return ApprovalRejected(stage, ObservationReason.ReplyNotObject, reply);
+        if (!peer.Alive)
+            return ApprovalRejected(stage, ObservationReason.PeerDisconnected, reply);
+        if (!_sessionEnabled)
+            return ApprovalRejected(stage, ObservationReason.SessionDisabled, reply);
         var data = reply.Data;
         try
         {
             string? target = data.GetProperty("target").GetString();
-            if (target is null || !reply.Route.Contains(target))
-                return false;
+            if (target is null)
+                return ApprovalRejected(stage, ObservationReason.TargetMissing, reply);
+            if (!reply.Route.Contains(target))
+                return ApprovalRejected(stage, ObservationReason.TargetOutsideRoute, reply);
             metadata = data.GetProperty("metadata").Deserialize<FieldMetadata>(BrowserServer.Json) is { } field
                 ? field with
                 {
                     Process = "chrome"
                 } : null;
-            if (metadata is null || !FieldPolicy.Allows(metadata, excluded) || !metadata.InDocument || !metadata.HasValue)
-                return false;
+            if (metadata is null)
+                return ApprovalRejected(stage, ObservationReason.MetadataMissing, reply);
+            if (!FieldPolicy.Allows(metadata, excluded))
+                return ApprovalRejected(stage, ObservationReason.FieldPolicy, reply);
+            if (!metadata.InDocument)
+                return ApprovalRejected(stage, ObservationReason.OutsideDocument, reply);
+            if (!metadata.HasValue)
+                return ApprovalRejected(stage, ObservationReason.ValueUnavailable, reply);
             authority = data.GetProperty("authority").Clone();
-            if (String(authority, "target") != target || !ValidAuthority(authority))
-                return false;
+            if (String(authority, "target") != target)
+                return ApprovalRejected(stage, ObservationReason.AuthorityTarget, reply);
+            if (!ValidAuthority(authority))
+                return ApprovalRejected(stage, ObservationReason.AuthorityInvalid, reply);
             var applied = data.GetProperty("sessionBindings");
-            if (String(applied, "shortcutDispatch") != "native" || !Guid.TryParse(String(applied, "generation"), out var generation)
-                || generation != _configurationGeneration || generation != _hook.CommandGeneration
-                || String(applied, "accept") != _bindings.Accept || String(applied, "exit") != _bindings.Exit
-                || !Boolean(applied, "sourceReady") || !Boolean(applied, "editorReady"))
-                return false;
+            if (String(applied, "shortcutDispatch") != "native")
+                return ApprovalRejected(stage, ObservationReason.DispatchMismatch, reply);
+            if (!Guid.TryParse(String(applied, "generation"), out var generation))
+                return ApprovalRejected(stage, ObservationReason.AcknowledgementGenerationInvalid, reply);
+            if (generation != _configurationGeneration)
+                return ApprovalRejected(stage, ObservationReason.ConfigurationGenerationMismatch, reply);
+            if (generation != _hook.CommandGeneration)
+                return ApprovalRejected(stage, ObservationReason.CommandGenerationChanged, reply);
+            if (String(applied, "accept") != _bindings.Accept)
+                return ApprovalRejected(stage, ObservationReason.AcceptKeyMismatch, reply);
+            if (String(applied, "exit") != _bindings.Exit)
+                return ApprovalRejected(stage, ObservationReason.ExitKeyMismatch, reply);
+            if (!Boolean(applied, "sourceReady"))
+                return ApprovalRejected(stage, ObservationReason.SourceNotReady, reply);
+            if (!Boolean(applied, "editorReady"))
+                return ApprovalRejected(stage, ObservationReason.EditorNotReady, reply);
             id = new("windows-browser", target, peer.ConnectionId);
             acknowledgement = new(id, generation, _bindings, true, true);
             return true;
         }
-        catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException or FormatException) { return false; }
+        catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
+        {
+            return ApprovalRejected(stage, ObservationReason.MalformedReply, reply);
+        }
     }
     internal static bool ValidAuthority(JsonElement value) => value.ValueKind == JsonValueKind.Object
         && String(value, "target") is { Length: > 0 and <= 256 }
@@ -221,26 +295,32 @@ internal sealed partial class BrowserInput : IDisposable
         && Number(first, "contentRevision") == Number(second, "contentRevision")
         && Number(first, "inputRevision") == Number(second, "inputRevision")
         && Number(first, "focusRevision") == Number(second, "focusRevision");
-    private static InputSnapshot? Snapshot(JsonElement value, TargetId target, FieldMetadata metadata)
+    private InputSnapshot? Snapshot(JsonElement value, TargetId target, FieldMetadata metadata,
+        ObservationStage stage = ObservationStage.None)
     {
         try
         {
             var authority = value.GetProperty("authority");
             var geometry = value.GetProperty("geometry");
             if (String(geometry, "space") != "browser-viewport")
-                return null;
+                return SnapshotRejected(stage, ObservationReason.GeometrySpace, value);
             var bounds = geometry.GetProperty("bounds").Deserialize<RectPx>(BrowserServer.Json);
             string? text = String(value, "text");
             var selection = value.GetProperty("selection").Deserialize<TextRange?>(BrowserServer.Json);
-            if (text is null || !Enum.TryParse<ImeState>(String(value, "ime"), out var ime))
-                return null;
+            if (text is null)
+                return SnapshotRejected(stage, ObservationReason.TextUnavailable, value);
+            if (!Enum.TryParse<ImeState>(String(value, "ime"), out var ime))
+                return SnapshotRejected(stage, ObservationReason.ImeInvalid, value);
             bool write = Boolean(value, "writeSupported");
             var snapshot = new InputSnapshot(target, text, selection, bounds, metadata.Multiline, FieldAccess.Supported,
                 ime, Number(value, "observedAtMs"), Number(authority, "inputRevision"), Number(authority, "focusRevision"), write,
                 DirectWriteSupported: write);
-            return snapshot.IsUsable ? snapshot : null;
+            return snapshot.IsUsable ? snapshot : SnapshotRejected(stage, ObservationReason.SnapshotUnusable, value);
         }
-        catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException) { return null; }
+        catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException)
+        {
+            return SnapshotRejected(stage, ObservationReason.MalformedReply, value);
+        }
     }
     internal static string? String(JsonElement value, string name) => value.ValueKind == JsonValueKind.Object
         && value.TryGetProperty(name, out var item) && item.ValueKind == JsonValueKind.String ? item.GetString() : null;
@@ -264,6 +344,7 @@ internal sealed partial class BrowserInput : IDisposable
         {
             _hook.NotifyBrowserChange(false, true);
             Revoke(true);
+            TraceObservation(ObservationStage.Lifecycle, ObservationReason.PeerDisconnected);
         }
         foreach (var key in _frozen.Where(item => item.Value.Observation.Peer == peer).Select(item => item.Key).ToArray())
             _frozen.Remove(key);
@@ -275,6 +356,7 @@ internal sealed partial class BrowserInput : IDisposable
         {
             _lastWindowEpoch = _hook.WindowEpoch;
             Revoke(true); // OS foreground transitions revoke page tickets too.
+            TraceObservation(ObservationStage.Lifecycle, ObservationReason.WindowEpochChanged);
         }
         while (_hook.TryReadBrowserPress(out var press))
             if (press is not null)
