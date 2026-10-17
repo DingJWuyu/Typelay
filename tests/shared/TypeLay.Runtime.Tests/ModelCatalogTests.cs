@@ -4,6 +4,21 @@ namespace TypeLay.Runtime.Tests;
 
 public sealed class ModelCatalogTests
 {
+    [Theory]
+    [InlineData(null, false, false)]
+    [InlineData("", false, false)]
+    [InlineData("zh_en", true, false)]
+    [InlineData("en_zh", true, false)]
+    [InlineData("en_zh,zh_en", true, true)]
+    [InlineData("zh_en,zh_en", false, false)]
+    [InlineData("zh_en,en_zh,fr_en", false, false)]
+    public void AVerifiedSubsetDoesNotBecomeACompletePreparationBundle(string? ids, bool valid, bool complete)
+    {
+        string[]? directions = ids is null ? null : ids.Length == 0 ? [] : ids.Split(',');
+        Assert.Equal(valid, ModelCatalog.IsValidDirectionSet(directions));
+        Assert.Equal(complete, ModelCatalog.IsCompleteDirectionSet(directions));
+    }
+
     [Fact]
     public void TheFixedCatalogOffersOnlyTheExistingDirectionsWithoutAnInstallation()
     {

@@ -1728,7 +1728,14 @@ class Input:
         )
 
     def configure_peer(self, peer):
-        peer.link.command("configure-shortcuts", self.shortcut_config)
+        configuration = self.shortcut_config
+        if peer.backend != "qt6" and any(
+            isinstance(configuration.get(name), str) and configuration[name].startswith("Ctrl+")
+            for name in ("accept", "exit")
+        ):
+            # Parsing a saved preference does not enable an unverified route.
+            configuration = {**configuration, "sessionEnabled": False}
+        peer.link.command("configure-shortcuts", configuration)
         peer.shortcut = None
         generation = self.shortcut_config.get("generation")
         if peer.command_generation != generation:
@@ -2020,13 +2027,13 @@ class Input:
             self.shortcut_ordered = False
             self.shortcut_command = None
         accept, exit_key = value.get("accept"), value.get("exit")
-        functions = {f"F{index}" for index in range(1, 25)}
+        functions = {f"{prefix}F{index}" for prefix in ("", "Ctrl+") for index in range(1, 25)}
         valid_session = (
             isinstance(accept, str)
             and isinstance(exit_key, str)
             and accept in functions | {"Tab"}
             and exit_key in functions | {"Esc"}
-            and accept != exit_key
+            and accept.removeprefix("Ctrl+") != exit_key.removeprefix("Ctrl+")
             and isinstance(value.get("generation"), str)
             and bool(value["generation"])
         )

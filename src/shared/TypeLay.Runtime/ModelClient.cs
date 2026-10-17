@@ -155,7 +155,7 @@ public sealed class ModelClient : ITranslationService, IDisposable
                 }
                 var hello = await ExchangeAsync(candidate, new(0, "hello"), TimeSpan.FromSeconds(120), operation.Token);
                 operation.Token.ThrowIfCancellationRequested();
-                if (hello.Status != "ready" || !ModelCatalog.IsCompleteDirectionSet(hello.Directions))
+                if (hello.Status != "ready" || !ModelCatalog.IsValidDirectionSet(hello.Directions))
                     return false;
                 candidate.Directions = Array.AsReadOnly(hello.Directions!.ToArray());
             }
@@ -227,9 +227,8 @@ public sealed class ModelClient : ITranslationService, IDisposable
                 return new(0, "error", Code: "invalid-request");
             connection = _active;
             admission = _admission;
-            if (request.Source != request.Target && !connection.Directions.Select(ModelCatalog.Get).Any(direction =>
-                direction.Target == request.Target && (request.Source == "auto" || direction.Source == request.Source)))
-                return new(0, "error", Code: "language-unavailable");
+            // The worker detects same-language text and manual append before it
+            // needs a pair. A missing target direction cannot reject Auto here.
             ++connection.Requests;
         }
         await _serial.WaitAsync();

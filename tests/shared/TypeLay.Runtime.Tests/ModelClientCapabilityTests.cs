@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Xunit;
 
 namespace TypeLay.Runtime.Tests;
@@ -11,7 +12,6 @@ public sealed class ModelClientCapabilityTests
     [InlineData("{\"status\":\"ready\"}")]
     [InlineData("{\"status\":\"ready\",\"directions\":null}")]
     [InlineData("{\"status\":\"ready\",\"directions\":[]}")]
-    [InlineData("{\"status\":\"ready\",\"directions\":[\"zh_en\"]}")]
     [InlineData("{\"status\":\"ready\",\"directions\":[\"zh_en\",\"zh_en\"]}")]
     [InlineData("{\"status\":\"ready\",\"directions\":[\"zh_en\",\"en_zh\",\"fr_en\"]}")]
     [InlineData("{\"status\":\"ready\",\"directions\":[\"zh_en\",null]}")]
@@ -25,21 +25,51 @@ public sealed class ModelClientCapabilityTests
         Assert.Empty(peer.Client.AvailableDirections);
     }
 
-    [Fact]
-    public async Task OnlyACompleteHandshakeGrantsCapabilitiesAndDisposalClearsThem()
+    [Theory]
+    [InlineData("en_zh,zh_en")]
+    [InlineData("zh_en")]
+    [InlineData("en_zh")]
+    public async Task OnlyAValidNonemptyHandshakeGrantsItsCapabilitiesAndDisposalClearsThem(string ids)
     {
-        using var peer = new ProtocolPeer("{\"status\":\"ready\",\"directions\":[\"en_zh\",\"zh_en\"]}");
+        var directions = ids.Split(',');
+        using var peer = new ProtocolPeer(JsonSerializer.Serialize(new
+        {
+            status = "ready",
+            directions
+        }));
         Assert.True(peer.Client.Installed);
         Assert.False(peer.Client.Ready);
         Assert.Empty(peer.Client.AvailableDirections);
         await peer.Client.StartAsync().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
         Assert.True(peer.Client.Ready);
-        Assert.Equal(["en_zh", "zh_en"], peer.Client.AvailableDirections);
+        Assert.Equal(directions, peer.Client.AvailableDirections);
         if (peer.Client.AvailableDirections is IList<string> mutable)
             Assert.Throws<NotSupportedException>(() => mutable[0] = "fr_en");
         peer.Client.Dispose();
         Assert.False(peer.Client.Ready);
         Assert.Empty(peer.Client.AvailableDirections);
+    }
+
+    [Theory]
+    [InlineData("auto", "no-translation", "")]
+    [InlineData("zh", "no-translation", "")]
+    [InlineData("auto", "error", "language-unavailable")]
+    [InlineData("zh", "error", "language-unavailable")]
+    public async Task ValidRequestsReachTheSubsetWorkerForSameLanguageOrMissingDirection(string source, string status, string code)
+    {
+        using var peer = new ProtocolPeer("{\"status\":\"ready\",\"directions\":[\"en_zh\"]}",
+            JsonSerializer.Serialize(new
+            {
+                status,
+                code
+            }));
+        await peer.Client.StartAsync().WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        var response = await peer.Client.TranslateTextAsync("English text", new(source, "en"))
+            .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        Assert.Equal(status, response.Status);
+        Assert.Equal(code, response.Code);
+        Assert.True(peer.Client.Ready);
+        Assert.Equal(["en_zh"], peer.Client.AvailableDirections);
     }
 
     [Fact]
@@ -78,7 +108,7 @@ public sealed class ModelClientCapabilityTests
             get;
         }
 
-        public ProtocolPeer(string response)
+        public ProtocolPeer(string response, string? translationResponse = null)
         {
             Directory.CreateDirectory(_directory);
             string python = Path.Combine(_directory, "python-marker");
@@ -87,15 +117,17 @@ public sealed class ModelClientCapabilityTests
             string script = Path.Combine(_directory, "peer.py");
             File.WriteAllText(script, """
                 import json, struct, sys
-                response = json.loads(sys.argv[1])
-                size = struct.unpack("<I", sys.stdin.buffer.read(4))[0]
-                request = json.loads(sys.stdin.buffer.read(size))
-                response["id"] = request["id"]
-                encoded = json.dumps(response).encode("utf-8")
-                sys.stdout.buffer.write(struct.pack("<I", len(encoded)) + encoded)
-                sys.stdout.buffer.flush()
-                # Exit on the next request to exercise the real client's loss path.
-                sys.stdin.buffer.read(4)
+                hello = json.loads(sys.argv[1])
+                translation = json.loads(sys.argv[2]) if len(sys.argv) > 2 else None
+                while header := sys.stdin.buffer.read(4):
+                    request = json.loads(sys.stdin.buffer.read(struct.unpack("<I", header)[0]))
+                    response = hello if request["op"] == "hello" else translation
+                    # Without a translation response, exercise the client's loss path.
+                    if response is None: break
+                    response["id"] = request["id"]
+                    encoded = json.dumps(response).encode("utf-8")
+                    sys.stdout.buffer.write(struct.pack("<I", len(encoded)) + encoded)
+                    sys.stdout.buffer.flush()
                 """);
             Client = new(new(python, script, _directory), _ =>
             {
@@ -111,6 +143,8 @@ public sealed class ModelClientCapabilityTests
                 start.ArgumentList.Add("-B");
                 start.ArgumentList.Add(script);
                 start.ArgumentList.Add(response);
+                if (translationResponse is not null)
+                    start.ArgumentList.Add(translationResponse);
                 return new OwnedProcess(Process.Start(start)!);
             });
         }

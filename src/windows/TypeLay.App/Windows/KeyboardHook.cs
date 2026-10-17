@@ -32,7 +32,10 @@ internal sealed partial class KeyboardHook : IInputMonitor
     private nint _hook, _mouseHook;
     private uint _threadId;
     private readonly bool[] _keys = new bool[256];
-    private sealed record SessionKeys(uint Accept, uint Exit, SessionShortcutBindings Bindings);
+    private sealed record SessionKeys(uint Accept, uint Exit, SessionShortcutBindings Bindings)
+    {
+        public bool Supported => Accept != 0 && Exit != 0;
+    }
     private SessionKeys _sessionKeys = new(9, 27, SessionShortcutBindings.Default);
     private volatile bool _sessionEnabled = true;
     private uint? _escapeKeyDown;
@@ -45,26 +48,29 @@ internal sealed partial class KeyboardHook : IInputMonitor
     public long WindowEpoch => Interlocked.Read(ref _windowEpoch);
     private volatile bool _ready;
     public bool Ready => _ready;
-    public bool CanInterceptAcceptance => Ready && _sessionEnabled;
+    public bool CanInterceptAcceptance => Ready && _sessionEnabled && Volatile.Read(ref _sessionKeys).Supported;
     public string ShortcutStatus => _hotkeys.Status;
-    // Staged platform entry point. The shared controller does not activate
-    // custom session bindings until all consumers can confirm the same contract.
+    // Shared preferences may express chords whose ownership this hook has not
+    // implemented. Such a pair must not advertise either session action.
     internal void ConfigureSessionShortcuts(SessionShortcutBindings bindings)
     {
         static uint Key(string value) => value switch
         {
             "Tab" => 9,
             "Esc" => 27,
-            _ => 0x6Fu + uint.Parse(value.AsSpan(1), System.Globalization.CultureInfo.InvariantCulture)
+            _ => SessionShortcutBindings.FunctionKeys.Contains(value)
+                && uint.TryParse(value.AsSpan(1), out uint number) ? 0x6Fu + number : 0
         };
         _gate.Revoke();
         _ownedGate.Revoke();
         Interlocked.Exchange(ref _lease, null);
-        Interlocked.Exchange(ref _sessionKeys, new(Key(bindings.Accept), Key(bindings.Exit), bindings));
+        uint accept = Key(bindings.Accept), exit = Key(bindings.Exit);
+        Interlocked.Exchange(ref _sessionKeys, new(accept != 0 && exit != 0 ? accept : 0,
+            accept != 0 && exit != 0 ? exit : 0, bindings));
         // Outstanding consumed key releases remain owned by their original press.
     }
 
-    internal bool HasSessionConfiguration(SessionShortcutConfiguration configuration) => Ready && _sessionEnabled
+    internal bool HasSessionConfiguration(SessionShortcutConfiguration configuration) => CanInterceptAcceptance
         && configuration.Generation == CommandGeneration
         && configuration.Bindings == Volatile.Read(ref _sessionKeys).Bindings;
     public void ConfigureShortcuts(bool enabled, string wake, string direct, SessionShortcutBindings sessionBindings, bool sessionEnabled)
@@ -299,10 +305,10 @@ internal sealed partial class KeyboardHook : IInputMonitor
         var lease = binding?.Observation;
         long now = WindowsInterruptClock.NowMs;
         ObserveReturnKey(data, down, repeated, injected, now);
-        bool fresh = _sessionEnabled && lease is not null && lease.CommandGeneration == CommandGeneration && lease.UserEpoch == UserEpoch && lease.ForegroundEpoch == ForegroundEpoch
+        var sessionKeys = Volatile.Read(ref _sessionKeys);
+        bool fresh = _sessionEnabled && sessionKeys.Supported && lease is not null && lease.CommandGeneration == CommandGeneration && lease.UserEpoch == UserEpoch && lease.ForegroundEpoch == ForegroundEpoch
             && now >= lease.Source.ObservedAtMs && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
         bool source = fresh && Native.GetForegroundWindow() == (nint)binding!.RootHwnd;
-        var sessionKeys = Volatile.Read(ref _sessionKeys);
         if (ObserveOwnedKey(data, down, repeated, injected, now, sessionKeys.Accept))
             return Native.CallNextHookEx(_hook, code, wParam, lParam);
         var decision = _gate.ProcessAcceptanceKey(new(data.Key, down, repeated, data.Key == sessionKeys.Accept),

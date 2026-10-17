@@ -301,6 +301,7 @@ def ordered_controls(out, env, children, delay_finished=False):
     """Real provider + consumer, synthetic host permits; no model/UI claim."""
     import hashlib
     import socket
+    import uuid
 
     sys.path.insert(0, str(ROOT / "tests/linux"))
     from native_e2e import Native, plan
@@ -431,15 +432,24 @@ def ordered_controls(out, env, children, delay_finished=False):
                     },
                     "text": captured["text"],
                     "selection": captured["selection"],
+                    "observedAtMs": captured["observedAtMs"],
+                    "inputEpoch": captured["authority"]["inputRevision"],
+                    "focusEpoch": captured["authority"]["focusRevision"],
                 }
                 replacement = plan(source, "Translated result")
                 value = {
                     "target": captured["target"],
                     "generation": generation,
                     "authority": captured["authority"],
-                    "permit": {"plan": replacement, "expiresAtMs": now_ms() + 100},
+                    "permit": {
+                        "plan": replacement,
+                        "inputEpoch": source["inputEpoch"],
+                        "focusEpoch": source["focusEpoch"],
+                        "observedAtMs": source["observedAtMs"],
+                        "expiresAtMs": source["observedAtMs"] + 100,
+                    },
                     "lease": {
-                        "source": {"observedAtMs": captured["observedAtMs"]},
+                        "source": dict(source),
                         "escapeAllowed": True,
                         "sessionRevision": 1,
                     },
@@ -634,6 +644,85 @@ def ordered_controls(out, env, children, delay_finished=False):
                 )
                 assert state()["first"]["text"] == "Original source"
                 result["explicit_revoke_passes_pair"] = True
+
+                # Match real Session.Prepare renewal: a new plan ID and fresh
+                # observation timestamps for the same source/candidate. The
+                # original Ctrl press still owns its original plan and deadline.
+                for changed_epoch in (False, True):
+                    prepare()
+                    native.describe()
+                    accepted_before = len(
+                        [event for event in native.events if event.get("event") == "accepted"]
+                    )
+                    keys_before = state()["keys"]
+                    publication = publish()
+                    run(["xdotool", "keydown", "--delay", "0", "Control_L"], env=environment)
+                    try:
+                        wait(
+                            lambda: state().get("keys", {}).get("controlPress", 0)
+                            > keys_before.get("controlPress", 0)
+                            and settled(),
+                            "the original Ctrl reaches its ordinary destination",
+                        )
+                        current = native.describe()["authority"]
+                        renewed = json.loads(json.dumps(publication))
+                        renewed["authority"] = current
+                        renewed["permit"]["plan"]["id"] = str(uuid.uuid4())
+                        observed = current["observedAtMs"]
+                        renewed["permit"]["plan"]["expected"]["observedAtMs"] = observed
+                        renewed["permit"]["observedAtMs"] = observed
+                        renewed["permit"]["expiresAtMs"] = observed + 100
+                        renewed["lease"]["source"]["observedAtMs"] = observed
+                        if changed_epoch:
+                            # Equal text is insufficient when the captured input
+                            # version changes; it cannot replace the frozen ticket.
+                            renewed["permit"]["plan"]["expected"]["inputEpoch"] += 1
+                        assert native.call("publish", renewed)["published"]
+                        assert now_ms() < publication["permit"]["expiresAtMs"], (
+                            "renewal must execute within the original, unextended deadline"
+                        )
+                        run(["xdotool", "keydown", "--delay", "0", "F7"], env=environment)
+                    finally:
+                        run(
+                            [
+                                "xdotool",
+                                "keyup",
+                                "--delay",
+                                "0",
+                                "Control_L",
+                                "keyup",
+                                "--delay",
+                                "0",
+                                "F7",
+                            ],
+                            env=environment,
+                        )
+                    wait(
+                        lambda: settled()
+                        and (
+                            state().get("keys", {}).get("firstF7Release", 0)
+                            == keys_before.get("firstF7Release", 0) + 1
+                            if changed_epoch
+                            else state().get("first", {}).get("text") == "Translated result"
+                        ),
+                        "renewal retains only the original source qualification",
+                    )
+                    native.describe()
+                    accepted = [
+                        event for event in native.events if event.get("event") == "accepted"
+                    ]
+                    if changed_epoch:
+                        assert len(accepted) == accepted_before
+                        assert state()["first"]["text"] == "Original source"
+                        result["same_text_new_input_version_revokes_original_ticket"] = True
+                    else:
+                        assert len(accepted) == accepted_before + 1
+                        assert accepted[-1]["data"]["planId"] == publication["permit"]["plan"]["id"]
+                        assert accepted[-1]["data"]["planId"] != renewed["permit"]["plan"]["id"]
+                        assert accepted[-1]["data"]["receipt"]["status"] == "Verified"
+                        fixture("undo", field="first")
+                        assert state()["first"]["text"] == "Original source"
+                        result["same_candidate_renewal_receipt_keeps_original_plan"] = True
 
                 configure("Tab", "Esc")
                 prepare()

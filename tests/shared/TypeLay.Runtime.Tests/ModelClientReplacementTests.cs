@@ -7,6 +7,20 @@ namespace TypeLay.Runtime.Tests;
 public sealed class ModelClientReplacementTests
 {
     [Fact]
+    public async Task ASubsetCanTakeOverAndSurviveARejectedSuccessor()
+    {
+        using var peers = new Peers();
+        using var client = peers.Client();
+        await client.StartAsync();
+        Assert.True(await client.ReloadAsync(peers.Paths("subset"), () => { }, TestContext.Current.CancellationToken));
+        Assert.Equal(["zh_en"], client.AvailableDirections);
+        Assert.Equal("subset", (await client.TranslateTextAsync("中文", new("auto", "en"))).Text);
+        Assert.False(await client.ReloadAsync(peers.Paths("invalid"), () => throw new Exception("must-not-publish"), TestContext.Current.CancellationToken));
+        Assert.Equal(["zh_en"], client.AvailableDirections);
+        Assert.Equal("subset", (await client.TranslateTextAsync("中文", new("auto", "en"))).Text);
+    }
+
+    [Fact]
     public async Task FailedCandidateAndFailedPublicationKeepTheOldConnectionServing()
     {
         using var peers = new Peers();
@@ -152,7 +166,8 @@ public sealed class ModelClientReplacementTests
                         if name == 'held-hello':
                             print('hello', file=sys.stderr, flush=True)
                             sys.stdin.buffer.read(1)
-                        response = {'status': 'ready', 'directions': ['zh_en'] if name == 'invalid' else ['zh_en','en_zh']}
+                        directions = ['unknown'] if name == 'invalid' else ['zh_en'] if name == 'subset' else ['zh_en','en_zh']
+                        response = {'status': 'ready', 'directions': directions}
                     else:
                         text = request.get('text', '')
                         if text in ('hold', 'fail'):

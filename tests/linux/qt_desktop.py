@@ -29,6 +29,7 @@ def run_qt(
     key,
     typed,
     send_tab,
+    send_control_key,
     trace_checkpoint,
     new_write_outcomes,
     verified_write,
@@ -488,6 +489,17 @@ def run_qt(
                                 lambda: named(host_pid, "设置：" + name),
                                 "real session-key combo was not accessible: " + name,
                             )
+                            saved_key = json.loads(paths.settings.read_text()).get(
+                                "AcceptShortcut" if default == "Tab" else "ExitShortcut", default
+                            )
+                            if saved_key.startswith("Ctrl+"):
+                                selected = Atspi.Selection.get_selected_child(
+                                    combo.get_selection_iface(), 0
+                                )
+                                assert selected and selected.get_name() == saved_key
+                                assert not selected.get_state_set().contains(
+                                    Atspi.StateType.SENSITIVE
+                                )
                             index = 0 if key_name == default else int(key_name[1:])
                             assert Atspi.Selection.select_child(combo.get_selection_iface(), index)
                         save = wait_for(
@@ -863,6 +875,100 @@ def run_qt(
                 command("set", field="second", text=other)
                 wait_for(
                     lambda: state()["second"]["text"] == other, "second field was not prepared"
+                )
+                saved_settings = json.loads(Paths(arguments.package).settings.read_text())
+                assert (saved_settings["AcceptShortcut"], saved_settings["ExitShortcut"]) == (
+                    "Ctrl+F7",
+                    "Ctrl+F8",
+                )
+                control_original = "Please send me the latest report."
+                control_candidate = enter_source(control_original)
+                before_click = state()
+                click_rectangle(before_click, before_click["editorGeometry"])
+                readonly = wait_for(
+                    lambda: value
+                    if (value := state())["overlayEventCount"] > before_click["overlayEventCount"]
+                    else None,
+                    "the read-only Qt candidate did not receive the real click",
+                )
+                assert readonly["editorReadOnly"] and not readonly["editorFocused"]
+                assert readonly["first"]["focused"]
+                assert readonly["first"]["text"] == control_original
+                wait_for(ready_to_accept, "original Qt Ctrl acceptance was not ready")
+                before = state()
+                offset = trace_checkpoint()
+                send_control_key("F7", repeat=True)
+                accepted = wait_for(
+                    lambda: value
+                    if (value := state())["first"]["text"] == control_candidate
+                    and settled(value)
+                    and verified_write(offset)
+                    else None,
+                    "real host/model Ctrl+F7 was not verified exactly once",
+                )
+                assert accepted["first"]["changes"] == before["first"]["changes"] + 1
+                for name in ("firstF7Press", "firstF7Release"):
+                    assert accepted["keys"].get(name, 0) == before["keys"].get(name, 0)
+                assert accepted["second"]["text"] == other
+                key("ctrl+z")
+                wait_for(
+                    lambda: state()["first"]["text"] == control_original and settled(state()),
+                    "one native undo did not restore the Ctrl-accepted source",
+                )
+                enter_source("Please keep this message private.")
+                before_exit = state()
+                exit_offset = trace_checkpoint()
+                wait_for(ready_to_accept, "original Qt Ctrl exit was not ready")
+                send_control_key("F8")
+                exited = wait_for(
+                    lambda: value
+                    if not (value := state())["overlayVisible"]
+                    and status().get("viewState") is None
+                    and settled(value)
+                    else None,
+                    "real host Ctrl+F8 did not exit the original session",
+                )
+                assert exited["first"]["text"] == before_exit["first"]["text"]
+                assert exited["first"]["changes"] == before_exit["first"]["changes"]
+                for name in ("firstF8Press", "firstF8Release"):
+                    assert exited["keys"].get(name, 0) == before_exit["keys"].get(name, 0)
+                assert not new_write_outcomes(exit_offset)
+                set_mode(session_keys=("Tab", "Esc"))
+                ordinary_original = "Please check the current schedule."
+                ordinary_candidate = enter_source(ordinary_original)
+                offset = trace_checkpoint()
+                wait_for(ready_to_accept, "default Qt Tab was not ready after the real UI save")
+                send_tab()
+                wait_for(
+                    lambda: state()["first"]["text"] == ordinary_candidate
+                    and verified_write(offset),
+                    "default Tab did not retain its ordinary acceptance path",
+                )
+                key("ctrl+z")
+                wait_for(
+                    lambda: state()["first"]["text"] == ordinary_original and settled(state()),
+                    "default Tab undo did not restore the ordinary source",
+                )
+                (arguments.output / "qt-control-host-result.json").write_text(
+                    json.dumps(
+                        {
+                            "realModel": True,
+                            "savedConfigurationLoaded": True,
+                            "sourceAcceptRepeatCtrlFirstReleaseAndUndo": True,
+                            "sourceExitWithoutWrite": True,
+                            "editorUnavailable": True,
+                            "savedChordDisplayAndOrdinarySelection": True,
+                            "defaultTabAndUndo": True,
+                            "input": "XTest through nested niri; not physical keyboard",
+                        },
+                        indent=2,
+                    )
+                    + "\n"
+                )
+                evidence.append(
+                    "real production host/model saved Ctrl+F7/F8: source acceptance once, "
+                    "Ctrl-first release, repeat, undo and exit; editing refused; real settings "
+                    "display saved chords and restore Tab/Esc; default Tab and undo pass"
                 )
                 original = "Please send me the latest report."
                 candidate = enter_source(original)

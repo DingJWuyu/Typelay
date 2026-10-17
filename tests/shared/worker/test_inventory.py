@@ -85,7 +85,7 @@ class InventoryTests(unittest.TestCase):
                     LocalEngine(self.root)
 
     def test_missing_or_unknown_legacy_schema_never_loads_or_advertises_directions(self):
-        for fields in ({}, {"schema": 2}):
+        for fields in ({}, {"schema": 2}, {"schema": 3}, {"schema": True}):
             with self.subTest(fields=fields):
                 (self.root / "installed.json").write_text(
                     json.dumps({"files": self.entries, **fields}), encoding="utf8"
@@ -94,6 +94,30 @@ class InventoryTests(unittest.TestCase):
                 self.assertEqual(result, 2)
                 self.assertEqual(loaded, [])
                 self.assertIsNone(response)
+
+    def test_schema2_invalid_selections_never_load_or_advertise_directions(self):
+        for selected in (None, [], ["zh_en", "zh_en"], ["fr_en"], ["zh_en", None], "zh_en"):
+            with self.subTest(selected=selected):
+                self.save(schema=2, directions=selected)
+                result, response, loaded = self.start_worker()
+                self.assertEqual((result, response, loaded), (2, None, []))
+
+    def test_schema2_cannot_claim_files_from_an_unselected_direction(self):
+        self.save(schema=2, directions=["zh_en"])
+        result, response, loaded = self.start_worker()
+        self.assertEqual((result, response, loaded), (2, None, []))
+
+    def test_schema2_cannot_load_an_uninventoried_model_file(self):
+        (self.root / "zh_en/model/config.json").write_text("{}", encoding="utf8")
+        self.save(schema=2, directions=["zh_en", "en_zh"])
+        result, response, loaded = self.start_worker()
+        self.assertEqual((result, response, loaded), (2, None, []))
+
+    def test_schema2_rejects_a_noncanonical_alias_even_when_its_hash_matches(self):
+        self.entries[0]["path"] = "zh_en/model/../model/model.bin"
+        self.save(schema=2, directions=["zh_en", "en_zh"])
+        result, response, loaded = self.start_worker()
+        self.assertEqual((result, response, loaded), (2, None, []))
 
     def test_schema1_hello_advertises_the_complete_bundle_only_after_both_native_loads(self):
         for fields in ({}, {"directions": ["en_zh", "zh_en"]}):
@@ -105,20 +129,86 @@ class InventoryTests(unittest.TestCase):
                 self.assertEqual(response["status"], "ready")
                 self.assertEqual(response["directions"], ["zh_en", "en_zh"])
 
+    def test_schema2_loads_and_advertises_only_its_nonempty_selection(self):
+        entries = self.entries
+        for selected in (["zh_en"], ["en_zh"], ["en_zh", "zh_en"]):
+            with self.subTest(selected=selected):
+                self.entries = [item for item in entries if item["path"].split("/")[0] in selected]
+                self.save(schema=2, directions=selected)
+                result, response, loaded = self.start_worker()
+                self.assertEqual(result, 0)
+                expected = ["zh_en", "en_zh"] if len(selected) == 2 else selected
+                self.assertEqual(loaded, expected)
+                self.assertEqual(response["status"], "ready")
+                self.assertEqual(response["directions"], expected)
+
     def test_second_native_model_load_failure_never_advertises_any_direction(self):
-        result, response, loaded = self.start_worker(fail_load="en_zh")
-        self.assertEqual(result, 2)
-        self.assertEqual(loaded, ["zh_en", "en_zh"])
-        self.assertIsNone(response)
+        for schema in (1, 2):
+            with self.subTest(schema=schema):
+                self.save(schema=schema, directions=["zh_en", "en_zh"])
+                result, response, loaded = self.start_worker(fail_load="en_zh")
+                self.assertEqual(result, 2)
+                self.assertEqual(loaded, ["zh_en", "en_zh"])
+                self.assertIsNone(response)
 
-    def test_legacy_tampered_inventory_never_loads_a_model_or_advertises_directions(self):
+    def test_tampered_inventory_never_loads_a_model_or_advertises_directions(self):
         (self.root / self.entries[0]["path"]).write_bytes(b"changed")
-        result, response, loaded = self.start_worker()
-        self.assertEqual(result, 2)
-        self.assertEqual(loaded, [])
-        self.assertIsNone(response)
+        for fields in ({}, {"schema": 2, "directions": ["zh_en", "en_zh"]}):
+            with self.subTest(fields=fields):
+                self.save(**fields)
+                result, response, loaded = self.start_worker()
+                self.assertEqual(result, 2)
+                self.assertEqual(loaded, [])
+                self.assertIsNone(response)
 
-    def start_worker(self, fail_load=None):
+    def test_schema2_selfcheck_reports_only_the_loaded_selection(self):
+        self.entries = [item for item in self.entries if item["path"].startswith("en_zh/")]
+        self.save(schema=2, directions=["en_zh"])
+        result, response, loaded = self.start_worker(self_check=True)
+        self.assertEqual(result, 0)
+        self.assertEqual(loaded, ["en_zh"])
+        self.assertEqual(response["status"], "passed")
+        self.assertEqual([item["direction"] for item in response["results"]], ["en_zh"])
+
+    def test_subset_requests_keep_detection_same_language_and_manual_append_before_missing_pair(
+        self,
+    ):
+        self.entries = [item for item in self.entries if item["path"].startswith("en_zh/")]
+        self.save(schema=2, directions=["en_zh"])
+        cases = (
+            ("English text", "auto", "en", None, "en", "no-translation", "", ""),
+            ("English text", "zh", "en", None, "en", "no-translation", "", ""),
+            (
+                "English text",
+                "auto",
+                "en",
+                "Manual.",
+                "en",
+                "translated",
+                "Manual. English text",
+                "",
+            ),
+            ("中文", "auto", "en", None, "en", "error", "", "language-unavailable"),
+            ("English text", "auto", "zh", None, "en", "translated", "translated", ""),
+            ("Bonjour", "auto", "en", None, "fr", "error", "", "language-unavailable"),
+            ("???", "auto", "en", None, None, "error", "", "language-unavailable"),
+            ("Bonjour", "fr", "en", None, "fr", "error", "", "invalid-request"),
+        )
+        for text, source, target, preserved, detected, status, output, code in cases:
+            with self.subTest(source=source, target=target, detected=detected, preserved=preserved):
+                request = dict(id=2, op="translate", text=text, source=source, target=target)
+                if preserved is not None:
+                    request["preserved"] = preserved
+                result, responses, loaded = self.start_worker(request=request, detected=detected)
+                self.assertEqual(result, 0)
+                self.assertEqual(loaded, ["en_zh"])
+                self.assertEqual(responses[0]["directions"], ["en_zh"])
+                self.assertEqual(
+                    (responses[1]["status"], responses[1]["text"], responses[1]["code"]),
+                    (status, output, code),
+                )
+
+    def start_worker(self, fail_load=None, *, request=None, detected="en", self_check=False):
         # Control native dependency constructors at their external API, never replace
         # the engine. This proves readiness ordering and protocol, not real inference.
         loaded = []
@@ -130,26 +220,51 @@ class InventoryTests(unittest.TestCase):
             self.assertEqual(options["compute_type"], "int8")
             if pair == fail_load:
                 raise RuntimeError("private native failure")
-            return object()
+            return SimpleNamespace(
+                translate_batch=lambda *_args, **_options: [
+                    SimpleNamespace(hypotheses=[["translated"]])
+                ]
+            )
 
         builder = SimpleNamespace()
         builder.from_all_languages = lambda: builder
         builder.with_low_accuracy_mode = lambda: builder
-        builder.build = lambda: object()
+        builder.build = lambda: SimpleNamespace(
+            detect_language_of=lambda _: SimpleNamespace(
+                iso_code_639_1=SimpleNamespace(name=detected)
+            )
+            if detected
+            else None
+        )
         dependencies = {
             "lingua": SimpleNamespace(LanguageDetectorBuilder=builder),
-            "sentencepiece": SimpleNamespace(SentencePieceProcessor=lambda **_: object()),
+            "sentencepiece": SimpleNamespace(
+                SentencePieceProcessor=lambda **_: SimpleNamespace(
+                    encode=lambda text, **_: text.split()
+                )
+            ),
             "ctranslate2": SimpleNamespace(Translator=load_model),
         }
         incoming, outgoing = io.BytesIO(), io.BytesIO()
         write_frame(incoming, {"id": 1, "op": "hello"})
+        if request is not None:
+            write_frame(incoming, request)
         incoming.seek(0)
+        stdout = io.StringIO() if self_check else SimpleNamespace(buffer=outgoing)
+        arguments = ["run_worker.py", "--models", str(self.root)]
+        if self_check:
+            arguments.append("--self-check")
         with (
             patch.dict(sys.modules, dependencies),
-            patch.object(sys, "argv", ["run_worker.py", "--models", str(self.root)]),
+            patch.object(sys, "argv", arguments),
             patch.object(sys, "stdin", SimpleNamespace(buffer=incoming)),
-            patch.object(sys, "stdout", SimpleNamespace(buffer=outgoing)),
+            patch.object(sys, "stdout", stdout),
         ):
             result = run_worker.main()
+        if self_check:
+            return result, json.loads(stdout.getvalue()), loaded
         outgoing.seek(0)
+        if request is not None:
+            responses = [read_frame(outgoing), read_frame(outgoing)] if outgoing.getvalue() else []
+            return result, responses, loaded
         return result, read_frame(outgoing) if outgoing.getvalue() else None, loaded

@@ -168,6 +168,11 @@ def run(arguments):
         "Mode": 1 if arguments.desktop_scope == "setup" else 0,
     }
 
+    if arguments.desktop_scope == "qt":
+        # The production SettingsStore loads this isolated saved preference.
+        # The real settings UI later selects the ordinary keys again.
+        settings.update(AcceptShortcut="Ctrl+F7", ExitShortcut="Ctrl+F8")
+
     session_bindings = getattr(arguments, "gtk_session_bindings", False)
     accept_key = "Tab"
     gtk_acceptance_phases = []
@@ -275,6 +280,25 @@ def run(arguments):
             if arguments.desktop_scope in ("all", "browser", "qt", "gtk4")
             else None
         )
+        control_keys = (
+            {name: prepare_key(resources, name) for name in ("Control_L", "F7", "F8")}
+            if arguments.desktop_scope == "qt"
+            else {}
+        )
+
+        def send_control_key(name, *, repeat=False):
+            control, function = control_keys["Control_L"], control_keys[name]
+            try:
+                control(True)
+                function(True)
+                if repeat:
+                    function(True)
+            finally:
+                # XSync acknowledges the X server only. There is no wait for
+                # Ctrl's provider retirement before submitting the original Fn.
+                control(False)
+                function(False)
+
         start()
         # A duplicate background request must use the existing real session.
         subprocess.run([str(package / "typelay"), "--background"], env=environment, check=True)
@@ -2554,6 +2578,7 @@ def run(arguments):
                     key=key,
                     typed=typed,
                     send_tab=send_tab,
+                    send_control_key=send_control_key,
                     trace_checkpoint=trace_checkpoint,
                     new_write_outcomes=new_write_outcomes,
                     verified_write=verified_write,
@@ -4219,8 +4244,7 @@ def run(arguments):
             assert json.loads(paths.settings.read_text())["AcceptShortcut"] == "Tab"
             activate_setting("保存修改")
             wait_for(
-                lambda: text(settings_control("设置反馈"))
-                == "请选择有效且不同的接受与退出快捷键。",
+                lambda: text(settings_control("设置反馈")) == "接受与退出请选择有效且不同的主键。",
                 "duplicate session key did not reject the complete draft",
             )
             assert status()["setup"]["settingsDraft"]

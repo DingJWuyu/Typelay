@@ -1101,6 +1101,16 @@ class Settings:
                 widget = Gtk.ComboBoxText()
                 for identity, title in choices:
                     widget.append(identity, title)
+                if key in ("acceptShortcut", "exitShortcut"):
+                    # Only an already-saved chord is displayed. The staged UI
+                    # still offers ordinary keys, including a path back to them.
+                    for cell in widget.get_cells():
+                        widget.set_cell_data_func(
+                            cell,
+                            lambda _layout, renderer, model, iterator, _data: renderer.set_property(
+                                "sensitive", not model.get_value(iterator, 1).startswith("Ctrl+")
+                            ),
+                        )
                 if key in ("source", "target", "acceptShortcut", "exitShortcut"):
                     widget.set_sensitive(False)
             else:
@@ -1356,7 +1366,14 @@ class Settings:
         self.mode_description.set_tooltip_text(value["modeDescription"])
         self.mode_description.get_accessible().set_description(value["modeDescription"])
         self.controls["mode"].set_tooltip_text(value["modeDescription"])
-        self.acceptance_description.set_text(value["acceptanceDescription"])
+        control_session = self.value and any(
+            self.value[key].startswith("Ctrl+") for key in ("acceptShortcut", "exitShortcut")
+        )
+        self.acceptance_description.set_text(
+            "已保存组合键仅用于合作 Qt6 的原输入框接受和退出；当前不支持译文编辑。"
+            if control_session
+            else value["acceptanceDescription"]
+        )
 
     def configure(self, value):
         first = self.value is None
@@ -1371,6 +1388,15 @@ class Settings:
                 if isinstance(widget, Gtk.Switch):
                     widget.set_active(value[key])
                 elif isinstance(widget, Gtk.ComboBoxText):
+                    if key in ("acceptShortcut", "exitShortcut"):
+                        default = "Tab" if key == "acceptShortcut" else "Esc"
+                        choices = [default] + [f"F{number}" for number in range(1, 25)]
+                        if value[key] not in choices:
+                            choices.append(value[key])
+                        if [row[1] for row in widget.get_model()] != choices:
+                            widget.remove_all()
+                            for choice in choices:
+                                widget.append(choice, choice)
                     widget.set_active_id(value[key])
                 else:
                     widget.set_text(value[key])

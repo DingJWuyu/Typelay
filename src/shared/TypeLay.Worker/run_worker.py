@@ -29,6 +29,8 @@ def main() -> int:
     if args.self_check:
         results = []
         for direction in engine.catalog:
+            if direction.id not in engine.directions:
+                continue
             text, source, target = direction.self_check_text, direction.source, direction.target
             start = time.perf_counter()
             result = engine.translate(text, source, target)
@@ -41,7 +43,7 @@ def main() -> int:
                     "elapsedMs": round((time.perf_counter() - start) * 1000, 2),
                 }
             )
-        passed = all(
+        passed = bool(results) and all(
             r["status"] == "translated" and r["nonempty"] and r["differs"] for r in results
         )
         print(

@@ -65,6 +65,27 @@ public sealed class SettingsBehaviorTests : IDisposable
     }
 
     [Fact]
+    public void SavedControlSessionKeysSurviveLoadAndUnrelatedUpdates()
+    {
+        Directory.CreateDirectory(_directory);
+        File.WriteAllText(SettingsPath, """{"Schema":1,"AcceptShortcut":"ctrl+f7","ExitShortcut":"Ctrl+F8","Theme":"dark"}""");
+        var store = new SettingsStore(SettingsPath);
+        Assert.Equal("Ctrl+F7", store.Value.AcceptShortcut);
+        Assert.Equal("Ctrl+F8", store.Value.ExitShortcut);
+        var draft = ShortcutSettingsDraft.From(store.Value) with
+        {
+            Wake = "Ctrl+K"
+        };
+        Assert.True(draft.TryApply(store.Value, out var updated, out _));
+        store.Update(updated!);
+        var reloaded = new SettingsStore(SettingsPath).Value;
+        Assert.Equal("Ctrl+F7", reloaded.AcceptShortcut);
+        Assert.Equal("Ctrl+F8", reloaded.ExitShortcut);
+        Assert.Equal("Ctrl+K", reloaded.WakeShortcut);
+        Assert.Equal("dark", reloaded.Theme);
+    }
+
+    [Fact]
     public void ModeAndIndependentShortcutsPersistAcrossRestart()
     {
         var store = new SettingsStore(SettingsPath);
@@ -176,7 +197,10 @@ public sealed class SettingsBehaviorTests : IDisposable
 
     [Theory]
     [InlineData("F8", "f8")]
-    [InlineData("Ctrl+F8", "Esc")]
+    [InlineData("Ctrl+F8", "ctrl+f8")]
+    [InlineData("F7", "Ctrl+F7")]
+    [InlineData("Ctrl+F7", "F7")]
+    [InlineData("Alt+F8", "Esc")]
     public void InvalidSessionKeysCannotPartiallySaveOrChangeStartup(string accept, string exit)
     {
         var startupChanges = new List<bool>();

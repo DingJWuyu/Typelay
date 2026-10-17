@@ -58,17 +58,22 @@ public static class ModelCatalog
         && (source == "auto" || source == target && SourceChoices.Any(choice => choice.Code == source)
             || Directions.Any(direction => direction.Source == source && direction.Target == target));
 
-    public static bool IsCompleteDirectionSet(IEnumerable<string>? ids)
+    public static bool IsCompleteDirectionSet(IEnumerable<string>? ids) =>
+        ValidatedDirectionCount(ids) == Directions.Count;
+
+    public static bool IsValidDirectionSet(IEnumerable<string>? ids) => ValidatedDirectionCount(ids) > 0;
+
+    private static int ValidatedDirectionCount(IEnumerable<string>? ids)
     {
         if (ids is null)
-            return false;
+            return 0;
         HashSet<string> seen = new(StringComparer.Ordinal);
         foreach (string id in ids)
         {
             if (id is null || !seen.Add(id) || !Directions.Any(direction => direction.Id == id))
-                return false;
+                return 0;
         }
-        return seen.Count == Directions.Count;
+        return seen.Count;
     }
 
     private static bool LanguageCode(string code) => code is { Length: 2 }

@@ -912,6 +912,54 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
     }
 
     [Fact]
+    public Task SavedControlChordIsVisibleButOnlyOrdinaryKeysCanBeSelected() => desktop.RunAsync(() =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-saved-control-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string path = Path.Combine(directory, "settings.json");
+            var settings = WindowsRuntime.CreateSettings(path);
+            settings.Update(settings.Value with
+            {
+                AcceptShortcut = "Ctrl+F7",
+                ExitShortcut = "Ctrl+F8"
+            });
+            using var model = WindowsRuntime.CreateModel();
+            var window = new SettingsWindow(settings, model, () => { });
+            window.ShowPage("shortcuts");
+            window.UpdateLayout();
+            var accept = SessionShortcutSelector(window, accept: true);
+            var exit = SessionShortcutSelector(window, accept: false);
+            Assert.Equal("Ctrl+F7", accept.SelectedItem);
+            Assert.Equal("Ctrl+F8", exit.SelectedItem);
+            Assert.Single(accept.Items.Cast<string>(), value => value.StartsWith("Ctrl+", StringComparison.Ordinal));
+            Assert.Contains(Descendants(window).OfType<TextBlock>(), value => value.Text.Contains("Windows 不可用", StringComparison.Ordinal));
+            accept.IsDropDownOpen = true;
+            window.UpdateLayout();
+            var saved = Assert.IsType<ComboBoxItem>(accept.ItemContainerGenerator.ContainerFromItem("Ctrl+F7"));
+            Assert.False(saved.IsEnabled);
+            accept.IsDropDownOpen = false;
+            ShortcutEditor(window).Text = "Ctrl+K";
+            Save();
+            Assert.Equal("Ctrl+F7", WindowsRuntime.CreateSettings(path).Value.AcceptShortcut);
+            accept.SelectedItem = "Tab";
+            exit.SelectedItem = "Esc";
+            Save();
+            Assert.Equal("Tab", WindowsRuntime.CreateSettings(path).Value.AcceptShortcut);
+            Assert.Equal("Esc", WindowsRuntime.CreateSettings(path).Value.ExitShortcut);
+            Assert.DoesNotContain(accept.Items.Cast<string>(), value => value.StartsWith("Ctrl+", StringComparison.Ordinal));
+            window.Close();
+            void Save() => Descendants(window).OfType<Button>().Single(button =>
+                Equals(button.Content, SettingsDraftPresentation.Create().SaveLabel)).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    });
+
+    [Fact]
     public async Task ShortcutDraftSavesOnlyValidPairsAndRefreshesCleanValues()
     {
         await desktop.RunAsync(() =>

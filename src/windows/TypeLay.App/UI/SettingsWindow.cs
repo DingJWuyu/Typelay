@@ -592,7 +592,11 @@ internal sealed class SettingsWindow : Window
         RefreshPracticeProgress();
         var details = new StackPanel { Margin = new(0, 10, 0, 0) };
         details.Children.Add(UiTheme.Text(guidance.ModeDescription, 12, true));
-        var acceptance = UiTheme.Text(guidance.AcceptanceDescription, 12, true);
+        var acceptance = UiTheme.Text(
+            _settings.Value.AcceptShortcut.StartsWith("Ctrl+", StringComparison.Ordinal)
+                || _settings.Value.ExitShortcut.StartsWith("Ctrl+", StringComparison.Ordinal)
+                ? "当前组合键在 Windows 不可用，请在快捷键中选择普通键。"
+                : guidance.AcceptanceDescription, 12, true);
         acceptance.Margin = new(0, 8, 0, 0);
         details.Children.Add(acceptance);
         _content.Children.Add(new Expander { Header = "使用说明", Content = details, Margin = new(0, 10, 0, 0) });
@@ -800,14 +804,16 @@ internal sealed class SettingsWindow : Window
             {
                 UpdateShortcutText(_wakeShortcutInput, _settings.Value.WakeShortcut);
                 UpdateShortcutText(_directShortcutInput, _settings.Value.DirectShortcut);
-                _acceptShortcutInput.SelectedItem = _settings.Value.AcceptShortcut;
-                _exitShortcutInput.SelectedItem = _settings.Value.ExitShortcut;
+                UpdateSessionShortcutInput(_acceptShortcutInput, _settings.Value.AcceptShortcut, "Tab");
+                UpdateSessionShortcutInput(_exitShortcutInput, _settings.Value.ExitShortcut, "Esc");
             }
             finally { _updatingShortcuts = false; }
         }
         string accept = _acceptShortcutInput.SelectedItem as string ?? _settings.Value.AcceptShortcut;
         if (_returnShortcutHint is not null)
-            _returnShortcutHint.Text = accept + " → " + accept;
+            _returnShortcutHint.Text = accept.StartsWith("Ctrl+", StringComparison.Ordinal)
+                || (_exitShortcutInput.SelectedItem as string)?.StartsWith("Ctrl+", StringComparison.Ordinal) == true
+                    ? "当前组合键在 Windows 不可用；请选择普通键。" : accept + " → " + accept;
         RefreshDraftBar();
         _shortcutStatus.Text = ShortcutStatus?.Invoke() ?? "仅在启用 TypeLay 的按需模式下生效。自动模式不注册这两个快捷键。";
     }
@@ -880,13 +886,31 @@ internal sealed class SettingsWindow : Window
     {
         var input = new ComboBox
         {
-            ItemsSource = new[] { defaultKey }.Concat(SessionShortcutBindings.FunctionKeys).ToArray(),
-            SelectedItem = value,
             Width = 178,
             VerticalAlignment = VerticalAlignment.Center
         };
+        UpdateSessionShortcutInput(input, value, defaultKey);
         System.Windows.Automation.AutomationProperties.SetName(input, label);
         return input;
+    }
+    private static void UpdateSessionShortcutInput(ComboBox input, string value, string defaultKey)
+    {
+        var choices = new[] { defaultKey }.Concat(SessionShortcutBindings.FunctionKeys).ToList();
+        bool savedOnly = !choices.Contains(value);
+        if (savedOnly)
+            choices.Add(value);
+        if (!input.Items.Cast<string>().SequenceEqual(choices))
+            input.ItemsSource = choices;
+        Style? style = null;
+        if (savedOnly)
+        {
+            style = new Style(typeof(ComboBoxItem), input.TryFindResource(typeof(ComboBoxItem)) as Style);
+            var current = new DataTrigger { Binding = new System.Windows.Data.Binding(), Value = value };
+            current.Setters.Add(new Setter(IsEnabledProperty, false));
+            style.Triggers.Add(current);
+        }
+        input.ItemContainerStyle = style;
+        input.SelectedItem = value;
     }
     private static TextBox ShortcutInput(string value, string label)
     {

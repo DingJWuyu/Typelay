@@ -1851,6 +1851,32 @@ public sealed class SessionControllerTests
     }
 
     [Fact]
+    public void NativeReceiptForTheOriginalPublicationCompletesAfterObservationRenewal()
+    {
+        using var s = new SessionScenario(experimental: true);
+        s.ReadyCandidate();
+        var original = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Tick(200);
+        var renewed = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        Assert.NotEqual(original.Plan.Id, renewed.Plan.Id);
+        Assert.Equal(original.Plan.SessionId, renewed.Plan.SessionId);
+        Assert.Equal(original.Plan.Revision, renewed.Plan.Revision);
+        var after = s.Fresh with
+        {
+            Text = original.Plan.ResultText,
+            Selection = new(original.Plan.Caret, original.Plan.Caret)
+        };
+        s.Input.Notices.Enqueue(new("accept", original, CompletedReceipt:
+            new(WriteStatus.Verified, Denial.None, after)));
+        s.Source = after;
+        s.Tick();
+        Assert.Empty(s.Service.Writes);
+        Assert.Equal(SessionState.NoSession, s.View.State);
+        s.Tick();
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
     public void LateNativeReceiptCannotReplaceANewerFieldsDraft()
     {
         using var s = new SessionScenario(experimental: true);

@@ -550,6 +550,25 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
         saved = json.loads((self.home / "config/settings.json").read_text())
         self.assertEqual((saved["AcceptShortcut"], saved["ExitShortcut"]), ("F7", "F8"))
 
+    async def test_control_session_keys_use_the_normal_draft_and_persistence_path(self):
+        self.assertTrue(await self.ask("start"))
+        result = await self.ask("saveSettingsDraft", self.draft("ctrl+f7", "Ctrl+F8"))
+        self.assertTrue(result["saved"])
+        settings = self.latest("settings")
+        self.assertEqual(
+            (settings["acceptShortcut"], settings["exitShortcut"]), ("Ctrl+F7", "Ctrl+F8")
+        )
+        configuration = self.latest("shortcuts")
+        self.assertEqual((configuration["accept"], configuration["exit"]), ("Ctrl+F7", "Ctrl+F8"))
+        self.assertEqual((await self.ask("sessionShortcutSettings"))["acceptKey"], "Ctrl+F7")
+        saved = json.loads((self.home / "config/settings.json").read_text())
+        self.assertEqual((saved["AcceptShortcut"], saved["ExitShortcut"]), ("Ctrl+F7", "Ctrl+F8"))
+        for accept, exit_key in (("Ctrl+F7", "ctrl+f7"), ("F7", "Ctrl+F7"), ("Ctrl+Tab", "Esc")):
+            self.assertFalse(
+                (await self.ask("saveSettingsDraft", self.draft(accept, exit_key)))["saved"]
+            )
+            self.assertEqual(json.loads((self.home / "config/settings.json").read_text()), saved)
+
     async def test_practice_progress_requires_fresh_run_exact_target_and_real_completion(self):
         self.assertTrue(
             await self.ask(
@@ -646,7 +665,7 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
         generation = self.latest("shortcuts")["generation"]
         result = await self.ask("saveSettingsDraft", self.draft("F12", "F12"))
         self.assertFalse(result["saved"])
-        self.assertEqual(result["message"], "请选择有效且不同的接受与退出快捷键。")
+        self.assertEqual(result["message"], "接受与退出请选择有效且不同的主键。")
         self.assertEqual(self.latest("shortcuts")["generation"], generation)
         hints = await self.ask("sessionShortcutSettings")
         self.assertEqual((hints["acceptKey"], hints["exitKey"]), ("F7", "F8"))

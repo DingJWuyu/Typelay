@@ -27,7 +27,7 @@ public sealed record SessionShortcutBindings
     {
         bindings = null;
         string? parsedAccept = ParseKey(accept, "Tab"), parsedExit = ParseKey(exit, "Esc");
-        if (parsedAccept is null || parsedExit is null || parsedAccept == parsedExit)
+        if (parsedAccept is null || parsedExit is null || SameMainKey(parsedAccept, parsedExit))
             return false;
         bindings = new(parsedAccept, parsedExit);
         return true;
@@ -39,8 +39,14 @@ public sealed record SessionShortcutBindings
     {
         string parsedAccept = ParseKey(accept, "Tab") ?? "Tab";
         string parsedExit = ParseKey(exit, "Esc") ?? "Esc";
-        return new(parsedAccept, parsedAccept == parsedExit ? "Esc" : parsedExit);
+        return new(parsedAccept, SameMainKey(parsedAccept, parsedExit) ? "Esc" : parsedExit);
     }
+
+    // The current native route owns one action per physical function key.
+    // A shared preference must not save a pair the staged route cannot admit.
+    private static bool SameMainKey(string first, string second) =>
+        (first.StartsWith("Ctrl+", StringComparison.Ordinal) ? first[5..] : first)
+        == (second.StartsWith("Ctrl+", StringComparison.Ordinal) ? second[5..] : second);
 
     private static string? ParseKey(string? text, string defaultKey)
     {
@@ -49,6 +55,9 @@ public sealed record SessionShortcutBindings
         text = text.Trim();
         if (text.Equals(defaultKey, StringComparison.OrdinalIgnoreCase))
             return defaultKey;
-        return FunctionKeys.FirstOrDefault(key => key.Equals(text, StringComparison.OrdinalIgnoreCase));
+        bool control = text.StartsWith("Ctrl+", StringComparison.OrdinalIgnoreCase);
+        string keyText = control ? text[5..] : text;
+        string? key = FunctionKeys.FirstOrDefault(key => key.Equals(keyText, StringComparison.OrdinalIgnoreCase));
+        return key is null ? null : control ? "Ctrl+" + key : key;
     }
 }

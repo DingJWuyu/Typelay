@@ -918,10 +918,18 @@ private:
         // with a frozen ticket. It never replaces that ticket's original clock.
         for (auto *object : {&previous, &incoming}) {
             auto authority = object->value("authority").toObject();
-            authority.remove("observedAtMs"); authority.remove("contextStamp");
+            authority.remove("observedAtMs");
+            auto stamp = authority.value("contextStamp").toObject();
+            // Renewal can retain the ticket, never grant continuity. Only Decide
+            // proves this local epoch belongs to the original Ctrl prefix.
+            stamp.remove("epoch"); authority.insert("contextStamp", stamp);
             object->insert("authority", authority);
             auto permit = object->value("permit").toObject();
-            permit.remove("expiresAtMs"); object->insert("permit", permit);
+            permit.remove("expiresAtMs"); permit.remove("observedAtMs");
+            auto plan = permit.value("plan").toObject(); plan.remove("id");
+            auto expected = plan.value("expected").toObject(); expected.remove("observedAtMs");
+            plan.insert("expected", expected); permit.insert("plan", plan);
+            object->insert("permit", permit);
             auto lease = object->value("lease").toObject();
             auto source = lease.value("source").toObject(); source.remove("observedAtMs");
             lease.insert("source", source); object->insert("lease", lease);

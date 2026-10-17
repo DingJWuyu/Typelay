@@ -16,6 +16,7 @@ public sealed class SettingsDraftPresentationTests
     [Theory]
     [InlineData("Tab", "Esc")]
     [InlineData("F24", "F1")]
+    [InlineData("Ctrl+F7", "Ctrl+F8")]
     public void ExpiredAcceptanceUsesTheSamePassThroughHintOnEveryRenderer(string accept, string exit)
     {
         var bindings = TypeLay.Core.SessionShortcutBindings.Restore(accept, exit);
@@ -95,7 +96,8 @@ public sealed class SettingsDraftPresentationTests
         Assert.Equal("F12 接受译文", view.AcceptHint);
         Assert.Equal("F12 返回原输入框", view.ReturnHint);
         Assert.Equal("F7 退出当前翻译", view.ExitHint);
-        Assert.Contains("修饰键组合尚未提供", view.ScopeNote);
+        Assert.Contains("已保存组合键", view.ScopeNote);
+        Assert.Contains("当前输入适配器确认", view.ScopeNote);
         var defaults = SettingsDraftPresentation.SessionShortcuts(TypeLay.Core.SessionShortcutBindings.Default);
         Assert.Equal("Tab", defaults.AcceptKey);
         Assert.Equal("Esc", defaults.ExitKey);

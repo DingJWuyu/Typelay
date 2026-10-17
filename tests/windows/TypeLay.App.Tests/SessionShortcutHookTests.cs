@@ -140,6 +140,31 @@ public sealed class SessionShortcutHookTests(WpfDesktopFixture desktop)
                 Assert.Contains(Key.F7, down);
                 Assert.Contains(Key.F7, up);
                 Assert.False(hook.TryRead(out _));
+                // Loading a shared Ctrl chord disables both Windows actions,
+                // without releasing the earlier consumed physical press.
+                Configure("F8", "F7");
+                Publish();
+                Send(0x77, true);
+                Assert.NotNull((await Notice("accept")).Permit);
+                Configure("Ctrl+F8", "Esc");
+                Assert.False(hook.CanInterceptAcceptance);
+                Assert.False(hook.HasSessionConfiguration(new(hook.CommandGeneration,
+                    SessionShortcutBindings.Restore("Ctrl+F8", "Esc"))));
+                Publish();
+                int exitDown = down.Count(key => key == Key.Escape);
+                int functionDown = down.Count(key => key == Key.F8);
+                Send(0x77, false);
+                Send(27, true);
+                Send(27, false);
+                Send(0x77, true);
+                Send(0x77, false);
+                await SourceBarrier();
+                Assert.Equal(exitDown + 1, down.Count(key => key == Key.Escape));
+                Assert.Equal(functionDown + 1, down.Count(key => key == Key.F8));
+                Assert.Equal(1, up.Count(key => key == Key.F8));
+                Assert.False(hook.TryRead(out _));
+                Configure("Tab", "Esc");
+                Assert.True(hook.CanInterceptAcceptance);
                 Assert.Equal("Synthetic hook source", input.Text);
                 Assert.True(input.IsKeyboardFocused);
             }

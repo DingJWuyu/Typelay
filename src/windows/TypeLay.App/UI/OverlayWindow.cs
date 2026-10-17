@@ -101,9 +101,13 @@ internal sealed class OverlayWindow : Window, ISessionView
     {
         if (_shortcutMessages.AcceptKey == bindings.Accept && _shortcutMessages.ExitKey == bindings.Exit)
             return;
-        static Key EditorKey(string value) => value == "Esc" ? Key.Escape : Enum.Parse<Key>(value);
+        static Key EditorKey(string value) => value == "Esc" ? Key.Escape
+            : Enum.TryParse(value, out Key key) && (key == Key.Tab || key is >= Key.F1 and <= Key.F24)
+                ? key : Key.None;
         _acceptKey = EditorKey(bindings.Accept);
         _exitKey = EditorKey(bindings.Exit);
+        if (_acceptKey == Key.None || _exitKey == Key.None)
+            _acceptKey = _exitKey = Key.None;
         _shortcutMessages = SettingsDraftPresentation.SessionShortcuts(bindings);
         ((TextBlock)_acceptKeycap.Child).Text = _shortcutMessages.AcceptKey;
         ((TextBlock)_escapeKeycap.Child).Text = _shortcutMessages.ExitKey;

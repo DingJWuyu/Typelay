@@ -780,7 +780,15 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             Assert.Equal(SessionState.ReturningToSource, session.State);
             Assert.Equal("A manual draft", session.Draft);
             Assert.Equal("Source text", input.Text);
+            Assert.True(SessionShortcutBindings.TryParse("Ctrl+F8", "Esc", out var unsupported));
+            overlay.ConfigureSessionShortcuts(unsupported!);
+            Assert.False(EditorKey(editor, Key.Escape, Keyboard.PreviewKeyDownEvent).Handled);
+            Assert.False(EditorKey(editor, Key.Escape, Keyboard.PreviewKeyUpEvent).Handled);
+            Assert.False(EditorKey(editor, Key.F8, Keyboard.PreviewKeyDownEvent).Handled);
+            Assert.False(EditorKey(editor, Key.F8, Keyboard.PreviewKeyUpEvent).Handled);
+            Assert.Equal(0, exits);
             Assert.True(EditorKey(editor, Key.F12, Keyboard.PreviewKeyUpEvent).Handled);
+            overlay.ConfigureSessionShortcuts(bindings!);
             Assert.True(EditorKey(editor, Key.F7, Keyboard.PreviewKeyDownEvent).Handled);
             Assert.Equal(1, returns);
             Assert.Equal(1, exits);

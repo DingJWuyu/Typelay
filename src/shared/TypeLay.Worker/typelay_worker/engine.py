@@ -107,10 +107,9 @@ class Ct2Pair:
 
 
 class LocalEngine:
-    def __init__(self, models: Path, *, verify: bool = True):
+    def __init__(self, models: Path):
         self.catalog = load_catalog()
-        if verify:
-            self._verify_inventory(models, self.catalog)
+        selected = self._verify_inventory(models, self.catalog)
         from lingua import LanguageDetectorBuilder
 
         # A real offline detector is used; Auto is not a Han/non-Han dictionary substitute.
@@ -120,21 +119,52 @@ class LocalEngine:
         threads = max(1, min(4, (os.cpu_count() or 2) // 2))
         self._pairs = {
             (direction.source, direction.target): Ct2Pair(models / direction.id, threads)
-            for direction in self.catalog
+            for direction in selected
         }
 
     @staticmethod
-    def _verify_inventory(models: Path, catalog: tuple[ModelDirection, ...]) -> None:
+    def _verify_inventory(
+        models: Path, catalog: tuple[ModelDirection, ...]
+    ) -> tuple[ModelDirection, ...]:
         try:
             inventory = json.loads((models / "installed.json").read_text(encoding="utf-8"))
-            if type(inventory.get("schema")) is not int or inventory["schema"] != 1:
+            if not isinstance(inventory, dict):
                 raise EngineError("model-inventory")
+            schema = inventory.get("schema")
+            if type(schema) is not int or schema not in (1, 2):
+                raise EngineError("model-inventory")
+            selected = catalog
+            if schema == 2 or "directions" in inventory:
+                directions = inventory["directions"]
+                if (
+                    not isinstance(directions, list)
+                    or not directions
+                    or any(not isinstance(value, str) for value in directions)
+                    or len(set(directions)) != len(directions)
+                    or not set(directions).issubset(direction.id for direction in catalog)
+                    or (schema == 1 and len(directions) != len(catalog))
+                ):
+                    raise EngineError("model-inventory")
+                selected = tuple(direction for direction in catalog if direction.id in directions)
             entries = inventory["files"]
-            if not isinstance(entries, list) or not 4 <= len(entries) <= 20000:
+            if not isinstance(entries, list) or not 2 * len(selected) <= len(entries) <= 20000:
                 raise EngineError("model-inventory")
             seen: set[str] = set()
             for item in entries:
                 relative, expected = item["path"], item["sha256"]
+                if schema == 2:
+                    if not isinstance(relative, str) or not isinstance(expected, str):
+                        raise EngineError("model-inventory")
+                    parts = relative.split("/")
+                    if (
+                        len(parts) < 2
+                        or parts[0] not in {direction.id for direction in selected}
+                        or any(
+                            part in ("", ".", "..") or "\\" in part or ":" in part for part in parts
+                        )
+                        or not re.fullmatch(r"[0-9a-fA-F]{64}", expected)
+                    ):
+                        raise EngineError("model-inventory")
                 path = (models / relative).resolve()
                 if not path.is_relative_to(models.resolve()) or relative in seen:
                     raise EngineError("model-inventory")
@@ -145,28 +175,39 @@ class LocalEngine:
                     raise EngineError("model-integrity")
             required = {
                 f"{p}/{f}"
-                for p in (direction.id for direction in catalog)
+                for p in (direction.id for direction in selected)
                 for f in ("model/model.bin", "sentencepiece.model")
             }
             if not required.issubset(seen):
                 raise EngineError("model-inventory")
-            # Legacy schema-1 inventories have no direction claim. Infer the full bundle
-            # only after every listed file and both directions' required files pass.
-            if "directions" in inventory:
-                directions = inventory["directions"]
-                if (
-                    not isinstance(directions, list)
-                    or any(not isinstance(value, str) for value in directions)
-                    or len(directions) != len(catalog)
-                    or set(directions) != {direction.id for direction in catalog}
-                ):
+            if schema == 2:
+                # Every file the selected native models can read must be inventoried;
+                # leftover unselected folders never grant or extend capability.
+                actual_files: set[str] = set()
+                for direction in selected:
+                    directory = models / direction.id
+                    if directory.is_symlink():
+                        raise EngineError("model-inventory")
+                    for path in directory.rglob("*"):
+                        if path.is_symlink():
+                            raise EngineError("model-inventory")
+                        if path.is_file():
+                            actual_files.add(path.relative_to(models).as_posix())
+                if actual_files != seen:
                     raise EngineError("model-inventory")
+            # A legacy inventory without directions still requires the full bundle.
+            # Native loading must also finish before any hello can advertise it.
+            return selected
         except (OSError, KeyError, ValueError, TypeError):
             raise EngineError("model-inventory") from None
 
     @property
     def directions(self) -> tuple[str, ...]:
-        return tuple(direction.id for direction in self.catalog)
+        return tuple(
+            direction.id
+            for direction in self.catalog
+            if (direction.source, direction.target) in self._pairs
+        )
 
     def translate(
         self, text: str, source: str, target: str, preserved: str | None = None
