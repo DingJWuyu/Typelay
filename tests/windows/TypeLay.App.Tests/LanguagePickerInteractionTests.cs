@@ -51,7 +51,7 @@ public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
             await fixture.FailModelStartAsync();
             AssertSearch(fixture.Window, source, editor, search);
             Assert.DoesNotContain(Descendants(fixture.Window).OfType<TextBlock>(), text =>
-                text.Text.StartsWith("设置未保存", StringComparison.Ordinal));
+                IsVisibleSaveFailure(text, quickPanel));
         }
         Assert.Equal(1, changes);
         var saved = new SettingsStore(fixture.Path).Value;
@@ -138,7 +138,7 @@ public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
             AssertChoice(fixture, source, editor, previous: false);
             Assert.Equal(2, changes);
             Assert.Contains(Descendants(fixture.Window).OfType<TextBlock>(), text =>
-                text.IsVisible && text.Text.StartsWith("设置未保存", StringComparison.Ordinal));
+                IsVisibleSaveFailure(text, quickPanel));
             await fixture.FailModelStartAsync();
             AssertChoice(fixture, source, editor, previous: false);
         }
@@ -146,7 +146,7 @@ public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
         AssertChoice(fixture, source, editor, previous: true);
         Assert.Equal(3, changes);
         Assert.DoesNotContain(Descendants(fixture.Window).OfType<TextBlock>(), text =>
-            text.IsVisible && text.Text.StartsWith("设置未保存", StringComparison.Ordinal));
+            IsVisibleSaveFailure(text, quickPanel));
         await PressKeyAsync(fixture.Window, 0x09); // Tab uses the focus retained after saving.
         Assert.False(Language(fixture.Window, source).IsKeyboardFocusWithin);
         Assert.True(fixture.Window.IsKeyboardFocusWithin);
@@ -186,6 +186,10 @@ public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
         Assert.False(saved.Enabled);
         Assert.Equal(3, changes);
     });
+
+    private static bool IsVisibleSaveFailure(TextBlock text, bool quickPanel) => text.IsVisible
+        && text.Text == (quickPanel ? SettingsDraftPresentation.SaveUnconfirmedMessage
+            : "设置未保存\n请检查当前用户目录与组织策略。");
 
     private static void AssertSearch(Window window, bool source, TextBox editor, string search = "zz")
     {
