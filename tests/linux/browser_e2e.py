@@ -19,8 +19,9 @@ from playwright.sync_api import sync_playwright
 from support.browser_process import chromium_context
 
 ROOT = Path(__file__).resolve().parents[2]
-CONTENT = ROOT / "src/linux/browser/content.js"
-BRIDGE = ROOT / "src/linux/browser/editor-bridge.js"
+CONTENT = ROOT / "src/shared/browser/content.js"
+BACKGROUND = ROOT / "src/shared/browser/background.js"
+BRIDGE = ROOT / "src/shared/browser/editor-bridge.js"
 FIXTURE = """<!doctype html><meta charset='utf-8'>
 <label>Message <textarea id='source'></textarea></label>
 <input id='other'><input id='password' type='password'>
@@ -260,6 +261,7 @@ class BrowserContract(unittest.TestCase):
                 "exit": "F24",
                 "sourceReady": True,
                 "editorReady": True,
+                "shortcutDispatch": "page",
             },
         )
         self.command(
@@ -274,6 +276,159 @@ class BrowserContract(unittest.TestCase):
         self.page.keyboard.press("F1")
         self.assertEqual(self.page.locator("#source").input_value(), "你好")
         self.assertEqual(len(self.accepted()), 1)
+
+    def test_background_reconnect_cannot_assign_a_late_reply_to_a_new_request(self):
+        result = self.page.evaluate(
+            """source => {
+              const event = () => {
+                const listeners = [];
+                return {addListener: callback => listeners.push(callback),
+                  emit: message => listeners.forEach(callback => callback(message))};
+              };
+              const port = () => ({onMessage: event(), onDisconnect: event(), sent: [],
+                postMessage(message) { this.sent.push(message); }, disconnect() {}});
+              const connections = [], onConnect = event();
+              const extensionId = 'a'.repeat(32), documentToken = '1'.repeat(36);
+              let clock = 0;
+              const chrome = {runtime: {id: extensionId, onConnect,
+                connectNative() { const connection = port(); connections.push(connection); return connection; }}};
+              // Run the production extension listener; only browser transport
+              // ports and the reconnect clock are controlled at their boundary.
+              new Function('chrome', 'performance', source)(chrome, {now: () => clock});
+              const document = port();
+              document.name = 'typelay-document';
+              document.sender = {id: extensionId, frameId: 0, documentId: 'browser-document',
+                tab: {id: 1, windowId: 1}, url: 'https://example.test/'};
+              onConnect.emit(document);
+              document.onMessage.emit({event: 'document', data: documentToken});
+              document.onMessage.emit({event: 'focus', data: true});
+              connections[0].onMessage.emit({id: 1, op: 'describe'});
+              const previousId = document.sent.at(-1).id;
+              connections[0].onDisconnect.emit();
+              clock = 2100;
+              document.onMessage.emit({event: 'focus', data: true});
+              connections[1].onMessage.emit({op: 'configure-shortcuts', data: {shortcutDispatch: 'native'}});
+              connections[1].onMessage.emit({id: 1, op: 'capture', data: {target: documentToken + ':1'}});
+              const currentId = document.sent.at(-1).id;
+              document.onMessage.emit({id: previousId, data: {oldConnectionReply: true}});
+              document.onMessage.emit({id: currentId, data: {currentConnectionReply: true}});
+              return {replies: connections[1].sent.filter(message => message.id !== undefined),
+                extensionId, documentToken};
+            }""",
+            BACKGROUND.read_text(),
+        )
+        self.assertEqual(len(result["replies"]), 1)
+        response = result["replies"][0]
+        self.assertEqual(response["id"], 1)
+        self.assertEqual(response["data"], {"currentConnectionReply": True})
+        self.assertEqual(response["route"]["extensionId"], result["extensionId"])
+        self.assertEqual(response["route"]["documentToken"], result["documentToken"])
+
+    def shortcut_snapshot(self, dispatch=None):
+        return self.page.evaluate(
+            """dispatch => {
+              const configuration = {generation: 'shortcut-dispatch', enabled: true,
+                sessionEnabled: true, accept: 'Tab', exit: 'Esc', wake: {keyval: 65478, modifiers: 0},
+                direct: {keyval: 65479, modifiers: 0}};
+              if (dispatch !== null) configuration.shortcutDispatch = dispatch;
+              fixtureCommand({id: 701, op: 'configure-shortcuts', data: configuration});
+              const description = fixtureCommand({id: 702, op: 'describe'});
+              const snapshot = fixtureCommand({id: 703, op: 'capture', data: {
+                target: description.target, authority: description.authority}});
+              fixtureCommand({id: 704, op: 'publish-shortcut', data: {
+                target: snapshot.target, authority: snapshot.authority,
+                generation: configuration.generation}});
+              return snapshot;
+            }""",
+            dispatch,
+        )
+
+    def test_page_shortcut_dispatch_remains_the_default(self):
+        self.type_source()
+        for key, kind in (("F9", "wake"), ("F10", "direct")):
+            with self.subTest(key=key):
+                snapshot = self.shortcut_snapshot()
+                self.assertEqual(snapshot["sessionBindings"]["shortcutDispatch"], "page")
+                self.page.keyboard.press(key)
+                self.assertEqual(
+                    self.page.evaluate(
+                        "fixtureMessages.filter(item => item.event === 'shortcut').at(-1).data.kind"
+                    ),
+                    kind,
+                )
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+
+    def test_native_shortcut_uses_one_reply_and_preserves_the_host_command(self):
+        self.type_source()
+        snapshot = self.shortcut_snapshot("native")
+        self.assertEqual(snapshot["sessionBindings"]["shortcutDispatch"], "native")
+        self.page.keyboard.press("F9")
+        self.page.keyboard.press("F10")
+        self.page.keyboard.press("Escape")  # Close Chromium's unclaimed F10 menu, if opened.
+        self.page.locator("#source").focus()
+        # Each request keeps its original authority while an ordinary same-source
+        # publication may have a newer token. All work remains in one DOM turn.
+        result = self.page.evaluate("""() => {
+          const description = fixtureCommand({id: 711, op: 'describe'});
+          const source = fixtureCommand({id: 712, op: 'capture', data: {
+            target: description.target, authority: description.authority}});
+          const renewed = fixtureCommand({id: 713, op: 'capture', data: {
+            target: source.target, authority: source.authority}});
+          fixtureCommand({id: 714, op: 'publish-shortcut', data: {
+            target: renewed.target, authority: renewed.authority, generation: 'shortcut-dispatch'}});
+          const triggeredAtMs = fixtureHostClock().boottimeMs;
+          const response = fixtureCommand({id: 715, op: 'trigger-shortcut', data: {
+            target: source.target, authority: source.authority, generation: 'shortcut-dispatch',
+            kind: 'wake', commandId: 37, triggeredAtMs}});
+          return {response, triggeredAtMs, target: source.target, text: source.text};
+        }""")
+        response = result["response"]
+        self.assertTrue(response["triggered"])
+        self.assertEqual(response["commandId"], 37)
+        self.assertEqual(response["triggeredAtMs"], result["triggeredAtMs"])
+        self.assertEqual(response["native"]["target"], result["target"])
+        self.assertEqual(response["native"]["text"], result["text"])
+        self.assertEqual(
+            self.page.evaluate("fixtureMessages.filter(item => item.event === 'shortcut')"), []
+        )
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+
+    def test_native_shortcut_rejects_changed_authority_and_expired_original_trigger(self):
+        self.type_source()
+        self.shortcut_snapshot("native")
+        for fault in ("command", "authority", "trigger"):
+            with self.subTest(fault=fault):
+                result = self.page.evaluate(
+                    """fault => {
+                      const description = fixtureCommand({id: 721, op: 'describe'});
+                      const source = fixtureCommand({id: 722, op: 'capture', data: {
+                        target: description.target, authority: description.authority}});
+                      fixtureCommand({id: 723, op: 'publish-shortcut', data: {
+                        target: source.target, authority: source.authority,
+                        generation: 'shortcut-dispatch'}});
+                      const data = {target: source.target, authority: {...source.authority},
+                        generation: 'shortcut-dispatch', kind: 'direct', commandId: 41,
+                        triggeredAtMs: fixtureHostClock().boottimeMs};
+                      if (fault === 'command') data.commandId = 0;
+                      if (fault === 'authority') data.authority.inputRevision++;
+                      if (fault === 'trigger') data.triggeredAtMs -= 151;
+                      return {response: fixtureCommand({id: 724, op: 'trigger-shortcut', data}),
+                        commandId: data.commandId, triggeredAtMs: data.triggeredAtMs};
+                    }""",
+                    fault,
+                )
+                self.assertEqual(
+                    result["response"],
+                    {
+                        "triggered": False,
+                        "commandId": result["commandId"],
+                        "triggeredAtMs": result["triggeredAtMs"],
+                    },
+                )
+        self.assertEqual(
+            self.page.evaluate("fixtureMessages.filter(item => item.event === 'shortcut')"), []
+        )
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
 
     def configure_control(self, *, enabled=False):
         self.command(
@@ -1790,11 +1945,12 @@ class BrowserContract(unittest.TestCase):
     def test_control_editor_returns_without_write_then_requires_a_new_complete_pair(self):
         self.check_editor_draft_return_then_accept("Ctrl+F7", "Ctrl+F8")
 
-    def open_editor(self, accept, exit_key):
+    def open_editor(self, accept, exit_key, *, dispatch=None):
         self.command(
             "configure-shortcuts",
             {
                 "generation": "editor-" + accept,
+                **({"shortcutDispatch": dispatch} if dispatch else {}),
                 "enabled": False,
                 "sessionEnabled": True,
                 "accept": accept,
@@ -1960,6 +2116,43 @@ class BrowserContract(unittest.TestCase):
                     ("keyup", False),
                 ]
             )
+
+    def test_native_editor_metadata_renewal_preserves_draft_without_renewing_key_ticket(self):
+        snapshot, data = self.open_editor("Ctrl+F7", "Ctrl+F8", dispatch="native")
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        self.page.keyboard.press("Control+A")
+        self.page.keyboard.insert_text("Working draft")
+        self.page.keyboard.down("Control")
+        renew = """request => {
+          const description = fixtureCommand({id: 7601, op: 'describe', data: {target: request.target}});
+          fixtureCommand({id: 7602, op: 'overlay-renew', data: {...request,
+            authority: description.authority, metadataOnly: true}});
+        }"""
+        request = {
+            "target": snapshot["target"],
+            "generation": "editor-Ctrl+F7",
+            "revision": data["revision"],
+        }
+        # Pass both the original 800ms key ticket and the 1500ms capture clock.
+        # Only describe/renew run while editing; no new source capture or permit.
+        for _ in range(5):
+            self.page.wait_for_timeout(400)
+            self.page.evaluate(renew, request)
+        self.assertEqual(self.page.locator("html > div").count(), 1)
+        self.assertEqual(
+            self.overlay_dom(editor, "function() { return this.value; }"), "Working draft"
+        )
+        self.page.keyboard.down("F7")
+        self.page.keyboard.up("Control")
+        self.page.keyboard.up("F7")
+        self.assertFalse(
+            self.page.evaluate("""fixtureMessages.some(message =>
+          message.event === 'ui' && ['return', 'escape'].includes(message.data.operation))""")
+        )
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+        self.page.evaluate(renew, {**request, "revision": request["revision"] + 1})
+        self.assertEqual(self.page.locator("html > div").count(), 0)
 
     def test_control_editor_exit_owns_repeat_and_release_without_a_write(self):
         self.open_editor("Ctrl+F7", "Ctrl+F8")

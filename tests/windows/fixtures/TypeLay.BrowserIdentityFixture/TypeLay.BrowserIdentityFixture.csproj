@@ -5,6 +5,7 @@
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
   </PropertyGroup>
   <ItemGroup>
-    <None Update="extension/**/*;pages/**/*;chrome-for-testing.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="extension/**/*;pages/**/*" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../support/chrome-for-testing.json" Link="chrome-for-testing.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

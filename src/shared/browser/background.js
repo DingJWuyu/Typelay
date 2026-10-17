@@ -2,18 +2,29 @@
 "use strict";
 const api = globalThis.browser || chrome;
 const documents = new Map();
+const routes = new WeakMap();
 const pending = new Map();
 let native = null;
 let active = null;
 let configuration = null;
 let lastConnect = -Infinity;
 let connectTimer = null;
+let nextRequestId = 0;
+const nativeDispatch = () => configuration?.data?.shortcutDispatch === "native";
+const routable = port => !!port && (!nativeDispatch() || !!routes.get(port)?.documentId);
+function postDocument(connection, port, message) {
+  if (routable(port)) postNative(connection, {...message, route: routes.get(port)});
+}
+function documentFocus(port, focused) {
+  if (native && nativeDispatch()) postDocument(native, port, {event: "document-focus", data: focused});
+}
 
 function disconnect(connection, close = false) {
   if (native !== connection) return;
   // Our own Port.disconnect() does not notify this end of the port.
   // Retire its identity before closing, including during document navigation.
   native = null;
+  configuration = null;
   pending.clear();
   active = null;
   for (const port of documents.values()) {
@@ -50,6 +61,7 @@ function connect() {
     if (message.op === "configure-shortcuts") configuration = message;
     if (["revoke", "configure-shortcuts", "overlay-hide"].includes(message.op)) {
       for (const port of documents.values()) port.postMessage(message);
+      if (message.op === "configure-shortcuts" && active) documentFocus(active, true);
       return;
     }
     for (const [id, request] of pending) {
@@ -57,27 +69,49 @@ function connect() {
     }
     const target = data.target;
     const port = target ? documents.get(target.split(":")[0]) : active;
-    if (!port) {
+    if (!routable(port)) {
       if (message.id) postNative(connection, {id: message.id, data: null});
       return;
     }
     if (message.id) {
-      if (pending.size >= 32) {
+      if (pending.size >= 32 || nextRequestId >= Number.MAX_SAFE_INTEGER
+        || Array.from(pending.values()).some(request => request.connection === connection
+          && request.nativeId === message.id)) {
         postNative(connection, {id: message.id, data: null});
         return;
       }
-      pending.set(message.id, {port, expires: Date.now() + 1000});
+      // A document Port can outlive its native host. Never reuse a document-side
+      // request id after reconnect, even when the next host restarts its counter.
+      const id = ++nextRequestId;
+      pending.set(id, {nativeId: message.id, connection, port, expires: Date.now() + 1000});
+      port.postMessage({...message, id});
+      return;
     }
     port.postMessage(message);
   });
 }
 api.runtime.onConnect.addListener(port => {
-  if (port.name !== "typelay-document" || !port.sender?.tab || port.sender.frameId !== 0) return;
+  const sender = port.sender;
+  if (port.name !== "typelay-document" || sender?.id !== api.runtime.id || !sender.tab
+    || sender.frameId !== 0 || !Number.isSafeInteger(sender.tab.id) || sender.tab.id < 0
+    || !Number.isSafeInteger(sender.tab.windowId) || sender.tab.windowId < 0) return;
+  let scheme;
+  try { scheme = new URL(sender.url).protocol; } catch { return; }
+  if (!["http:", "https:"].includes(scheme)) return;
+  // These values come from the extension Port, never from a page message.
+  // Firefox/page dispatch may lack documentId; native dispatch cannot use it.
+  const route = {extensionId: sender.id,
+    documentId: typeof sender.documentId === "string" && sender.documentId.length > 0
+      && sender.documentId.length <= 128 ? sender.documentId : null,
+    documentToken: null, tabId: sender.tab.id, windowId: sender.tab.windowId,
+    frameId: 0, scheme};
   let documentId = null;
   port.onMessage.addListener(message => {
     if (message.event === "document") {
-      if (documentId || typeof message.data !== "string" || !/^[a-f0-9-]{36}$/.test(message.data)) return;
+      if (documentId || typeof message.data !== "string" || !/^[a-f0-9-]{36}$/.test(message.data)
+        || documents.has(message.data)) return;
       documentId = message.data;
+      routes.set(port, {...route, documentToken: documentId});
       documents.set(documentId, port);
       connect();
       if (configuration) port.postMessage(configuration);
@@ -85,24 +119,38 @@ api.runtime.onConnect.addListener(port => {
     }
     if (!documentId) return;
     if (message.event === "focus") {
-      if (message.data === true) { active = port; connect(); }
-      else if (active === port) active = null;
+      if (message.data === true) {
+        const previous = active;
+        active = port; connect();
+        if (previous !== port) {
+          if (previous) documentFocus(previous, false);
+          documentFocus(port, true);
+        }
+      } else if (message.data === false && active === port) {
+        active = null; documentFocus(port, false);
+      }
       return;
     }
     if (!native) return;
     if (message.id) {
-      if (pending.get(message.id)?.port !== port) return;
+      const request = pending.get(message.id);
+      if (request?.port !== port || request.connection !== native) return;
       pending.delete(message.id);
+      if (request.expires < Date.now()) return;
+      postDocument(request.connection, port, {...message, id: request.nativeId});
+      return;
     }
-    postNative(native, message);
+    postDocument(native, port, message);
   });
   port.onDisconnect.addListener(() => {
+    if (documentId && native && nativeDispatch())
+      postDocument(native, port, {event: "document-closed", data: null});
     if (documentId) documents.delete(documentId);
     if (active === port) active = null;
     for (const [id, owner] of pending) {
       if (owner.port === port) {
         pending.delete(id);
-        if (native) postNative(native, {id, data: null});
+        postDocument(owner.connection, port, {id: owner.nativeId, data: null});
       }
     }
     if (!documents.size) {

@@ -1075,15 +1075,24 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             };
             overlay.Render(session, settings, false, context: context);
             var rejected = new List<KeyEventArgs>();
-            KeyEventHandler observeRejected = (_, args) => { if ((args.Key == Key.System ? args.SystemKey : args.Key) == Key.F10) rejected.Add(args); };
-            editor.AddHandler(Keyboard.PreviewKeyDownEvent, observeRejected, handledEventsToo: true);
-            editor.AddHandler(Keyboard.PreviewKeyUpEvent, observeRejected, handledEventsToo: true);
+            bool rejectedControlReleased = false;
+            KeyEventHandler observeRejected = (_, args) =>
+            {
+                if ((args.Key == Key.System ? args.SystemKey : args.Key) == Key.F10)
+                    rejected.Add(args);
+                else if (args.Key == Key.LeftCtrl && args.RoutedEvent == Keyboard.PreviewKeyUpEvent)
+                    rejectedControlReleased = true;
+            };
+            // Revoking editability makes the old TextBox unfocusable. Observe
+            // the real window route, including its new keyboard-focus target.
+            overlay.AddHandler(Keyboard.PreviewKeyDownEvent, observeRejected, handledEventsToo: true);
+            overlay.AddHandler(Keyboard.PreviewKeyUpEvent, observeRejected, handledEventsToo: true);
             try
             {
                 // This next independent group has no editable token. Its first
                 // down, repeat and up must not inherit the old consumed mirror.
                 Send([Scan(0x1D, true), Scan(0x44, true), Scan(0x44, true), Scan(0x44, false), Scan(0x1D, false)]);
-                await Wait(() => controlReleases == 3);
+                await Wait(() => rejectedControlReleased);
                 Assert.Equal(3, rejected.Count);
                 Assert.All(rejected, args => Assert.False(args.Handled));
                 Assert.False(rejected[0].IsRepeat);
@@ -1092,8 +1101,8 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             }
             finally
             {
-                editor.RemoveHandler(Keyboard.PreviewKeyDownEvent, observeRejected);
-                editor.RemoveHandler(Keyboard.PreviewKeyUpEvent, observeRejected);
+                overlay.RemoveHandler(Keyboard.PreviewKeyDownEvent, observeRejected);
+                overlay.RemoveHandler(Keyboard.PreviewKeyUpEvent, observeRejected);
             }
             Assert.Equal("Source text", input.Text);
             Assert.Equal("A locally editable draft", editor.Text);

@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationManifest>../TypeLay.App/app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../shared/BrowserPeerIdentity.cs" Link="Windows/BrowserPeerIdentity.cs" />
+    <Compile Include="../shared/WindowsInterruptClock.cs" Link="Windows/WindowsInterruptClock.cs" />
+    <ProjectReference Include="../TypeLay.Windows.Contracts/TypeLay.Windows.Contracts.csproj" />
+    <ProjectReference Include="../../shared/TypeLay.Protocol/TypeLay.Protocol.csproj" />
+  </ItemGroup>
+</Project>

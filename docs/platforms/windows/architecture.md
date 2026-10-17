@@ -4,13 +4,21 @@
 
 ## 生产模块与平台内共享
 
-TypeLay.Windows.Contracts 引用 Core，仅拥有 App 与 Broker 共用的 DTO、协议版本和 WindowsTarget 编解码。它可在普通 .NET 下测试，但其职责仍属于 Windows。
+TypeLay.Windows.Contracts 引用 Core，拥有 App 与 Broker 共用的 DTO、协议版本、WindowsTarget 编解码，以及 Windows 浏览器原生桥的私有握手合同。它可在普通 .NET 下测试，但其职责仍属于 Windows。
 
 `TypeLay.App` 是 Windows 宿主。Windows/WindowsRuntime 组装共享运行时与 WPF 视图；WindowsInputService 把类型化输入操作转换为 Broker 请求，持有 HWND、焦点恢复和 IPC 期限。KeyboardHook/OnDemandHotkeys、Job Object、注册表启动项属于 Windows。UI 保持 WPF 展示与编辑，不直接写源字段。Infrastructure 的 AppPaths、ModelInstaller、SingleInstance 仍属于当前 Windows 分发/安装，不把 Windows Python wheel 选择冒充共享安装器。
 
 `TypeLay.Broker` 引用 Core/Protocol/Windows.Contracts，在单一 MTA 线程上拥有 UIA COM 对象。Input 的 UiaInputProvider 不按应用白名单定义普通输入支持；Interop 只封装平台调用。生产入口是 Program 和标准输入输出管道，而不是 fixtures。TypeLay.NativeInput 的系统 Edit 协调写入仍是独立、受限的 Windows x64 路径。
 
 `TypeLay.Launcher` 是 Windows 原生入口。发布时从 C 源码编译，调用发行目录 bootstrap/start.ps1；它不包含 SDK 下载和源码编译功能。
+
+## 浏览器合作输入
+
+Windows 浏览器适配通过 `WindowsInputRouter` 接入同一个 SessionController，页面实现来自 `src/shared/browser/`；平台只拥有 native-messaging 注册、传输、Hook 和视图路由。`TypeLay.BrowserHost` 由 Chrome 启动，双方按命名管道的实际进程核同用户、会话、发行路径和寿命，再核登记的精确扩展 origin。浏览器进程身份只筛选连接，字段授权仍由同一文档端口、目标、元数据、输入法与内容版本证明，不能由 PID 或最终前台窗口推导。标准 HTTP(S) 顶层 input/textarea 以外不开放此适配，失败不转 UIA 写入。
+
+Windows 的唤醒和直接替换由现 Hook 单一消费，页面 ACK `shortcutDispatch=native` 后停用对应本地处理。原按键冻结快照、命令身份和 t0，本次 Hook 处理结束后的 epochs 用于区分触发键自身与后续输入；页面回包只复核原证据，不能用后来 capture 续期。已受理的直接替换仍绑定原 DOM 和原范围，允许后台完成，不激活窗口或提交表单；自动接受由页面同步裁决，已执行回执进入共享完成路径，不再派第二次写。送写后的断连、超时或不完整回执按未知结果处理，不重试。原生连接和页面转发各自绑定请求归属，旧连接回包不能进入新请求。
+
+首片自动接受仍保留默认关闭的实验写回门；按需 F10 沿既有用户原次直接替换授权，不以该开关代替目标、输入法、版本与期限校验。正式用户接入同意与自动接受的源端同步事务能力开放另行完成。真实发行 App、Host、扩展及模型的组合软件验收尚待本轮检查；CfT 加载开发扩展不等于品牌 Chrome 的最终安装流程已经验证。
 
 ## 身份、时序与进程
 
@@ -24,7 +32,7 @@ Windows 轮询、debounce、许可与执行期限不因分层改变。Hook 回�
 
 ## 分发契约
 
-Windows 部署根包含 TypeLay.exe、app/、worker/、bootstrap/、README 与第三方声明。AppPaths.Home 由启动脚本指向整个发行根；Broker、App 与独立原生练习宿主 TypeLay.Practice 放在同一个 app/。练习宿主只提供普通 stock Edit 与共同操作说明；翻译和写入仍由正式 App/Broker 处理，不设置输入法状态或绕过权限。开机启动指向发行根 TypeLay.exe。App 的安装流程在用户同意后准备运行时与模型，Windows wheel 选择不进入共享安装器。
+Windows 部署根包含 TypeLay.exe、app/、worker/、browser/chromium/、bootstrap/、README 与第三方声明。AppPaths.Home 由启动脚本指向整个发行根；Broker、App 与独立原生练习宿主 TypeLay.Practice 放在同一个 app/。练习宿主只提供普通 stock Edit 与共同操作说明；翻译和写入仍由正式 App/Broker 处理，不设置输入法状态或绕过权限。开机启动指向发行根 TypeLay.exe。App 的安装流程在用户同意后准备运行时与模型，Windows wheel 选择不进入共享安装器。
 
 组件准备在数据根内建立独立代，完成请求方向的模型自检后，由长期持有的 ModelClient 对候选进程进行一次真实握手；原子发布活动指针与接管同一连接后才报告成功。准备失败不覆盖仍可用的旧运行时，候选失败不恢复旧连接已失效的健康状态；旧请求的迟到结果不能修改新连接。启动只尝试指针指定的活动代和明确上一代，回退也须实际加载并确认指针恢复；没有指针时兼容原固定目录，不扫描目录猜版本。提交结果未确认时保留可能被引用的文件。默认仍准备完整中英双向；设置中的可选单向使用 schema2 非空方向集合，旧 schema1 仍代表完整双向。补装以已提交安装记录与本次请求的并集为准，自检、候选握手和发布集合必须相同；坏记录不能猜测方向，只能完整修复。[真实 Windows 检查](https://github.com/DingJWuyu/Typelay/actions/runs/39040582082)已通过单向准备、缺向准确拒绝、补齐并集与双向模型验证，以及相关界面回归、封装和搬迁检查；模型接口检查不等于实际 F10 缺向验收，整套桌面验收仍未全绿。
 

@@ -31,10 +31,16 @@ internal static class WindowsRuntime
         var loop = new DispatcherSessionLoop();
         if (support is not null)
             loop.Tick += support.Poll;
-        var controller = new SessionController(settings, model, overlay, monitor,
-            new WindowsInputService(broker, overlay.Handle, support, monitor, practice), loop,
+        var browser = new BrowserInput(new BrowserServer(overlay.Dispatcher), monitor);
+        var browserView = new BrowserSessionView(browser, () => overlay.LanguageRequested?.Invoke());
+        var view = new WindowsSessionView(overlay, browserView);
+        var input = new WindowsInputRouter(new WindowsInputService(broker, overlay.Handle, support, monitor, practice), monitor, browser);
+        loop.Tick += browser.Poll;
+        loop.Tick += browserView.Poll;
+        var controller = new SessionController(settings, model, view, input, input, loop,
             practice is null ? null : practice.RetireAutomaticAsync,
             practice is null ? null : practice.ConfirmRetiredAutomaticAsync);
+        controller.OperationFeedback += browser.ObserveFeedback;
         if (practice is not null)
             loop.Tick += practice.PollAcceptance;
         return controller;

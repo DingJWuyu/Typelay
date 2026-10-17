@@ -189,3 +189,9 @@ dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows
 `--verify-continuous` 在同一已安装真实模型、共同桌面时限内追加独立练习场景：真实 WPF 默认取消不改模式，明确确认经正式设置持久化，启动发布用 `TypeLay.Practice` 的 stock Edit，由生产会话/Hook/Broker 执行一次 F9 预览与一次 F10 替换。必须比对真实模型参考、预览原文不变、焦点保留、Verified 结果与浮层隐藏；关闭后保留用户后来选的模式，不标记完整教程完成。前场景清理未确认时不启动后场景，任何场景失败仍整体失败。软件键注入不代表物理键盘或真实 IME 验收；未增加实验 Tab 授权。
 
 搬迁发行包回归单独启动实际 `TypeLay.Practice.exe`，确认自有普通 Edit 存在、无正文输出与设置不变，然后正常关闭并确认退出。该测试不替代前述真实翻译场景，也不把新入口尚未运行的 Windows 回归描述为通过。
+
+## Windows 浏览器合作链
+
+`TypeLay.DesktopFixture --verify-browser-cooperation <结果目录> <发行根> <CfT路径>` 使用实际发行 App 的既有 `--automation-test` 入口与 BrowserHost，独立 CfT profile 加载包内标准页扩展。CI 从固定官方版本及摘要取得浏览器，缓存命中仍重新校验；不运行旧浏览器身份研究探针。场景要求当前用户 TypeLay 数据目录和注册为空，仅清理自己创建的资源；使用本轮已校验模型组件并由正式 worker 重新加载。注册写入仅在明确的 `TYPELAY_BROWSER_REGISTRATION_E2E=1` 测试环境启用，普通发行检查默认不写注册。
+
+验收覆盖标准页的自动接受、真实按需直接替换、已受理后原字段后台写入，以及命令前断连拒写。软件按键、显式实验开关和开发扩展属于该场景的前提，不代表物理输入法、品牌 Chrome 扩展安装或默认关闭门已经验收；真实结果以本轮 result.json 为准，未执行的后续阶段不得计作通过。

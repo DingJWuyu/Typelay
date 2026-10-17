@@ -127,13 +127,60 @@ jobs:
         run: |
           dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-continuous artifacts/continuous-translation src/shared/TypeLay.Worker/run_worker.py tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll
           exit $LASTEXITCODE
+      - name: Restore the pinned cooperative-browser test archive
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        id: cooperative-browser-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: artifacts/browser-download/chrome-win64.zip
+          key: typelay-cft-win64-${{ hashFiles('tests/windows/support/chrome-for-testing.json') }}
+      - name: Verify and prepare Chrome for Testing for the cooperative product path
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        id: cooperative-browser-prepare
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pin = Get-Content tests/windows/support/chrome-for-testing.json -Raw | ConvertFrom-Json
+          $archive = Join-Path $PWD 'artifacts/browser-download/chrome-win64.zip'
+          New-Item -ItemType Directory -Path (Split-Path $archive) -Force | Out-Null
+          if (-not (Test-Path -LiteralPath $archive)) {
+            Invoke-WebRequest -Uri $pin.archiveUrl -OutFile $archive -TimeoutSec 180
+          }
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $pin.archiveSha256) {
+            throw 'Chrome for Testing archive SHA-256 mismatch.'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath artifacts/cooperative-browser
+          $chrome = Join-Path $PWD 'artifacts/cooperative-browser/chrome-win64/chrome.exe'
+          $version = [Diagnostics.FileVersionInfo]::GetVersionInfo($chrome)
+          if ($version.ProductVersion -ne $pin.version -or $version.ProductName -ne 'Google Chrome for Testing') {
+            throw 'Chrome for Testing product/version mismatch.'
+          }
+          "chrome=$chrome" >> $env:GITHUB_OUTPUT
+      - name: Cache the verified cooperative-browser archive
+        if: ${{ !cancelled() && steps.cooperative-browser-prepare.outcome == 'success' && steps.cooperative-browser-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: artifacts/browser-download/chrome-win64.zip
+          key: ${{ steps.cooperative-browser-cache.outputs.cache-primary-key }}
       # The metadata-only browser research probe is paused at an unresolved CI startup
       # precondition. Run its documented script explicitly when new evidence warrants it;
       # the ordinary Chrome product regression above remains required and keeps its result.
       - name: Package and test the relocated distribution
+        id: windows-package
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
+        env:
+          TYPELAY_BROWSER_REGISTRATION_E2E: "1"
         run: ./dev.ps1 pack
+      - name: Verify cooperative browser input with the shipped app and real model
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' && steps.cooperative-browser-prepare.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          TYPELAY_BROWSER_REGISTRATION_E2E: "1"
+        run: |
+          dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-browser-cooperation artifacts/browser-cooperation artifacts/package/TypeLay '${{ steps.cooperative-browser-prepare.outputs.chrome }}'
+          exit $LASTEXITCODE
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -144,6 +191,8 @@ jobs:
             artifacts/continuous-translation/result.json
             artifacts/continuous-translation/trace*.jsonl
             artifacts/continuous-translation/data/setup-self-check.json
+            artifacts/browser-cooperation/result.json
+            artifacts/browser-cooperation/trace*.jsonl
             artifacts/TypeLay-Windows-preview.zip
             artifacts/TypeLay-Windows-preview.zip.sha256
           if-no-files-found: warn

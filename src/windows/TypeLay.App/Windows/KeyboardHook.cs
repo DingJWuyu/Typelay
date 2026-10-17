@@ -166,6 +166,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     }
     public void SetShortcuts(RegisteredShortcut[] shortcuts)
     {
+        PublishBrowserShortcut(null);
         InvalidateOrdinaryChord();
         var configuration = new ShortcutConfiguration(Guid.NewGuid(), shortcuts);
         Interlocked.Exchange(ref _shortcuts, configuration);
@@ -544,81 +545,89 @@ internal sealed partial class KeyboardHook : IInputMonitor
     {
         if (code < 0)
             return Native.CallNextHookEx(_hook, code, wParam, lParam);
-        Interlocked.Increment(ref _editorInputSequence);
-        var data = Marshal.PtrToStructure<Native.KeyData>(lParam);
-        bool down = wParam == 0x100 || wParam == 0x104;
-        bool injected = (data.Flags & 0x12) != 0;
-        bool repeated = data.Key < 256 && _keys[data.Key];
-        if (data.Key < 256)
-            _keys[data.Key] = down;
-        if (down && !IsModifier(data.Key))
+        BrowserShortcutPress? browserPress = null;
+        try
         {
-            TryInvokeShortcut(data.Key, repeated, injected);
-            Interlocked.Increment(ref _contentEpoch);
-        }
-        var binding = Volatile.Read(ref _lease);
-        var lease = binding?.Observation;
-        long now = WindowsInterruptClock.NowMs;
-        ObserveReturnKey(data, down, repeated, injected, now);
-        var sessionKeys = Volatile.Read(ref _sessionKeys);
-        bool fresh = _sessionEnabled && sessionKeys.Supported && lease is not null && lease.CommandGeneration == CommandGeneration && lease.UserEpoch == UserEpoch && lease.ForegroundEpoch == ForegroundEpoch
-            && now >= lease.Source.ObservedAtMs && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
-        bool source = fresh && Native.GetForegroundWindow() == (nint)binding!.RootHwnd;
-        if (PairOrdinaryChord(data, down, repeated))
-            return 1;
-        if (ObserveOwnedKey(data, down, repeated, injected, now, sessionKeys.Accept))
-            return Native.CallNextHookEx(_hook, code, wParam, lParam);
-        int ordinary = ObserveOrdinaryChord(data, down, repeated, injected, now, binding, fresh, sessionKeys);
-        if (ordinary != 0)
-            return ordinary > 0 ? 1 : Native.CallNextHookEx(_hook, code, wParam, lParam);
-        var decision = _gate.ProcessAcceptanceKey(new(data.Key, down, repeated, data.Key == sessionKeys.Accept && UsesUnmodifiedSessionKeys),
-            new(lease?.Source.Target, source, lease?.Source.Ime ?? ImeState.Unknown,
-                Modified, injected, fresh && UsesUnmodifiedSessionKeys, lease?.Source.InputEpoch ?? -1, lease?.Source.FocusEpoch ?? -1, now));
-        if (decision.Permit is not null)
-            _notices.Enqueue(new("accept", decision.Permit, now, UserEpoch, ForegroundEpoch,
-                CommandGeneration: lease!.CommandGeneration, SessionRevision: lease.SessionRevision));
-        if (decision.Consume)
-            return 1;
-        if (_escapeKeyDown == data.Key)
-        {
-            bool consume = _escapeConsumed;
-            if (!down)
+            Interlocked.Increment(ref _editorInputSequence);
+            var data = Marshal.PtrToStructure<Native.KeyData>(lParam);
+            bool down = wParam == 0x100 || wParam == 0x104;
+            bool injected = (data.Flags & 0x12) != 0;
+            bool repeated = data.Key < 256 && _keys[data.Key];
+            if (data.Key < 256)
+                _keys[data.Key] = down;
+            if (down && !IsModifier(data.Key))
             {
-                _escapeKeyDown = null;
-                _escapeConsumed = false;
+                TryInvokeShortcut(data.Key, repeated, injected, out browserPress);
+                Interlocked.Increment(ref _contentEpoch);
             }
-            if (consume)
+            var binding = Volatile.Read(ref _lease);
+            var lease = binding?.Observation;
+            long now = WindowsInterruptClock.NowMs;
+            ObserveReturnKey(data, down, repeated, injected, now);
+            var sessionKeys = Volatile.Read(ref _sessionKeys);
+            bool fresh = _sessionEnabled && sessionKeys.Supported && lease is not null && lease.CommandGeneration == CommandGeneration && lease.UserEpoch == UserEpoch && lease.ForegroundEpoch == ForegroundEpoch
+                && now >= lease.Source.ObservedAtMs && now - lease.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs;
+            bool source = fresh && Native.GetForegroundWindow() == (nint)binding!.RootHwnd;
+            if (PairOrdinaryChord(data, down, repeated))
                 return 1;
-        }
-        else if (down && data.Key == sessionKeys.Exit && !repeated && _escapeKeyDown is null)
-        {
-            _escapeKeyDown = data.Key;
-            _escapeConsumed = source && (!injected || _allowInjectedInput) && !Modified
-                && sessionKeys.ExitModifiers == ShortcutModifiers.None && Volatile.Read(ref _ordinaryChord) is null
-                && lease!.Source.Ime == ImeState.Clear && lease.EscapeAllowed;
-            if (_escapeConsumed)
+            if (ObserveOwnedKey(data, down, repeated, injected, now, sessionKeys.Accept))
+                return Native.CallNextHookEx(_hook, code, wParam, lParam);
+            int ordinary = ObserveOrdinaryChord(data, down, repeated, injected, now, binding, fresh, sessionKeys);
+            if (ordinary != 0)
+                return ordinary > 0 ? 1 : Native.CallNextHookEx(_hook, code, wParam, lParam);
+            var decision = _gate.ProcessAcceptanceKey(new(data.Key, down, repeated, data.Key == sessionKeys.Accept && UsesUnmodifiedSessionKeys),
+                new(lease?.Source.Target, source, lease?.Source.Ime ?? ImeState.Unknown,
+                    Modified, injected, fresh && UsesUnmodifiedSessionKeys, lease?.Source.InputEpoch ?? -1, lease?.Source.FocusEpoch ?? -1, now));
+            if (decision.Permit is not null)
+                _notices.Enqueue(new("accept", decision.Permit, now, UserEpoch, ForegroundEpoch,
+                    CommandGeneration: lease!.CommandGeneration, SessionRevision: lease.SessionRevision));
+            if (decision.Consume)
+                return 1;
+            if (_escapeKeyDown == data.Key)
             {
+                bool consume = _escapeConsumed;
+                if (!down)
+                {
+                    _escapeKeyDown = null;
+                    _escapeConsumed = false;
+                }
+                if (consume)
+                    return 1;
+            }
+            else if (down && data.Key == sessionKeys.Exit && !repeated && _escapeKeyDown is null)
+            {
+                _escapeKeyDown = data.Key;
+                _escapeConsumed = source && (!injected || _allowInjectedInput) && !Modified
+                    && sessionKeys.ExitModifiers == ShortcutModifiers.None && Volatile.Read(ref _ordinaryChord) is null
+                    && lease!.Source.Ime == ImeState.Clear && lease.EscapeAllowed;
+                if (_escapeConsumed)
+                {
+                    _gate.Revoke();
+                    _notices.Enqueue(new("escape", AcceptedAtMs: now, UserEpoch: UserEpoch, ForegroundEpoch: ForegroundEpoch,
+                        CommandGeneration: lease!.CommandGeneration, Target: lease.Source.Target, SessionRevision: lease.SessionRevision));
+                    return 1;
+                }
+            }
+            else if (data.Key == sessionKeys.Accept || data.Key == sessionKeys.Exit)
+            {
+                // A passed session key retains the existing Tab/Esc epoch behavior.
+            }
+            else if (down)
+            {
+                // Revoke on every source keystroke, including injected input and modifier changes.
+                Interlocked.Increment(ref _userEpoch);
                 _gate.Revoke();
-                _notices.Enqueue(new("escape", AcceptedAtMs: now, UserEpoch: UserEpoch, ForegroundEpoch: ForegroundEpoch,
-                    CommandGeneration: lease!.CommandGeneration, Target: lease.Source.Target, SessionRevision: lease.SessionRevision));
-                return 1;
+                // Local translation edits do not alter the saved source basis.
+                // All other input remains conservative, including injected keys.
+                if (Native.GetForegroundWindow() != _editorHwnd)
+                    Interlocked.Increment(ref _sourceUserEpoch);
             }
+            return Native.CallNextHookEx(_hook, code, wParam, lParam);
         }
-        else if (data.Key == sessionKeys.Accept || data.Key == sessionKeys.Exit)
+        finally
         {
-            // A passed session key retains the existing Tab/Esc epoch behavior.
+            CompleteBrowserPress(browserPress);
         }
-        else if (down)
-        {
-            // Revoke on every source keystroke, including injected input and modifier changes.
-            Interlocked.Increment(ref _userEpoch);
-            _gate.Revoke();
-            // Local translation edits do not alter the saved source basis.
-            // All other input remains conservative, including injected keys.
-            if (Native.GetForegroundWindow() != _editorHwnd)
-                Interlocked.Increment(ref _sourceUserEpoch);
-        }
-        return Native.CallNextHookEx(_hook, code, wParam, lParam);
     }
     private static bool IsModifier(uint key) => key is 0x10 or 0x11 or 0x12 or 0x5B or 0x5C
         or >= 0xA0 and <= 0xA5;
@@ -627,8 +636,9 @@ internal sealed partial class KeyboardHook : IInputMonitor
         | (_keys[0x12] || _keys[0xA4] || _keys[0xA5] ? ShortcutModifiers.Alt : ShortcutModifiers.None)
         | (_keys[0x10] || _keys[0xA0] || _keys[0xA1] ? ShortcutModifiers.Shift : ShortcutModifiers.None)
         | (_keys[0x5B] || _keys[0x5C] ? (ShortcutModifiers)8 : ShortcutModifiers.None);
-    private void TryInvokeShortcut(uint key, bool repeated, bool injected)
+    private void TryInvokeShortcut(uint key, bool repeated, bool injected, out BrowserShortcutPress? browserPress)
     {
+        browserPress = null;
         if (repeated || injected && !_allowInjectedInput || _keys[0x5B] || _keys[0x5C])
         {
             TraceShortcutKey(repeated ? "repeat" : injected && !_allowInjectedInput ? "injected" : "windows-key", key);
@@ -648,6 +658,8 @@ internal sealed partial class KeyboardHook : IInputMonitor
             return;
         }
         long sequence = Interlocked.Increment(ref _commandSequence);
+        if (TryInvokeBrowserShortcut(command.Action, configuration.Generation, sequence, WindowsInterruptClock.NowMs, out browserPress))
+            return;
         var nativeLease = Volatile.Read(ref _shortcutLease);
         var lease = nativeLease?.Observation;
         long now = WindowsInterruptClock.NowMs;

@@ -113,10 +113,12 @@ def build(output, fixture=False, cooperation_package=None):
     for browser in ("chromium", "firefox"):
         destination = output / "browser" / browser
         destination.mkdir(parents=True)
-        source = ROOT / "src/linux/browser"
+        source = ROOT / "src/shared/browser"
         for name in ("content.js", "background.js", "editor-bridge.js", "editor-adapter.js"):
             shutil.copy2(source / name, destination / name)
-        shutil.copy2(source / f"manifest.{browser}.json", destination / "manifest.json")
+        shutil.copy2(
+            ROOT / "src/linux/browser" / f"manifest.{browser}.json", destination / "manifest.json"
+        )
     # Firefox stable requires Mozilla signing for permanent installation. Ship
     # the exact unsigned payload for temporary loading or an explicit signing step.
     with zipfile.ZipFile(output / "browser/typelay-firefox-unsigned.xpi", "w") as addon:

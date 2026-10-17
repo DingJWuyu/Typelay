@@ -78,6 +78,7 @@ class DistributionTests(unittest.TestCase):
             "app",
             "worker",
             "bootstrap",
+            "browser",
         }
         self.assertEqual({p.name for p in self.home.iterdir()}, expected)
         forbidden = {
@@ -121,6 +122,7 @@ class DistributionTests(unittest.TestCase):
             "app/TypeLay.App.exe",
             "app/TypeLay.Broker.exe",
             "app/TypeLay.Practice.exe",
+            "app/TypeLay.BrowserHost.exe",
             "app/TypeLay.Core.dll",
             "app/TypeLay.Protocol.dll",
             "app/TypeLay.Runtime.dll",
@@ -131,6 +133,9 @@ class DistributionTests(unittest.TestCase):
             "worker/typelay_worker/engine.py",
             "worker/typelay_worker/catalog.py",
             "worker/model-catalog.json",
+            "browser/chromium/manifest.json",
+            "browser/chromium/background.js",
+            "browser/chromium/content.js",
         ):
             with self.subTest(path=relative):
                 self.assertTrue((self.home / relative).is_file(), relative)
@@ -139,6 +144,145 @@ class DistributionTests(unittest.TestCase):
         )
         self.assertNotIn("frameworks", config["runtimeOptions"])
         self.assertNotIn("framework", config["runtimeOptions"])
+
+    def test_browser_host_rejects_invalid_entry_without_protocol_output(self):
+        host = self.home / "app/TypeLay.BrowserHost.exe"
+        for arguments in (
+            ["chrome-extension://invalid/", "--parent-window=0"],
+            ["chrome-extension://" + "a" * 32 + "/", "--parent-window=-1"],
+            ["chrome-extension://" + "a" * 32 + "/", "--parent-window=0", "unexpected"],
+            ["register", "--extension-id", "a" * 31],
+            ["register", "--extension-id", "q" * 32],
+        ):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    [str(host), *arguments],
+                    cwd=self.temporary.name,
+                    capture_output=True,
+                    timeout=10,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, b"")
+                self.assertNotIn(b"unexpected", result.stderr)
+
+    @unittest.skipUnless(
+        os.environ.get("TYPELAY_BROWSER_REGISTRATION_E2E") == "1",
+        "Native-host registration requires an explicitly isolated Windows account.",
+    )
+    def test_browser_registration_preserves_conflicts_and_removes_only_its_installation(self):
+        import winreg
+
+        host = self.home / "app/TypeLay.BrowserHost.exe"
+        data_root = Path(os.environ["LOCALAPPDATA"]) / "TypeLay"
+        manifest = data_root / "browser/org.typelay.browser.json"
+        registry = r"Software\Google\Chrome\NativeMessagingHosts\org.typelay.browser"
+        views = (winreg.KEY_WOW64_32KEY, winreg.KEY_WOW64_64KEY)
+        self.assertFalse(
+            data_root.exists(), "Registration E2E requires an unused TypeLay data root."
+        )
+        self.assertFalse(manifest.exists(), "Registration E2E requires an unused manifest path.")
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            for view in views:
+                with self.assertRaises(FileNotFoundError):
+                    with winreg.OpenKey(hive, registry, 0, winreg.KEY_READ | view):
+                        self.fail("Registration E2E requires an unused host name in both views.")
+
+        def command(*arguments, expected=0):
+            result = subprocess.run(
+                [str(host), *arguments], cwd=self.temporary.name, capture_output=True, timeout=10
+            )
+            self.assertEqual(result.returncode, expected, result.stderr.decode(errors="replace"))
+            return result
+
+        def cleanup():
+            command("unregister")
+            if not data_root.exists():
+                return
+            # Only paths created after the proven-empty preflight are ours. Unexpected
+            # files make cleanup fail rather than deleting another process's state.
+            browser = data_root / "browser"
+            lock = browser / "registration.lock"
+            self.assertEqual(set(data_root.iterdir()), {browser})
+            self.assertEqual(set(browser.iterdir()), {lock})
+            self.assertFalse(lock.is_symlink())
+            self.assertEqual(lock.read_bytes(), b"")
+            lock.unlink()
+            browser.rmdir()
+            data_root.rmdir()
+
+        # The explicit gate and empty-name preflight precede every registry mutation.
+        # The production unregister command itself checks ownership during cleanup.
+        self.addCleanup(cleanup)
+        self.assertEqual(
+            json.loads(command("status").stdout), {"registered": False, "origin": None}
+        )
+        extension = "abcdefghijklmnopabcdefghijklmnop"
+        origin = "chrome-extension://" + extension + "/"
+        command("register", "--extension-id", extension)
+        original = manifest.read_bytes()
+        metadata = json.loads(original)
+        self.assertEqual(metadata["path"], str(host))
+        self.assertEqual(metadata["allowed_origins"], [origin])
+        self.assertEqual(
+            json.loads(command("status").stdout), {"registered": True, "origin": origin}
+        )
+        command("register", "--extension-id", extension)
+        self.assertEqual(manifest.read_bytes(), original)
+        command("register", "--extension-id", "p" * 32, expected=2)
+        self.assertEqual(manifest.read_bytes(), original)
+        self.assertEqual(
+            command("chrome-extension://" + "p" * 32 + "/", "--parent-window=0", expected=2).stdout,
+            b"",
+        )
+
+        # A conflicting view may alias HKCU's first view. Restore only our own injected value.
+        foreign = str(self.home / "foreign-test-manifest.json")
+        with winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER, registry, 0, winreg.KEY_ALL_ACCESS | winreg.KEY_WOW64_64KEY
+        ) as key:
+            previous = winreg.QueryValueEx(key, "")[0] if winreg.QueryInfoKey(key)[1] else None
+            winreg.SetValueEx(key, "", 0, winreg.REG_SZ, foreign)
+        try:
+            command("register", "--extension-id", extension, expected=2)
+            command("unregister", expected=2)
+            self.assertEqual(manifest.read_bytes(), original)
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, registry, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY
+            ) as key:
+                self.assertEqual(winreg.QueryValueEx(key, ""), (foreign, winreg.REG_SZ))
+        finally:
+            with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                registry,
+                0,
+                winreg.KEY_ALL_ACCESS | winreg.KEY_WOW64_64KEY,
+            ) as key:
+                self.assertEqual(winreg.QueryValueEx(key, ""), (foreign, winreg.REG_SZ))
+                if previous is not None:
+                    winreg.SetValueEx(key, "", 0, winreg.REG_SZ, previous)
+                else:
+                    winreg.DeleteValue(key, "")
+            if previous is None:
+                winreg.DeleteKeyEx(winreg.HKEY_CURRENT_USER, registry, winreg.KEY_WOW64_64KEY)
+
+        # A manifest belonging to another installation is never replaced or removed.
+        altered = dict(metadata, path=str(self.home / "foreign TypeLay/TypeLay.BrowserHost.exe"))
+        foreign_bytes = json.dumps(altered).encode()
+        manifest.write_bytes(foreign_bytes)
+        try:
+            command("register", "--extension-id", extension, expected=2)
+            command("unregister", expected=2)
+            self.assertEqual(manifest.read_bytes(), foreign_bytes)
+        finally:
+            self.assertEqual(manifest.read_bytes(), foreign_bytes)
+            manifest.write_bytes(original)
+
+        command("unregister")
+        self.assertFalse(manifest.exists())
+        self.assertEqual(
+            json.loads(command("status").stdout), {"registered": False, "origin": None}
+        )
+        command("unregister")
 
     def test_relocated_practice_opens_a_real_stock_edit_without_changing_settings(self):
         settings = Path(self.temporary.name) / "练习 settings.json"

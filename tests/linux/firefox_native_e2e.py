@@ -231,6 +231,7 @@ class FirefoxNativeContract(unittest.TestCase):
             connection.settimeout(10)
             native = browser_native_e2e.NativeBrowserContract()
             native.sequence = 0
+            native.events = []
             hello = native.receive(connection)
             self.assertEqual(hello["event"], "hello")
             self.assertEqual(hello["data"]["backend"], "browser")
@@ -245,6 +246,7 @@ class FirefoxNativeContract(unittest.TestCase):
                     "exit": "Esc",
                     "sourceReady": True,
                     "editorReady": True,
+                    "shortcutDispatch": "page",
                 },
             )
             snapshot = self.capture(native, connection, original, web)

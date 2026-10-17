@@ -36,7 +36,7 @@ MV3 service worker 没有页面原生视图；仅有浏览器 PID 无法区分�
 
 ## 执行
 
-需要交互式 Windows 桌面、仓库指定 .NET SDK，以及由执行者从官方来源取得并固定 SHA-256 的本地 CfT win64 ZIP。脚本本身不下载、不安装浏览器、不接入 CI。固定版本、revision 和官方地址由 fixture 的 `chrome-for-testing.json` 管理。
+需要交互式 Windows 桌面、仓库指定 .NET SDK，以及由执行者从官方来源取得并固定 SHA-256 的本地 CfT win64 ZIP。脚本本身不下载、不安装浏览器、不接入 CI。固定版本、revision 和官方地址由 测试共用的 `tests/windows/support/chrome-for-testing.json` 管理。
 
 [官方版本 JSON](https://googlechromelabs.github.io/chrome-for-testing/155.0.8059.39.json) 给出版本和下载地址，不提供 SHA-256。执行者应从该 JSON 的官方 win64 URL 取得 ZIP，独立记录首次可信取得的 SHA-256，后续运行严格使用同一预期值；不能运行前对任意未知 ZIP 现算 hash 后就当成已验证来源。runner 校验 ZIP SHA-256、解压后的产品名称及固定版本，并把版本/来源/实际 hash 写到结果旁的 `.browser.json`。
 

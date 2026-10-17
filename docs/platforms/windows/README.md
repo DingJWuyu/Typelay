@@ -14,6 +14,22 @@
 
 普通输入框是产品目标，不是按应用维护的支持名单。未知输入法状态只允许只读预览；密码、敏感字段、终端和代码编辑器不能通过弱化安全限制来“扩大支持”。
 
+### Chrome 合作扩展的实验入口
+
+浏览器合作链当前用于受控实验验收。注册扩展本身不启用默认关闭的自动接受；按需 F10 仍须本次真实按键及原目标、输入法、输入版本和时效校验。正式“应用支持”接入尚未开放。普通网页的原生 `input` / `textarea` 是本切片的验证对象，新标签页中央搜索框、富文本、嵌套 frame、物理按键和真实输入法不因此获得支持声明。
+
+完整包包含 `browser/chromium` 和 `app/TypeLay.BrowserHost.exe`。开发或隔离验收时，在 Chrome 扩展管理页明确启用开发者模式并“加载已解压的扩展程序”，选择本包的 `browser/chromium`。核对 Chrome 实际显示的扩展 ID，再从本包目录运行：
+
+```powershell
+.\app\TypeLay.BrowserHost.exe register --extension-id <实际32位扩展ID>
+.\app\TypeLay.BrowserHost.exe status
+.\app\TypeLay.BrowserHost.exe unregister
+```
+
+注册只写当前用户 HKCU 和 `%LOCALAPPDATA%\TypeLay\browser\org.typelay.browser.json`，manifest 指向本包的完整 host 路径；安装目录可以只读。32/64 位注册视图、系统级同名 host 或另一安装发生冲突时会拒绝，不覆盖它们。同一安装和 ID 可重复注册；换 ID、搬迁或升级前，先从旧安装运行 `unregister`，再从新位置重新注册。不要先删除仍被注册引用的旧安装。
+
+注销不会终止用户的 Chrome，也不会删除扩展；请在扩展管理页停用或重新加载扩展，断开已有端口。host 由 Chrome 启动，仅连接同用户、同 Windows 会话、同一发行目录中已经运行的 App，不启动 App、模型或网络服务。标准输入输出只承载有界协议帧，失败诊断不包含网页正文。Chrome 的 `--parent-window=0` 不作为窗口或字段身份。
+
 当前源码在显式唤醒已接受、首次读取输入框失败或抛出异常时，按原目标和本次命令给出一次提示。请保持焦点后主动重试；此提示不代表读取成功率已经改善，也不会自动重试。
 
 托盘修改设置遇到保存错误时，会保留上次确认的状态并显示提示，模型状态刷新不会抹掉错误。检查目录权限或磁盘空间后，重新选择原控件即可重试；收到成功结果才清除提示。

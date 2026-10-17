@@ -30,8 +30,11 @@
   };
   // Configuration is Applied only by this document's installed source/editor
   // listeners. A native-host or another document's ACK cannot grant capability.
+  const shortcutDispatch = () => configuration?.shortcutDispatch === undefined
+    ? "page" : configuration.shortcutDispatch;
   function sessionApplied() {
-    return typeof configuration?.sessionEnabled === "boolean" && typeof configuration.generation === "string"
+    return ["page", "native"].includes(shortcutDispatch()) && typeof configuration?.sessionEnabled === "boolean"
+      && typeof configuration.generation === "string"
       && configuration.generation.length > 0
       && typeof configuration.accept === "string" && typeof configuration.exit === "string"
       && (configuration.accept === "Tab" || /^(?:Ctrl\+)?F(?:[1-9]|1[0-9]|2[0-4])$/.test(configuration.accept))
@@ -52,7 +55,8 @@
   function sessionBindings(field) {
     const source = sourceConfigured(field);
     return {generation: configuration?.generation ?? null, accept: configuration?.accept ?? null,
-      exit: configuration?.exit ?? null, sourceReady: source, editorReady: editorConfigured(field)};
+      exit: configuration?.exit ?? null, sourceReady: source, editorReady: editorConfigured(field),
+      shortcutDispatch: shortcutDispatch()};
   }
   function sessionKey(event, action) {
     return sessionConfigured() && event.ctrlKey === controlBinding(action)
@@ -928,17 +932,30 @@
           expiresAtWallMs: data.expiresAtMs - clock?.upperWall}, true);
       }
       case "trigger-shortcut": {
+        const nativeDispatch = shortcutDispatch() === "native";
+        const rejected = nativeDispatch ? {triggered: false, commandId: data.commandId,
+          triggeredAtMs: data.triggeredAtMs} : {triggered: false};
+        if (nativeDispatch && (!Number.isSafeInteger(data.commandId) || data.commandId <= 0
+          || !Number.isSafeInteger(data.triggeredAtMs) || data.triggeredAtMs < 0
+          || data.target !== field?.id || !issued(field, data.authority)
+          || !issued(field, shortcut?.authority)
+          || !["target", "metadataKey", "contentRevision", "inputRevision", "focusRevision"]
+            .every(key => data.authority?.[key] === shortcut?.authority?.[key]))) return rejected;
         if (!field || !focused(field) || !configuration?.enabled || !shortcut
           || data.generation !== configuration.generation || data.generation !== shortcut.generation
           || !["wake", "direct"].includes(data.kind) || !fresh(data.triggeredAtMs, 150)
           || !approved(field, data.authority) || !approved(field, shortcut.authority)
           || field.content !== data.authority.contentRevision || field.input !== data.authority.inputRevision
-          || field.focus !== data.authority.focusRevision || field.ime !== "Clear") return {triggered: false};
+          || field.focus !== data.authority.focusRevision || field.ime !== "Clear") return rejected;
         const snapshot = capture(field, data.authority);
-        if (!snapshot || !sessionCurrent(data.generation)) return {triggered: false};
+        if (!snapshot || !sessionCurrent(data.generation)) return rejected;
         retireOrdered(); retireEditorControl();
-        send("shortcut", {kind: data.kind, generation: data.generation, native: snapshot, acceptedAtMs: now()});
         publication = shortcut = null;
+        // Native dispatch has one terminal channel. The host owns this command
+        // and its original trigger time; a fresh capture cannot renew either.
+        if (nativeDispatch) return {triggered: true, commandId: data.commandId,
+          triggeredAtMs: data.triggeredAtMs, native: snapshot};
+        send("shortcut", {kind: data.kind, generation: data.generation, native: snapshot, acceptedAtMs: now()});
         return {triggered: true};
       }
       case "quarantine": retireOrdered(); retireEditorControl(); if (field) field.quarantined = true; publication = null; return null;
@@ -974,6 +991,14 @@
         if (overlay?.field === field && sessionApplied() && data.generation === configuration.generation
           && (overlay.paused || configuration.sessionEnabled) && overlay.generation === data.generation
           && approved(field, data.authority)
+          // Editing may renew the clock with a fresh metadata-only host proof.
+          // Existing source permits and pressed-key tickets keep their copied deadlines.
+          && (data.metadataOnly !== true || shortcutDispatch() === "native" && overlay.editing && !overlay.paused
+            && data.target === field.id && overlay.revision === data.revision && document.hasFocus()
+            && field.ime === "Clear" && field.content === data.authority.contentRevision
+            && field.input === data.authority.inputRevision && field.focus === data.authority.focusRevision
+            && ["metadataKey", "contentRevision", "inputRevision"].every(key =>
+              overlay.authority?.[key] === data.authority[key]) && calibrate(field, data.authority))
           && (!overlay.paused || pauseCurrent(field, data.authority) && calibrate(field, data.authority))
           && fresh(data.expiresAtMs - 800, 800) && sessionApplied() && data.generation === configuration.generation
           && overlay?.generation === data.generation) {
@@ -1311,7 +1336,7 @@
       if (orderedKey(event, field, press)) return;
       retireOrdered();
     }
-    if (configuration?.enabled && shortcut && shortcut.generation === configuration.generation
+    if (shortcutDispatch() === "page" && configuration?.enabled && shortcut && shortcut.generation === configuration.generation
       && approved(field, shortcut.authority) && issued(field, shortcut.authority)) {
       const kind = shortcutMatches(event, configuration.wake) ? "wake" : shortcutMatches(event, configuration.direct) ? "direct" : null;
       if (kind) {

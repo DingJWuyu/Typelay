@@ -10,7 +10,7 @@
 
 `src/linux/native/` 的 `gtk3/`、`gtk4/`、`qt6/` 分别拥有各 toolkit 的源控件与父窗口内浮层，`common/` 保留实际共用的原生实现，`fcitx5/` 保留输入法合作接口；根目录只负责总构建和子进程监督。普通 GTK API 无法证明异步 IME 空闲，通用路径保持 Unknown。可选 Fcitx 合作组件提供真实 context、在途状态、输出序号与字段绑定，只向经过验证的标准控件授予能力。GTK 两代共用私有 TextBuffer 写入实现，平台对象/元数据检查仍归各自模块；Qt 使用实际 QObject/provider 与源 GUI 线程，不复用 GTK 控件身份。标准控件、前台与后台写回的不同范围见 [Linux 能力表](README.md#与-windows-的功能对齐)及 [Qt 路径](qt.md)。
 
-`src/linux/browser/` 的扩展在真实文档事件线程处理标准 DOM 输入；单段 Tiptap 富文本通过有界 MAIN-world 桥调用源编辑器事务，隔离脚本持有 IME 与最终写入许可，经浏览器拥有的 native-messaging 子进程进入相同宿主端口。宿主独立验证同用户进程祖先与启动寿命，不接受页面声明的 PID。GTK/Qt 父窗口和浏览器视口坐标明确分开，只有对应的 renderer 使用，不能混为屏幕全局坐标。GTK 锚点契约见 `docs/platforms/linux/adr/0004-native-anchors.md`，浏览器部署/限制见 `docs/platforms/linux/browser.md`。同级 `src/linux/vscode/` 仅提供手动预览确认替换，不代表自动浮层后端。
+`src/shared/browser/` 的共享扩展脚本与 `src/linux/browser/` 的平台清单在真实文档事件线程处理标准 DOM 输入；单段 Tiptap 富文本通过有界 MAIN-world 桥调用源编辑器事务，隔离脚本持有 IME 与最终写入许可，经浏览器拥有的 native-messaging 子进程进入相同宿主端口。宿主独立验证同用户进程祖先与启动寿命，不接受页面声明的 PID。GTK/Qt 父窗口和浏览器视口坐标明确分开，只有对应的 renderer 使用，不能混为屏幕全局坐标。GTK 锚点契约见 `docs/platforms/linux/adr/0004-native-anchors.md`，浏览器部署/限制见 `docs/platforms/linux/browser.md`。同级 `src/linux/vscode/` 仅提供手动预览确认替换，不代表自动浮层后端。
 
 `eng/linux/cooperative/` 拥有合作组件的固定输入、补丁、生产构建和 Qt 运行时探针；`packaging/linux/fcitx-cooperative/` 负责产物、对应源码/许可及逐应用启动器。测试 runner 调用这些构建入口，不再拥有生产 recipe。当前部署与验收边界见 `docs/platforms/linux/README.md`、`docs/platforms/linux/fcitx.md`。
 

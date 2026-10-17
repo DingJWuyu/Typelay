@@ -14,6 +14,8 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 4 && args[0] == "--verify-browser-cooperation")
+            return BrowserCooperationCheck.Run(args[1], args[2], args[3]);
         if (args.Length == 4 && args[0] == "--verify-continuous")
             return ContinuousTranslationCheck.Run(args[1], args[2], args[3]);
         if (args.Length != 1)

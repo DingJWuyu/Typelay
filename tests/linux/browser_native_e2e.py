@@ -185,6 +185,7 @@ class NativeBrowserContract(unittest.TestCase):
                                 hello["data"]["lifetime"], previous_hello["data"]["lifetime"]
                             )
                             self.sequence = 0
+                            self.events = []
                             # Browser callbacks continue in another process while
                             # this test's socket receives the native-host reply.
                             legacy = self.focused_description(connection)
@@ -192,6 +193,8 @@ class NativeBrowserContract(unittest.TestCase):
                             self.configure_session(connection)
                             original = self.focused_description(connection)
                             self.assertIsNotNone(original)
+                            original_route = self.last_route
+                            self.assert_document_route(original_route, original["target"])
                             self.assertEqual(
                                 original["sessionBindings"],
                                 {
@@ -200,6 +203,7 @@ class NativeBrowserContract(unittest.TestCase):
                                     "exit": "Esc",
                                     "sourceReady": True,
                                     "editorReady": True,
+                                    "shortcutDispatch": "page",
                                 },
                             )
                             snapshot = self.request(
@@ -221,6 +225,11 @@ class NativeBrowserContract(unittest.TestCase):
                             )
                             self.assertIsNotNone(current)
                             self.assertNotEqual(current["target"], original["target"])
+                            current_route = self.last_route
+                            self.assert_document_route(current_route, current["target"])
+                            self.assertNotEqual(
+                                current_route["documentId"], original_route["documentId"]
+                            )
                             self.assertEqual(
                                 current["sessionBindings"], original["sessionBindings"]
                             )
@@ -245,6 +254,36 @@ class NativeBrowserContract(unittest.TestCase):
                             )
                             self.assertEqual(
                                 second.locator("#source").input_value(), "Second document"
+                            )
+                            # The same real extension must publish native dispatch
+                            # per document and revoke the browser-owned closed route.
+                            self.configure_session(connection, "native")
+                            applied = self.focused_description(connection)
+                            self.assertEqual(
+                                applied["sessionBindings"]["shortcutDispatch"], "native"
+                            )
+                            first.close()
+                            deadline = time.monotonic() + 3
+                            while time.monotonic() < deadline and not any(
+                                event.get("event") == "document-closed"
+                                and event.get("route") == original_route
+                                for event in self.events
+                            ):
+                                self.request(connection, "describe")
+                            self.assertTrue(
+                                any(
+                                    event.get("event") == "document-focus"
+                                    and event.get("data") is True
+                                    and event.get("route") == current_route
+                                    for event in self.events
+                                )
+                            )
+                            self.assertTrue(
+                                any(
+                                    event.get("event") == "document-closed"
+                                    and event.get("route") == original_route
+                                    for event in self.events
+                                )
                             )
                     finally:
                         scope.__exit__(None, None, None)
@@ -346,8 +385,29 @@ class NativeBrowserContract(unittest.TestCase):
             raise ValueError("native-frame-size")
         return json.loads(exact(length))
 
+    def assert_document_route(self, route, target):
+        self.assertEqual(
+            set(route),
+            {
+                "extensionId",
+                "documentId",
+                "documentToken",
+                "tabId",
+                "windowId",
+                "frameId",
+                "scheme",
+            },
+        )
+        self.assertRegex(route["extensionId"], r"^[a-p]{32}$")
+        self.assertTrue(route["documentId"])
+        self.assertEqual(route["documentToken"], target.split(":")[0])
+        self.assertGreaterEqual(route["tabId"], 0)
+        self.assertGreaterEqual(route["windowId"], 0)
+        self.assertEqual(route["frameId"], 0)
+        self.assertEqual(route["scheme"], "http:")
+
     @staticmethod
-    def configure_session(connection):
+    def configure_session(connection, dispatch=None):
         # Configuration broadcasts deliberately have no process-wide ACK. The
         # next routed describe/capture confirms each actual document separately.
         packet = json.dumps(
@@ -359,6 +419,7 @@ class NativeBrowserContract(unittest.TestCase):
                     "sessionEnabled": True,
                     "accept": "Tab",
                     "exit": "Esc",
+                    **({"shortcutDispatch": dispatch} if dispatch else {}),
                 },
             }
         ).encode()
@@ -371,7 +432,10 @@ class NativeBrowserContract(unittest.TestCase):
         for _ in range(128):
             message = self.receive(connection)
             if message.get("id") == self.sequence:
+                self.last_route = message.get("route")
                 return message.get("data")
+            if "event" in message:
+                self.events.append(message)
         self.fail("Native host did not return the matching bounded request")
 
 

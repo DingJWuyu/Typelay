@@ -20,9 +20,9 @@ from support.browser_process import chromium_context
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = ROOT / "tests/linux/fixtures/editor"
-ADAPTER = ROOT / "src/linux/browser/editor-adapter.js"
-BRIDGE = ROOT / "src/linux/browser/editor-bridge.js"
-CONTENT = ROOT / "src/linux/browser/content.js"
+ADAPTER = ROOT / "src/shared/browser/editor-adapter.js"
+BRIDGE = ROOT / "src/shared/browser/editor-bridge.js"
+CONTENT = ROOT / "src/shared/browser/content.js"
 INITIAL = "<p>Before <strong>hello world</strong> after <em>untouched</em></p>"
 TRANSLATED = "<p>Before <strong>bonjour world</strong> after <em>untouched</em></p>"
 NEW_SOURCE = "<p>NEW Before <strong>hello world</strong> after <em>untouched</em></p>"

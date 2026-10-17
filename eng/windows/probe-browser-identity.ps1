@@ -57,7 +57,7 @@ if (-not $OwnedChild) {
     if ($entryFailure -or $cleanupError) { exit 1 }
     exit $entryCode
 }
-$pin = Get-Content (Join-Path $fixture 'chrome-for-testing.json') -Raw | ConvertFrom-Json
+$pin = Get-Content (Join-Path $repo 'tests/windows/support/chrome-for-testing.json') -Raw | ConvertFrom-Json
 $archive = (Resolve-Path -LiteralPath $ChromeArchive).Path
 $actualSha256 = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actualSha256 -ne $ExpectedSha256.ToLowerInvariant()) { throw 'Chrome archive SHA-256 mismatch.' }

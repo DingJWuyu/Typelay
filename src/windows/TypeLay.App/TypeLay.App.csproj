@@ -13,6 +13,7 @@
     <Compile Include="../shared/OwnedPracticeAcceptanceProtocol.cs" Link="Windows/OwnedPracticeAcceptanceProtocol.cs" />
     <Compile Include="../shared/PracticeProgressPipe.cs" Link="Windows/PracticeProgressPipe.cs" />
     <Compile Include="../shared/WindowsInterruptClock.cs" Link="Windows/WindowsInterruptClock.cs" />
+    <Compile Include="../shared/BrowserPeerIdentity.cs" Link="Windows/BrowserPeerIdentity.cs" />
     <ProjectReference Include="../TypeLay.Practice/TypeLay.Practice.csproj" ReferenceOutputAssembly="false" />
     <ProjectReference Include="../TypeLay.Windows.Contracts/TypeLay.Windows.Contracts.csproj" />
     <ProjectReference Include="../../shared/TypeLay.Runtime/TypeLay.Runtime.csproj" />
