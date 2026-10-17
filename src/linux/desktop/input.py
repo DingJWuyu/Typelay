@@ -1280,7 +1280,21 @@ class Input:
         return max(0, int(value["until"] - now_ms()))
 
     def diagnostics(self):
+        acknowledgement = (
+            self.current_session_acknowledgement(self.bound_observation)
+            if self.bound_observation
+            and self.bound_observation["peer"] is self.focused_peer()
+            and self.bound_observation["target"] == self.bound
+            else None
+        )
         return {
+            "sessionShortcuts": {
+                "bindings": dict(acknowledgement["bindings"]),
+                "sourceReady": acknowledgement["sourceReady"],
+                "editorReady": acknowledgement["editorReady"],
+            }
+            if acknowledgement
+            else None,
             "captureStatus": self.capture_status,
             "captureCounts": dict(self.capture_counts),
             "captureFailures": list(self.capture_failures),

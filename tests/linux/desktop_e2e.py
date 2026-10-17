@@ -1353,7 +1353,10 @@ def run(arguments):
                             start()
                             request({"Action": {"FocusWindow": {"id": window["id"]}}})
                             enter_source(typed_source)
-                            acknowledgement = status()["input"]["sessionShortcuts"]
+                            acknowledgement = wait_for(
+                                lambda: status().get("input", {}).get("sessionShortcuts"),
+                                "GTK source did not report its current session key acknowledgement",
+                            )
                             assert acknowledgement["bindings"] == {
                                 "accept": "Ctrl+F7",
                                 "exit": "Ctrl+F8",
