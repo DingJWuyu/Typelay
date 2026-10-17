@@ -15,7 +15,7 @@
   const consumed = new Map();
   const held = new Map();
   const MAX_TEXT = 8192;
-  let counter = 0, publication = null, shortcut = null, configuration = null, hintTimer = null;
+  let counter = 0, publication = null, shortcut = null, configuration = null, hintTimer = null, ordered = null;
   let clock = null, commandClock = null, lastHostStamp = NaN, alive = true, overlay = null, mutating = false, ownInputEvent = null;
   // Cache native methods in the extension's isolated world, never invoke a
   // page-overridden setter or a page-supplied replacement function.
@@ -34,21 +34,31 @@
     return typeof configuration?.sessionEnabled === "boolean" && typeof configuration.generation === "string"
       && configuration.generation.length > 0
       && typeof configuration.accept === "string" && typeof configuration.exit === "string"
-      && (configuration.accept === "Tab" || /^F(?:[1-9]|1[0-9]|2[0-4])$/.test(configuration.accept))
-      && (configuration.exit === "Esc" || /^F(?:[1-9]|1[0-9]|2[0-4])$/.test(configuration.exit))
-      && configuration.accept !== configuration.exit;
+      && (configuration.accept === "Tab" || /^(?:Ctrl\+)?F(?:[1-9]|1[0-9]|2[0-4])$/.test(configuration.accept))
+      && (configuration.exit === "Esc" || /^(?:Ctrl\+)?F(?:[1-9]|1[0-9]|2[0-4])$/.test(configuration.exit))
+      && configuration.accept.replace(/^Ctrl\+/, "") !== configuration.exit.replace(/^Ctrl\+/, "");
   }
   function sessionConfigured() { return sessionApplied() && configuration.sessionEnabled; }
   function sessionCurrent(generation) {
     return sessionConfigured() && generation === configuration.generation;
   }
-  function sessionBindings() {
+  const controlBinding = action => typeof configuration?.[action] === "string" && configuration[action].startsWith("Ctrl+");
+  const controlPair = () => controlBinding("accept") || controlBinding("exit");
+  const sourceConfigured = field => sessionConfigured() && (!controlPair()
+    || !!field && !field.richText && allowedElement(field.element) && !field.dead);
+  function sessionBindings(field) {
+    const source = sourceConfigured(field);
     return {generation: configuration?.generation ?? null, accept: configuration?.accept ?? null,
-      exit: configuration?.exit ?? null, sourceReady: sessionConfigured(), editorReady: sessionConfigured()};
+      exit: configuration?.exit ?? null, sourceReady: source, editorReady: source && !controlPair()};
   }
   function sessionKey(event, action) {
-    return sessionConfigured() && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey
-      && event.key === (configuration[action] === "Esc" ? "Escape" : configuration[action]);
+    return sessionConfigured() && event.ctrlKey === controlBinding(action)
+      && !event.altKey && !event.shiftKey && !event.metaKey
+      && event.key === (configuration[action] === "Esc" ? "Escape" : configuration[action].replace(/^Ctrl\+/, ""));
+  }
+  function retireOrdered() {
+    if (ordered) ordered.revoked = true;
+    ordered = null; // Physical press ownership lives until its real key-up.
   }
   function viewCurrent(field, data) {
     if (!field || !sessionApplied() || data.generation !== configuration.generation) return false;
@@ -91,7 +101,7 @@
     captureCounts[lastCaptureReason] = Math.min(1000000, captureCounts[lastCaptureReason] + 1);
     return null;
   }
-  function clockReject(reason) { lastClockReason = reason; return false; }
+  function clockReject(reason) { retireOrdered(); lastClockReason = reason; return false; }
   function fineClock() {
     const first = monoNow();
     let previous = first;
@@ -293,7 +303,7 @@
     if (!meta || meta.password || !meta.enabled || meta.readOnly || meta.offscreen) return null;
     return {target: field.id, metadata: meta, authority: authority(field, meta),
       geometry: geometry(field), focused: focused(field), diagnostics: diagnostics(),
-      publication: publicationState(field, meta), sessionBindings: sessionBindings()};
+      publication: publicationState(field, meta), sessionBindings: sessionBindings(field)};
   }
   function approved(field, basis, domOnly = false) {
     const meta = field && metadata(field, domOnly);
@@ -357,10 +367,10 @@
     if (requireFocused && !focused(field) || configuration !== applied) return noteCapture("postcheck");
     noteCapture("supported");
     return {...result, diagnostics: diagnostics(), text, selection: selected,
-      ime: field.ime, observedAtMs: now(), writeSupported: !field.quarantined && sessionConfigured()};
+      ime: field.ime, observedAtMs: now(), writeSupported: !field.quarantined && sourceConfigured(field)};
   }
   const rejection = reason => ({status: "RejectedBeforeMutation", reason});
-  function write(field, request, direct) {
+  function write(field, request, direct, ticket = null) {
     drainMutations();
     const plan = request.plan, basis = request.authority, approval = direct ? request.approved : basis;
     const expected = plan?.expected, applied = configuration;
@@ -384,6 +394,7 @@
     const result = text.slice(0, start) + replacement + text.slice(end);
     if (!validText(result) || result !== plan.resultText || plan.caret !== start + replacement.length
       || element.maxLength >= 0 && result.length > element.maxLength) return rejection("BadPlan");
+    if (ticket && !orderedCurrent(ticket, true)) return rejection("EpochChanged");
     if (field.richText) return writeRich(field, request, direct, text, start, end, result, applied);
     if (!liveDeadline(request)) return rejection("StaleObservation");
     if (!sessionCurrent(request.generation) || configuration !== applied) return rejection("EpochChanged");
@@ -394,6 +405,7 @@
       // No beforeinput dispatch before the mutation: page handlers could change
       // focus/text inside that event. The native operation is a single synchronous edit.
       const replace = element instanceof HTMLTextAreaElement ? areaReplace : inputReplace;
+      if (ticket && !claimOrdered(ticket)) return rejection("EpochChanged");
       mutated = true;
       replace.call(element, replacement, start, end, "end");
       ownInputEvent = new InputEvent("input", {bubbles: true, composed: true,
@@ -401,7 +413,8 @@
       element.dispatchEvent(ownInputEvent);
       drainMutations();
       field.content++;
-      if (field.dead || !approved(field, approval) || field.ime !== "Clear" || read(field) !== result
+      if (ticket && (!orderedCurrent(ticket, false) || !liveDeadline(ticket.accept))
+        || field.dead || !approved(field, approval) || field.ime !== "Clear" || read(field) !== result
         || field.content !== basis.contentRevision + 1 || (!direct && !focused(field))
         || element.selectionStart !== plan.caret || element.selectionEnd !== plan.caret) {
         field.quarantined = true;
@@ -473,11 +486,13 @@
     if (rememberSelection(field) && !mutating) changed(field, false, false);
   }
   function observationInterrupted() {
+    retireOrdered();
     publication = shortcut = clock = null;
     hide();
     for (const field of targets.values()) { field.ime = "Unknown"; field.authorities?.clear(); }
   }
   function changed(field, textChanged, focusChanged) {
+    retireOrdered();
     publication = shortcut = null;
     if (!focusChanged) field.input++;
     if (textChanged) field.content++;
@@ -489,7 +504,10 @@
   function mutations(records) {
     if (records.length && overlay?.paused && !pauseCurrent(overlay.field, overlay.authority, true)) hide();
     for (const record of records) {
-      if (record.type === "attributes") continue;
+      if (record.type === "attributes") {
+        if (ordered && (record.target === ordered.field.element || record.target.contains(ordered.field.element))) retireOrdered();
+        continue;
+      }
       if (!mutating) {
         for (const field of targets.values()) {
           if (field.richText && (record.target === field.element || field.element.contains(record.target))) {
@@ -501,6 +519,7 @@
       for (const node of record.removedNodes) {
         for (const field of targets.values()) {
           if (node === field.element || node.contains?.(field.element)) {
+            retireOrdered();
             field.dead = true;
             targets.delete(field.id);
             publication = shortcut = null;
@@ -523,6 +542,7 @@
     if (reducedMotion.matches && overlay) { cancelMotion(overlay); position(); }
   });
   function hide() {
+    retireOrdered();
     clearTimeout(hintTimer); hintTimer = null;
     if (!overlay) return;
     const previous = overlay;
@@ -598,7 +618,7 @@
       return {visible: overlay.host.isConnected, editing: overlay.editing};
     }
     const view = data.view, paused = view?.state === "Paused";
-    if (paused) publication = shortcut = null;
+    if (paused) { retireOrdered(); publication = shortcut = null; }
     // A paused view has no capture. Echoing its metadata authority establishes
     // the same bounded host clock proof without reading source text/selection.
     if (paused && (!pauseCurrent(field, data.authority) || !calibrate(field, data.authority))) {
@@ -762,7 +782,7 @@
     overlay.language.hidden = paused;
     overlay.panel.classList.toggle("paused", paused);
     overlay.renewed = data.expiresAtMs - 800;
-    overlay.editable = !paused && view.editable && view.viewContext?.canEdit === true;
+    overlay.editable = !paused && !controlPair() && view.editable && view.viewContext?.canEdit === true;
     overlay.editor.dataset.editable = String(!!overlay.editable);
     overlay.editor.title = overlay.editable
       ? view.presentation.editorOwnsText ? "编辑译文" : "点击译文以编辑" : "";
@@ -800,7 +820,8 @@
       case "describe": return describe(field);
       case "capture": return capture(field, data.authority, data.requireFocused === true);
       case "publish": {
-        if (!sessionCurrent(data.generation)) return {published: false};
+        if (!sameOrderedPublication(data)) retireOrdered();
+        if (!sessionCurrent(data.generation) || !sourceConfigured(field)) return {published: false};
         const previous = publication, oldBasis = previous?.authority, basis = data.authority;
         const sameSource = field && previous?.target === field.id && data.target === field.id
           && field.content === basis?.contentRevision && field.input === basis?.inputRevision
@@ -832,11 +853,12 @@
       case "publish-shortcut": shortcut = calibrate(field, data.authority) ? data : null; return null;
       case "configure-shortcuts":
         // Revoke the old generation before applying even invalid or disabled input.
-        publication = shortcut = null; hide();
+        retireOrdered(); publication = shortcut = null; hide();
         configuration = {...data};
         return null;
-      case "revoke": publication = null; if (data.shortcuts) shortcut = null; return null;
+      case "revoke": retireOrdered(); publication = null; if (data.shortcuts) shortcut = null; return null;
       case "direct": {
+        retireOrdered();
         if (!sessionCurrent(data.generation)) return rejection("EpochChanged");
         if (!data.plan?.id || consumed.has(data.plan.id)) return rejection("BadPlan");
         for (const [id, expiry] of consumed) if (monoNow() > expiry) consumed.delete(id);
@@ -855,12 +877,14 @@
           || field.focus !== data.authority.focusRevision || field.ime !== "Clear") return {triggered: false};
         const snapshot = capture(field, data.authority);
         if (!snapshot || !sessionCurrent(data.generation)) return {triggered: false};
+        retireOrdered();
         send("shortcut", {kind: data.kind, generation: data.generation, native: snapshot, acceptedAtMs: now()});
         publication = shortcut = null;
         return {triggered: true};
       }
-      case "quarantine": if (field) field.quarantined = true; publication = null; return null;
+      case "quarantine": retireOrdered(); if (field) field.quarantined = true; publication = null; return null;
       case "return": {
+        if (controlPair()) return {returned: false};
         if (!sessionCurrent(data.generation) || !field || !approved(field, data.authority)
           || field.content !== data.authority.contentRevision || field.ime !== "Clear"
           || !document.hasFocus() || overlay?.composing || !sessionCurrent(data.generation)) return {returned: false};
@@ -881,13 +905,13 @@
         } else hide();
         return null;
       case "overlay-edit":
-        if (overlay?.field === field && overlayCurrent(data) && overlay.editable && !overlay.paused
+        if (!controlPair() && overlay?.field === field && overlayCurrent(data) && overlay.editable && !overlay.paused
           && data.allowed === true && document.hasFocus() && field.ime === "Clear") {
           overlay.editing = true; overlay.editor.readOnly = false; overlay.editor.focus({preventScroll: true});
         }
         return null;
       case "overlay-resume":
-        if (overlay?.field === field && overlayCurrent(data) && !overlay.paused && document.hasFocus()) {
+        if (!controlPair() && overlay?.field === field && overlayCurrent(data) && !overlay.paused && document.hasFocus()) {
           overlay.status.textContent = "无法返回原输入框，请点击译文继续编辑";
         }
         return null;
@@ -915,10 +939,10 @@
       if (synced || message.op === "configure-shortcuts") result = command(message);
       else {
         if (message.op === "capture") noteCapture(lastClockReason);
-        publication = shortcut = null; hide();
+        retireOrdered(); publication = shortcut = null; hide();
       }
     }
-    catch (_) { publication = shortcut = null; hide(); }
+    catch (_) { retireOrdered(); publication = shortcut = null; hide(); }
     commandClock = null;
     if (captureStarted !== null && result) {
       const elapsed = monoNow() - captureStarted;
@@ -935,11 +959,11 @@
     reportFocus();
     // Focus loss does not interrupt these window-capture observers. Keep both
     // Clear and sticky Composing so a frozen direct request retains its source.
-    if (!document.hasFocus()) { publication = shortcut = null; hide(); }
+    if (!document.hasFocus()) { retireOrdered(); publication = shortcut = null; hide(); }
   }, true);
   document.addEventListener("visibilitychange", () => {
     reportFocus();
-    if (document.hidden) { publication = shortcut = null; hide(); }
+    if (document.hidden) { retireOrdered(); publication = shortcut = null; hide(); }
   });
   window.addEventListener("focusin", event => {
     const field = fieldFor(event.target);
@@ -972,7 +996,98 @@
     const field = fields.get(event.target) || fields.get(document.activeElement);
     if (field) selectionChanged(field);
   }, true);
-  function consume(event) { event.preventDefault(); event.stopImmediatePropagation(); held.set(event.code, true); }
+  function consume(event) {
+    event.preventDefault(); event.stopImmediatePropagation();
+    const press = held.get(event.code);
+    if (press) press.consumed = true;
+  }
+  function sameOrderedPublication(next) {
+    if (!ordered || ordered.revoked || !next) return false;
+    const normalize = current => {
+      const value = JSON.parse(JSON.stringify(current));
+      delete value.expiresAtPerformanceMs; delete value.expiresAtWallMs; delete value.traceRound;
+      if (value.authority) { delete value.authority.token; delete value.authority.observedAtMs; }
+      if (value.permit) { delete value.permit.observedAtMs; delete value.permit.expiresAtMs; }
+      if (value.permit?.plan) delete value.permit.plan.id;
+      if (value.permit?.plan?.expected) delete value.permit.plan.expected.observedAtMs;
+      if (value.lease?.source) delete value.lease.source.observedAtMs;
+      return JSON.stringify(value);
+    };
+    return normalize(ordered.publication) === normalize(next);
+  }
+  function orderedCurrent(ticket, source) {
+    if (!ticket || ordered !== ticket || ticket.revoked || !alive || configuration !== ticket.configuration
+      || !sessionCurrent(ticket.publication.generation) || !sourceConfigured(ticket.field) || !clockValid()) return false;
+    const field = ticket.field, basis = ticket.publication.authority;
+    if (fields.get(field.element) !== field || field.dead || field.quarantined || field.ime !== "Clear"
+      || !focused(field) || !approved(field, basis) || field.input !== basis.inputRevision
+      || field.focus !== basis.focusRevision) return false;
+    if (source) {
+      const selected = selection(field);
+      if (field.content !== basis.contentRevision || read(field) !== ticket.source.text
+        || selected?.start !== ticket.source.selection.start || selected?.end !== ticket.source.selection.end) return false;
+    }
+    return ordered === ticket && !ticket.revoked && configuration === ticket.configuration;
+  }
+  function beginOrdered(event, field, press) {
+    if (!controlPair() || !sourceConfigured(field) || !["ControlLeft", "ControlRight"].includes(event.code)
+      || event.altKey || event.shiftKey || event.metaKey || !publication
+      || [...held.keys()].some(code => code !== event.code && ["ControlLeft", "ControlRight"].includes(code))) return;
+    drainMutations();
+    const current = publication, basis = current?.authority;
+    const source = current?.permit?.plan?.expected ?? current?.lease?.source;
+    if (!current || !basis || !source?.selection || typeof source.text !== "string"
+      || source.target?.value !== field.id || current.target !== field.id || !clockValid()) return;
+    const lease = current.lease;
+    const exitAt = controlBinding("exit") && lease?.escapeAllowed && fresh(lease.source?.observedAtMs, 150)
+      && lease.commandGeneration === current.generation && Number.isSafeInteger(lease.sessionRevision)
+      && lease.source.target?.value === field.id && lease.source.text === source.text
+      && lease.source.selection?.start === source.selection.start && lease.source.selection?.end === source.selection.end
+      ? lease.source.observedAtMs + 150 : NaN;
+    const ticket = {publication: current, configuration, field, source,
+      controlCode: event.code, controlPress: press, revoked: false, claimed: false,
+      accept: {expiresAtPerformanceMs: current.expiresAtPerformanceMs, expiresAtWallMs: current.expiresAtWallMs},
+      exit: {expiresAtPerformanceMs: exitAt - clock.upper, expiresAtWallMs: exitAt - clock.upperWall}};
+    if ((!controlBinding("accept") || !liveDeadline(ticket.accept)) && !liveDeadline(ticket.exit)) return;
+    ordered = ticket;
+    if (!orderedCurrent(ticket, true) || publication !== current) retireOrdered();
+  }
+  function claimOrdered(ticket) {
+    if (!orderedCurrent(ticket, true) || !liveDeadline(ticket.accept) || ticket.claimed
+      || held.get(ticket.controlCode) !== ticket.controlPress
+      || held.get(ticket.event.code) !== ticket.press || ticket.press.consumed) return false;
+    ticket.claimed = true;
+    consume(ticket.event); // Immediately before the first setter, never admission.
+    return true;
+  }
+  function orderedKey(event, field, press) {
+    const ticket = ordered;
+    const accept = controlBinding("accept") && sessionKey(event, "accept");
+    const exit = controlBinding("exit") && sessionKey(event, "exit");
+    if ((!accept && !exit) || !ticket || ticket.claimed || field !== ticket.field
+      || held.get(ticket.controlCode) !== ticket.controlPress || !orderedCurrent(ticket, true)
+      || !liveDeadline(accept ? ticket.accept : ticket.exit)) return false;
+    ticket.event = event; ticket.press = press;
+    const current = ticket.publication;
+    if (exit) {
+      ticket.claimed = true; consume(event);
+      publication = null; refreshHint();
+      send("escape", {target: field.id, generation: current.generation, sessionRevision: current.lease.sessionRevision});
+    } else {
+      const plan = current.permit?.plan;
+      if (!plan?.id || consumed.has(plan.id)) return false;
+      for (const [id, expiry] of consumed) if (monoNow() > expiry) consumed.delete(id);
+      if (consumed.size >= 128) return false;
+      consumed.set(plan.id, monoNow() + 100);
+      const acceptedAtMs = now();
+      const receipt = write(field, {plan, authority: current.authority, generation: current.generation, ...ticket.accept}, false, ticket);
+      publication = null; refreshHint();
+      if (ticket.claimed) send("accepted", {planId: plan.id, receipt, acceptedAtMs});
+    }
+    const claimed = ticket.claimed;
+    if (ordered === ticket) retireOrdered();
+    return claimed;
+  }
   function shortcutMatches(event, binding) {
     const keyval = /^F(?:[1-9]|[12][0-9]|3[0-5])$/.test(event.key)
       ? 65469 + Number(event.key.slice(1))
@@ -999,26 +1114,41 @@
   }
   window.addEventListener("keydown", event => {
     if (!event.isTrusted) return;
-    if (held.has(event.code)) { tabDiagnostic(event, fields.get(event.target))("held"); if (held.get(event.code)) consume(event); return; }
-    if (event.repeat) { tabDiagnostic(event, fields.get(event.target))("repeat"); return; }
-    held.set(event.code, false);
+    if (held.has(event.code)) {
+      if (ordered && !ordered.claimed) retireOrdered();
+      tabDiagnostic(event, fields.get(event.target))("held");
+      if (held.get(event.code).consumed) consume(event);
+      return;
+    }
+    if (event.repeat) { retireOrdered(); tabDiagnostic(event, fields.get(event.target))("repeat"); return; }
+    const press = {consumed: false};
+    held.set(event.code, press);
     // A closed shadow root retargets to the host at window capture. Handle the
     // installed editor here so one physical key has one owner across focus/config.
     if (overlay && event.target === overlay.host && overlay.editing
       && overlay.shadow.activeElement === overlay.editor && sessionCurrent(overlay.generation)) {
-      if (event.isComposing || overlay.composing || event.keyCode === 229) return;
+      if (controlPair() || event.isComposing || overlay.composing || event.keyCode === 229) return;
       if (sessionKey(event, "accept")) { publication = null; consume(event); ui("return"); }
       else if (sessionKey(event, "exit")) { publication = null; consume(event); ui("escape"); }
       return;
     }
     const field = fieldFor(event.target);
     const reportTab = tabDiagnostic(event, field);
-    if (!field || !focused(field)) { reportTab("target-unfocused"); return; }
-    if (event.isComposing || event.keyCode === 229) { reportTab("composing"); field.ime = "Composing"; publication = shortcut = null; refreshHint(); return; }
+    if (!field || !focused(field)) { retireOrdered(); reportTab("target-unfocused"); return; }
+    if (event.isComposing || event.keyCode === 229) { retireOrdered(); reportTab("composing"); field.ime = "Composing"; publication = shortcut = null; refreshHint(); return; }
     // A trusted non-composing keyboard event provides positive state evidence;
     // it does not retroactively make a previously issued unknown-state plan valid.
     if (field.ime === "Unknown") { reportTab("ime-unknown"); field.ime = "Clear"; changed(field, false, false); return; }
-    if (field.ime !== "Clear") { reportTab("composing"); return; }
+    if (field.ime !== "Clear") { retireOrdered(); reportTab("composing"); return; }
+    if (event.key === "Control") {
+      retireOrdered();
+      beginOrdered(event, field, press);
+      return; // The original Ctrl continues through the browser unchanged.
+    }
+    if (ordered) {
+      if (orderedKey(event, field, press)) return;
+      retireOrdered();
+    }
     if (configuration?.enabled && shortcut && shortcut.generation === configuration.generation
       && approved(field, shortcut.authority) && issued(field, shortcut.authority)) {
       const kind = shortcutMatches(event, configuration.wake) ? "wake" : shortcutMatches(event, configuration.direct) ? "direct" : null;
@@ -1033,7 +1163,7 @@
         }
       }
     }
-    if (!publication || !sessionCurrent(publication.generation) || event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) { reportTab("no-publication"); return; }
+    if (!publication || !sourceConfigured(field) || !sessionCurrent(publication.generation) || event.ctrlKey || event.altKey || event.shiftKey || event.metaKey) { reportTab("no-publication"); return; }
     const current = publication, basis = current.authority;
     if (!approved(field, basis) || field.input !== basis.inputRevision || field.focus !== basis.focusRevision) { reportTab("authority-changed"); publication = null; refreshHint(); return; }
     if (publication !== current || !sessionCurrent(current.generation)) return;
@@ -1058,7 +1188,8 @@
   }, true);
   window.addEventListener("keyup", event => {
     if (!event.isTrusted) return;
-    if (held.get(event.code)) { event.preventDefault(); event.stopImmediatePropagation(); }
+    if (ordered && !ordered.claimed && event.code === ordered.controlCode) retireOrdered();
+    if (held.get(event.code)?.consumed) { event.preventDefault(); event.stopImmediatePropagation(); }
     held.delete(event.code);
   }, true);
   window.addEventListener("scroll", () => position(), true);

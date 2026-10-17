@@ -4,7 +4,7 @@
 
 这套可选组件让 TypeLay 与实际 Fcitx 输入事务协作。已验证范围包括 GTK3、GTK4 的标准 GtkEntry 和原生 GtkEntryBuffer；标准纯文本 TextView 使用原生 TextBuffer，两代已有多行选区、真实模型、Tab 和 IME 实证；GTK3 验证宿主 user-action 分组，GTK4 另验原生 undo/redo。GTK4 须单独以 --gtk4 启动。Qt 的可选同版构建与启动入口见末节；非纯文本/自定义控件、通用 Electron 尚未开放。普通 TypeLay 安装不会安装或启用这些组件。
 
-标准 GTK3 GtkEntry 的可选 Ctrl+功能键源操作已通过[实际主机与本地模型检查](https://github.com/DingJWuyu/Typelay/actions/runs/39013453807)：Ctrl+F7 一次写入、重复及先松 Ctrl 的释放归属、Ctrl+F8 不写退出、目标变化拒写均通过。同一能力已扩至标准纯文本 TextView，[实际多行选区接受](https://github.com/DingJWuyu/Typelay/actions/runs/39015404063)已验证选区外原文、一次回执和原 user-action 分组；退出、目标变化拒写与默认恢复尚未验完。只使用原次 Ctrl 前已有的源资格和截止，实际输入法处理完成后才裁决功能键；输入法输出、原文、目标或配置变化仍撤销。GTK4 当前源码也复用该能力：原 Ctrl 同步处理和 fallback 完成后，仅由下一次已有源观察完成裁决，标准 Entry/delegate 与纯文本 TextView 的真实链尚待验证。该路径须双方确认新能力，旧组件不启用组合接受，默认键行为保持；组合编辑及设置选项仍未开放。上述软件输入不代表物理键或实际输入法验收。
+可选 Ctrl+功能键源操作已通过[实际主机与本地模型检查](https://github.com/DingJWuyu/Typelay/actions/runs/39017668844)：GTK3 标准 GtkEntry，以及 GTK4 标准 Entry/delegate 和纯文本 TextView，均验证一次写入、重复及释放归属、不写退出、目标变化拒写；GTK4 还通过多行选区外原文保留、原生 Undo 和默认键恢复。GTK3 纯文本 TextView 已验证多行选区接受、原 user-action 分组及不写退出，目标变化负控和默认恢复尚未验完。组合操作仅使用原次 Ctrl 前的源资格和截止，真实输入法处理完成后裁决，输入法输出、原文、目标或配置变化仍撤销。双方须确认新能力，旧组件不启用组合接受；组合编辑和公开设置选项仍未开放。软件输入不代表物理键或实际输入法验收。
 
 固定生产输入以 `eng/linux/cooperative/inputs.py` 为准，当前为 Core 5.1.22、Chinese Addons 5.1.14、GTK IM 5.1.7、完整私有 LibIME 1.1.16。对应组件已在隔离环境完整构建，实际库、模型路径与同版官方包均有校验。搬迁后的私有包已通过默认组件会话、配置/前台重启、原 session bus，以及嵌套 niri 的实际 CPU 模型、自动预览、一次 Tab 写回、编辑后两阶段 Tab 与拼音组合保护。同窗后台直接替换也已验证实际类型恰为标准 GTK3/GTK4 Entry 的原字段：一次真实 F10/模型任务写 A 时保持 B 的焦点、正文与选择，原文变化时拒绝；不外推到 TextView 或跨窗口/应用后台。实际按键由隔离桌面自动化送入，不能代替用户 CachyOS 桌面的物理输入验收。
 

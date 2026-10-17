@@ -275,6 +275,206 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.locator("#source").input_value(), "你好")
         self.assertEqual(len(self.accepted()), 1)
 
+    def configure_control(self, *, enabled=False):
+        self.command(
+            "configure-shortcuts",
+            {
+                "generation": "control-source",
+                "enabled": enabled,
+                "sessionEnabled": True,
+                "accept": "Ctrl+F7",
+                "exit": "Ctrl+F8",
+            },
+        )
+        self.page.evaluate("""() => {
+          window.controlEvents = [];
+          for (const type of ['keydown', 'keyup']) window.addEventListener(type, event => {
+            if (['F7', 'F8'].includes(event.key)) controlEvents.push([type, event.key]);
+          });
+        }""")
+
+    def publish_control(self, snapshot, plan=None):
+        plan = plan or self.plan(snapshot)
+        return self.command(
+            "publish",
+            {
+                "target": snapshot["target"],
+                "authority": snapshot["authority"],
+                "permit": {"plan": plan},
+                "lease": {
+                    "source": plan["expected"],
+                    "escapeAllowed": True,
+                    "sessionRevision": 1,
+                    "commandGeneration": "control-source",
+                },
+            },
+        )
+
+    def test_control_source_keeps_original_plan_and_release_ownership(self):
+        self.configure_control()
+        snapshot = self.type_source()
+        self.assertTrue(snapshot["sessionBindings"]["sourceReady"])
+        self.assertFalse(snapshot["sessionBindings"]["editorReady"])
+        self.assertTrue(self.publish_control(snapshot)["published"])
+        self.page.keyboard.down("Control")
+        # A normal same-candidate host renewal cannot replace the old plan or
+        # lend it a newer deadline, even with a fresh authority token.
+        next_snapshot = self.capture()
+        next_plan = self.plan(next_snapshot)
+        next_plan["id"] = "new-plan"
+        self.assertTrue(self.publish_control(next_snapshot, next_plan)["published"])
+        self.page.keyboard.down("F7")
+        self.page.keyboard.down("F7")
+        self.page.keyboard.up("Control")
+        self.page.keyboard.up("F7")
+        self.assertEqual(self.page.locator("#source").input_value(), "你好")
+        accepted = self.accepted()
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(accepted[0]["data"]["planId"], "test-plan")
+        self.assertEqual(accepted[0]["data"]["receipt"]["status"], "Verified")
+        self.assertEqual(self.page.evaluate("controlEvents"), [])
+
+    def test_control_configuration_cannot_open_the_overlay_editor(self):
+        self.configure_control()
+        snapshot = self.type_source()
+        rendered = self.command(
+            "overlay-render",
+            {
+                "target": snapshot["target"],
+                "authority": snapshot["authority"],
+                "revision": 1,
+                "view": {
+                    "state": "ValidTranslation",
+                    "text": "你好",
+                    "editable": True,
+                    "presentation": {
+                        "visible": True,
+                        "editorOwnsText": False,
+                        "tabHint": "Ctrl+F7 接受译文",
+                    },
+                },
+            },
+        )
+        self.assertTrue(rendered["visible"])
+        self.command("overlay-edit", {"target": snapshot["target"], "allowed": True})
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+        self.assertFalse(self.capture()["sessionBindings"]["editorReady"])
+
+    def test_control_source_exit_and_ordinary_binding_restore(self):
+        self.configure_control()
+        snapshot = self.type_source()
+        self.assertTrue(self.publish_control(snapshot)["published"])
+        self.page.keyboard.press("Control+F8")
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+        self.assertEqual(self.page.evaluate("controlEvents"), [])
+        self.assertEqual(
+            self.page.evaluate("fixtureMessages.filter(item => item.event === 'escape').length"),
+            1,
+        )
+        self.command(
+            "configure-shortcuts",
+            {
+                "generation": "ordinary-again",
+                "enabled": False,
+                "sessionEnabled": True,
+                "accept": "Tab",
+                "exit": "Esc",
+            },
+        )
+        snapshot = self.capture()
+        self.assertTrue(snapshot["sessionBindings"]["editorReady"])
+        self.publish(snapshot, self.plan(snapshot))
+        self.page.keyboard.press("Tab")
+        self.assertEqual(self.page.locator("#source").input_value(), "你好")
+        self.assertEqual(len(self.accepted()), 1)
+
+    def test_control_revocation_focus_and_composition_cannot_be_republished(self):
+        for change in ("revoke", "focus", "composition", "shortcut"):
+            with self.subTest(change=change):
+                self.page.reload()
+                self.page.locator("#source").focus()
+                self.configure_control(enabled=change == "shortcut")
+                snapshot = self.type_source()
+                self.assertTrue(self.publish_control(snapshot)["published"])
+                if change == "shortcut":
+                    self.command(
+                        "publish-shortcut",
+                        {
+                            "target": snapshot["target"],
+                            "authority": snapshot["authority"],
+                            "generation": "control-source",
+                        },
+                    )
+                self.page.keyboard.down("Control")
+                if change == "revoke":
+                    self.command("revoke")
+                elif change == "focus":
+                    self.page.evaluate("""() => {
+                      document.querySelector('#other').focus();
+                      document.querySelector('#source').focus();
+                    }""")
+                elif change == "composition":
+                    # Synthetic composition only revokes; it never grants Clear.
+                    self.page.locator("#source").dispatch_event("compositionstart")
+                elif change == "shortcut":
+                    result = self.command(
+                        "trigger-shortcut",
+                        {
+                            "target": snapshot["target"],
+                            "authority": snapshot["authority"],
+                            "generation": "control-source",
+                            "kind": "wake",
+                            "triggeredAtMs": snapshot["observedAtMs"],
+                        },
+                    )
+                    self.assertTrue(result["triggered"])
+                self.publish_control(snapshot)
+                self.page.keyboard.down("F7")
+                self.page.keyboard.up("Control")
+                self.page.keyboard.up("F7")
+                self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+                self.assertEqual(self.accepted(), [])
+                self.assertEqual(
+                    self.page.evaluate("controlEvents"), [["keydown", "F7"], ["keyup", "F7"]]
+                )
+
+    def test_control_renewal_does_not_extend_original_deadline(self):
+        self.configure_control()
+        snapshot = self.type_source()
+        self.assertTrue(self.publish_control(snapshot)["published"])
+        self.page.keyboard.down("Control")
+        self.page.wait_for_timeout(
+            160
+        )  # Intentionally expire the original 90ms permit and exit lease.
+        next_snapshot = self.capture()
+        next_plan = self.plan(next_snapshot)
+        next_plan["id"] = "renewed-after-expiry"
+        self.assertTrue(self.publish_control(next_snapshot, next_plan)["published"])
+        self.page.keyboard.down("F7")
+        self.page.keyboard.up("Control")
+        self.page.keyboard.up("F7")
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+        self.assertEqual(self.accepted(), [])
+        self.assertEqual(self.page.evaluate("controlEvents"), [["keydown", "F7"], ["keyup", "F7"]])
+
+    def test_control_postmutation_focus_roundtrip_is_unknown_and_consumed(self):
+        self.configure_control()
+        snapshot = self.type_source()
+        self.page.locator(
+            "#source"
+        ).evaluate("""element => element.addEventListener('input', () => {
+          document.querySelector('#other').focus(); element.focus();
+        }, {once: true})""")
+        self.assertTrue(self.publish_control(snapshot)["published"])
+        self.page.keyboard.press("Control+F7")
+        self.assertEqual(self.page.locator("#source").input_value(), "你好")
+        accepted = self.accepted()
+        self.assertEqual(len(accepted), 1)
+        self.assertEqual(accepted[0]["data"]["receipt"]["status"], "OutcomeUnknown")
+        self.assertEqual(self.page.evaluate("controlEvents"), [])
+        self.assertFalse(self.capture()["writeSupported"])
+
     def test_legacy_invalid_and_disabled_configuration_remain_read_only(self):
         for config in (
             {"enabled": True, "generation": "legacy"},
@@ -291,6 +491,13 @@ class BrowserContract(unittest.TestCase):
                 "generation": "same",
                 "accept": "F7",
                 "exit": "F7",
+            },
+            {
+                "enabled": False,
+                "sessionEnabled": True,
+                "generation": "same-base",
+                "accept": "F7",
+                "exit": "Ctrl+F7",
             },
             {
                 "enabled": False,

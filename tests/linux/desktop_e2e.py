@@ -577,7 +577,7 @@ def run(arguments):
         )
         control_keys = (
             {name: prepare_key(resources, name) for name in ("Control_L", "F7", "F8")}
-            if arguments.desktop_scope in ("all", "gtk", "gtk4", "qt")
+            if arguments.desktop_scope in ("all", "browser", "gtk", "gtk4", "qt")
             else {}
         )
 
@@ -715,6 +715,131 @@ def run(arguments):
                         )
                         evidence.append(
                             "Wayland Chromium: real extension, native host, compositor process binding, CPU model and Tab"
+                        )
+                        page.evaluate("""() => {
+                          window.controlEvidence = {input: 0, keys: []};
+                          document.querySelector('#source').addEventListener('input', () => controlEvidence.input++);
+                          for (const type of ['keydown', 'keyup']) window.addEventListener(type, event => {
+                            if (['F7', 'F8'].includes(event.key)) controlEvidence.keys.push([type, event.key]);
+                          });
+                        }""")
+
+                        def browser_control_state():
+                            return page.evaluate("""() => ({
+                              ...controlEvidence,
+                              source: document.querySelector('#source').value,
+                              other: document.querySelector('#other').value,
+                              focus: document.activeElement.id
+                            })""")
+
+                        def browser_control_source(text):
+                            page.locator("#source").click()
+                            key("ctrl+a")
+                            typed(text)
+                            wait_for(
+                                lambda: browser_control_state()["source"] == text,
+                                "browser control source input did not arrive",
+                            )
+                            wait_for(ready_to_accept, "browser control source did not become ready")
+
+                        ordinary_pair = (
+                            settings.get("AcceptShortcut", "Tab"),
+                            settings.get("ExitShortcut", "Esc"),
+                        )
+                        stop()
+                        settings.update(AcceptShortcut="Ctrl+F7", ExitShortcut="Ctrl+F8")
+                        start()
+                        request({"Action": {"FocusWindow": {"id": window["id"]}}})
+                        browser_control_source("Please review this draft.")
+                        acknowledgement = wait_for(
+                            lambda: status().get("input", {}).get("sessionShortcuts"),
+                            "browser did not acknowledge its current control source bindings",
+                        )
+                        assert acknowledgement == {
+                            "bindings": {"accept": "Ctrl+F7", "exit": "Ctrl+F8"},
+                            "sourceReady": True,
+                            "editorReady": False,
+                        }
+                        before_control = browser_control_state()
+                        offset = trace_checkpoint()
+                        wait_for(ready_to_accept, "browser control permit was not current")
+                        send_control_key("F7", repeat=True)
+                        wait_for(
+                            lambda: translated(browser_control_state()["source"])
+                            and verified_write(offset),
+                            "browser Ctrl+F7 did not accept the real model candidate",
+                        )
+                        accepted_control = browser_control_state()
+                        assert len(new_write_outcomes(offset)) == 1
+                        assert accepted_control["input"] == before_control["input"] + 1
+                        assert accepted_control["keys"] == before_control["keys"]
+                        assert accepted_control["focus"] == "source"
+                        assert accepted_control["other"] == before_control["other"]
+                        browser_control_source("Please keep this message private.")
+                        before_exit = browser_control_state()
+                        offset = trace_checkpoint()
+                        wait_for(ready_to_accept, "browser control exit was not current")
+                        send_control_key("F8")
+                        wait_for(
+                            lambda: not status().get("overlayVisible")
+                            and status().get("viewState") is None,
+                            "browser Ctrl+F8 did not close the original session",
+                        )
+                        exited_control = browser_control_state()
+                        assert exited_control == before_exit
+                        assert not new_write_outcomes(offset)
+                        browser_control_source("Please confirm the final schedule.")
+                        before_target = browser_control_state()
+                        offset = trace_checkpoint()
+                        wait_for(ready_to_accept, "browser target-change control was not current")
+                        try:
+                            control_keys["Control_L"](True)
+                            page.locator("#other").click()
+                            control_keys["F7"](True)
+                        finally:
+                            control_keys["Control_L"](False)
+                            control_keys["F7"](False)
+                        rejected_control = wait_for(
+                            lambda: value
+                            if len((value := browser_control_state())["keys"])
+                            == len(before_target["keys"]) + 2
+                            else None,
+                            "browser target-change key pair did not reach the original page",
+                        )
+                        assert rejected_control["keys"][-2:] == [["keydown", "F7"], ["keyup", "F7"]]
+                        for name in ("source", "other", "input"):
+                            assert rejected_control[name] == before_target[name]
+                        assert not new_write_outcomes(offset)
+                        stop()
+                        settings.update(
+                            AcceptShortcut=ordinary_pair[0], ExitShortcut=ordinary_pair[1]
+                        )
+                        start()
+                        request({"Action": {"FocusWindow": {"id": window["id"]}}})
+                        browser_control_source("Please send the updated report.")
+                        offset = trace_checkpoint()
+                        send_tab()
+                        wait_for(
+                            lambda: translated(browser_control_state()["source"])
+                            and verified_write(offset),
+                            "browser default Tab did not recover after control configuration",
+                        )
+                        (arguments.output / "browser-control-source.json").write_text(
+                            json.dumps(
+                                {
+                                    "bindings": acknowledgement,
+                                    "accepted": accepted_control,
+                                    "exited": exited_control,
+                                    "targetChanged": rejected_control,
+                                    "defaultRestored": browser_control_state(),
+                                },
+                                indent=2,
+                            )
+                            + "\n"
+                        )
+                        evidence.append(
+                            "Wayland Chromium source: production saved Ctrl+Fn settings, one real-model write, "
+                            "repeat and Ctrl-first release ownership, exit without write, target-change refusal and default Tab recovery"
                         )
                     except BaseException:
                         browser_evidence("chromium", lambda: page.evaluate(page_state))
@@ -1531,6 +1656,19 @@ def run(arguments):
                         assert not new_write_outcomes(offset)
 
                         select_control_multiline()
+                        # Esc keeps unchanged source suppressed, including reselection.
+                        # Start this separate refusal case with real new ASCII input.
+                        key("Right")
+                        typed(" Please confirm.")
+                        multiline_target_source = (
+                            multiline_original[: -len(suffix)] + " Please confirm." + suffix
+                        )
+                        wait_for(
+                            lambda: gtk_state()["multiline"]["text"] == multiline_target_source
+                            and gtk_state().get("focusedImeClear"),
+                            "GTK target-change case did not establish its new source",
+                        )
+                        select_control_multiline()
                         wait_for(ready_to_accept, "GTK Ctrl TextView target-change was not ready")
                         before_multiline_target = gtk_state()
                         offset, dispatch_offset = trace_checkpoint(), key_trace_checkpoint()
@@ -1545,7 +1683,7 @@ def run(arguments):
                         multiline_rejected = gtk_state()
                         for name in ("first", "second"):
                             assert multiline_rejected[name] == before_multiline_target[name]
-                        assert multiline_rejected["multiline"]["text"] == multiline_original
+                        assert multiline_rejected["multiline"]["text"] == multiline_target_source
                         for phase in ("down", "up"):
                             assert (
                                 multiline_rejected["functionKeys"][6][phase]
