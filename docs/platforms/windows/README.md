@@ -46,25 +46,25 @@
 
 ### 当前可验证候选
 
-这是开发候选，不是已完成通用输入验收的正式发布。本候选已开放完整自有编辑练习入口，并通过本次真实模型的软件输入完整链。[已核对的 Actions 运行](https://github.com/DingJWuyu/Typelay/actions/runs/38941521973)对应源码 `cf2b339ffb16636fbdbadf3da2fb13ebfc9350d9`；[下载 Windows artifact](https://github.com/DingJWuyu/Typelay/actions/runs/38941521973/artifacts/12062988281)，其名称为 `typelay-windows-cf2b339ffb16636fbdbadf3da2fb13ebfc9350d9`。取出内层 `TypeLay-Windows-preview.zip`，再完整解压启动。包内附带说明不用于识别构建，请以本节的源码提交及校验和核对。
+这是开发候选，不是已完成通用输入验收的正式发布。本候选包含原中英双向模型的共享目录与运行能力校验，未增加语言或改变默认设置。[已核对的 Actions 运行](https://github.com/DingJWuyu/Typelay/actions/runs/38950098717)对应源码 `fc954debc823fc75f34b53bda116b8cae7bdcc0c`；[下载 Windows artifact](https://github.com/DingJWuyu/Typelay/actions/runs/38950098717/artifacts/12067757607)，其名称为 `typelay-windows-fc954debc823fc75f34b53bda116b8cae7bdcc0c`。取出内层 `TypeLay-Windows-preview.zip`，再完整解压启动。包内附带说明不用于识别构建，请以本节的源码提交及校验和核对。
 
-Windows 检查仍未全绿：App 桌面回归 **180 项通过、7 项失败**；其中四项回归在编辑隔离、拒读或退休后读取控件状态时超时，三项为浏览器或测试 DLL 清理失败。真实模型检查的浏览器清理仍失败。artifact 预计于 **2026-10-30 17:46 UTC** 到期，届时需核对新的候选，不能将其它包当作同一版本。
+Windows 检查仍未全绿：App 桌面回归 **181 项通过、8 项失败**，涉及捕获与许可负控、编辑隔离、退休及浏览器或测试 DLL 清理；真实模型练习也未全部通过，具体结果见下文。artifact 预计于 **2026-10-30 18:53 UTC** 到期，届时需核对新的候选，不能将其它包当作同一版本。
 
 <details>
 <summary>包校验与版本配对</summary>
 
-- 源码提交：`cf2b339ffb16636fbdbadf3da2fb13ebfc9350d9`
-- 内层安装 ZIP：76,780,928 字节；SHA-256：`ede51203c68e529d69e49732388cf533eee69fce80cbbf1b73d5497c20e5be87`。已与包旁的 `.sha256` 文件核对。
-- 外层 Actions artifact：78,185,726 字节；SHA-256：`635239c6232a73ec4e02b621b20a88dee85af057df8eeede67f8333242ec224d`。已与 Actions artifact 摘要核对，不要混用内外层校验值。
+- 源码提交：`fc954debc823fc75f34b53bda116b8cae7bdcc0c`
+- 内层安装 ZIP：76,788,422 字节；SHA-256：`6ce6d0efe418e00517a2008650cf03b29e79e8d5a362d72119856053249110be`。已与包旁的 `.sha256` 文件核对。
+- 外层 Actions artifact：78,190,321 字节；SHA-256：`00fcafb4bc0b2f4e3d32f6c8e2c8b9b8febc710f5a582de101546f47c53ab2b0`。已与 Actions artifact 摘要核对，不要混用内外层校验值。
 - App、Broker 与 Practice 必须来自这同一个完整包，不要混放旧包文件。仅看 `0.2.0.0` 不能区分开发包。
 
 在 ZIP 所在文件夹可用 `Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256` 核对内层安装包。
 
 </details>
 
-同一提交已通过 Core 225、Runtime 460、Protocol 9、Windows.Contracts 21 项，以及格式、原生适配器和打包检查。设置保存的焦点保持、退休成功或失败后的状态处理、用户切换窗口或控件后不抢焦点，以及默认 Tab 下的按需练习入口均已通过桌面回归。
+同一提交已通过 Core 225、Runtime 490、Protocol 10、Windows.Contracts 21 项，以及格式、原生适配器、worker 41 项和搬迁后发行包 17 项检查。包内共享模型目录已核验，中英两个方向的实际安装、自检和模型就绪均通过；旧安装兼容不以标记文件存在代替模型加载验证。设置保存的焦点保持、按需入口与应用排除草稿回归通过。
 
-生产构建的真实本地模型检查通过无标点持续预览、一次原生 Edit 直接替换和按需练习。默认生产编辑能力下，自有练习的首次接受、单击改稿、Tab 与鼠标回源、人工稿第二次接受及 Finish 保存关闭均已通过软件输入检查；生产注入拒绝负控保持通过。应用排除草稿的跨页保留、与快捷键原子保存、保存失败保稿及关闭选择也已通过桌面回归，公共保存栏与精简后的应用排除行实图已核验，一般安全说明可在既有详情查看。普通受控网页未做测试 UIA 预热即生成首译，原文、焦点和 Document 保持，但随后清理失败，本轮新标签页两模式未运行。软件输入不等于物理按键或输入法验收；用户本机的新标签页、复杂控件及其它应用仍须按[最小实机步骤](open-issues.md#新标签页实机复现)验证，自有 Edit 成功不扩大第三方写回范围。
+本次真实模型检查通过无标点持续预览和一次原生 Edit 直接替换。按需练习收到 `shortcut-staleobservation`，未完成预览；自有自动练习首次接受在写入前以 `EpochChanged` 拒绝，原文未变且没有写入，组合资格门的具体分因尚未确定，后续编辑、回源与 Finish 未运行。上文链接的此前完整软件输入链仍是独立证据，不能替代本候选的失败结果。普通受控网页未做测试 UIA 预热即生成首译，原文、焦点和 Document 保持，但随后清理失败，本轮新标签页两模式未运行。软件输入不等于物理按键或输入法验收；用户本机的新标签页、复杂控件及其它应用仍须按[最小实机步骤](open-issues.md#新标签页实机复现)验证，自有 Edit 成功不扩大第三方写回范围。
 
 ## 工作模式与按需操作
 
