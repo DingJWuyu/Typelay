@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Windows.Automation;
 using TypeLay.App;
@@ -95,15 +96,38 @@ internal static partial class BrowserCooperationCheck
             await Task.Delay(40, ct);
         }
     }
-    private static async Task FocusCommandFieldAsync(Cdp cdp, BrowserWindows windows, CancellationToken ct)
+    private static async Task<System.Windows.Rect> FocusCommandFieldAsync(Cdp cdp, BrowserWindows windows, AutomationElement settings, CancellationToken ct)
     {
         await FocusPageAsync(cdp, windows, ct);
-        // Returning to Chrome only focuses the document. The settings button
-        // removed its former overlay, so explicitly click the visible source
-        // before expecting that field's public command readiness.
-        var point = await cdp.EvaluateAsync("(()=>{const r=a.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,visible:a.isConnected&&r.width>0&&r.height>0};})()", ct);
+        var pages = windows.Read().Where(window => window.Page).ToArray();
+        Require(pages.Length == 1, "owned-page-window-unavailable");
+        nint page = pages[0].Handle;
+        var viewport = PageContentBounds(page);
+        var settingsBounds = WindowBounds(settings.Current.NativeWindowHandle);
+        var metrics = await cdp.EvaluateAsync("({width:innerWidth,height:innerHeight,scale:devicePixelRatio})", ct);
+        double scale = metrics.GetProperty("scale").GetDouble();
+        Require(double.IsFinite(scale) && scale > 0
+            && Math.Abs(viewport.Width - metrics.GetProperty("width").GetDouble() * scale) <= 2
+            && Math.Abs(viewport.Height - metrics.GetProperty("height").GetDouble() * scale) <= 2,
+            "source-viewport-scale-mismatch");
+        double width = (Math.Min(viewport.Right, settingsBounds.Left - 16) - viewport.Left) / scale;
+        Require(width >= 100, "source-command-layout-unavailable");
+        // Only this controlled page's layout changes. Chrome keeps its normal
+        // window; both real fields fit in the exposed space left of Settings.
+        await cdp.EvaluateAsync($"document.body.style.cssText='margin:0;padding:8px;box-sizing:border-box;font:20px sans-serif;width:'+{JsonSerializer.Serialize(width)}+'px';for(const f of [a,b]){{f.style.boxSizing='border-box';f.style.width='100%';f.style.margin='8px 0';f.style.padding='8px';}}true", ct);
+        var point = await cdp.EvaluateAsync("(()=>{const r=a.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;return {x,y,left:r.left,top:r.top,width:r.width,height:r.height,visible:a.isConnected&&r.width>0&&r.height>0&&r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=innerHeight&&document.elementFromPoint(x,y)===a};})()", ct);
         Require(point.GetProperty("visible").GetBoolean(), "source-field-not-visible");
         double x = point.GetProperty("x").GetDouble(), y = point.GetProperty("y").GetDouble();
+        var field = new System.Windows.Rect(viewport.Left + point.GetProperty("left").GetDouble() * scale,
+            viewport.Top + point.GetProperty("top").GetDouble() * scale,
+            point.GetProperty("width").GetDouble() * scale, point.GetProperty("height").GetDouble() * scale);
+        Require(viewport.Contains(field) && !settingsBounds.IntersectsWith(field)
+            && Native.GetAncestor(WindowFromPoint(new Native.Point
+            {
+                X = (int)(viewport.Left + x * scale),
+                Y = (int)(viewport.Top + y * scale)
+            }), 2) == page,
+            "source-field-obscured");
         foreach (string type in new[] { "mousePressed", "mouseReleased" })
             await cdp.PageCallAsync("Input.dispatchMouseEvent", new
             {
@@ -115,84 +139,51 @@ internal static partial class BrowserCooperationCheck
             }, ct);
         var state = await cdp.StateAsync("", ct);
         Require(state.PageFocused && state.Focus == "a", "source-focus-precondition");
+        return field;
     }
-    private static int _publicCommandTraceCount;
-    private static (int ShellCount, bool Visible, int KnownLabels, int VisibleLabels)? _lastPublicCommandTrace;
-    private static async Task WaitPublicCommandReadyAsync(string tracePath, CancellationToken ct)
+    private static async Task WaitPublicCommandReadyAsync(AutomationElement settings, BrowserWindows windows, System.Windows.Rect source, CancellationToken ct)
     {
-        // This is the shipped tray's exact accessible label, including the
-        // visible automation marker. It is read before normal typing/selection,
-        // never after those actions to wait for a private source observation.
-        const string ready = "TypeLay · 浏览器快捷键已就绪。 · 自动化测试";
-        string[] labels = [ready,
-            "TypeLay · 浏览器快捷键尚未就绪，请返回受支持的输入框。 · 自动化测试",
-            "TypeLay · 浏览器快捷键连接中。 · 自动化测试",
-            "TypeLay · 两个快捷键已启用；操作不会切换工作模式。 · 自动化测试",
-            "TypeLay · 快捷键输入观察未就绪，当前不会执行按需命令。 · 自动化测试",
-            "TypeLay · 已暂停 · 自动化测试"];
+        // The existing settings page remains visible beside the source. Read its
+        // actual status text before typing/selection, never an internal ACK.
+        const string ready = "浏览器快捷键已就绪。";
         try
         {
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
-                var observed = await Task.Run(() =>
+                bool visible = await Task.Run(() =>
                 {
-                    var trays = AutomationElement.RootElement.FindAll(TreeScope.Children,
-                        new OrCondition(new PropertyCondition(AutomationElement.ClassNameProperty, "Shell_TrayWnd"),
-                            new PropertyCondition(AutomationElement.ClassNameProperty, "Shell_SecondaryTrayWnd")));
-                    // Preserve the original public Ready query and its early success.
-                    foreach (AutomationElement tray in trays)
-                        if (tray.FindFirst(TreeScope.Descendants, new AndCondition(
-                            new PropertyCondition(AutomationElement.NameProperty, ready),
-                            new PropertyCondition(AutomationElement.IsOffscreenProperty, false))) is not null)
-                            return (ShellCount: trays.Count, Visible: true, KnownLabels: 1, VisibleLabels: 1);
-                    int known = 0, visible = 0;
-                    if (_publicCommandTraceCount < 32)
-                    {
-                        try
+                    var pages = windows.Read().Where(window => window.Page).ToArray();
+                    Require(pages.Length == 1, "owned-page-window-unavailable");
+                    Require(Native.GetForegroundWindow() == pages[0].Handle, "public-command-source-not-foreground");
+                    nint settingsHandle = settings.Current.NativeWindowHandle;
+                    var settingsBounds = WindowBounds(settingsHandle);
+                    var monitor = new Native.MonitorInfo { Size = Marshal.SizeOf<Native.MonitorInfo>() };
+                    Require(Native.GetMonitorInfoW(Native.MonitorFromWindow(settingsHandle, 2), ref monitor), "settings-monitor-unavailable");
+                    var work = new System.Windows.Rect(monitor.Work.Left, monitor.Work.Top,
+                        monitor.Work.Right - monitor.Work.Left, monitor.Work.Bottom - monitor.Work.Top);
+                    Require(!settings.Current.IsOffscreen && work.Contains(settingsBounds) && work.Contains(source)
+                        && PageContentBounds(pages[0].Handle).Contains(source) && !settingsBounds.IntersectsWith(source)
+                        && Native.GetAncestor(WindowFromPoint(new Native.Point
                         {
-                            // Only exact product-owned literals enter this diagnostic
-                            // query. No other tray names or dynamic statuses are read.
-                            var condition = new OrCondition(labels.Select(label =>
-                                (Condition)new PropertyCondition(AutomationElement.NameProperty, label)).ToArray());
-                            foreach (AutomationElement tray in trays)
-                                foreach (AutomationElement item in tray.FindAll(TreeScope.Descendants, condition))
-                                {
-                                    int index = Array.IndexOf(labels, item.Current.Name);
-                                    if (index < 0)
-                                        continue;
-                                    known |= 1 << index;
-                                    if (!item.Current.IsOffscreen)
-                                        visible |= 1 << index;
-                                }
-                        }
-                        catch (Exception error) when (error is not OutOfMemoryException) { known = visible = -1; }
-                    }
-                    return (ShellCount: trays.Count, Visible: false, KnownLabels: known, VisibleLabels: visible);
+                            X = (int)(source.Left + source.Width / 2),
+                            Y = (int)(source.Top + source.Height / 2)
+                        }), 2) == pages[0].Handle,
+                        "settings-command-layout-unavailable");
+                    var status = settings.FindFirst(TreeScope.Descendants, new AndCondition(
+                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text),
+                        new PropertyCondition(AutomationElement.NameProperty, ready),
+                        new PropertyCondition(AutomationElement.IsOffscreenProperty, false)));
+                    if (status is null)
+                        return false;
+                    var viewport = settings.FindFirst(TreeScope.Descendants,
+                        new PropertyCondition(AutomationElement.ClassNameProperty, "ScrollViewer"));
+                    var bounds = status.Current.BoundingRectangle;
+                    return viewport is not null && !viewport.Current.IsOffscreen && !bounds.IsEmpty
+                        && bounds.Width > 0 && bounds.Height > 0 && settingsBounds.Contains(bounds)
+                        && viewport.Current.BoundingRectangle.Contains(bounds);
                 }, ct).WaitAsync(ct);
-                if (_publicCommandTraceCount < 32 && _lastPublicCommandTrace != observed)
-                {
-                    _lastPublicCommandTrace = observed;
-                    _publicCommandTraceCount++;
-                    try
-                    {
-                        File.AppendAllText(tracePath, JsonSerializer.Serialize(new
-                        {
-                            operation = "public-command-label",
-                            shellCount = Math.Min(observed.ShellCount, 16),
-                            readyVisible = observed.Visible,
-                            knownLabels = observed.KnownLabels,
-                            visibleLabels = observed.VisibleLabels,
-                            // Bit 0 Ready, 1 NotReady, 2 Connecting, 3 NativeReady,
-                            // 4 InputNotReady, 5 Paused; -1 means diagnostic unavailable.
-                            exactReadyFound = observed.KnownLabels < 0 ? (bool?)null : (observed.KnownLabels & 1) != 0,
-                            exactReadyOffscreen = observed.KnownLabels < 0 || (observed.KnownLabels & 1) == 0 ? (bool?)null
-                                : (observed.VisibleLabels & 1) == 0
-                        }) + Environment.NewLine);
-                    }
-                    catch (Exception error) when (error is not OutOfMemoryException) { }
-                }
-                if (observed.Visible)
+                if (visible)
                     return;
                 await Task.Delay(40, ct);
             }
@@ -201,6 +192,26 @@ internal static partial class BrowserCooperationCheck
         {
             throw new Failure("public-command-ready-unavailable");
         }
+    }
+    private static System.Windows.Rect PageContentBounds(nint page)
+    {
+        var renderers = new List<nint>();
+        EnumChildWindows(page, (child, _) =>
+        {
+            var name = new StringBuilder(128);
+            GetClassNameW(child, name, name.Capacity);
+            if (IsWindowVisible(child) && name.ToString() == "Chrome_RenderWidgetHostHWND")
+                renderers.Add(child);
+            return true;
+        }, 0);
+        Require(renderers.Count == 1, "source-viewport-unavailable");
+        return WindowBounds(renderers[0]);
+    }
+    private static System.Windows.Rect WindowBounds(nint window)
+    {
+        Require(GetWindowRect(window, out var bounds) && bounds.Right > bounds.Left && bounds.Bottom > bounds.Top,
+            "owned-window-bounds-unavailable");
+        return new(bounds.Left, bounds.Top, bounds.Right - bounds.Left, bounds.Bottom - bounds.Top);
     }
     private static async Task PrepareInputAsync(Cdp cdp, BrowserWindows windows, string prefix, string suffix,
         bool selectSource, CancellationToken ct)
@@ -284,7 +295,7 @@ internal static partial class BrowserCooperationCheck
             await Task.Delay(10, ct);
         }
     }
-    private static async Task SetOnDemandAsync(Process app, string data, CancellationToken ct)
+    private static async Task<AutomationElement> SetOnDemandAsync(Process app, string data, CancellationToken ct)
     {
         // UIA only drives the shipped settings window. It neither reads browser
         // input nor supplies a replacement Runtime/controller to the test.
@@ -331,11 +342,25 @@ internal static partial class BrowserCooperationCheck
         }
         await Task.Run(() =>
         {
-            var close = window.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.NameProperty, "关闭设置"));
-            Require(close is not null, "settings-close-unavailable");
+            var shortcuts = window.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.NameProperty, "⌨  快捷键"));
+            Require(shortcuts is not null && shortcuts.TryGetCurrentPattern(InvokePattern.Pattern, out _), "settings-shortcuts-unavailable");
             ct.ThrowIfCancellationRequested();
-            ((InvokePattern)close!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+            ((InvokePattern)shortcuts!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+            nint settingsHandle = window.Current.NativeWindowHandle;
+            Native.GetWindowThreadProcessId(settingsHandle, out uint settingsProcess);
+            Require(settingsProcess == app.Id, "settings-window-ownership-changed");
+            var monitor = new Native.MonitorInfo { Size = Marshal.SizeOf<Native.MonitorInfo>() };
+            Require(Native.GetMonitorInfoW(Native.MonitorFromWindow(settingsHandle, 2), ref monitor), "settings-monitor-unavailable");
+            int width = (int)Math.Ceiling(WindowBounds(settingsHandle).Width);
+            int height = monitor.Work.Bottom - monitor.Work.Top;
+            Require(width <= monitor.Work.Right - monitor.Work.Left && height > 0, "settings-command-layout-unavailable");
+            ct.ThrowIfCancellationRequested();
+            // Only this fixture-owned settings window is kept above Chrome,
+            // without activating it. The real source receives focus next.
+            Require(Native.SetWindowPos(settingsHandle, -1, monitor.Work.Right - width, monitor.Work.Top, width, height,
+                0x0010), "settings-command-layout-failed"); // TOPMOST | NOACTIVATE
         }, ct).WaitAsync(ct);
+        return window;
     }
     private static async Task<string> ReadSharedTextAsync(string path, CancellationToken ct)
     {
@@ -370,6 +395,17 @@ internal static partial class BrowserCooperationCheck
         [FieldOffset(8)] public ushort Key;
         [FieldOffset(12)] public uint Flags;
     }
+    private delegate bool EnumWindow(nint window, nint data);
+    [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(nint parent, EnumWindow callback, nint data);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassNameW(nint window, StringBuilder text, int maximum);
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(nint window);
+    [DllImport("user32.dll")]
+    private static extern nint WindowFromPoint(Native.Point point);
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(nint window, out Native.Rect bounds);
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint count, KeyInput[] input, int size);
 }

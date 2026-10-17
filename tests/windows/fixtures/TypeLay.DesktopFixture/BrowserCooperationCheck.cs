@@ -3,6 +3,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Principal;
 using System.Text.Json;
+using System.Windows.Automation;
 using TypeLay.App;
 using TypeLay.Runtime;
 using TypeLay.Windows.Testing;
@@ -109,6 +110,7 @@ internal static partial class BrowserCooperationCheck
         BrowserWindows? windows = null;
         PageServer? server = null;
         Cdp? cdp = null;
+        AutomationElement? commandSettings = null;
         string? extensionId = null;
         var elapsed = Stopwatch.StartNew();
         string fixtureTrace = Path.Combine(directory, "trace-fixture.jsonl");
@@ -237,13 +239,13 @@ internal static partial class BrowserCooperationCheck
                 await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
                 await WaitPreviewAsync(cdp!, ct);
                 await cdp!.ClickOverlaySettingsAsync(ct);
-                await SetOnDemandAsync(app!.Process, data, ct);
+                commandSettings = await SetOnDemandAsync(app!.Process, data, ct);
                 await FocusPageAsync(cdp, windows!, ct);
             });
             await Phase(direct, "wait-public-command-ready", 30, async ct =>
             {
-                await FocusCommandFieldAsync(cdp!, windows!, ct);
-                await WaitPublicCommandReadyAsync(fixtureTrace, ct);
+                var sourceBounds = await FocusCommandFieldAsync(cdp!, windows!, commandSettings!, ct);
+                await WaitPublicCommandReadyAsync(commandSettings!, windows!, sourceBounds, ct);
                 direct.Stage = "single-f10-selection";
                 await PrepareInputAsync(cdp!, windows!, "Keep [", "] unchanged", selectSource: true, ct);
                 long offset = TraceLength(trace);
@@ -261,8 +263,8 @@ internal static partial class BrowserCooperationCheck
             });
             await Phase(background, "wait-public-command-ready", 30, async ct =>
             {
-                await FocusCommandFieldAsync(cdp!, windows!, ct);
-                await WaitPublicCommandReadyAsync(fixtureTrace, ct);
+                var sourceBounds = await FocusCommandFieldAsync(cdp!, windows!, commandSettings!, ct);
+                await WaitPublicCommandReadyAsync(commandSettings!, windows!, sourceBounds, ct);
                 background.Stage = "single-f10-full-text";
                 await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
                 long offset = TraceLength(trace);
