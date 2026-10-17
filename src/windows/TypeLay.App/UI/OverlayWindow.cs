@@ -259,28 +259,57 @@ internal sealed class OverlayWindow : Window, ISessionView
             Key key = ShortcutEventKey(e);
             if (key is not (Key.Tab or Key.Escape) && (key < Key.F1 || key > Key.F24))
                 return;
-            bool ordinaryControl = _ownedEditor is null && Keyboard.Modifiers == ModifierKeys.Control
+            string? entryRefusal = _ownedEditor is not null ? "owned-editor"
+                : Keyboard.Modifiers != ModifierKeys.Control ? "modifiers"
+                : !(key == _acceptKey && _acceptModifiers == ModifierKeys.Control
+                    || key == _exitKey && _exitModifiers == ModifierKeys.Control) ? "binding" : null;
+            bool ordinaryControl = entryRefusal is null;
+            // The diagnostic includes a configured ordinary chord whose modifier
+            // gate failed, but never spends its bound on owned/default keys.
+            bool traceOrdinary = ordinaryControl || entryRefusal == "modifiers"
                 && (key == _acceptKey && _acceptModifiers == ModifierKeys.Control
                     || key == _exitKey && _exitModifiers == ModifierKeys.Control);
             if (ordinaryControl && !e.IsRepeat)
             {
-                if (!ClaimOrdinaryEditorKey(e, key))
+                if (!ClaimOrdinaryEditorKey(e, key, out string? refusal))
+                {
+                    if (traceOrdinary)
+                        _ordinaryInput?.QueueOrdinaryKeyTrace("wpf", refusal!, entryRefusal, e.Handled, e.IsRepeat);
                     return;
+                }
             }
             if (!_pressedShortcutKeys.Add(key) || e.IsRepeat)
             {
                 if (_consumedShortcutKeys.Contains(key))
                     e.Handled = true;
+                if (traceOrdinary)
+                    _ordinaryInput?.QueueOrdinaryKeyTrace("wpf", "repeat-or-held", entryRefusal, e.Handled, e.IsRepeat);
                 return;
             }
-            if (_composing || e.Key == Key.ImeProcessed || _viewContext is not { } context)
+            string? viewRefusal = _composing ? "composing" : e.Key == Key.ImeProcessed ? "ime-key" : null;
+            if (viewRefusal is not null)
+            {
+                if (traceOrdinary)
+                    _ordinaryInput?.QueueOrdinaryKeyTrace("wpf", viewRefusal, entryRefusal, e.Handled, e.IsRepeat);
                 return;
+            }
+            if (_viewContext is not { } context)
+            {
+                if (traceOrdinary)
+                    _ordinaryInput?.QueueOrdinaryKeyTrace("wpf", "context-missing", entryRefusal, e.Handled, e.IsRepeat);
+                return;
+            }
             ModifierKeys modifiers = Keyboard.Modifiers;
             bool configured = key == _acceptKey && modifiers == _acceptModifiers
                 || key == _exitKey && modifiers == _exitModifiers;
             if (_ownedEditor is null && configured && modifiers != ModifierKeys.Control
                 && _ordinaryInput?.OrdinaryGroupPending == true)
+            {
+                if (traceOrdinary)
+                    _ordinaryInput?.QueueOrdinaryKeyTrace("wpf", "ordinary-group-pending", entryRefusal, e.Handled, e.IsRepeat);
                 return;
+            }
+            string outcome = "action-not-eligible";
             if (key == _acceptKey && modifiers == _acceptModifiers && _editing && context.CanEdit)
             {
                 _consumedShortcutKeys.Add(key);
@@ -289,6 +318,7 @@ internal sealed class OverlayWindow : Window, ISessionView
                     RequestOwnedReturn(owned, OwnedReturnKind.Tab);
                 else
                     ReturnRequested?.Invoke(context.Token);
+                outcome = "return-requested";
             }
             else if (key == _exitKey && modifiers == _exitModifiers && _editing)
             {
@@ -298,7 +328,10 @@ internal sealed class OverlayWindow : Window, ISessionView
                     RequestOwnedReturn(owned, OwnedReturnKind.Escape);
                 else
                     EscapeRequested?.Invoke(context.Token);
+                outcome = "exit-requested";
             }
+            if (traceOrdinary)
+                _ordinaryInput?.QueueOrdinaryKeyTrace("wpf", outcome, entryRefusal, e.Handled, e.IsRepeat);
         };
         _editor.PreviewKeyUp += (_, e) =>
         {
@@ -433,25 +466,42 @@ internal sealed class OverlayWindow : Window, ISessionView
         _ownedEditor is null && _editing && !_composing && _editor.IsKeyboardFocused
             && _viewContext is { CanEdit: true } context ? context.Token : null);
 
-    private bool ClaimOrdinaryEditorKey(KeyEventArgs input, Key key)
+    private bool ClaimOrdinaryEditorKey(KeyEventArgs input, Key key, out string? refusal)
     {
         // ProcessKeyAction scopes this original MSG around WPF's ReportInput.
         // The routed event may use WPF's cached time; the raw MSG is matched to LL below.
         var message = ComponentDispatcher.CurrentKeyboardMessage;
         long bits = message.lParam.ToInt64();
         uint virtualKey = (uint)KeyInterop.VirtualKeyFromKey(key), scan = (uint)(bits >> 16) & 255;
-        if (message.hwnd != _hwnd || message.message is not (0x100 or 0x104) || message.wParam != (nint)virtualKey
-            || (bits & 0xe0000000L) != 0 || scan == 0)
+        refusal = message.hwnd != _hwnd ? "message-window"
+            : message.message is not (0x100 or 0x104) ? "message-kind"
+            : message.wParam != (nint)virtualKey ? "message-key"
+            : (bits & 0xe0000000L) != 0 ? "message-flags"
+            : scan == 0 ? "message-scan" : null;
+        if (refusal is not null)
             return false;
         // A real new down retires the old WPF mirror even when admission fails.
         // The Hook still owns the old physical pair; a synthetic routed event
         // cannot clear it or make this new press inherit its consumed state.
         _pressedShortcutKeys.Remove(key);
         _consumedShortcutKeys.Remove(key);
-        return !_composing && input.Key != Key.ImeProcessed && _editing && _editor.IsKeyboardFocused
-            && _viewContext is { CanEdit: true } context
-            && _ordinaryInput?.ClaimOrdinaryEditorKey(context.Token, virtualKey, unchecked((uint)message.time),
-                scan, (bits & 0x01000000) != 0) == true;
+        refusal = _composing ? "composing" : input.Key == Key.ImeProcessed ? "ime-key"
+            : !_editing ? "not-editing" : !_editor.IsKeyboardFocused ? "editor-not-focused" : null;
+        if (refusal is not null)
+            return false;
+        if (_viewContext is not { CanEdit: true } context)
+        {
+            refusal = "context-not-editable";
+            return false;
+        }
+        var ordinaryInput = _ordinaryInput;
+        if (ordinaryInput is null)
+        {
+            refusal = "hook-missing";
+            return false;
+        }
+        return ordinaryInput.ClaimOrdinaryEditorKey(context.Token, virtualKey,
+            unchecked((uint)message.time), scan, (bits & 0x01000000) != 0, out refusal);
     }
 
     private nint WindowMessage(nint hwnd, int msg, nint wp, nint lp, ref bool handled)

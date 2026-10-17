@@ -367,9 +367,11 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(result.stdout, b"")
         self.assertEqual(result.stderr, b"")
 
-    def broker(self, data: bytes, token: str | None = TOKEN):
+    def broker(self, data: bytes, token: str | None = TOKEN, trace: Path | None = None):
         environment = os.environ.copy()
         environment.pop("TYPELAY_TRACE", None)
+        if trace is not None:
+            environment["TYPELAY_TRACE"] = str(trace)
         if token is None:
             environment.pop("TYPELAY_PIPE_TOKEN", None)
         else:
@@ -385,12 +387,31 @@ class DistributionTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform == "win32", "Production Windows broker")
     def test_broker_handshake_and_shutdown_use_real_process_pipes(self):
-        result = self.broker(frame(request(1, "hello")) + frame(request(2, "quit")))
+        trace = Path(self.temporary.name) / "return-trace.jsonl"
+        result = self.broker(
+            frame(request(1, "hello")) + frame(request(2, "return")) + frame(request(3, "quit")),
+            trace=trace,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
-            [(r["id"], r["status"]) for r in responses(result.stdout)], [(1, "ready"), (2, "bye")]
+            [(r["id"], r["status"]) for r in responses(result.stdout)],
+            [(1, "ready"), (2, "denied"), (3, "bye")],
         )
         self.assertEqual(result.stderr, b"")
+        events = [
+            json.loads(line) for line in Path(str(trace) + ".broker.jsonl").read_text().splitlines()
+        ]
+        self.assertEqual(len(events), 1)
+        self.assertGreater(events[0].pop("atMs"), 0)
+        self.assertEqual(
+            events[0],
+            {
+                "operation": "return",
+                "status": "denied",
+                "reason": "target-missing",
+                "errorType": None,
+            },
+        )
 
     @unittest.skipUnless(sys.platform == "win32", "Production Windows broker")
     def test_direct_write_is_rejected_without_falling_back_to_foreground_mutation(self):

@@ -1042,16 +1042,20 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         {
             for (int attempt = 1; attempt <= 2; attempt++)
             {
-                var received = new TaskCompletionSource<KeyEventArgs>(TaskCreationOptions.RunContinuationsAsynchronously);
-                KeyEventHandler observe = (_, args) => { if ((args.Key == Key.System ? args.SystemKey : args.Key) == Key.F10) received.TrySetResult(args); };
+                var received = new TaskCompletionSource<(bool Handled, bool IsRepeat, int Returns)>(TaskCreationOptions.RunContinuationsAsynchronously);
+                KeyEventHandler observe = (_, args) =>
+                {
+                    if ((args.Key == Key.System ? args.SystemKey : args.Key) == Key.F10)
+                        received.TrySetResult((args.Handled, args.IsRepeat, returns));
+                };
                 editor.AddHandler(Keyboard.PreviewKeyDownEvent, observe, handledEventsToo: true);
                 try
                 {
                     Send([Scan(0x1D, true), Scan(0x44, true)]);
                     held = true;
                     var down = await received.Task.WaitAsync(deadline.Token);
-                    Assert.False(down.IsRepeat);
-                    Assert.True(down.Handled);
+                    Assert.False(down.IsRepeat, $"attempt={attempt}; returns={down.Returns}; handled={down.Handled}");
+                    Assert.True(down.Handled, $"attempt={attempt}; returns={down.Returns}; repeat={down.IsRepeat}");
                     Assert.Equal(attempt, returns);
                     // Release only after the real WPF consumer claimed down.
                     // The Hook consumes Fn up, leaving the old WPF mirror.
@@ -1098,6 +1102,9 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         {
             if (held)
                 Send([Scan(0x44, false), Scan(0x1D, false)]);
+            // This isolated Hook has no Runtime poller. The existing reader
+            // flushes its bounded trace even when the first assertion fails.
+            hook.TryRead(out _);
         }
         async Task Wait(Func<bool> condition)
         {

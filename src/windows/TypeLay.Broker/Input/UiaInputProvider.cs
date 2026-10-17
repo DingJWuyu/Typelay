@@ -560,17 +560,40 @@ internal sealed class UiaInputProvider : IDisposable
         _quarantine.Add((t.ProcessId, t.ProcessStartUtcTicks, t.ElementToken));
         return new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
     }
-    public bool ReturnToSource(TargetId? target)
+    public bool ReturnToSource(TargetId? target, out string reason)
     {
-        if (target is null || _previous?.Target != target || _element is null
-            || !WindowsTarget.TryDecode(target.Value, out var binding))
+        // Fixed outcome/stage names only. The caller writes them after replying;
+        // no diagnostic read changes this original return attempt.
+        reason = "target-missing";
+        if (target is null)
             return false;
+        reason = "cached-target-changed";
+        if (_previous?.Target != target)
+            return false;
+        reason = "cached-element-missing";
+        if (_element is null)
+            return false;
+        reason = "target-invalid";
+        if (!WindowsTarget.TryDecode(target.Value, out var binding))
+            return false;
+        reason = "element-identity";
         if (string.Join('.', _element.GetRuntimeId()) != binding.ElementToken)
+        {
+            reason = "element-identity-changed";
             return false;
+        }
+        reason = "foreground";
         if (GetForegroundWindow() != (nint)binding.RootHwnd && !SetForegroundWindow((nint)binding.RootHwnd))
+        {
+            reason = "foreground-denied";
             return false;
+        }
+        reason = "set-focus";
         _element.SetFocus();
-        return string.Join('.', AutomationElement.FocusedElement.GetRuntimeId()) == binding.ElementToken;
+        reason = "focus-recheck";
+        bool focused = string.Join('.', AutomationElement.FocusedElement.GetRuntimeId()) == binding.ElementToken;
+        reason = focused ? "focused" : "focus-unconfirmed";
+        return focused;
     }
     public void Clear(TargetId? expected = null)
     {

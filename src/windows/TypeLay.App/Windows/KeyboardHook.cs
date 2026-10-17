@@ -16,7 +16,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     private readonly ConcurrentQueue<InputNotice> _notices = new();
     private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
     private readonly ConcurrentQueue<object> _shortcutTrace = new();
-    private int _shortcutTraceCount, _shortcutTraceDropped;
+    private int _shortcutTraceCount, _shortcutTraceDropped, _ordinaryKeyTraceSamples;
     private readonly Thread _thread;
     private readonly Native.HookProc _callback, _mouseCallback;
     private readonly Native.WinEventProc _focusCallback;
@@ -252,6 +252,41 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 foregroundEpoch: foregroundEpoch, evaluatedAtMs: evaluatedAtMs,
                 commandGeneration: configuration.Generation);
     }
+    internal void QueueOrdinaryKeyTrace(string stage, string reason, string? entryRefusal = null,
+        bool? handled = null, bool? repeat = null)
+    {
+        if (string.IsNullOrWhiteSpace(_tracePath))
+            return;
+        if (Interlocked.Increment(ref _ordinaryKeyTraceSamples) > 8)
+        {
+            Interlocked.Decrement(ref _ordinaryKeyTraceSamples);
+            return;
+        }
+        // Shared bound for the original Ctrl, Fn and WPF stages. Only fixed
+        // labels and already observed booleans; no extra clock or identity read.
+        if (Interlocked.Increment(ref _shortcutTraceCount) > 64)
+        {
+            Interlocked.Decrement(ref _shortcutTraceCount);
+            Interlocked.Increment(ref _shortcutTraceDropped);
+            return;
+        }
+        try
+        {
+            _shortcutTrace.Enqueue(new
+            {
+                operation = "ordinary-editor-key",
+                stage,
+                reason,
+                entryRefusal,
+                handled,
+                repeat
+            });
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            Interlocked.Decrement(ref _shortcutTraceCount);
+        }
+    }
     private void FlushShortcutTrace()
     {
         if (string.IsNullOrWhiteSpace(_tracePath))
@@ -351,15 +386,28 @@ internal sealed partial class KeyboardHook : IInputMonitor
     }
     private static bool SameOrdinaryPress(Native.KeyData first, Native.KeyData next) => first.Key == next.Key
         && first.Scan == next.Scan && (first.Flags & 0x13) == (next.Flags & 0x13);
-    private bool OrdinaryChordCurrent(OrdinaryChord chord, long now) => Volatile.Read(ref chord.Invalid) == 0
-        && _sessionEnabled && ShortcutsReady && chord.Generation == CommandGeneration && chord.UserEpoch == UserEpoch
-        && chord.SourceEpoch == SourceUserEpoch && chord.ForegroundEpoch == ForegroundEpoch
-        && chord.WindowEpoch == WindowEpoch
-        && (chord.Editor is { } editor ? ReferenceEquals(editor, Volatile.Read(ref _ordinaryEditor))
-            && editor.Token.CommandGeneration == CommandGeneration && Native.GetForegroundWindow() == _editorHwnd
-            : chord.Source is { } source && Native.GetForegroundWindow() == source.RootHwnd
-                && now >= source.Observation.Source.ObservedAtMs
-                && now - source.Observation.Source.ObservedAtMs <= Limits.ObservationMaxAgeMs);
+    private bool OrdinaryChordCurrent(OrdinaryChord chord, long now, out string? refusal)
+    {
+        // Preserve the original short-circuit order. The first failed gate is
+        // diagnostic metadata, never a second observation of live state.
+        refusal = Volatile.Read(ref chord.Invalid) != 0 ? "chord-invalid"
+            : !_sessionEnabled ? "session-disabled"
+            : !ShortcutsReady ? "shortcuts-not-ready"
+            : chord.Generation != CommandGeneration ? "configuration-changed"
+            : chord.UserEpoch != UserEpoch ? "user-epoch-changed"
+            : chord.SourceEpoch != SourceUserEpoch ? "source-epoch-changed"
+            : chord.ForegroundEpoch != ForegroundEpoch ? "foreground-epoch-changed"
+            : chord.WindowEpoch != WindowEpoch ? "window-epoch-changed"
+            : chord.Editor is { } editor
+                ? !ReferenceEquals(editor, Volatile.Read(ref _ordinaryEditor)) ? "editor-changed"
+                    : editor.Token.CommandGeneration != CommandGeneration ? "editor-configuration-changed"
+                    : Native.GetForegroundWindow() != _editorHwnd ? "editor-not-foreground" : null
+                : chord.Source is not { } source ? "source-missing"
+                    : Native.GetForegroundWindow() != source.RootHwnd ? "source-not-foreground"
+                    : now < source.Observation.Source.ObservedAtMs ? "source-clock"
+                    : now - source.Observation.Source.ObservedAtMs > Limits.ObservationMaxAgeMs ? "source-expired" : null;
+        return refusal is null;
+    }
     private bool PairOrdinaryChord(Native.KeyData input, bool down, bool repeated)
     {
         var chord = Volatile.Read(ref _ordinaryChord);
@@ -388,29 +436,48 @@ internal sealed partial class KeyboardHook : IInputMonitor
         HookLease? source, bool fresh, SessionKeys keys)
     {
         var chord = Volatile.Read(ref _ordinaryChord);
-        if (down && !repeated && ShortcutsReady && ControlKey(input.Key) && CurrentModifiers == ShortcutModifiers.Control
-            && !OtherKeyHeld(input.Key) && chord is null && (!injected || _allowInjectedInput)
-            && input.Scan is > 0 and <= 255)
+        bool traceOrdinary = keys.AcceptModifiers == ShortcutModifiers.Control || keys.ExitModifiers == ShortcutModifiers.Control;
+        string? controlRefusal = !down ? "not-down" : repeated ? "repeat"
+            : !ShortcutsReady ? "shortcuts-not-ready" : !ControlKey(input.Key) ? "not-control"
+            : CurrentModifiers != ShortcutModifiers.Control ? "modifiers" : OtherKeyHeld(input.Key) ? "other-held"
+            : chord is not null ? "group-pending" : injected && !_allowInjectedInput ? "injected"
+            : input.Scan is not (> 0 and <= 255) ? "scan" : null;
+        if (controlRefusal is null)
         {
             var editor = Volatile.Read(ref _ordinaryEditor);
-            if (editor is not null && Native.GetForegroundWindow() == _editorHwnd
-                && editor.Token.CommandGeneration == CommandGeneration
-                && (keys.AcceptModifiers == ShortcutModifiers.Control || keys.ExitModifiers == ShortcutModifiers.Control))
+            string? editorRefusal = editor is null ? "editor-missing"
+                : Native.GetForegroundWindow() != _editorHwnd ? "editor-not-foreground"
+                : editor.Token.CommandGeneration != CommandGeneration ? "editor-configuration-changed"
+                : !(keys.AcceptModifiers == ShortcutModifiers.Control || keys.ExitModifiers == ShortcutModifiers.Control)
+                    ? "editor-binding" : null;
+            if (editorRefusal is null)
                 source = null;
             else
             {
                 editor = null;
-                if (!fresh || source is null || Native.GetForegroundWindow() != source.RootHwnd
-                    || !source.Observation.EscapeAllowed || source.Observation.Source.Ime != ImeState.Clear
-                    || keys.ExitModifiers != ShortcutModifiers.Control)
+                string? sourceRefusal = !fresh ? "source-not-fresh" : source is null ? "source-missing"
+                    : Native.GetForegroundWindow() != source.RootHwnd ? "source-not-foreground"
+                    : !source.Observation.EscapeAllowed ? "source-exit-not-allowed"
+                    : source.Observation.Source.Ime != ImeState.Clear ? "source-ime"
+                    : keys.ExitModifiers != ShortcutModifiers.Control ? "source-binding" : null;
+                if (sourceRefusal is not null)
+                {
+                    if (traceOrdinary)
+                        QueueOrdinaryKeyTrace("control", sourceRefusal, editorRefusal);
                     return 0;
+                }
             }
             // Ordinary Ctrl still advances both source epochs below, or only U
             // inside the editor. No old permit or input version is preserved.
             Interlocked.Exchange(ref _ordinaryChord, new(input, source, editor, CommandGeneration,
                 UserEpoch + 1, SourceUserEpoch + (editor is null ? 1 : 0), ForegroundEpoch, WindowEpoch, ContentEpoch));
+            if (traceOrdinary)
+                QueueOrdinaryKeyTrace("control", "admitted", editorRefusal);
             return 0;
         }
+        // Classify only the already received Ctrl down, never log arbitrary keys.
+        if (traceOrdinary && down && !repeated && ControlKey(input.Key))
+            QueueOrdinaryKeyTrace("control", controlRefusal);
         if (chord is null)
             return 0;
         var function = Volatile.Read(ref chord.Function);
@@ -419,15 +486,23 @@ internal sealed partial class KeyboardHook : IInputMonitor
             return 0;
         bool configured = input.Key == keys.Exit && keys.ExitModifiers == ShortcutModifiers.Control
             || chord.Editor is not null && input.Key == keys.Accept && keys.AcceptModifiers == ShortcutModifiers.Control;
-        if (!down || repeated || !configured || function is not null || Volatile.Read(ref chord.ControlReleased) != 0
-            || CurrentModifiers != ShortcutModifiers.Control || ContentEpoch != chord.ContentEpoch + 1
-            || !SameInputOrigin(chord.Control, input) || input.Scan is 0 or > 255 || !OrdinaryChordCurrent(chord, now))
+        string? functionRefusal = !down ? "not-down" : repeated ? "repeat" : !configured ? "not-configured"
+            : function is not null ? "function-present"
+            : Volatile.Read(ref chord.ControlReleased) != 0 ? "control-released"
+            : CurrentModifiers != ShortcutModifiers.Control ? "modifiers"
+            : ContentEpoch != chord.ContentEpoch + 1 ? "content-epoch-changed"
+            : !SameInputOrigin(chord.Control, input) ? "input-origin"
+            : input.Scan is 0 or > 255 ? "scan" : null;
+        if (functionRefusal is not null || !OrdinaryChordCurrent(chord, now, out functionRefusal))
         {
             Interlocked.Exchange(ref chord.Invalid, 1);
+            if (configured && down && !repeated)
+                QueueOrdinaryKeyTrace("function", functionRefusal!);
             return 0;
         }
         function = new(input, now);
         Volatile.Write(ref chord.Function, function);
+        QueueOrdinaryKeyTrace("function", "admitted");
         if (chord.Editor is not null)
             return -1; // The actual WPF message must claim this original Fn.
         Interlocked.Exchange(ref function.Claimed, 1);
@@ -438,16 +513,25 @@ internal sealed partial class KeyboardHook : IInputMonitor
         return 1;
     }
     private static bool SameInputOrigin(Native.KeyData first, Native.KeyData next) => (first.Flags & 0x12) == (next.Flags & 0x12);
-    internal bool ClaimOrdinaryEditorKey(SessionViewToken token, uint key, uint timestamp, uint scan, bool extended)
+    internal bool ClaimOrdinaryEditorKey(SessionViewToken token, uint key, uint timestamp, uint scan, bool extended,
+        out string? refusal)
     {
         var chord = Volatile.Read(ref _ordinaryChord);
         var function = chord is null ? null : Volatile.Read(ref chord.Function);
         long now = WindowsInterruptClock.NowMs;
-        if (chord?.Editor?.Token != token || function is null || function.Input.Key != key
-            || function.Input.Time != timestamp || function.Input.Scan != scan || ((function.Input.Flags & 1) != 0) != extended
-            || now < function.ReceivedAt || now - function.ReceivedAt > 500 || !OrdinaryChordCurrent(chord, now))
+        refusal = chord is null ? "chord-missing" : chord.Editor?.Token != token ? "editor-token-mismatch"
+            : function is null ? "function-missing"
+            : function.Input.Key != key ? "function-key-mismatch"
+            : function.Input.Time != timestamp ? "function-time-mismatch"
+            : function.Input.Scan != scan ? "function-scan-mismatch"
+            : ((function.Input.Flags & 1) != 0) != extended ? "function-extended-mismatch"
+            : now < function.ReceivedAt ? "function-clock"
+            : now - function.ReceivedAt > 500 ? "function-expired" : null;
+        if (refusal is not null || !OrdinaryChordCurrent(chord!, now, out refusal))
             return false;
-        return Interlocked.CompareExchange(ref function.Claimed, 1, 0) == 0;
+        bool claimed = Interlocked.CompareExchange(ref function!.Claimed, 1, 0) == 0;
+        refusal = claimed ? null : "function-already-claimed";
+        return claimed;
     }
     internal bool OrdinaryGroupPending => Volatile.Read(ref _ordinaryChord) is { } chord
         && (Volatile.Read(ref chord.ControlReleased) == 0

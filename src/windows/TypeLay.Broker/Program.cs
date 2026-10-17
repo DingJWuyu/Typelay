@@ -31,6 +31,7 @@ internal static class Program
                     return 3;
                 last = request.Id;
                 BrokerResponse response;
+                string? returnReason = null, returnErrorType = null;
                 try
                 {
                     response = request.Op switch
@@ -40,7 +41,8 @@ internal static class Program
                         "direct-clear" => ClearDirect(provider, request),
                         "write" => new(BrokerProtocol.Version, request.Id, "receipt", Receipt: provider.Write(request)),
                         "direct-write" => new(BrokerProtocol.Version, request.Id, "receipt", Receipt: provider.WriteDirect(request)),
-                        "return" => new(BrokerProtocol.Version, request.Id, provider.ReturnToSource(request.BoundTarget) ? "focused" : "denied"),
+                        "return" => new(BrokerProtocol.Version, request.Id,
+                            provider.ReturnToSource(request.BoundTarget, out returnReason) ? "focused" : "denied"),
                         "capture" => Observe(provider, request),
                         "capture-owned" => ObserveOwned(provider, request),
                         "observe-pause" => ObservePause(provider, request),
@@ -50,8 +52,10 @@ internal static class Program
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
+                    if (request.Op == "return")
+                        returnErrorType = ex.GetType().Name;
                     string? trace = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
-                    if (!string.IsNullOrWhiteSpace(trace))
+                    if (request.Op != "return" && !string.IsNullOrWhiteSpace(trace))
                     {
                         try
                         {
@@ -63,8 +67,24 @@ internal static class Program
                     response = new(BrokerProtocol.Version, request.Id, "unavailable");
                 }
                 Wire.WriteAsync(output, response).AsTask().GetAwaiter().GetResult();
-                // Log only after replying so diagnostic disk I/O cannot delay this write receipt.
+                // Log only after replying so diagnostic disk I/O cannot delay the result.
                 // Opt-in outcomes only: no source, target, selection, exception text or identities.
+                if (request.Op == "return"
+                    && Environment.GetEnvironmentVariable("TYPELAY_TRACE") is { Length: > 0 } returnTracePath)
+                {
+                    try
+                    {
+                        File.AppendAllText(returnTracePath + ".broker.jsonl", System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            atMs = WindowsInterruptClock.NowMs,
+                            operation = "return",
+                            status = response.Status,
+                            reason = returnReason,
+                            errorType = returnErrorType
+                        }) + Environment.NewLine);
+                    }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+                }
                 if (request.Op is "write" or "direct-write" && response.Receipt is { } receipt
                     && Environment.GetEnvironmentVariable("TYPELAY_TRACE") is { Length: > 0 } tracePath)
                 {
