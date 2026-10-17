@@ -112,27 +112,32 @@ internal static partial class BrowserCooperationCheck
         private string? _page;
         public ExtensionDiscovery Discovery { get; private set; } = new(0, 0, 0, 0, 0);
         private static readonly JsonSerializerOptions ReadJson = new() { PropertyNameCaseInsensitive = true };
-        public static async Task<Cdp> ConnectAsync(string profile, CancellationToken ct)
+        public static async Task<Cdp> ConnectAsync(string profile, Action<string> setStage, CancellationToken ct)
         {
             string portFile = Path.Combine(profile, "DevToolsActivePort");
             string[] lines;
+            setStage("wait-cft-cdp-port");
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
                 if (File.Exists(portFile))
                 {
+                    setStage("read-cft-cdp-port");
                     lines = await File.ReadAllLinesAsync(portFile, ct);
                     if (lines.Length == 2 && int.TryParse(lines[0], out _))
                         break;
                 }
+                setStage("wait-cft-cdp-port");
                 await Task.Delay(40, ct);
             }
+            setStage("validate-cft-cdp-endpoint");
             Require(int.TryParse(lines[0], out int port) && port is > 0 and <= 65535
                 && lines[1].StartsWith("/devtools/browser/", StringComparison.Ordinal)
                 && !lines[1].Contains('?') && !lines[1].Contains('#'), "owned-cdp-endpoint-invalid");
             var cdp = new Cdp();
             try
             {
+                setStage("connect-cft-cdp");
                 await cdp._socket.ConnectAsync(new Uri($"ws://127.0.0.1:{port}{lines[1]}"), ct);
                 return cdp;
             }

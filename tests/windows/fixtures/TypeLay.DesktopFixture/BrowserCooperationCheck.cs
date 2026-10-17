@@ -25,6 +25,14 @@ internal static partial class BrowserCooperationCheck
         public string Stage { get; set; } = "not-started";
         public string Failure { get; set; } = "none";
         public string ErrorType { get; set; } = "none";
+        public string? ErrorCode
+        {
+            get; set;
+        }
+        public int? ErrorHResult
+        {
+            get; set;
+        }
         public long ElapsedMs
         {
             get; set;
@@ -159,7 +167,7 @@ internal static partial class BrowserCooperationCheck
                 await CopyModelAsync(directory, data, ct);
                 await File.WriteAllTextAsync(Path.Combine(data, "settings.json"), JsonSerializer.Serialize(new UserSettings(
                     Source: "zh", Target: "en", Theme: "light", OnboardingComplete: true, ExperimentalWriteback: false)), ct);
-                setup.Stage = "start-shipped-app-and-cft";
+                setup.Stage = "start-shipped-app";
                 var appStart = StartInfo(Path.Combine(distribution, "app", "TypeLay.App.exe"));
                 appStart.ArgumentList.Add("--automation-test");
                 // This is the shipped launcher's resource root, not a user-data override.
@@ -167,6 +175,7 @@ internal static partial class BrowserCooperationCheck
                 appStart.Environment["TYPELAY_TRACE"] = trace;
                 app = new ChildProcess(appStart);
                 appStopped = false;
+                setup.Stage = "check-shipped-extension";
                 string extension = Path.Combine(distribution, "browser", "chromium");
                 Require(File.Exists(Path.Combine(extension, "manifest.json")), "shipped-extension-missing");
                 string profile = Path.Combine(directory, "profile");
@@ -175,14 +184,19 @@ internal static partial class BrowserCooperationCheck
                     "--disable-search-engine-choice-screen", "--remote-debugging-port=0", "--load-extension=" + extension,
                     "--disable-extensions-except=" + extension, "--new-window", "about:blank" })
                     chromeStart.ArgumentList.Add(argument);
+                setup.Stage = "start-cft";
                 browser = new ChildProcess(chromeStart);
                 browserStopped = false;
+                setup.Stage = "identify-cft-process";
                 windows = new BrowserWindows(browser.Process, "TypeLay cooperation");
-                cdp = await Cdp.ConnectAsync(profile, ct);
+                cdp = await Cdp.ConnectAsync(profile, stage => setup.Stage = stage, ct);
                 // A real HTTP document opens the extension port and wakes its actual
                 // service worker. No inferred path hash or edited manifest supplies ID.
+                setup.Stage = "start-loopback-page";
                 server = new PageServer();
+                setup.Stage = "open-loopback-page";
                 await cdp.OpenPageAsync(server.Url, ct);
+                setup.Stage = "focus-loopback-page";
                 await FocusPageAsync(cdp, windows, ct);
                 setup.Stage = "discover-loaded-extension-and-register";
                 extensionId = await cdp.ExtensionIdAsync(Path.Combine(extension, "manifest.json"), ct);
@@ -309,6 +323,22 @@ internal static partial class BrowserCooperationCheck
             active.Outcome = "failed";
             active.Failure = error is Failure failure ? failure.Code : error is OperationCanceledException ? active.Stage + "-deadline" : "unexpected-error";
             active.ErrorType = error.GetType().Name;
+            if (ReferenceEquals(active, setup))
+            {
+                // Only ChildProcess's fixed codes may cross this diagnostic boundary.
+                // OS exception messages can contain paths and are never recorded.
+                active.ErrorCode = error is IOException && active.Stage is "start-shipped-app" or "start-cft"
+                    ? error.Message switch
+                    {
+                        "job-create" => "job-create",
+                        "job-limit" => "job-limit",
+                        "child-start" => "child-start",
+                        "job-assign" => "job-assign",
+                        _ => "unexpected-error"
+                    }
+                    : "unexpected-error";
+                active.ErrorHResult = error.HResult;
+            }
             Record("scene-failed", active);
         }
         finally
