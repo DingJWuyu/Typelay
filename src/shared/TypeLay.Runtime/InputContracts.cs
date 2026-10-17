@@ -20,8 +20,10 @@ public sealed record CommandFeedback(long Revision, Guid CommandGeneration, long
 // A configuration acknowledgement is capability evidence for exactly one target.
 // It does not replace field, IME, focus, version or write-permit checks.
 public sealed record SessionShortcutConfiguration(Guid Generation, SessionShortcutBindings Bindings);
+// SourceLocalAcceptanceVersion 1 means the source executes acceptance synchronously
+// and reports CompletedReceipt. It never authorizes a later WriteAsync dispatch.
 public sealed record SessionShortcutAcknowledgement(TargetId Target, Guid Generation,
-    SessionShortcutBindings Bindings, bool SourceReady, bool EditorReady);
+    SessionShortcutBindings Bindings, bool SourceReady, bool EditorReady, int SourceLocalAcceptanceVersion = 0);
 public sealed record InputLease(InputSnapshot Source, long UserEpoch, long ForegroundEpoch, bool EscapeAllowed,
     Guid CommandGeneration = default, long SessionRevision = 0,
     Guid? PracticeRunId = null, Guid? PracticeConnectionId = null);

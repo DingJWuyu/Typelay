@@ -803,7 +803,8 @@ public sealed partial class SessionController : IDisposable
             var practiceBinding = AutomaticPracticeFor(snapshot.Target);
             if (inputUnchanged && result.Focus == FocusMember.Source && _model.Ready
                 && !RetiredAutomaticTarget(snapshot.Target)
-                && (_settings.Value.ExperimentalWriteback || practiceBinding is not null)
+                && (_settings.Value.ExperimentalWriteback || practiceBinding is not null
+                    || _sessionShortcuts is { SourceLocalAcceptanceVersion: 1 })
                 && snapshot.WriteSupported && _hook.CanInterceptAcceptance && SessionBindingsReady(snapshot.Target, false))
             {
                 var context = new AcceptanceContext(FocusMember.Source, false, false, snapshot.Ime,
@@ -1213,6 +1214,7 @@ public sealed partial class SessionController : IDisposable
         RevokeInput("accept");
         _permitUntil = 0;
         if (notice.Permit is not { } permit || notice.CommandGeneration != _hook.CommandGeneration
+            || !(_settings.Value.ExperimentalWriteback || AutomaticPracticeFor(permit.Plan.Expected.Target) is not null)
             || !SessionBindingsReady(permit.Plan.Expected.Target, false)
             || _loop.NowMs - notice.AcceptedAtMs > Limits.WriteExecutionMaxAgeMs
             || notice.UserEpoch != _hook.UserEpoch || notice.ForegroundEpoch != _hook.ForegroundEpoch)

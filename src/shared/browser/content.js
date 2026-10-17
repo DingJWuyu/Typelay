@@ -54,9 +54,14 @@
     || rich?.modelFocus === 1 && field.richFocusSupported === true);
   function sessionBindings(field) {
     const source = sourceConfigured(field);
+    const sourceLocal = configuration?.sourceLocalAcceptanceVersion === 1 && shortcutDispatch() === "native"
+      && source && alive && !!field && !field.richText && !field.dead && !field.quarantined
+      && allowedElement(field.element) && field.element.isConnected && field.element.getRootNode() === document
+      && typeof (field.element instanceof HTMLTextAreaElement ? areaReplace : inputReplace) === "function";
     return {generation: configuration?.generation ?? null, accept: configuration?.accept ?? null,
       exit: configuration?.exit ?? null, sourceReady: source, editorReady: editorConfigured(field),
-      shortcutDispatch: shortcutDispatch()};
+      shortcutDispatch: shortcutDispatch(), target: field?.id ?? null,
+      sourceLocalAcceptanceVersion: sourceLocal ? 1 : 0};
   }
   function sessionKey(event, action) {
     return sessionConfigured() && event.ctrlKey === controlBinding(action)

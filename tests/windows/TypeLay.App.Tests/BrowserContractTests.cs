@@ -1,5 +1,6 @@
 using System.Text.Json;
 using TypeLay.Core;
+using TypeLay.Runtime;
 using Xunit;
 
 namespace TypeLay.App.Tests;
@@ -61,6 +62,44 @@ public sealed class BrowserContractTests
         Assert.False(BrowserInput.SameAuthority(original, Authority(metadata: "changed")));
         Assert.False(BrowserInput.SameAuthority(original, Authority(token: "invalid")));
         Assert.False(BrowserInput.SameAuthority(original, default));
+    }
+    [Fact]
+    public void ContinuousCapturesKeepTheirOwnExactObservationAndRetireOnlyTheOldestArrival()
+    {
+        var history = new BrowserObservationHistory();
+        var target = new TargetId("windows-browser", Document + ":1", Guid.NewGuid());
+        var generation = Guid.NewGuid();
+        BrowserObservation Record(long at) => new(null!, Route, Authority(observed: at), target, at, 0,
+            new(0, 0, 0, 0, 0, generation), new(target, generation, SessionShortcutBindings.Default, true, true));
+        for (int at = 1; at <= 130; at++)
+        {
+            // Only retention is under test. No authenticated peer or browser
+            // authority is claimed by these in-memory records.
+            var current = Record(at);
+            history.Remember(current);
+            Assert.Same(current, history.Observation(target, at));
+            Assert.Same(current, history.Latest(target));
+        }
+        Assert.Null(history.Observation(target, 1));
+        Assert.Null(history.Observation(target, 2));
+        Assert.NotNull(history.Observation(target, 3));
+        var renewed = Record(3);
+        history.Remember(renewed);
+        Assert.Same(renewed, history.Observation(target, 3));
+        Assert.Same(renewed, history.Latest(target));
+        var other = Record(131) with
+        {
+            Target = target with
+            {
+                Value = Document + ":2"
+            }
+        };
+        history.Remember(other);
+        Assert.Null(history.Observation(target, 4));
+        Assert.Same(renewed, history.Observation(target, 3));
+        Assert.Same(renewed, history.Latest(target));
+        Assert.Same(other, history.Latest(other.Target));
+        Assert.NotNull(history.Observation(target, 130));
     }
     [Fact]
     public void BrowserWireUsesSharedPageEnumSpelling()

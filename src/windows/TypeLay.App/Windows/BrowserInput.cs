@@ -9,12 +9,32 @@ internal sealed record BrowserObservation(BrowserPeer Peer, BrowserRoute Route, 
     TargetId Target, long ObservedAtMs, nint Root, BrowserInputEpochs Epochs,
     SessionShortcutAcknowledgement Acknowledgement);
 
+// Retain arrival order explicitly: Dictionary enumeration does not retain it
+// after a removed slot is reused by a later capture.
+internal sealed class BrowserObservationHistory
+{
+    private readonly List<BrowserObservation> _records = new();
+    public void Remember(BrowserObservation record)
+    {
+        int previous = _records.FindIndex(item => item.Target == record.Target && item.ObservedAtMs == record.ObservedAtMs);
+        if (previous >= 0)
+            _records.RemoveAt(previous);
+        _records.Add(record);
+        if (_records.Count > 128)
+            _records.RemoveAt(0);
+    }
+    public BrowserObservation? Observation(TargetId target, long observedAtMs) =>
+        _records.FindLast(item => item.Target == target && item.ObservedAtMs == observedAtMs);
+    public BrowserObservation? Latest(TargetId target) => _records.FindLast(item => item.Target == target);
+    public void Clear() => _records.Clear();
+}
+
 // Platform adapter for the shared page executor. No browser UIA/body fallback.
 internal sealed partial class BrowserInput : IDisposable
 {
     private readonly BrowserServer _server;
     private readonly KeyboardHook _hook;
-    private readonly Dictionary<(TargetId, long), BrowserObservation> _observations = new();
+    private readonly BrowserObservationHistory _observations = new();
     private sealed record FrozenCommand(BrowserObservation Observation, Guid Generation, long Sequence, long RetireAfter);
     private readonly Dictionary<(TargetId, long), FrozenCommand> _frozen = new();
     private readonly Dictionary<Guid, BrowserRoute> _active = new();
@@ -96,7 +116,8 @@ internal sealed partial class BrowserInput : IDisposable
             sessionEnabled,
             accept = bindings.Accept,
             exit = bindings.Exit,
-            shortcutDispatch = "native"
+            shortcutDispatch = "native",
+            sourceLocalAcceptanceVersion = 1
         };
         CancelEditorTransition();
         _current = null;
@@ -209,7 +230,7 @@ internal sealed partial class BrowserInput : IDisposable
         if (now - snapshot.ObservedAtMs > Limits.ObservationMaxAgeMs)
             return CaptureRejected(ObservationReason.SnapshotExpired, result, editor, now - snapshot.ObservedAtMs);
         var record = new BrowserObservation(peer, result.Route, capturedAuthority, id, snapshot.ObservedAtMs, root, epochs, ack!);
-        Remember(record);
+        _observations.Remember(record);
         _current = record;
         RememberPublication(peer, result.Route, result.Data);
         TraceObservation(ObservationStage.Capture, ObservationReason.Ready, result.Data, editor,
@@ -276,7 +297,11 @@ internal sealed partial class BrowserInput : IDisposable
             if (!Boolean(applied, "editorReady"))
                 return ApprovalRejected(stage, ObservationReason.EditorNotReady, reply);
             id = new("windows-browser", target, peer.ConnectionId);
-            acknowledgement = new(id, generation, _bindings, true, true);
+            // The authenticated connection and document route own this target.
+            // Legacy/mismatched acknowledgements retain preview, never this capability.
+            int sourceLocalVersion = Number(applied, "sourceLocalAcceptanceVersion") == 1
+                && String(applied, "target") == target ? 1 : 0;
+            acknowledgement = new(id, generation, _bindings, true, true, sourceLocalVersion);
             return true;
         }
         catch (Exception error) when (error is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
@@ -328,15 +353,8 @@ internal sealed partial class BrowserInput : IDisposable
         && value.TryGetProperty(name, out var item) && item.ValueKind == JsonValueKind.Number && item.TryGetInt64(out long result) ? result : -1;
     internal static bool Boolean(JsonElement value, string name) => value.ValueKind == JsonValueKind.Object
         && value.TryGetProperty(name, out var item) && item.ValueKind == JsonValueKind.True;
-    private void Remember(BrowserObservation record)
-    {
-        _observations[(record.Target, record.ObservedAtMs)] = record;
-        while (_observations.Count > 128)
-            _observations.Remove(_observations.Keys.First());
-    }
-    internal BrowserObservation? Observation(InputSnapshot source) => _observations.GetValueOrDefault((source.Target, source.ObservedAtMs));
-    internal BrowserObservation? Latest(TargetId target) => _current?.Target == target ? _current
-        : _observations.Values.LastOrDefault(record => record.Target == target);
+    internal BrowserObservation? Observation(InputSnapshot source) => _observations.Observation(source.Target, source.ObservedAtMs);
+    internal BrowserObservation? Latest(TargetId target) => _current?.Target == target ? _current : _observations.Latest(target);
     private void Lost(BrowserPeer peer)
     {
         _active.Remove(peer.ConnectionId);

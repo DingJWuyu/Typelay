@@ -120,7 +120,11 @@ class BrowserContract(unittest.TestCase):
             })();"""
         bridge = (
             BRIDGE.read_text()
-            if self._testMethodName == "test_paused_page_probe_cannot_outlive_display_deadline"
+            if self._testMethodName
+            in (
+                "test_paused_page_probe_cannot_outlive_display_deadline",
+                "test_rich_field_does_not_advertise_standard_source_local_acceptance",
+            )
             else ""
         )
         self.context.add_init_script(
@@ -262,6 +266,8 @@ class BrowserContract(unittest.TestCase):
                 "sourceReady": True,
                 "editorReady": True,
                 "shortcutDispatch": "page",
+                "target": snapshot["target"],
+                "sourceLocalAcceptanceVersion": 0,
             },
         )
         self.command(
@@ -276,6 +282,105 @@ class BrowserContract(unittest.TestCase):
         self.page.keyboard.press("F1")
         self.assertEqual(self.page.locator("#source").input_value(), "你好")
         self.assertEqual(len(self.accepted()), 1)
+
+    def test_source_local_acceptance_requires_explicit_native_version_and_supported_keys(self):
+        self.type_source()
+        cases = [
+            ({}, 0),
+            ({"sourceLocalAcceptanceVersion": 1}, 0),
+            ({"shortcutDispatch": "native"}, 0),
+            ({"shortcutDispatch": "native", "sourceLocalAcceptanceVersion": 1}, 1),
+            ({"shortcutDispatch": "native", "sourceLocalAcceptanceVersion": 2}, 0),
+            ({"shortcutDispatch": "native", "sourceLocalAcceptanceVersion": "1"}, 0),
+            (
+                {
+                    "shortcutDispatch": "native",
+                    "sourceLocalAcceptanceVersion": 1,
+                    "sessionEnabled": False,
+                },
+                0,
+            ),
+            (
+                {
+                    "shortcutDispatch": "native",
+                    "sourceLocalAcceptanceVersion": 1,
+                    "accept": "Shift+F7",
+                },
+                0,
+            ),
+        ]
+        for change, expected in cases:
+            with self.subTest(configuration=change):
+                self.command(
+                    "configure-shortcuts",
+                    {
+                        "generation": "source-local",
+                        "sessionEnabled": True,
+                        "enabled": False,
+                        "accept": "Tab",
+                        "exit": "Esc",
+                        **change,
+                    },
+                )
+                description = self.command("describe")
+                self.assertEqual(description["sessionBindings"]["target"], description["target"])
+                self.assertEqual(
+                    description["sessionBindings"].get("sourceLocalAcceptanceVersion", 0), expected
+                )
+
+    def test_source_local_acceptance_acknowledges_each_actual_standard_field(self):
+        self.command(
+            "configure-shortcuts",
+            {
+                "generation": "source-local",
+                "sessionEnabled": True,
+                "enabled": False,
+                "accept": "Ctrl+F7",
+                "exit": "Ctrl+F8",
+                "shortcutDispatch": "native",
+                "sourceLocalAcceptanceVersion": 1,
+            },
+        )
+        targets = []
+        for selector in ("#source", "#other"):
+            self.page.locator(selector).focus()
+            self.page.keyboard.insert_text("Hello")
+            source = self.capture()
+            targets.append(source["target"])
+            self.assertEqual(source["sessionBindings"]["target"], source["target"])
+            self.assertEqual(source["sessionBindings"].get("sourceLocalAcceptanceVersion", 0), 1)
+        self.assertNotEqual(*targets)
+
+    def test_rich_field_does_not_advertise_standard_source_local_acceptance(self):
+        self.page.evaluate("""() => {
+          const root = document.createElement('div');
+          root.className = 'ProseMirror'; root.contentEditable = 'true';
+          root.style.cssText = 'width:480px;min-height:80px';
+          document.body.append(root);
+          root.addEventListener('typelay-editor-request', event => {
+            const request = JSON.parse(event.detail);
+            if (request.op === 'probe') root.dispatchEvent(new CustomEvent('typelay-editor-response', {
+              bubbles: true, detail: JSON.stringify({id: request.id,
+                result: {kind: 'tiptap', supported: true}})}));
+          });
+          root.focus();
+        }""")
+        self.command(
+            "configure-shortcuts",
+            {
+                "generation": "source-local-rich",
+                "sessionEnabled": True,
+                "enabled": False,
+                "accept": "Tab",
+                "exit": "Esc",
+                "shortcutDispatch": "native",
+                "sourceLocalAcceptanceVersion": 1,
+            },
+        )
+        description = self.command("describe")
+        self.assertIsNotNone(description)
+        self.assertEqual(description["sessionBindings"]["target"], description["target"])
+        self.assertEqual(description["sessionBindings"]["sourceLocalAcceptanceVersion"], 0)
 
     def test_background_reconnect_cannot_assign_a_late_reply_to_a_new_request(self):
         result = self.page.evaluate(

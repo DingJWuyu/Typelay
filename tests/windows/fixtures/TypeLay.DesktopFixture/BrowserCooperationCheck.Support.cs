@@ -218,7 +218,7 @@ internal static partial class BrowserCooperationCheck
         while (true)
         {
             var saved = JsonSerializer.Deserialize<UserSettings>(await ReadSharedTextAsync(Path.Combine(data, "settings.json"), ct));
-            if (saved?.Mode == WorkMode.OnDemand && saved.DirectShortcut == "Ctrl+Shift+F10" && saved.ExperimentalWriteback)
+            if (saved?.Mode == WorkMode.OnDemand && saved.DirectShortcut == "Ctrl+Shift+F10" && !saved.ExperimentalWriteback)
                 break;
             await Task.Delay(40, ct);
         }

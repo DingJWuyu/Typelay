@@ -158,7 +158,7 @@ internal static partial class BrowserCooperationCheck
                 await File.WriteAllTextAsync(ownerFile, ownerToken, ct);
                 await CopyModelAsync(directory, data, ct);
                 await File.WriteAllTextAsync(Path.Combine(data, "settings.json"), JsonSerializer.Serialize(new UserSettings(
-                    Source: "zh", Target: "en", Theme: "light", OnboardingComplete: true, ExperimentalWriteback: true)), ct);
+                    Source: "zh", Target: "en", Theme: "light", OnboardingComplete: true, ExperimentalWriteback: false)), ct);
                 setup.Stage = "start-shipped-app-and-cft";
                 var appStart = StartInfo(Path.Combine(distribution, "app", "TypeLay.App.exe"));
                 appStart.ArgumentList.Add("--automation-test");
@@ -389,7 +389,7 @@ internal static partial class BrowserCooperationCheck
             scenes,
             cleanupErrors,
             elapsedMs = elapsed.ElapsedMilliseconds,
-            experimentalWriteback = true,
+            experimentalWriteback = false,
             softwareInput = true,
             physicalIme = false,
             sourceBackend = "shipped-app-chrome-native-host-standard-textarea",

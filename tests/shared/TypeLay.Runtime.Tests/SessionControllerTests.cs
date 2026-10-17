@@ -6,6 +6,147 @@ namespace TypeLay.Runtime.Tests;
 public sealed class SessionControllerTests
 {
     [Theory]
+    [InlineData(0, false)]
+    [InlineData(1, true)]
+    [InlineData(2, false)]
+    [InlineData(-1, false)]
+    public void SourceLocalAcceptanceRequiresTheSupportedVersionWithoutEnablingExperimentalWriteback(int version, bool allowed)
+    {
+        using var s = new SessionScenario();
+        s.Service.TransformAcknowledgement = acknowledgement => acknowledgement with { SourceLocalAcceptanceVersion = version };
+        s.ReadyCandidate();
+        Assert.False(s.Settings.Value.ExperimentalWriteback);
+        Assert.Equal("translated", s.View.Preview);
+        Assert.Equal(allowed, s.Input.Permit is not null);
+        Assert.Equal(allowed, s.View.CanAccept);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void SourceLocalAcceptanceCannotDispatchAReceiptlessWrite()
+    {
+        using var s = new SessionScenario();
+        s.Service.TransformAcknowledgement = acknowledgement => acknowledgement with { SourceLocalAcceptanceVersion = 1 };
+        s.ReadyCandidate();
+        var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Input.Notices.Enqueue(new("accept", permit, s.Loop.NowMs, s.Input.UserEpoch, s.Input.ForegroundEpoch,
+            CommandGeneration: s.Input.CommandGeneration));
+        s.Tick();
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+        Assert.Equal("translated", s.View.Preview);
+    }
+
+    [Theory]
+    [InlineData("target")]
+    [InlineData("lifetime")]
+    [InlineData("generation")]
+    [InlineData("bindings")]
+    [InlineData("source")]
+    public void SourceLocalAcceptanceCannotBeTransferredToAnotherAcknowledgement(string mismatch)
+    {
+        using var s = new SessionScenario();
+        s.Service.TransformAcknowledgement = acknowledgement => (mismatch switch
+        {
+            "target" => acknowledgement with { Target = new("controlled", "other", acknowledgement.Target.Lifetime) },
+            "lifetime" => acknowledgement with { Target = acknowledgement.Target with { Lifetime = Guid.NewGuid() } },
+            "generation" => acknowledgement with { Generation = Guid.NewGuid() },
+            "bindings" => acknowledgement with { Bindings = SessionShortcutBindings.Restore("F8", "F7") },
+            _ => acknowledgement with { SourceReady = false }
+        }) with
+        {
+            SourceLocalAcceptanceVersion = 1
+        };
+        s.ReadyCandidate();
+        Assert.Equal("translated", s.View.Preview);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.View.CanAccept);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("acknowledgement")]
+    [InlineData("ime")]
+    [InlineData("expiry")]
+    [InlineData("input")]
+    [InlineData("focus")]
+    [InlineData("configuration")]
+    public void SourceLocalAcceptanceRetainsTheExistingRevocationGates(string change)
+    {
+        using var s = new SessionScenario();
+        s.Service.TransformAcknowledgement = acknowledgement => acknowledgement with { SourceLocalAcceptanceVersion = 1 };
+        s.ReadyCandidate();
+        Assert.NotNull(s.Input.Permit);
+        switch (change)
+        {
+            case "acknowledgement":
+                s.Service.TransformAcknowledgement = _ => null;
+                break;
+            case "ime":
+                s.Source = s.Source with
+                {
+                    Ime = ImeState.Composing
+                };
+                break;
+            case "expiry":
+                s.Service.PendingCapture = new();
+                break;
+            case "input":
+                s.Source = s.Source with
+                {
+                    Text = "new text",
+                    InputEpoch = s.Source.InputEpoch + 1
+                };
+                break;
+            case "focus":
+                s.FocusAnotherField();
+                break;
+            default:
+                s.Settings.Update(s.Settings.Value with
+                {
+                    AcceptShortcut = "F7"
+                });
+                break;
+        }
+        s.Tick(change == "expiry" ? Limits.PermitMaxAgeMs + 1 : 40);
+        Assert.False(s.View.CanAccept);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData(WriteStatus.Verified)]
+    [InlineData(WriteStatus.OutcomeUnknown)]
+    public void SourceLocalCompletedReceiptSurvivesCapabilityRevocationWithoutAnotherWrite(WriteStatus status)
+    {
+        using var s = new SessionScenario();
+        s.Service.TransformAcknowledgement = acknowledgement => acknowledgement with { SourceLocalAcceptanceVersion = 1 };
+        s.ReadyCandidate();
+        var permit = Assert.IsType<AcceptancePermit>(s.Input.Permit);
+        s.Service.TransformAcknowledgement = acknowledgement => acknowledgement;
+        s.Tick();
+        Assert.Null(s.Input.Permit);
+        var after = s.Fresh with
+        {
+            Text = permit.Plan.ResultText,
+            Selection = new(permit.Plan.Caret, permit.Plan.Caret)
+        };
+        var completed = new InputNotice("accepted", permit, CompletedReceipt: status == WriteStatus.Verified
+            ? new(status, Denial.None, after) : new(status, Denial.UnknownOutcome));
+        s.Input.Notices.Enqueue(completed);
+        if (status == WriteStatus.Verified)
+            s.Source = after;
+        s.Tick();
+        var expected = status == WriteStatus.Verified ? SessionState.NoSession : SessionState.OutcomeUnknown;
+        Assert.Equal(expected, s.View.State);
+        s.Input.Notices.Enqueue(completed);
+        s.Tick();
+        Assert.Equal(expected, s.View.State);
+        Assert.Empty(s.Service.Writes);
+        Assert.Empty(s.Service.DirectWrites);
+        Assert.False(s.Settings.Value.ExperimentalWriteback);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void RenderedCandidateKeepsEditingSeparateFromAcceptance(bool experimental)
