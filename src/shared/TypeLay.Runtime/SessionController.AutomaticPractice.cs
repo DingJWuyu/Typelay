@@ -651,11 +651,14 @@ public sealed partial class SessionController
 
     private void BeginAutomaticEdit()
     {
-        if (_session.Current is not { } source || AutomaticPracticeFor(source.Target) is null
-            || AutomaticPracticeProgress is not { AcceptanceCompleted: true } progress)
+        if (_session.Current is not { } source || AutomaticPracticeFor(source.Target) is null)
+            return;
+        // Every admitted owned edit needs its Core basis for fresh return
+        // binding. Tutorial credit still requires the first accepted preview.
+        _automaticEditRevision = _session.Revision;
+        if (AutomaticPracticeProgress is not { AcceptanceCompleted: true } progress)
             return;
         _automaticEditSeed = _session.Draft;
-        _automaticEditRevision = _session.Revision;
         UpdateAutomaticPractice(progress with
         {
             EditingStarted = true,

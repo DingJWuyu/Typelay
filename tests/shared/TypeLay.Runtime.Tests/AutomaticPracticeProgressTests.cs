@@ -185,6 +185,59 @@ public sealed class AutomaticPracticeProgressTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void FirstPreviewEditingCanReturnOrExitWithoutCreditingTheAcceptanceLesson(bool escape)
+    {
+        using var s = new SessionScenario();
+        var binding = Bind(s);
+        s.ReadyCandidate();
+        string source = s.Source.Text;
+        Assert.True(s.View.BeginEditing!(s.View.Token));
+        s.Input.InEditor = true;
+        s.View.DraftChanged!("first preview manual draft");
+        Assert.False(s.Controller.AutomaticPracticeProgress!.AcceptanceCompleted);
+        Assert.False(s.Controller.AutomaticPracticeProgress.EditingStarted);
+        Assert.False(s.Controller.AutomaticPracticeProgress.DraftChanged);
+        if (escape)
+        {
+            s.View.PrearmedEditorExit = s.View.Token;
+            s.View.EscapeRequested!(s.View.Token);
+        }
+        else
+            s.View.ReturnRequested!(s.View.Token);
+        Assert.True(s.Controller.AutomaticPracticeProgress.AwaitingFreshSource);
+        Assert.Null(s.Input.Permit);
+        s.Tick();
+        Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+        Assert.Null(s.Input.Permit);
+        BindReturned(s);
+        Assert.Equal(binding.RunId, s.Controller.AutomaticPracticeProgress!.RunId);
+        Assert.False(s.Controller.AutomaticPracticeProgress.AwaitingFreshSource);
+        Assert.Equal(source, s.Source.Text);
+        Assert.Empty(s.Service.Writes);
+        if (escape)
+        {
+            Assert.Equal(SessionState.NoSession, s.View.State);
+            Assert.False(s.View.Visible);
+            Assert.Null(s.Input.Permit);
+        }
+        else
+        {
+            Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+            Assert.Equal("first preview manual draft", s.Input.Permit!.Plan.Replacement);
+            CompleteAcceptance(s);
+            Assert.Equal("first preview manual draft", s.Source.Text);
+        }
+        Assert.False(s.Controller.AutomaticPracticeProgress.AcceptanceCompleted);
+        Assert.False(s.Controller.AutomaticPracticeProgress.EditingStarted);
+        Assert.False(s.Controller.AutomaticPracticeProgress.DraftChanged);
+        Assert.False(s.Controller.AutomaticPracticeProgress.ReturnedToSource);
+        Assert.False(s.Controller.AutomaticPracticeProgress.Completed);
+        Assert.False(s.Settings.Value.OnboardingComplete);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void EditorEscapeWaitsForTheVerifiedReturnThenHidesWithoutGrantingAcceptanceOrEndingPractice(bool serializedReturn)
     {
         using var s = new SessionScenario();
