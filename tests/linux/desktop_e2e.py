@@ -1484,7 +1484,7 @@ def run(arguments):
                         acknowledgement = wait_for(
                             lambda: value
                             if (value := status().get("input", {}).get("sessionShortcuts"))
-                            and value["editorReady"] is (not gtk4)
+                            and value["editorReady"] is True
                             else None,
                             "GTK source did not report its current session key acknowledgement",
                         )
@@ -1493,7 +1493,7 @@ def run(arguments):
                             "exit": "Ctrl+F8",
                         }
                         assert acknowledgement["sourceReady"]
-                        assert acknowledgement["editorReady"] is (not gtk4)
+                        assert acknowledgement["editorReady"] is True
                         candidate = gtk_state()["candidate"]["text"]
                         before = gtk_state()
                         offset, dispatch_offset = trace_checkpoint(), key_trace_checkpoint()
@@ -1601,7 +1601,7 @@ def run(arguments):
                         multiline_bindings = wait_for(
                             lambda: value
                             if (value := status().get("input", {}).get("sessionShortcuts"))
-                            and value["editorReady"] is (not gtk4)
+                            and value["editorReady"] is True
                             else None,
                             "GTK TextView did not confirm its current source/editor bindings",
                         )
@@ -2129,28 +2129,10 @@ def run(arguments):
                                 else None
                             )
 
-                            editor_revoke_offset = before_return
-
-                            def editor_source_revoked():
-                                with trace_path.open("rb") as trace:
-                                    trace.seek(editor_revoke_offset)
-                                    data = trace.read()
-                                return any(
-                                    (row := json.loads(line)).get("operation") == "input-revoked"
-                                    and (row.get("detail") or {}).get("reason")
-                                    == "editing-translation"
-                                    for line in data[: data.rfind(b"\n") + 1].splitlines()
-                                )
-
                             try:
                                 if hold_return:
                                     if control_editor:
                                         control_keys["Control_L"](True)
-                                        editor_revoke_offset = trace_checkpoint()
-                                        wait_for(
-                                            editor_source_revoked,
-                                            "normal editor source revocation was not observed while Ctrl was held",
-                                        )
                                         control_keys[main_key](True)
                                     else:
                                         subprocess.run(
@@ -2228,24 +2210,23 @@ def run(arguments):
                             )
                             return {"returnedSource": editing_source, "accepted": gtk_state()}
 
-                        if not gtk4:
-                            stop()
-                            settings.update(AcceptShortcut="Ctrl+F7", ExitShortcut="Ctrl+F8")
-                            start()
-                            request({"Action": {"FocusWindow": {"id": window["id"]}}})
-                            click_entry("first")
-                            control_edited = edit_and_accept("Ctrl+F7", hold_return=True)
-                            control_exited = edit_and_accept("Ctrl+F7", exit_editor=True)
-                            (arguments.output / "gtk-control-editor.json").write_text(
-                                json.dumps({**control_edited, **control_exited}, indent=2) + "\n"
-                            )
-                            stop()
-                            settings.update(
-                                AcceptShortcut=ordinary_pair[0], ExitShortcut=ordinary_pair[1]
-                            )
-                            start()
-                            request({"Action": {"FocusWindow": {"id": window["id"]}}})
-                            click_entry("first")
+                        stop()
+                        settings.update(AcceptShortcut="Ctrl+F7", ExitShortcut="Ctrl+F8")
+                        start()
+                        request({"Action": {"FocusWindow": {"id": window["id"]}}})
+                        click_entry("first")
+                        control_edited = edit_and_accept("Ctrl+F7", hold_return=True)
+                        control_exited = edit_and_accept("Ctrl+F7", exit_editor=True)
+                        (arguments.output / "gtk-control-editor.json").write_text(
+                            json.dumps({**control_edited, **control_exited}, indent=2) + "\n"
+                        )
+                        stop()
+                        settings.update(
+                            AcceptShortcut=ordinary_pair[0], ExitShortcut=ordinary_pair[1]
+                        )
+                        start()
+                        request({"Action": {"FocusWindow": {"id": window["id"]}}})
+                        click_entry("first")
 
                         edit_and_accept("Tab", motion=True)
                         edit_and_accept("Tab")

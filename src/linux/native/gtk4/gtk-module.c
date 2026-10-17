@@ -22,7 +22,7 @@ static guint shortcut_key;
 static gboolean shortcut_consumed;
 /* Bounded session candidates, retained across configuration, field focus and
  * popover destruction. A refused physical down never becomes a later accept. */
-static struct { guint keycode; guint64 sequence; gboolean consumed; } held_keys[64];
+static struct { guint keycode, keyval; guint64 sequence; gboolean consumed; } held_keys[64];
 static guint64 held_sequence, configuration_sequence;
 static gboolean configuring, held_overflow;
 static gboolean initialized;
@@ -133,7 +133,8 @@ gboolean tl_controller_attached(GtkWidget *widget, const char *key) {
     GtkEventController *controller = widget ? g_object_get_data(G_OBJECT(widget), key) : NULL;
     /* The qdata owns its reference even if the host detaches the controller. */
     return controller && gtk_event_controller_get_widget(controller) == widget
-        && gtk_event_controller_get_propagation_phase(controller) == GTK_PHASE_CAPTURE;
+        && gtk_event_controller_get_propagation_phase(controller) == GTK_PHASE_CAPTURE
+        && gtk_event_controller_get_propagation_limit(controller) == GTK_LIMIT_SAME_NATIVE;
 }
 JsonObject *tl_session_bindings(Target *target) {
     const char *generation = tl_string(shortcut_configuration, "generation");
@@ -149,7 +150,7 @@ JsonObject *tl_session_bindings(Target *target) {
     json_object_set_boolean_member(bindings, "sourceReady", source);
     /* Read-only rendering can create the editor before its separate capability
        is confirmed. Never infer an installed editor from a source hook/hello. */
-    json_object_set_boolean_member(bindings, "editorReady", source && !control_pair() && tl_overlay_bindings_ready(target));
+    json_object_set_boolean_member(bindings, "editorReady", source && tl_overlay_bindings_ready(target));
     return bindings;
 }
 gboolean tl_view_context_matches(Target *target, JsonObject *view) {
@@ -211,6 +212,7 @@ static void ordered_revoke(void) {
     ordered_unref(ticket);
 }
 void tl_clear_permit(void) {
+    tl_overlay_control_cancel();
     ordered_revoke();
     tl_drop_publication();
 }
@@ -655,8 +657,10 @@ static void command(JsonObject *frame) {
         respond(id, description);
     } else if (strcmp(operation, "capture") == 0)
         respond(id, tl_capture(target, tl_object(data, "authority")));
-    else if (strcmp(operation, "direct") == 0) respond(id, tl_write(target, data, TRUE));
-    else if (strcmp(operation, "return") == 0) {
+    else if (strcmp(operation, "direct") == 0) {
+        tl_overlay_control_cancel();
+        respond(id, tl_write(target, data, TRUE));
+    } else if (strcmp(operation, "return") == 0) {
         return_generation++;
         JsonObject *basis = tl_object(data, "authority");
         gboolean focused = tl_configuration_current(tl_string(data, "generation"))
@@ -711,8 +715,12 @@ static void command(JsonObject *frame) {
         respond(id, NULL);
     } else if (strcmp(operation, "revoke") == 0) {
         trace_publication("host-revoke");
-        tl_clear_permit();
-        if (tl_integer(data, "shortcuts", 0)) clear_shortcut();
+        if (tl_integer(data, "shortcuts", 0)) { tl_clear_permit(); clear_shortcut(); }
+        else {
+            /* Runtime withdraws source writes on every editing Tick. The
+               independent editor token authorizes only return/exit, not a write. */
+            ordered_revoke(); tl_drop_publication();
+        }
         respond(id, NULL);
     } else if (strcmp(operation, "publish") == 0) {
         AcceptanceTiming timing = {.entered_at = tl_now()};
@@ -1191,6 +1199,19 @@ static void trace_session_key(guint keyval, const char *phase, gboolean consumed
     g_printerr("TypeLay GTK%d session-key kind=%s phase=%s consumed=%d atMonoMs=%" G_GINT64_FORMAT "\n",
         GTK_MAJOR_VERSION, kind, phase, consumed, g_get_monotonic_time() / 1000);
 }
+gboolean tl_overlay_key_claim(guint keycode, guint64 sequence, guint control_keycode, guint64 control_sequence) {
+    gint control_index = -1, key_index = -1;
+    for (guint index = 0; index < G_N_ELEMENTS(held_keys); index++) {
+        if (held_keys[index].keycode == control_keycode && held_keys[index].sequence == control_sequence
+            && (held_keys[index].keyval == GDK_KEY_Control_L || held_keys[index].keyval == GDK_KEY_Control_R))
+            control_index = (gint)index;
+        if (held_keys[index].keycode == keycode && held_keys[index].sequence == sequence
+            && !held_keys[index].consumed) key_index = (gint)index;
+    }
+    if (held_overflow || control_index < 0 || key_index < 0 || control_index == key_index) return FALSE;
+    held_keys[key_index].consumed = TRUE;
+    return TRUE;
+}
 gboolean tl_dispatch_key(GdkEvent *event) {
     if (!event) return FALSE;
     GdkEventType type = gdk_event_get_event_type(event);
@@ -1209,6 +1230,7 @@ gboolean tl_dispatch_key(GdkEvent *event) {
     gint empty = -1;
     for (guint index = 0; index < G_N_ELEMENTS(held_keys); index++) {
         if (held_keys[index].keycode == keycode) {
+            tl_overlay_control_cancel();
             gboolean consumed = held_keys[index].consumed;
             if (!down) { held_keys[index].keycode = 0; (void)shortcut_event(&key); }
             trace_session_key(keyval, down ? "repeat" : "release", consumed);
@@ -1219,20 +1241,36 @@ gboolean tl_dispatch_key(GdkEvent *event) {
     gboolean candidate = keyval == GDK_KEY_Tab || keyval == GDK_KEY_ISO_Left_Tab
         || keyval == GDK_KEY_Escape || (keyval >= GDK_KEY_F1 && keyval <= GDK_KEY_F24)
         || keyval == GDK_KEY_Control_L || keyval == GDK_KEY_Control_R;
-    if (!candidate) return shortcut_event(&key);
+    if (!candidate) { tl_overlay_control_cancel(); return shortcut_event(&key); }
     if (!down || held_overflow) return FALSE;
     /* Saturation must never turn an untracked held press into a fresh command
        when another slot is released. Remain fail-closed for this module lifetime. */
     if (empty < 0) { held_overflow = TRUE; tl_clear_permit(); return FALSE; }
     guint64 sequence = ++held_sequence;
     held_keys[empty].keycode = keycode;
+    held_keys[empty].keyval = keyval;
     held_keys[empty].sequence = sequence;
     held_keys[empty].consumed = FALSE;
     if (keyval == GDK_KEY_Control_L || keyval == GDK_KEY_Control_R) {
-        ordered_begin(event);
+        tl_overlay_control_cancel();
+        gboolean single_control = TRUE;
+        for (guint index = 0; index < G_N_ELEMENTS(held_keys); index++)
+            if (index != (guint)empty && held_keys[index].keycode
+                && (held_keys[index].keyval == GDK_KEY_Control_L || held_keys[index].keyval == GDK_KEY_Control_R))
+                single_control = FALSE;
+        guint other_modifiers = state & (GDK_SHIFT_MASK | GDK_ALT_MASK | GDK_SUPER_MASK | GDK_HYPER_MASK | GDK_META_MASK);
+        if (control_pair() && single_control && !other_modifiers)
+            tl_overlay_control_begin(keycode, sequence);
+        /* The editor's Ctrl can never also own a source ticket. */
+        if (tl_focused()) ordered_begin(event);
         return FALSE; /* The original Ctrl continues to GtkText/TextView once. */
     }
-    gboolean consumed = (!control_pair() && tl_overlay_key(keyval, state)) || shortcut_event(&key)
+    guint modifiers = state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK | GDK_HYPER_MASK | GDK_META_MASK);
+    gboolean accept = keyval == tl_session_keyval(TRUE) && modifiers == (control_binding(TRUE) ? GDK_CONTROL_MASK : 0);
+    gboolean exit = keyval == tl_session_keyval(FALSE) && modifiers == (control_binding(FALSE) ? GDK_CONTROL_MASK : 0);
+    gboolean consumed = tl_overlay_key(accept, exit, (modifiers & GDK_CONTROL_MASK) != 0, keycode, sequence);
+    tl_overlay_control_cancel();
+    consumed = consumed || shortcut_event(&key)
         || ordered_acceptance(&key, sequence) || acceptance_event(&key, entered_at);
     if (held_keys[empty].keycode == keycode && held_keys[empty].sequence == sequence)
         held_keys[empty].consumed = held_keys[empty].consumed || consumed;
@@ -1305,6 +1343,9 @@ G_MODULE_EXPORT void tl_gtk4_attach(GtkWidget *client_widget) {
     if (g_object_get_data(G_OBJECT(root), "typelay-gtk4-controller")) return;
     GtkEventController *controller = gtk_event_controller_legacy_new();
     gtk_event_controller_set_propagation_phase(controller, GTK_PHASE_CAPTURE);
+    /* The popover owns a different native: its editor controller alone sees
+       those keys. The shared held table still follows releases back here. */
+    gtk_event_controller_set_propagation_limit(controller, GTK_LIMIT_SAME_NATIVE);
     g_signal_connect(controller, "event", G_CALLBACK(dispatch), NULL);
     g_object_set_data_full(G_OBJECT(root), "typelay-gtk4-controller", g_object_ref(controller), g_object_unref);
     gtk_widget_add_controller(GTK_WIDGET(root), controller);
