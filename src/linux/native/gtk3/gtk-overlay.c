@@ -27,6 +27,25 @@ typedef struct {
 } EditHandoff;
 static EditHandoff *edit_handoff;
 
+/* Only a local editor command, never a source write permit. Borrowed identities
+ * are compared while the current overlay owns them, never dereferenced later. */
+typedef struct {
+    Target *target;
+    GtkWidget *editor;
+    GtkTextBuffer *buffer;
+    gpointer context;
+    JsonObject *view, *token;
+    guint keycode;
+    guint64 sequence, serial;
+    gint64 revision, expires;
+} EditorControl;
+static EditorControl editor_control;
+static guint64 editor_control_serial;
+
+void tl_overlay_control_cancel(void) {
+    memset(&editor_control, 0, sizeof editor_control);
+}
+
 static gboolean boolean(JsonObject *object, const char *key) {
     JsonNode *node = object ? json_object_get_member(object, key) : NULL;
     return node && JSON_NODE_HOLDS_VALUE(node) && json_node_get_value_type(node) == G_TYPE_BOOLEAN
@@ -76,6 +95,36 @@ static gboolean active(void) {
 static gboolean paused(void) {
     return g_strcmp0(tl_string(overlay.view, "state"), "Paused") == 0;
 }
+static gboolean editor_control_current(const EditorControl *ticket) {
+    return ticket->keycode && editor_control.serial == ticket->serial
+        && overlay.target == ticket->target && overlay.text == ticket->editor
+        && overlay.view == ticket->view && overlay.revision == ticket->revision
+        && tl_object(tl_object(overlay.view, "viewContext"), "token") == ticket->token
+        && active() && !paused() && !overlay.composing && overlay.focused
+        && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == overlay.text
+        && gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text)) == ticket->buffer
+        && g_object_get_data(G_OBJECT(overlay.text), TL_FCITX_CONTEXT_V1) == ticket->context
+        && gtk_text_view_get_editable(GTK_TEXT_VIEW(overlay.text))
+        && tl_configuration_current(overlay.generation)
+        && tl_view_context_matches(overlay.target, overlay.view)
+        && tl_now() <= ticket->expires;
+}
+void tl_overlay_control_begin(guint keycode, guint64 sequence) {
+    tl_overlay_control_cancel();
+    if (!keycode || !sequence || editor_control_serial == G_MAXUINT64 || !active()
+        || !overlay.text || !overlay.view || paused() || overlay.composing || !overlay.focused
+        || gtk_window_get_focus(GTK_WINDOW(overlay.top)) != overlay.text
+        || !gtk_text_view_get_editable(GTK_TEXT_VIEW(overlay.text))
+        || !tl_configuration_current(overlay.generation)
+        || !tl_view_context_matches(overlay.target, overlay.view) || tl_now() > overlay.expires) return;
+    gpointer context = g_object_get_data(G_OBJECT(overlay.text), TL_FCITX_CONTEXT_V1);
+    JsonObject *token = tl_object(tl_object(overlay.view, "viewContext"), "token");
+    if (!context || !token) return;
+    editor_control = (EditorControl){.target = overlay.target, .editor = overlay.text,
+        .buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text)), .context = context,
+        .view = overlay.view, .token = token, .revision = overlay.revision, .expires = overlay.expires,
+        .keycode = keycode, .sequence = sequence, .serial = ++editor_control_serial};
+}
 static gboolean pause_current(Target *target, JsonObject *authority) {
     if (!target || !authority) return FALSE;
     /* IME inspection may dispatch invalidation. Hold the metadata record and
@@ -117,6 +166,7 @@ void tl_overlay_sync(void) {
     gboolean focused = active() && overlay.popover && gtk_widget_get_visible(overlay.popover)
         && tl_overlay_contains(gtk_window_get_focus(GTK_WINDOW(overlay.top)));
     if (focused != overlay.focused) {
+        tl_overlay_control_cancel();
         overlay.focused = focused;
         emit_boolean("focus", focused);
     }
@@ -136,6 +186,7 @@ static void emit_editor_focus(GtkWidget *widget) {
 }
 static void focus_changed(GtkWindow *window, GtkWidget *widget, gpointer data) {
     (void)data;
+    tl_overlay_control_cancel();
     /* set-focus's argument is the destination. GTK internally clears its old
      * focus pointer during transfer; that transient NULL is not set-focus(NULL). */
     if (edit_handoff && GTK_WIDGET(window) == edit_handoff->top
@@ -157,6 +208,7 @@ static void focus_changed(GtkWindow *window, GtkWidget *widget, gpointer data) {
 }
 static void active_changed(GObject *object, GParamSpec *property, gpointer data) {
     (void)object; (void)property; (void)data;
+    tl_overlay_control_cancel();
     if (!active()) {
         if (edit_handoff) edit_handoff->failed = TRUE;
         if ((edit_handoff || overlay.private_editor) && overlay.target) emit_editor_focus(NULL);
@@ -174,6 +226,7 @@ static gboolean expired(gpointer data) {
     return G_SOURCE_CONTINUE;
 }
 void tl_overlay_hide(void) {
+    tl_overlay_control_cancel();
     if (edit_handoff) edit_handoff->failed = TRUE;
     /* Clear state before destroy: source destruction and GTK callbacks are reentrant. */
     if (overlay.focused) emit_boolean("focus", FALSE);
@@ -210,6 +263,7 @@ static char *candidate(void) {
 }
 static void draft_changed(GtkTextBuffer *buffer, gpointer data) {
     (void)buffer; (void)data;
+    tl_overlay_control_cancel();
     if (!overlay.setting_text && overlay.text
         && buffer == gtk_text_view_get_buffer(GTK_TEXT_VIEW(overlay.text))
         && tl_configuration_current(overlay.generation) && tl_view_context_matches(overlay.target, overlay.view)
@@ -234,6 +288,7 @@ static void limit_draft(GtkTextBuffer *buffer, GtkTextIter *location, gchar *tex
 }
 static void preedit(GtkWidget *widget, const gchar *text, gpointer data) {
     (void)data;
+    tl_overlay_control_cancel();
     if (widget != overlay.text || !tl_configuration_current(overlay.generation)) return;
     overlay.composing = text && *text;
     emit_boolean("composition", overlay.composing);
@@ -503,6 +558,7 @@ static gboolean render(Target *target, JsonObject *data) {
     gboolean expansion = same_view && tl_integer(data, "visualExpansionFrom", -1) == overlay.revision
         && overlay.revision < G_MAXINT64
         && tl_integer(data, "revision", -1) == overlay.revision + 1;
+    tl_overlay_control_cancel();
     if (overlay.target != target || overlay.top != top) { tl_overlay_hide(); create(target); }
     g_free(overlay.generation);
     overlay.generation = g_strdup(generation);
@@ -729,13 +785,13 @@ finished:;
         json_object_set_boolean_member(reply, "handoff", handoff);
     return reply;
 }
-gboolean tl_overlay_key(guint keyval, GdkModifierType state) {
+gboolean tl_overlay_key(gboolean accept, gboolean exit, gboolean control, guint keycode, guint64 sequence) {
     if (!overlay.popover) return FALSE;
     tl_overlay_sync();
-    gboolean accept = keyval == tl_session_keyval(TRUE), exit = keyval == tl_session_keyval(FALSE);
     if ((!accept && !exit) || !overlay.focused || overlay.composing || paused()
-        || !tl_configuration_current(overlay.generation) || !tl_view_context_matches(overlay.target, overlay.view)
-        || (state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_MOD1_MASK | GDK_MOD3_MASK | GDK_MOD4_MASK | GDK_MOD5_MASK | GDK_SUPER_MASK | GDK_HYPER_MASK | GDK_META_MASK))) return FALSE;
+        || !tl_configuration_current(overlay.generation) || !tl_view_context_matches(overlay.target, overlay.view)) return FALSE;
+    EditorControl ticket = editor_control;
+    if (control && !editor_control_current(&ticket)) return FALSE;
     Target *target = overlay.target;
     gint64 revision = overlay.revision;
     char *generation = g_strdup(overlay.generation);
@@ -749,6 +805,9 @@ gboolean tl_overlay_key(guint keyval, GdkModifierType state) {
         && tl_configuration_current(generation) && tl_view_context_matches(target, overlay.view)
         && overlay.focused && !overlay.composing && active() && tl_now() <= overlay.expires;
     gboolean consumed = current && (exit || (accept && gtk_text_view_get_editable(GTK_TEXT_VIEW(editor))));
+    if (control) consumed = consumed && editor_control_current(&ticket)
+        && tl_overlay_key_claim(keycode, sequence, ticket.keycode, ticket.sequence);
+    tl_overlay_control_cancel();
     if (consumed) emit(exit ? "escape" : "return", NULL);
     json_object_unref(view);
     g_object_unref(editor);

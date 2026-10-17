@@ -658,7 +658,8 @@ def run(arguments):
                             lambda route: route.fulfill(
                                 content_type="text/html",
                                 body="<!doctype html><title>TypeLay browser contracts</title>"
-                                "<style>textarea{margin:80px;width:500px;height:100px}</style>"
+                                "<style>textarea{margin:80px;width:500px;height:100px}"
+                                "#other{position:fixed;right:24px;bottom:24px;width:160px}</style>"
                                 "<label>Message<textarea id='source'></textarea></label><input id='other'>",
                             ),
                         )
@@ -795,6 +796,9 @@ def run(arguments):
                         try:
                             control_keys["Control_L"](True)
                             page.locator("#other").click()
+                            assert page.locator("#other").evaluate(
+                                "element => document.activeElement === element"
+                            )
                             control_keys["F7"](True)
                         finally:
                             control_keys["Control_L"](False)
@@ -1478,14 +1482,18 @@ def run(arguments):
                         request({"Action": {"FocusWindow": {"id": window["id"]}}})
                         enter_source(typed_source)
                         acknowledgement = wait_for(
-                            lambda: status().get("input", {}).get("sessionShortcuts"),
+                            lambda: value
+                            if (value := status().get("input", {}).get("sessionShortcuts"))
+                            and value["editorReady"] is (not gtk4)
+                            else None,
                             "GTK source did not report its current session key acknowledgement",
                         )
                         assert acknowledgement["bindings"] == {
                             "accept": "Ctrl+F7",
                             "exit": "Ctrl+F8",
                         }
-                        assert acknowledgement["sourceReady"] and not acknowledgement["editorReady"]
+                        assert acknowledgement["sourceReady"]
+                        assert acknowledgement["editorReady"] is (not gtk4)
                         candidate = gtk_state()["candidate"]["text"]
                         before = gtk_state()
                         offset, dispatch_offset = trace_checkpoint(), key_trace_checkpoint()
@@ -1590,7 +1598,13 @@ def run(arguments):
 
                         select_control_multiline()
                         wait_for(ready_to_accept, "GTK Ctrl TextView candidate was not ready")
-                        multiline_bindings = status()["input"]["sessionShortcuts"]
+                        multiline_bindings = wait_for(
+                            lambda: value
+                            if (value := status().get("input", {}).get("sessionShortcuts"))
+                            and value["editorReady"] is (not gtk4)
+                            else None,
+                            "GTK TextView did not confirm its current source/editor bindings",
+                        )
                         assert multiline_bindings == acknowledgement
                         before_multiline = gtk_state()
                         middle = before_multiline["candidate"]["text"]
@@ -2005,9 +2019,24 @@ def run(arguments):
                                     assert restored["motionAnimations"] is original
                                     assert restored["motionReduced"] == original_reduced
 
-                        def edit_and_accept(accept_key, hold_return=False, motion=False):
+                        def edit_and_accept(
+                            accept_key, hold_return=False, motion=False, exit_editor=False
+                        ):
+                            control_editor = accept_key.startswith("Ctrl+")
+                            main_key = accept_key.removeprefix("Ctrl+")
+                            function_index = (
+                                int(main_key[1:]) - 1 if main_key.startswith("F") else None
+                            )
                             editing_source = "Please review this note."
                             enter_source(editing_source)
+                            if control_editor:
+                                wait_for(
+                                    lambda: (
+                                        status().get("input", {}).get("sessionShortcuts") or {}
+                                    ).get("editorReady")
+                                    is True,
+                                    "GTK Ctrl editor did not confirm the installed return/exit bindings",
+                                )
                             actual = wait_for(
                                 lambda: value
                                 if (value := gtk_state()).get("fullscreen")
@@ -2068,6 +2097,21 @@ def run(arguments):
                             if gtk4:
                                 assert not edited["candidate"]["editablePreview"]
                             assert edited["first"] == editing_source
+                            if exit_editor:
+                                before_exit = trace_checkpoint()
+                                baseline = edited["functionKeys"][7].copy()
+                                send_control_key("F8", repeat=True)
+                                wait_for(
+                                    lambda: not status().get("overlayVisible")
+                                    and status().get("viewState") is None,
+                                    "editor Ctrl+F8 did not return and exit without a source write",
+                                )
+                                exited = gtk_state()
+                                assert exited["first"] == editing_source
+                                assert exited["focus"] == "fixture-first"
+                                assert exited["functionKeys"][7] == baseline
+                                assert not new_write_outcomes(before_exit)
+                                return {"exited": exited}
                             if motion:
                                 check_overlay_motion(draft)
                                 assert gtk_state()["first"] == editing_source
@@ -2080,13 +2124,40 @@ def run(arguments):
                                 )
                             before_return = trace_checkpoint()
                             baseline = (
-                                gtk_state()["functionKeys"][0].copy() if hold_return else None
+                                gtk_state()["functionKeys"][function_index].copy()
+                                if hold_return
+                                else None
                             )
+
+                            editor_revoke_offset = before_return
+
+                            def editor_source_revoked():
+                                with trace_path.open("rb") as trace:
+                                    trace.seek(editor_revoke_offset)
+                                    data = trace.read()
+                                return any(
+                                    (row := json.loads(line)).get("operation") == "input-revoked"
+                                    and (row.get("detail") or {}).get("reason")
+                                    == "editing-translation"
+                                    for line in data[: data.rfind(b"\n") + 1].splitlines()
+                                )
+
                             try:
                                 if hold_return:
-                                    subprocess.run(
-                                        ["xdotool", "keydown", accept_key], check=True, timeout=2
-                                    )
+                                    if control_editor:
+                                        control_keys["Control_L"](True)
+                                        editor_revoke_offset = trace_checkpoint()
+                                        wait_for(
+                                            editor_source_revoked,
+                                            "normal editor source revocation was not observed while Ctrl was held",
+                                        )
+                                        control_keys[main_key](True)
+                                    else:
+                                        subprocess.run(
+                                            ["xdotool", "keydown", accept_key],
+                                            check=True,
+                                            timeout=2,
+                                        )
                                 else:
                                     key(accept_key)
                                 wait_for(
@@ -2103,21 +2174,32 @@ def run(arguments):
                                     # Observe the real held-key decision passively. A new
                                     # application key would correctly invalidate this draft.
                                     repeated = key_trace_checkpoint()
-                                    subprocess.run(
-                                        ["xdotool", "keydown", accept_key], check=True, timeout=2
-                                    )
+                                    if control_editor:
+                                        control_keys[main_key](True)
+                                    else:
+                                        subprocess.run(
+                                            ["xdotool", "keydown", accept_key],
+                                            check=True,
+                                            timeout=2,
+                                        )
                                     observed_key(repeated, "function", "repeat", True)
                                     assert gtk_state()["first"] == editing_source
                                     assert not new_write_outcomes(before_return)
                             finally:
                                 if hold_return:
                                     released = key_trace_checkpoint()
-                                    subprocess.run(
-                                        ["xdotool", "keyup", accept_key], check=True, timeout=2
-                                    )
+                                    if control_editor:
+                                        # The original return pair keeps ownership after
+                                        # focus moves, even when Ctrl is released first.
+                                        control_keys["Control_L"](False)
+                                        control_keys[main_key](False)
+                                    else:
+                                        subprocess.run(
+                                            ["xdotool", "keyup", accept_key], check=True, timeout=2
+                                        )
                             if hold_return:
                                 observed_key(released, "function", "release", True)
-                                assert gtk_state()["functionKeys"][0] == baseline, (
+                                assert gtk_state()["functionKeys"][function_index] == baseline, (
                                     "editor return leaked its held repeat or release to the source"
                                 )
                                 assert gtk_state()["first"] == editing_source
@@ -2127,7 +2209,10 @@ def run(arguments):
                                     "held key release did not retain the recaptured manual candidate",
                                 )
                             before_write = trace_checkpoint()
-                            key(accept_key)
+                            if control_editor:
+                                send_control_key(main_key)
+                            else:
+                                key(accept_key)
                             wait_for(
                                 lambda: gtk_state().get("first") == draft,
                                 f"second {accept_key} did not accept the exact manual draft",
@@ -2137,9 +2222,30 @@ def run(arguments):
                                 "manual draft acceptance did not receive a verified write receipt",
                             )
                             assert gtk_state()["focus"] == "fixture-first"
+                            assert len(new_write_outcomes(before_write)) == 1
                             evidence.append(
                                 "Wayland GTK editor: actual candidate click and draft typing, first configured key returns without writing, second independent key verifies the exact draft"
                             )
+                            return {"returnedSource": editing_source, "accepted": gtk_state()}
+
+                        if not gtk4:
+                            stop()
+                            settings.update(AcceptShortcut="Ctrl+F7", ExitShortcut="Ctrl+F8")
+                            start()
+                            request({"Action": {"FocusWindow": {"id": window["id"]}}})
+                            click_entry("first")
+                            control_edited = edit_and_accept("Ctrl+F7", hold_return=True)
+                            control_exited = edit_and_accept("Ctrl+F7", exit_editor=True)
+                            (arguments.output / "gtk-control-editor.json").write_text(
+                                json.dumps({**control_edited, **control_exited}, indent=2) + "\n"
+                            )
+                            stop()
+                            settings.update(
+                                AcceptShortcut=ordinary_pair[0], ExitShortcut=ordinary_pair[1]
+                            )
+                            start()
+                            request({"Action": {"FocusWindow": {"id": window["id"]}}})
+                            click_entry("first")
 
                         edit_and_accept("Tab", motion=True)
                         edit_and_accept("Tab")

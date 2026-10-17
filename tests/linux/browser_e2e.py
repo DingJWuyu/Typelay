@@ -460,12 +460,13 @@ class BrowserContract(unittest.TestCase):
 
     def test_control_postmutation_focus_roundtrip_is_unknown_and_consumed(self):
         self.configure_control()
-        snapshot = self.type_source()
+        self.page.keyboard.insert_text("Hello")
         self.page.locator(
             "#source"
         ).evaluate("""element => element.addEventListener('input', () => {
           document.querySelector('#other').focus(); element.focus();
         }, {once: true})""")
+        snapshot = self.capture()
         self.assertTrue(self.publish_control(snapshot)["published"])
         self.page.keyboard.press("Control+F7")
         self.assertEqual(self.page.locator("#source").input_value(), "你好")

@@ -333,6 +333,36 @@ def inside(arguments):
         assert not any(event.get("event") in ("accepted", "shortcut") for event in client.events)
         key("shift+Tab")
         wait_state(lambda value: value.get("focus") == "fixture-first")
+        control_generation = str(uuid.uuid4())
+        client.call(
+            "configure-shortcuts",
+            {
+                "enabled": False,
+                "sessionEnabled": True,
+                "generation": control_generation,
+                "accept": "Ctrl+F7",
+                "exit": "Ctrl+F8",
+                "wake": {},
+                "direct": {},
+            },
+        )
+        unsupported = client.describe(target)["sessionBindings"]
+        assert unsupported["sourceReady"] is False and unsupported["editorReady"] is False
+        for name, index in (("F7", 6), ("F8", 7)):
+            before = state()["functionKeys"][index]
+            key("ctrl+" + name)
+            observed = wait_state(lambda value: value["functionKeys"][index]["up"] > before["up"])
+            assert observed["functionKeys"][index]["down"] > before["down"]
+            assert observed["first"] == original
+        client.describe(target)
+        assert not any(event.get("event") == "accepted" for event in client.events)
+        assert not any(
+            event.get("event") == "ui" and event["data"].get("operation") in ("return", "escape")
+            for event in client.events
+        )
+        checks.append(
+            "Unknown IME keeps Ctrl source/editor unavailable and both original key pairs pass"
+        )
         key("End")
         subprocess.run(["xdotool", "type", "--clearmodifiers", "x"], check=True, timeout=2)
         wait_state(lambda value: value.get("first") == original + "x")
