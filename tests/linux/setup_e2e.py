@@ -1383,6 +1383,7 @@ class InstallationFailureTests(unittest.TestCase):
         repair=False,
         activation=None,
         damaged_marker=False,
+        venv_target=None,
     ):
         with tempfile.TemporaryDirectory(prefix="typelay-install-failure-") as directory:
             base = Path(directory)
@@ -1424,9 +1425,20 @@ class InstallationFailureTests(unittest.TestCase):
                 elif arguments[1] == "venv":
                     entry = Path(arguments[2]) / "bin/python"
                     entry.parent.mkdir(parents=True)
-                    # uv preserves the supplied interpreter path in this link,
-                    # including a managed Python alias in an ancestor directory.
-                    entry.symlink_to(arguments[arguments.index("--python") + 1])
+                    # The packaged installation produced this managed alias even
+                    # when uv received the canonical interpreter path.
+                    target = (
+                        Path(options["env"]["UV_PYTHON_INSTALL_DIR"])
+                        / "cpython-3.13-linux-x86_64-gnu/bin/python3.13"
+                    )
+                    if venv_target == "different":
+                        target = entry.parent.parent.parent / "different-python"
+                        target.write_bytes(b"different interpreter")
+                    elif venv_target == "outside":
+                        outside = base / "outside-python"
+                        os.link(target, outside, follow_symlinks=True)
+                        target = outside
+                    entry.symlink_to(target)
                 elif arguments[1:3] == ["pip", "compile"]:
                     lock = Path(arguments[arguments.index("--output-file") + 1])
                     lock.parent.mkdir(parents=True, exist_ok=True)
@@ -1742,6 +1754,14 @@ class InstallationFailureTests(unittest.TestCase):
             expected_code=0,
         )
 
+    def test_venv_cannot_substitute_an_unverified_or_external_interpreter(self):
+        for target in ("different", "outside"):
+            with self.subTest(target=target):
+                output = self.run_setup(venv_target=target)
+                self.assertIn('"stage":"runtime"', output)
+                self.assertNotIn("正在解析 Linux 依赖", output)
+                self.assertNotIn(setup.PREPARED_PREFIX, output)
+
     def test_cleanup_failure_cannot_replace_the_first_failure_including_unknown(self):
         for original, expected in (
             (ConnectionError("private-token"), "network"),
@@ -1805,7 +1825,12 @@ class InstallationProcessTests(unittest.TestCase):
             )
             executable.chmod(0o700)
             current = base / "data/components/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            current.mkdir(parents=True)
+            # Validate prior intent before reaching the supervised uv child.
+            (current / "models").mkdir(parents=True)
+            (current / "models/installed.json").write_text(
+                json.dumps({"schema": 1, "directions": ["zh_en", "en_zh"]})
+            )
+            (current / "activation.json").write_text(json.dumps({"schema": 1, "previous": None}))
             (current / "retained").write_text("old usable version")
             (current.parent / "current").symlink_to("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
             process = subprocess.Popen(

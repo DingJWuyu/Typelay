@@ -603,6 +603,18 @@ def install(home, data, cache, requested_directions=None, repair=False):
         venv = version / "runtime/venv"
         uv("venv", venv, "--python", python, "--no-python-downloads")
         executable = venv / "bin/python"
+        # uv may still emit its managed-directory alias. Normalize only this
+        # unpublished venv's link to the exact interpreter already validated.
+        resolved = executable.resolve(strict=True)
+        if (
+            not executable.is_symlink()
+            or resolved != python
+            or not resolved.is_relative_to(version)
+            or not executable.samefile(python)
+        ):
+            raise ValueError("python-venv-path")
+        executable.unlink()
+        executable.symlink_to(python)
         stage = "dependencies"
         print("正在解析 Linux 依赖并验证 wheel 哈希", flush=True)
         requirements = version / "runtime/requirements.lock"

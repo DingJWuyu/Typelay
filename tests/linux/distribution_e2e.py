@@ -118,7 +118,12 @@ class DistributionTests(unittest.TestCase):
 
     def test_failed_setup_uses_shared_guidance_and_keeps_the_previous_version(self):
         current = self.home / "data/typelay/components/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-        current.mkdir(parents=True)
+        # Reach the missing-uv boundary after validating the previous intent.
+        (current / "models").mkdir(parents=True)
+        (current / "models/installed.json").write_text(
+            json.dumps({"schema": 1, "directions": ["zh_en", "en_zh"]})
+        )
+        (current / "activation.json").write_text(json.dumps({"schema": 1, "previous": None}))
         (current / "retained").write_text("previous usable version")
         (current.parent / "current").symlink_to("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
         for _ in range(2):
