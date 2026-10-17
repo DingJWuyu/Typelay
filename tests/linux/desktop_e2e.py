@@ -481,10 +481,13 @@ def run(arguments):
         data = status()
         return data if data.get("viewState") == state and data.get("overlayVisible") else None
 
-    def ready_to_accept(state="ValidTranslation"):
+    def ready_to_accept(state="ValidTranslation", browser_rounds=None):
         nonlocal last_acceptance_observation
         started = now_ms()
-        data = view(state)
+        data = status()
+        if browser_rounds is not None:
+            browser_rounds[:] = data.get("input", {}).get("browserRounds", [])
+        data = data if data.get("viewState") == state and data.get("overlayVisible") else None
         finished = now_ms()
         if data and data.get("acceptanceReady"):
             last_acceptance_observation = {
@@ -938,11 +941,29 @@ def run(arguments):
                                 return page.evaluate("""() => ({...editorProbeInspect(),
                                   keys: [...richControlKeys], focus: document.activeElement.id})""")
 
-                            def rich_control_source():
+                            def rich_control_source(observation=None):
                                 page.evaluate("editorProbeSetup('guarded')")
                                 key("Shift_L")
-                                wait_for(ready_to_accept, "rich Ctrl source did not become ready")
-                                return rich_control_state()
+                                ready = wait_for(
+                                    ready_to_accept, "rich Ctrl source did not become ready"
+                                )
+                                current = rich_control_state()
+                                if observation is not None:
+                                    observation["source"] = {
+                                        "modelSelection": current["selection"],
+                                        "composing": current["composing"],
+                                        "capture": next(
+                                            (
+                                                row
+                                                for row in reversed(
+                                                    ready.get("input", {}).get("browserRounds", [])
+                                                )
+                                                if "observation" in row
+                                            ),
+                                            None,
+                                        ),
+                                    }
+                                return current
 
                             before_rich = rich_control_source()
                             acknowledgement = wait_for(
@@ -989,7 +1010,8 @@ def run(arguments):
                             assert not new_write_outcomes(checkpoint)
 
                             def edit_rich_candidate(*, exit_editor=False):
-                                before = rich_control_source()
+                                return_observation = {} if not exit_editor else None
+                                before = rich_control_source(return_observation)
                                 candidate = wait_for(
                                     browser_editor, "rich candidate was not accessible"
                                 )
@@ -1028,12 +1050,42 @@ def run(arguments):
                                     assert exited == before
                                     assert not new_write_outcomes(checkpoint)
                                     return exited
+                                return_started = now_ms()
+                                return_observation["returnStartedAtMs"] = return_started
+
+                                def returned_with_permit():
+                                    current = rich_control_state()
+                                    # Keep the original focus short circuit: diagnostics
+                                    # cannot cause an extra status or source query.
+                                    if current["focus"] != "editor-source":
+                                        return False
+                                    rounds = []
+                                    ready = ready_to_accept("EditedTranslationPending", rounds)
+                                    if "returned" not in return_observation:
+                                        first = next(
+                                            (
+                                                row
+                                                for row in rounds
+                                                if row.get("startedMs", -1) >= return_started
+                                                and "observation" in row
+                                            ),
+                                            None,
+                                        )
+                                        if first is not None:
+                                            return_observation["returned"] = {
+                                                "capture": first,
+                                                "modelSelection": current["selection"],
+                                                "composing": current["composing"],
+                                                "sourceUnchanged": current["after"]
+                                                == before["after"],
+                                            }
+                                    return ready
+
                                 try:
                                     control_keys["Control_L"](True)
                                     control_keys["F7"](True)
                                     wait_for(
-                                        lambda: rich_control_state()["focus"] == "editor-source"
-                                        and ready_to_accept("EditedTranslationPending"),
+                                        returned_with_permit,
                                         "first rich editor Ctrl+F7 did not return with a new source permit",
                                     )
                                     assert rich_control_state() == before
@@ -1042,6 +1094,9 @@ def run(arguments):
                                 finally:
                                     control_keys["Control_L"](False)
                                     control_keys["F7"](False)
+                                    (
+                                        arguments.output / "browser-rich-return-observation.json"
+                                    ).write_text(json.dumps(return_observation, indent=2) + "\n")
                                 returned = rich_control_state()
                                 assert returned == before
                                 assert not new_write_outcomes(checkpoint)

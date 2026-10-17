@@ -1710,6 +1710,20 @@ class Input:
         self.bound, self.bound_observation = snapshot["target"], record
         if browser_source:
             round_timing["snapshotAtMs"] = native["observedAtMs"]
+            if os.environ.get("TYPELAY_TRACE"):
+                # Project only values from this already-approved capture. The
+                # existing bounded round ring never stores text or target IDs.
+                round_timing["observation"] = {
+                    key: value
+                    for key, value in {
+                        "inputRevision": snapshot["inputEpoch"],
+                        "focusRevision": snapshot["focusEpoch"],
+                        "contentRevision": record["authority"]["contentRevision"],
+                        "selectionStart": snapshot["selection"]["start"],
+                        "selectionEnd": snapshot["selection"]["end"],
+                    }.items()
+                    if type(value) is int and 0 <= value < 2**53
+                }
             record["roundTiming"] = round_timing
             self.remember_browser_diagnostics(native.get("diagnostics"))
             self.remember_publication(peer, native, publication_generation)
@@ -2501,6 +2515,15 @@ class Input:
         if not current():
             return False
         peer, target = record["peer"], record["target"]["value"]
+        trace_browser = (
+            peer.backend == "browser"
+            and os.environ.get("TYPELAY_TRACE")
+            and getattr(self, "return_trace_count", 0) < 32
+        )
+        if trace_browser:
+            basis_round = record.get("roundTiming", {})
+            trace["basisRound"] = basis_round.get("round")
+            trace["basisObservation"] = dict(basis_round.get("observation", {}))
         trace["phase"] = "describe"
         description = await peer.link.ask("describe", {"target": target})
         trace["phase"] = "describe-current"
@@ -2516,6 +2539,12 @@ class Input:
             or description["authority"]["contentRevision"] != record["authority"]["contentRevision"]
         ):
             return False
+        if trace_browser:
+            trace["beforeReturn"] = {
+                key: value
+                for key in ("inputRevision", "focusRevision", "contentRevision")
+                if type(value := description["authority"].get(key)) is int and 0 <= value < 2**53
+            }
         # Return only within the same active parent; the native consumer checks
         # this generation again after focus/provider callbacks, before return.
         trace["phase"] = "native-request"
