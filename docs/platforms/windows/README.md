@@ -14,21 +14,24 @@
 
 普通输入框是产品目标，不是按应用维护的支持名单。未知输入法状态只允许只读预览；密码、敏感字段、终端和代码编辑器不能通过弱化安全限制来“扩大支持”。
 
-### Chrome 合作扩展的实验入口
+### Chrome 合作扩展接入
 
-浏览器合作链当前用于受控实验验收。注册扩展本身不启用默认关闭的自动接受；按需 F10 仍须本次真实按键及原目标、输入法、输入版本和时效校验。正式“应用支持”接入尚未开放。普通网页的原生 `input` / `textarea` 是本切片的验证对象，新标签页中央搜索框、富文本、嵌套 frame、物理按键和真实输入法不因此获得支持声明。
+设置的“应用支持”页提供 Google Chrome 接入、状态刷新和移除。发行包中的 `browser/chromium/connection.json` 固定扩展身份；当前源码默认 ID 和商店链接均为空，界面显示“待发布扩展”，不提供新的接入按钮。正式商店条目与发布身份尚未完成，不能将 Chrome for Testing 的开发加载验收当作品牌 Chrome 商店安装。已有本安装明确注册的扩展仍可显示真实连接并移除。发布者须遵循 [Chrome 官方安装渠道](https://developer.chrome.com/docs/extensions/how-to/distribute/install-extensions)与[扩展身份规则](https://developer.chrome.com/docs/extensions/reference/manifest/key)，商店账号、条目与发布确认仍需所有者完成。
 
-完整包包含 `browser/chromium` 和 `app/TypeLay.BrowserHost.exe`。开发或隔离验收时，在 Chrome 扩展管理页明确启用开发者模式并“加载已解压的扩展程序”，选择本包的 `browser/chromium`。核对 Chrome 实际显示的扩展 ID，再从本包目录运行：
+配置了正式身份的发行版使用以下流程，无需输入命令或猜测扩展 ID：
 
-```powershell
-.\app\TypeLay.BrowserHost.exe register --extension-id <实际32位扩展ID>
-.\app\TypeLay.BrowserHost.exe status
-.\app\TypeLay.BrowserHost.exe unregister
-```
+1. 打开设置 - 应用支持 - Google Chrome 的详情，打开发行版提供的 Chrome 网上应用店链接，亲自在 Chrome 完成安装与权限确认。
+2. 点击“接入”，核对确认窗口中的扩展 ID 和本地程序路径，同意为当前用户注册连接。
+3. “已注册，尚未连接”只表示注册存在；“已连接”表示经过身份核验的浏览器连接仍存活。当前输入框的能力另行检查，注册或连接本身不赋予写权限。
+4. 要停止合作，在同一行选择“移除连接”并确认。移除先停止本次运行的新授权和原连接，再删除精确匹配的当前用户注册。失败会保留真实状态，可重试；注册仍在时，重新启动 TypeLay 后可能重新连接。
 
-注册只写当前用户 HKCU 和 `%LOCALAPPDATA%\TypeLay\browser\org.typelay.browser.json`，manifest 指向本包的完整 host 路径；安装目录可以只读。32/64 位注册视图、系统级同名 host 或另一安装发生冲突时会拒绝，不覆盖它们。同一安装和 ID 可重复注册；换 ID、搬迁或升级前，先从旧安装运行 `unregister`，再从新位置重新注册。不要先删除仍被注册引用的旧安装。
+暂停 TypeLay 或模型尚未就绪不妨碍连接管理。关闭设置不会取消已确认的操作，也不会因迟到结果重新打开窗口。移除不终止 Chrome，不删除扩展、模型或个人设置；扩展本身由用户在 Chrome 中管理。不同安装或扩展的注册不会被覆盖或删除。换 ID、搬迁或升级前先在旧安装移除，不要先删除仍被注册引用的目录。
 
-注销不会终止用户的 Chrome，也不会删除扩展；请在扩展管理页停用或重新加载扩展，断开已有端口。host 由 Chrome 启动，仅连接同用户、同 Windows 会话、同一发行目录中已经运行的 App，不启动 App、模型或网络服务。标准输入输出只承载有界协议帧，失败诊断不包含网页正文。Chrome 的 `--parent-window=0` 不作为窗口或字段身份。
+开发发行版可以固定实际已加载扩展的 ID，且商店链接为空，界面明确标注开发加载。用户仍须亲自在 Chrome 扩展管理页加载本包的 `browser/chromium`。隔离验收只把 Chrome 实际报告的 ID 注入测试发行配置，并通过同一真实 UI 确认；测试结束精确恢复原配置，不把测试 ID 发布为正式身份。发行身份不从网页、环境变量、用户输入或浏览器目录扫描取得。
+
+注册只写当前用户 HKCU 和 `%LOCALAPPDATA%\TypeLay\browser\org.typelay.browser.json`，manifest 指向本包的完整 host 路径，安装目录可只读。32/64 位注册视图、系统级同名 host 或另一安装发生冲突时明确拒绝。高级隔离维护仍可使用 host 的 `status`、`register --extension-id <ID>` 和 `unregister --extension-id <ID>`；UI 的移除始终带确认的精确 ID。
+
+普通网页的原生 `input` / `textarea` 是当前验证对象；注册不打开默认关闭的实验写回开关。标准字段的源端同步能力与按需 F10 仍受原目标、输入法、输入版本和期限校验。新标签页中央搜索框、富文本、嵌套 frame、物理按键和真实输入法不因此获得支持声明。host 由 Chrome 启动，仅连接同用户、同 Windows 会话、同一发行目录中已经运行的 App，不启动 App、模型或网络。标准输入输出只承载有界协议，Chrome 的 `--parent-window=0` 不是窗口或字段身份。
 
 当前源码在显式唤醒已接受、首次读取输入框失败或抛出异常时，按原目标和本次命令给出一次提示。请保持焦点后主动重试；此提示不代表读取成功率已经改善，也不会自动重试。
 
@@ -105,7 +108,7 @@ Windows 检查仍未全绿：App 桌面回归 **255 项通过、8 项失败**，
 
 直接替换绑定触发时的原输入框和文本。翻译期间可切换输入框或应用，任务不会仅因焦点变化取消；结果只尝试写回原控件，不抢回焦点，不修改后来聚焦的输入框。原目标失效、内容冲突、输入法状态不明确或无法确认结果时，不进行有风险的重试。操作状态沿用托盘快速面板反馈。
 
-**直接替换当前支持通过运行时校验的原生系统 `Edit`，以及明确接入的 Chrome 合作扩展标准网页字段。** 原生控件须未被应用替换窗口过程、身份仍有效且能完成原文校验；合作浏览器须完成上方实验接入，并由原页面按次与字段策略校验。未接入的浏览器、富文本或不支持事务的自定义控件不会回退到 UIA `SetValue`、模拟按键或抢焦点写回。普通只读预览控件仍可按需唤醒，但这不赋予写回权限。实现依据与边界见 [ADR-0002](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/adr/0002-on-demand-and-direct-write.md)。
+**直接替换当前支持通过运行时校验的原生系统 `Edit`，以及明确接入的 Chrome 合作扩展标准网页字段。** 原生控件须未被应用替换窗口过程、身份仍有效且能完成原文校验；合作浏览器须完成上方明确接入，并由原页面按次与字段策略校验。未接入的浏览器、富文本或不支持事务的自定义控件不会回退到 UIA `SetValue`、模拟按键或抢焦点写回。普通只读预览控件仍可按需唤醒，但这不赋予写回权限。实现依据与边界见 [ADR-0002](https://github.com/DingJWuyu/Typelay/blob/trunk/docs/adr/0002-on-demand-and-direct-write.md)。
 
 ## 开发与验收入口
 

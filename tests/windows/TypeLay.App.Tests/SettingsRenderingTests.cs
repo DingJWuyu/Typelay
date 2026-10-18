@@ -120,6 +120,24 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                         Enabled = false
                     });
                     window.UpdateLayout();
+                    var moreApplications = Descendants(window).OfType<Expander>().SingleOrDefault(expander =>
+                        Equals(expander.Header, ApplicationSupportPresentation.Create([]).Labels.MoreApplications));
+                    if (moreApplications is not null)
+                        moreApplications.IsExpanded = true;
+                    window.UpdateLayout();
+                    var chrome = Descendants(window).OfType<FrameworkElement>().Single(control =>
+                        AutomationProperties.GetAutomationId(control) == "ChromeConnection");
+                    var chromePrimary = Descendants(chrome).OfType<Button>().Single(control =>
+                        AutomationProperties.GetAutomationId(control) == "ChromeConnectionPrimary");
+                    Assert.Equal("查看详情", chromePrimary.Content);
+                    Assert.True(chromePrimary.IsEnabled); // Model/Enabled never hide connection management.
+                    Assert.Contains(Descendants(chrome).OfType<TextBlock>(), text => text.Text == "待发布扩展");
+                    Assert.DoesNotContain(Descendants(chrome).OfType<Button>(), button => button.Visibility == Visibility.Visible
+                        && AutomationProperties.GetAutomationId(button) == "ChromeConnectionConnect");
+                    var chromeFact = new WindowsApplicationSupport().Read(settings.Value).Rows.Single(row => row.Id == "google-chrome");
+                    Assert.Equal(ApplicationSupportState.NeedsInstall, chromeFact.State);
+                    Assert.False(chromeFact.Capabilities.Preview);
+                    Assert.False(chromeFact.Capabilities.TabAccept);
                     var checks = Descendants(window).OfType<Button>().Where(button => Equals(button.Content, "检查连接")).ToArray();
                     Assert.NotEmpty(checks);
                     Assert.All(checks, button => Assert.False(button.IsEnabled));

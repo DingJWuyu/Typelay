@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text.Json;
 using TypeLay.Core;
 using TypeLay.Runtime;
@@ -22,6 +23,71 @@ public sealed class BrowserContractTests
             token,
             observedAtMs = observed
         });
+    [Fact]
+    public void BrowserConnectionConfigurationRequiresOneExactPublishedIdentity()
+    {
+        var empty = BrowserConnectionConfiguration.Parse("""{"version":1,"extensionId":null,"storeUrl":null}""");
+        Assert.Null(empty.ExtensionId);
+        Assert.Null(empty.StoreUrl);
+        Assert.Equal(Extension, BrowserConnectionConfiguration.Parse(JsonSerializer.Serialize(
+            new
+            {
+                version = 1,
+                extensionId = Extension,
+                storeUrl = (string?)null
+            })).ExtensionId);
+        foreach (string invalid in new[]
+        {
+            "{}", "[]", "null", "{", "{\"version\":1,\"extensionId\":null,\"storeUrl\":null,\"extra\":1}",
+            "{\"version\":1,\"extensionId\":null,\"storeUrl\":null,\"version\":1}"
+        })
+            Assert.Throws<InvalidDataException>(() => BrowserConnectionConfiguration.Parse(invalid));
+        string url = "https://chromewebstore.google.com/detail/typelay/" + Extension;
+        var configured = BrowserConnectionConfiguration.Parse(JsonSerializer.Serialize(new
+        {
+            version = 1,
+            extensionId = Extension,
+            storeUrl = url
+        }));
+        Assert.Equal(Extension, configured.ExtensionId);
+        Assert.Equal(url, configured.StoreUrl);
+        foreach (string invalid in new[]
+        {
+            "https://example.com/detail/typelay/" + Extension,
+            url + "?source=another", url + "#fragment", url.Replace("https:", "http:"),
+            url.Replace(Extension, new string('p', 32)), url.Replace(".com/", ".com:444/"),
+            url.Replace("//chrome", "//user@chrome")
+        })
+            Assert.Throws<InvalidDataException>(() => BrowserConnectionConfiguration.Parse(
+                JsonSerializer.Serialize(new
+                {
+                    version = 1,
+                    extensionId = Extension,
+                    storeUrl = invalid
+                })));
+        Assert.Throws<InvalidDataException>(() => BrowserConnectionConfiguration.Parse(
+            JsonSerializer.Serialize(new
+            {
+                version = 2,
+                extensionId = Extension,
+                storeUrl = url
+            })));
+        Assert.Throws<InvalidDataException>(() => BrowserConnectionConfiguration.Parse(
+            JsonSerializer.Serialize(new
+            {
+                version = 1,
+                extensionId = (string?)null,
+                storeUrl = url
+            })));
+        Assert.Throws<InvalidDataException>(() => BrowserConnectionConfiguration.Parse(
+            JsonSerializer.Serialize(new
+            {
+                version = 1,
+                extensionId = new string('q', 32),
+                storeUrl = (string?)null
+            })));
+    }
+
     [Fact]
     public void BrowserTraceNoiseCannotConsumeReservedCommandAndReceiptBudget()
     {

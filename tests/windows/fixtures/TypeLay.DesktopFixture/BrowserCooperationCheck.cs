@@ -144,7 +144,7 @@ internal static partial class BrowserCooperationCheck
         var mode = new Scene("on-demand-settings");
         var direct = new Scene("direct-selection");
         var background = new Scene("direct-original-field-after-focus-switch");
-        var disconnected = new Scene("disconnected-before-command");
+        var disconnected = new Scene("removed-connection-before-command");
         var submitCounter = new Scene("submit-counter-positive-control");
         Scene[] scenes = [setup, automatic, mode, direct, background, disconnected, submitCounter];
         Scene active = setup;
@@ -156,6 +156,9 @@ internal static partial class BrowserCooperationCheck
         string host = Path.Combine(distribution, "app", "TypeLay.BrowserHost.exe");
         bool ownData = false, registrationAttempted = false, registrationAbsent = true;
         bool appStopped = true, browserStopped = true, modelPreviewObserved = false;
+        string connectionFile = Path.Combine(distribution, "browser", "chromium", "connection.json");
+        byte[]? originalConnection = null, injectedConnection = null;
+        bool connectionInjected = false, uiConnectCancelled = false, uiConnectConfirmed = false, uiRemoveConfirmed = false;
         ChildProcess? app = null, browser = null;
         BrowserWindows? windows = null;
         PageServer? server = null;
@@ -220,15 +223,7 @@ internal static partial class BrowserCooperationCheck
                 await File.WriteAllTextAsync(ownerFile, ownerToken, ct);
                 await CopyModelAsync(directory, data, ct);
                 await File.WriteAllTextAsync(Path.Combine(data, "settings.json"), JsonSerializer.Serialize(new UserSettings(
-                    Source: "zh", Target: "en", Theme: "light", OnboardingComplete: true, ExperimentalWriteback: false)), ct);
-                setup.Stage = "start-shipped-app";
-                var appStart = StartInfo(Path.Combine(distribution, "app", "TypeLay.App.exe"));
-                appStart.ArgumentList.Add("--automation-test");
-                // This is the shipped launcher's resource root, not a user-data override.
-                appStart.Environment["TYPELAY_HOME"] = distribution;
-                appStart.Environment["TYPELAY_TRACE"] = trace;
-                app = new ChildProcess(appStart);
-                appStopped = false;
+                    Source: "zh", Target: "en", Theme: "light", OnboardingComplete: false, ExperimentalWriteback: false)), ct);
                 setup.Stage = "check-shipped-extension";
                 string extension = Path.Combine(distribution, "browser", "chromium");
                 Require(File.Exists(Path.Combine(extension, "manifest.json")), "shipped-extension-missing");
@@ -252,19 +247,47 @@ internal static partial class BrowserCooperationCheck
                 await cdp.OpenPageAsync(server.Url, ct);
                 setup.Stage = "focus-loopback-page";
                 await FocusPageAsync(cdp, windows, ct);
-                setup.Stage = "discover-loaded-extension-and-register";
+                setup.Stage = "discover-loaded-extension";
                 extensionId = await cdp.ExtensionIdAsync(Path.Combine(extension, "manifest.json"), ct);
                 registrationAbsent = false;
                 using (var before = JsonDocument.Parse(await HostCommandAsync(host, ["status"], ct)))
                     Require(!before.RootElement.GetProperty("registered").GetBoolean(), "preexisting-host-registration");
-                // The command may commit before cancellation is observed. Cleanup must
-                // reconcile its real exact registration even if no success reply arrives.
-                registrationAttempted = true;
+                registrationAbsent = true;
+                originalConnection = await File.ReadAllBytesAsync(connectionFile, ct);
+                var released = BrowserConnectionConfiguration.Parse(System.Text.Encoding.UTF8.GetString(originalConnection));
+                Require(released.ExtensionId is null && released.StoreUrl is null, "test-release-identity-already-configured");
+                injectedConnection = JsonSerializer.SerializeToUtf8Bytes(new
+                {
+                    version = 1,
+                    extensionId,
+                    storeUrl = (string?)null
+                });
+                // Only this exclusive test release is changed. The original bytes
+                // are restored after confirmed App exit, before any artifact ships.
+                await ReplaceConnectionConfigurationAsync(connectionFile, originalConnection, injectedConnection, ct);
+                connectionInjected = true;
+                setup.Stage = "start-shipped-app";
+                var appStart = StartInfo(Path.Combine(distribution, "app", "TypeLay.App.exe"));
+                appStart.ArgumentList.Add("--automation-test");
+                // This is the shipped launcher's resource root, not a user-data override.
+                appStart.Environment["TYPELAY_HOME"] = distribution;
+                appStart.Environment["TYPELAY_TRACE"] = trace;
+                app = new ChildProcess(appStart);
+                appStopped = false;
+                setup.Stage = "cancel-connect-in-real-settings";
+                registrationAttempted = true; // Also reconcile an unexpected registration after cancellation.
                 registrationAbsent = false;
-                await HostCommandAsync(host, ["register", "--extension-id", extensionId], ct);
+                await BrowserConnectionActionAsync(app.Process, "接入", ct, accept: false);
+                using (var cancelled = JsonDocument.Parse(await HostCommandAsync(host, ["status"], ct)))
+                    Require(!cancelled.RootElement.GetProperty("registered").GetBoolean(), "cancelled-connect-registered");
+                uiConnectCancelled = true;
+                setup.Stage = "confirm-connect-in-real-settings";
+                await BrowserConnectionActionAsync(app.Process, "接入", ct);
+                uiConnectConfirmed = true;
                 using (var status = JsonDocument.Parse(await HostCommandAsync(host, ["status"], ct)))
                     Require(status.RootElement.GetProperty("registered").GetBoolean()
                         && status.RootElement.GetProperty("origin").GetString() == "chrome-extension://" + extensionId + "/", "registration-unconfirmed");
+                await WaitBrowserConnectionStatusAsync(app.Process, "已连接", ct);
             });
             string reference = "";
             await Phase(automatic, "type-and-wait-for-visible-preview", 90, async ct =>
@@ -334,30 +357,46 @@ internal static partial class BrowserCooperationCheck
                 Require(background.NoPreview && !(await cdp.PreviewAsync(ct)).Visible, "background-opened-preview");
                 await WaitTraceAsync(trace, "browser-direct-Verified", offset, ct);
             });
-            await Phase(disconnected, "disconnect-before-command", 15, async ct =>
+            await Phase(disconnected, "confirm-remove-in-real-settings", 30, async ct =>
             {
+                await BrowserConnectionActionAsync(app!.Process, "移除连接", ct);
+                uiRemoveConfirmed = true;
+                using (var status = JsonDocument.Parse(await HostCommandAsync(host, ["status"], ct)))
+                    Require(!status.RootElement.GetProperty("registered").GetBoolean(), "ui-removal-unconfirmed");
+                registrationAbsent = true;
+                await WaitBrowserConnectionStatusAsync(app.Process, "需要安装或连接", ct);
+                Require(!app.Process.HasExited, "app-exited-during-remove");
                 await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);
-                await app!.TerminateAndWaitAsync(ct);
-                app = null;
-                appStopped = true;
+                disconnected.Stage = "disconnected-source-precondition";
+                var before = await cdp!.StateAsync("", ct);
+                ObserveDom(before, disconnected, Source);
+                Require(before.A == Source && before.B == Other && before.Focus == "a" && before.PageFocused
+                    && before.AStart == Source.Length && before.AEnd == Source.Length
+                    && before.Replacements == 0 && before.Submits == 0 && before.PreviewMounts == 0,
+                    "disconnected-source-precondition");
                 disconnected.Stage = "single-disconnected-f10";
                 SendChord([0x11, 0x10, 0x79], cleanupErrors);
                 disconnected.ShortcutPresses = 1;
-                var state = await WaitStateAsync(cdp!, s => s.DirectKeys == 1, ct);
-                // A bounded negative observation after confirmed App/job termination,
-                // not an inference about a write that was already submitted.
+                // A bounded negative observation after confirmed UI removal while
+                // the App remains alive, not an inference about an in-flight write.
+                // Page bubbling is not required: disconnection is asynchronous.
+                disconnected.Stage = "observe-disconnected-source";
+                PageState state;
                 var watch = Stopwatch.StartNew();
                 do
                 {
                     state = await cdp!.StateAsync("", ct);
+                    ObserveDom(state, disconnected, Source);
                     Require(state.A == Source && state.Replacements == 0 && state.Submits == 0, "disconnected-source-mutated");
                     Require(state.B == Other, "disconnected-other-field-changed");
+                    Require(state.Focus == "a" && state.PageFocused, "disconnected-source-focus-lost");
+                    Require(state.AStart == before.AStart && state.AEnd == before.AEnd
+                        && state.BStart == before.BStart && state.BEnd == before.BEnd, "disconnected-selection-changed");
+                    Require(state.PreviewMounts == 0, "disconnected-command-opened-preview");
                     await Task.Delay(40, ct);
                 } while (watch.Elapsed < TimeSpan.FromSeconds(2));
-                Require(state.DirectKeys == 1 && state.PreviewMounts == 0 && !(await cdp!.PreviewAsync(ct)).Visible, "disconnected-command-not-refused");
-                disconnected.ExactText = true;
-                disconnected.SourceFocus = state.Focus == "a" && state.PageFocused;
-                disconnected.NoPreview = true;
+                Require(!(await cdp!.PreviewAsync(ct)).Visible, "disconnected-command-opened-preview");
+                Require(!app!.Process.HasExited, "app-exited-during-removed-command");
             });
             await Phase(submitCounter, "click-owned-submit-control", 5, async ct =>
             {
@@ -425,6 +464,17 @@ internal static partial class BrowserCooperationCheck
                 }
             });
             await Clean("loopback-page", async () => { if (server is not null) await server.DisposeAsync(); });
+            if (connectionInjected)
+                await Clean("release-connection-configuration", async () =>
+                {
+                    Require(appStopped, "app-exit-unconfirmed-configuration-preserved");
+                    Require((await File.ReadAllBytesAsync(connectionFile)).AsSpan().SequenceEqual(injectedConnection),
+                        "release-configuration-ownership-changed");
+                    using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                    await ReplaceConnectionConfigurationAsync(connectionFile, injectedConnection!, originalConnection!, limit.Token);
+                    Require((await File.ReadAllBytesAsync(connectionFile)).AsSpan().SequenceEqual(originalConnection),
+                        "release-configuration-restoration-unconfirmed");
+                });
             if (registrationAttempted)
                 await Clean("native-host-registration", async () =>
                 {
@@ -435,7 +485,7 @@ internal static partial class BrowserCooperationCheck
                         {
                             Require(current.RootElement.GetProperty("origin").GetString() == "chrome-extension://" + extensionId + "/",
                                 "registration-ownership-changed");
-                            await HostCommandAsync(host, ["unregister"], limit.Token);
+                            await HostCommandAsync(host, ["unregister", "--extension-id", extensionId!], limit.Token);
                         }
                     }
                     using var status = JsonDocument.Parse(await HostCommandAsync(host, ["status"], limit.Token));
@@ -493,7 +543,10 @@ internal static partial class BrowserCooperationCheck
             modelSource = "same-run-verified-installation",
             realModelPreviewObserved = modelPreviewObserved,
             noModelDownloads = true,
-            disconnectedBoundary = "before-command-no-in-flight-write"
+            uiConnectCancelled,
+            uiConnectConfirmed,
+            uiRemoveConfirmed,
+            disconnectedBoundary = "ui-remove-confirmed-app-alive-before-command-no-in-flight-write"
         }, Json));
         Console.WriteLine($"Browser cooperation: {(passed ? "passed" : "failed")}; stage={first?.Stage ?? (passed ? "complete" : "cleanup")}; failure={first?.Failure ?? "none"}.");
         return passed ? 0 : 1;

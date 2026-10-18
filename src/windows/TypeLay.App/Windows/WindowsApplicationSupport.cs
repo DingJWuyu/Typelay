@@ -26,6 +26,19 @@ internal sealed class WindowsApplicationSupport
     public event Action<string>? CheckStarted;
     public event Action<string>? CheckCompleted;
 
+    public BrowserConnection? Browser
+    {
+        get; private set;
+    }
+    public event Action? BrowserChanged;
+    public void BindBrowser(BrowserInput input)
+    {
+        Browser = new(input);
+        Browser.Changed += () => BrowserChanged?.Invoke();
+        _ = Browser.RefreshAsync();
+    }
+    public Task CompletePendingAsync() => Browser?.CompletePendingAsync() ?? Task.CompletedTask;
+
     public void Bind(IInputBroker broker, IInputMonitor monitor)
     {
         _broker = broker;
@@ -49,6 +62,7 @@ internal sealed class WindowsApplicationSupport
     // service. A user-initiated check must always get a bounded terminal result.
     public void Poll()
     {
+        Browser?.Poll();
         if (_requested is null)
             return;
         if (_broker?.Available != true || _monitor?.Ready != true)
@@ -166,6 +180,11 @@ internal sealed class WindowsApplicationSupport
         ApplicationSupportFact Fact(string id)
         {
             bool detected = id == "desktop-text" || _observations.ContainsKey(id) || Installed(id);
+            if (id == "google-chrome")
+                return Browser?.Read(detected) ?? new(id, ApplicationSupportState.NeedsInstall,
+                    ApplicationSupportReason.RegistrationMissing,
+                    SupportedActions: [ApplicationSupportAction.Refresh, ApplicationSupportAction.OpenInstructions],
+                    Details: "此发行版尚未配置 Chrome 连接。", ApplicationDetected: detected);
             if (id is not ("desktop-text" or "firefox" or "chromium" or "google-chrome" or "microsoft-edge"))
                 return new(id, ApplicationSupportState.Unsupported, ApplicationSupportReason.NotImplemented,
                     SupportedActions: [ApplicationSupportAction.OpenInstructions], ApplicationDetected: detected);

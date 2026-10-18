@@ -99,8 +99,9 @@ internal sealed class BrowserRegistration(string executable)
         }
     }
 
-    internal void Unregister()
+    internal void Unregister(string? expectedExtensionId = null)
     {
+        string? expectedOrigin = expectedExtensionId is null ? null : BrowserHostProtocol.OriginForExtensionId(expectedExtensionId);
         if (!Directory.Exists(Path.GetDirectoryName(_manifest)))
         {
             if (InspectUserKeys().Count != 0)
@@ -116,6 +117,8 @@ internal sealed class BrowserRegistration(string executable)
                 throw new RegistrationConflictException();
             return;
         }
+        if (expectedOrigin is not null && owned.Origin != expectedOrigin)
+            throw new RegistrationConflictException();
         // Validate all views before touching either. HKCU views can alias on some systems.
         foreach (RegistryView view in keys)
         {

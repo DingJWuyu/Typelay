@@ -51,6 +51,37 @@ internal sealed partial class BrowserInput : IDisposable
     private SessionViewToken? _editorToken;
     private readonly Queue<(InputNotice Notice, long Deadline)> _notices = new();
     public event Action<BrowserEvent>? Ui;
+    private ApplicationSupportCapabilities _supportCapabilities = new();
+    private BrowserObservation? _supportObservation;
+    public bool Connected => _server.Peers.Length != 0;
+    public bool OriginSuspended(string origin) => _server.OriginSuspended(origin);
+    public void ResumeOrigin(string origin) => _server.ResumeOrigin(origin);
+    public ApplicationSupportCapabilities SupportCapabilities => _current is { } current
+        && ReferenceEquals(current, _supportObservation) && DocumentCurrent(current)
+        && current.Epochs == _hook.BrowserEpochs && AcknowledgementCurrent(current)
+        && WindowsInterruptClock.NowMs - current.ObservedAtMs is >= 0 and <= Limits.ObservationMaxAgeMs
+        ? _supportCapabilities : new();
+    public void SuspendOrigin(string origin)
+    {
+        // Seal admission before retiring page ownership. The existing retirement
+        // ledger still waits for ACK/maximum issued expiry and whole key release.
+        _server.BlockOrigin(origin);
+        if (_commandOwner?.Peer.Origin == origin)
+            RetireCommandOwner();
+        Revoke(true);
+        _hook.Revoke();
+        _hook.NotifyBrowserChange(false, true);
+        _current = null;
+        foreach (var item in _frozen.Where(item => item.Value.Observation.Peer.Origin == origin).ToArray())
+            _frozen.Remove(item.Key);
+        var receipts = _notices.Where(item => item.Notice.CompletedReceipt is not null).ToArray();
+        _notices.Clear();
+        foreach (var receipt in receipts)
+            _notices.Enqueue(receipt);
+        // Issued plans and already received receipts retain their original
+        // terminal accounting. Disconnection is not proof that a write failed.
+        _server.CloseOrigin(origin);
+    }
     public BrowserInput(BrowserServer server, KeyboardHook hook)
     {
         _server = server;
@@ -245,6 +276,10 @@ internal sealed partial class BrowserInput : IDisposable
         var record = new BrowserObservation(peer, result.Route, capturedAuthority, id, snapshot.ObservedAtMs, root, epochs, ack!);
         _observations.Remember(record);
         _current = record;
+        _supportObservation = record;
+        _supportCapabilities = new(true, snapshot.WriteSupported && snapshot.Ime == ImeState.Clear
+            && ack!.SourceReady && ack.SourceLocalAcceptanceVersion == 1,
+            snapshot.DirectWriteSupported && snapshot.Ime == ImeState.Clear);
         RememberPublication(peer, result.Route, result.Data);
         TraceObservation(ObservationStage.Capture, ObservationReason.Ready, result.Data, editor,
             observationAgeMs: now - snapshot.ObservedAtMs);

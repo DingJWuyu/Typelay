@@ -292,7 +292,34 @@ internal static partial class BrowserCooperationCheck
             await Task.Delay(10, ct);
         }
     }
-    private static async Task<AutomationElement> SetOnDemandAsync(Process app, string data, CancellationToken ct)
+    private static async Task ReplaceConnectionConfigurationAsync(string path, byte[] expected, byte[] replacement, CancellationToken ct)
+    {
+        string temporary = path + ".fixture-" + Guid.NewGuid().ToString("N");
+        bool ownTemporary = false;
+        try
+        {
+            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                ownTemporary = true;
+                await stream.WriteAsync(replacement, ct);
+                await stream.FlushAsync(ct);
+                stream.Flush(flushToDisk: true);
+            }
+            ct.ThrowIfCancellationRequested();
+            Require((await File.ReadAllBytesAsync(path, ct)).AsSpan().SequenceEqual(expected), "release-configuration-ownership-changed");
+            ct.ThrowIfCancellationRequested();
+            // Same-directory replacement publishes only a complete file. A
+            // cancelled temporary write leaves the original release untouched.
+            File.Move(temporary, path, overwrite: true);
+            ownTemporary = false;
+        }
+        finally
+        {
+            if (ownTemporary)
+                File.Delete(temporary);
+        }
+    }
+    private static async Task<AutomationElement> FindSettingsAsync(Process app, CancellationToken ct)
     {
         // UIA only drives the shipped settings window. It neither reads browser
         // input nor supplies a replacement Runtime/controller to the test.
@@ -307,6 +334,78 @@ internal static partial class BrowserCooperationCheck
             if (window is null)
                 await Task.Delay(40, ct);
         }
+        return window;
+    }
+    private static async Task BrowserConnectionActionAsync(Process app, string action, CancellationToken ct, bool accept = true)
+    {
+        var window = await FindSettingsAsync(app, ct);
+        await Task.Run(() =>
+        {
+            var apps = window.FindFirst(TreeScope.Descendants,
+                new PropertyCondition(AutomationElement.NameProperty, "▦  " + ApplicationSupportPresentation.Create([]).Title));
+            Require(apps is not null, "settings-applications-unavailable");
+            ((InvokePattern)apps!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+            var more = window.FindFirst(TreeScope.Descendants,
+                new PropertyCondition(AutomationElement.NameProperty, ApplicationSupportPresentation.Create([]).Labels.MoreApplications));
+            if (more is not null && more.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var expansion))
+                ((ExpandCollapsePattern)expansion).Expand();
+        }, ct).WaitAsync(ct);
+        AutomationElement? primary = null;
+        while (primary is null)
+        {
+            primary = await Task.Run(() => window.FindFirst(TreeScope.Descendants,
+                new AndCondition(new PropertyCondition(AutomationElement.AutomationIdProperty, "ChromeConnectionPrimary"),
+                    new PropertyCondition(AutomationElement.NameProperty, action),
+                    new PropertyCondition(AutomationElement.IsEnabledProperty, true))), ct).WaitAsync(ct);
+            if (primary is null)
+                await Task.Delay(40, ct);
+        }
+        // InvokePattern can wait while the owned modal is open. Confirm from a
+        // separate UIA call, then await the original invocation as well.
+        Task invocation = Task.Run(() => ((InvokePattern)primary.GetCurrentPattern(InvokePattern.Pattern)).Invoke(), ct);
+        AutomationElement? confirm = null;
+        while (confirm is null)
+        {
+            ct.ThrowIfCancellationRequested();
+            confirm = await Task.Run(() =>
+            {
+                var dialog = AutomationElement.RootElement.FindFirst(TreeScope.Children,
+                    new AndCondition(new PropertyCondition(AutomationElement.ProcessIdProperty, app.Id),
+                        new PropertyCondition(AutomationElement.AutomationIdProperty, "ChromeConnectionConfirmation")));
+                return dialog?.FindFirst(TreeScope.Descendants,
+                    new PropertyCondition(AutomationElement.AutomationIdProperty, accept ? "ChromeConnectionConfirm" : "ChromeConnectionCancel"));
+            }, ct).WaitAsync(ct);
+            if (confirm is null)
+                await Task.Delay(40, ct);
+        }
+        await Task.Run(() => ((InvokePattern)confirm.GetCurrentPattern(InvokePattern.Pattern)).Invoke(), ct).WaitAsync(ct);
+        await invocation.WaitAsync(ct);
+        if (!accept)
+            return;
+        // Wait for the actual serialized Host operation, not merely the dialog.
+        while (true)
+        {
+            bool complete = await Task.Run(() => primary.Current.IsEnabled && primary.Current.Name != action, ct).WaitAsync(ct);
+            if (complete)
+                break;
+            await Task.Delay(40, ct);
+        }
+    }
+    private static async Task WaitBrowserConnectionStatusAsync(Process app, string expected, CancellationToken ct)
+    {
+        var window = await FindSettingsAsync(app, ct);
+        while (true)
+        {
+            string? value = await Task.Run(() => window.FindFirst(TreeScope.Descendants,
+                new PropertyCondition(AutomationElement.AutomationIdProperty, "ChromeConnectionStatus"))?.Current.Name, ct).WaitAsync(ct);
+            if (value == expected)
+                return;
+            await Task.Delay(40, ct);
+        }
+    }
+    private static async Task<AutomationElement> SetOnDemandAsync(Process app, string data, CancellationToken ct)
+    {
+        var window = await FindSettingsAsync(app, ct);
         await Task.Run(() =>
         {
             var general = window.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.NameProperty, "⌂  常规"));

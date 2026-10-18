@@ -77,6 +77,7 @@ function Publish-Distribution([bool]$SelfContained) {
     New-Item -ItemType Directory -Force (Join-Path $stage 'browser/chromium') | Out-Null
     Copy-Item 'src/shared/browser/background.js', 'src/shared/browser/content.js' (Join-Path $stage 'browser/chromium')
     Copy-Item 'src/windows/browser/manifest.chromium.json' (Join-Path $stage 'browser/chromium/manifest.json')
+    Copy-Item 'src/windows/browser/connection.chromium.json' (Join-Path $stage 'browser/chromium/connection.json')
     Copy-Item 'docs/platforms/windows/README.md' (Join-Path $stage 'README.md')
     Copy-Item 'THIRD_PARTY_NOTICES.md' $stage
     Invoke-Checked python @('eng/windows/build-launcher.py', '--output', (Join-Path $stage 'TypeLay.exe'))

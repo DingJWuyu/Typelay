@@ -64,6 +64,17 @@ internal sealed class SettingsWindow : Window
     private Border? _preparationCard;
     private StackPanel? _preparationSecondary, _preparationDiagnostics, _preparationDirections;
     private readonly List<Button> _connectionChecks = [];
+    private Action? _refreshBrowserRow;
+    private void RefreshBrowserConnection()
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(RefreshBrowserConnection));
+            return;
+        }
+        if (IsVisible && _page == "apps" && _renderedPage == _page)
+            _refreshBrowserRow?.Invoke();
+    }
     public Func<AutomaticPracticeProgress?>? AutomaticPracticeProgress
     {
         get; set;
@@ -104,6 +115,8 @@ internal sealed class SettingsWindow : Window
         _model = model;
         _openPractice = openPractice;
         _support = support;
+        if (support is not null)
+            support.BrowserChanged += RefreshBrowserConnection;
         _createInstaller = createInstaller ?? (() => new ModelInstaller());
         _installations = installations ?? new ModelInstallationStore(AppPaths.Data, AppPaths.Worker);
         _selectApplication = selectApplication ?? SelectApplication;
@@ -313,6 +326,7 @@ internal sealed class SettingsWindow : Window
             RefreshDraftBar();
             return;
         }
+        _refreshBrowserRow = null;
         _renderedPage = _page;
         _nav.Children.Clear();
         foreach (var (key, title) in new[] { ("general", "⌂  常规"), ("language", "文  语言"), ("shortcuts", "⌨  快捷键"),
@@ -974,6 +988,8 @@ internal sealed class SettingsWindow : Window
     }
     private FrameworkElement SupportRow(ApplicationSupportRow row, ApplicationSupportView view)
     {
+        if (row.Id == "google-chrome")
+            return BrowserSupportRow(view);
         var body = new StackPanel();
         var header = new DockPanel();
         var detailsBody = new StackPanel();
@@ -1032,6 +1048,170 @@ internal sealed class SettingsWindow : Window
         card.BorderThickness = new(0, 0, 0, 1);
         card.Padding = new(0, 14, 0, 14);
         return card;
+    }
+    private FrameworkElement BrowserSupportRow(ApplicationSupportView view)
+    {
+        var body = new StackPanel();
+        var header = new DockPanel();
+        var status = UiTheme.Text("", 12, true);
+        AutomationProperties.SetAutomationId(status, "ChromeConnectionStatus");
+        var summary = UiTheme.Text("", 12, true);
+        summary.Margin = new(0, 8, 0, 0);
+        var explanation = UiTheme.Text("", 12, true);
+        var capabilities = UiTheme.Text("", 12, true);
+        var detailsBody = new StackPanel();
+        detailsBody.Children.Add(explanation);
+        detailsBody.Children.Add(capabilities);
+        var details = new Expander { Header = view.Labels.Details, Content = detailsBody, Margin = new(0, 10, 0, 0) };
+        ApplicationSupportRow Current() => (_support?.Read(_settings.Value) ?? view).Rows.Single(item => item.Id == "google-chrome");
+        var buttons = new Dictionary<ApplicationSupportAction, Button>();
+        async void Run(ApplicationSupportAction action)
+        {
+            if (_support?.Browser is not { } browser || browser.Busy)
+                return;
+            if (action == ApplicationSupportAction.Refresh)
+                await browser.RefreshAsync();
+            else if (action == ApplicationSupportAction.Connect && browser.ExtensionId is { } id)
+            {
+                if (ConfirmBrowserConnection("接入 Chrome", "允许本用户的 Chrome 扩展连接 TypeLay？\n\n扩展 ID：" + id
+                    + "\n本地程序：" + browser.HostPath
+                    + "\n\n这会注册本用户的连接，适用于使用此扩展的 Chrome 配置文件。仍需在 Chrome 中完成扩展安装和权限确认。"))
+                    await browser.ConnectAsync(id);
+            }
+            else if (action == ApplicationSupportAction.Remove && browser.RegisteredOrigin is { } origin)
+            {
+                if (ConfirmBrowserConnection("移除 Chrome 连接", "停止此扩展的 TypeLay 连接并移除本用户注册？\n\n" + origin
+                    + "\n\n扩展本身、浏览器和模型会保留。要再次连接，需要重新确认接入。"))
+                    await browser.RemoveAsync(origin);
+            }
+        }
+        foreach (var action in new[] { ApplicationSupportAction.Connect, ApplicationSupportAction.Remove, ApplicationSupportAction.Refresh })
+        {
+            string label = action switch
+            {
+                ApplicationSupportAction.Connect => "接入",
+                ApplicationSupportAction.Remove => "移除连接",
+                _ => "刷新状态"
+            };
+            var button = UiTheme.Button(label, () => Run(action));
+            AutomationProperties.SetAutomationId(button, "ChromeConnection" + action);
+            button.HorizontalAlignment = HorizontalAlignment.Left;
+            button.Margin = new(0, 8, 8, 0);
+            buttons[action] = button;
+        }
+        var actions = new WrapPanel();
+        foreach (var button in buttons.Values)
+            actions.Children.Add(button);
+        detailsBody.Children.Add(actions);
+        var store = UiTheme.Button("打开 Chrome 网上应用店", () =>
+        {
+            if (_support?.Browser?.StoreUrl is { } url)
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+                }
+                catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception)
+                {
+                    explanation.Text = "无法打开浏览器。请检查默认浏览器设置后重试。";
+                }
+            }
+        });
+        store.HorizontalAlignment = HorizontalAlignment.Left;
+        store.Margin = new(0, 8, 0, 0);
+        detailsBody.Children.Add(store);
+        var primary = UiTheme.Button("", () =>
+        {
+            var browser = _support?.Browser;
+            if (browser?.CanConnect == true)
+                Run(ApplicationSupportAction.Connect);
+            else if (browser?.CanRemove == true)
+                Run(ApplicationSupportAction.Remove);
+            else
+                details.IsExpanded = true;
+        });
+        primary.Margin = new(12, 0, 0, 0);
+        DockPanel.SetDock(primary, Dock.Right);
+        header.Children.Add(primary);
+        var labelPanel = new StackPanel();
+        labelPanel.Children.Add(UiTheme.Text("Google Chrome", 13, bold: true));
+        labelPanel.Children.Add(status);
+        header.Children.Add(labelPanel);
+        body.Children.Add(header);
+        body.Children.Add(summary);
+        body.Children.Add(details);
+        void Update()
+        {
+            var current = Current();
+            var browser = _support?.Browser;
+            bool busy = browser?.Busy == true;
+            status.Text = browser?.MutationUnavailable == true ? "操作结果未确认" : busy ? "正在更新连接…"
+                : browser?.Suspended == true ? "注册仍在，连接已停止"
+                : current.State is ApplicationSupportState.Connected or ApplicationSupportState.Registered or ApplicationSupportState.Error
+                ? current.StatusText : browser?.ExtensionId is null ? "待发布扩展" : current.StatusText;
+            summary.Text = browser?.Suspended == true ? "可重试移除，或确认重新接入。"
+                : current.State == ApplicationSupportState.Connected ? "浏览器已连接，当前输入框的支持情况见详情。"
+                : current.State == ApplicationSupportState.Registered ? "已接入，等待浏览器连接。" : "在详情中查看接入方式。";
+            explanation.Text = current.Details ?? "此发行版尚未配置 Chrome 连接。";
+            capabilities.Text = current.CapabilityText;
+            foreach (var (action, button) in buttons)
+            {
+                bool available = action switch
+                {
+                    ApplicationSupportAction.Connect => browser?.CanConnect == true,
+                    ApplicationSupportAction.Remove => browser?.CanRemove == true,
+                    _ => true
+                };
+                button.Visibility = available ? Visibility.Visible : Visibility.Collapsed;
+                button.IsEnabled = !busy && browser is not null;
+            }
+            primary.Content = browser?.CanConnect == true ? "接入" : browser?.CanRemove == true ? "移除连接" : "查看详情";
+            primary.IsEnabled = !busy;
+            AutomationProperties.SetAutomationId(primary, "ChromeConnectionPrimary");
+            store.Visibility = browser?.StoreUrl is not null ? Visibility.Visible : Visibility.Collapsed;
+        }
+        _refreshBrowserRow = Update;
+        Update();
+        var card = UiTheme.Border(body, 0, "Panel", 0);
+        AutomationProperties.SetAutomationId(card, "ChromeConnection");
+        card.BorderThickness = new(0, 0, 0, 1);
+        card.Padding = new(0, 14, 0, 14);
+        return card;
+    }
+    private bool ConfirmBrowserConnection(string title, string message)
+    {
+        var dialog = new Window
+        {
+            Owner = this,
+            Title = title,
+            Width = 460,
+            SizeToContent = SizeToContent.Height,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ShowInTaskbar = false
+        };
+        AutomationProperties.SetAutomationId(dialog, "ChromeConnectionConfirmation");
+        dialog.SetResourceReference(BackgroundProperty, "Panel");
+        var content = new StackPanel { Margin = new(22) };
+        content.Children.Add(UiTheme.Text(message, 13));
+        var actions = new WrapPanel { HorizontalAlignment = HorizontalAlignment.Right, Margin = new(0, 20, 0, 0) };
+        var cancel = UiTheme.Button("取消", () => dialog.DialogResult = false);
+        AutomationProperties.SetAutomationId(cancel, "ChromeConnectionCancel");
+        cancel.IsCancel = true;
+        cancel.Margin = new(0, 0, 8, 0);
+        var confirm = UiTheme.Button("确认", () => dialog.DialogResult = true);
+        AutomationProperties.SetAutomationId(confirm, "ChromeConnectionConfirm");
+        actions.Children.Add(cancel);
+        actions.Children.Add(confirm);
+        content.Children.Add(actions);
+        dialog.Content = content;
+        dialog.Loaded += (_, _) => cancel.Focus();
+        _closeDialog = dialog;
+        try
+        {
+            return dialog.ShowDialog() == true;
+        }
+        finally { _closeDialog = null; }
     }
     private void Translation()
     {

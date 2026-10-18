@@ -93,7 +93,10 @@ internal static class Program
                 try
                 {
                     if (await session.RetireAutomaticPracticeAsync())
+                    {
+                        await support.CompletePendingAsync();
                         app.Shutdown();
+                    }
                     else
                         tray?.ShowBalloonTip(5000, "TypeLay", "练习尚未确认停止，请关闭练习窗口后再退出。", Forms.ToolTipIcon.Warning);
                 }

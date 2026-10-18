@@ -32,6 +32,7 @@ internal static class WindowsRuntime
         if (support is not null)
             loop.Tick += support.Poll;
         var browser = new BrowserInput(new BrowserServer(overlay.Dispatcher), monitor);
+        support?.BindBrowser(browser);
         var browserView = new BrowserSessionView(browser, () => overlay.LanguageRequested?.Invoke());
         var view = new WindowsSessionView(overlay, browserView);
         var input = new WindowsInputRouter(new WindowsInputService(broker, overlay.Handle, support, monitor, practice), monitor, browser);

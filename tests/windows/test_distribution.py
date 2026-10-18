@@ -134,11 +134,18 @@ class DistributionTests(unittest.TestCase):
             "worker/typelay_worker/catalog.py",
             "worker/model-catalog.json",
             "browser/chromium/manifest.json",
+            "browser/chromium/connection.json",
             "browser/chromium/background.js",
             "browser/chromium/content.js",
         ):
             with self.subTest(path=relative):
                 self.assertTrue((self.home / relative).is_file(), relative)
+        self.assertEqual(
+            json.loads(
+                (self.home / "browser/chromium/connection.json").read_text(encoding="utf-8")
+            ),
+            {"version": 1, "extensionId": None, "storeUrl": None},
+        )
         config = json.loads(
             (self.home / "app/TypeLay.App.runtimeconfig.json").read_text(encoding="utf-8")
         )
@@ -271,6 +278,8 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(manifest.read_bytes(), original)
         command("register", "--extension-id", "p" * 32, expected=2)
         self.assertEqual(manifest.read_bytes(), original)
+        command("unregister", "--extension-id", "p" * 32, expected=2)
+        self.assertEqual(manifest.read_bytes(), original)
         self.assertEqual(
             command("chrome-extension://" + "p" * 32 + "/", "--parent-window=0", expected=2).stdout,
             b"",
@@ -318,7 +327,7 @@ class DistributionTests(unittest.TestCase):
             self.assertEqual(manifest.read_bytes(), foreign_bytes)
             manifest.write_bytes(original)
 
-        command("unregister")
+        command("unregister", "--extension-id", extension)
         self.assertFalse(manifest.exists())
         self.assertEqual(
             json.loads(command("status").stdout), {"registered": False, "origin": None}

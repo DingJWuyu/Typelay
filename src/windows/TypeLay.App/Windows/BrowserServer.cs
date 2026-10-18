@@ -34,6 +34,26 @@ internal sealed class BrowserServer : IDisposable
     private readonly SemaphoreSlim _connections = new(4);
     private readonly string _root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, ".."));
     private Task? _listener;
+    private readonly HashSet<string> _blockedOrigins = new(StringComparer.Ordinal);
+    private long _admissionEpoch;
+    public bool OriginSuspended(string origin) => _blockedOrigins.Contains(origin);
+    public void BlockOrigin(string origin)
+    {
+        _dispatcher.VerifyAccess();
+        _blockedOrigins.Add(origin);
+        _admissionEpoch++;
+    }
+    public void ResumeOrigin(string origin)
+    {
+        _dispatcher.VerifyAccess();
+        _blockedOrigins.Remove(origin);
+        _admissionEpoch++;
+    }
+    public void CloseOrigin(string origin)
+    {
+        foreach (var peer in Peers.Where(peer => peer.Origin == origin))
+            peer.Dispose();
+    }
     internal static readonly JsonSerializerOptions Json = new(Wire.Json)
     {
         Converters = { new JsonStringEnumConverter() }
@@ -88,6 +108,12 @@ internal sealed class BrowserServer : IDisposable
             if (hello is null || hello.Protocol != BrowserHostProtocol.Version || hello.Lifetime == Guid.Empty
                 || !BrowserHostProtocol.IsOrigin(hello.Origin) || !RegistrationMatches(_root, hello.Origin))
                 throw new UnauthorizedAccessException("browser-registration");
+            long admittedEpoch = await _dispatcher.InvokeAsync(() =>
+            {
+                if (_blockedOrigins.Contains(hello.Origin))
+                    throw new UnauthorizedAccessException("browser-revoked");
+                return _admissionEpoch;
+            });
             await Wire.WriteAsync(pipe, new
             {
                 @event = "welcome",
@@ -95,9 +121,13 @@ internal sealed class BrowserServer : IDisposable
             }, deadline.Token).ConfigureAwait(false);
             peer = new BrowserPeer(pipe, host, browser, hello.Origin, _dispatcher, message => Message?.Invoke(message));
             host = browser = null;
-            if (!_peers.TryAdd(peer.ConnectionId, peer))
-                throw new InvalidOperationException("browser-connection");
-            await _dispatcher.InvokeAsync(() => Connected?.Invoke(peer));
+            await _dispatcher.InvokeAsync(() =>
+            {
+                if (admittedEpoch != _admissionEpoch || _blockedOrigins.Contains(peer.Origin)
+                    || !peer.Alive || !_peers.TryAdd(peer.ConnectionId, peer))
+                    throw new UnauthorizedAccessException("browser-revoked");
+                Connected?.Invoke(peer);
+            });
             await peer.RunAsync(_closed.Token).ConfigureAwait(false);
         }
         catch (Exception error) when (error is IOException or InvalidDataException or UnauthorizedAccessException

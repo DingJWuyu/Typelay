@@ -33,9 +33,9 @@ internal static class Program
                 registration.Register(extensionId);
                 Console.WriteLine("Browser host registered for the current user.");
             }
-            else if (args is ["unregister"])
+            else if (args is ["unregister"] or ["unregister", "--extension-id", _])
             {
-                registration.Unregister();
+                registration.Unregister(args.Length == 3 ? args[2] : null);
                 Console.WriteLine("Browser host unregistered for the current user.");
             }
             else if (args is ["status"])
@@ -48,7 +48,7 @@ internal static class Program
                 }, Wire.Json));
             }
             else if (args is ["--help"])
-                Console.WriteLine("TypeLay.BrowserHost.exe register --extension-id <Chrome extension ID> | unregister | status");
+                Console.WriteLine("TypeLay.BrowserHost.exe register --extension-id <Chrome extension ID> | unregister [--extension-id <Chrome extension ID>] | status");
             else
                 throw new ArgumentException("arguments");
             return 0;
