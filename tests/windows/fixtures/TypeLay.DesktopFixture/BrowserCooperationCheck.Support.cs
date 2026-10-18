@@ -389,7 +389,7 @@ internal static partial class BrowserCooperationCheck
         }
         setStage("invoke-primary");
         Task invocation = Task.Run(() => ((InvokePattern)primary.GetCurrentPattern(InvokePattern.Pattern)).Invoke(), ct);
-        AutomationElement? FindConfirmation() => AutomationElement.RootElement.FindFirst(TreeScope.Children,
+        AutomationElement? FindConfirmation() => window.FindFirst(TreeScope.Children,
             new AndCondition(new PropertyCondition(AutomationElement.ProcessIdProperty, app.Id),
                 new PropertyCondition(AutomationElement.AutomationIdProperty, "ChromeConnectionConfirmation")));
         setStage("find-confirmation");
