@@ -724,36 +724,77 @@ def ordered_controls(out, env, children, delay_finished=False):
                         assert state()["first"]["text"] == "Original source"
                         result["same_candidate_renewal_receipt_keeps_original_plan"] = True
 
-                def editor_view():
-                    prepare()
-                    publication = publish()
+                def render_view(publication, state, text, owns_text, revision):
                     target = publication["target"]
                     identity = publication["permit"]["plan"]["expected"]["target"]
                     view = {
-                        "state": "EditingTranslation",
-                        "text": "Exact manual translation",
+                        "state": state,
+                        "text": text,
                         "editable": True,
                         "viewContext": {
                             "token": {
                                 "target": identity,
                                 "commandGeneration": generation,
-                                "revision": 1,
+                                "revision": revision,
                             },
                             "bindings": {"accept": "Ctrl+F7", "exit": "Ctrl+F8"},
                             "canEdit": True,
                         },
-                        "presentation": {"visible": True, "editorOwnsText": True},
+                        "presentation": {"visible": True, "editorOwnsText": owns_text},
                     }
-                    assert native.call(
+                    return native.call(
                         "overlay-render",
                         {
                             "target": target,
                             "authority": publication["authority"],
                             "generation": generation,
-                            "revision": 1,
+                            "revision": revision,
                             "expiresAtMs": now_ms() + 800,
+                            "theme": "light",
                             "view": view,
                         },
+                    )
+
+                prepare()
+                publication = publish()
+                source_before = state()["first"]
+                # Color-only renderer coverage with the real widgets. This
+                # does not wait for or delay the real model's updating phase.
+                for revision, (view_state, text, owned, color) in enumerate(
+                    (
+                        ("Translating", "", False, "#171a21"),
+                        ("Translating", "Previous translation", False, "#6c7482"),
+                        ("ValidTranslation", "Fresh translation", False, "#171a21"),
+                        ("TranslationFailed", "Fresh translation", False, "#171a21"),
+                        ("EditingTranslation", "Human draft", True, "#171a21"),
+                        ("ReturningToSource", "Human draft", True, "#171a21"),
+                        ("EditedTranslationPending", "Human draft", False, "#171a21"),
+                        ("Translating", "Human draft", False, "#6c7482"),
+                        ("Translating", "Human draft", True, "#171a21"),
+                        ("ValidTranslation", "Refreshed translation", False, "#171a21"),
+                    ),
+                    start=1,
+                ):
+                    assert render_view(publication, view_state, text, owned, revision)["visible"]
+                    actual = wait(
+                        lambda: value
+                        if (value := state()).get("editorVisible")
+                        and value["editorText"] == text
+                        and value["editorPalette"]["text"] == color
+                        else None,
+                        f"{view_state} retained translation color (editor owns text: {owned})",
+                    )
+                    assert actual["first"] == source_before
+                    assert not actual["editorFocused"]
+                native.call("overlay-hide")
+                result["updating_translation_muted_and_manual_states_normal"] = True
+
+                def editor_view():
+                    prepare()
+                    publication = publish()
+                    target = publication["target"]
+                    assert render_view(
+                        publication, "EditingTranslation", "Exact manual translation", True, 1
                     )["editing"]
                     assert native.call(
                         "overlay-resume",

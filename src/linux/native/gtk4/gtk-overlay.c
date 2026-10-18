@@ -356,7 +356,7 @@ static GtkWidget *button(GtkWidget *box, const char *label, const char *operatio
     gtk_box_append(GTK_BOX(box), widget);
     return widget;
 }
-static void theme(const char *choice) {
+static void theme(const char *choice, gboolean stale_preview) {
     gboolean dark = FALSE;
     char *name = NULL;
     g_object_get(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", &dark, "gtk-theme-name", &name, NULL);
@@ -379,7 +379,7 @@ static void theme(const char *choice) {
         "#typelay-overlay #typelay-candidate.editable-preview:hover { border-color: %s; }"
         "#typelay-overlay #typelay-candidate:focus { border-color: %s; }"
         "#typelay-overlay #typelay-header .pending { color: %s; }",
-        bg, fg, border, muted, line, muted, muted, hover, fg, bg, fg, line, accent,
+        bg, fg, border, muted, line, muted, muted, hover, fg, bg, stale_preview ? muted : fg, line, accent,
         dark ? "#f2bb8d" : "#99511f");
 #if GTK_CHECK_VERSION(4, 12, 0)
     gtk_css_provider_load_from_string(overlay.css, css);
@@ -590,7 +590,9 @@ static gboolean render(Target *target, JsonObject *data) {
     if (editable_preview) gtk_widget_add_css_class(overlay.text, "editable-preview");
     else gtk_widget_remove_css_class(overlay.text, "editable-preview");
     gtk_widget_set_tooltip_text(overlay.text, editable_preview ? "点击译文编辑" : NULL);
-    theme(text_or_empty(data, "theme"));
+    gboolean stale_preview = g_strcmp0(state, "Translating") == 0
+        && *text_or_empty(value, "text") && !boolean(presentation, "editorOwnsText");
+    theme(text_or_empty(data, "theme"), stale_preview);
     gboolean capsule = is_paused || g_strcmp0(tl_string(value, "state"), "IdleCapsule") == 0;
     gint width = capsule ? 160 : CLAMP(gtk_widget_get_width(target->widget), 390, 520);
     width = MIN(width, MAX(160, gtk_widget_get_width(top) - 48));

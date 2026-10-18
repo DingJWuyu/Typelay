@@ -1277,6 +1277,7 @@ def run_qt(
                 assert state()["editorUndoRedoEnabled"], (
                     "actual Qt editor disabled native undo/redo"
                 )
+                assert state()["editorPalette"]["text"] in ("#171a21", "#e8ebf2")
                 switch_im("keyboard-us")
                 # Synthetic Chinese is inserted through the owned fixture's
                 # real QPlainTextEdit API; this is not physical IME evidence.
@@ -1373,10 +1374,15 @@ def run_qt(
                 )
                 assert state()["first"]["text"] == editing_source
                 before_return = trace_checkpoint()
+                editor_color = state()["editorPalette"]["text"]
+                assert editor_color in ("#171a21", "#e8ebf2")
                 send_tab()
                 wait_for(
                     lambda: state()["first"]["focused"]
-                    and ready_to_accept("EditedTranslationPending"),
+                    and ready_to_accept("EditedTranslationPending")
+                    and state()["editorReadOnly"]
+                    and state()["editorText"] == draft
+                    and state()["editorPalette"]["text"] == editor_color,
                     "first Qt editor Tab did not return with a fresh draft acceptance permit",
                 )
                 assert state()["first"]["text"] == editing_source

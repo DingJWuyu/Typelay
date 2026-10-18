@@ -381,7 +381,7 @@ static void style(GtkWidget *widget, gpointer provider) {
         GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
     if (GTK_IS_CONTAINER(widget)) gtk_container_forall(GTK_CONTAINER(widget), style, provider);
 }
-static void theme(const char *choice) {
+static void theme(const char *choice, gboolean stale_preview) {
     gboolean dark = FALSE;
     char *name = NULL;
     g_object_get(gtk_settings_get_default(), "gtk-application-prefer-dark-theme", &dark, "gtk-theme-name", &name, NULL);
@@ -405,7 +405,7 @@ static void theme(const char *choice) {
         "#typelay-overlay #typelay-candidate > text { border: 1px solid transparent; border-radius: 7px; }"
         "#typelay-overlay #typelay-candidate:focus > text { border-color: %s; }"
         "#typelay-overlay #typelay-header .pending { color: %s; }",
-        bg, fg, border, muted, line, muted, muted, hover, fg, bg, fg, accent,
+        bg, fg, border, muted, line, muted, muted, hover, fg, bg, stale_preview ? muted : fg, accent,
         dark ? "#f2bb8d" : "#99511f");
     gtk_css_provider_load_from_data(overlay.css, css, -1, NULL);
     g_free(css);
@@ -602,7 +602,9 @@ static gboolean render(Target *target, JsonObject *data) {
         && boolean(tl_object(value, "viewContext"), "canEdit")
         && (g_strcmp0(state, "ValidTranslation") == 0 || g_strcmp0(state, "EditedTranslationPending") == 0);
     gtk_widget_set_tooltip_text(overlay.text, editable_preview ? "点击译文编辑" : NULL);
-    theme(text_or_empty(data, "theme"));
+    gboolean stale_preview = g_strcmp0(state, "Translating") == 0
+        && *text_or_empty(value, "text") && !boolean(presentation, "editorOwnsText");
+    theme(text_or_empty(data, "theme"), stale_preview);
     gboolean capsule = is_paused || g_strcmp0(tl_string(value, "state"), "IdleCapsule") == 0;
     gint width = capsule ? 160 : CLAMP(gtk_widget_get_allocated_width(target->widget), 390, 520);
     width = MIN(width, MAX(160, gtk_widget_get_allocated_width(top) - 48));

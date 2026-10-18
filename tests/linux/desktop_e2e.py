@@ -1655,18 +1655,33 @@ def run(arguments):
                             evidence.append(
                                 "Relocated private Fcitx: existing-owner refusal, real Configure script, foreground Restart and original session bus"
                             )
-                        fixture = subprocess.Popen(
-                            (
-                                [
-                                    sys.executable,
-                                    str(bundle_launcher),
-                                    "launch",
-                                    *(["--gtk4"] if gtk4 else []),
-                                ]
-                                if bundled
-                                else []
+                        fixture_command = (
+                            [
+                                sys.executable,
+                                str(bundle_launcher),
+                                "launch",
+                                *(["--gtk4"] if gtk4 else []),
+                            ]
+                            if bundled
+                            else []
+                        ) + [str(arguments.native / ("gtk4-fixture" if gtk4 else "gtk-fixture"))]
+                        from gtk_session_reentry import run_case
+
+                        with tempfile.TemporaryDirectory(prefix="tl-gtk-preview-") as directory:
+                            # Reuse only the real Fcitx setup and its render-only branch.
+                            run_case(
+                                fixture_command,
+                                gtk_environment,
+                                arguments.output,
+                                None,
+                                Path(directory),
+                                "preview-colors",
+                                False,
+                                nested[0],
                             )
-                            + [str(arguments.native / ("gtk4-fixture" if gtk4 else "gtk-fixture"))],
+                        evidence.append("GTK renderer: only nonempty updating previews are muted")
+                        fixture = subprocess.Popen(
+                            fixture_command,
                             env=gtk_environment,
                             stdout=sys.stdout,
                             stderr=sys.stderr,
@@ -2438,7 +2453,8 @@ def run(arguments):
                             actual = wait_for(
                                 lambda: value
                                 if (value := gtk_state()).get("fullscreen")
-                                and value.get("candidate")
+                                and (value.get("candidate") or {}).get("foreground")
+                                in ("rgb(34,35,39)", "rgb(244,244,246)")
                                 else None,
                                 "fullscreen GTK candidate did not expose real widget geometry",
                             )
@@ -2454,6 +2470,7 @@ def run(arguments):
                             assert actual["width"] * scale == int(geometry["WIDTH"])
                             assert actual["height"] * scale == int(geometry["HEIGHT"])
                             candidate = actual["candidate"]
+                            normal_foreground = candidate["foreground"]
                             x = candidate["x"] + candidate["width"] // 2
                             y = candidate["y"] + candidate["height"] // 2
                             assert 0 <= x < actual["width"] and 0 <= y < actual["height"]
@@ -2494,6 +2511,7 @@ def run(arguments):
                             )
                             if gtk4:
                                 assert not edited["candidate"]["editablePreview"]
+                            assert edited["candidate"]["foreground"] == normal_foreground
                             assert edited["first"] == editing_source
                             if exit_editor:
                                 before_exit = trace_checkpoint()
@@ -2546,6 +2564,7 @@ def run(arguments):
                                     and ready_to_accept("EditedTranslationPending"),
                                     f"first editor {accept_key} did not return with the draft awaiting acceptance",
                                 )
+                                assert gtk_state()["candidate"]["foreground"] == normal_foreground
                                 assert gtk_state()["first"] == editing_source
                                 assert not new_write_outcomes(before_return), (
                                     f"first editor {accept_key} performed a write"

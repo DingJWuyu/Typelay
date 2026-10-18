@@ -1795,6 +1795,58 @@ class BrowserContract(unittest.TestCase):
                     # Capture the actual opaque surfaces before any hover. AX and
                     # pointer geometry work through the real closed shadow root.
                     self.page.screenshot(path=output / f"{theme}-{width}-preview.png", clip=bounds)
+                    if theme == "light" and width == 320:
+                        editor_object = self.overlay_control("TypeLay 译文", "textbox")
+                        original_text = view["text"]
+                        # Exercise the existing renderer directly; no model delay
+                        # or transient host-state polling is needed for colors.
+                        for revision, (state, text, owned, color) in enumerate(
+                            (
+                                ("Translating", "", False, "rgb(37, 42, 49)"),
+                                ("Translating", original_text, False, "rgb(102, 107, 117)"),
+                                ("ValidTranslation", "Fresh translation", False, "rgb(37, 42, 49)"),
+                                (
+                                    "TranslationFailed",
+                                    "Fresh translation",
+                                    False,
+                                    "rgb(37, 42, 49)",
+                                ),
+                                ("EditingTranslation", "Human draft", True, "rgb(37, 42, 49)"),
+                                ("ReturningToSource", "Human draft", True, "rgb(37, 42, 49)"),
+                                (
+                                    "EditedTranslationPending",
+                                    "Human draft",
+                                    False,
+                                    "rgb(37, 42, 49)",
+                                ),
+                                ("Translating", "Human draft", False, "rgb(102, 107, 117)"),
+                                ("Translating", "Human draft", True, "rgb(37, 42, 49)"),
+                                ("ValidTranslation", original_text, False, "rgb(37, 42, 49)"),
+                            ),
+                            start=2,
+                        ):
+                            view.update(state=state, text=text)
+                            view["status"] = (
+                                "更新中" if state == "Translating" and text else "译文就绪"
+                            )
+                            view["presentation"]["editorOwnsText"] = owned
+                            data["revision"] = revision
+                            self.assertTrue(self.command("overlay-render", data)["visible"])
+                            self.assertEqual(
+                                self.overlay_dom(
+                                    editor_object,
+                                    "function() { return [this.value, getComputedStyle(this).color]; }",
+                                ),
+                                [text, color],
+                                (state, owned),
+                            )
+                            self.assertEqual(
+                                self.page.evaluate("document.activeElement.id"), "source"
+                            )
+                            if revision == 3:
+                                self.page.screenshot(
+                                    path=output / "updating-preview.png", clip=bounds
+                                )
                     edit_requests = self.page.evaluate("""fixtureMessages.filter(message =>
                       message.event === 'ui' && message.data.operation === 'beginEdit').length""")
                     self.page.mouse.click(
@@ -1809,7 +1861,7 @@ class BrowserContract(unittest.TestCase):
                     self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
                     view["presentation"]["editorOwnsText"] = True
                     view["state"] = "EditingTranslation"
-                    data["revision"] = 2
+                    data["revision"] += 1
                     self.assertTrue(self.command("overlay-render", data)["visible"])
                     self.command("overlay-edit", {"target": snapshot["target"], "allowed": True})
                     self.page.keyboard.press("Control+A")
@@ -2331,11 +2383,15 @@ class BrowserContract(unittest.TestCase):
             "中文人工草稿，保留选区与原生撤销。" * 20 if accept == "Tab" else "Human draft"
         )
         self.page.keyboard.insert_text(human_draft)
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        self.assertEqual(
+            self.overlay_dom(editor, "function() { return getComputedStyle(this).color; }"),
+            "rgb(37, 42, 49)",
+        )
         if accept == "Tab":
             # Reuse the existing two-stage return case for motion, Chinese
             # selection and Chromium's actual textarea undo/redo stack.
             self.page.keyboard.press("Shift+ArrowLeft")
-            editor = self.overlay_control("TypeLay 译文", "textbox")
             selection = self.overlay_dom(
                 editor, "function() { return [this.selectionStart, this.selectionEnd]; }"
             )
@@ -2392,6 +2448,12 @@ class BrowserContract(unittest.TestCase):
                     "authority": description["authority"],
                 },
             )["returned"]
+        )
+        self.assertEqual(
+            self.overlay_dom(
+                editor, "function() { return [this.value, getComputedStyle(this).color]; }"
+            ),
+            [draft, "rgb(37, 42, 49)"],
         )
         returned = self.capture()
         self.assertEqual(returned["selection"], snapshot["selection"])

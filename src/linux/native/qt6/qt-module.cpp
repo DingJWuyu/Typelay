@@ -1481,6 +1481,10 @@ private:
         const auto foreground = dark ? QStringLiteral("#e8ebf2") : QStringLiteral("#171a21");
         const auto border = dark ? QStringLiteral("#48515e") : QStringLiteral("#dfe3eb");
         const auto muted = dark ? QStringLiteral("#aeb7c4") : QStringLiteral("#6c7482");
+        const bool stale = overlayView_.value("state").toString() == QStringLiteral("Translating")
+            && !overlayView_.value("text").toString().isEmpty()
+            && !overlayView_.value("presentation").toObject().value("editorOwnsText").toBool();
+        const auto editorForeground = stale ? muted : foreground;
         const auto hover = dark ? QStringLiteral("#303741") : QStringLiteral("#f1f3f6");
         const auto accent = dark ? QStringLiteral("#83a7ff") : QStringLiteral("#3267e3");
         const auto editorBorder = editor_ && !editor_->isReadOnly() ? accent : QStringLiteral("transparent");
@@ -1495,9 +1499,9 @@ private:
             "QFrame#typelay-overlay QPushButton:hover { color:%2; background-color:%5; }"
             "QFrame#typelay-overlay QPushButton:pressed { color:%2; background-color:%5; }"
             "QFrame#typelay-overlay QWidget#typelay-footer, QFrame#typelay-overlay QWidget#typelay-menu { border-top:1px solid %3; }"
-            "QFrame#typelay-overlay QPlainTextEdit#typelay-editor { background:%1; color:%2; border:1px solid %7;"
+            "QFrame#typelay-overlay QPlainTextEdit#typelay-editor { background:%1; color:%8; border:1px solid %7;"
             " border-radius:6px; padding:4px; font-size:15px; selection-background-color:%6; selection-color:%1; }")
-            .arg(background, foreground, border, muted, hover, accent, editorBorder);
+            .arg(background, foreground, border, muted, hover, accent, editorBorder, editorForeground);
         if (editor_ && editor_->isReadOnly() && overlayView_.value("editable").toBool()
             && overlayView_.value("viewContext").toObject().value("canEdit").toBool())
             style += QStringLiteral("QFrame#typelay-overlay QPlainTextEdit#typelay-editor:hover { border-color:%1; }").arg(border);

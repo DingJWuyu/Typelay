@@ -846,6 +846,7 @@
         textarea{box-sizing:border-box;display:block;resize:none;width:calc(100% - 16px);margin:0 8px;
           min-height:64px;max-height:160px;border:1px solid transparent;border-radius:6px;padding:6px;
           outline:none;font:15px/1.58 system-ui;background:transparent;color:var(--ink)}
+        textarea.stale{color:var(--muted)}
         textarea[data-editable=true]:read-only:hover,textarea[data-editable=true]:read-only:focus-visible{background:var(--hover)}
         textarea:not(:read-only){border-color:var(--accent)}
         textarea:focus-visible{border-color:var(--accent)}
@@ -1000,6 +1001,8 @@
     overlay.renewed = data.expiresAtMs - 800;
     overlay.editable = !paused && editorConfigured(field) && view.editable && view.viewContext?.canEdit === true;
     overlay.editor.dataset.editable = String(!!overlay.editable);
+    overlay.editor.classList.toggle("stale", view.state === "Translating" && !!view.text
+      && !view.presentation.editorOwnsText);
     overlay.editor.title = overlay.editable
       ? view.presentation.editorOwnsText ? "编辑译文" : "点击译文以编辑" : "";
     overlay.host.style.colorScheme = ["light", "dark"].includes(data.theme) ? data.theme : "light dark";

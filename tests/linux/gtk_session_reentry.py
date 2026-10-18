@@ -238,6 +238,13 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                     "editorReady": False,
                 }
                 assert source["authority"]["sessionBindings"] == source["sessionBindings"]
+                if stage == "preview-colors":
+                    check_preview_colors(client, source, generation, state, initial)
+                    print(
+                        "GTK preview colors: current text and manual drafts retain normal contrast",
+                        flush=True,
+                    )
+                    return
                 if stage == "footer":
                     check_footer(client, source, generation, runtime, state, initial)
                     print(f"{name}: real footer notify hid the overlay safely", flush=True)
@@ -483,6 +490,9 @@ def render_preview(
     view_state="ValidTranslation",
     can_edit=False,
     evidence=None,
+    text="Read-only fixture preview.",
+    theme="system",
+    editor_owns_text=None,
 ):
     expires = now_ms() + 800
     if evidence is not None:
@@ -495,17 +505,19 @@ def render_preview(
             "generation": generation,
             "revision": revision,
             "expiresAtMs": expires,
-            "theme": "system",
+            "theme": theme,
             "view": {
                 "state": view_state,
                 "editable": can_edit,
-                "text": "Read-only fixture preview.",
+                "text": text,
                 "status": "fixture preview",
                 "sourceLanguage": "en",
                 "targetLanguage": "zh",
                 "presentation": {
                     "visible": True,
-                    "editorOwnsText": view_state in ("EditingTranslation", "ReturningToSource"),
+                    "editorOwnsText": editor_owns_text
+                    if editor_owns_text is not None
+                    else view_state in ("EditingTranslation", "ReturningToSource"),
                     "tabHint": "fixture read-only preview",
                     "dot": "Yellow",
                 },
@@ -535,6 +547,46 @@ def render_preview(
         evidence["renderReturnedAtMs"] = now_ms()
         evidence["renderReturnedAtMonoMs"] = time.monotonic_ns() // 1_000_000
     return result
+
+
+def check_preview_colors(client, source, generation, state, initial):
+    # DTO-to-widget rendering only. Actual editing/return remains in desktop_e2e.
+    normal, muted = "rgb(34,35,39)", "rgb(102,103,113)"
+    for revision, (view_state, text, owns_text, foreground) in enumerate(
+        (
+            ("ValidTranslation", "Existing translation.", False, normal),
+            ("Translating", "Existing translation.", False, muted),
+            ("ValidTranslation", "Updated translation.", False, normal),
+            ("Translating", "", False, normal),
+            ("Translating", "Manual draft.", True, normal),
+            ("EditingTranslation", "Manual draft.", True, normal),
+            ("ReturningToSource", "Manual draft.", True, normal),
+            ("EditedTranslationPending", "Manual draft.", False, normal),
+        ),
+        1,
+    ):
+        assert render_preview(
+            client,
+            source,
+            generation,
+            revision,
+            "fixture exit",
+            view_state=view_state,
+            text=text,
+            theme="light",
+            editor_owns_text=owns_text,
+        )["visible"]
+        rendered_at = time.monotonic_ns() // 1_000_000
+        actual = wait_for(
+            lambda: (value := state()).get("observedAtMs", 0) > rendered_at
+            and value.get("candidate")
+            and value["candidate"]["text"] == text
+            and value,
+            f"{view_state}: actual candidate was not observed after rendering",
+        )
+        assert actual["candidate"]["foreground"] == foreground, (view_state, actual["candidate"])
+        assert actual["focus"] == "fixture-first"
+        assert actual["first"] == initial["first"] and actual["second"] == initial["second"]
 
 
 def check_footer(client, source, generation, runtime, state, initial):

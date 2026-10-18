@@ -210,6 +210,12 @@ static gboolean report_state(gpointer unused) {
             json_builder_add_int_value(builder, gtk_widget_get_allocated_width(candidate));
             json_builder_set_member_name(builder, "height");
             json_builder_add_int_value(builder, gtk_widget_get_allocated_height(candidate));
+            GdkRGBA foreground;
+            gtk_style_context_get_color(gtk_widget_get_style_context(candidate),
+                gtk_widget_get_state_flags(candidate), &foreground);
+            char *color = gdk_rgba_to_string(&foreground);
+            json_builder_set_member_name(builder, "foreground"); json_builder_add_string_value(builder, color);
+            g_free(color);
             GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(candidate));
             GtkTextIter first, last;
             gtk_text_buffer_get_bounds(buffer, &first, &last);

@@ -241,6 +241,15 @@ static gboolean report_state(gpointer unused) {
             json_builder_add_int_value(builder, gtk_widget_get_height(candidate));
             json_builder_set_member_name(builder, "editablePreview");
             json_builder_add_boolean_value(builder, gtk_widget_has_css_class(candidate, "editable-preview"));
+            GdkRGBA foreground;
+#if GTK_CHECK_VERSION(4, 10, 0)
+            gtk_widget_get_color(candidate, &foreground);
+#else
+            gtk_style_context_get_color(gtk_widget_get_style_context(candidate), &foreground);
+#endif
+            char *color = gdk_rgba_to_string(&foreground);
+            json_builder_set_member_name(builder, "foreground"); json_builder_add_string_value(builder, color);
+            g_free(color);
             GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(candidate));
             GtkTextIter first, last;
             gtk_text_buffer_get_bounds(buffer, &first, &last);
