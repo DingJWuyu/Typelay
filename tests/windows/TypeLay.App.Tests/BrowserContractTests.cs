@@ -149,6 +149,140 @@ public sealed class BrowserContractTests
         Assert.False(BrowserInput.SameAuthority(original, Authority(token: "invalid")));
         Assert.False(BrowserInput.SameAuthority(original, default));
     }
+    [Fact(Timeout = 5000)]
+    public async Task BrowserPolicyRefreshContinuesWhileThePreviousBodyReplyIsPending()
+    {
+        // These are transport completion barriers, not page approval or clock
+        // proofs. The production coordinator must never await the body barrier.
+        var refresh = new BrowserPolicyRefresh();
+        var description = new TaskCompletionSource<BrowserReply?>();
+        var acknowledgement = new TaskCompletionSource();
+        var body = new TaskCompletionSource();
+        var first = new BrowserReply(Authority(), Route);
+        BrowserReply? firstApproval = null, secondApproval = null;
+        int descriptions = 0, approvals = 0;
+        Task<BrowserReply?> Describe()
+        {
+            descriptions++;
+            return description.Task;
+        }
+        Task Approve(BrowserReply reply)
+        {
+            firstApproval = reply;
+            approvals++;
+            return acknowledgement.Task;
+        }
+        var round = refresh.Poll(100, Describe, Approve);
+        var capturedDescription = refresh.CaptureAsync();
+        description.SetResult(first);
+        Assert.Same(first, await capturedDescription);
+        async Task ReadBody()
+        {
+            await capturedDescription;
+            await body.Task;
+        }
+        var reading = ReadBody();
+        Assert.False(reading.IsCompleted);
+        Assert.Same(round, refresh.Poll(300, Describe, Approve));
+        Assert.Equal(1, descriptions); // An ACK timeout has not been reported yet.
+        Assert.Equal(1, approvals);
+        Assert.Same(first, firstApproval);
+        acknowledgement.SetResult();
+        await round;
+        var nextDescription = new TaskCompletionSource<BrowserReply?>();
+        var nextAck = new TaskCompletionSource();
+        var next = new BrowserReply(Authority(observed: 300), Route);
+        var nextRound = refresh.Poll(300, () =>
+        {
+            descriptions++;
+            return nextDescription.Task;
+        }, reply =>
+        {
+            secondApproval = reply;
+            approvals++;
+            return nextAck.Task;
+        });
+        nextDescription.SetResult(next);
+        Assert.Same(next, await refresh.CaptureAsync());
+        Assert.Equal(2, descriptions);
+        Assert.Equal(2, approvals);
+        Assert.Same(next, secondApproval);
+        Assert.False(reading.IsCompleted); // The scheduler clock advanced by 200ms.
+        nextAck.SetResult();
+        await nextRound;
+        body.SetResult();
+        await reading;
+    }
+
+    [Fact(Timeout = 5000)]
+    public async Task BrowserPolicyRefreshSharesEachDescriptionWithOnlyOneBodyRead()
+    {
+        var refresh = new BrowserPolicyRefresh();
+        var description = new TaskCompletionSource<BrowserReply?>();
+        var acknowledgement = new TaskCompletionSource();
+        var first = new BrowserReply(Authority(), Route);
+        var round = refresh.Poll(100, () => description.Task, _ => acknowledgement.Task);
+        var capture = refresh.CaptureAsync();
+        var nextCapture = refresh.CaptureAsync();
+        Assert.Null(await refresh.CaptureAsync()); // No unbounded queue or shared second body.
+        description.SetResult(first);
+        Assert.Same(first, await capture);
+        Assert.False(nextCapture.IsCompleted);
+        acknowledgement.SetResult();
+        await round;
+        bool described = false;
+        Task<BrowserReply?> Describe()
+        {
+            described = true;
+            return Task.FromResult<BrowserReply?>(new(Authority(observed: 135), Route));
+        }
+        await refresh.Poll(134, Describe, _ => Task.CompletedTask);
+        Assert.False(described);
+        await refresh.Poll(135, Describe, _ => Task.CompletedTask);
+        var next = await nextCapture;
+        Assert.True(described);
+        Assert.NotNull(next);
+        Assert.NotSame(first, next);
+        Assert.Equal(135, next.Data.GetProperty("observedAtMs").GetInt64());
+    }
+
+    [Fact(Timeout = 5000)]
+    public async Task BrowserPolicyRefreshRejectsLateDescriptionsAndWaitsForTheOldAck()
+    {
+        var refresh = new BrowserPolicyRefresh();
+        var description = new TaskCompletionSource<BrowserReply?>();
+        bool approved = false;
+        var round = refresh.Poll(100, () => description.Task, _ =>
+        {
+            approved = true;
+            return Task.CompletedTask;
+        });
+        var capture = refresh.CaptureAsync();
+        refresh.Invalidate();
+        Assert.Null(await capture);
+        description.SetResult(new(Authority(), Route));
+        await round;
+        Assert.False(approved);
+
+        var ack = new TaskCompletionSource();
+        var second = refresh.Poll(135, () => Task.FromResult<BrowserReply?>(new(Authority(), Route)), _ => ack.Task);
+        refresh.Invalidate();
+        bool nextStarted = false;
+        Assert.Same(second, refresh.Poll(300, () =>
+        {
+            nextStarted = true;
+            return Task.FromResult<BrowserReply?>(null);
+        }, _ => Task.CompletedTask));
+        Assert.False(nextStarted);
+        ack.SetResult(); // Includes RequestAsync returning null after its bounded timeout.
+        await second;
+        await refresh.Poll(300, () =>
+        {
+            nextStarted = true;
+            return Task.FromResult<BrowserReply?>(null);
+        }, _ => Task.CompletedTask);
+        Assert.True(nextStarted);
+    }
     [Fact]
     public void ContinuousCapturesKeepTheirOwnExactObservationAndRetireOnlyTheOldestArrival()
     {

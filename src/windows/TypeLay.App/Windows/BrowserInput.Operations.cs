@@ -5,6 +5,76 @@ using TypeLay.Windows;
 
 namespace TypeLay.App;
 
+// Coordinates only outstanding RPCs. Field approval, identity, and the original
+// authority deadline remain BrowserInput's responsibility. No completed round
+// is a cache, and a body reply is never a prerequisite for the next round.
+internal sealed class BrowserPolicyRefresh
+{
+    private sealed class Cycle(TaskCompletionSource<BrowserReply?> description, bool claimed)
+    {
+        public TaskCompletionSource<BrowserReply?> Description { get; } = description;
+        public Task Completion = Task.CompletedTask;
+        public bool Claimed = claimed, Invalid;
+    }
+    private Cycle? _cycle;
+    private TaskCompletionSource<BrowserReply?>? _capture;
+    private long _nextStart;
+    private static TaskCompletionSource<BrowserReply?> Completion() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public Task Poll(long now, Func<Task<BrowserReply?>> describe, Func<BrowserReply, Task> approve)
+    {
+        if (_cycle is { Completion.IsCompleted: false } || now < _nextStart)
+            return _cycle?.Completion ?? Task.CompletedTask;
+        _nextStart = now + 35; // Same minimum interval as ordinary Runtime observation.
+        var cycle = new Cycle(_capture ?? Completion(), _capture is not null);
+        _capture = null;
+        _cycle = cycle;
+        cycle.Completion = Run(cycle, describe, approve);
+        return cycle.Completion;
+    }
+    private static async Task Run(Cycle cycle, Func<Task<BrowserReply?>> describe, Func<BrowserReply, Task> approve)
+    {
+        try
+        {
+            var reply = await describe();
+            if (cycle.Invalid || reply is null)
+                return;
+            // Enqueue the sole approval before waking the body consumer, but do
+            // not make that consumer await the policy ACK.
+            Task acknowledgement = approve(reply);
+            cycle.Description.TrySetResult(reply);
+            await acknowledgement;
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { }
+        finally { cycle.Description.TrySetResult(null); }
+    }
+    public Task<BrowserReply?> CaptureAsync()
+    {
+        if (_cycle is { Invalid: false, Claimed: false, Completion.IsCompleted: false } cycle)
+        {
+            cycle.Claimed = true;
+            return cycle.Description.Task;
+        }
+        // Runtime has one outstanding body capture. Bound even an accidental
+        // second caller instead of letting two bodies consume one description.
+        if (_capture is not null)
+            return Task.FromResult<BrowserReply?>(null);
+        _capture = Completion();
+        return _capture.Task;
+    }
+    public void Invalidate()
+    {
+        if (_cycle is { } cycle)
+        {
+            cycle.Invalid = true;
+            cycle.Description.TrySetResult(null);
+        }
+        _capture?.TrySetResult(null);
+        _capture = null;
+        // RequestAsync timeout/disposal is the terminal RPC event. Invalidation
+        // cannot cancel a command already queued to the page or bypass its ACK.
+    }
+}
+
 internal sealed partial class BrowserInput
 {
     private sealed record Issued(BrowserObservation Observation, InputLease Lease, AcceptancePermit Permit, long Deadline);
@@ -72,13 +142,16 @@ internal sealed partial class BrowserInput
         }
         TraceObservation(ObservationStage.Shortcut, ObservationReason.Ready);
     }
-    private sealed class CommandOwner(BrowserPeer peer, BrowserRoute route, nint root, long windowEpoch, Guid generation, long startedAt)
+    private sealed class CommandOwner(BrowserPeer peer, BrowserRoute route, nint root, long windowEpoch, Guid generation, long startedAt, string[] excluded)
     {
         public BrowserPeer Peer { get; } = peer;
         public BrowserRoute Route { get; } = route;
         public nint Root { get; } = root;
         public long WindowEpoch { get; } = windowEpoch;
         public Guid Generation { get; } = generation;
+        public string[] Excluded { get; } = excluded.ToArray();
+        public BrowserPolicyRefresh PolicyRefresh { get; } = new();
+        public long FocusRevision;
         public string Id { get; } = Guid.NewGuid().ToString();
         public long EstablishUntil { get; } = startedAt + 200;
         public long MaxIssuedExpiry, GrantSequence, PendingGrant, LastGrantAt, LastCommandId;
@@ -172,6 +245,7 @@ internal sealed partial class BrowserInput
             return;
         owner.RetiredAt = WindowsInterruptClock.NowMs;
         owner.Active = false;
+        owner.PolicyRefresh.Invalidate();
         owner.ReadyPolicy = owner.PendingPolicy = null;
         _commandOwner = null;
         _retiredCommandOwners.Add(owner);
@@ -221,8 +295,12 @@ internal sealed partial class BrowserInput
             else if (current.Active && current.PendingGrant == 0 && now - current.LastGrantAt >= 200)
                 SendOwnerGrant(current, false, now);
         }
-        if (_commandOwner is not null)
+        if (_commandOwner is { } activeOwner)
+        {
+            if (activeOwner.Active && !_editorFocused && _editorTransition is null)
+                PollCommandPolicy(activeOwner, now);
             return;
+        }
         bool safelyRetired = _retiredCommandOwners.All(owner => owner.RetirementAcknowledged || now > owner.MaxIssuedExpiry);
         if (!safelyRetired)
         {
@@ -248,7 +326,7 @@ internal sealed partial class BrowserInput
             if (peer is not null && _active.TryGetValue(peer.ConnectionId, out var route))
             {
                 _ownerRefreshRequested = false;
-                var owner = new CommandOwner(peer, route, ForegroundRoot(), _hook.WindowEpoch, _hook.CommandGeneration, now);
+                var owner = new CommandOwner(peer, route, ForegroundRoot(), _hook.WindowEpoch, _hook.CommandGeneration, now, _commandExcluded!);
                 owner.Wake = _wake;
                 owner.Direct = _direct;
                 _commandOwner = owner;
@@ -300,7 +378,7 @@ internal sealed partial class BrowserInput
             reason = OwnerReason.WakeMismatch;
         else if (!CommandKeyMatches(reply.Data, "direct", _direct))
             reason = OwnerReason.DirectMismatch;
-        else if (!Approved(owner.Peer, reply, _commandExcluded!, out _, out _, out _, out _, ObservationStage.OwnerPrepare))
+        else if (!Approved(owner.Peer, reply, owner.Excluded, out _, out _, out _, out _, ObservationStage.OwnerPrepare))
             reason = OwnerReason.ApprovalRejected;
         else if (!Boolean(reply.Data, "focused"))
             reason = OwnerReason.SourceNotFocused;
@@ -366,7 +444,7 @@ internal sealed partial class BrowserInput
             TraceOwner(OwnerStage.Activate, OwnerReason.KeysHeld, owner, now, released);
             return;
         }
-        owner.PendingPolicy = new(target, authority, _commandExcluded!.ToArray(), expiry);
+        owner.PendingPolicy = new(target, authority, owner.Excluded, expiry);
         owner.Policies.Add(owner.PendingPolicy);
         SendOwnerGrant(owner, true, now);
     }
@@ -479,15 +557,56 @@ internal sealed partial class BrowserInput
             owner.ReadyPolicy = policy;
         TraceOwner(stage, OwnerReason.Ready, owner, now, page: data);
     }
-    private void ApproveCommandPolicy(BrowserPeer peer, BrowserReply description, TargetId target, JsonElement authority, string[] excluded)
+    private bool PolicyContextCurrent(CommandOwner owner, long focusRevision, long foregroundEpoch) =>
+        _commandOwner == owner && owner.Active && owner.RetiredAt == long.MaxValue
+        && owner.FocusRevision == focusRevision && _hook.ForegroundEpoch == foregroundEpoch
+        && owner.Generation == _configurationGeneration && OwnerForeground(owner)
+        && _commandsEnabled && _sessionEnabled && !_editorFocused && _editorTransition is null
+        && _commandExcluded is not null && owner.Excluded.SequenceEqual(_commandExcluded);
+    private static void InvalidateCommandPolicy(CommandOwner owner)
     {
-        var owner = _commandOwner;
+        owner.FocusRevision++;
+        owner.PolicyRefresh.Invalidate();
+        owner.ReadyPolicy = owner.PendingPolicy = null;
+    }
+    private void PollCommandPolicy(CommandOwner owner, long now)
+    {
+        long focusRevision = owner.FocusRevision, foregroundEpoch = _hook.ForegroundEpoch;
+        if (!PolicyContextCurrent(owner, focusRevision, foregroundEpoch))
+            return;
+        _ = owner.PolicyRefresh.Poll(now,
+            () => DescribeCommandPolicyAsync(owner, focusRevision, foregroundEpoch),
+            description => ApproveCommandPolicy(owner, focusRevision, foregroundEpoch, description));
+    }
+    private async Task<BrowserReply?> DescribeCommandPolicyAsync(CommandOwner owner, long focusRevision, long foregroundEpoch)
+    {
+        if (!PolicyContextCurrent(owner, focusRevision, foregroundEpoch))
+            return null;
+        var description = await owner.Peer.RequestAsync("describe", new
+        {
+            documentToken = owner.Route.DocumentToken
+        });
+        if (!PolicyContextCurrent(owner, focusRevision, foregroundEpoch)
+            || description?.Route != owner.Route
+            || !Approved(owner.Peer, description, owner.Excluded, out var authority, out _, out _, out _, ObservationStage.Describe)
+            || !Boolean(description.Data, "focused"))
+            return null;
+        long now = WindowsInterruptClock.NowMs, observed = Number(authority, "observedAtMs");
+        if (now < observed || now - observed > Limits.ObservationMaxAgeMs)
+            return null;
+        TraceObservation(ObservationStage.Describe, ObservationReason.Ready, description.Data, false);
+        return description;
+    }
+    private Task ApproveCommandPolicy(CommandOwner owner, long focusRevision, long foregroundEpoch, BrowserReply description)
+    {
+        // This is the only renewal submitter. The same context is checked again
+        // immediately before enqueue and after ACK; a late describe cannot send
+        // an old approval after a replacement round has begun.
+        if (!PolicyContextCurrent(owner, focusRevision, foregroundEpoch)
+            || !Approved(owner.Peer, description, owner.Excluded, out var authority, out _, out var target, out _))
+            return Task.CompletedTask;
         OwnerReason reason;
-        if (owner is not { Active: true })
-            reason = OwnerReason.NotActive;
-        else if (owner.Peer != peer)
-            reason = OwnerReason.PeerMismatch;
-        else if (owner.Route != description.Route)
+        if (owner.Route != description.Route)
             reason = OwnerReason.RouteMismatch;
         else if (!OwnerForeground(owner, out reason))
         {
@@ -501,28 +620,31 @@ internal sealed partial class BrowserInput
         if (reason != OwnerReason.Ready)
         {
             TraceOwner(OwnerStage.Policy, reason, owner);
-            return;
+            return Task.CompletedTask;
         }
-        long expiry = Number(authority, "observedAtMs") + Limits.ObservationMaxAgeMs;
+        long observed = Number(authority, "observedAtMs"), expiry = observed + Limits.ObservationMaxAgeMs;
         long now = WindowsInterruptClock.NowMs;
-        if (now > expiry)
+        if (now < observed || now > expiry)
         {
             TraceOwner(OwnerStage.Policy, OwnerReason.PolicyExpired, owner, now);
-            return;
+            return Task.CompletedTask;
         }
-        var policy = new CommandPolicy(target, authority.Clone(), excluded.ToArray(), expiry);
-        if (owner!.Policies.Any(item => item.Token == policy.Token))
+        var policy = new CommandPolicy(target, authority.Clone(), owner.Excluded, expiry);
+        if (owner.Policies.Any(item => item.Token == policy.Token))
         {
             TraceOwner(OwnerStage.Policy, OwnerReason.PolicyDuplicate, owner, now);
-            return;
+            return Task.CompletedTask;
         }
         owner.Policies.Add(policy);
         owner.PendingPolicy = policy;
-        _ = ApproveCommandPolicyAsync(owner, policy);
+        Task acknowledgement = ApproveCommandPolicyAsync(owner, policy, focusRevision, foregroundEpoch);
         TraceOwner(OwnerStage.Policy, OwnerReason.Sent, owner, now);
+        return acknowledgement;
     }
-    private async Task ApproveCommandPolicyAsync(CommandOwner owner, CommandPolicy policy)
+    private async Task ApproveCommandPolicyAsync(CommandOwner owner, CommandPolicy policy, long focusRevision, long foregroundEpoch)
     {
+        if (!PolicyContextCurrent(owner, focusRevision, foregroundEpoch))
+            return;
         var reply = await owner.Peer.RequestAsync("approve-command-policy", new
         {
             target = policy.Target.Value,
@@ -537,9 +659,8 @@ internal sealed partial class BrowserInput
             reason = OwnerReason.Replaced;
         else if (owner.PendingPolicy != policy)
             reason = OwnerReason.PolicyReplaced;
-        else if (!OwnerForeground(owner, out reason))
-        {
-        }
+        else if (!PolicyContextCurrent(owner, focusRevision, foregroundEpoch))
+            reason = OwnerReason.Replaced;
         else if (reply?.Route != owner.Route)
             reason = reply is null ? OwnerReason.ReplyMissing : OwnerReason.RouteMismatch;
         else if (!Boolean(reply.Data, "applied"))
@@ -848,8 +969,8 @@ internal sealed partial class BrowserInput
         if (name == "input" || name == "destroy")
         {
             bool focusChanged = Boolean(value, "focusChanged");
-            if (focusChanged && _commandOwner is { } owner && owner.Peer == peer && owner.Route == route)
-                owner.ReadyPolicy = owner.PendingPolicy = null;
+            if ((focusChanged || name == "destroy") && _commandOwner is { } owner && owner.Peer == peer && owner.Route == route)
+                InvalidateCommandPolicy(owner);
             if (focusChanged && Boolean(value, "focused") && _commandOwner is not { Active: true }
                 && _active.GetValueOrDefault(peer.ConnectionId) == route && ProcessFor(ForegroundRoot()) == peer.BrowserProcessId)
                 RequestCommandOwnerRefresh(); // A new focused field is only a metadata candidate.
@@ -859,9 +980,6 @@ internal sealed partial class BrowserInput
                     && (target != transition.Token.Target.Value || !Boolean(value, "focusChanged") || Boolean(value, "focused")))
                     CancelEditorTransition();
                 bool textChanged = Boolean(value, "textChanged") || name == "destroy";
-                if (name == "destroy" && _commandOwner is { } destroyedOwner
-                    && destroyedOwner.Peer == peer && destroyedOwner.Route == route)
-                    destroyedOwner.ReadyPolicy = destroyedOwner.PendingPolicy = null;
                 _hook.NotifyBrowserChange(textChanged, focusChanged);
                 _publication = null;
                 if (name == "destroy")
@@ -929,6 +1047,8 @@ internal sealed partial class BrowserInput
         if (_current is not { } current || current.Target != token.Target
             || token.CommandGeneration != _hook.CommandGeneration || !ForegroundCurrent(current))
             return false;
+        if (_commandOwner is { } owner)
+            InvalidateCommandPolicy(owner);
         _editorFocused = false;
         _editorTransition = new(token, WindowsInterruptClock.NowMs + 500,
             new(TaskCreationOptions.RunContinuationsAsynchronously));
@@ -959,6 +1079,8 @@ internal sealed partial class BrowserInput
         else if (_editorToken is not { } editor || editor.Target != token.Target
             || editor.CommandGeneration != token.CommandGeneration)
             return;
+        if (_editorFocused != focused && _commandOwner is { } owner)
+            InvalidateCommandPolicy(owner);
         _editorFocused = focused;
         _hook.NotifyBrowserChange(false, false, source: false);
     }

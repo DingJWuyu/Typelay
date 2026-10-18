@@ -174,8 +174,6 @@ internal sealed partial class BrowserInput : IDisposable
     }
     public async Task<InputCapture> CaptureAsync(InputContext context)
     {
-        _commandExcluded = context.Excluded.ToArray();
-        PollCommandOwner(WindowsInterruptClock.NowMs);
         // An authorized editor click does not claim focus. Wait only for the
         // exact page UI acknowledgement before asking for its bound source.
         if (_editorTransition is { } transition && context.BoundTarget == transition.Token.Target)
@@ -208,15 +206,29 @@ internal sealed partial class BrowserInput : IDisposable
             return CaptureRejected(ObservationReason.SessionDisabled);
         if (context.SessionShortcuts?.Generation != _configurationGeneration)
             return CaptureRejected(ObservationReason.ContextGeneration);
+        if (_commandExcluded is not null && !_commandExcluded.SequenceEqual(context.Excluded))
+            RequestCommandOwnerRefresh();
+        _commandExcluded = context.Excluded.ToArray();
+        PollCommandOwner(WindowsInterruptClock.NowMs);
         var bound = context.BoundTarget is { } target && Owns(target) ? Latest(target) : null;
         bool editor = bound is not null && _editorFocused && GetFocus(bound.Target) == FocusMember.Overlay;
-        var description = await peer.RequestAsync("describe", editor ? new
-        {
-            target = bound!.Target.Value
-        } : null);
+        var owner = _commandOwner;
+        long ownerFocusRevision = owner?.FocusRevision ?? 0;
+        bool sharedDescription = !editor && owner is { Active: true } && owner.Peer == peer
+            && PolicyContextCurrent(owner, ownerFocusRevision, epochs.Foreground);
+        // Only the current source owner shares its in-flight metadata round.
+        // Editor and unowned reads retain their own target-bound describe path.
+        var description = sharedDescription
+            ? await owner!.PolicyRefresh.CaptureAsync()
+            : await peer.RequestAsync("describe", editor ? new
+            {
+                target = bound!.Target.Value
+            } : null);
         if (!Approved(peer, description, context.Excluded, out var authority, out var metadata, out var id, out var ack,
             ObservationStage.Describe))
             return new(null);
+        if (sharedDescription && !PolicyContextCurrent(owner!, ownerFocusRevision, epochs.Foreground))
+            return CaptureRejected(ObservationReason.ForegroundEpochChanged, description, editor);
         if (!editor && !Boolean(description!.Data, "focused"))
             return CaptureRejected(ObservationReason.SourceNotFocused, description, editor);
         if (ForegroundRoot() != root)
@@ -231,9 +243,12 @@ internal sealed partial class BrowserInput : IDisposable
             return CaptureRejected(ObservationReason.ActiveDocumentMissing, description, editor);
         if (active != description!.Route)
             return CaptureRejected(ObservationReason.ActiveDocumentChanged, description, editor);
+        long descriptionNow = WindowsInterruptClock.NowMs, describedAt = Number(authority, "observedAtMs");
+        if (descriptionNow < describedAt)
+            return CaptureRejected(ObservationReason.SnapshotFuture, description, editor, descriptionNow - describedAt);
+        if (descriptionNow - describedAt > Limits.ObservationMaxAgeMs)
+            return CaptureRejected(ObservationReason.SnapshotExpired, description, editor, descriptionNow - describedAt);
         TraceObservation(ObservationStage.Describe, ObservationReason.Ready, description.Data, editor);
-        if (!editor)
-            ApproveCommandPolicy(peer, description, id, authority, context.Excluded);
         var result = await peer.RequestAsync("capture", new
         {
             target = id.Value,
