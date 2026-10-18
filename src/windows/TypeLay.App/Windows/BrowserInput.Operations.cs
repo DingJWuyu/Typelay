@@ -570,45 +570,78 @@ internal sealed partial class BrowserInput
             item.Peer == peer && item.Route == route && item.Id == String(data, "ownerId"));
         long commandId = Number(data, "commandId"), t0 = Number(data, "triggeredAtMs"), now = WindowsInterruptClock.NowMs;
         string? kind = String(data, "kind");
-        if (owner is null || !owner.EverActive || owner.Generation != _hook.CommandGeneration || String(data, "generation") != owner.Generation.ToString()
-            || kind is not ("wake" or "direct") || commandId is <= 0 or > 9007199254740991 || commandId <= owner.LastCommandId
-            || !owner.Grants.TryGetValue(Number(data, "ownerGrantSequence"), out long ownerExpiry)
-            || t0 < 0 || now < t0 || now - t0 > Limits.ObservationMaxAgeMs)
+        long ownerExpiry = 0;
+        var reason = owner is null ? CommandPathReason.OwnerMissing
+            : !owner.EverActive ? CommandPathReason.OwnerNotActive
+            : owner.Generation != _hook.CommandGeneration ? CommandPathReason.CurrentGenerationChanged
+            : String(data, "generation") != owner.Generation.ToString() ? CommandPathReason.MessageGenerationChanged
+            : kind is not ("wake" or "direct") ? CommandPathReason.KindInvalid
+            : commandId is <= 0 or > 9007199254740991 ? CommandPathReason.CommandIdInvalid
+            : commandId <= owner.LastCommandId ? CommandPathReason.CommandReplayed
+            : !owner.Grants.TryGetValue(Number(data, "ownerGrantSequence"), out ownerExpiry) ? CommandPathReason.GrantMissing
+            : t0 < 0 ? CommandPathReason.TriggerInvalid
+            : now < t0 ? CommandPathReason.TriggerFuture
+            : now - t0 > Limits.ObservationMaxAgeMs ? CommandPathReason.TriggerExpired : CommandPathReason.Queued;
+        if (reason != CommandPathReason.Queued)
+        {
+            TraceCommandPath(CommandPathStage.Ingress, reason, kind, ageMs: t0 >= 0 ? now - t0 : null);
             return;
-        owner.LastCommandId = commandId;
+        }
+        owner!.LastCommandId = commandId;
         if (_notices.Count >= 16)
+        {
+            TraceCommandPath(CommandPathStage.Ingress, CommandPathReason.NoticeCapacity, kind, ageMs: now - t0);
             return;
+        }
         long sequence = _hook.NextCommandSequence();
-        void Reject(Denial reason) => _notices.Enqueue((new(kind, AcceptedAtMs: t0,
-            CommandGeneration: owner.Generation, Rejection: reason, CommandSequence: sequence), t0 + Limits.ObservationMaxAgeMs));
+        void Reject(Denial denial, CommandPathReason rejected)
+        {
+            _notices.Enqueue((new(kind!, AcceptedAtMs: t0,
+                CommandGeneration: owner.Generation, Rejection: denial, CommandSequence: sequence), t0 + Limits.ObservationMaxAgeMs));
+            TraceCommandPath(CommandPathStage.Ingress, rejected, kind, ageMs: now - t0);
+        }
         if (!data.TryGetProperty("native", out var native))
         {
-            Reject(String(data, "reason") == "ImeUnclear" ? Denial.ImeUnclear : Denial.StaleObservation);
+            Reject(String(data, "reason") == "ImeUnclear" ? Denial.ImeUnclear : Denial.StaleObservation, CommandPathReason.NativeMissing);
             return;
         }
         var policy = owner.Policies.FindLast(item => item.Token == String(data, "policyToken"));
         long capturedAt = Number(data, "capturedAtMs"), upper = Number(data, "captureUpperMs");
-        if (policy is null || upper < capturedAt || upper > t0 + Limits.ObservationMaxAgeMs
-            || upper > ownerExpiry || upper > policy.ExpiresAt || upper > owner.RetiredAt
-            || !Approved(peer, new(native, route), policy.Excluded, out var authority, out var metadata, out var target, out var ack)
-            || target != policy.Target || !native.TryGetProperty("sessionBindings", out var applied)
-            || String(applied, "target") != policy.Target.Value
-            || String(authority, "metadataKey") != String(policy.Authority, "metadataKey")
-            || !Boolean(native, "focused"))
+        JsonElement authority = default, applied = default;
+        FieldMetadata? metadata = null;
+        TargetId target = default;
+        SessionShortcutAcknowledgement? ack = null;
+        reason = policy is null ? CommandPathReason.PolicyMissing
+            : upper < capturedAt ? CommandPathReason.CaptureUpperInvalid
+            : upper > t0 + Limits.ObservationMaxAgeMs ? CommandPathReason.CaptureBudgetExceeded
+            : upper > ownerExpiry ? CommandPathReason.OwnerExpired
+            : upper > policy.ExpiresAt ? CommandPathReason.PolicyExpired
+            : upper > owner.RetiredAt ? CommandPathReason.OwnerRetired
+            : !Approved(peer, new(native, route), policy.Excluded, out authority, out metadata, out target, out ack) ? CommandPathReason.ApprovalRejected
+            : target != policy.Target ? CommandPathReason.TargetMismatch
+            : !native.TryGetProperty("sessionBindings", out applied) ? CommandPathReason.KeyAcknowledgementMissing
+            : String(applied, "target") != policy.Target.Value ? CommandPathReason.KeyTargetMismatch
+            : String(authority, "metadataKey") != String(policy.Authority, "metadataKey") ? CommandPathReason.MetadataChanged
+            : !Boolean(native, "focused") ? CommandPathReason.SourceNotFocused : CommandPathReason.Queued;
+        if (reason != CommandPathReason.Queued)
         {
-            Reject(Denial.StaleObservation);
+            Reject(Denial.StaleObservation, reason);
             return;
         }
         var source = Snapshot(native, target, metadata!);
         var evidence = new CommandCaptureEvidence(target, t0, capturedAt);
-        if (source is null || evidence.Check(source, now) != Denial.None || source.Ime != ImeState.Clear || !source.DirectWriteSupported)
+        reason = source is null ? CommandPathReason.SnapshotUnavailable
+            : evidence.Check(source, now) != Denial.None ? CommandPathReason.EvidenceRejected
+            : source.Ime != ImeState.Clear ? CommandPathReason.ImeUnclear
+            : !source.DirectWriteSupported ? CommandPathReason.DirectUnsupported : CommandPathReason.Queued;
+        if (reason != CommandPathReason.Queued)
         {
-            Reject(Denial.StaleObservation);
+            Reject(Denial.StaleObservation, reason);
             return;
         }
         if (kind == "direct" && _frozen.Count >= 4)
         {
-            Reject(Denial.PlatformFailure);
+            Reject(Denial.PlatformFailure, CommandPathReason.FrozenCapacity);
             return;
         }
         var epochs = _hook.BrowserEpochs;
@@ -618,9 +651,10 @@ internal sealed partial class BrowserInput
             _current = record;
         if (kind == "direct")
             _frozen.TryAdd((target, capturedAt), new(record, owner.Generation, sequence, t0 + 212000));
-        _notices.Enqueue((new(kind, AcceptedAtMs: t0, UserEpoch: epochs.User, ForegroundEpoch: epochs.Foreground,
+        _notices.Enqueue((new(kind!, AcceptedAtMs: t0, UserEpoch: epochs.User, ForegroundEpoch: epochs.Foreground,
             Source: source, CommandGeneration: owner.Generation, CommandSequence: sequence, CommandCapture: evidence),
             t0 + Limits.ObservationMaxAgeMs));
+        TraceCommandPath(CommandPathStage.Ingress, CommandPathReason.Queued, kind, hasNative: true, ageMs: now - t0);
     }
     public async Task<WriteReceipt> WriteDirectAsync(WritePlan plan, string[] excluded)
     {
@@ -744,6 +778,13 @@ internal sealed partial class BrowserInput
         if (name == "command-owner")
         {
             OwnerAcknowledged(peer, route, value);
+            return;
+        }
+        // An authenticated route transports diagnostics, but never makes them
+        // commands. This branch cannot enqueue a Runtime notice or read a field.
+        if (name == "source-command-diagnostic")
+        {
+            TracePageCommand(value);
             return;
         }
         if (name == "source-command")

@@ -10,9 +10,10 @@ internal sealed class BrowserTraceBudget
 {
     private int _general, _commands;
     public bool GeneralAvailable => Volatile.Read(ref _general) < 224;
+    public bool CommandsAvailable => Volatile.Read(ref _commands) < 32;
     public bool TryTake(string operation)
     {
-        bool command = operation is "browser-command-approved"
+        bool command = operation is "browser-command-approved" or "browser-command-path"
             or "browser-direct-Verified" or "browser-direct-RejectedBeforeMutation" or "browser-direct-OutcomeUnknown"
             or "browser-accept-Verified" or "browser-accept-RejectedBeforeMutation" or "browser-accept-OutcomeUnknown";
         ref int count = ref (command ? ref _commands : ref _general);
@@ -25,6 +26,63 @@ internal sealed partial class BrowserInput
 {
     private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
     private static readonly BrowserTraceBudget TraceBudget = new();
+    internal enum CommandPathStage
+    {
+        Page, Ingress, Dequeue
+    }
+    internal enum CommandPathReason
+    {
+        Unknown, NotDispatched, Held, EditorOwned, OwnerUnavailable, BindingMismatch,
+        TimestampInvalid, BeforeActivation, TimestampFuture, CommandLimit, HostTimeInvalid,
+        SourceChanged, ImeUnclear, PolicyUnavailable, CaptureUnavailable, PolicyChanged,
+        OwnerChanged, CaptureBeforeTrigger, CaptureTimeInvalid, OwnerExpiredAtCapture,
+        PolicyExpiredAtCapture, CaptureBudgetExceeded, StaleObservation, Sent,
+        OwnerMissing, OwnerNotActive, CurrentGenerationChanged, MessageGenerationChanged,
+        KindInvalid, CommandIdInvalid, CommandReplayed, GrantMissing, TriggerInvalid,
+        TriggerFuture, TriggerExpired, NoticeCapacity, NativeMissing, PolicyMissing,
+        CaptureUpperInvalid, OwnerExpired, PolicyExpired, OwnerRetired, ApprovalRejected,
+        TargetMismatch, KeyAcknowledgementMissing, KeyTargetMismatch, MetadataChanged,
+        SourceNotFocused, SnapshotUnavailable, EvidenceRejected, DirectUnsupported,
+        FrozenCapacity, Queued, Expired, Rejected, Delivered
+    }
+    private bool CommandTraceEnabled => !string.IsNullOrWhiteSpace(_tracePath) && TraceBudget.CommandsAvailable;
+    private void TraceCommandPath(CommandPathStage stage, CommandPathReason reason, string? kind,
+        bool? commandSent = null, bool? hasNative = null, long? ageMs = null)
+    {
+        if (!CommandTraceEnabled)
+            return;
+        try
+        {
+            Trace("browser-command-path", new
+            {
+                stage,
+                reason,
+                kind = kind is "wake" or "direct" ? kind : "unknown",
+                commandSent,
+                hasNative,
+                ageMs = ageMs is { } age ? Math.Clamp(age, -10000, 10000) : (long?)null
+            });
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { }
+    }
+    private void TracePageCommand(JsonElement data)
+    {
+        if (!CommandTraceEnabled)
+            return;
+        try
+        {
+            string? rawReason = String(data, "firstReason");
+            var reason = rawReason is "NotDispatched" or "Held" or "EditorOwned" or "OwnerUnavailable" or "BindingMismatch"
+                or "TimestampInvalid" or "BeforeActivation" or "TimestampFuture" or "CommandLimit" or "HostTimeInvalid"
+                or "SourceChanged" or "ImeUnclear" or "PolicyUnavailable" or "CaptureUnavailable" or "PolicyChanged"
+                or "OwnerChanged" or "CaptureBeforeTrigger" or "CaptureTimeInvalid" or "OwnerExpiredAtCapture"
+                or "PolicyExpiredAtCapture" or "CaptureBudgetExceeded" or "StaleObservation" or "Sent"
+                ? Enum.Parse<CommandPathReason>(rawReason) : CommandPathReason.Unknown;
+            TraceCommandPath(CommandPathStage.Page, reason, String(data, "kind"),
+                Boolean(data, "commandSent"), Boolean(data, "hasNative"));
+        }
+        catch (Exception error) when (error is not OutOfMemoryException) { }
+    }
     private enum ObservationStage
     {
         None, Describe, Capture, Snapshot, Publish, Shortcut, Input, Lifecycle, OwnerPrepare

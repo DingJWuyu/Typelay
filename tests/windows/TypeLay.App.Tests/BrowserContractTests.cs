@@ -29,13 +29,15 @@ public sealed class BrowserContractTests
         for (int index = 0; index < 224; index++)
             Assert.True(budget.TryTake("browser-observation"));
         Assert.False(budget.GeneralAvailable);
+        Assert.True(budget.CommandsAvailable);
         Assert.False(budget.TryTake("browser-owner"));
         Assert.False(budget.TryTake("browser-direct-unrecognized"));
-        string[] commands = ["browser-command-approved", "browser-direct-Verified",
+        string[] commands = ["browser-command-approved", "browser-command-path", "browser-direct-Verified",
             "browser-direct-RejectedBeforeMutation", "browser-direct-OutcomeUnknown",
             "browser-accept-Verified", "browser-accept-RejectedBeforeMutation", "browser-accept-OutcomeUnknown"];
         for (int index = 0; index < 32; index++)
             Assert.True(budget.TryTake(commands[index % commands.Length]));
+        Assert.False(budget.CommandsAvailable);
         foreach (string operation in commands)
             Assert.False(budget.TryTake(operation));
         Assert.False(budget.TryTake("browser-observation"));

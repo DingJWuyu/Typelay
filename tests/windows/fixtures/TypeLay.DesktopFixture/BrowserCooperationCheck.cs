@@ -42,6 +42,10 @@ internal static partial class BrowserCooperationCheck
         {
             get; set;
         }
+        public bool DomObserved
+        {
+            get; set;
+        }
         public int ReplacementEvents
         {
             get; set;
@@ -70,6 +74,52 @@ internal static partial class BrowserCooperationCheck
         {
             get; set;
         }
+    }
+    private sealed record CommandPathEntry(long AtMs, string Stage, string Reason, string Kind,
+        bool? CommandSent, bool? HasNative, long? AgeMs);
+    private static bool ObserveDom(PageState state, Scene scene, string expected)
+    {
+        // The wait already read this state. Preserve those observations even if
+        // it times out before the strict replacement assertions are reached.
+        scene.DomObserved = true;
+        scene.ReplacementEvents = state.Replacements;
+        scene.Submits = state.Submits;
+        scene.ExactText = state.A == expected;
+        scene.SourceFocus = state.Focus == "a" && state.PageFocused;
+        scene.NoPreview = state.PreviewMounts == 0;
+        return state.Replacements != 0;
+    }
+    private static CommandPathEntry[] ReadCommandPath(string trace)
+    {
+        var records = new List<CommandPathEntry>();
+        foreach (string line in File.ReadLines(trace))
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(line);
+                var value = document.RootElement;
+                if (!value.TryGetProperty("operation", out var operation) || operation.GetString() != "browser-command-path")
+                    continue;
+                var detail = value.GetProperty("detail");
+                string? stage = detail.GetProperty("stage").GetString(), reason = detail.GetProperty("reason").GetString();
+                if (!Enum.TryParse<BrowserInput.CommandPathStage>(stage, out var parsedStage) || !Enum.IsDefined(parsedStage)
+                    || parsedStage.ToString() != stage
+                    || !Enum.TryParse<BrowserInput.CommandPathReason>(reason, out var parsedReason) || !Enum.IsDefined(parsedReason)
+                    || parsedReason.ToString() != reason)
+                    continue;
+                string? kind = detail.GetProperty("kind").GetString();
+                static bool? Flag(JsonElement item, string key) => item.TryGetProperty(key, out var field)
+                    && field.ValueKind is JsonValueKind.True or JsonValueKind.False ? field.GetBoolean() : null;
+                long? age = detail.TryGetProperty("ageMs", out var metric) && metric.ValueKind == JsonValueKind.Number && metric.TryGetInt64(out long number)
+                    ? Math.Clamp(number, -10000, 10000) : null;
+                records.Add(new(value.GetProperty("atMs").GetInt64(), stage!, reason!,
+                    kind is "wake" or "direct" ? kind : "unknown", Flag(detail, "commandSent"), Flag(detail, "hasNative"), age));
+                if (records.Count == 32)
+                    break;
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { } // A truncated line cannot discard earlier evidence.
+        }
+        return records.ToArray();
     }
     private sealed record CleanupError(string Resource, string ErrorType);
     private static void Require(bool condition, string code)
@@ -114,6 +164,8 @@ internal static partial class BrowserCooperationCheck
         string? extensionId = null;
         var elapsed = Stopwatch.StartNew();
         string fixtureTrace = Path.Combine(directory, "trace-fixture.jsonl");
+        CommandPathEntry[] commandPath = [];
+        bool commandPathRead = false;
         void Record(string operation, Scene scene)
         {
             try
@@ -228,7 +280,7 @@ internal static partial class BrowserCooperationCheck
                 SendChord([0x09], cleanupErrors);
                 automatic.ShortcutPresses = 1;
                 automatic.Stage = "wait-single-tab-replacement";
-                var state = await WaitStateAsync(cdp!, s => s.Replacements != 0, ct);
+                var state = await WaitStateAsync(cdp!, s => ObserveDom(s, automatic, reference), ct);
                 CheckReplacement(state, automatic, reference, sourceFocus: true);
                 Require(await WaitTraceAsync(trace, "browser-accept-Verified", 0, ct) > 0, "tab-receipt-unconfirmed");
             });
@@ -251,7 +303,7 @@ internal static partial class BrowserCooperationCheck
                 SendChord([0x11, 0x10, 0x79], cleanupErrors);
                 direct.ShortcutPresses = 1;
                 direct.Stage = "wait-direct-replacement";
-                var state = await WaitStateAsync(cdp!, s => s.Replacements != 0, ct);
+                var state = await WaitStateAsync(cdp!, s => ObserveDom(s, direct, "Keep [" + reference + "] unchanged"), ct);
                 CheckReplacement(state, direct, "Keep [" + reference + "] unchanged", sourceFocus: true, caret: 6 + reference.Length);
                 direct.NoPreview = state.PreviewMounts == 0;
                 Require(direct.NoPreview && !(await cdp!.PreviewAsync(ct)).Visible, "direct-opened-preview");
@@ -274,7 +326,7 @@ internal static partial class BrowserCooperationCheck
                 background.SwitchedBeforeMutation = switched.A == Source && switched.Replacements == 0 && switched.Focus == "b" && switched.PageFocused;
                 Require(background.SwitchedBeforeMutation, "background-write-finished-before-switch");
                 background.Stage = "wait-original-field-replacement";
-                var state = await WaitStateAsync(cdp, s => s.Replacements != 0, ct);
+                var state = await WaitStateAsync(cdp, s => ObserveDom(s, background, reference), ct);
                 CheckReplacement(state, background, reference, sourceFocus: false);
                 background.OtherTextAndFocusUnchanged = state.B == Other && state.Focus == "b" && state.PageFocused && state.BStart == 4 && state.BEnd == 4;
                 Require(background.OtherTextAndFocusUnchanged, "background-other-field-changed");
@@ -411,6 +463,12 @@ internal static partial class BrowserCooperationCheck
                 }
                 return Task.CompletedTask;
             });
+            try
+            {
+                commandPath = ReadCommandPath(trace);
+                commandPathRead = true;
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
         }
         bool passed = scenes.All(scene => scene.Outcome == "passed") && cleanupErrors.Count == 0;
         var first = scenes.FirstOrDefault(scene => scene.Outcome == "failed");
@@ -421,6 +479,8 @@ internal static partial class BrowserCooperationCheck
             failure = first?.Failure ?? (passed ? "none" : "cleanup-failed"),
             scenes,
             cleanupErrors,
+            commandPathRead,
+            commandPath,
             elapsedMs = elapsed.ElapsedMilliseconds,
             experimentalWriteback = false,
             softwareInput = true,

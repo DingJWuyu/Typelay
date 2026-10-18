@@ -126,7 +126,8 @@ internal sealed partial class BrowserInput : IDisposable
             shortcutDispatch = "source-local",
             wake = _wake,
             direct = _direct,
-            sourceLocalAcceptanceVersion = 1
+            sourceLocalAcceptanceVersion = 1,
+            traceCommand = !string.IsNullOrWhiteSpace(_tracePath)
         };
         CancelEditorTransition();
         _current = null;
@@ -424,8 +425,13 @@ internal sealed partial class BrowserInput : IDisposable
                     Source = null,
                     Rejection = Denial.StaleObservation
                 };
+                TraceCommandPath(CommandPathStage.Dequeue, CommandPathReason.Expired, notice.Kind,
+                    ageMs: now - notice.AcceptedAtMs);
             }
             else
+            {
+                TraceCommandPath(CommandPathStage.Dequeue, CommandPathReason.Delivered, notice.Kind,
+                    ageMs: now - notice.AcceptedAtMs);
                 Trace("browser-command-approved", new
                 {
                     kind = notice.Kind,
@@ -434,7 +440,11 @@ internal sealed partial class BrowserInput : IDisposable
                     completedAtMs = now,
                     remainingMs = queued.Deadline - now
                 });
+            }
         }
+        else if (notice.Kind is "wake" or "direct")
+            TraceCommandPath(CommandPathStage.Dequeue, notice.Rejection != Denial.None
+                ? CommandPathReason.Rejected : CommandPathReason.Delivered, notice.Kind);
         return true;
     }
     public void Revoke(bool shortcuts = false)

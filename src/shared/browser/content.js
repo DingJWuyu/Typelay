@@ -261,19 +261,42 @@
   function storeCommandPolicy(field, basis) {
     commandPolicy = {field, authority: basis, expiresAtMs: basis.observedAtMs + 150};
   }
-  function sourceCommand(event, field) {
-    if (!commandOwnerCurrent()) return false;
+  let commandDiagnosticCount = 0;
+  function commandKeyDiagnostic(event) {
+    if (configuration?.traceCommand !== true || configuration.enabled !== true
+      || shortcutDispatch() !== "source-local" || event.repeat || commandDiagnosticCount >= 32) return null;
+    const kind = shortcutMatches(event, configuration.wake) ? "wake"
+      : shortcutMatches(event, configuration.direct) ? "direct" : null;
+    if (!kind) return null;
+    commandDiagnosticCount++;
+    return {kind, firstReason: "NotDispatched", commandSent: false, hasNative: false};
+  }
+  function commandCheck(value, diagnostic, reason) {
+    if (!value && diagnostic?.firstReason === "NotDispatched") diagnostic.firstReason = reason;
+    return value;
+  }
+  function finishCommandDiagnostic(diagnostic) {
+    if (!diagnostic) return;
+    try { send("source-command-diagnostic", diagnostic); }
+    catch (_) { /* Diagnostic transport cannot alter the original key decision. */ }
+  }
+  function sourceCommand(event, field, diagnostic) {
+    if (!commandCheck(commandOwnerCurrent(), diagnostic, "OwnerUnavailable")) return false;
     const current = commandOwner;
     const kind = shortcutMatches(event, current.configuration.wake) ? "wake"
       : shortcutMatches(event, current.configuration.direct) ? "direct" : null;
     const triggerMono = event.timeStamp;
-    if (!kind || !Number.isFinite(triggerMono) || triggerMono < current.activateMono || triggerMono > monoNow()) return false;
-    if (nextSourceCommandId >= Number.MAX_SAFE_INTEGER) { retireCommandOwner(); return false; }
+    if (!commandCheck(!!kind, diagnostic, "BindingMismatch")
+      || !commandCheck(Number.isFinite(triggerMono), diagnostic, "TimestampInvalid")
+      || !commandCheck(!(triggerMono < current.activateMono), diagnostic, "BeforeActivation")
+      || !commandCheck(!(triggerMono > monoNow()), diagnostic, "TimestampFuture")) return false;
+    if (nextSourceCommandId >= Number.MAX_SAFE_INTEGER) { retireCommandOwner(); commandCheck(false, diagnostic, "CommandLimit"); return false; }
     // Freeze the existing proved clock before any body/selection operation.
     // No later calibration, owner renewal, or fresh snapshot may move this t0.
     const frozenClock = {lower: clock.lower, upper: clock.upper};
     const triggeredAtMs = Math.floor(frozenClock.lower + triggerMono);
-    if (!Number.isSafeInteger(triggeredAtMs) || triggeredAtMs < 0) return false;
+    if (!commandCheck(Number.isSafeInteger(triggeredAtMs), diagnostic, "HostTimeInvalid")
+      || !commandCheck(triggeredAtMs >= 0, diagnostic, "HostTimeInvalid")) return false;
     drainMutations();
     const policy = commandPolicy;
     const command = {ownerId: current.ownerId, ownerGrantSequence: current.grantSequence,
@@ -281,19 +304,30 @@
       ...(policy?.field === field ? {policyToken: policy.authority.token} : {})};
     consume(event);
     retireOrdered(); retireEditorControl(); publication = shortcut = null;
-    const reject = reason => { send("source-command", {...command, reason}); refreshHint(); return true; };
+    const reject = reason => {
+      commandCheck(false, diagnostic, reason);
+      send("source-command", {...command, reason});
+      if (diagnostic) diagnostic.commandSent = true;
+      refreshHint(); return true;
+    };
     if (!field || field.richText || !focused(field) || field.dead || field.quarantined) return reject("SourceChanged");
     if (event.isComposing || event.keyCode === 229) field.ime = "Composing";
     if (field.ime !== "Clear") return reject("ImeUnclear");
     if (!policy || policy.field !== field || !commandPolicyProof(field, policy.authority)) return reject("PolicyUnavailable");
     const snapshot = capture(field, policy.authority, true);
     const captureMono = monoNow(), captureUpperMs = Math.ceil(frozenClock.upper + captureMono);
-    if (!snapshot || commandPolicy !== policy || commandOwner !== current || !commandOwnerCurrent()
-      || !commandPolicyProof(field, policy.authority) || triggerMono > captureMono
-      || !Number.isSafeInteger(captureUpperMs)
-      || captureUpperMs > current.expiresAtMs || captureUpperMs > policy.expiresAtMs
-      || captureUpperMs > triggeredAtMs + 150) return reject("StaleObservation");
+    if (!commandCheck(!!snapshot, diagnostic, "CaptureUnavailable")
+      || !commandCheck(commandPolicy === policy, diagnostic, "PolicyChanged")
+      || !commandCheck(commandOwner === current, diagnostic, "OwnerChanged")
+      || !commandCheck(commandOwnerCurrent(), diagnostic, "OwnerUnavailable")
+      || !commandCheck(commandPolicyProof(field, policy.authority), diagnostic, "PolicyUnavailable")
+      || !commandCheck(!(triggerMono > captureMono), diagnostic, "CaptureBeforeTrigger")
+      || !commandCheck(Number.isSafeInteger(captureUpperMs), diagnostic, "CaptureTimeInvalid")
+      || !commandCheck(captureUpperMs <= current.expiresAtMs, diagnostic, "OwnerExpiredAtCapture")
+      || !commandCheck(captureUpperMs <= policy.expiresAtMs, diagnostic, "PolicyExpiredAtCapture")
+      || !commandCheck(captureUpperMs <= triggeredAtMs + 150, diagnostic, "CaptureBudgetExceeded")) return reject("StaleObservation");
     send("source-command", {...command, capturedAtMs: snapshot.observedAtMs, captureUpperMs, native: snapshot});
+    if (diagnostic) { diagnostic.firstReason = "Sent"; diagnostic.commandSent = diagnostic.hasNative = true; }
     refreshHint();
     return true;
   }
@@ -1512,9 +1546,9 @@
       && event.timeStamp <= monoNow() ? Math.ceil(clock.upper + event.timeStamp) : NaN;
     press.latestObservedUpperMs = Number.isSafeInteger(upper) ? upper : null;
   }
-  window.addEventListener("keydown", event => {
-    if (!event.isTrusted) return;
+  function sourceKeydown(event, diagnostic) {
     if (held.has(event.code)) {
+      commandCheck(false, diagnostic, "Held");
       observeHeld(held.get(event.code), event);
       retireEditorControl();
       if (ordered && !ordered.claimed) retireOrdered();
@@ -1530,6 +1564,7 @@
     // installed editor here so one physical key has one owner across focus/config.
     if (overlay && event.target === overlay.host && overlay.editing
       && overlay.shadow.activeElement === overlay.editor && sessionCurrent(overlay.generation)) {
+      commandCheck(false, diagnostic, "EditorOwned");
       if (event.isComposing || overlay.composing || event.keyCode === 229) {
         overlay.composing = true; retireEditorControl(); return;
       }
@@ -1546,7 +1581,7 @@
     }
     retireEditorControl();
     const field = fieldFor(event.target);
-    if (shortcutDispatch() === "source-local" && sourceCommand(event, field)) return;
+    if (shortcutDispatch() === "source-local" && sourceCommand(event, field, diagnostic)) return;
     const reportTab = tabDiagnostic(event, field);
     if (!field || !focused(field)) { retireOrdered(); reportTab("target-unfocused"); return; }
     if (event.isComposing || event.keyCode === 229) { retireOrdered(); reportTab("composing"); field.ime = "Composing"; publication = shortcut = null; refreshHint(); return; }
@@ -1599,6 +1634,14 @@
       consume(event);
       send("accepted", {planId: permit.plan.id, receipt, acceptedAtMs});
     }
+  }
+  window.addEventListener("keydown", event => {
+    if (!event.isTrusted) return;
+    let diagnostic = null;
+    try { diagnostic = commandKeyDiagnostic(event); }
+    catch (_) { /* Diagnostic preparation cannot prevent the original key. */ }
+    try { sourceKeydown(event, diagnostic); }
+    finally { finishCommandDiagnostic(diagnostic); }
   }, true);
   window.addEventListener("keyup", event => {
     if (!event.isTrusted) return;

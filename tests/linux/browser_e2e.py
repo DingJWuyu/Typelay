@@ -449,7 +449,9 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(result["routedReply"]["data"], {"retired": True})
         self.assertEqual(result["routedReply"]["route"]["documentToken"], result["documentToken"])
 
-    def activate_source_command_owner(self, owner_id="test-owner", released_at=None):
+    def activate_source_command_owner(
+        self, owner_id="test-owner", released_at=None, trace_command=False
+    ):
         return self.page.evaluate(
             """request => {
               if (!window.fixturePassedCommandKeys) {
@@ -459,7 +461,7 @@ class BrowserContract(unittest.TestCase):
                 }, true);
               }
               fixtureCommand({id: 7800, op: 'configure-shortcuts', data: {
-                generation: 'source-command', enabled: true, sessionEnabled: true,
+                generation: 'source-command', enabled: true, sessionEnabled: true, traceCommand: request.traceCommand,
                 accept: 'Tab', exit: 'Esc', shortcutDispatch: 'source-local',
                 sourceLocalAcceptanceVersion: 1, wake: {keyval: 65478, modifiers: 0},
                 direct: {keyval: 65479, modifiers: 0}}});
@@ -475,7 +477,7 @@ class BrowserContract(unittest.TestCase):
               return {prepared, owner: fixtureOwner,
                 ack: fixtureMessages.filter(item => item.event === 'command-owner').at(-1)?.data};
             }""",
-            {"ownerId": owner_id, "releasedAtMs": released_at},
+            {"ownerId": owner_id, "releasedAtMs": released_at, "traceCommand": trace_command},
         )
 
     def source_commands(self):
@@ -483,7 +485,7 @@ class BrowserContract(unittest.TestCase):
 
     def test_source_command_captures_current_input_once_without_a_published_shortcut(self):
         self.type_source()
-        result = self.activate_source_command_owner()
+        result = self.activate_source_command_owner(trace_command=True)
         self.assertNotIn("text", result["prepared"])
         self.assertNotIn("selection", result["prepared"])
         self.assertEqual(result["prepared"]["commandLocalVersion"], 1)
@@ -499,6 +501,12 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(len(commands), 1)
         command = commands[0]["data"]
         self.assertEqual(command["kind"], "direct")
+        self.assertEqual(
+            self.page.evaluate(
+                "fixtureMessages.filter(item => item.event === 'source-command-diagnostic').map(item => item.data)"
+            ),
+            [{"kind": "direct", "firstReason": "Sent", "commandSent": True, "hasNative": True}],
+        )
         self.assertEqual(command["native"]["text"], "Hello now")
         self.assertEqual(command["native"]["selection"], {"start": 9, "end": 9})
         self.assertEqual(command["policyToken"], result["owner"]["authority"]["token"])
@@ -519,6 +527,39 @@ class BrowserContract(unittest.TestCase):
           && item.data.state === 'active') < fixtureMessages.findIndex(item => item.event === 'source-command')""")
         )
 
+    def test_source_command_diagnostic_observes_unowned_original_key_without_a_command(self):
+        self.type_source()
+        self.command(
+            "configure-shortcuts",
+            {
+                "generation": "diagnostic-only",
+                "enabled": True,
+                "sessionEnabled": True,
+                "accept": "Tab",
+                "exit": "Esc",
+                "shortcutDispatch": "source-local",
+                "traceCommand": True,
+                "wake": {"keyval": 65478, "modifiers": 0},
+                "direct": {"keyval": 65479, "modifiers": 0},
+            },
+        )
+        self.page.keyboard.press("F10")
+        self.assertEqual(self.source_commands(), [])
+        self.assertEqual(
+            self.page.evaluate(
+                "fixtureMessages.filter(item => item.event === 'source-command-diagnostic').map(item => item.data)"
+            ),
+            [
+                {
+                    "kind": "direct",
+                    "firstReason": "OwnerUnavailable",
+                    "commandSent": False,
+                    "hasNative": False,
+                }
+            ],
+        )
+        self.assertEqual(self.page.locator("#source").input_value(), "Hello")
+
     def test_source_command_owner_renewal_cannot_renew_policy_or_revive_a_retired_owner(self):
         self.type_source()
         owner = self.activate_source_command_owner()["owner"]
@@ -529,6 +570,12 @@ class BrowserContract(unittest.TestCase):
         commands = self.source_commands()
         self.assertEqual(len(commands), 1)
         self.assertEqual(commands[0]["data"]["reason"], "PolicyUnavailable")
+        self.assertEqual(
+            self.page.evaluate(
+                "fixtureMessages.filter(item => item.event === 'source-command-diagnostic')"
+            ),
+            [],
+        )
         self.assertNotIn("native", commands[0]["data"])
         self.assertEqual(self.page.evaluate("fixturePassedCommandKeys"), [])
         self.command("deactivate-command-owner", {**owner, "grantSequence": 2})
