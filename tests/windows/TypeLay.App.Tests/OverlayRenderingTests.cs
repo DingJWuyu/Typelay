@@ -1806,9 +1806,25 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 var point = button.PointToScreen(new(button.ActualWidth / 2, button.ActualHeight / 2));
                 var pixel = new Native.Point { X = (int)point.X, Y = (int)point.Y };
                 Assert.Equal(overlay.Handle, WindowFromPoint(pixel));
-                Assert.True(SetCursorPos(pixel.X, pixel.Y));
-                await ObserveRenderingFor(TimeSpan.Zero);
+                var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                MouseEventHandler onEnter = (_, _) =>
+                {
+                    if (button.IsMouseOver)
+                        entered.TrySetResult();
+                };
+                button.MouseEnter += onEnter;
+                try
+                {
+                    Assert.True(SetCursorPos(pixel.X, pixel.Y));
+                    // A rendering frame can precede queued mouse input. Wait for
+                    // WPF's actual hover state before injecting the single click.
+                    if (button.IsMouseOver)
+                        entered.TrySetResult();
+                    await entered.Task.WaitAsync(deadline.Token);
+                }
+                finally { button.MouseEnter -= onEnter; }
                 Assert.True(button.IsMouseOver);
+                Assert.Equal(overlay.Handle, WindowFromPoint(pixel));
                 Assert.Equal(1, button.Opacity);
                 Assert.False(Native.GetAsyncKeyState(1) < 0);
                 KeyboardInput[] input = [new() { MouseFlags = 2 }, new() { MouseFlags = 4 }];
