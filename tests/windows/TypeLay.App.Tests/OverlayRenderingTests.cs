@@ -58,6 +58,10 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 var languageBounds = language.TransformToAncestor(overlay).TransformBounds(new Rect(language.RenderSize));
                 var statusBounds = status.TransformToAncestor(overlay).TransformBounds(new Rect(status.RenderSize));
                 Assert.True(languageBounds.Right <= statusBounds.Left, "The language and status must not overlap.");
+                var expansion = ExpansionButton(overlay);
+                var expansionBounds = expansion.TransformToAncestor(overlay).TransformBounds(new Rect(expansion.RenderSize));
+                Assert.True(statusBounds.Right <= expansionBounds.Left, "The status and expansion action must not overlap.");
+                Assert.True(expansionBounds.Right <= overlay.ActualWidth);
             }
             Render("译文就绪");
             var editor = Descendants(overlay).OfType<TextBox>().Single();
@@ -93,6 +97,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             Assert.Equal(ResourceColor(overlay, "Accent"), Assert.IsType<SolidColorBrush>(editor.BorderBrush).Color);
             Assert.Equal(ResourceColor(overlay, "Panel"), Assert.IsType<SolidColorBrush>(editor.Background).Color);
             AssertEditorTextFullyVisible(editor);
+            Assert.Equal(1, ExpansionButton(overlay).Opacity);
             SaveScreenshot(overlay, $"overlay-editing-{theme}-{width:0}.png");
             Assert.True(session.RequestSourceReturn());
             Render("译文就绪");
@@ -117,8 +122,13 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             session.Observe(source, FocusMember.Source, 1000);
             var failedJob = session.TakeTranslationJob(1300);
             Assert.NotNull(failedJob);
+            Render("正在翻译");
+            AssertExpansionDisabled(overlay);
             Assert.True(session.Fail(failedJob));
             Render("暂时无法翻译");
+            AssertExpansionDisabled(overlay);
+            Assert.Equal("Source text", input.Text);
+            Assert.True(input.IsKeyboardFocused);
             Assert.True(editor.IsReadOnly);
             Assert.Equal("译文预览", new TextBoxAutomationPeer(editor).GetName());
             Assert.Null(editor.ToolTip);
@@ -161,7 +171,9 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 }
                 await MovePointer(input, new WindowInteropHelper(window).Handle, false);
                 Assert.Equal(Colors.Transparent, Assert.IsType<SolidColorBrush>(editor.BorderBrush).Color);
+                Assert.Equal(0, ExpansionButton(overlay).Opacity);
                 await MovePointer(editor, overlay.Handle, true);
+                Assert.Equal(1, ExpansionButton(overlay).Opacity);
                 Assert.Equal(ResourceColor(overlay, "Line"), Assert.IsType<SolidColorBrush>(editor.BorderBrush).Color);
                 Assert.Equal("点击译文编辑", editor.ToolTip);
                 SaveScreenshot(overlay, "overlay-hover-light-520.png");
@@ -358,6 +370,9 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                     Bounds = InputBounds(input)
                 };
             }
+            int sourceChanges = 0;
+            input.TextChanged += (_, _) => sourceChanges++;
+            input.Select(2, 4);
             var settings = new UserSettings(Theme: "light");
             string preview = string.Join("\n", Enumerable.Repeat("A readable preview line", 12));
             var session = Ready(source, preview);
@@ -379,7 +394,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             string phase = "opening";
             try
             {
-                await ToggleExpansion(overlay, expand: true);
+                await ToggleExpansion(overlay, expand: true, mouse: true);
                 overlay.Render(session, settings, true, context: context);
                 Assert.Equal(compact, Bounds(overlay));
                 phase = "expanding";
@@ -412,6 +427,9 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                     Assert.True(input.IsKeyboardFocused);
                     Assert.Same(editor, Descendants(overlay).OfType<TextBox>().Single());
                     Assert.Equal(preview, editor.Text);
+                    Assert.Equal(0, sourceChanges);
+                    Assert.Equal(2, input.SelectionStart);
+                    Assert.Equal(4, input.SelectionLength);
                     Assert.Equal(fontSize, editor.FontSize);
                     Assert.Equal(lineHeight, editor.GetRectFromCharacterIndex(2).Height);
                     Assert.True(editor.RenderTransform.Value.IsIdentity);
@@ -462,6 +480,9 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 AssertContinuousHeight(collapse, increasing: false);
                 Assert.InRange(editor.ActualHeight, 159, 161);
                 Assert.Equal("Source text", input.Text);
+                Assert.Equal(0, sourceChanges);
+                Assert.Equal(2, input.SelectionStart);
+                Assert.Equal(4, input.SelectionLength);
                 phase = "complete";
             }
             finally
@@ -604,6 +625,8 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         {
             var (_, input, source) = OpenSource();
             var settings = new UserSettings(Theme: "light");
+            int sourceChanges = 0;
+            input.TextChanged += (_, _) => sourceChanges++;
             string preview = string.Join("\n", Enumerable.Repeat("A manual draft line", 12));
             var session = Ready(source, preview);
             var context = EditableView(source);
@@ -631,6 +654,8 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 Assert.Same(editor, Descendants(overlay).OfType<TextBox>().Single());
                 Assert.Equal(draft, editor.Text);
                 Assert.Equal(draft, session.Draft);
+                Assert.Equal("Source text", input.Text);
+                Assert.Equal(0, sourceChanges);
                 Assert.Equal(3, editor.SelectionStart);
                 Assert.Equal(6, editor.SelectionLength);
                 Assert.True(editor.CanUndo);
@@ -648,7 +673,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             });
             AssertContinuousHeight(expansion, increasing: true);
             var expanded = Bounds(overlay);
-            await ToggleExpansion(overlay, expand: false);
+            await ToggleExpansion(overlay, expand: false, mouse: true);
             overlay.Render(session, settings, false, context: context);
             await ObserveRenderingFor(TimeSpan.FromMilliseconds(60), AssertDraft);
             Assert.True(Bounds(overlay).Height < expanded.Height);
@@ -671,6 +696,12 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             Assert.Equal(preview, editor.Text);
             Assert.Equal(preview, session.Draft);
             Assert.Equal("Source text", input.Text);
+            Assert.Equal(0, sourceChanges);
+            editor.Clear();
+            Assert.Empty(session.Draft);
+            AssertExpansionDisabled(overlay);
+            Assert.True(editor.IsKeyboardFocused);
+            Assert.Equal(0, sourceChanges);
         });
     }
 
@@ -1332,13 +1363,13 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
     [Fact]
     public async Task ThemeExpansionAndDraftEditsRemainLiveAcrossRepeatedRenders()
     {
-        await desktop.RunAsync(() =>
+        await desktop.RunAsync(async () =>
         {
-            var (_, _, source) = OpenSource();
+            var (_, input, source) = OpenSource();
             var settings = new UserSettings(Theme: "light");
             string preview = string.Join("\n", Enumerable.Repeat("Preview line", 12));
             var session = Ready(source, preview);
-            var context = EditableView(source);
+            var context = EditableView(source, SessionShortcutBindings.Restore("F12", "Esc"));
             var overlay = new OverlayWindow(clientAreaAnimation: () => false)
             {
                 BeginEditing = _ => session.BeginEdit(),
@@ -1353,15 +1384,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             Render();
             var editor = Descendants(overlay).OfType<TextBox>().Single();
             Assert.InRange(editor.ActualHeight, 159, 161);
-            var more = Descendants(overlay).OfType<Button>().Single(button => Equals(button.Content, "⋯"));
-            more.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            var menu = PresentationSource.CurrentSources.OfType<HwndSource>()
-                .Select(source => source.RootVisual).OfType<DependencyObject>()
-                .SelectMany(root => Descendants(root).Prepend(root))
-                .OfType<ContextMenu>().Single(control => control.IsOpen);
-            menu.Items.OfType<MenuItem>().Single(item => Equals(item.Header, "展开编辑面板"))
-                .RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-            menu.IsOpen = false;
+            await ToggleExpansion(overlay, expand: true);
             Render();
             Assert.InRange(editor.ActualHeight, 303, 315);
             AssertEditorTextFullyVisible(editor);
@@ -1408,6 +1431,14 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             Assert.True(editor.IsKeyboardFocused);
             Assert.Equal(ResourceColor(overlay, "Panel"), Assert.IsType<SolidColorBrush>(editor.Background).Color);
             Assert.Equal(ResourceColor(overlay, "Accent"), Assert.IsType<SolidColorBrush>(editor.BorderBrush).Color);
+            // A configured non-Tab accept key leaves normal keyboard traversal
+            // available. Keep the existing menu route useful alongside the icon.
+            await ToggleExpansionFromKeyboardMenu(overlay);
+            Assert.Equal("展开译文", new ButtonAutomationPeer(ExpansionButton(overlay)).GetName());
+            Assert.Equal("An edited draft", session.Draft);
+            Assert.Equal(3, editor.SelectionStart);
+            Assert.Equal(6, editor.SelectionLength);
+            Assert.Equal("Source text", input.Text);
         });
     }
 
@@ -1735,51 +1766,135 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         return directory;
     }
 
-    private static async Task ToggleExpansion(OverlayWindow overlay, bool expand)
+    private static Button ExpansionButton(OverlayWindow overlay) => Descendants(overlay).OfType<Button>()
+        .Single(button => new ButtonAutomationPeer(button).GetName() is "展开译文" or "收起译文");
+
+    private static void AssertExpansionDisabled(OverlayWindow overlay)
     {
-        // Use the controls' public automation actions. Raising Click directly
-        // skips MenuItem's PreviewClick/menu-mode exit and focus restoration.
+        var button = ExpansionButton(overlay);
+        var peer = new ButtonAutomationPeer(button);
+        Assert.False(peer.IsEnabled());
+        var invoke = Assert.IsAssignableFrom<IInvokeProvider>(peer.GetPattern(PatternInterface.Invoke));
+        var before = Bounds(overlay);
+        Assert.Throws<System.Windows.Automation.ElementNotEnabledException>(() => invoke.Invoke());
+        Assert.Equal(before, Bounds(overlay));
+    }
+
+    private static async Task ToggleExpansion(OverlayWindow overlay, bool expand, bool mouse = false)
+    {
+        // Exercise the direct header action through UIA and real software mouse
+        // input, including WM_MOUSEACTIVATE. Neither may need focus repair.
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
         deadline.CancelAfter(TimeSpan.FromSeconds(3));
-        var more = Descendants(overlay).OfType<Button>().Single(button => Equals(button.Content, "⋯"));
-        var opened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        RoutedEventHandler onMoreClick = (_, _) => opened.TrySetResult();
-        more.Click += onMoreClick;
+        var button = ExpansionButton(overlay);
+        var peer = new ButtonAutomationPeer(button);
+        Assert.Equal(expand ? "展开译文" : "收起译文", peer.GetName());
+        Assert.Equal(peer.GetName(), button.ToolTip);
+        Assert.True(peer.IsEnabled());
+        var clicked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        RoutedEventHandler onClick = (_, _) => clicked.TrySetResult();
+        button.Click += onClick;
+        var focused = Keyboard.FocusedElement;
+        nint foreground = Native.GetForegroundWindow();
+        Native.Point? original = null;
         try
         {
-            var invoke = Assert.IsAssignableFrom<IInvokeProvider>(new ButtonAutomationPeer(more).GetPattern(PatternInterface.Invoke));
-            invoke.Invoke();
+            if (mouse)
+            {
+                Assert.True(Native.GetCursorPos(out var cursor));
+                original = cursor;
+                var point = button.PointToScreen(new(button.ActualWidth / 2, button.ActualHeight / 2));
+                var pixel = new Native.Point { X = (int)point.X, Y = (int)point.Y };
+                Assert.Equal(overlay.Handle, WindowFromPoint(pixel));
+                Assert.True(SetCursorPos(pixel.X, pixel.Y));
+                await ObserveRenderingFor(TimeSpan.Zero);
+                Assert.True(button.IsMouseOver);
+                Assert.Equal(1, button.Opacity);
+                Assert.False(Native.GetAsyncKeyState(1) < 0);
+                KeyboardInput[] input = [new() { MouseFlags = 2 }, new() { MouseFlags = 4 }];
+                uint sent = SendInput(2, input, Marshal.SizeOf<KeyboardInput>());
+                if (sent == 1)
+                    Assert.Equal(1u, SendInput(1, [input[1]], Marshal.SizeOf<KeyboardInput>()));
+                Assert.Equal(2u, sent);
+            }
+            else
+            {
+                var invoke = Assert.IsAssignableFrom<IInvokeProvider>(peer.GetPattern(PatternInterface.Invoke));
+                invoke.Invoke();
+            }
+            await clicked.Task.WaitAsync(deadline.Token);
+            Assert.Equal(expand ? "收起译文" : "展开译文", peer.GetName());
+            Assert.Equal(peer.GetName(), button.ToolTip);
+            Assert.Same(focused, Keyboard.FocusedElement);
+            Assert.Equal(foreground, Native.GetForegroundWindow());
+        }
+        finally
+        {
+            button.Click -= onClick;
+            if (original is { } cursor)
+                Assert.True(SetCursorPos(cursor.X, cursor.Y));
+        }
+    }
+
+    private static async Task ToggleExpansionFromKeyboardMenu(OverlayWindow overlay)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(3));
+        var more = Descendants(overlay).OfType<Button>()
+            .Single(button => new ButtonAutomationPeer(button).GetName() == "更多翻译操作");
+        for (int step = 0; step < 2; step++)
+        {
+            var focused = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            KeyboardFocusChangedEventHandler onFocus = (_, _) => focused.TrySetResult();
+            overlay.AddHandler(Keyboard.GotKeyboardFocusEvent, onFocus);
+            try
+            {
+                Press(Key.Tab);
+                await focused.Task.WaitAsync(deadline.Token);
+            }
+            finally { overlay.RemoveHandler(Keyboard.GotKeyboardFocusEvent, onFocus); }
+        }
+        Assert.True(more.IsKeyboardFocused);
+        var opened = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        RoutedEventHandler onOpen = (_, _) => opened.TrySetResult();
+        more.Click += onOpen;
+        try
+        {
+            Press(Key.Space);
             await opened.Task.WaitAsync(deadline.Token);
         }
-        finally { more.Click -= onMoreClick; }
+        finally { more.Click -= onOpen; }
         var menu = PresentationSource.CurrentSources.OfType<HwndSource>()
             .Select(value => value.RootVisual).OfType<DependencyObject>()
             .SelectMany(root => Descendants(root).Prepend(root))
             .OfType<ContextMenu>().Single(control => control.IsOpen);
-        MenuItem? item = null;
-        var clicked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var button = ExpansionButton(overlay);
+        var item = menu.Items.OfType<MenuItem>().Single(value => Equals(value.Header, new ButtonAutomationPeer(button).GetName()));
+        Assert.Equal(button.IsEnabled, item.IsEnabled);
         var closed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        RoutedEventHandler onClick = (_, _) => clicked.TrySetResult();
         RoutedEventHandler onClosed = (_, _) => closed.TrySetResult();
+        menu.Closed += onClosed;
         try
         {
-            item = menu.Items.OfType<MenuItem>().Single(value => Equals(value.Header, expand ? "展开编辑面板" : "收起编辑面板"));
-            item.Click += onClick;
-            menu.Closed += onClosed;
             var invoke = Assert.IsAssignableFrom<IInvokeProvider>(new MenuItemAutomationPeer(item).GetPattern(PatternInterface.Invoke));
             invoke.Invoke();
-            await Task.WhenAll(clicked.Task, closed.Task).WaitAsync(deadline.Token);
-            Assert.False(menu.IsOpen);
+            await closed.Task.WaitAsync(deadline.Token);
         }
         finally
         {
-            if (item is not null)
-                item.Click -= onClick;
             menu.Closed -= onClosed;
-            // Only failed interactions need cleanup; successful invocation
-            // closes the popup through WPF, without any manual focus repair.
             if (menu.IsOpen)
                 menu.IsOpen = false;
+        }
+
+        static void Press(Key key)
+        {
+            ushort code = (ushort)KeyInterop.VirtualKeyFromKey(key);
+            KeyboardInput[] input = [new() { Type = 1, Key = code }, new() { Type = 1, Key = code, Flags = 2 }];
+            uint sent = SendInput(2, input, Marshal.SizeOf<KeyboardInput>());
+            if (sent == 1)
+                Assert.Equal(1u, SendInput(1, [input[1]], Marshal.SizeOf<KeyboardInput>()));
+            Assert.Equal(2u, sent);
         }
     }
 
@@ -1863,6 +1978,7 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         [FieldOffset(8)] public ushort Key;
         [FieldOffset(10)] public ushort Scan;
         [FieldOffset(12)] public uint Flags;
+        [FieldOffset(20)] public uint MouseFlags;
     }
 
     [DllImport("user32.dll")]

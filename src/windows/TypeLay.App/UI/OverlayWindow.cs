@@ -40,7 +40,7 @@ internal sealed class OverlayWindow : Window, ISessionView
     private SessionViewToken? _pressedExitToken;
     private bool _exitPressPending;
     private readonly Grid _surface;
-    private readonly Button _resumeButton;
+    private readonly Button _resumeButton, _expandButton;
     private readonly TextBlock _pausedStatus, _resumeHint;
     private long? _pausedRevision, _pressedPauseRevision;
     private bool _rendering, _editing, _composing, _expanded, _hasPreview, _canEditPreview;
@@ -170,6 +170,42 @@ internal sealed class OverlayWindow : Window, ISessionView
         _status = UiTheme.Text("", 10.5, muted: true);
         tag.Children.Add(_dot);
         tag.Children.Add(_status);
+        _expandButton = new Button
+        {
+            Width = 27,
+            Height = 27,
+            Margin = new(6, 0, 0, 0),
+            Padding = new(0),
+            Background = Brushes.Transparent,
+            BorderThickness = new(0),
+            Focusable = false,
+            IsTabStop = false,
+            IsEnabled = false,
+            Opacity = 0
+        };
+        _expandButton.Template = (ControlTemplate)XamlReader.Parse("""
+            <ControlTemplate xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" TargetType="Button">
+              <Border x:Name="button" CornerRadius="6" Background="{TemplateBinding Background}">
+                <Viewbox Width="15" Height="15">
+                  <Canvas Width="24" Height="24">
+                    <Path x:Name="icon" Data="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7" Stroke="{DynamicResource Muted}" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                  </Canvas>
+                </Viewbox>
+              </Border>
+              <ControlTemplate.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                  <Setter TargetName="button" Property="Background" Value="{DynamicResource Panel2}"/>
+                  <Setter TargetName="icon" Property="Stroke" Value="{DynamicResource Text}"/>
+                </Trigger>
+                <Trigger Property="IsEnabled" Value="False"><Setter TargetName="button" Property="Opacity" Value="0.4"/></Trigger>
+              </ControlTemplate.Triggers>
+            </ControlTemplate>
+            """);
+        _expandButton.Click += (_, _) => ToggleExpansion();
+        _surface.MouseEnter += (_, _) => UpdateExpansionAffordance();
+        _surface.MouseLeave += (_, _) => UpdateExpansionAffordance();
+        _surface.IsKeyboardFocusWithinChanged += (_, _) => UpdateExpansionAffordance();
+        tag.Children.Add(_expandButton);
         Grid.SetColumn(tag, 1);
         header.Children.Add(tag);
         _headerBorder = UiTheme.Border(header, 0);
@@ -240,6 +276,7 @@ internal sealed class OverlayWindow : Window, ISessionView
                 _ordinaryInput?.InvalidateOrdinaryEditorInput();
                 if (_viewContext?.CanEdit == true)
                     DraftChanged?.Invoke(_editor.Text);
+                UpdateExpansionAffordance();
             }
         };
         _editor.LostKeyboardFocus += (_, _) => _ordinaryInput?.SetOrdinaryEditor(null);
@@ -590,6 +627,18 @@ internal sealed class OverlayWindow : Window, ISessionView
             }
             else
                 Native.GetCursorPos(out cursor);
+            // Expanding is a visual-only action, including for owned sources.
+            // Deliver its click without starting an editor focus handoff.
+            if (_expandButton.IsVisible && _expandButton.IsEnabled)
+            {
+                var expansionPoint = _expandButton.PointFromScreen(new(cursor.X, cursor.Y));
+                if (expansionPoint.X >= 0 && expansionPoint.Y >= 0
+                    && expansionPoint.X < _expandButton.ActualWidth && expansionPoint.Y < _expandButton.ActualHeight)
+                {
+                    handled = true;
+                    return 3; // MA_NOACTIVATE
+                }
+            }
             var local = _editor.PointFromScreen(new(cursor.X, cursor.Y));
             var refusal = OwnedEditorAdmissionReason.None;
             bool Refuse(OwnedEditorAdmissionReason reason)
@@ -847,6 +896,21 @@ internal sealed class OverlayWindow : Window, ISessionView
         else
             _editor.BorderBrush = Brushes.Transparent;
     }
+    private void ToggleExpansion()
+    {
+        if (!_expandButton.IsEnabled || !_expandButton.IsVisible)
+            return;
+        _expanded = !_expanded;
+        UpdateExpansionAffordance();
+    }
+    private void UpdateExpansionAffordance()
+    {
+        string name = _expanded ? "收起译文" : "展开译文";
+        _expandButton.ToolTip = name;
+        AutomationProperties.SetName(_expandButton, name);
+        _expandButton.IsEnabled = _hasPreview && _editor.Text.Length > 0;
+        _expandButton.Opacity = _surface.IsMouseOver || _surface.IsKeyboardFocusWithin ? 1 : 0;
+    }
     private void SetNoActivate(bool value)
     {
         if (_hwnd == 0)
@@ -925,6 +989,7 @@ internal sealed class OverlayWindow : Window, ISessionView
             _footerBorder.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
             _surface.RowDefinitions[2].Height = new(idle ? 0 : 34);
             _status.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
+            _expandButton.Visibility = idle ? Visibility.Collapsed : Visibility.Visible;
             _dot.Visibility = display.Dot == StatusDot.None ? Visibility.Collapsed : Visibility.Visible;
             if (idle)
                 _expanded = false;
@@ -976,6 +1041,7 @@ internal sealed class OverlayWindow : Window, ISessionView
                 _editorForegroundKey = foregroundKey;
             }
             UpdateEditorAffordance();
+            UpdateExpansionAffordance();
             if (trace)
                 uiMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds - textMs;
             positionTiming = Position(source.Target, source.Bounds, idle, trace);
@@ -1230,6 +1296,7 @@ internal sealed class OverlayWindow : Window, ISessionView
             _editor.IsReadOnly = true;
             _editor.Focusable = false;
             UpdateEditorAffordance();
+            UpdateExpansionAffordance();
             _status.Text = "";
         }
         finally { _rendering = false; }
@@ -1247,7 +1314,8 @@ internal sealed class OverlayWindow : Window, ISessionView
         }
         Add("复制译文", () => { try { Clipboard.SetText(_editor.Text); } catch (System.Runtime.InteropServices.ExternalException) { } }, _hasPreview);
         Add("重新翻译", () => RegenerateRequested?.Invoke(), !_composing);
-        Add(_expanded ? "收起编辑面板" : "展开编辑面板", () => _expanded = !_expanded);
+        // The focusable menu remains an auxiliary keyboard route.
+        Add(AutomationProperties.GetName(_expandButton), ToggleExpansion, _expandButton.IsEnabled);
         menu.Items.Add(new Separator());
         Add("不要在这个应用中显示", () => ExcludeRequested?.Invoke());
         Add("隐藏当前翻译", () =>
