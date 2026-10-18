@@ -4,10 +4,27 @@ using TypeLay.Runtime;
 using TypeLay.Windows;
 namespace TypeLay.App;
 
+// Keep existing command/receipt evidence available after noisy observations,
+// while retaining the original process-wide maximum of 256 trace entries.
+internal sealed class BrowserTraceBudget
+{
+    private int _general, _commands;
+    public bool GeneralAvailable => Volatile.Read(ref _general) < 224;
+    public bool TryTake(string operation)
+    {
+        bool command = operation is "browser-command-approved"
+            or "browser-direct-Verified" or "browser-direct-RejectedBeforeMutation" or "browser-direct-OutcomeUnknown"
+            or "browser-accept-Verified" or "browser-accept-RejectedBeforeMutation" or "browser-accept-OutcomeUnknown";
+        ref int count = ref (command ? ref _commands : ref _general);
+        int maximum = command ? 32 : 224;
+        return Volatile.Read(ref count) < maximum && Interlocked.Increment(ref count) <= maximum;
+    }
+}
+
 internal sealed partial class BrowserInput
 {
     private readonly string? _tracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
-    private static int _traceCount;
+    private static readonly BrowserTraceBudget TraceBudget = new();
     private enum ObservationStage
     {
         None, Describe, Capture, Snapshot, Publish, Shortcut, Input, Lifecycle, OwnerPrepare
@@ -35,7 +52,7 @@ internal sealed partial class BrowserInput
     private readonly record struct ObservationTraceKey(ObservationReason Reason, bool? Editor,
         bool? TextChanged, bool? FocusChanged, PageReason Capture, PageReason Clock);
     private Dictionary<ObservationStage, ObservationTraceKey>? _lastObservationTrace;
-    private bool TraceEnabled => !string.IsNullOrWhiteSpace(_tracePath) && _traceCount < 256;
+    private bool TraceEnabled => !string.IsNullOrWhiteSpace(_tracePath) && TraceBudget.GeneralAvailable;
     private InputCapture CaptureRejected(ObservationReason reason, BrowserReply? reply = null,
         bool? editor = null, long? observationAgeMs = null)
     {
@@ -226,7 +243,7 @@ internal sealed partial class BrowserInput
     private static string? _lastTrayTrace;
     internal static void TraceTrayStatus(string? path, string assignedText)
     {
-        if (string.IsNullOrWhiteSpace(path) || _traceCount >= 256)
+        if (string.IsNullOrWhiteSpace(path) || !TraceBudget.GeneralAvailable)
             return;
         try
         {
@@ -254,12 +271,12 @@ internal sealed partial class BrowserInput
     }
     private void Trace(string operation, object? detail = null)
     {
-        if (TraceEnabled)
+        if (!string.IsNullOrWhiteSpace(_tracePath))
             TraceCore(_tracePath!, operation, detail);
     }
     private static void TraceCore(string path, string operation, object? detail)
     {
-        if (Interlocked.Increment(ref _traceCount) > 256)
+        if (!TraceBudget.TryTake(operation))
             return;
         try
         {

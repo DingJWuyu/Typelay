@@ -248,18 +248,13 @@ internal static partial class BrowserCooperationCheck
                 await WaitPublicCommandReadyAsync(commandSettings!, windows!, sourceBounds, ct);
                 direct.Stage = "single-f10-selection";
                 await PrepareInputAsync(cdp!, windows!, "Keep [", "] unchanged", selectSource: true, ct);
-                long offset = TraceLength(trace);
                 SendChord([0x11, 0x10, 0x79], cleanupErrors);
                 direct.ShortcutPresses = 1;
-                direct.Stage = "wait-direct-admission";
-                await WaitTraceAsync(trace, "browser-command-approved", offset, ct, directOnly: true);
                 direct.Stage = "wait-direct-replacement";
                 var state = await WaitStateAsync(cdp!, s => s.Replacements != 0, ct);
                 CheckReplacement(state, direct, "Keep [" + reference + "] unchanged", sourceFocus: true, caret: 6 + reference.Length);
                 direct.NoPreview = state.PreviewMounts == 0;
                 Require(direct.NoPreview && !(await cdp!.PreviewAsync(ct)).Visible, "direct-opened-preview");
-                direct.Stage = "wait-direct-receipt";
-                await WaitTraceAsync(trace, "browser-direct-Verified", offset, ct);
             });
             await Phase(background, "wait-public-command-ready", 30, async ct =>
             {

@@ -23,6 +23,24 @@ public sealed class BrowserContractTests
             observedAtMs = observed
         });
     [Fact]
+    public void BrowserTraceNoiseCannotConsumeReservedCommandAndReceiptBudget()
+    {
+        var budget = new BrowserTraceBudget();
+        for (int index = 0; index < 224; index++)
+            Assert.True(budget.TryTake("browser-observation"));
+        Assert.False(budget.GeneralAvailable);
+        Assert.False(budget.TryTake("browser-owner"));
+        Assert.False(budget.TryTake("browser-direct-unrecognized"));
+        string[] commands = ["browser-command-approved", "browser-direct-Verified",
+            "browser-direct-RejectedBeforeMutation", "browser-direct-OutcomeUnknown",
+            "browser-accept-Verified", "browser-accept-RejectedBeforeMutation", "browser-accept-OutcomeUnknown"];
+        for (int index = 0; index < 32; index++)
+            Assert.True(budget.TryTake(commands[index % commands.Length]));
+        foreach (string operation in commands)
+            Assert.False(budget.TryTake(operation));
+        Assert.False(budget.TryTake("browser-observation"));
+    }
+    [Fact]
     public void RouteRequiresAuthenticatedExtensionTopDocumentAndNormalWebScheme()
     {
         string origin = "chrome-extension://" + Extension + "/";
