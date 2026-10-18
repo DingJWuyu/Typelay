@@ -2,7 +2,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using System.Windows.Automation;
 using TypeLay.App;
@@ -102,15 +101,17 @@ internal static partial class BrowserCooperationCheck
         var pages = windows.Read().Where(window => window.Page).ToArray();
         Require(pages.Length == 1, "owned-page-window-unavailable");
         nint page = pages[0].Handle;
-        var viewport = PageContentBounds(page);
+        var browserBounds = WindowBounds(page);
         var settingsBounds = WindowBounds(settings.Current.NativeWindowHandle);
-        var metrics = await cdp.EvaluateAsync("({width:innerWidth,height:innerHeight,scale:devicePixelRatio})", ct);
-        double scale = metrics.GetProperty("scale").GetDouble();
-        Require(double.IsFinite(scale) && scale > 0
-            && Math.Abs(viewport.Width - metrics.GetProperty("width").GetDouble() * scale) <= 2
-            && Math.Abs(viewport.Height - metrics.GetProperty("height").GetDouble() * scale) <= 2,
-            "source-viewport-scale-mismatch");
-        double width = (Math.Min(viewport.Right, settingsBounds.Left - 16) - viewport.Left) / scale;
+        var monitor = new Native.MonitorInfo { Size = Marshal.SizeOf<Native.MonitorInfo>() };
+        Require(Native.GetMonitorInfoW(Native.MonitorFromWindow(page, 2), ref monitor), "source-monitor-unavailable");
+        var metrics = await cdp.EvaluateAsync("({width:innerWidth,height:innerHeight,scale:devicePixelRatio,left:screen.availLeft,top:screen.availTop,screenWidth:screen.availWidth,screenHeight:screen.availHeight})", ct);
+        double scale = Native.GetDpiForWindow(page) / 96.0;
+        Require(scale > 0 && Math.Abs(scale - metrics.GetProperty("scale").GetDouble()) < 0.001
+            && Math.Abs(monitor.Work.Right - monitor.Work.Left - metrics.GetProperty("screenWidth").GetDouble() * scale) <= 2
+            && Math.Abs(monitor.Work.Bottom - monitor.Work.Top - metrics.GetProperty("screenHeight").GetDouble() * scale) <= 2,
+            "source-screen-scale-mismatch");
+        double width = Math.Min(metrics.GetProperty("width").GetDouble(), (settingsBounds.Left - browserBounds.Left - 32) / scale);
         Require(width >= 100, "source-command-layout-unavailable");
         // Only this controlled page's layout changes. Chrome keeps its normal
         // window; both real fields fit in the exposed space left of Settings.
@@ -118,16 +119,9 @@ internal static partial class BrowserCooperationCheck
         var point = await cdp.EvaluateAsync("(()=>{const r=a.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2;return {x,y,left:r.left,top:r.top,width:r.width,height:r.height,visible:a.isConnected&&r.width>0&&r.height>0&&r.left>=0&&r.top>=0&&r.right<=innerWidth&&r.bottom<=innerHeight&&document.elementFromPoint(x,y)===a};})()", ct);
         Require(point.GetProperty("visible").GetBoolean(), "source-field-not-visible");
         double x = point.GetProperty("x").GetDouble(), y = point.GetProperty("y").GetDouble();
-        var field = new System.Windows.Rect(viewport.Left + point.GetProperty("left").GetDouble() * scale,
-            viewport.Top + point.GetProperty("top").GetDouble() * scale,
-            point.GetProperty("width").GetDouble() * scale, point.GetProperty("height").GetDouble() * scale);
-        Require(viewport.Contains(field) && !settingsBounds.IntersectsWith(field)
-            && Native.GetAncestor(WindowFromPoint(new Native.Point
-            {
-                X = (int)(viewport.Left + x * scale),
-                Y = (int)(viewport.Top + y * scale)
-            }), 2) == page,
-            "source-field-obscured");
+        // Observe the original click's browser-computed screen/client pair.
+        // No Chrome-internal child HWND or guessed toolbar height is needed.
+        await cdp.EvaluateAsync("globalThis.__cooperationPointer=null;a.addEventListener('mousedown',e=>{globalThis.__cooperationPointer={trusted:e.isTrusted,target:e.target===a,clientX:e.clientX,clientY:e.clientY,screenX:e.screenX,screenY:e.screenY};},{once:true});true", ct);
         foreach (string type in new[] { "mousePressed", "mouseReleased" })
             await cdp.PageCallAsync("Input.dispatchMouseEvent", new
             {
@@ -137,6 +131,23 @@ internal static partial class BrowserCooperationCheck
                 button = "left",
                 clickCount = 1
             }, ct);
+        var click = await cdp.EvaluateAsync("(()=>{const p=globalThis.__cooperationPointer;delete globalThis.__cooperationPointer;return p;})()", ct);
+        Require(click.ValueKind == JsonValueKind.Object && click.GetProperty("trusted").GetBoolean()
+            && click.GetProperty("target").GetBoolean()
+            && Math.Abs(click.GetProperty("clientX").GetDouble() - x) <= 1
+            && Math.Abs(click.GetProperty("clientY").GetDouble() - y) <= 1, "source-click-unobserved");
+        double screenX = monitor.Work.Left + (click.GetProperty("screenX").GetDouble() - metrics.GetProperty("left").GetDouble()) * scale;
+        double screenY = monitor.Work.Top + (click.GetProperty("screenY").GetDouble() - metrics.GetProperty("top").GetDouble()) * scale;
+        var viewport = new System.Windows.Rect(screenX - click.GetProperty("clientX").GetDouble() * scale,
+            screenY - click.GetProperty("clientY").GetDouble() * scale,
+            metrics.GetProperty("width").GetDouble() * scale, metrics.GetProperty("height").GetDouble() * scale);
+        var field = new System.Windows.Rect(viewport.Left + point.GetProperty("left").GetDouble() * scale,
+            viewport.Top + point.GetProperty("top").GetDouble() * scale,
+            point.GetProperty("width").GetDouble() * scale, point.GetProperty("height").GetDouble() * scale);
+        Require(viewport.Contains(field) && browserBounds.Contains(field) && !settingsBounds.IntersectsWith(field)
+            && Native.GetForegroundWindow() == page
+            && Native.GetAncestor(WindowFromPoint(new Native.Point { X = (int)screenX, Y = (int)screenY }), 2) == page,
+            "source-field-obscured");
         var state = await cdp.StateAsync("", ct);
         Require(state.PageFocused && state.Focus == "a", "source-focus-precondition");
         return field;
@@ -163,7 +174,7 @@ internal static partial class BrowserCooperationCheck
                     var work = new System.Windows.Rect(monitor.Work.Left, monitor.Work.Top,
                         monitor.Work.Right - monitor.Work.Left, monitor.Work.Bottom - monitor.Work.Top);
                     Require(!settings.Current.IsOffscreen && work.Contains(settingsBounds) && work.Contains(source)
-                        && PageContentBounds(pages[0].Handle).Contains(source) && !settingsBounds.IntersectsWith(source)
+                        && WindowBounds(pages[0].Handle).Contains(source) && !settingsBounds.IntersectsWith(source)
                         && Native.GetAncestor(WindowFromPoint(new Native.Point
                         {
                             X = (int)(source.Left + source.Width / 2),
@@ -192,20 +203,6 @@ internal static partial class BrowserCooperationCheck
         {
             throw new Failure("public-command-ready-unavailable");
         }
-    }
-    private static System.Windows.Rect PageContentBounds(nint page)
-    {
-        var renderers = new List<nint>();
-        EnumChildWindows(page, (child, _) =>
-        {
-            var name = new StringBuilder(128);
-            GetClassNameW(child, name, name.Capacity);
-            if (IsWindowVisible(child) && name.ToString() == "Chrome_RenderWidgetHostHWND")
-                renderers.Add(child);
-            return true;
-        }, 0);
-        Require(renderers.Count == 1, "source-viewport-unavailable");
-        return WindowBounds(renderers[0]);
     }
     private static System.Windows.Rect WindowBounds(nint window)
     {
@@ -395,13 +392,6 @@ internal static partial class BrowserCooperationCheck
         [FieldOffset(8)] public ushort Key;
         [FieldOffset(12)] public uint Flags;
     }
-    private delegate bool EnumWindow(nint window, nint data);
-    [DllImport("user32.dll")]
-    private static extern bool EnumChildWindows(nint parent, EnumWindow callback, nint data);
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern int GetClassNameW(nint window, StringBuilder text, int maximum);
-    [DllImport("user32.dll")]
-    private static extern bool IsWindowVisible(nint window);
     [DllImport("user32.dll")]
     private static extern nint WindowFromPoint(Native.Point point);
     [DllImport("user32.dll")]
