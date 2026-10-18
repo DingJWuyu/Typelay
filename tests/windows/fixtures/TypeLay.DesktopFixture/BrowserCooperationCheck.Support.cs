@@ -368,19 +368,27 @@ internal static partial class BrowserCooperationCheck
     private static void SendChord(ushort[] keys, List<CleanupError> cleanupErrors)
     {
         Require(new ushort[] { 0x11, 0x10, 0x12, 0x5b, 0x5c }.All(key => (Native.GetAsyncKeyState(key) & 0x8000) == 0), "modifier-already-held");
-        var inputs = keys.Select(key => new KeyInput { Type = 1, Key = key })
-            .Concat(keys.Reverse().Select(key => new KeyInput { Type = 1, Key = key, Flags = 2 })).ToArray();
+        // The browser's physical press identity comes from the scan code.
+        // Resolve every key before inserting any edge, then reuse the same
+        // identity for key-up and partial-insertion cleanup.
+        var presses = keys.Select(key =>
+        {
+            uint scan = MapVirtualKeyW(key, 0); // MAPVK_VK_TO_VSC; generic modifiers map to the left key.
+            Require(scan is > 0 and <= 0xff, "shortcut-scan-unavailable");
+            return new KeyInput { Type = 1, Scan = (ushort)scan, Flags = 8 }; // KEYEVENTF_SCANCODE
+        }).ToArray();
+        var inputs = presses.Concat(presses.Reverse().Select(input => input with { Flags = input.Flags | 2 })).ToArray();
         uint inserted = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<KeyInput>());
         if (inserted == inputs.Length)
             return;
         // Clean up only the successfully inserted prefix; never repeat a keydown.
-        var held = new List<ushort>();
+        var held = new List<KeyInput>();
         foreach (var input in inputs.Take((int)Math.Min(inserted, (uint)inputs.Length)))
-            if (input.Flags == 0)
-                held.Add(input.Key);
+            if ((input.Flags & 2) == 0)
+                held.Add(input);
             else
-                held.Remove(input.Key);
-        var release = held.AsEnumerable().Reverse().Select(key => new KeyInput { Type = 1, Key = key, Flags = 2 }).ToArray();
+                held.RemoveAll(press => press.Scan == input.Scan);
+        var release = held.AsEnumerable().Reverse().Select(input => input with { Flags = input.Flags | 2 }).ToArray();
         if (release.Length > 0 && SendInput((uint)release.Length, release, Marshal.SizeOf<KeyInput>()) != release.Length)
             cleanupErrors.Add(new("injected-keys", "key-release-incomplete"));
         throw new Failure("single-shortcut-injection-incomplete");
@@ -389,7 +397,7 @@ internal static partial class BrowserCooperationCheck
     private struct KeyInput
     {
         [FieldOffset(0)] public uint Type;
-        [FieldOffset(8)] public ushort Key;
+        [FieldOffset(10)] public ushort Scan;
         [FieldOffset(12)] public uint Flags;
     }
     [DllImport("user32.dll")]
@@ -398,4 +406,6 @@ internal static partial class BrowserCooperationCheck
     private static extern bool GetWindowRect(nint window, out Native.Rect bounds);
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint count, KeyInput[] input, int size);
+    [DllImport("user32.dll")]
+    private static extern uint MapVirtualKeyW(uint code, uint mapType);
 }
