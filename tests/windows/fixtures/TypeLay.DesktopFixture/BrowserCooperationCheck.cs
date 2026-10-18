@@ -274,19 +274,20 @@ internal static partial class BrowserCooperationCheck
                 appStart.Environment["TYPELAY_TRACE"] = trace;
                 app = new ChildProcess(appStart);
                 appStopped = false;
-                setup.Stage = "cancel-connect-in-real-settings";
                 registrationAttempted = true; // Also reconcile an unexpected registration after cancellation.
                 registrationAbsent = false;
-                await BrowserConnectionActionAsync(app.Process, "接入", ct, accept: false);
+                await BrowserConnectionActionAsync(app.Process, "接入", step => setup.Stage = "cancel-connect-" + step, ct, accept: false);
+                setup.Stage = "cancel-connect-host-status";
                 using (var cancelled = JsonDocument.Parse(await HostCommandAsync(host, ["status"], ct)))
                     Require(!cancelled.RootElement.GetProperty("registered").GetBoolean(), "cancelled-connect-registered");
                 uiConnectCancelled = true;
-                setup.Stage = "confirm-connect-in-real-settings";
-                await BrowserConnectionActionAsync(app.Process, "接入", ct);
+                await BrowserConnectionActionAsync(app.Process, "接入", step => setup.Stage = "confirm-connect-" + step, ct);
                 uiConnectConfirmed = true;
+                setup.Stage = "confirm-connect-host-status";
                 using (var status = JsonDocument.Parse(await HostCommandAsync(host, ["status"], ct)))
                     Require(status.RootElement.GetProperty("registered").GetBoolean()
                         && status.RootElement.GetProperty("origin").GetString() == "chrome-extension://" + extensionId + "/", "registration-unconfirmed");
+                setup.Stage = "confirm-connect-wait-connected";
                 await WaitBrowserConnectionStatusAsync(app.Process, "已连接", ct);
             });
             string reference = "";
@@ -359,11 +360,13 @@ internal static partial class BrowserCooperationCheck
             });
             await Phase(disconnected, "confirm-remove-in-real-settings", 30, async ct =>
             {
-                await BrowserConnectionActionAsync(app!.Process, "移除连接", ct);
+                await BrowserConnectionActionAsync(app!.Process, "移除连接", step => disconnected.Stage = "remove-connection-" + step, ct);
                 uiRemoveConfirmed = true;
+                disconnected.Stage = "remove-connection-host-status";
                 using (var status = JsonDocument.Parse(await HostCommandAsync(host, ["status"], ct)))
                     Require(!status.RootElement.GetProperty("registered").GetBoolean(), "ui-removal-unconfirmed");
                 registrationAbsent = true;
+                disconnected.Stage = "remove-connection-wait-disconnected";
                 await WaitBrowserConnectionStatusAsync(app.Process, "需要安装或连接", ct);
                 Require(!app.Process.HasExited, "app-exited-during-remove");
                 await PrepareInputAsync(cdp!, windows!, "", "", selectSource: false, ct);

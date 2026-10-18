@@ -336,20 +336,47 @@ internal static partial class BrowserCooperationCheck
         }
         return window;
     }
-    private static async Task BrowserConnectionActionAsync(Process app, string action, CancellationToken ct, bool accept = true)
+    private static async Task BrowserConnectionActionAsync(Process app, string action, Action<string> setStage, CancellationToken ct, bool accept = true)
     {
+        setStage("find-settings");
         var window = await FindSettingsAsync(app, ct);
+        var presentation = ApplicationSupportPresentation.Create([]);
+        var applications = new PropertyCondition(AutomationElement.NameProperty, "▦  " + presentation.Title);
+        setStage("navigate-applications");
+        int[] previousNavigation = await Task.Run(() =>
+        {
+            var apps = window.FindFirst(TreeScope.Descendants, applications);
+            Require(apps is not null, "settings-applications-unavailable");
+            int[] identity = apps!.GetRuntimeId();
+            ((InvokePattern)apps.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+            return identity;
+        }, ct).WaitAsync(ct);
+        // WPF queues Invoke. Even when applications was already selected, wait
+        // for its new visible page before expanding controls from that page.
+        setStage("await-applications-page");
+        while (true)
+        {
+            bool ready = await Task.Run(() =>
+            {
+                var apps = window.FindFirst(TreeScope.Descendants, applications);
+                return apps is not null && !apps.GetRuntimeId().SequenceEqual(previousNavigation)
+                    && window.FindFirst(TreeScope.Descendants,
+                        new AndCondition(new PropertyCondition(AutomationElement.NameProperty, presentation.Title),
+                            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text))) is not null;
+            }, ct).WaitAsync(ct);
+            if (ready)
+                break;
+            await Task.Delay(40, ct);
+        }
+        setStage("expand-other-applications");
         await Task.Run(() =>
         {
-            var apps = window.FindFirst(TreeScope.Descendants,
-                new PropertyCondition(AutomationElement.NameProperty, "▦  " + ApplicationSupportPresentation.Create([]).Title));
-            Require(apps is not null, "settings-applications-unavailable");
-            ((InvokePattern)apps!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
             var more = window.FindFirst(TreeScope.Descendants,
-                new PropertyCondition(AutomationElement.NameProperty, ApplicationSupportPresentation.Create([]).Labels.MoreApplications));
+                new PropertyCondition(AutomationElement.NameProperty, presentation.Labels.MoreApplications));
             if (more is not null && more.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out var expansion))
                 ((ExpandCollapsePattern)expansion).Expand();
         }, ct).WaitAsync(ct);
+        setStage("find-primary");
         AutomationElement? primary = null;
         while (primary is null)
         {
@@ -360,29 +387,35 @@ internal static partial class BrowserCooperationCheck
             if (primary is null)
                 await Task.Delay(40, ct);
         }
-        // InvokePattern can wait while the owned modal is open. Confirm from a
-        // separate UIA call, then await the original invocation as well.
+        setStage("invoke-primary");
         Task invocation = Task.Run(() => ((InvokePattern)primary.GetCurrentPattern(InvokePattern.Pattern)).Invoke(), ct);
+        AutomationElement? FindConfirmation() => AutomationElement.RootElement.FindFirst(TreeScope.Children,
+            new AndCondition(new PropertyCondition(AutomationElement.ProcessIdProperty, app.Id),
+                new PropertyCondition(AutomationElement.AutomationIdProperty, "ChromeConnectionConfirmation")));
+        setStage("find-confirmation");
         AutomationElement? confirm = null;
         while (confirm is null)
         {
             ct.ThrowIfCancellationRequested();
             confirm = await Task.Run(() =>
             {
-                var dialog = AutomationElement.RootElement.FindFirst(TreeScope.Children,
-                    new AndCondition(new PropertyCondition(AutomationElement.ProcessIdProperty, app.Id),
-                        new PropertyCondition(AutomationElement.AutomationIdProperty, "ChromeConnectionConfirmation")));
+                var dialog = FindConfirmation();
                 return dialog?.FindFirst(TreeScope.Descendants,
                     new PropertyCondition(AutomationElement.AutomationIdProperty, accept ? "ChromeConnectionConfirm" : "ChromeConnectionCancel"));
             }, ct).WaitAsync(ct);
             if (confirm is null)
                 await Task.Delay(40, ct);
         }
+        setStage(accept ? "confirm" : "cancel");
         await Task.Run(() => ((InvokePattern)confirm.GetCurrentPattern(InvokePattern.Pattern)).Invoke(), ct).WaitAsync(ct);
         await invocation.WaitAsync(ct);
+        setStage("await-dialog-close");
+        while (await Task.Run(() => FindConfirmation() is not null, ct).WaitAsync(ct))
+            await Task.Delay(40, ct);
         if (!accept)
             return;
         // Wait for the actual serialized Host operation, not merely the dialog.
+        setStage("await-host-completion");
         while (true)
         {
             bool complete = await Task.Run(() => primary.Current.IsEnabled && primary.Current.Name != action, ct).WaitAsync(ct);
