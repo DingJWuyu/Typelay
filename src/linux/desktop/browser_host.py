@@ -7,6 +7,7 @@ The desktop independently authenticates our same-user browser ancestry.
 """
 
 import os
+import re
 import selectors
 import sys
 import time
@@ -19,7 +20,13 @@ from wire import MAX_FRAME, Decoder, encode, now_ms, stamp_capture_reply
 
 
 def main():
-    connection = connect_private(Paths(home=Path(__file__).resolve().parent.parent).native)
+    paths = Paths(home=Path(__file__).resolve().parent.parent)
+    # Chromium supplies its own extension origin to the registered host. Other
+    # browser invocation shapes retain the existing, zero-capability protocol.
+    origin = sys.argv[1] if len(sys.argv) == 2 else None
+    if not isinstance(origin, str) or not re.fullmatch(r"chrome-extension://[a-p]{32}/", origin):
+        origin = None
+    connection = connect_private(paths.native)
     connection.setblocking(False)
     input_fd, output_fd = sys.stdin.fileno(), sys.stdout.fileno()
     os.set_blocking(input_fd, False)
@@ -52,6 +59,8 @@ def main():
                     "backend": "browser",
                     "pid": os.getpid(),
                     "lifetime": str(uuid.uuid4()),
+                    "origin": origin,
+                    "home": str(paths.home),
                 },
             },
         )

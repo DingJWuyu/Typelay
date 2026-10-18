@@ -11,12 +11,13 @@ let lastConnect = -Infinity;
 let connectTimer = null;
 let nextRequestId = 0;
 const nativeDispatch = () => ["native", "source-local"].includes(configuration?.data?.shortcutDispatch);
+const routedLifecycle = () => nativeDispatch() || configuration?.data?.sourceLocalAcceptanceVersion === 1;
 const routable = port => !!port && (!nativeDispatch() || !!routes.get(port)?.documentId);
 function postDocument(connection, port, message) {
   if (routable(port)) postNative(connection, {...message, route: routes.get(port)});
 }
 function documentFocus(port, focused) {
-  if (native && nativeDispatch()) postDocument(native, port, {event: "document-focus", data: focused});
+  if (native && routedLifecycle()) postDocument(native, port, {event: "document-focus", data: focused});
 }
 
 function disconnect(connection, close = false) {
@@ -144,7 +145,7 @@ api.runtime.onConnect.addListener(port => {
     postDocument(native, port, message);
   });
   port.onDisconnect.addListener(() => {
-    if (documentId && native && nativeDispatch())
+    if (documentId && native && routedLifecycle())
       postDocument(native, port, {event: "document-closed", data: null});
     if (documentId) documents.delete(documentId);
     if (active === port) active = null;

@@ -14,7 +14,7 @@ import uuid
 from collections import Counter, OrderedDict
 
 from geometry import anchor_geometry
-from link import Link
+from link import Link, RoutedReply
 from niri import Niri
 from paths import peer_credentials, process_identity, process_lineage
 from wire import now_ms
@@ -46,6 +46,14 @@ class Peer:
         self.application = process_identity(pid)
         self.backend = "gtk3"
         self.ancestors = {}
+        self.started = None
+        self.browser_origin = self.browser_home = None
+        self.browser_registration = None
+        self.browser_identity = None
+        self.browser_suspended = False
+        self.browser_had_v1 = False
+        self.browser_retired = False
+        self.browser_active_route = None
         self.lifetime = None
         self.connection_id = str(uuid.uuid4())
         self.shortcut = None
@@ -70,7 +78,7 @@ class Peer:
             self.link.close()
         return False
 
-    def event(self, name, data):
+    def event(self, name, data, route=None):
         if self.lifetime is None:
             import uuid
 
@@ -81,7 +89,13 @@ class Peer:
                 raise ValueError("native-backend")
             if self.backend == "browser":
                 self.ancestors = process_lineage(self.pid)
-                self.ancestors.pop(self.pid, None)
+                self.started = self.ancestors.pop(self.pid, None)
+                self.browser_origin, self.browser_home = data.get("origin"), data.get("home")
+                self.browser_registration = self.owner.browser_registration(
+                    self.browser_origin, self.browser_home, self.ancestors
+                )
+                self.browser_identity = self.browser_registration
+                self.link.routed = True
             self.lifetime = str(uuid.UUID(data["lifetime"]))
             if self.hello_timer:
                 self.owner.glib.source_remove(self.hello_timer)
@@ -89,7 +103,50 @@ class Peer:
             self.owner.configure_peer(self)
             self.owner.changed()
         else:
-            self.owner.event(self, name, data)
+            self.owner.event(
+                self,
+                name,
+                RoutedReply(data, route)
+                if self.backend == "browser" and isinstance(data, dict)
+                else data,
+                route=route,
+            )
+
+    def browser_alive(self):
+        identity = self.browser_identity
+        if not identity or not self.link.channel.alive:
+            return False
+        try:
+            current = process_lineage(self.pid)
+            return (
+                current.get(self.pid) == self.started
+                and current.get(identity["pid"]) == identity["started"]
+            )
+        except (OSError, ValueError, IndexError):
+            return False
+
+    def valid_browser_route(self, route, target=None):
+        if not self.browser_identity or not isinstance(route, dict):
+            return False
+        try:
+            token = route.get("documentToken")
+            return (
+                route.get("extensionId") == self.browser_origin[len("chrome-extension://") : -1]
+                and isinstance(route.get("documentId"), str)
+                and 0 < len(route["documentId"]) <= 128
+                and isinstance(token, str)
+                and str(uuid.UUID(token)) == token
+                and all(
+                    type(route.get(key)) is int and 0 <= route[key] < 2**53
+                    for key in ("tabId", "windowId")
+                )
+                and type(route.get("frameId")) is int
+                and route["frameId"] == 0
+                and route.get("scheme") in ("http:", "https:")
+                and (target is None or isinstance(target, str) and target.startswith(token + ":"))
+            )
+        except (ValueError, TypeError, AttributeError):
+            return False
 
     @property
     def anchor_space(self):
@@ -112,8 +169,9 @@ class Peer:
 
 
 class Input:
-    def __init__(self, glib, gdk, paths, host, tasks):
+    def __init__(self, glib, gdk, paths, host, tasks, *, browser_registration=None):
         self.glib, self.gdk, self.paths, self.host, self.tasks = glib, gdk, paths, host, tasks
+        self.browser_registration = browser_registration or (lambda *_: None)
         self.peers = set()
         self.observations = OrderedDict()
         self.frozen = OrderedDict()
@@ -243,7 +301,11 @@ class Input:
         if not self.fresh() or not self.niri.focused:
             return None
         pid = self.niri.focused.get("pid")
-        peers = [peer for peer in self.peers if peer.lifetime and peer.matches_process(pid)]
+        peers = [
+            peer
+            for peer in self.peers
+            if peer.lifetime and not peer.browser_retired and peer.matches_process(pid)
+        ]
         # niri chooses the process, not a guessed window-to-widget mapping. The
         # authenticated native peer then proves which GTK parent actually owns
         # keyboard focus. Its opaque field and parent-local view identify the
@@ -1010,6 +1072,7 @@ class Input:
         self.state()
 
     def expire(self):
+        self.check_browser_registrations()
         stamp = now_ms()
         for collection, age in (
             (self.observations, 2000),
@@ -1021,6 +1084,63 @@ class Input:
                     collection.pop(key)
         self.state()
         return not self.closing
+
+    def check_browser_registrations(self):
+        # Reuse the existing maintenance cycle and explicit settings action.
+        # Revocation retires grants, not the accounting for an already executed write.
+        for peer in list(self.peers):
+            if peer.backend != "browser" or not peer.lifetime:
+                continue
+            registration = (
+                self.browser_registration(peer.browser_origin, peer.browser_home, peer.ancestors)
+                if not peer.browser_suspended and not peer.browser_retired and peer.browser_alive()
+                else None
+            )
+            if registration != peer.browser_identity:
+                registration = None
+            if registration == peer.browser_registration:
+                continue
+            peer.browser_registration = registration
+            self.retire_browser_document(peer)
+            self.configure_peer(peer)
+
+    def suspend_browser(self, browser, suspended=True):
+        for peer in list(self.peers):
+            if peer.browser_identity and peer.browser_identity["browser"] == browser:
+                peer.browser_suspended = suspended
+                if suspended and peer.browser_had_v1:
+                    # Explicit Remove retires this exact granted connection.
+                    # Reconnecting explicitly creates a new peer; old issued
+                    # receipts still settle through the original connection.
+                    peer.browser_retired = True
+                    self.retire_browser_document(peer)
+        self.check_browser_registrations()
+
+    def retire_browser_document(self, peer, route=None):
+        self.clear_browser_capture()
+        if self.published_plan and self.published_plan[0] is peer:
+            issued = self.issued.get(self.published_plan[1])
+            if route is None or issued and issued.get("route") == route:
+                self.invalidate_publication()
+        record = self.bound_observation
+        if record and record["peer"] is peer and (route is None or record.get("route") == route):
+            self.bound_observation = None
+            self.window_epoch += 1
+        peer.link.command("revoke", {"shortcuts": 1})
+        peer.shortcut = None
+        self.state()
+
+    def browser_source_local(self, peer, native):
+        route = getattr(native, "route", None)
+        return bool(
+            peer.browser_registration
+            and not peer.browser_retired
+            and peer.browser_alive()
+            and self.niri.focused
+            and self.niri.focused.get("pid") == peer.browser_registration["pid"]
+            and peer.valid_browser_route(route, native.get("target"))
+            and route == peer.browser_active_route
+        )
 
     def remember(self, peer, native, window, geometry, frozen=False):
         # Diagnostic capability evidence only; never used to authorize capture or writes.
@@ -1052,6 +1172,7 @@ class Input:
             "geometry": geometry,
             "time": now_ms(),
             "target": snapshot["target"],
+            "route": getattr(native, "route", None),
         }
         # Do not retain captured source strings in this bookkeeping. Core owns them.
         collection = self.frozen if frozen else self.observations
@@ -1066,6 +1187,7 @@ class Input:
         config = self.shortcut_config
         if (
             config.get("sessionEnabled") is not True
+            or peer.browser_retired
             or not isinstance(acknowledgement, dict)
             or not config.get("generation")
             or acknowledgement.get("generation") != config["generation"]
@@ -1083,6 +1205,18 @@ class Input:
             "bindings": {"accept": config["accept"], "exit": config["exit"]},
             "sourceReady": acknowledgement["sourceReady"],
             "editorReady": acknowledgement["editorReady"],
+            "sourceLocalAcceptanceVersion": 1
+            if peer.backend == "browser"
+            and self.browser_source_local(peer, native)
+            and acknowledgement.get("shortcutDispatch") == "page"
+            and native.get("metadata", {}).get("inDocument") is True
+            and native.get("metadata", {}).get("hasValue") is True
+            and acknowledgement.get("target") == native["target"]
+            and type(acknowledgement.get("sourceLocalAcceptanceVersion")) is int
+            and acknowledgement["sourceLocalAcceptanceVersion"] == 1
+            and acknowledgement["sourceReady"]
+            and acknowledgement["editorReady"]
+            else 0,
         }
 
     def current_session_acknowledgement(self, record):
@@ -1090,11 +1224,18 @@ class Input:
         config = self.shortcut_config
         if (
             config.get("sessionEnabled") is not True
+            or record
+            and record["peer"].browser_retired
             or not acknowledgement
             or acknowledgement["target"] != record["target"]
             or acknowledgement["generation"] != config.get("generation")
             or acknowledgement["bindings"]
             != {"accept": config.get("accept"), "exit": config.get("exit")}
+            or acknowledgement.get("sourceLocalAcceptanceVersion") == 1
+            and not self.browser_source_local(
+                record["peer"],
+                RoutedReply({"target": record["target"]["value"]}, record.get("route")),
+            )
         ):
             return None
         return acknowledgement
@@ -1227,6 +1368,8 @@ class Input:
             not issued
             or issued["peer"] is not peer
             or issued["lease"]["source"]["target"] != target_id(peer, description["target"])
+            or issued.get("route") is not None
+            and issued["route"] != getattr(description, "route", None)
         ):
             return
         if value.get("ready") is not True:
@@ -1292,6 +1435,9 @@ class Input:
                 "bindings": dict(acknowledgement["bindings"]),
                 "sourceReady": acknowledgement["sourceReady"],
                 "editorReady": acknowledgement["editorReady"],
+                "sourceLocalAcceptanceVersion": acknowledgement.get(
+                    "sourceLocalAcceptanceVersion", 0
+                ),
             }
             if acknowledgement
             else None,
@@ -1511,7 +1657,7 @@ class Input:
             return self.expired_practice_capture(practice)
         if window is None:
             return self.captured("no-window")
-        if peer not in self.peers:
+        if peer not in self.peers or peer.browser_retired:
             return self.captured("unsupported-application")
         publication_generation = self.publication_generation
         cached, self.browser_capture = self.browser_capture, None
@@ -1551,6 +1697,8 @@ class Input:
         )
         if round_timing is not None:
             round_timing["describedMs"] = now_ms()
+        if peer.browser_retired:
+            return self.captured("browser-connection-removed")
         if not description:
             return self.captured("no-native-field")
         if peer.backend == "browser":
@@ -1559,6 +1707,8 @@ class Input:
             self.remember_publication(peer, description, publication_generation)
         if not await self.approve(peer, description):
             return self.captured("excluded-or-sensitive")
+        if peer.browser_retired:
+            return self.captured("browser-connection-removed")
         if round_timing is not None:
             round_timing["approvedMs"] = now_ms()
         if reuse and (
@@ -1589,6 +1739,8 @@ class Input:
         native = await peer.link.ask(
             "capture", capture_data, capture_trace=native_failure, capture_continuity=continuity
         )
+        if peer.browser_retired:
+            return self.captured("browser-connection-removed")
         if round_timing is not None:
             round_timing["capturedMs"] = now_ms()
             trace = native.get("captureTrace") if isinstance(native, dict) else None
@@ -1701,11 +1853,18 @@ class Input:
             owned_source["binding"]["commandGeneration"] = command_generation
         snapshot, record = self.remember(peer, native, window, geometry)
         acknowledgement = self.session_acknowledgement(peer, native)
-        if command_generation != self.shortcut_config.get(
-            "generation"
-        ) or acknowledgement != self.session_acknowledgement(peer, description):
+        if (
+            command_generation != self.shortcut_config.get("generation")
+            or acknowledgement != self.session_acknowledgement(peer, description)
+            or (
+                peer.backend == "browser"
+                and getattr(description, "route", None) != getattr(native, "route", None)
+            )
+        ):
             acknowledgement = None
         record["sessionShortcuts"] = acknowledgement
+        if acknowledgement and acknowledgement["sourceLocalAcceptanceVersion"] == 1:
+            peer.browser_had_v1 = True
         record["commandGeneration"] = command_generation
         self.bound, self.bound_observation = snapshot["target"], record
         if browser_source:
@@ -1735,11 +1894,14 @@ class Input:
                 # Retain metadata approval inputs only, never the source body.
                 self.browser_capture = {
                     "identity": identity,
-                    "description": {
-                        key: native[key]
-                        for key in ("target", "metadata", "authority", "sessionBindings")
-                        if key in native
-                    },
+                    "description": RoutedReply(
+                        {
+                            key: native[key]
+                            for key in ("target", "metadata", "authority", "sessionBindings")
+                            if key in native
+                        },
+                        getattr(native, "route", None),
+                    ),
                 }
         self.state()
         return self.captured(
@@ -1757,6 +1919,19 @@ class Input:
 
     def configure_peer(self, peer):
         configuration = self.shortcut_config
+        if peer.backend == "browser":
+            configuration = {
+                **configuration,
+                "shortcutDispatch": "page",
+                "sourceLocalAcceptanceVersion": 1 if peer.browser_registration else 0,
+            }
+            if peer.browser_retired:
+                configuration = {
+                    **configuration,
+                    "enabled": False,
+                    "sessionEnabled": False,
+                    "sourceLocalAcceptanceVersion": 0,
+                }
         if peer.backend not in ("qt6", "gtk3", "gtk4", "browser") and any(
             isinstance(configuration.get(name), str) and configuration[name].startswith("Ctrl+")
             for name in ("accept", "exit")
@@ -1787,7 +1962,8 @@ class Input:
 
     def start_shortcut(self, peer, value):
         if (
-            not isinstance(value, dict)
+            peer.browser_retired
+            or not isinstance(value, dict)
             or value.get("kind") not in ("wake", "direct")
             or not self.shortcut_config.get("enabled")
             or value.get("generation") != self.shortcut_config.get("generation")
@@ -1818,7 +1994,8 @@ class Input:
 
     def finish_shortcut(self, peer, value, rejected=False):
         if (
-            not isinstance(value, dict)
+            peer.browser_retired
+            or not isinstance(value, dict)
             or value.get("kind") not in ("wake", "direct")
             or not self.shortcut_config.get("enabled")
             or value.get("generation") != self.shortcut_config.get("generation")
@@ -2091,7 +2268,7 @@ class Input:
         if not record or record["peer"] not in self.peers or not self.fresh():
             return
         peer = record["peer"]
-        if self.focused_peer() is not peer or self.overlay_focused:
+        if peer.browser_retired or self.focused_peer() is not peer or self.overlay_focused:
             return
         if not shortcut and not self.practice_publication_allowed(lease, peer):
             return
@@ -2158,6 +2335,9 @@ class Input:
                     "lease": lease,
                     "time": now_ms(),
                     "roundTiming": round_timing,
+                    "route": record.get("route")
+                    if acknowledgement.get("sourceLocalAcceptanceVersion") == 1
+                    else None,
                 }
                 while len(self.issued) > 32:
                     self.issued.popitem(last=False)
@@ -2220,10 +2400,25 @@ class Input:
         # Retain issued receipts and frozen commands across foreground-session
         # teardown: they belong to already accepted physical input, not the UI.
 
-    def event(self, peer, name, value):
-        if peer not in self.peers:
+    def event(self, peer, name, value, *, route=None):
+        if peer not in self.peers or peer.browser_retired and name != "accepted":
             return
-        if name == "tab-diagnostic" and peer.backend == "browser":
+        if name in ("document-focus", "document-closed") and peer.backend == "browser":
+            if not peer.valid_browser_route(route):
+                return
+            if name == "document-closed":
+                if peer.browser_active_route == route:
+                    peer.browser_active_route = None
+                self.retire_browser_document(peer, route)
+            elif value is True:
+                previous = peer.browser_active_route
+                peer.browser_active_route = dict(route)
+                if previous and previous != route:
+                    self.retire_browser_document(peer, previous)
+            elif value is False and peer.browser_active_route == route:
+                peer.browser_active_route = None
+                self.retire_browser_document(peer, route)
+        elif name == "tab-diagnostic" and peer.backend == "browser":
             if not os.environ.get("TYPELAY_TRACE") or not isinstance(value, dict):
                 return
             reasons = {
@@ -2289,7 +2484,7 @@ class Input:
             if isinstance(value, dict) and isinstance(value.get("target"), str):
                 self.remember_publication(
                     peer,
-                    {"target": value["target"], "publication": value},
+                    RoutedReply({"target": value["target"], "publication": value}, route),
                     self.publication_generation,
                 )
         elif name == "ui":
@@ -2361,14 +2556,26 @@ class Input:
             self.clear_browser_capture()
             if self.published_plan and self.published_plan[0] is peer:
                 self.invalidate_publication()
-            issued = self.issued.get(value["planId"])
-            if not issued or issued["peer"] is not peer:
+            issued = self.issued.get(value.get("planId")) if isinstance(value, dict) else None
+            if (
+                not issued
+                or issued["peer"] is not peer
+                or issued.get("route") is not None
+                and issued["route"] != route
+            ):
                 peer.link.command(
                     "quarantine", {"target": self.bound["value"] if self.bound else ""}
                 )
                 return
             self.issued.pop(value["planId"])
-            receipt = value["receipt"]
+            # A receiptless native notification cannot cause a deferred write or
+            # claim success. The original one-shot operation is now uncertain.
+            receipt = value.get("receipt") if issued.get("route") is not None else value["receipt"]
+            if issued.get("route") is not None and not isinstance(receipt, dict):
+                receipt = refused(True)
+                peer.link.command(
+                    "quarantine", {"target": issued["lease"]["source"]["target"]["value"]}
+                )
             self.host.send(
                 "notice",
                 {
@@ -2423,14 +2630,14 @@ class Input:
 
     async def direct(self, plan):
         record = self.frozen.pop(observation_key(plan["expected"]), None)
-        if not record or record["peer"] not in self.peers:
+        if not record or record["peer"] not in self.peers or record["peer"].browser_retired:
             return refused()
         peer, target = record["peer"], record["target"]["value"]
         generation = self.shortcut_config.get("generation")
         description = await peer.link.ask("describe", {"target": target})
-        if not await self.approve(peer, description) or generation != self.shortcut_config.get(
-            "generation"
-        ):
+        if peer.browser_retired or not await self.approve(peer, description):
+            return refused()
+        if peer.browser_retired or generation != self.shortcut_config.get("generation"):
             return refused()
         try:
             return await peer.link.ask(

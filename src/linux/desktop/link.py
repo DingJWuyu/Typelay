@@ -5,6 +5,14 @@ import asyncio
 from wire import Channel
 
 
+class RoutedReply(dict):
+    """Native browser data with its request-owned, outer transport route."""
+
+    def __init__(self, data, route):
+        super().__init__(data)
+        self.route = dict(route) if isinstance(route, dict) else None
+
+
 def capture_failure_trace(value):
     """Allow diagnostic scalars only; this never supplies an input result."""
     if not isinstance(value, dict) or value.get("reason") not in (
@@ -62,6 +70,7 @@ class Link:
         self.request = request
         self.on_closed = closed
         self.response_key = response_key
+        self.routed = False
         self.sequence = 0
         self.pending = {}
         self.capture_traces = {}
@@ -102,7 +111,12 @@ class Link:
         if self.response_key in frame and "op" not in frame:
             future = self.pending.get(frame[self.response_key])
             if future is not None and not future.done():
-                future.set_result(frame.get("data"))
+                data = frame.get("data")
+                future.set_result(
+                    RoutedReply(data, frame.get("route"))
+                    if self.routed and isinstance(data, dict)
+                    else data
+                )
                 continuity = self.capture_continuities.get(frame[self.response_key])
                 value = frame.get("captureContinuity")
                 if continuity is not None and frame.get("data") is None and isinstance(value, dict):
@@ -134,7 +148,10 @@ class Link:
                     except Exception:
                         pass
         elif "event" in frame:
-            self.notification(frame["event"], frame.get("data"))
+            if self.routed:
+                self.notification(frame["event"], frame.get("data"), frame.get("route"))
+            else:
+                self.notification(frame["event"], frame.get("data"))
         elif self.request is not None and len(self.tasks) < 16:
             task = asyncio.create_task(self.serve(frame))
             self.tasks.add(task)

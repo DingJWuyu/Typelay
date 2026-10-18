@@ -259,7 +259,7 @@ async def desktop(paths, background, lock, tutorial=False):
 
     gi.require_version("Gtk", "3.0")
     gi.require_version("Gdk", "3.0")
-    from application_support import ApplicationSupport
+    from application_support import BROWSERS, ApplicationSupport
     from gi.repository import Gdk, GLib, Gtk
     from input import Input
     from link import Link
@@ -455,8 +455,10 @@ async def desktop(paths, background, lock, tutorial=False):
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server_watch = 0
     try:
-        components["input"] = Input(GLib, Gdk, paths, host, task)
         support = ApplicationSupport(paths)
+        components["input"] = Input(
+            GLib, Gdk, paths, host, task, browser_registration=support.browser_registration
+        )
         practice = PracticeSession(host, components["input"], support, task)
 
         async def support_view():
@@ -496,9 +498,18 @@ async def desktop(paths, background, lock, tutorial=False):
                 )
             if identity == "desktop-text" and action in ("Connect", "Remove"):
                 await practice.end(practice.pid)
-            await support.execute(
+            if identity in BROWSERS and action == "Remove":
+                components["input"].suspend_browser(identity)
+            result = await support.execute(
                 identity, action, directory, startup_id=startup_id, desktop_id=desktop_id
             )
+            if identity in BROWSERS and action == "Remove" and result.get("ok"):
+                # Include any granted peer that connected while the installer
+                # was removing the registration. Completed receipts still settle.
+                components["input"].suspend_browser(identity)
+            if identity in BROWSERS and action in ("Connect", "Repair") and result.get("ok"):
+                components["input"].suspend_browser(identity, False)
+            components["input"].check_browser_registrations()
             return await support_view()
 
         components["settings"] = Settings(

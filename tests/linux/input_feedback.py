@@ -9,6 +9,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
+from application_support import ApplicationSupport  # noqa: E402
 from input import Input, Peer  # noqa: E402
 from overlay import Overlay  # noqa: E402
 from practice_session import PracticeSession  # noqa: E402
@@ -99,6 +101,7 @@ class InputFeedbackTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory(prefix="typelay-input-feedback-")
         self.addCleanup(directory.cleanup)
+        self.home = Path(directory.name)
         self.host = Host()
         self.loop = EventLoop()
         self.connections = {}
@@ -138,7 +141,7 @@ class InputFeedbackTests(unittest.TestCase):
             },
         )
 
-    def connect_peer(self, backend="qt6"):
+    def connect_peer(self, backend="qt6", hello=None):
         process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
 
         def stop():
@@ -153,9 +156,387 @@ class InputFeedbackTests(unittest.TestCase):
         self.input.peers.add(peer)
         peer.event(
             "hello",
-            {"protocol": 2, "pid": process.pid, "backend": backend, "lifetime": str(uuid.uuid4())},
+            {
+                "protocol": 2,
+                "pid": process.pid,
+                "backend": backend,
+                "lifetime": str(uuid.uuid4()),
+                **(hello or {}),
+            },
         )
         return peer
+
+    def connect_registered_browser(self):
+        environment = patch.dict(
+            os.environ, {"HOME": str(self.home), "XDG_CONFIG_HOME": str(self.home / "config")}
+        )
+        environment.start()
+        self.addCleanup(environment.stop)
+        root = self.home / ".local/lib/typelay"
+        release = root / "releases/current-test"
+        release.mkdir(parents=True)
+        (root / "current").symlink_to(release, target_is_directory=True)
+        shutil.copy2(ROOT / "packaging/linux/install.py", release / "install.py")
+        host = release / "typelay-browser-host"
+        host.write_text("#!/bin/sh\nexit 1\n")
+        host.chmod(0o700)
+        self.support = ApplicationSupport(SimpleNamespace(home=release))
+        # Only the OS executable-name port is controlled. PID ancestry and start
+        # times, current-user registration files and the production installer are real.
+        identity = patch(
+            "application_support.process_identity",
+            side_effect=lambda pid: "chromium" if pid == os.getpid() else "python",
+        )
+        identity.start()
+        self.addCleanup(identity.stop)
+        self.extension_id = "a" * 32
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.support.installer.register_browser(root, "chromium", self.extension_id)
+        self.input.browser_registration = self.support.browser_registration
+        self.peer = self.connect_peer(
+            "browser", {"origin": f"chrome-extension://{self.extension_id}/", "home": str(release)}
+        )
+        self.route = {
+            "extensionId": self.extension_id,
+            "documentId": "browser-owned-document",
+            "documentToken": str(uuid.uuid4()),
+            "tabId": 1,
+            "windowId": 2,
+            "frameId": 0,
+            "scheme": "https:",
+        }
+        self.input.niri._deliver(
+            ("test", [{"id": 99, "pid": os.getpid(), "is_focused": True}], {}, {}, False, 1000)
+        )
+        self.peer.link.receive({"event": "document-focus", "data": True, "route": self.route})
+        return self.native_frames(self.peer)
+
+    async def capture_browser(
+        self, *, bindings=None, description_route=None, capture_route=None, before_reply=None
+    ):
+        self.host.capture_allowed = True
+        self.input.notification("settings", {"enabled": True})
+        self.input.notification("revoke", None)
+        self.native_frames(self.peer)
+        operation = asyncio.create_task(self.input.request("capture", {}))
+        description = self.description()
+        target = self.route["documentToken"] + ":1"
+        description["target"] = description["authority"]["target"] = target
+        description["metadata"]["inDocument"] = True
+        description["geometry"]["space"] = "browser-viewport"
+        description["sessionBindings"] = {
+            "target": target,
+            "generation": self.generation,
+            "accept": "Tab",
+            "exit": "Esc",
+            "sourceReady": True,
+            "editorReady": True,
+            "shortcutDispatch": "page",
+            "sourceLocalAcceptanceVersion": 1,
+            **(bindings or {}),
+        }
+        native = {
+            **description,
+            "text": "Original source",
+            "selection": {"start": 0, "end": 0},
+            "ime": "Clear",
+            "observedAtMs": 1000,
+            "writeSupported": True,
+        }
+        self.browser_native = native
+        for expected, value, route in (
+            ("describe", description, description_route),
+            ("capture", native, capture_route),
+        ):
+
+            async def reply():
+                while True:
+                    requests = self.native_frames(self.peer)
+                    if requests:
+                        self.assertEqual([frame["op"] for frame in requests], [expected])
+                        if before_reply:
+                            before_reply(expected)
+                        self.peer.link.receive(
+                            {
+                                "id": requests[0]["id"],
+                                "data": value,
+                                "route": self.route if route is None else route,
+                            }
+                        )
+                        return
+                    await asyncio.sleep(0)
+
+            await asyncio.wait_for(reply(), 1)
+        return await asyncio.wait_for(operation, 1)
+
+    def publish_browser(self, capture):
+        identity = str(uuid.uuid4())
+        self.input.notification(
+            "publish",
+            {
+                "lease": {
+                    "source": capture["snapshot"],
+                    "userEpoch": capture["userEpoch"],
+                    "foregroundEpoch": capture["foregroundEpoch"],
+                    "escapeAllowed": True,
+                    "commandGeneration": self.generation,
+                    "sessionRevision": 9,
+                },
+                "permit": {
+                    "plan": {
+                        "id": identity,
+                        "expected": capture["snapshot"],
+                        "replacement": "Translation",
+                    },
+                    "expiresAtMs": 1100,
+                },
+            },
+        )
+        self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["publish"])
+        return identity
+
+    def test_browser_default_capability_requires_current_registered_connection_and_exact_ack(self):
+        frames = self.connect_registered_browser()
+        configured = next(frame["data"] for frame in frames if frame["op"] == "configure-shortcuts")
+        self.assertEqual(configured["shortcutDispatch"], "page")
+        self.assertEqual(configured["sourceLocalAcceptanceVersion"], 1)
+        capture = asyncio.run(self.capture_browser())
+        self.assertEqual(capture["sessionShortcuts"]["sourceLocalAcceptanceVersion"], 1)
+        for change in (
+            {"target": "other"},
+            {"generation": str(uuid.uuid4())},
+            {"accept": "F7"},
+            {"sourceReady": False},
+            {"editorReady": False},
+            {"sourceLocalAcceptanceVersion": True},
+            {"sourceLocalAcceptanceVersion": 0},
+            {"sourceLocalAcceptanceVersion": 2},
+        ):
+            with self.subTest(change=change):
+                capture = asyncio.run(self.capture_browser(bindings=change))
+                self.assertEqual(
+                    (capture["sessionShortcuts"] or {}).get("sourceLocalAcceptanceVersion", 0), 0
+                )
+        self.support.installer.unregister_browser(self.support.root, "chromium")
+        self.input.expire()
+        capture = asyncio.run(self.capture_browser())
+        self.assertEqual(capture["sessionShortcuts"]["sourceLocalAcceptanceVersion"], 0)
+
+    def test_browser_route_mismatch_and_ancestor_focus_never_receive_default_acceptance(self):
+        self.connect_registered_browser()
+        for route in (
+            {},
+            {**self.route, "extensionId": "b" * 32},
+            {**self.route, "documentId": None},
+            {**self.route, "documentId": "different-document"},
+            {**self.route, "frameId": 1},
+        ):
+            with self.subTest(route=route):
+                capture = asyncio.run(self.capture_browser(capture_route=route))
+                self.assertEqual(
+                    (capture["sessionShortcuts"] or {}).get("sourceLocalAcceptanceVersion", 0), 0
+                )
+        # The existing general ancestry match is insufficient: the foreground
+        # must be the specific browser ancestor established by this registration.
+        self.focus(self.peer)
+        self.assertIsNone(asyncio.run(self.input.request("capture", {})))
+
+    def test_browser_retired_registration_and_document_keep_only_original_completed_receipt(self):
+        self.connect_registered_browser()
+        identity = self.publish_browser(asyncio.run(self.capture_browser()))
+        self.support.installer.unregister_browser(self.support.root, "chromium")
+        self.input.expire()
+        self.peer.link.receive({"event": "document-closed", "data": None, "route": self.route})
+        self.native_frames(self.peer)
+        receipt = {
+            "planId": identity,
+            "acceptedAtMs": 1000,
+            "receipt": {"status": "OutcomeUnknown", "reason": "UnknownOutcome"},
+        }
+        self.peer.link.receive(
+            {"event": "accepted", "data": receipt, "route": {**self.route, "documentId": "other"}}
+        )
+        self.assertEqual(self.host.notices, [])
+        self.native_frames(self.peer)
+        self.peer.link.receive({"event": "accepted", "data": receipt, "route": self.route})
+        self.assertEqual(len(self.host.notices), 1)
+        self.assertEqual(self.host.notices[0]["completedReceipt"], receipt["receipt"])
+        self.assertEqual(self.native_frames(self.peer), [])
+        self.peer.link.receive({"event": "accepted", "data": receipt, "route": self.route})
+        self.assertEqual(len(self.host.notices), 1)
+        self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["quarantine"])
+
+    def test_browser_receiptless_acceptance_reports_uncertainty_without_another_write(self):
+        self.connect_registered_browser()
+        identity = self.publish_browser(asyncio.run(self.capture_browser()))
+        self.peer.link.receive(
+            {
+                "event": "accepted",
+                "data": {"planId": identity, "acceptedAtMs": 1000},
+                "route": self.route,
+            }
+        )
+        self.assertEqual(len(self.host.notices), 1)
+        self.assertEqual(self.host.notices[0]["completedReceipt"]["status"], "OutcomeUnknown")
+        self.assertEqual([frame["op"] for frame in self.native_frames(self.peer)], ["quarantine"])
+
+    def test_browser_registration_rejects_foreign_origin_and_stale_installation(self):
+        self.connect_registered_browser()
+        manifest = self.support.installer.browser_manifest("chromium")
+        original = manifest.read_text()
+        value = json.loads(original)
+        for origins in (["chrome-extension://" + "b" * 32 + "/"], value["allowed_origins"] * 2):
+            with self.subTest(origins=origins):
+                manifest.write_text(json.dumps({**value, "allowed_origins": origins}))
+                self.input.expire()
+                self.assertIsNone(self.peer.browser_registration)
+        manifest.write_text(original)
+        self.input.expire()
+        self.assertIsNotNone(self.peer.browser_registration)
+        old = self.home / "old-release"
+        old.mkdir()
+        self.assertIsNone(
+            self.support.browser_registration(
+                self.peer.browser_origin, str(old), self.peer.ancestors
+            )
+        )
+        current = self.support.paths.home
+        self.support.paths.home = old
+        self.input.expire()
+        self.assertIsNone(self.peer.browser_registration)
+        self.support.paths.home = current
+        # Reusing either the host PID or its selected browser ancestor cannot
+        # inherit the original process lifetime.
+        for changed_pid in (self.peer.pid, self.peer.browser_identity["pid"]):
+            lineage = {**self.peer.ancestors, self.peer.pid: self.peer.started}
+            lineage[changed_pid] += 1
+            with patch("input.process_lineage", return_value=lineage):
+                self.input.expire()
+                self.assertIsNone(self.peer.browser_registration)
+
+    def test_explicit_browser_remove_blocks_future_grants_but_keeps_issued_receipt(self):
+        self.connect_registered_browser()
+        capture = asyncio.run(self.capture_browser())
+        identity = self.publish_browser(capture)
+        self.input.suspend_browser("chromium")
+        self.support.installer.unregister_browser(self.support.root, "chromium")
+        self.input.expire()
+        self.native_frames(self.peer)
+        self.assertIsNone(asyncio.run(self.input.request("capture", {})))
+        for operation in ("publish", "publishShortcut"):
+            self.input.notification(
+                operation, {"lease": {"source": capture["snapshot"]}, "generation": self.generation}
+            )
+        self.peer.link.receive(
+            {
+                "event": "shortcut",
+                "data": {
+                    "kind": "direct",
+                    "generation": self.generation,
+                    "acceptedAtMs": 1000,
+                    "native": self.browser_native,
+                },
+                "route": self.route,
+            }
+        )
+        self.assertEqual(self.host.notices, [])
+        self.assertEqual(self.native_frames(self.peer), [])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.support.installer.register_browser(
+                self.support.root, "chromium", self.extension_id
+            )
+        self.input.suspend_browser("chromium", False)
+        self.input.expire()
+        self.assertIsNone(asyncio.run(self.input.request("capture", {})))
+        self.assertEqual(self.native_frames(self.peer), [])
+        self.peer.link.receive(
+            {
+                "event": "accepted",
+                "data": {
+                    "planId": identity,
+                    "acceptedAtMs": 1000,
+                    "receipt": {"status": "OutcomeUnknown", "reason": "UnknownOutcome"},
+                },
+                "route": self.route,
+            }
+        )
+        self.assertEqual(len(self.host.notices), 1)
+
+    def test_legacy_browser_without_complete_v1_ack_keeps_existing_remove_behavior(self):
+        self.connect_registered_browser()
+        capture = asyncio.run(self.capture_browser(bindings={"sourceLocalAcceptanceVersion": 0}))
+        self.assertEqual(capture["sessionShortcuts"]["sourceLocalAcceptanceVersion"], 0)
+        self.input.suspend_browser("chromium")
+        capture = asyncio.run(self.capture_browser())
+        self.assertEqual(capture["sessionShortcuts"]["sourceLocalAcceptanceVersion"], 0)
+
+    def test_browser_remove_during_capture_cannot_bind_a_late_snapshot(self):
+        self.connect_registered_browser()
+        asyncio.run(self.capture_browser())
+        capture = asyncio.run(
+            self.capture_browser(
+                before_reply=lambda operation: (
+                    self.input.suspend_browser("chromium") if operation == "capture" else None
+                )
+            )
+        )
+        self.assertIsNone(capture)
+        self.assertIsNone(self.input.bound_observation)
+
+    def browser_direct_removal(self, *, sent):
+        self.connect_registered_browser()
+        capture = asyncio.run(self.capture_browser())
+        self.input.notification(
+            "publishShortcut",
+            {"lease": {"source": capture["snapshot"]}, "generation": self.generation},
+        )
+        self.native_frames(self.peer)
+        self.peer.link.receive(
+            {
+                "event": "shortcut",
+                "data": {
+                    "kind": "direct",
+                    "generation": self.generation,
+                    "acceptedAtMs": 1000,
+                    "native": self.browser_native,
+                },
+                "route": self.route,
+            }
+        )
+        snapshot = self.host.notices[-1]["source"]
+
+        async def exercise():
+            task = asyncio.create_task(self.input.request("direct", {"expected": snapshot}))
+            await asyncio.sleep(0)
+            describe = self.native_frames(self.peer)[0]
+            self.assertEqual(describe["op"], "describe")
+            if not sent:
+                self.input.suspend_browser("chromium")
+                self.native_frames(self.peer)
+            self.peer.link.receive(
+                {"id": describe["id"], "data": self.browser_native, "route": self.route}
+            )
+            if sent:
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+                direct = self.native_frames(self.peer)[0]
+                self.assertEqual(direct["op"], "direct")
+                self.input.suspend_browser("chromium")
+                self.native_frames(self.peer)
+                self.peer.link.receive(
+                    {"id": direct["id"], "data": {"status": "Verified"}, "route": self.route}
+                )
+            result = await asyncio.wait_for(task, 1)
+            self.assertEqual(result["status"], "Verified" if sent else "RejectedBeforeMutation")
+            self.assertEqual(self.native_frames(self.peer), [])
+
+        asyncio.run(exercise())
+
+    def test_browser_remove_during_direct_describe_prevents_dispatch(self):
+        self.browser_direct_removal(sent=False)
+
+    def test_browser_remove_after_direct_dispatch_keeps_its_terminal_result(self):
+        self.browser_direct_removal(sent=True)
 
     def native_frames(self, peer):
         connection = self.connections[peer]

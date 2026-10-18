@@ -283,12 +283,13 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.locator("#source").input_value(), "你好")
         self.assertEqual(len(self.accepted()), 1)
 
-    def test_source_local_acceptance_requires_explicit_native_version_and_supported_keys(self):
+    def test_source_local_acceptance_requires_explicit_dispatch_version_and_supported_keys(self):
         self.type_source()
         cases = [
             ({}, 0),
             ({"sourceLocalAcceptanceVersion": 1}, 0),
             ({"shortcutDispatch": "native"}, 0),
+            ({"shortcutDispatch": "page", "sourceLocalAcceptanceVersion": 1}, 1),
             ({"shortcutDispatch": "native", "sourceLocalAcceptanceVersion": 1}, 1),
             ({"shortcutDispatch": "source-local", "sourceLocalAcceptanceVersion": 1}, 1),
             ({"shortcutDispatch": "native", "sourceLocalAcceptanceVersion": 2}, 0),
@@ -432,7 +433,18 @@ class BrowserContract(unittest.TestCase):
               connections[1].onMessage.emit({id: 3, op: 'deactivate-command-owner', data: {documentToken}});
               const retirement = document.sent.at(-1);
               document.onMessage.emit({id: retirement.id, data: {retired: true}});
-              return {replies, blocked, retirement, routedReply: connections[1].sent.at(-1),
+              const routedReply = connections[1].sent.at(-1);
+              // A legacy browser without documentId keeps page preview. Its
+              // unproven route cannot obtain the desktop's version-1 capability.
+              connections[1].onMessage.emit({op: 'configure-shortcuts', data: {
+                shortcutDispatch: 'page', sourceLocalAcceptanceVersion: 1}});
+              connections[1].onMessage.emit({id: 4, op: 'describe'});
+              const legacyRequest = unproved.sent.at(-1);
+              unproved.onMessage.emit({id: legacyRequest.id, data: {preview: true}});
+              const legacyPreview = connections[1].sent.at(-1);
+              document.onDisconnect.emit();
+              return {replies, blocked, retirement, routedReply, legacyPreview,
+                closed: connections[1].sent.at(-1),
                 extensionId, documentToken};
             }""",
             BACKGROUND.read_text(),
@@ -448,6 +460,11 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(result["routedReply"]["id"], 3)
         self.assertEqual(result["routedReply"]["data"], {"retired": True})
         self.assertEqual(result["routedReply"]["route"]["documentToken"], result["documentToken"])
+        self.assertEqual(result["legacyPreview"]["id"], 4)
+        self.assertEqual(result["legacyPreview"]["data"], {"preview": True})
+        self.assertIsNone(result["legacyPreview"]["route"]["documentId"])
+        self.assertEqual(result["closed"]["event"], "document-closed")
+        self.assertEqual(result["closed"]["route"]["documentToken"], result["documentToken"])
 
     def activate_source_command_owner(
         self, owner_id="test-owner", released_at=None, trace_command=False

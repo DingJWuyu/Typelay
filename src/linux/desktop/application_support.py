@@ -16,10 +16,19 @@ from pathlib import Path
 from desktop_component import DesktopComponent
 from desktop_session import DesktopSession
 from fcitx_session_source import detect_fcitx_source
+from paths import process_identity
 from registered_applications import list_applications, resolve_application
 from wire import now_ms
 
 BROWSERS = ("firefox", "chromium", "google-chrome")
+BROWSER_EXECUTABLES = {
+    "firefox": "firefox",
+    "firefox-bin": "firefox",
+    "chromium": "chromium",
+    "chromium-browser": "chromium",
+    "chrome": "google-chrome",
+    "google-chrome": "google-chrome",
+}
 BROWSER_MANAGEMENT_URIS = {
     "firefox": "about:debugging#/runtime/this-firefox",
     "chromium": "chrome://extensions/",
@@ -143,6 +152,47 @@ class ApplicationSupport:
                     continue
         return sorted(result)
 
+    def browser_registration(self, origin, host_home, ancestors):
+        """An explicit, current registration for this installed browser host.
+
+        Ancestor identities come from the socket peer's original /proc lineage,
+        never from the browser message. This is the existing same-user boundary,
+        not isolation from malicious processes running as that user.
+        """
+        if (
+            not isinstance(origin, str)
+            or not re.fullmatch(r"chrome-extension://[a-p]{32}/", origin)
+            or not isinstance(host_home, str)
+            or not Path(host_home).is_absolute()
+        ):
+            return None
+        try:
+            installed = (self.root / "current").resolve(strict=True)
+            if (
+                Path(host_home).resolve(strict=True) != installed
+                or self.paths.home.resolve(strict=True) != installed
+            ):
+                return None
+            for pid, started in ancestors.items():
+                browser = BROWSER_EXECUTABLES.get(process_identity(pid))
+                if browser not in ("chromium", "google-chrome"):
+                    continue
+                status = self.browser_status(browser)
+                if (
+                    status["state"] == "registered"
+                    and origin == f"chrome-extension://{status['extensionId']}/"
+                ):
+                    return {
+                        "browser": browser,
+                        "pid": pid,
+                        "started": started,
+                        "origin": origin,
+                        "home": str(installed),
+                    }
+        except (OSError, ValueError, RuntimeError):
+            pass
+        return None
+
     async def browser_action(self, browser, action, extension_id=None):
         result = await self._browser_action(browser, action, extension_id)
         self.last_results[browser] = result
@@ -214,21 +264,13 @@ class ApplicationSupport:
         stamp = now_ms()
         checked_at = datetime.now(timezone.utc)
         capability_keys = ("preview", "tabAccept", "directReplace")
-        browser_executables = {
-            "firefox": "firefox",
-            "firefox-bin": "firefox",
-            "chromium": "chromium",
-            "chromium-browser": "chromium",
-            "chrome": "google-chrome",
-            "google-chrome": "google-chrome",
-        }
         for peer in peers:
             if not peer.lifetime or not peer.link.channel.alive:
                 continue
             identity = (
                 "desktop-text"
                 if peer.backend in ("gtk3", "gtk4", "qt6")
-                else browser_executables.get(peer.application)
+                else BROWSER_EXECUTABLES.get(peer.application)
                 if peer.backend == "browser"
                 else None
             )

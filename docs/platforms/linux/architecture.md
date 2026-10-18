@@ -44,6 +44,8 @@ GTK 的 [输入法菜单](https://github.com/GNOME/gtk/blob/gtk-3-24/gtk/gtkimmu
 
 参考：[niri IPC](https://niri-wm.github.io/niri/IPC.html)、[niri 集成](https://niri-wm.github.io/niri/Integrating-niri.html)、[Ayatana AppIndicator](https://github.com/AyatanaIndicators/libayatana-appindicator)、[Waybar tray](https://github.com/Alexays/Waybar/wiki/Module:-Tray)、[GTK3 输入法](https://docs.gtk.org/gtk3/class.IMContext.html)、[uv Python 安装](https://docs.astral.sh/uv/guides/install-python/)。
 
+Chrome/Chromium 标准字段的默认自动接受接入共享 `SourceLocalAcceptanceVersion=1`：只对本用户明确注册、与当前运行安装一致的 native host、原浏览器祖先寿命及精确扩展 origin 请求该能力。宿主保留浏览器附加的文档路由，描述与捕获须匹配同一连接、文档、目标、配置代次和键对，当前标准字段回显后才传入共享控制器。Linux 按需命令继续使用原 page 派发，不借此切换 Windows 的命令归属协议。Firefox、无可靠文档身份的连接及富文本仍为版本 0，实验写回默认值不变。接入移除、文档失效和注册复核失败撤销新许可，已发操作的精确回执继续结账，缺回执不会补写。此默认关闭实验门的标准网页链尚待本轮实际验证。
+
 ## 浏览器短租约风险
 
 Linux 浏览器链路仍有短租约到期与续期之间的可用性空窗风险；某次模型/Tab 回归通过不能证明所有调度条件稳定。保持到期拒绝，不延长授权或放宽断言掩盖。当前实现缺口统一见[Linux 能力表](README.md#与-windows-的功能对齐)。

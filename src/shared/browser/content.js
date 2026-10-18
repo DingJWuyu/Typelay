@@ -68,7 +68,8 @@
     || rich?.modelFocus === 1 && field.richFocusSupported === true);
   function sessionBindings(field) {
     const source = sourceConfigured(field);
-    const sourceLocal = configuration?.sourceLocalAcceptanceVersion === 1 && ["native", "source-local"].includes(shortcutDispatch())
+    const sourceLocal = configuration?.sourceLocalAcceptanceVersion === 1
+      && (["native", "source-local"].includes(shortcutDispatch()) || configuration.shortcutDispatch === "page")
       && source && alive && !!field && !field.richText && !field.dead && !field.quarantined
       && allowedElement(field.element) && field.element.isConnected && field.element.getRootNode() === document
       && typeof (field.element instanceof HTMLTextAreaElement ? areaReplace : inputReplace) === "function";

@@ -507,7 +507,18 @@ def run(arguments):
     ).splitlines()
     assert len(nested) == 1
     subprocess.run(["xdotool", "windowfocus", "--sync", nested[0]], check=True, timeout=2)
+    resources = ExitStack()
     package = arguments.package
+    if arguments.desktop_scope in ("all", "browser"):
+        # The running desktop and native host must be the same real installed
+        # release in one disposable HOME. Keep the fixture's isolated XDG model
+        # data rather than downloading or copying another model.
+        home = resources.enter_context(tempfile.TemporaryDirectory(prefix="typelay-desktop-home-"))
+        resources.enter_context(patch.dict(os.environ, {"HOME": home}))
+        subprocess.run(
+            [sys.executable, str(package / "install.py"), "install"], check=True, timeout=30
+        )
+        package = (Path(home) / ".local/lib/typelay/current").resolve(strict=True)
     paths = Paths(package)
     environment = dict(os.environ)
     trace_path = arguments.output / "controller.jsonl"
@@ -521,7 +532,7 @@ def run(arguments):
         "Source": "en",
         "Target": "zh",
         "OnboardingComplete": arguments.desktop_scope != "setup",
-        "ExperimentalWriteback": arguments.desktop_scope != "setup",
+        "ExperimentalWriteback": arguments.desktop_scope not in ("setup", "all", "browser"),
         "Mode": 1 if arguments.desktop_scope == "setup" else 0,
     }
 
@@ -610,7 +621,7 @@ def run(arguments):
         process = None
         assert not paths.control.exists() and not paths.native.exists()
 
-    def set_session_keys(accept, exit_key):
+    def set_session_keys(accept, exit_key, *, experimental=None):
         assert control(paths, "settings") is True
         settings_window = wait_for(
             lambda: next(
@@ -624,6 +635,22 @@ def run(arguments):
             "owned production settings window did not map",
         )
         request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
+        if experimental is not None:
+            from support.gtk_accessibility import Atspi, named, select_settings_page
+
+            select_settings_page(process.pid, "常规")
+            switch = wait_for(
+                lambda: named(process.pid, "设置：启用原生输入框替换"),
+                "experimental writeback setting did not appear",
+            )
+            if json.loads(paths.settings.read_text())["ExperimentalWriteback"] != experimental:
+                assert Atspi.Action.do_action(switch.get_action_iface(), 0)
+            wait_for(
+                lambda: json.loads(paths.settings.read_text())["ExperimentalWriteback"]
+                == experimental,
+                "explicit experimental setting did not save",
+            )
+            settings["ExperimentalWriteback"] = experimental
         select_session_keys(paths, process.pid, accept, exit_key)
         settings.update(AcceptShortcut=accept, ExitShortcut=exit_key)
         request({"Action": {"CloseWindow": {"id": settings_window["id"]}}})
@@ -646,7 +673,6 @@ def run(arguments):
         except Exception:
             pass  # Observability must not replace the original browser failure.
 
-    resources = ExitStack()
     try:
         if arguments.desktop_scope == "setup":
             evidence.append(verify_direction_installation(arguments, environment))
@@ -684,27 +710,14 @@ def run(arguments):
             from playwright.sync_api import sync_playwright
             from support.browser_process import chromium_context
 
-            with tempfile.TemporaryDirectory(prefix="typelay-browser-desktop-") as temporary:
-                browser_home = Path(temporary)
-                browser_environment = {
-                    **environment,
-                    "HOME": str(browser_home),
-                    "XDG_CONFIG_HOME": str(browser_home / "config"),
-                    "XDG_DATA_HOME": str(browser_home / "data"),
-                    "XDG_CACHE_HOME": str(browser_home / "cache"),
-                }
-                subprocess.run(
-                    [sys.executable, str(package / "install.py"), "install"],
-                    env=browser_environment,
-                    check=True,
-                    timeout=30,
-                )
+            with tempfile.TemporaryDirectory(prefix="typelay-browser-profile-") as temporary:
+                browser_environment = dict(environment)
                 extension = package / "browser/chromium"
                 with sync_playwright() as playwright:
                     browser_scope = chromium_context(
                         playwright,
                         "/usr/bin/chromium",
-                        browser_home / "config/chromium",
+                        Path(temporary),
                         browser_environment,
                         [
                             "--ozone-platform=wayland",
@@ -744,6 +757,7 @@ def run(arguments):
                             ),
                         )
                         page = browser.new_page()
+                        page.set_viewport_size({"width": 1280, "height": 800})
                         page.goto("http://127.0.0.1/typelay-contract")
                         window = wait_for(
                             lambda: next(
@@ -773,14 +787,26 @@ def run(arguments):
                             lambda: page.locator("#source").input_value() == original,
                             "XTest input did not reach Chromium source",
                         )
-                        wait_for(
+                        ready = wait_for(
                             ready_to_accept,
                             "browser native route/model did not grant Tab acceptance",
+                        )
+                        assert (
+                            ready["input"]["sessionShortcuts"]["sourceLocalAcceptanceVersion"] == 1
+                        )
+                        assert (
+                            json.loads(paths.settings.read_text())["ExperimentalWriteback"] is False
                         )
                         assert page.locator("#source").input_value() == original
                         subprocess.run(
                             ["grim", str(arguments.output / "browser.png")], check=True, timeout=3
                         )
+                        page.evaluate("""() => {
+                          window.defaultAcceptInputs = 0;
+                          document.querySelector('#source').addEventListener('input',
+                            () => defaultAcceptInputs++);
+                        }""")
+                        checkpoint = trace_checkpoint()
                         # Screenshot capture can outlive the 100 ms acceptance permit.
                         # Observe the current readiness after it, then send one Tab only.
                         wait_for(
@@ -794,8 +820,21 @@ def run(arguments):
                         assert page.evaluate("document.activeElement.id") == "source", (
                             "browser Tab also navigated"
                         )
+                        wait_for(
+                            lambda: verified_write(checkpoint),
+                            "default browser Tab lacked its receipt",
+                        )
+                        assert page.evaluate("defaultAcceptInputs") == 1
+                        assert (
+                            json.loads(paths.settings.read_text())["ExperimentalWriteback"] is False
+                        )
+                        # Save only the actual page after the real model/receipt
+                        # passed. This is a standard field, not rich-editor proof.
+                        page.screenshot(
+                            path=str(arguments.output / "browser-standard-accepted-1280x800.png")
+                        )
                         evidence.append(
-                            "Wayland Chromium: real extension, native host, compositor process binding, CPU model and Tab"
+                            "Wayland Chromium: same-HOME installed desktop/native host, exact route v1, ExperimentalWriteback=false, CPU model and one Tab with one input and one Verified receipt"
                         )
                         page.evaluate("""() => {
                           window.controlEvidence = {input: 0, keys: []};
@@ -827,7 +866,9 @@ def run(arguments):
                             settings.get("AcceptShortcut", "Tab"),
                             settings.get("ExitShortcut", "Esc"),
                         )
-                        set_session_keys("Ctrl+F7", "Ctrl+F8")
+                        # The remaining older experimental/rich scenarios keep
+                        # their explicit setting, after proving the default above.
+                        set_session_keys("Ctrl+F7", "Ctrl+F8", experimental=True)
                         request({"Action": {"FocusWindow": {"id": window["id"]}}})
                         browser_control_source("Please review this draft.")
                         acknowledgement = wait_for(
@@ -838,6 +879,7 @@ def run(arguments):
                             "bindings": {"accept": "Ctrl+F7", "exit": "Ctrl+F8"},
                             "sourceReady": True,
                             "editorReady": True,
+                            "sourceLocalAcceptanceVersion": 1,
                         }
                         before_control = browser_control_state()
                         offset = trace_checkpoint()
@@ -1049,6 +1091,7 @@ def run(arguments):
                                 "bindings": {"accept": "Ctrl+F7", "exit": "Ctrl+F8"},
                                 "sourceReady": True,
                                 "editorReady": True,
+                                "sourceLocalAcceptanceVersion": 0,
                             }
                             checkpoint = trace_checkpoint()
                             wait_for(ready_to_accept, "rich source Ctrl permit was not current")
@@ -6163,7 +6206,6 @@ def run(arguments):
                 )
             except OSError:
                 pass  # Preserve the actual acceptance failure and cleanup.
-        resources.close()
         for child in (process,):
             if child is not None and child.poll() is None:
                 child.terminate()
@@ -6172,3 +6214,4 @@ def run(arguments):
                 except subprocess.TimeoutExpired:
                     child.kill()
                     child.wait()
+        resources.close()

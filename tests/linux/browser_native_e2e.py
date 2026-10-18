@@ -181,6 +181,13 @@ class NativeBrowserContract(unittest.TestCase):
                             self.assertEqual(hello["event"], "hello")
                             self.assertEqual(hello["data"]["backend"], "browser")
                             self.assertEqual(hello["data"]["protocol"], 2)
+                            self.assertEqual(hello["data"]["home"], str(installed.resolve()))
+                            with patch.dict(os.environ, environment):
+                                registration = support.browser_status("chromium")
+                            self.assertEqual(
+                                hello["data"]["origin"],
+                                f"chrome-extension://{registration['extensionId']}/",
+                            )
                             self.assertNotEqual(
                                 hello["data"]["lifetime"], previous_hello["data"]["lifetime"]
                             )
@@ -217,6 +224,15 @@ class NativeBrowserContract(unittest.TestCase):
                                 },
                             )
                             self.assertEqual(snapshot["text"], "First document")
+                            self.configure_session(connection, "page", source_local_version=1)
+                            capable = self.focused_description(connection)
+                            self.assertEqual(
+                                capable["sessionBindings"]["sourceLocalAcceptanceVersion"], 1
+                            )
+                            self.assertEqual(
+                                capable["sessionBindings"]["target"], capable["target"]
+                            )
+                            self.assertEqual(self.last_route, original_route)
                             second = context.new_page()
                             second.goto("http://127.0.0.1/second")
                             second.bring_to_front()
@@ -258,13 +274,11 @@ class NativeBrowserContract(unittest.TestCase):
                             self.assertEqual(
                                 second.locator("#source").input_value(), "Second document"
                             )
-                            # The same real extension must publish native dispatch
-                            # per document and revoke the browser-owned closed route.
-                            self.configure_session(connection, "native")
+                            # Linux page dispatch also reports source-local
+                            # document lifetime and the browser-owned closed route.
+                            self.configure_session(connection, "page", source_local_version=1)
                             applied = self.focused_description(connection)
-                            self.assertEqual(
-                                applied["sessionBindings"]["shortcutDispatch"], "native"
-                            )
+                            self.assertEqual(applied["sessionBindings"]["shortcutDispatch"], "page")
                             first.close()
                             deadline = time.monotonic() + 3
                             while time.monotonic() < deadline and not any(
@@ -410,7 +424,7 @@ class NativeBrowserContract(unittest.TestCase):
         self.assertEqual(route["scheme"], "http:")
 
     @staticmethod
-    def configure_session(connection, dispatch=None):
+    def configure_session(connection, dispatch=None, source_local_version=0):
         # Configuration broadcasts deliberately have no process-wide ACK. The
         # next routed describe/capture confirms each actual document separately.
         packet = json.dumps(
@@ -423,6 +437,7 @@ class NativeBrowserContract(unittest.TestCase):
                     "accept": "Tab",
                     "exit": "Esc",
                     **({"shortcutDispatch": dispatch} if dispatch else {}),
+                    "sourceLocalAcceptanceVersion": source_local_version,
                 },
             }
         ).encode()
