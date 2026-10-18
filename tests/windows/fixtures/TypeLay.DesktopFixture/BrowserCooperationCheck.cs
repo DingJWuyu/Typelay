@@ -287,6 +287,13 @@ internal static partial class BrowserCooperationCheck
                 using (var status = JsonDocument.Parse(await HostCommandAsync(host, ["status"], ct)))
                     Require(status.RootElement.GetProperty("registered").GetBoolean()
                         && status.RootElement.GetProperty("origin").GetString() == "chrome-extension://" + extensionId + "/", "registration-unconfirmed");
+                setup.Stage = "confirm-connect-registered-actions";
+                var connectionWindow = await FindSettingsAsync(app.Process, ct);
+                Require(await Task.Run(() => connectionWindow.FindFirst(TreeScope.Descendants,
+                    new PropertyCondition(AutomationElement.AutomationIdProperty, "ChromeConnectionPrimary"))?.Current.Name == "移除连接", ct).WaitAsync(ct),
+                    "registered-connect-action-remained");
+                setup.Stage = "confirm-connect-return-to-page";
+                await FocusPageAsync(cdp!, windows!, ct);
                 setup.Stage = "confirm-connect-wait-connected";
                 await WaitBrowserConnectionStatusAsync(app.Process, "已连接", ct);
             });

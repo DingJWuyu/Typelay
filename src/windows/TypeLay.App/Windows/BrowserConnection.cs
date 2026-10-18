@@ -57,7 +57,7 @@ internal sealed class BrowserConnection
     public bool MutationUnavailable => _mutationLocked;
     public bool Suspended => _origin is not null && _input.OriginSuspended(_origin);
     public bool CanConnect => _known && !_mutationLocked && ExtensionId is not null
-        && (_origin is null || _origin == BrowserHostProtocol.OriginForExtensionId(ExtensionId))
+        && (_origin is null || _origin == BrowserHostProtocol.OriginForExtensionId(ExtensionId) && Suspended)
         && (!_input.Connected || Suspended);
     public bool CanRemove => _known && !_mutationLocked && _origin is not null;
     public string? ExtensionId => _configuration?.ExtensionId;

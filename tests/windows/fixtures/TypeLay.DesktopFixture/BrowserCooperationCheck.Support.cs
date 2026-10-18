@@ -414,12 +414,18 @@ internal static partial class BrowserCooperationCheck
             await Task.Delay(40, ct);
         if (!accept)
             return;
-        // Wait for the actual serialized Host operation, not merely the dialog.
+        // The action can keep its label after completion. Observe the public
+        // busy/error state, then let the caller reconcile the actual Host status.
         setStage("await-host-completion");
         while (true)
         {
-            bool complete = await Task.Run(() => primary.Current.IsEnabled && primary.Current.Name != action, ct).WaitAsync(ct);
-            if (complete)
+            var state = await Task.Run(() => (Enabled: primary.Current.IsEnabled,
+                Status: window.FindFirst(TreeScope.Descendants,
+                    new PropertyCondition(AutomationElement.AutomationIdProperty, "ChromeConnectionStatus"))?.Current.Name), ct).WaitAsync(ct);
+            Require(state.Status is not null, "browser-connection-status-unavailable");
+            Require(state.Status != "操作结果未确认", "browser-connection-operation-unconfirmed");
+            Require(state.Status != "接入异常", "browser-connection-status-failed");
+            if (state.Enabled && state.Status != "正在更新连接…")
                 break;
             await Task.Delay(40, ct);
         }
