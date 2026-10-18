@@ -152,6 +152,28 @@ class DistributionTests(unittest.TestCase):
         self.assertNotIn("frameworks", config["runtimeOptions"])
         self.assertNotIn("framework", config["runtimeOptions"])
 
+    def test_browser_icons_survive_relocation(self):
+        extension = self.home / "browser/chromium"
+        self.assertEqual(
+            {p.relative_to(extension).as_posix() for p in extension.rglob("*") if p.is_file()},
+            {
+                "manifest.json",
+                "connection.json",
+                "background.js",
+                "content.js",
+                "icons/typelay-16.png",
+                "icons/typelay-48.png",
+                "icons/typelay-128.png",
+            },
+        )
+        manifest = json.loads((extension / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual(set(manifest["icons"]), {"16", "48", "128"})
+        for size, name in manifest["icons"].items():
+            with self.subTest(size=size):
+                png = (extension / name).read_bytes()
+                self.assertEqual(png[:16], b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+                self.assertEqual(struct.unpack(">II", png[16:24]), (int(size), int(size)))
+
     def test_browser_host_rejects_invalid_entry_without_protocol_output(self):
         host = self.home / "app/TypeLay.BrowserHost.exe"
         for arguments in (

@@ -1863,7 +1863,20 @@ class BrowserContract(unittest.TestCase):
                     view["state"] = "EditingTranslation"
                     data["revision"] += 1
                     self.assertTrue(self.command("overlay-render", data)["visible"])
-                    self.command("overlay-edit", {"target": snapshot["target"], "allowed": True})
+                    self.command(
+                        "overlay-edit",
+                        {
+                            "target": snapshot["target"],
+                            "revision": data["revision"],
+                            "allowed": True,
+                        },
+                    )
+                    self.assertTrue(
+                        self.overlay_dom(
+                            self.overlay_control("TypeLay 译文", "textbox"),
+                            "function() { return !this.readOnly && this.matches(':focus'); }",
+                        )
+                    )
                     self.page.keyboard.press("Control+A")
                     self.page.keyboard.insert_text("Human draft")
                     self.assertEqual(

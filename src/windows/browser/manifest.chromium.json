@@ -3,6 +3,11 @@
   "name": "TypeLay local input",
   "version": "0.1.0",
   "description": "Connect ordinary webpage inputs to the local TypeLay client.",
+  "icons": {
+    "16": "icons/typelay-16.png",
+    "48": "icons/typelay-48.png",
+    "128": "icons/typelay-128.png"
+  },
   "permissions": [
     "nativeMessaging"
   ],

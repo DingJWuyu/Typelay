@@ -4,11 +4,13 @@ import hashlib
 import io
 import json
 import shutil
+import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,11 +22,53 @@ QT_TEST_INPUTS = (
 )
 sys.path.insert(0, str(ROOT))
 
+from eng.linux import build  # noqa: E402
 from eng.linux.cooperative import inputs  # noqa: E402
 
 
 def digest(content):
     return hashlib.sha256(content).hexdigest()
+
+
+class BrowserBundleTests(unittest.TestCase):
+    def test_browser_payloads_include_the_declared_icons_and_exact_xpi(self):
+        with tempfile.TemporaryDirectory(prefix="typelay-browser-") as directory:
+            package = Path(directory) / "发行 包"
+            build.package_browsers(package)
+            expected = {
+                "manifest.json",
+                "background.js",
+                "content.js",
+                "editor-bridge.js",
+                "editor-adapter.js",
+                "icons/typelay-16.png",
+                "icons/typelay-48.png",
+                "icons/typelay-128.png",
+            }
+            for browser in ("chromium", "firefox"):
+                with self.subTest(browser=browser):
+                    extension = package / "browser" / browser
+                    self.assertEqual(
+                        {
+                            p.relative_to(extension).as_posix()
+                            for p in extension.rglob("*")
+                            if p.is_file()
+                        },
+                        expected,
+                    )
+                    manifest = json.loads((extension / "manifest.json").read_text())
+                    self.assertEqual(set(manifest["icons"]), {"16", "48", "128"})
+                    for size, name in manifest["icons"].items():
+                        png = (extension / name).read_bytes()
+                        self.assertEqual(png, (ROOT / "src/shared/browser" / name).read_bytes())
+                        self.assertEqual(png[:16], b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+                        self.assertEqual(struct.unpack(">II", png[16:24]), (int(size), int(size)))
+            with zipfile.ZipFile(package / "browser/typelay-firefox-unsigned.xpi") as addon:
+                self.assertEqual(set(addon.namelist()), expected)
+                for name in expected:
+                    self.assertEqual(
+                        addon.read(name), (package / "browser/firefox" / name).read_bytes()
+                    )
 
 
 class MainBundleTests(unittest.TestCase):

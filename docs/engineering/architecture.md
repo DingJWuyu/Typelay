@@ -12,6 +12,8 @@ Windows/Linux 在 trunk 共用 src/shared/ 下的一份 Core、Runtime、Protoco
 
 GTK、Qt 和共享浏览器沿用现有视图状态，在 `Translating`、正文非空且 `editorOwnsText=false` 时以现有弱化文字色显示旧译文，与 Windows 更新态对齐；新结果恢复正常色，编辑与回源人工稿保持原色，不增加协议字段或接受资格。
 
+[本轮呈现检查](https://github.com/DingJWuyu/Typelay/actions/runs/39095613424)已通过 GTK3、GTK4 和 Qt 的实际控件颜色状态断言，以及浏览器浅色 320 像素场景的状态序列；Qt 真实模型编辑与回源链也通过。浏览器其余三个主题与宽度子例因测试编辑请求误用旧视图代次而失败，修正后的消费者尚待验证；整套平台检查仍有其它失败，不能将颜色检查作为完整输入验收。
+
 TypeLay.Protocol 不引用 Core，拥有长度前缀帧和 worker 消息。Windows Broker 私有协议另属 Windows.Contracts，不是全平台共享协议。
 
 TypeLay.Worker 是独立 Python 进程，拥有本地模型校验、文本结构保护与推理。源码及 worker 协议共享，原生 Python 依赖的目标平台发行与真实推理分别验证；worker 不自动下载、不监听端口，不向协议输出原始异常或用户文本诊断。模型安装与用户同意流程由各平台宿主负责。

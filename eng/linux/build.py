@@ -110,29 +110,7 @@ def build(output, fixture=False, cooperation_package=None):
         output / "worker",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
-    for browser in ("chromium", "firefox"):
-        destination = output / "browser" / browser
-        destination.mkdir(parents=True)
-        source = ROOT / "src/shared/browser"
-        for name in ("content.js", "background.js", "editor-bridge.js", "editor-adapter.js"):
-            shutil.copy2(source / name, destination / name)
-        shutil.copy2(
-            ROOT / "src/linux/browser" / f"manifest.{browser}.json", destination / "manifest.json"
-        )
-    # Firefox stable requires Mozilla signing for permanent installation. Ship
-    # the exact unsigned payload for temporary loading or an explicit signing step.
-    with zipfile.ZipFile(output / "browser/typelay-firefox-unsigned.xpi", "w") as addon:
-        for name in (
-            "manifest.json",
-            "background.js",
-            "content.js",
-            "editor-bridge.js",
-            "editor-adapter.js",
-        ):
-            entry = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
-            entry.compress_type = zipfile.ZIP_DEFLATED
-            entry.external_attr = 0o100644 << 16
-            addon.writestr(entry, (output / "browser/firefox" / name).read_bytes())
+    package_browsers(output)
     package_editor(output)
     for name in ("typelay", "typelay-browser-host", "install.py"):
         shutil.copy2(ROOT / "packaging/linux" / name, output / name)
@@ -150,6 +128,35 @@ def build(output, fixture=False, cooperation_package=None):
     else:
         write_archive(output)
         print("Setup-only build: desktop cooperation payload is not included")
+
+
+def package_browsers(output):
+    files = (
+        "content.js",
+        "background.js",
+        "editor-bridge.js",
+        "editor-adapter.js",
+        "icons/typelay-16.png",
+        "icons/typelay-48.png",
+        "icons/typelay-128.png",
+    )
+    for browser in ("chromium", "firefox"):
+        destination = output / "browser" / browser
+        (destination / "icons").mkdir(parents=True)
+        source = ROOT / "src/shared/browser"
+        for name in files:
+            shutil.copy2(source / name, destination / name)
+        shutil.copy2(
+            ROOT / "src/linux/browser" / f"manifest.{browser}.json", destination / "manifest.json"
+        )
+    # Firefox stable requires Mozilla signing for permanent installation. Ship
+    # the exact unsigned payload for temporary loading or an explicit signing step.
+    with zipfile.ZipFile(output / "browser/typelay-firefox-unsigned.xpi", "w") as addon:
+        for name in ("manifest.json", *files):
+            entry = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            entry.compress_type = zipfile.ZIP_DEFLATED
+            entry.external_attr = 0o100644 << 16
+            addon.writestr(entry, (output / "browser/firefox" / name).read_bytes())
 
 
 def package_files(output):

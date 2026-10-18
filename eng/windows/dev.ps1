@@ -74,8 +74,11 @@ function Publish-Distribution([bool]$SelfContained) {
     New-Item -ItemType Directory -Force (Join-Path $stage 'bootstrap') | Out-Null
     Copy-Item 'packaging/windows/start.ps1' (Join-Path $stage 'bootstrap/start.ps1')
     Copy-Item 'packaging/windows/Start-TypeLay.cmd' $stage
-    New-Item -ItemType Directory -Force (Join-Path $stage 'browser/chromium') | Out-Null
+    New-Item -ItemType Directory -Force (Join-Path $stage 'browser/chromium/icons') | Out-Null
     Copy-Item 'src/shared/browser/background.js', 'src/shared/browser/content.js' (Join-Path $stage 'browser/chromium')
+    foreach ($size in @(16, 48, 128)) {
+        Copy-Item "src/shared/browser/icons/typelay-$size.png" (Join-Path $stage 'browser/chromium/icons')
+    }
     Copy-Item 'src/windows/browser/manifest.chromium.json' (Join-Path $stage 'browser/chromium/manifest.json')
     Copy-Item 'src/windows/browser/connection.chromium.json' (Join-Path $stage 'browser/chromium/connection.json')
     Copy-Item 'docs/platforms/windows/README.md' (Join-Path $stage 'README.md')

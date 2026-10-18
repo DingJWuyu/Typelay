@@ -10,6 +10,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 
@@ -63,6 +64,29 @@ class DistributionTests(unittest.TestCase):
 
     def assert_success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_browser_icons_survive_relocation_in_directories_and_xpi(self):
+        expected = {
+            "16": "icons/typelay-16.png",
+            "48": "icons/typelay-48.png",
+            "128": "icons/typelay-128.png",
+        }
+        for browser in ("chromium", "firefox"):
+            with self.subTest(browser=browser):
+                extension = self.package / "browser" / browser
+                manifest = json.loads((extension / "manifest.json").read_text())
+                self.assertEqual(manifest["icons"], expected)
+                for size, name in expected.items():
+                    png = (extension / name).read_bytes()
+                    self.assertEqual(png[:16], b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+                    self.assertEqual(struct.unpack(">II", png[16:24]), (int(size), int(size)))
+                    self.assertEqual(png, (self.package / "browser/chromium" / name).read_bytes())
+        firefox = self.package / "browser/firefox"
+        files = {p.relative_to(firefox).as_posix() for p in firefox.rglob("*") if p.is_file()}
+        with zipfile.ZipFile(self.package / "browser/typelay-firefox-unsigned.xpi") as addon:
+            self.assertEqual(set(addon.namelist()), files)
+            for name in files:
+                self.assertEqual(addon.read(name), (firefox / name).read_bytes())
 
     def test_relocated_worker_reads_its_shared_model_catalog(self):
         result = subprocess.run(

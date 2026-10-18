@@ -16,6 +16,8 @@
 
 ### Chrome 合作扩展接入
 
+发布者准备正式条目时，使用[Chrome 商店发布准备](chrome-store-release.md)核对描述、权限、隐私披露和素材；该指南不表示扩展已上架。
+
 设置的“应用支持”页提供 Google Chrome 接入、状态刷新和移除。发行包中的 `browser/chromium/connection.json` 固定扩展身份；当前源码默认 ID 和商店链接均为空，界面显示“待发布扩展”，不提供新的接入按钮。正式商店条目与发布身份尚未完成，不能将 Chrome for Testing 的开发加载验收当作品牌 Chrome 商店安装。已有本安装明确注册的扩展仍可显示真实连接并移除。发布者须遵循 [Chrome 官方安装渠道](https://developer.chrome.com/docs/extensions/how-to/distribute/install-extensions)与[扩展身份规则](https://developer.chrome.com/docs/extensions/reference/manifest/key)，商店账号、条目与发布确认仍需所有者完成。
 
 配置了正式身份的发行版使用以下流程，无需输入命令或猜测扩展 ID：
