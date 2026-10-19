@@ -1,6 +1,8 @@
 using System.IO;
+using System.IO.Pipes;
 using System.Text.Json;
 using TypeLay.Core;
+using TypeLay.Protocol;
 using TypeLay.Runtime;
 using Xunit;
 
@@ -23,6 +25,343 @@ public sealed class BrowserContractTests
             token,
             observedAtMs = observed
         });
+    [Fact(Timeout = 5000)]
+    public async Task BrowserReaderCapturesReceiptsWhileUiIsBlockedAndDrainsEarlierEventsFirst()
+    {
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var delivered = new List<string>();
+        await using var transport = await BrowserIngress.CreateAsync(name =>
+        {
+            delivered.Add(name);
+            if (name == "input")
+            {
+                entered.Set();
+                Assert.True(release.Wait(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken));
+            }
+        });
+        var receipt = transport.Request("direct", "direct-1");
+        await transport.Event("input");
+        await transport.WaitUntilReadAsync();
+        Task drain = Task.Run(transport.Ui.RunNext, TestContext.Current.CancellationToken);
+        try
+        {
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken));
+            await transport.Event("accepted");
+            await transport.Reply("direct-1", "verified");
+            transport.Client.Dispose();
+            // EOF is observed by the real reader while its UI callback is still
+            // blocked. The captured receipt must survive that close, but cannot
+            // be used before the preceding events finish on the UI owner.
+            await Assert.ThrowsAnyAsync<IOException>(() => transport.Reader);
+            Assert.False(receipt.IsCompleted);
+            Assert.Equal(new[] { "input" }, delivered);
+        }
+        finally { release.Set(); }
+        await drain;
+        Assert.Equal(new[] { "input", "accepted" }, delivered);
+        Assert.Equal("verified", (await receipt)!.Data.GetString());
+        await transport.Inbox.Completion;
+    }
+
+    [Fact(Timeout = 5000)]
+    public async Task BrowserReplyCannotOvertakeAQueuedRevocationAndSharesTheSixteenRequestLimit()
+    {
+        bool revoked = false;
+        await using var transport = await BrowserIngress.CreateAsync(name => revoked |= name == "destroy");
+        Task<BrowserReply?>[] requests = Enumerable.Range(0, 16)
+            .Select(index => transport.Request("describe", "request-" + index)).ToArray();
+        await transport.Event("destroy");
+        for (int index = 0; index < requests.Length; index++)
+            await transport.Reply("request-" + index, "description");
+        // Observe the next pipe read, not private pending state or elapsed time.
+        await transport.WaitUntilReadAsync();
+        bool sent = false;
+        Assert.Null(await transport.Inbox.RequestAsync("seventeenth", "describe", () => sent = true, 3000));
+        Assert.False(sent);
+        Assert.All(requests, request => Assert.False(request.IsCompleted));
+        transport.Ui.RunNext();
+        Assert.True(revoked);
+        foreach (var request in requests)
+            Assert.NotNull(await request);
+    }
+
+    [Fact(Timeout = 5000)]
+    public async Task BrowserOverflowKeepsTheLastAcceptedEventAndCapturedDirectReceiptOnly()
+    {
+        var delivered = new List<string>();
+        await using var transport = await BrowserIngress.CreateAsync(delivered.Add);
+        var direct = transport.Request("direct", "direct-1");
+        var missing = transport.Request("direct", "direct-missing");
+        var authority = transport.Request("describe", "authority-1");
+        await transport.Event("destroy");
+        await transport.Reply("direct-1", "verified");
+        await transport.Reply("authority-1", "approved");
+        for (int index = 1; index < 64; index++)
+            await transport.Event("input");
+        await transport.Event("accepted"); // The bounded overflow frame is terminal too.
+        await transport.Reader;
+        Assert.Null(await missing);
+        Assert.Null(await authority);
+        Assert.False(direct.IsCompleted);
+        Assert.Null(await transport.Request("describe", "closed"));
+        transport.Ui.RunNext();
+        Assert.Equal(new[] { "accepted" }, delivered);
+        Assert.Equal("verified", (await direct)!.Data.GetString());
+        await transport.Inbox.Completion;
+    }
+
+    [Fact(Timeout = 5000)]
+    public async Task BrowserTimeoutDoesNotRestartAtTheReplyBarrierOrLoseAnOnTimeDirectReceipt()
+    {
+        await using var transport = await BrowserIngress.CreateAsync(_ => { });
+        var direct = transport.Request("direct", "direct-1", 500);
+        var authority = transport.Request("describe", "authority-1", 500);
+        await transport.Event("input");
+        await transport.Reply("direct-1", "verified");
+        await transport.Reply("authority-1", "approved");
+        await transport.WaitUntilReadAsync();
+        Assert.Null(await authority); // Original overall deadline, with UI still queued.
+        Assert.False(direct.IsCompleted);
+        transport.Ui.RunNext();
+        Assert.Equal("verified", (await direct)!.Data.GetString());
+    }
+
+    [Fact(Timeout = 5000)]
+    public async Task BrowserCancellationAndLateIdsCannotCompleteANewerRequest()
+    {
+        await using var transport = await BrowserIngress.CreateAsync(_ => { });
+        var expired = transport.Request("direct", "old", 20);
+        Assert.Null(await expired);
+        var current = transport.Request("direct", "current");
+        await transport.Reply("old", "late");
+        await transport.Reply("other-peer:current", "wrong-peer");
+        await transport.WaitUntilReadAsync();
+        Assert.False(current.IsCompleted);
+        transport.Owner.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => transport.Reader);
+        Assert.Null(await current);
+        await transport.Inbox.Completion;
+    }
+
+    [Fact(Timeout = 5000)]
+    public async Task BrowserUiShutdownSettlesReceivedTerminalsOnceWithoutReentrantDrain()
+    {
+        var delivered = new List<string>();
+        BrowserIngress? active = null;
+        await using var transport = await BrowserIngress.CreateAsync(name =>
+        {
+            delivered.Add(name + "-start");
+            if (name == "input")
+            {
+                active!.Inbox.CloseOnUiThread();
+                Assert.Equal(new[] { "input-start" }, delivered);
+            }
+            delivered.Add(name + "-end");
+        });
+        active = transport;
+        var direct = transport.Request("direct", "direct-1");
+        await transport.Event("input");
+        await transport.Event("accepted");
+        await transport.Reply("direct-1", "verified");
+        await transport.WaitUntilReadAsync();
+        transport.Ui.RunNext();
+        await transport.Inbox.Completion;
+        Assert.Equal(new[] { "input-start", "input-end", "accepted-start", "accepted-end" }, delivered);
+        Assert.Equal("verified", (await direct)!.Data.GetString());
+        transport.Inbox.CloseOnUiThread();
+        Assert.Equal(new[] { "input-start", "input-end", "accepted-start", "accepted-end" }, delivered);
+    }
+
+    [Fact(Timeout = 5000)]
+    public async Task BrowserCallbackFailureClosesABlockedReaderAndStillSettlesReceivedTerminals()
+    {
+        var failure = new InvalidOperationException("callback-failed");
+        int accepted = 0;
+        await using var transport = await BrowserIngress.CreateAsync(name =>
+        {
+            if (name == "input")
+                throw failure;
+            if (name == "accepted")
+                accepted++;
+        });
+        transport.ExpectedFailure = failure;
+        var direct = transport.Request("direct", "direct-1");
+        await transport.Event("input");
+        await transport.Event("accepted");
+        await transport.Reply("direct-1", "verified");
+        await transport.WaitUntilReadAsync(); // No further frame will wake this read.
+        transport.Ui.RunNext();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => transport.Reader);
+        Assert.Same(failure, await Assert.ThrowsAsync<InvalidOperationException>(() => transport.Inbox.Completion));
+        Assert.Null(await transport.Request("describe", "closed"));
+        Assert.Equal(1, accepted);
+        Assert.Equal("verified", (await direct)!.Data.GetString());
+    }
+
+    private sealed class BrowserUi
+    {
+        private readonly Queue<(Action Action, TaskCompletionSource Completion)> _queue = new();
+        public Task Post(Action action)
+        {
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_queue)
+                _queue.Enqueue((action, completion));
+            return completion.Task;
+        }
+        public void RunNext()
+        {
+            (Action Action, TaskCompletionSource Completion) next;
+            lock (_queue)
+                next = _queue.Dequeue();
+            try
+            {
+                next.Action();
+                next.Completion.SetResult();
+            }
+            catch (Exception error) { next.Completion.SetException(error); throw; }
+        }
+        public void RunAll()
+        {
+            while (true)
+            {
+                lock (_queue)
+                    if (_queue.Count == 0)
+                        return;
+                RunNext();
+            }
+        }
+    }
+
+    private sealed class BrowserIngress : IAsyncDisposable
+    {
+        private readonly NamedPipeServerStream _server;
+        private readonly ReadObservedStream _observed;
+        private long _sentBytes;
+        public NamedPipeClientStream Client
+        {
+            get;
+        }
+        public BrowserUi Ui { get; } = new();
+        public CancellationTokenSource Owner { get; } = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        public BrowserPeerInbox Inbox
+        {
+            get;
+        }
+        public Task Reader
+        {
+            get;
+        }
+        public Exception? ExpectedFailure
+        {
+            get; set;
+        }
+        private BrowserIngress(NamedPipeServerStream server, NamedPipeClientStream client, Action<string> receive)
+        {
+            _server = server;
+            Client = client;
+            Inbox = new("chrome-extension://" + Extension + "/", Ui.Post, (name, _, _) => receive(name), Owner.Cancel);
+            _observed = new(server);
+            Reader = Inbox.ReadAsync(_observed, () => true, Owner.Token);
+        }
+        public static async Task<BrowserIngress> CreateAsync(Action<string> receive)
+        {
+            string name = "typelay-inbound-" + Guid.NewGuid().ToString("N");
+            var server = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
+            var client = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous);
+            try
+            {
+                await Task.WhenAll(server.WaitForConnectionAsync(TestContext.Current.CancellationToken),
+                    client.ConnectAsync(3000, TestContext.Current.CancellationToken));
+            }
+            catch
+            {
+                server.Dispose();
+                client.Dispose();
+                throw;
+            }
+            return new(server, client, receive);
+        }
+        public Task<BrowserReply?> Request(string op, string id, int timeoutMs = 3000) =>
+            Inbox.RequestAsync(id, op, () => true, timeoutMs);
+        public Task Event(string name) => Frame(new { @event = name, route = Route, data = new { } });
+        public Task Reply(string id, string data) => Frame(new { id, route = Route, data });
+        private async Task Frame(object message)
+        {
+            _sentBytes += 4 + JsonSerializer.SerializeToUtf8Bytes(message, Wire.Json).Length;
+            await Wire.WriteAsync(Client, message, TestContext.Current.CancellationToken);
+        }
+        public Task WaitUntilReadAsync() => _observed.WaitForReadAfterAsync(_sentBytes).WaitAsync(Owner.Token);
+        public async ValueTask DisposeAsync()
+        {
+            Inbox.Close();
+            Owner.Cancel();
+            Client.Dispose();
+            _server.Dispose();
+            Ui.RunAll();
+            try
+            {
+                await Reader;
+            }
+            catch (Exception error) when (error is IOException or OperationCanceledException or ObjectDisposedException) { }
+            try
+            {
+                await Inbox.Completion;
+            }
+            catch (Exception error) when (ReferenceEquals(error, ExpectedFailure)) { }
+            Owner.Dispose();
+        }
+    }
+
+    // This adapter observes the next real stream read. It changes neither wire
+    // contents nor reader completion, and avoids timing guesses in queue tests.
+    private sealed class ReadObservedStream(Stream inner) : Stream
+    {
+        private readonly object _gate = new();
+        private long _bytesRead, _readStartedAt = -1, _waitingAt;
+        private TaskCompletionSource? _waiting;
+        public Task WaitForReadAfterAsync(long position)
+        {
+            lock (_gate)
+            {
+                if (_readStartedAt >= position)
+                    return Task.CompletedTask;
+                _waitingAt = position;
+                _waiting = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                return _waiting.Task;
+            }
+        }
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            lock (_gate)
+            {
+                _readStartedAt = _bytesRead;
+                if (_waiting is not null && _readStartedAt >= _waitingAt)
+                {
+                    _waiting.TrySetResult();
+                    _waiting = null;
+                }
+            }
+            int read = await inner.ReadAsync(buffer, cancellationToken);
+            lock (_gate)
+                _bytesRead += read;
+            return read;
+        }
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException(); set => throw new NotSupportedException();
+        }
+        public override void Flush() => throw new NotSupportedException();
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
     [Fact]
     public void BrowserConnectionConfigurationRequiresOneExactPublishedIdentity()
     {

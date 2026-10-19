@@ -190,7 +190,7 @@ internal sealed class BrowserPeer : IDisposable
     private readonly Action<BrowserEvent> _message;
     private readonly CancellationTokenSource _closed = new();
     private readonly Channel<object> _outgoing = Channel.CreateBounded<object>(64);
-    private readonly ConcurrentDictionary<string, TaskCompletionSource<BrowserReply?>> _pending = new();
+    private readonly BrowserPeerInbox _incoming;
     private long _sequence;
     private int _disposed;
     public Guid ConnectionId { get; } = Guid.NewGuid();
@@ -209,30 +209,41 @@ internal sealed class BrowserPeer : IDisposable
         Origin = origin;
         _dispatcher = dispatcher;
         _message = message;
+        _incoming = new(origin, action => _dispatcher.InvokeAsync(action).Task,
+            (name, data, route) =>
+            {
+                if (!Alive)
+                {
+                    Dispose();
+                    if (name != "accepted")
+                        return;
+                }
+                _message(new(this, name, data, route));
+            }, Dispose);
+        _dispatcher.ShutdownStarted += Shutdown;
     }
-    public async Task<BrowserReply?> RequestAsync(string op, object? data = null, int timeoutMs = 200)
+    private void Shutdown(object? sender, EventArgs args)
     {
-        if (!Alive || _pending.Count >= 16)
-            return null;
+        Dispose();
+        _incoming.CloseOnUiThread();
+    }
+    public Task<BrowserReply?> RequestAsync(string op, object? data = null, int timeoutMs = 200)
+    {
+        if (!Alive)
+            return Task.FromResult<BrowserReply?>(null);
         string id = NextId();
-        var result = new TaskCompletionSource<BrowserReply?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pending[id] = result;
-        try
+        return _incoming.RequestAsync(id, op, () =>
         {
-            if (!_outgoing.Writer.TryWrite(new
+            if (Alive && _outgoing.Writer.TryWrite(new
             {
                 id,
                 op,
                 data
             }))
-            {
-                Dispose();
-                return null;
-            }
-            return await result.Task.WaitAsync(TimeSpan.FromMilliseconds(timeoutMs), _closed.Token);
-        }
-        catch (Exception error) when (error is TimeoutException or OperationCanceledException) { return null; }
-        finally { _pending.TryRemove(id, out _); }
+                return true;
+            Dispose();
+            return false;
+        }, timeoutMs);
     }
     private string NextId() => ConnectionId.ToString("N") + ":" + Interlocked.Increment(ref _sequence);
     public void Send(string op, object? data = null)
@@ -251,32 +262,25 @@ internal sealed class BrowserPeer : IDisposable
         Task writer = WriteAsync(linked.Token);
         try
         {
-            while (!linked.IsCancellationRequested && Alive)
-            {
-                var message = await Wire.ReadAsync<JsonElement>(_pipe, linked.Token).ConfigureAwait(false);
-                if (!message.TryGetProperty("route", out var routeValue))
-                    continue;
-                var route = routeValue.Deserialize<BrowserRoute>(BrowserServer.Json);
-                if (route is null || !route.Valid(Origin))
-                    throw new InvalidDataException("browser-route");
-                var data = message.TryGetProperty("data", out var content) ? content.Clone() : default;
-                if (message.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String)
-                {
-                    if (_pending.TryRemove(id.GetString()!, out var pending))
-                        pending.TrySetResult(new(data, route));
-                }
-                else if (message.TryGetProperty("event", out var kind) && kind.GetString() is { } name)
-                    await _dispatcher.InvokeAsync(() => { if (Alive) _message(new(this, name, data, route)); });
-            }
+            await _incoming.ReadAsync(_pipe, () => Alive, linked.Token).ConfigureAwait(false);
         }
         finally
         {
+            Dispose();
             linked.Cancel();
             try
             {
                 await writer.ConfigureAwait(false);
             }
-            catch (Exception error) when (error is IOException or OperationCanceledException) { }
+            catch (Exception error) when (error is IOException or OperationCanceledException or ObjectDisposedException) { }
+            finally
+            {
+                try
+                {
+                    await _incoming.Completion.ConfigureAwait(false);
+                }
+                finally { _dispatcher.ShutdownStarted -= Shutdown; }
+            }
         }
     }
     private async Task WriteAsync(CancellationToken ct)
@@ -288,13 +292,303 @@ internal sealed class BrowserPeer : IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
+        _incoming.Close();
+        if (_incoming.Completion.IsCompleted)
+            _dispatcher.ShutdownStarted -= Shutdown;
         _closed.Cancel();
         _outgoing.Writer.TryComplete();
         _pipe.Dispose();
         _host.Dispose();
         _browser.Dispose();
-        foreach (var pending in _pending.Values)
-            pending.TrySetResult(null);
-        _pending.Clear();
+    }
+}
+
+// One authenticated peer's actual reader and UI handoff. Receiving a frame does
+// not apply it: replies retain the sequence of all preceding event frames.
+internal sealed class BrowserPeerInbox
+{
+    private const int EventCapacity = 64, RequestCapacity = 16;
+    private readonly string _origin;
+    private readonly Func<Action, Task> _dispatch;
+    private readonly Action<string, JsonElement, BrowserRoute> _message;
+    private readonly Action _closeConnection;
+    private readonly object _gate = new();
+    private readonly Dictionary<string, PendingReply> _pending = new(StringComparer.Ordinal);
+    private readonly Queue<(long Sequence, string Name, JsonElement Data, BrowserRoute Route)> _events = new();
+    private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private long _receivedSequence, _appliedSequence;
+    private int _outstandingEvents;
+    private bool _closed, _scheduled, _draining;
+    private Exception? _failure;
+    public Task Completion => _completion.Task;
+
+    private sealed class PendingReply(bool terminal, long deadline)
+    {
+        public readonly bool Terminal = terminal;
+        public readonly long Deadline = deadline;
+        public readonly TaskCompletionSource<BrowserReply?> Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public BrowserReply? Received;
+        public long PrecedingEventSequence;
+    }
+
+    public BrowserPeerInbox(string origin, Func<Action, Task> dispatch,
+        Action<string, JsonElement, BrowserRoute> message, Action closeConnection)
+    {
+        _origin = origin;
+        _dispatch = dispatch;
+        _message = message;
+        _closeConnection = closeConnection;
+    }
+
+    public async Task<BrowserReply?> RequestAsync(string id, string op, Func<bool> enqueue, int timeoutMs)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(timeoutMs);
+        long deadline = Stopwatch.GetTimestamp() + (long)timeoutMs * Stopwatch.Frequency / 1000;
+        var pending = new PendingReply(op == "direct", deadline);
+        lock (_gate)
+        {
+            if (_closed || _pending.Count >= RequestCapacity)
+                return null;
+            _pending.Add(id, pending);
+        }
+        using var timeout = new CancellationTokenSource();
+        using var expired = timeout.Token.Register(() =>
+        {
+            lock (_gate)
+            {
+                if (pending.Terminal && pending.Received is not null)
+                    return;
+                Finish(id, pending, null);
+            }
+        });
+        timeout.CancelAfter(TimeSpan.FromMilliseconds(Math.Max(0,
+            Math.Ceiling((deadline - Stopwatch.GetTimestamp()) * 1000d / Stopwatch.Frequency))));
+        try
+        {
+            if (!enqueue())
+                Close();
+            return await pending.Completion.Task.ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (_gate)
+                Finish(id, pending, null);
+        }
+    }
+
+    public async Task ReadAsync(Stream stream, Func<bool> alive, CancellationToken cancellation)
+    {
+        try
+        {
+            while (!cancellation.IsCancellationRequested && alive())
+            {
+                lock (_gate)
+                    if (_closed)
+                        return;
+                var message = await Wire.ReadAsync<JsonElement>(stream, cancellation).ConfigureAwait(false);
+                if (!Receive(message))
+                    return;
+            }
+            cancellation.ThrowIfCancellationRequested();
+        }
+        finally { Close(); }
+    }
+
+    private bool Receive(JsonElement message)
+    {
+        if (!message.TryGetProperty("route", out var routeValue))
+            return true;
+        var route = routeValue.Deserialize<BrowserRoute>(BrowserServer.Json);
+        if (route is null || !route.Valid(_origin))
+            throw new InvalidDataException("browser-route");
+        var data = message.TryGetProperty("data", out var content) ? content.Clone() : default;
+        bool schedule = false, close = false, open;
+        lock (_gate)
+        {
+            // This lock is the receipt boundary, including the close/timeout
+            // race. Bytes read after Close never acquire another peer's request.
+            if (_closed)
+                return false;
+            if (message.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String)
+            {
+                if (_pending.TryGetValue(id.GetString()!, out var pending) && pending.Received is null)
+                {
+                    if (Stopwatch.GetTimestamp() >= pending.Deadline)
+                        Finish(id.GetString()!, pending, null);
+                    else
+                    {
+                        pending.Received = new(data, route);
+                        pending.PrecedingEventSequence = _receivedSequence;
+                        CompleteReplies();
+                    }
+                }
+            }
+            else if (message.TryGetProperty("event", out var kind) && kind.GetString() is { } name)
+            {
+                _events.Enqueue((++_receivedSequence, name, data, route));
+                // Keep this one overflow frame too: it may already be an
+                // accepted receipt. Seal immediately; storage is at most 65,
+                // including any event currently executing on the UI thread.
+                if (++_outstandingEvents > EventCapacity)
+                    close = CloseCore();
+                if (!_scheduled)
+                    schedule = _scheduled = true;
+            }
+            open = !_closed;
+        }
+        if (close)
+            _closeConnection();
+        if (schedule)
+            _ = DispatchAsync();
+        return open;
+    }
+
+    private async Task DispatchAsync()
+    {
+        try
+        {
+            await _dispatch(Drain).ConfigureAwait(false);
+        }
+        catch (Exception error)
+        {
+            bool close;
+            lock (_gate)
+            {
+                if (_completion.Task.IsCompleted)
+                    return; // ShutdownStarted already drained on the UI owner.
+                close = CloseCore();
+                // This dispatch cannot deliver queued callbacks. Do not leave
+                // callers hanging, or turn an already read direct receipt into
+                // an unknown result. Surface the failed dispatch to the owner.
+                _events.Clear();
+                _outstandingEvents = 0;
+                _appliedSequence = _receivedSequence;
+                CompleteReplies();
+                _completion.TrySetException(error);
+            }
+            if (close)
+                _closeConnection();
+        }
+    }
+
+    private void Drain()
+    {
+        lock (_gate)
+        {
+            if (_draining)
+                return;
+            _draining = true;
+        }
+        int remaining = EventCapacity;
+        while (true)
+        {
+            (long Sequence, string Name, JsonElement Data, BrowserRoute Route) message;
+            bool deliver;
+            lock (_gate)
+            {
+                if (_events.Count == 0)
+                {
+                    _draining = _scheduled = false;
+                    CompleteReplies();
+                    CompleteClosed();
+                    return;
+                }
+                if (!_closed && remaining-- == 0)
+                {
+                    // A continuous reader must still yield to other UI work.
+                    // Keep the one scheduled owner and resume the same FIFO.
+                    _draining = false;
+                    break;
+                }
+                message = _events.Dequeue();
+                deliver = !_closed || message.Name == "accepted";
+            }
+            try
+            {
+                if (deliver)
+                    _message(message.Name, message.Data, message.Route);
+            }
+            catch (Exception error)
+            {
+                bool close;
+                lock (_gate)
+                {
+                    _failure ??= error;
+                    close = CloseCore();
+                }
+                if (close)
+                    _closeConnection();
+            }
+            finally
+            {
+                lock (_gate)
+                {
+                    _appliedSequence = message.Sequence;
+                    _outstandingEvents--;
+                    CompleteReplies();
+                }
+            }
+        }
+        _ = DispatchAsync();
+    }
+
+    public void Close()
+    {
+        bool close;
+        lock (_gate)
+        {
+            close = CloseCore();
+            CompleteClosed();
+        }
+        if (close)
+            _closeConnection();
+    }
+
+    // WPF still owns this callback at ShutdownStarted. Reuse the same drain;
+    // a shutdown raised inside an event cannot overtake that event's barrier.
+    public void CloseOnUiThread()
+    {
+        Close();
+        Drain();
+    }
+
+    private bool CloseCore()
+    {
+        bool changed = !_closed;
+        _closed = true;
+        CompleteReplies();
+        return changed;
+    }
+
+    private void CompleteReplies()
+    {
+        long now = Stopwatch.GetTimestamp();
+        foreach (var (id, pending) in _pending.ToArray())
+        {
+            bool terminal = pending.Terminal && pending.Received is not null;
+            if (!terminal && (_closed || now >= pending.Deadline))
+                Finish(id, pending, null);
+            else if (pending.Received is not null && pending.PrecedingEventSequence <= _appliedSequence)
+                Finish(id, pending, pending.Received);
+        }
+    }
+
+    private void Finish(string id, PendingReply pending, BrowserReply? reply)
+    {
+        if (_pending.TryGetValue(id, out var current) && ReferenceEquals(current, pending))
+        {
+            _pending.Remove(id);
+            pending.Completion.TrySetResult(reply);
+        }
+    }
+
+    private void CompleteClosed()
+    {
+        if (!_closed || _outstandingEvents != 0 || _draining)
+            return;
+        if (_failure is null)
+            _completion.TrySetResult();
+        else
+            _completion.TrySetException(_failure);
     }
 }
