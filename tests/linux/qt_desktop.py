@@ -268,6 +268,9 @@ def run_qt(
                                         ],
                                         "overlayEventCount": actual["overlayEventCount"],
                                         "geometry": rectangle,
+                                        "styleClickGeometry": actual["overlayControls"][
+                                            control_name
+                                        ].get("styleClickGeometry"),
                                         "x": x,
                                         "y": y,
                                     }

@@ -114,6 +114,32 @@ def disk_budget(package, data):
     }
 
 
+def worker_generation(pid, package, components):
+    process = Path("/proc") / str(pid)
+    args = (process / "cmdline").read_bytes().split(b"\0")
+    if (
+        len(args) < 4
+        or args[-4] != os.fsencode(package / "worker/run_worker.py")
+        or args[-3] != b"--models"
+        or args[-1] != b""
+    ):
+        return None
+    models = Path(os.fsdecode(args[-2]))
+    generation = models.parent
+    if (
+        models.name != "models"
+        or generation.parent != components
+        or len(generation.name) != 32
+        or any(character not in "0123456789abcdef" for character in generation.name)
+    ):
+        return None
+    # Bind to the immutable --models generation, including an unpublished
+    # candidate. Runtime copies materialize venv/bin/python as a regular file.
+    if (process / "exe").samefile(generation / "runtime/venv/bin/python"):
+        return generation.name
+    return None
+
+
 def run(arguments):
     from support.gtk_accessibility import Atspi, named, select_settings_page
 
@@ -203,7 +229,22 @@ def run(arguments):
         def state():
             assert process.poll() is None, "formal desktop exited during package lifecycle"
             try:
-                return control(paths, "status") or {}
+                value = control(paths, "status") or {}
+                if value:
+                    # Keep only the last already-read model facts. Full status
+                    # can include editor state and must not enter the artifact.
+                    report["lastObservedStatus"] = {
+                        "modelReady": value.get("modelReady"),
+                        "modelDirections": value.get("modelDirections"),
+                        "modelPackages": [
+                            {key: item.get(key) for key in ("id", "version", "directions")}
+                            for item in value.get("modelPackages") or []
+                        ],
+                        "modelFailureCode": value.get("modelFailureCode"),
+                        "modelCleanupPending": value.get("modelCleanupPending"),
+                        "installation": value.get("setup", {}).get("installation"),
+                    }
+                return value
             except (OSError, EOFError, ValueError):
                 return {}
 
@@ -240,11 +281,7 @@ def run(arguments):
             found = []
             for pid in owned:
                 try:
-                    args = (Path("/proc") / str(pid) / "cmdline").read_bytes().split(b"\0")
-                    if (
-                        os.fsencode(package / "worker/run_worker.py") in args
-                        and Path(os.readlink(f"/proc/{pid}/exe")).name == "python3.13"
-                    ):
+                    if worker_generation(pid, package, paths.data / "components") is not None:
                         found.append(pid)
                         info = (
                             (Path("/proc") / str(pid) / "stat")

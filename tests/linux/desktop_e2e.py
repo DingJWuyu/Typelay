@@ -359,18 +359,19 @@ def verify_direction_installation(arguments, environment):
                             } == {identity: cached[identity][0] for identity in expected}
                         return root
 
-                    def inference(expected, requests):
+                    def inference(generation, expected, requests):
                         # This separate real worker verifies inference against the installed
                         # generation. The UI host's own hello is observed in modelDirections.
+                        assert paths.models.parent.resolve(strict=True) == generation
                         worker = subprocess.Popen(
                             [
                                 str(paths.home / "native/typelay-supervise"),
-                                str(paths.python),
+                                str(generation / "runtime/venv/bin/python"),
                                 "-I",
                                 "-B",
                                 str(paths.home / "worker/run_worker.py"),
                                 "--models",
-                                str(paths.models),
+                                str(generation / "models"),
                             ],
                             stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE,
@@ -430,6 +431,7 @@ def verify_direction_installation(arguments, environment):
                     result["singleDirections"] = ["zh_en"]
                     result["stage"] = "infer-single"
                     translated, same, missing = inference(
+                        single,
                         ["zh_en"],
                         [
                             {"text": samples["zh_en"], "source": "zh", "target": "en"},
@@ -473,6 +475,7 @@ def verify_direction_installation(arguments, environment):
                     )
                     result["stage"] = "infer-complete"
                     responses = inference(
+                        complete,
                         ["zh_en", "en_zh"],
                         [
                             {"text": samples["zh_en"], "source": "zh", "target": "en"},

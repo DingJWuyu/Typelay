@@ -513,7 +513,9 @@ class PackageCatalogTests(unittest.TestCase):
                 self.assertEqual([item.package.id for item in selection], expected)
 
     def preview_catalog(self):
-        value = json.loads((Path(run_worker.__file__).parent / "model-catalog.json").read_text())
+        value = json.loads(
+            (Path(run_worker.__file__).parent / "model-catalog.json").read_text(encoding="utf8")
+        )
         value["packages"] = value["packages"][:2]
         pairs = (
             "zh_ja",

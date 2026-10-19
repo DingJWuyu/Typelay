@@ -21,6 +21,7 @@
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QPixmap>
+#include <QRadioButton>
 #include <QTextBlock>
 #include <QTextDocument>
 #include <QTextFrame>
@@ -29,6 +30,7 @@
 #include <QSocketNotifier>
 #include <QStyleHints>
 #include <QStyle>
+#include <QStyleOptionButton>
 #include <QTimer>
 #include <QToolTip>
 #include <QVBoxLayout>
@@ -52,7 +54,7 @@ public:
     QWidget *window = nullptr;
     struct OverlayObject { QString role; quint64 instance; QRect bounds; };
     QHash<QObject *, OverlayObject> overlayObjects;
-    quint64 overlayInstance = 0, overlayEventCount = 0;
+    quint64 overlayInstance = 0, overlayEventCount = 0, languageClickEventCount = 0;
     QJsonObject counts;
     quint64 commandSequence = 0;
     bool firstPreedit = false, secondPreedit = false, plainPreedit = false, editorPreedit = false;
@@ -82,7 +84,16 @@ public:
     void overlayEvent(const char *event, const OverlayObject &object, QJsonObject extra = {}) {
         // Owned TypeLay control roles and numeric geometry/timing only. Never
         // log widget text, unrelated object names or native addresses.
-        if (overlayEventCount >= 160) return;
+        // Preserve the existing total bound, reserving twelve events for the
+        // first real Auto/English clicks after the preceding desktop cases.
+        const bool languageClick = (object.role == QStringLiteral("typelay-source-auto")
+            || object.role == QStringLiteral("typelay-source-en"))
+            && (qstrcmp(event, "mouse-press") == 0 || qstrcmp(event, "mouse-release") == 0
+                || qstrcmp(event, "pressed") == 0 || qstrcmp(event, "released") == 0
+                || qstrcmp(event, "clicked") == 0);
+        if (overlayEventCount >= 160 || (languageClick ? languageClickEventCount >= 12
+                : overlayEventCount - languageClickEventCount >= 148)) return;
+        if (languageClick) ++languageClickEventCount;
         const auto &bounds = object.bounds;
         extra.insert("sequence", qint64(++overlayEventCount));
         extra.insert("atMs", observedAtMs());
@@ -380,14 +391,26 @@ int main(int argc, char **argv) {
             const auto name = button->objectName();
             if (!name.startsWith(QStringLiteral("typelay-"))) continue;
             observer.observeOverlay(button);
-            overlayControls.insert(name, QJsonObject{
+            QJsonObject control{
                 {"text", button->text()}, {"focused", button->hasFocus()},
                 {"visible", button->isVisible()}, {"enabled", button->isEnabled()},
                 {"underMouse", button->underMouse()},
                 {"checked", button->isChecked()}, {"geometry", rectangle(button)},
                 {"textColor", button->palette().color(QPalette::Active, QPalette::ButtonText).name()},
                 {"backgroundColor", button->palette().color(QPalette::Active, QPalette::Button).name()},
-                {"instance", qint64(observer.overlayObjects.value(button).instance)}});
+                {"instance", qint64(observer.overlayObjects.value(button).instance)}};
+            if (qobject_cast<QRadioButton *>(button)
+                && (name == QStringLiteral("typelay-source-auto") || name == QStringLiteral("typelay-source-en"))) {
+                QStyleOptionButton option;
+                option.initFrom(button);
+                option.text = button->text(); option.icon = button->icon(); option.iconSize = button->iconSize();
+                option.state |= button->isChecked() ? QStyle::State_On : QStyle::State_Off;
+                const auto local = button->style()->subElementRect(QStyle::SE_RadioButtonClickRect, &option, button);
+                const auto origin = button->mapTo(&window, local.topLeft());
+                control.insert("styleClickGeometry", QJsonObject{{"x", origin.x()}, {"y", origin.y()},
+                    {"width", local.width()}, {"height", local.height()}});
+            }
+            overlayControls.insert(name, control);
         }
         auto *clipboard = QApplication::clipboard();
         QJsonObject state{{"pid", qint64(getpid())}, {"qtVersion", QString::fromLatin1(qVersion())},

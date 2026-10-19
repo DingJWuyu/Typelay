@@ -240,7 +240,14 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                 assert source["authority"]["sessionBindings"] == source["sessionBindings"]
                 if stage == "language-options":
                     check_language_options(
-                        client, source, generation, state, initial, nested, dimensions
+                        client,
+                        source,
+                        generation,
+                        state,
+                        initial,
+                        nested,
+                        dimensions,
+                        click_evidence,
                     )
                     print(
                         "GTK language options: real menus and Apply checked without a model",
@@ -600,7 +607,9 @@ def check_preview_colors(client, source, generation, state, initial):
         assert actual["first"] == initial["first"] and actual["second"] == initial["second"]
 
 
-def check_language_options(client, source, generation, state, initial, nested, dimensions):
+def check_language_options(
+    client, source, generation, state, initial, nested, dimensions, evidence
+):
     """Real menu widgets and UI events; synthetic view DTO, no installed model claim."""
     trigger = "typelay-menu-trigger"
     menu = "typelay-language-menu"
@@ -621,20 +630,69 @@ def check_language_options(client, source, generation, state, initial, nested, d
     }
     view = {"sourceLanguage": "en", "targetLanguage": "ja", "languageChoices": choices}
     revision = 0
+    phases = evidence["languagePhases"] = []
+
+    def observe(value):
+        # Only the first three existing render/input boundaries. Do not retain
+        # source/candidate text, labels, or add observation requests or sleeps.
+        return {
+            "observedAtMonoMs": value.get("observedAtMs"),
+            "focus": value.get("focus"),
+            "controls": {
+                name: {
+                    key: control[key]
+                    for key in (
+                        "instance",
+                        "modelInstance",
+                        "visible",
+                        "enabled",
+                        "focused",
+                        "selected",
+                        "x",
+                        "y",
+                        "width",
+                        "height",
+                    )
+                    if key in control
+                }
+                for name, control in value.get("overlayControls", {}).items()
+                if name in (trigger, menu, source_control, target_control, apply_control)
+            },
+        }
 
     def render():
         nonlocal revision
         revision += 1
-        assert render_preview(
-            client, source, generation, revision, "fixture exit", language_view=view
-        )["visible"]
-        rendered = time.monotonic_ns() // 1_000_000
-        return wait_for(
-            lambda: (value := state()).get("observedAtMs", 0) > rendered
-            and value.get("overlayControls", {}).get(trigger, {}).get("visible")
-            and value["overlayControls"],
-            "language controls did not render",
+        phase = None
+        if revision <= 3:
+            phase = {"stage": ("initial", "menu-renew", "choice-renew")[revision - 1]}
+            phases.append(phase)
+        result = render_preview(
+            client,
+            source,
+            generation,
+            revision,
+            "fixture exit",
+            language_view=view,
+            evidence=phase,
         )
+        if phase is not None:
+            phase["renderVisible"] = result["visible"]
+        assert result["visible"]
+        rendered = time.monotonic_ns() // 1_000_000
+
+        def shown():
+            value = state()
+            fresh = value.get("observedAtMs", 0) > rendered
+            if fresh and phase is not None and "firstFreshObservation" not in phase:
+                phase["firstFreshObservation"] = observe(value)
+            if fresh and value.get("overlayControls", {}).get(trigger, {}).get("visible"):
+                if phase is not None:
+                    phase["shownObservation"] = observe(value)
+                return value["overlayControls"]
+            return None
+
+        return wait_for(shown, "language controls did not render")
 
     def controls():
         return state().get("overlayControls", {})
@@ -648,7 +706,10 @@ def check_language_options(client, source, generation, state, initial, nested, d
             (control["x"] + control["width"] / 2, control["y"] + control["height"] / 2),
             dimensions,
         )
-        click_once(nested, point, {})
+        phase = phases[-1] if revision <= 3 else {}
+        if phase:
+            phase.update(control=name, point=point, beforeClick=observe(actual))
+        click_once(nested, point, phase)
 
     def toggle(opened, renew=True):
         if renew:
@@ -666,8 +727,18 @@ def check_language_options(client, source, generation, state, initial, nested, d
         for _ in range(index):
             key("Down")
         key("Return")
+        if revision == 3:
+            phases[-1]["keysReturnedAtMs"] = now_ms()
+
+        def selected():
+            actual = state()
+            value = actual.get("overlayControls", {})
+            if revision == 3 and "afterKeys" not in phases[-1]:
+                phases[-1]["afterKeys"] = observe(actual)
+            return value if value.get(name, {}).get("selected") == index else None
+
         return wait_for(
-            lambda: (value := controls()).get(name, {}).get("selected") == index and value,
+            selected,
             "actual dropdown selection did not change",
         )
 

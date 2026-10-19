@@ -137,7 +137,7 @@ class HyContractTests(unittest.TestCase):
         self.native = NativeRuntime
         self.verified = {"model_path": str(directory / files[0]["path"])}
 
-    def run_worker(self, requests=(), *, self_check=False, detected="zh"):
+    def run_worker(self, requests=(), *, self_check=False, detected="zh", platform="linux"):
         (self.root / "installed.json").write_text(json.dumps(self.inventory), encoding="utf8")
         incoming, outgoing = io.BytesIO(), io.BytesIO()
         for number, request in enumerate(({"op": "hello"}, *requests), 1):
@@ -160,6 +160,7 @@ class HyContractTests(unittest.TestCase):
         with (
             patch.dict(sys.modules, {"lingua": SimpleNamespace(LanguageDetectorBuilder=builder)}),
             patch.object(hy, "LinuxRuntime", self.native),
+            patch.object(sys, "platform", platform),
             patch("typelay_worker.hy_assets.verify_production", return_value=self.verified),
             patch.object(sys, "argv", arguments),
             patch.object(sys, "stdin", SimpleNamespace(buffer=incoming)),
@@ -192,8 +193,7 @@ class HyContractTests(unittest.TestCase):
 
     def test_windows_production_refuses_all_twelve_before_loading_native(self):
         self.inventory["packages"][0]["directions"] = EXPECTED_DIRECTIONS
-        with patch.object(sys, "platform", "win32"):
-            status, replies = self.run_worker()
+        status, replies = self.run_worker(platform="win32")
         self.assertEqual((status, replies), (2, []))
         self.assertEqual((self.opened, self.closed, self.loader_closed, self.calls), (0, 0, 0, []))
 
