@@ -250,7 +250,7 @@ class NativeBrowserContract(unittest.TestCase):
                             )
                             self.assertEqual(
                                 current["sessionBindings"],
-                                {**original["sessionBindings"], "target": current["target"]},
+                                {**capable["sessionBindings"], "target": current["target"]},
                             )
                             snapshot = self.request(
                                 connection,

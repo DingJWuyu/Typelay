@@ -514,7 +514,9 @@ def run(arguments):
         # release in one disposable HOME. Keep the fixture's isolated XDG model
         # data rather than downloading or copying another model.
         home = resources.enter_context(tempfile.TemporaryDirectory(prefix="typelay-desktop-home-"))
-        resources.enter_context(patch.dict(os.environ, {"HOME": home}))
+        resources.enter_context(
+            patch.dict(os.environ, {"HOME": home, "XDG_CONFIG_HOME": str(Path(home) / "config")})
+        )
         subprocess.run(
             [sys.executable, str(package / "install.py"), "install"], check=True, timeout=30
         )
@@ -710,22 +712,22 @@ def run(arguments):
             from playwright.sync_api import sync_playwright
             from support.browser_process import chromium_context
 
-            with tempfile.TemporaryDirectory(prefix="typelay-browser-profile-") as temporary:
+            with sync_playwright() as playwright:
                 browser_environment = dict(environment)
                 extension = package / "browser/chromium"
-                with sync_playwright() as playwright:
-                    browser_scope = chromium_context(
-                        playwright,
-                        "/usr/bin/chromium",
-                        Path(temporary),
-                        browser_environment,
-                        [
-                            "--ozone-platform=wayland",
-                            f"--disable-extensions-except={extension}",
-                            f"--load-extension={extension}",
-                        ],
-                    )
-                    browser = browser_scope.__enter__()
+                # Chromium resolves user native hosts below its actual user-data-dir.
+                # Match the running desktop's isolated XDG registration root.
+                with chromium_context(
+                    playwright,
+                    "/usr/bin/chromium",
+                    paths.config.parent / "chromium",
+                    browser_environment,
+                    [
+                        "--ozone-platform=wayland",
+                        f"--disable-extensions-except={extension}",
+                        f"--load-extension={extension}",
+                    ],
+                ) as browser:
                     try:
                         worker = (
                             browser.service_workers[0]
@@ -1295,8 +1297,6 @@ def run(arguments):
                     except BaseException:
                         browser_evidence("chromium", lambda: page.evaluate(page_state))
                         raise
-                    finally:
-                        browser_scope.__exit__(None, None, None)
             # Observe teardown of the Chromium source before accepting any Firefox
             # readiness, even though this scenario deliberately uses the same text.
             wait_for(
