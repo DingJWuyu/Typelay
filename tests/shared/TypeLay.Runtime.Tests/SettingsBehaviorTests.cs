@@ -16,6 +16,10 @@ public sealed class SettingsBehaviorTests : IDisposable
     [InlineData("en", "zh")]
     [InlineData("zh", "zh")]
     [InlineData("en", "en")]
+    [InlineData("zh", "ja")]
+    [InlineData("ja", "zh")]
+    [InlineData("auto", "ja")]
+    [InlineData("ja", "ja")]
     public void CatalogSettingsPersistWithoutAnInstalledModel(string source, string target)
     {
         var store = new SettingsStore(SettingsPath);

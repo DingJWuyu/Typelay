@@ -186,11 +186,15 @@ def digest(path):
 
 
 class Redirects(urllib.request.HTTPRedirectHandler):
+    def __init__(self, hosts=("argos-net.com",)):
+        super().__init__()
+        self.hosts = frozenset(hosts)
+
     def redirect_request(self, request, fp, code, msg, headers, newurl):
         parsed = urllib.parse.urlsplit(newurl)
         if (
             parsed.scheme != "https"
-            or parsed.hostname != "argos-net.com"
+            or parsed.hostname not in self.hosts
             or parsed.username is not None
             or parsed.password is not None
             or parsed.port not in (None, 443)
@@ -236,10 +240,28 @@ def model_catalog(home):
 
 
 def download(direction, cache):
-    pair, url = direction.id, direction.url
-    archive = cache / f"{pair}-{direction.version}.argosmodel"
-    if archive.is_file() and not archive.is_symlink() and 0 < archive.stat().st_size <= MAX_ARCHIVE:
-        return archive, url
+    return download_resource(
+        direction.id,
+        direction.url,
+        cache / f"{direction.id}-{direction.version}.argosmodel",
+        MAX_ARCHIVE,
+    )
+
+
+def download_resource(pair, url, archive, limit, *, expected=None, hosts=("argos-net.com",)):
+    if (
+        archive.is_file()
+        and not archive.is_symlink()
+        and archive.stat().st_nlink == 1
+        and 0 < archive.stat().st_size <= limit
+    ):
+        if expected is None or (
+            archive.stat().st_size == expected["bytes"] and digest(archive) == expected["sha256"]
+        ):
+            return archive, url
+        archive.unlink()
+    elif archive.exists() or archive.is_symlink():
+        raise ValueError("model-cache-path")
     partial = archive.with_suffix(".part")
     metadata = partial.with_suffix(".part.json")
 
@@ -250,7 +272,13 @@ def download(direction, cache):
 
     offset, saved, checksum = 0, {}, hashlib.sha256()
     try:
-        if partial.is_symlink() or metadata.is_symlink() or metadata.stat().st_size > 4096:
+        if (
+            partial.is_symlink()
+            or metadata.is_symlink()
+            or metadata.stat().st_size > 4096
+            or partial.stat().st_nlink != 1
+            or metadata.stat().st_nlink != 1
+        ):
             raise ValueError("model-resume-metadata")
         saved = json.loads(metadata.read_text(encoding="utf-8"))
         offset = saved["size"]
@@ -258,7 +286,7 @@ def download(direction, cache):
             saved["url"] != url
             or type(offset) is not int
             or type(saved["total"]) is not int
-            or not 0 < offset <= saved["total"] <= MAX_ARCHIVE
+            or not 0 < offset <= saved["total"] <= limit
             or not saved["validator"]
             or not isinstance(saved["validatorHeaders"], dict)
             or saved["validator"] != validator(saved["validatorHeaders"])
@@ -279,7 +307,7 @@ def download(direction, cache):
         discard()
         offset, saved, checksum = 0, {}, hashlib.sha256()
 
-    opener = urllib.request.build_opener(Redirects())
+    opener = urllib.request.build_opener(Redirects(hosts))
     started = time.monotonic()
     # One fresh retry is sufficient for an ignored Range, stale validator or 416.
     for attempt in range(2):
@@ -301,7 +329,7 @@ def download(direction, cache):
             length = int(response.headers.get("Content-Length", "0"))
             if (
                 length < 0
-                or length > MAX_ARCHIVE
+                or length > limit
                 or response.headers.get("Content-Encoding", "identity") != "identity"
             ):
                 raise ValueError("model-download-size")
@@ -341,6 +369,8 @@ def download(direction, cache):
             last_progress = 0.0
             descriptor = os.open(partial, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
             with os.fdopen(descriptor, "r+b") as output:
+                if os.fstat(output.fileno()).st_nlink != 1:
+                    raise ValueError("model-cache-path")
                 output.truncate(offset)
                 output.seek(offset)
 
@@ -359,10 +389,11 @@ def download(direction, cache):
                         "sha256": checksum.hexdigest(),
                     }
                     pending = metadata.with_suffix(".tmp")
-                    fd = os.open(
-                        pending, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600
-                    )
+                    fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
                     with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                        if os.fstat(stream.fileno()).st_nlink != 1:
+                            raise ValueError("model-cache-path")
+                        stream.truncate(0)
                         json.dump(value, stream)
                         stream.flush()
                         os.fsync(stream.fileno())
@@ -370,7 +401,7 @@ def download(direction, cache):
 
                 try:
                     while block := response.read(65536):
-                        if count + len(block) > MAX_ARCHIVE or time.monotonic() - started > 900:
+                        if count + len(block) > limit or time.monotonic() - started > 900:
                             raise ValueError("model-download-limit")
                         output.write(block)
                         checksum.update(block)
@@ -389,6 +420,11 @@ def download(direction, cache):
                 except ValueError:
                     metadata.unlink(missing_ok=True)
                     raise
+            if expected is not None and (
+                count != expected["bytes"] or checksum.hexdigest() != expected["sha256"]
+            ):
+                discard()
+                raise ValueError("model-fixed-hash")
             partial.replace(archive)
             metadata.unlink(missing_ok=True)
             return archive, url
@@ -451,31 +487,32 @@ def extract_model(archive, destination, direction):
             raise ValueError("model-layout")
 
 
+def legacy_directions(value, catalog):
+    available = tuple(direction.id for direction in catalog)
+    if (
+        not isinstance(value, dict)
+        or type(value.get("schema")) is not int
+        or value["schema"] not in (1, 2)
+    ):
+        raise ValueError("model-inventory")
+    if value["schema"] == 1 and "directions" not in value:
+        return available
+    selected = value.get("directions")
+    if (
+        not isinstance(selected, list)
+        or not selected
+        or any(not isinstance(item, str) for item in selected)
+        or len(set(selected)) != len(selected)
+        or not set(selected).issubset(available)
+        or value["schema"] == 1
+        and set(selected) != set(available)
+    ):
+        raise ValueError("model-inventory")
+    return tuple(item for item in available if item in selected)
+
+
 def installation_directions(models, catalog):
     available = tuple(direction.id for direction in catalog)
-
-    def directions(value):
-        if (
-            not isinstance(value, dict)
-            or type(value.get("schema")) is not int
-            or value["schema"] not in (1, 2)
-        ):
-            raise ValueError("model-inventory")
-        if value["schema"] == 1 and "directions" not in value:
-            return available
-        selected = value.get("directions")
-        if (
-            not isinstance(selected, list)
-            or not selected
-            or any(not isinstance(item, str) for item in selected)
-            or len(set(selected)) != len(selected)
-            or not set(selected).issubset(available)
-            or value["schema"] == 1
-            and set(selected) != set(available)
-        ):
-            raise ValueError("model-inventory")
-        return tuple(item for item in available if item in selected)
-
     for path in (models.parent, models, models / "installed.json"):
         if path.is_symlink():
             raise ValueError("model-inventory")
@@ -483,7 +520,7 @@ def installation_directions(models, catalog):
     metadata = marker.stat()
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 8 * 1024 * 1024:
         raise ValueError("model-inventory")
-    selected = directions(json.loads(marker.read_text(encoding="utf-8")))
+    selected = legacy_directions(read_metadata(marker, 8 * 1024 * 1024), catalog)
     activation = models.parent / "activation.json"
     try:
         metadata = activation.lstat()
@@ -492,8 +529,8 @@ def installation_directions(models, catalog):
     else:
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 4096:
             raise ValueError("model-activation")
-        value = json.loads(activation.read_text(encoding="utf-8"))
-        recorded = directions(value)
+        value = read_metadata(activation, 4096)
+        recorded = legacy_directions(value, catalog)
         if set(value) != (
             {"schema", "previous"} if value["schema"] == 1 else {"schema", "previous", "directions"}
         ):
@@ -508,6 +545,744 @@ def installation_directions(models, catalog):
     if selected != recorded:
         raise ValueError("model-directions")
     return selected
+
+
+def unique_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("model-duplicate-field")
+        value[key] = item
+    return value
+
+
+def read_metadata(path, limit):
+    if path.is_symlink():
+        raise ValueError("model-metadata")
+    info = path.stat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > limit:
+        raise ValueError("model-metadata")
+    return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+
+
+def package_catalog(home):
+    sys.path.insert(0, str(home / "worker"))
+    from typelay_worker.catalog import load_package_catalog
+
+    return load_package_catalog(home / "worker/model-catalog.json")
+
+
+def hy_assets(home):
+    # Resolve this distribution explicitly; a previously imported worker must not
+    # make another distribution's closure appear available.
+    import importlib.util
+
+    module = importlib.util.spec_from_file_location(
+        "typelay_setup_hy_assets", home / "worker/typelay_worker/hy_assets.py"
+    )
+    if module is None or module.loader is None:
+        raise ValueError("hy-native-unavailable")
+    assets = importlib.util.module_from_spec(module)
+    module.loader.exec_module(assets)
+    return assets
+
+
+def check_hy_runtime(home):
+    try:
+        hy_assets(home).verify_native()
+        return {"available": True, "reason": None}
+    except (OSError, ValueError, KeyError, TypeError, ImportError):
+        return {"available": False, "reason": "native-unavailable"}
+
+
+def current_generation(components):
+    current = components / "current"
+    if current.is_symlink():
+        value = os.readlink(current)
+        if not re.fullmatch(r"[0-9a-f]{32}", value):
+            raise ValueError("model-current")
+        root = components / value
+        if root.is_symlink() or not root.is_dir():
+            raise ValueError("model-current")
+        return value
+    if current.exists():
+        raise ValueError("model-current")
+    return None
+
+
+def package_identity(selection):
+    return {
+        "id": selection.package.id,
+        "version": selection.package.version,
+        "directions": [direction.id for direction in selection.directions],
+    }
+
+
+def read_package_state(root, catalog):
+    from typelay_worker.catalog import read_active_selection, read_installation_selection
+
+    for directory in (root, root / "models"):
+        if directory.is_symlink() or not directory.is_dir():
+            raise ValueError("model-inventory")
+    inventory = read_metadata(root / "models/installed.json", 8 * 1024 * 1024)
+    installed = read_installation_selection(inventory, catalog)
+    active = read_active_selection(inventory, catalog)
+    if inventory["schema"] != 3:
+        installation_directions(root / "models", catalog.legacy_directions)
+        return inventory, installed, active, None
+    activation = read_metadata(root / "activation.json", 16384)
+    if (
+        set(activation)
+        != {"schema", "previous", "packages", "operation", "removedPackages", "recoveryPrevious"}
+        or type(activation["schema"]) is not int
+        or activation["schema"] != 3
+        or activation["operation"] not in ("Install", "Repair", "Select", "Remove")
+    ):
+        raise ValueError("model-activation")
+    for name in ("previous", "recoveryPrevious"):
+        value = activation[name]
+        if value is not None and (
+            not isinstance(value, str)
+            or not re.fullmatch(r"[0-9a-f]{32}", value)
+            or value == root.name
+        ):
+            raise ValueError("model-activation")
+
+    def identities(entries):
+        if not isinstance(entries, list):
+            raise ValueError("model-activation")
+        result = {}
+        for item in entries:
+            if not isinstance(item, dict) or set(item) != {"id", "version", "directions"}:
+                raise ValueError("model-activation")
+            package = next(
+                (package for package in catalog.packages if package.id == item["id"]), None
+            )
+            ids = item["directions"]
+            if (
+                package is None
+                or item["version"] != package.version
+                or package.id in result
+                or not isinstance(ids, list)
+                or not ids
+                or any(not isinstance(direction, str) for direction in ids)
+                or len(set(ids)) != len(ids)
+                or not set(ids).issubset(direction.id for direction in package.directions)
+            ):
+                raise ValueError("model-activation")
+            result[package.id] = (package.version, frozenset(ids))
+        return result
+
+    if identities(activation["packages"]) != identities(
+        [package_identity(item) for item in active]
+    ):
+        raise ValueError("model-activation")
+    removed = identities(activation["removedPackages"])
+    if activation["operation"] == "Remove":
+        if (
+            len(removed) != 1
+            or activation["recoveryPrevious"] is not None
+            or set(removed) & {item.package.id for item in installed}
+        ):
+            raise ValueError("model-activation")
+    elif removed or activation["recoveryPrevious"] != activation["previous"]:
+        raise ValueError("model-activation")
+    return inventory, installed, active, activation
+
+
+def validate_package_request(request, catalog):
+    if (
+        not isinstance(request, dict)
+        or set(request)
+        != {"format", "operation", "packageIds", "activePackages", "expectedCurrent"}
+        or type(request["format"]) is not int
+        or request["format"] != 1
+        or request["operation"] not in ("Install", "Repair", "Select", "Remove")
+    ):
+        raise ValueError("model-package-request")
+    known = {package.id for package in catalog.packages}
+    for key in ("packageIds", "activePackages"):
+        ids = request[key]
+        if (
+            not isinstance(ids, list)
+            or any(not isinstance(item, str) or item not in known for item in ids)
+            or len(ids) != len(set(ids))
+        ):
+            raise ValueError("model-package-request")
+    if (
+        len(
+            {package.backend for package in catalog.packages if package.id in request["packageIds"]}
+        )
+        > 1
+    ):
+        raise ValueError("model-package-request")
+    selected = [package for package in catalog.packages if package.id in request["activePackages"]]
+    if not selected or not (
+        all(package.backend == "argos" for package in selected)
+        or len(selected) == 1
+        and selected[0].backend == "hy-mt-llama-cpu"
+    ):
+        raise ValueError("model-package-request")
+    previous = request["expectedCurrent"]
+    if previous is not None and (
+        not isinstance(previous, str) or not re.fullmatch(r"[0-9a-f]{32}", previous)
+    ):
+        raise ValueError("model-package-request")
+    operation, ids = request["operation"], request["packageIds"]
+    if (
+        (operation == "Select" and ids)
+        or (operation != "Select" and not ids)
+        or (operation == "Remove" and len(ids) != 1)
+    ):
+        raise ValueError("model-package-request")
+
+
+def plain_files(root):
+    if any(path.is_symlink() for path in (root, *root.parents)) or not root.is_dir():
+        raise ValueError("model-package-path")
+    result = []
+    for path in sorted(root.rglob("*")):
+        info = path.lstat()
+        if stat.S_ISDIR(info.st_mode):
+            continue
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("model-package-path")
+        result.append(path)
+    return result
+
+
+def copy_package(source, destination, files):
+    expected = {item.path: item.sha256 for item in files}
+    actual = plain_files(source)
+    if {path.relative_to(source).as_posix() for path in actual} != set(expected):
+        raise ValueError("model-package-files")
+    for path in actual:
+        relative = path.relative_to(source)
+        if digest(path) != expected[relative.as_posix()]:
+            raise ValueError("model-package-hash")
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        shutil.copyfile(path, target)
+        if digest(target) != expected[relative.as_posix()]:
+            raise ValueError("model-package-hash")
+
+
+def runtime_copy_plan(root):
+    if any(path.is_symlink() for path in (root, *root.parents)) or not root.is_dir():
+        raise ValueError("python-runtime-path")
+    root = root.resolve(strict=True)
+    result = []
+
+    def walk(path, relative, ancestors):
+        resolved = path.resolve(strict=True)
+        if not resolved.is_relative_to(root) or resolved in ancestors:
+            raise ValueError("python-runtime-path")
+        info = resolved.stat()
+        if stat.S_ISDIR(info.st_mode):
+            for child in sorted(resolved.iterdir()):
+                walk(child, relative / child.name, ancestors | {resolved})
+        elif stat.S_ISREG(info.st_mode):
+            result.append((resolved, relative, stat.S_IMODE(info.st_mode)))
+        else:
+            raise ValueError("python-runtime-path")
+
+    walk(root, Path(), set())
+    return result
+
+
+def copy_runtime(source, destination, plan):
+    for path, relative, mode in plan:
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        shutil.copyfile(path, target)
+        target.chmod(mode & 0o700)
+    # Managed CPython is relocatable. venv metadata, entry points and activation
+    # scripts are not: rewrite only bounded text in the copied venv, never binaries.
+    venv = destination / "venv"
+    candidates = [venv / "pyvenv.cfg", *(venv / "bin").iterdir()]
+    for path in candidates:
+        if path.is_file() and path.stat().st_size <= 1024 * 1024:
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeError:
+                continue
+            path.write_text(text.replace(str(source), str(destination)), encoding="utf-8")
+    executable = venv / "bin/python"
+    result = subprocess.run(
+        [
+            str(executable),
+            "-I",
+            "-B",
+            "-c",
+            "import json,sys,ctranslate2,sentencepiece; print(json.dumps({'prefix':sys.prefix,'basePrefix':sys.base_prefix,'dependencies':[ctranslate2.__file__,sentencepiece.__file__]}))",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=60,
+        env={
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith(("UV_", "PIP_", "PYTHON"))
+        },
+        check=True,
+    )
+    if len(result.stdout) > 16384:
+        raise ValueError("python-runtime-path")
+    try:
+        value = json.loads(result.stdout)
+        dependencies = value.get("dependencies")
+        if (
+            Path(value["prefix"]) != venv
+            or not Path(value["basePrefix"]).is_relative_to(destination / "python")
+            or not isinstance(dependencies, list)
+            or len(dependencies) != 2
+            or any(
+                not Path(path).resolve(strict=True).is_relative_to(destination)
+                for path in dependencies
+            )
+        ):
+            raise ValueError("python-runtime-path")
+        if not (destination / "requirements.lock").is_file():
+            raise ValueError("python-runtime-path")
+    except (ValueError, TypeError, KeyError) as error:
+        raise ValueError("python-runtime-path") from error
+    return executable, destination / "requirements.lock"
+
+
+def prepare_runtime(home, version, uv, set_stage):
+    set_stage("runtime")
+    print("正在安装私有 CPython 3.13.16 运行时", flush=True)
+    uv("python", "install", PYTHON, "--no-bin")
+    python = Path(
+        uv("python", "find", PYTHON, "--managed-python", "--no-python-downloads", capture=True)
+    ).resolve(strict=True)
+    if not python.is_relative_to(version):
+        raise ValueError("python-installation-path")
+    venv = version / "runtime/venv"
+    uv("venv", venv, "--python", python, "--no-python-downloads")
+    executable = venv / "bin/python"
+    # uv may still emit its managed-directory alias. Normalize only this
+    # unpublished venv's link to the exact interpreter already validated.
+    resolved = executable.resolve(strict=True)
+    if (
+        not executable.is_symlink()
+        or resolved != python
+        or not resolved.is_relative_to(version)
+        or not executable.samefile(python)
+    ):
+        raise ValueError("python-venv-path")
+    executable.unlink()
+    executable.symlink_to(python)
+    set_stage("dependencies")
+    print("正在解析 Linux 依赖并验证 wheel 哈希", flush=True)
+    requirements = version / "runtime/requirements.lock"
+    uv(
+        "pip",
+        "compile",
+        home / "worker/requirements.txt",
+        "--python",
+        executable,
+        "--generate-hashes",
+        "--only-binary",
+        ":all:",
+        "--index-url",
+        "https://pypi.org/simple",
+        "--output-file",
+        requirements,
+    )
+    uv(
+        "pip",
+        "install",
+        "--python",
+        executable,
+        "--require-hashes",
+        "--only-binary",
+        ":all:",
+        "--index-url",
+        "https://pypi.org/simple",
+        "--requirements",
+        requirements,
+    )
+    return executable, requirements
+
+
+def install_packages(home, data, cache, request):
+    catalog = package_catalog(home)
+    validate_package_request(request, catalog)
+    for path in (data, cache):
+        private_directory(path)
+    components = private_directory(data / "components")
+    download_cache = private_directory(cache / "components")
+    lock = os.open(components / "install.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    version, prepared, stage = None, False, "prepare"
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        previous = current_generation(components)
+        if previous != request["expectedCurrent"]:
+            raise ValueError("model-preparation-stale")
+        old_inventory, installed, active = None, (), ()
+        if previous is not None:
+            old_inventory, installed, active, _ = read_package_state(components / previous, catalog)
+        old = {item.package.id: item for item in installed}
+        ids, operation = set(request["packageIds"]), request["operation"]
+        if (
+            operation == "Install"
+            and ids & set(old)
+            or operation in ("Repair", "Remove")
+            and not ids.issubset(old)
+            or operation == "Remove"
+            and ids & {item.package.id for item in active}
+            or operation in ("Repair", "Remove")
+            and set(request["activePackages"]) != {item.package.id for item in active}
+        ):
+            raise ValueError("model-package-request")
+        retained = set(old) - (ids if operation == "Remove" else set())
+        result_ids = retained | (ids if operation == "Install" else set())
+        if not set(request["activePackages"]).issubset(result_ids):
+            raise ValueError("model-package-request")
+        selected = [package for package in catalog.packages if package.id in result_ids]
+        downloading_hy = any(
+            package.backend == "hy-mt-llama-cpu" and package.id in ids for package in selected
+        ) and operation in ("Install", "Repair")
+        if downloading_hy or any(
+            package.backend == "hy-mt-llama-cpu" and package.id in request["activePackages"]
+            for package in selected
+        ):
+            hy_assets(home).verify_native()
+        source_runtime = components / previous / "runtime" if previous is not None else None
+        may_rebuild_runtime = operation in ("Install", "Repair")
+
+        def rebuildable(error):
+            return may_rebuild_runtime and (
+                isinstance(error, (FileNotFoundError, subprocess.CalledProcessError))
+                or isinstance(error, ValueError)
+                and error.args == ("python-runtime-path",)
+                or isinstance(error, OSError)
+                and error.errno == errno.ENOEXEC
+            )
+
+        runtime_plan = None
+        if source_runtime is not None:
+            try:
+                runtime_plan = runtime_copy_plan(source_runtime)
+            except Exception as error:
+                if not rebuildable(error):
+                    raise
+        copied_runtime_bytes = (
+            sum(path.stat().st_size for path, _, _ in runtime_plan)
+            if runtime_plan is not None
+            else 0
+        )
+        # Install/Repair may rebuild a damaged private runtime. Reserve that
+        # fallback before copying anything; offline operations cannot enter it.
+        runtime_budget = 1024 * 1024 * 1024 if may_rebuild_runtime else 0
+        required_data = max(copied_runtime_bytes, runtime_budget)
+        required_cache = runtime_budget
+        fixed = None
+        if downloading_hy:
+            fixed = hy_assets(home).read_json(home / "worker/native/hy/model.lock.json")
+            package = next(package for package in selected if package.backend == "hy-mt-llama-cpu")
+            if (
+                fixed["package_id"] != package.id
+                or fixed["version"] != package.version
+                or fixed["directions"] != [direction.id for direction in package.directions]
+            ):
+                raise ValueError("model-fixed-identity")
+        for item in installed:
+            if item.package.id in retained and not (
+                operation == "Repair" and item.package.id in ids
+            ):
+                source = components / previous / "models"
+                source /= (
+                    (Path("packages") / item.package.id / item.package.version)
+                    if old_inventory["schema"] == 3
+                    else Path(item.directions[0].id)
+                )
+                required_data += sum(path.stat().st_size for path in plain_files(source))
+        if operation in ("Install", "Repair"):
+            for package in selected:
+                if package.id not in ids:
+                    continue
+                size = (
+                    sum(fixed[key]["bytes"] for key in ("model", "model_license"))
+                    if package.backend == "hy-mt-llama-cpu"
+                    else MAX_ARCHIVE
+                )
+                required_cache += size
+                required_data += size if package.backend == "hy-mt-llama-cpu" else 2 * MAX_ARCHIVE
+        margin = 64 * 1024 * 1024
+        same_disk = data.stat().st_dev == cache.stat().st_dev
+        if (
+            shutil.disk_usage(data).free
+            < required_data + (required_cache if same_disk else 0) + margin
+            or not same_disk
+            and shutil.disk_usage(cache).free < required_cache + margin
+        ):
+            raise OSError(errno.ENOSPC, "model-space")
+        print(
+            f"本次最多新增组件 {required_data // (1024 * 1024)} MiB、下载缓存 {required_cache // (1024 * 1024)} MiB；准备期间保留当前组件。",
+            flush=True,
+        )
+        version = private_directory(components / uuid.uuid4().hex)
+        stage = "runtime"
+        requirements = None
+        if runtime_plan is not None:
+            try:
+                _, requirements = copy_runtime(source_runtime, version / "runtime", runtime_plan)
+            except Exception as error:
+                if not rebuildable(error):
+                    raise
+                if (version / "runtime").exists():
+                    shutil.rmtree(version / "runtime")
+        if requirements is None:
+            if not may_rebuild_runtime:
+                raise ValueError("python-runtime-path")
+            environment = {
+                key: value
+                for key, value in os.environ.items()
+                if not key.startswith(("UV_", "PIP_", "PYTHON"))
+            }
+            environment.update(
+                UV_PYTHON_INSTALL_DIR=str(version / "runtime/python"),
+                UV_CACHE_DIR=str(download_cache / "uv"),
+                UV_NO_PROGRESS="1",
+                UV_NO_CONFIG="1",
+                PYTHONNOUSERSITE="1",
+                UV_LINK_MODE="copy",
+            )
+
+            def uv(*arguments, capture=False):
+                process = subprocess.Popen(
+                    ["uv", *map(str, arguments), "--no-config"],
+                    env=environment,
+                    stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                try:
+                    output, _ = process.communicate(timeout=1200)
+                    if process.returncode:
+                        raise subprocess.CalledProcessError(process.returncode, "component-setup")
+                    return output.decode().strip() if capture else None
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                        process.wait(timeout=5)
+
+            def set_stage(value):
+                nonlocal stage
+                stage = value
+
+            _, requirements = prepare_runtime(home, version, uv, set_stage)
+        stage = "model-verify"
+        models = private_directory(version / "models")
+        packages = []
+        from typelay_worker.catalog import ModelFile, read_file_manifest
+
+        for package in selected:
+            destination = models / "packages" / package.id / package.version
+            replacing = operation in ("Install", "Repair") and package.id in ids
+            if replacing:
+                directions = (
+                    old[package.id].directions if operation == "Repair" else package.directions
+                )
+                if package.backend == "argos":
+                    stage = "model-download"
+                    archive, _ = download(package.directions[0], download_cache)
+                    stage = "model-extract"
+                    try:
+                        extract_model(archive, destination, package.directions[0])
+                    except (ValueError, zipfile.BadZipFile):
+                        archive.unlink(missing_ok=True)
+                        raise
+                else:
+                    package_cache = private_directory(
+                        private_directory(download_cache / package.id) / package.version
+                    )
+                    destination.mkdir(parents=True, mode=0o700)
+                    for kind in ("model", "model_license"):
+                        record = fixed[kind]
+                        url = (
+                            package.url
+                            if kind == "model"
+                            else package.url.rsplit("/", 1)[0] + "/LICENSE.txt"
+                        )
+                        stage = "model-download"
+                        archive, _ = download_resource(
+                            package.id,
+                            url,
+                            package_cache / record["file"],
+                            record["bytes"] + 65536,
+                            expected=record,
+                            hosts=(
+                                "huggingface.co",
+                                "cdn-lfs.huggingface.co",
+                                "cdn-lfs.hf.co",
+                                "cdn-lfs-us-1.hf.co",
+                                "cdn-lfs-eu-1.hf.co",
+                                "cas-bridge.xethub.hf.co",
+                                "us.aws.cdn.hf.co",
+                                "eu.aws.cdn.hf.co",
+                            ),
+                        )
+                        shutil.copyfile(archive, destination / record["file"])
+                    stage = "model-verify"
+                    for kind in ("model", "model_license"):
+                        record = fixed[kind]
+                        hy_assets(home).verify_file(destination / record["file"], record)
+                files = tuple(
+                    ModelFile(path.relative_to(destination).as_posix(), digest(path))
+                    for path in plain_files(destination)
+                )
+                identity = {
+                    "id": package.id,
+                    "version": package.version,
+                    "directions": [direction.id for direction in directions],
+                }
+            else:
+                item = old[package.id]
+                source = components / previous / "models"
+                if old_inventory["schema"] == 3:
+                    source /= Path("packages") / package.id / package.version
+                    files = item.files
+                else:
+                    direction = item.directions[0].id
+                    source /= direction
+                    files = tuple(
+                        ModelFile(file.path[len(direction) + 1 :], file.sha256)
+                        for file in read_file_manifest(old_inventory["files"])
+                        if file.path.startswith(direction + "/")
+                    )
+                stage = "model-verify"
+                copy_package(source, destination, files)
+                identity = package_identity(item)
+            packages.append(
+                {
+                    **identity,
+                    "files": [{"path": file.path, "sha256": file.sha256} for file in files],
+                }
+            )
+        inventory = {
+            "schema": 3,
+            "packages": packages,
+            "activePackages": request["activePackages"],
+            "pythonVersion": PYTHON,
+            "requirementsSha256": digest(requirements),
+        }
+        from typelay_worker.catalog import read_active_selection
+
+        chosen = read_active_selection(inventory, catalog)
+        (models / "installed.json").write_text(json.dumps(inventory, indent=2), encoding="utf-8")
+        activation = {
+            "schema": 3,
+            "previous": previous,
+            "packages": [package_identity(item) for item in chosen],
+            "operation": operation,
+            "removedPackages": [package_identity(old[identity]) for identity in ids]
+            if operation == "Remove"
+            else [],
+            "recoveryPrevious": None if operation == "Remove" else previous,
+        }
+        with (version / "activation.json").open("x", encoding="utf-8") as stream:
+            json.dump(activation, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        for directory in (version, components):
+            fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        print(PREPARED_PREFIX + version.name, flush=True)
+        prepared = True
+        return 0
+    except Paused:
+        raise
+    except Exception as error:
+        report_failure(error, stage, data, cache, home)
+        return 1
+    finally:
+        try:
+            if version is not None and not prepared:
+                shutil.rmtree(version)
+        finally:
+            os.close(lock)
+
+
+def cleanup_packages(home, data, cache):
+    """Discard only fixed caches outside every current/recovery inventory.
+
+    Called after confirmed activation and after that lease has been released.
+    Any unknown reference leaves every cache alone; no newest-directory inference.
+    """
+    components = private_directory(data / "components")
+    download_cache = private_directory(cache / "components")
+    lock = os.open(components / "install.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        catalog = package_catalog(home)
+        current = current_generation(components)
+        if current is None:
+            return False
+        referenced, generations = set(), set()
+        generation = current
+        while generation is not None:
+            if generation in generations:
+                return False
+            generations.add(generation)
+            inventory, installed, _, activation = read_package_state(
+                components / generation, catalog
+            )
+            referenced.update((item.package.id, item.package.version) for item in installed)
+            if inventory["schema"] == 3:
+                generation = activation["recoveryPrevious"]
+            else:
+                path = components / generation / "activation.json"
+                generation = read_metadata(path, 16384)["previous"] if path.exists() else None
+        candidates, folders = [], []
+        for package in catalog.packages:
+            if (package.id, package.version) in referenced:
+                continue
+            if package.backend == "argos":
+                archive = (
+                    download_cache / f"{package.directions[0].id}-{package.version}.argosmodel"
+                )
+                candidates += [
+                    archive,
+                    archive.with_suffix(".part"),
+                    archive.with_suffix(".part.json"),
+                    archive.with_suffix(".part.tmp"),
+                ]
+            else:
+                folder = download_cache / package.id / package.version
+                if folder.is_symlink() or folder.parent.is_symlink():
+                    return False
+                fixed = hy_assets(home).read_json(home / "worker/native/hy/model.lock.json")
+                if fixed["package_id"] != package.id or fixed["version"] != package.version:
+                    return False
+                for kind in ("model", "model_license"):
+                    archive = folder / fixed[kind]["file"]
+                    candidates += [
+                        archive,
+                        archive.with_suffix(".part"),
+                        archive.with_suffix(".part.json"),
+                        archive.with_suffix(".part.tmp"),
+                    ]
+                folders += [folder, folder.parent]
+        for path in candidates:
+            if path.is_symlink() or path.exists() and not path.is_file():
+                return False
+        if current_generation(components) != current:
+            return False
+        for path in candidates:
+            path.unlink(missing_ok=True)
+        for folder in folders:
+            if folder.is_dir() and not any(folder.iterdir()):
+                folder.rmdir()
+        return True
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    finally:
+        os.close(lock)
 
 
 def install(home, data, cache, requested_directions=None, repair=False):
@@ -587,64 +1362,55 @@ def install(home, data, cache, requested_directions=None, repair=False):
             try:
                 committed = installation_directions(components / previous / "models", catalog)
             except (ValueError, FileNotFoundError):
+                legacy_known = False
+                for marker, limit in (
+                    (components / previous / "models/installed.json", 8 * 1024 * 1024),
+                    (components / previous / "activation.json", 16384),
+                ):
+                    try:
+                        record = read_metadata(marker, limit)
+                    except (ValueError, FileNotFoundError):
+                        continue
+                    if (
+                        not isinstance(record, dict)
+                        or record.get("schema") == 3
+                        or "packages" in record
+                        or "activePackages" in record
+                    ):
+                        raise OSError("model-package-repair-required")
+                    try:
+                        legacy_directions(record, catalog)
+                        if marker.name == "activation.json":
+                            expected = {"schema", "previous"}
+                            if record["schema"] == 2:
+                                expected.add("directions")
+                            prior = record.get("previous")
+                            if (
+                                set(record) != expected
+                                or prior is not None
+                                and (
+                                    not isinstance(prior, str)
+                                    or not re.fullmatch(r"[0-9a-f]{32}", prior)
+                                    or prior == previous
+                                )
+                            ):
+                                raise ValueError("model-activation")
+                        legacy_known = True
+                    except ValueError:
+                        pass
+                if not legacy_known:
+                    raise OSError("model-installation-unknown")
                 if not repair or set(requested) != set(available):
                     raise
         selected = set(committed) | set(requested)
         directions = tuple(direction for direction in catalog if direction.id in selected)
         schema = 1 if len(directions) == len(catalog) else 2
-        stage = "runtime"
-        print("正在安装私有 CPython 3.13.16 运行时", flush=True)
-        uv("python", "install", PYTHON, "--no-bin")
-        python = Path(
-            uv("python", "find", PYTHON, "--managed-python", "--no-python-downloads", capture=True)
-        ).resolve(strict=True)
-        if not python.is_relative_to(version):
-            raise ValueError("python-installation-path")
-        venv = version / "runtime/venv"
-        uv("venv", venv, "--python", python, "--no-python-downloads")
-        executable = venv / "bin/python"
-        # uv may still emit its managed-directory alias. Normalize only this
-        # unpublished venv's link to the exact interpreter already validated.
-        resolved = executable.resolve(strict=True)
-        if (
-            not executable.is_symlink()
-            or resolved != python
-            or not resolved.is_relative_to(version)
-            or not executable.samefile(python)
-        ):
-            raise ValueError("python-venv-path")
-        executable.unlink()
-        executable.symlink_to(python)
-        stage = "dependencies"
-        print("正在解析 Linux 依赖并验证 wheel 哈希", flush=True)
-        requirements = version / "runtime/requirements.lock"
-        uv(
-            "pip",
-            "compile",
-            home / "worker/requirements.txt",
-            "--python",
-            executable,
-            "--generate-hashes",
-            "--only-binary",
-            ":all:",
-            "--index-url",
-            "https://pypi.org/simple",
-            "--output-file",
-            requirements,
-        )
-        uv(
-            "pip",
-            "install",
-            "--python",
-            executable,
-            "--require-hashes",
-            "--only-binary",
-            ":all:",
-            "--index-url",
-            "https://pypi.org/simple",
-            "--requirements",
-            requirements,
-        )
+
+        def set_stage(value):
+            nonlocal stage
+            stage = value
+
+        executable, requirements = prepare_runtime(home, version, uv, set_stage)
         models = private_directory(version / "models")
         dependencies = []
         for direction in directions:
@@ -755,6 +1521,25 @@ if __name__ == "__main__":
     os.umask(0o077)
     home = None
     try:
+        if (
+            len(sys.argv) == 3
+            and sys.argv[1] == "--check-hy-runtime"
+            and Path(sys.argv[2]).is_absolute()
+        ):
+            print(json.dumps(check_hy_runtime(Path(sys.argv[2])), separators=(",", ":")))
+            raise SystemExit(0)
+        if (
+            len(sys.argv) == 5
+            and sys.argv[1] == "--cleanup-packages"
+            and all(Path(value).is_absolute() for value in sys.argv[2:])
+        ):
+            print(
+                json.dumps(
+                    {"cleaned": cleanup_packages(*(Path(value) for value in sys.argv[2:]))},
+                    separators=(",", ":"),
+                )
+            )
+            raise SystemExit(0)
         supervised = sys.argv[1:2] == ["--supervised"]
         arguments = sys.argv[2:] if supervised else sys.argv[1:]
         if len(arguments) not in (3, 4) or any(
@@ -762,11 +1547,14 @@ if __name__ == "__main__":
         ):
             raise ValueError("setup-arguments")
         request = (
-            json.loads(arguments[3])
+            json.loads(arguments[3], object_pairs_hook=unique_object)
             if len(arguments) == 4
             else {"directions": None, "repair": False}
         )
-        if (
+        package_request = isinstance(request, dict) and "format" in request
+        if package_request:
+            validate_package_request(request, package_catalog(Path(arguments[0])))
+        elif (
             not isinstance(request, dict)
             or set(request) != {"directions", "repair"}
             or type(request["repair"]) is not bool
@@ -796,7 +1584,9 @@ if __name__ == "__main__":
         signal.signal(signal.SIGTERM, pause)
         signal.signal(signal.SIGINT, pause)
         raise SystemExit(
-            install(
+            install_packages(*(Path(value) for value in arguments[:3]), request)
+            if package_request
+            else install(
                 *(Path(value) for value in arguments[:3]), request["directions"], request["repair"]
             )
         )

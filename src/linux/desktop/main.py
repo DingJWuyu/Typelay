@@ -1,4 +1,4 @@
-"""TypeLay Linux entry point. Control sockets accept commands, never source text."""
+"""Linux entry point. Only the explicit editor snapshot carries text on control."""
 
 import argparse
 import asyncio
@@ -6,26 +6,51 @@ import fcntl
 import json
 import os
 import re
+import select
 import signal
 import socket
 import struct
 import subprocess
 import sys
+import time
 import uuid
 
 from paths import Paths, connect_private, peer_credentials
 from setup import FAILURE_PREFIX, PREPARED_PREFIX, failure_code
-from wire import MAX_FRAME, encode, now_ms, receive_sync
+from wire import MAX_FRAME, Decoder, encode, now_ms, receive_sync
 
 ACTIVATION_TIMEOUT = 225
 
 
-def control(paths, operation, data=None):
-    with connect_private(paths.control, 1.5) as connection:
-        if operation == "activateModel":
+def control(paths, operation, data=None, *, timeout=None):
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    with connect_private(
+        paths.control, min(1.5, timeout) if timeout is not None else 1.5
+    ) as connection:
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("control-deadline")
+            connection.settimeout(remaining)
+        elif operation == "activateModel":
             connection.settimeout(ACTIVATION_TIMEOUT + 5)
         connection.sendall(encode({"id": 1, "op": operation, "data": data}))
-        return receive_sync(connection).get("data")
+        if deadline is None:
+            return receive_sync(connection).get("data")
+        decoder = Decoder()
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("control-deadline")
+            connection.settimeout(remaining)
+            chunk = connection.recv(65536)
+            if not chunk:
+                raise EOFError("connection-closed")
+            frames = decoder.feed(chunk)
+            if frames:
+                if len(frames) != 1:
+                    raise ValueError("control-response")
+                return frames[0].get("data")
 
 
 def valid_activation(value):
@@ -63,6 +88,39 @@ async def activate_model(host, value):
                 host.send("cancelModelActivation", value["identity"])
             except (OSError, EOFError):
                 pass
+
+
+async def setup_observation(paths, command, *arguments):
+    process = await asyncio.create_subprocess_exec(
+        "/usr/bin/python3",
+        "-I",
+        "-B",
+        str(paths.home / "desktop/setup.py"),
+        command,
+        str(paths.home),
+        *map(str, arguments),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        output, _ = await asyncio.wait_for(process.communicate(), 30)
+        if process.returncode or len(output) > 1024:
+            raise ValueError("setup-observation")
+        return json.loads(output)
+    finally:
+        if process.returncode is None:
+            try:
+                process.terminate()
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), 2)
+            except TimeoutError:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                await asyncio.wait_for(process.wait(), 2)
 
 
 def install_models(paths):
@@ -195,8 +253,25 @@ def doctor(paths):
     return 0 if result["wayland"] and result["niriVersion"] and result["hostInstalled"] else 1
 
 
-async def tutorial_preview(paths, text):
-    """Use the production shared ModelClient through its existing one-shot port."""
+async def translate_editor_snapshot(host, request, timeout):
+    identity = uuid.uuid4().hex
+    completed = False
+    try:
+        result = await host.ask(
+            "translateEditorSnapshot", {"identity": identity, "request": request}, timeout=timeout
+        )
+        completed = True
+        return result
+    finally:
+        if not completed:
+            try:
+                host.send("cancelEditorSnapshot", identity)
+            except (OSError, EOFError):
+                pass
+
+
+async def tutorial_preview(host, text):
+    """Reuse the serving model; cancellation withdraws only this preview."""
     identity = str(uuid.uuid4())
     selection = {"start": 0, "length": len(text.encode("utf-16-le")) // 2}
     request = {
@@ -210,48 +285,122 @@ async def tutorial_preview(paths, text):
             "languageId": "plaintext",
         },
     }
-    process = await asyncio.create_subprocess_exec(
-        str(paths.home / "native/typelay-supervise"),
-        str(paths.home / "app/TypeLay.Linux"),
-        "--editor-host",
-        str(paths.home),
-        str(paths.config),
-        str(paths.data),
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
+    value = await translate_editor_snapshot(host, request, 140)
+    result = value.get("data") if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or value.get("id") != 1
+        or not isinstance(result, dict)
+        or result.get("documentId") != identity
+        or result.get("version") != 1
+        or result.get("selection") != selection
+        or not isinstance(result.get("translation"), str)
+        or not result["translation"].strip()
+        or "\0" in result["translation"]
+    ):
+        raise ValueError("tutorial-translation-unavailable")
+    return result["translation"]
+
+
+def editor_host(paths):
+    """One source-bound command, using the desktop or a supervised one-shot."""
+    deadline = time.monotonic() + 215
+    identity = 0
+    lock = None
+    helper = None
     try:
-        async with asyncio.timeout(140):
-            process.stdin.write(encode(request))
-            await process.stdin.drain()
-            process.stdin.close()
-            length = struct.unpack("<I", await process.stdout.readexactly(4))[0]
-            if not 0 < length <= MAX_FRAME:
-                raise ValueError("tutorial-response-size")
-            value = json.loads(await process.stdout.readexactly(length))
-            code = await process.wait()
-        result = value.get("data") if isinstance(value, dict) else None
+        reading = min(deadline, time.monotonic() + 5)
+
+        def exact(length):
+            data = bytearray()
+            while len(data) < length:
+                remaining = reading - time.monotonic()
+                if remaining <= 0 or not select.select([sys.stdin], [], [], remaining)[0]:
+                    raise TimeoutError("editor-request")
+                part = os.read(sys.stdin.fileno(), length - len(data))
+                if not part:
+                    raise EOFError("editor-request")
+                data.extend(part)
+            return bytes(data)
+
+        length = struct.unpack("<I", exact(4))[0]
+        if not 0 < length <= MAX_FRAME:
+            raise ValueError("editor-request")
+        request = json.loads(exact(length))
         if (
-            code
-            or not isinstance(value, dict)
-            or value.get("id") != 1
-            or not isinstance(result, dict)
-            or result.get("documentId") != identity
-            or result.get("version") != 1
-            or result.get("selection") != selection
-            or not isinstance(result.get("translation"), str)
-            or not result["translation"].strip()
-            or "\0" in result["translation"]
+            isinstance(request, dict)
+            and type(request.get("id")) is int
+            and 0 < request["id"] < 2**63
         ):
-            raise ValueError("tutorial-translation-unavailable")
-        return result["translation"]
-    except asyncio.IncompleteReadError:
-        raise EOFError("tutorial-host-closed") from None
+            identity = request["id"]
+        lock = os.open(
+            paths.session / "desktop.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600
+        )
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            # Never fall back after this decision, even if the desktop is still
+            # starting, rejects the snapshot, disconnects or times out.
+            response = control(
+                paths,
+                "translateEditorSnapshot",
+                request,
+                timeout=max(0.001, deadline - time.monotonic()),
+            )
+        else:
+            environment = dict(os.environ)
+            environment.pop("TYPELAY_MODEL_USE_LOCK", None)
+            helper = subprocess.Popen(
+                [
+                    str(paths.home / "native/typelay-supervise"),
+                    "--require-exit-proof",
+                    str(paths.home / "app/TypeLay.Linux"),
+                    "--editor-host",
+                    str(paths.home),
+                    str(paths.config),
+                    str(paths.data),
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+                pass_fds=(lock,),
+                start_new_session=True,
+            )
+            output, _ = helper.communicate(
+                b"\1" + encode(request), timeout=max(0.001, deadline - time.monotonic())
+            )
+            if helper.returncode != 200 or len(output) < 4 or len(output) > MAX_FRAME + 4:
+                raise ValueError("editor-exit-unconfirmed")
+            length = struct.unpack("<I", output[:4])[0]
+            if length != len(output) - 4:
+                raise ValueError("editor-response")
+            response = json.loads(output[4:])
+        if not isinstance(response, dict) or response.get("id") != identity:
+            raise ValueError("editor-response")
+        sys.stdout.buffer.write(encode(response))
+        sys.stdout.buffer.flush()
+        return 0
+    except (OSError, ValueError, EOFError, TimeoutError, subprocess.SubprocessError):
+        sys.stdout.buffer.write(encode({"id": identity, "error": "host-failed"}))
+        sys.stdout.buffer.flush()
+        return 1
     finally:
-        if process.returncode is None:
-            process.terminate()
-            await process.wait()
+        if helper is not None:
+            if helper.poll() is None:
+                try:
+                    helper.terminate()
+                    helper.wait(timeout=5)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    # The isolated supervisor keeps the inherited desktop lock
+                    # until real family cleanup; never SIGKILL the proof owner.
+                    pass
+            if helper.stdin:
+                helper.stdin.close()
+            if helper.stdout:
+                helper.stdout.close()
+        if lock is not None:
+            os.close(lock)
 
 
 async def desktop(paths, background, lock, tutorial=False):
@@ -317,6 +466,7 @@ async def desktop(paths, background, lock, tutorial=False):
                 settings.show()
         elif operation == "settingsGuidance":
             settings.render_guidance(value)
+            overlay.render_guidance(value)
             components["tray"].render_guidance(value)
         elif operation == "render":
             overlay.render(value)
@@ -369,13 +519,14 @@ async def desktop(paths, background, lock, tutorial=False):
         )
 
     async def install(request):
-        nonlocal installer
+        nonlocal installer, installation_request
         settings = components["settings"]
         settings.installation(
-            "running", "正在安装组件，完成自检后才会启用新版本；可暂停并保留已验证的下载进度。"
+            "running", "正在准备组件，文件校验并成功加载后才会启用；可暂停并保留已验证的下载进度。"
         )
         failure = None
         reload_started = False
+        committed = False
         generation = None
         try:
             installer = await asyncio.create_subprocess_exec(
@@ -386,7 +537,7 @@ async def desktop(paths, background, lock, tutorial=False):
                 str(paths.home),
                 str(paths.data),
                 str(paths.cache),
-                json.dumps({"directions": request[0], "repair": request[1]}),
+                request,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -415,18 +566,40 @@ async def desktop(paths, background, lock, tutorial=False):
                     host, {"identity": uuid.uuid4().hex, "generation": generation}
                 )
                 if result == "confirmed":
+                    committed = True
+                    installation_request = None
                     settings.installation("ready")
+                    cleaned = False
+                    # The host enqueues its final status before the reply on
+                    # this same ordered link. Publication alone is not exit proof.
+                    if status.get("modelFailureCode") is None:
+                        try:
+                            result = await setup_observation(
+                                paths, "--cleanup-packages", paths.data, paths.cache
+                            )
+                            cleaned = result == {"cleaned": True}
+                        except (OSError, ValueError, EOFError, TimeoutError):
+                            pass
+                    if not cleaned or status.get("modelCleanupPending"):
+                        settings.installation_progress(
+                            "当前模型已启用，但部分旧组件或下载缓存尚未释放空间。"
+                        )
                 else:
                     installation_result("failed", "runtime", activated=result == "unconfirmed")
         except asyncio.CancelledError:
-            if reload_started:
+            if committed:
+                settings.installation_progress("当前模型已启用，空间清理尚未完成。")
+            elif reload_started:
                 installation_result("failed", "runtime", activated=True)
             else:
                 installation_result("paused")
         except (OSError, ValueError, EOFError, TimeoutError):
-            installation_result(
-                "failed", "runtime" if reload_started else failure, activated=reload_started
-            )
+            if committed:
+                settings.installation_progress("当前模型已启用，空间清理尚未完成。")
+            else:
+                installation_result(
+                    "failed", "runtime" if reload_started else failure, activated=reload_started
+                )
         finally:
             if installer and installer.returncode is None:
                 installer.terminate()
@@ -437,9 +610,43 @@ async def desktop(paths, background, lock, tutorial=False):
         nonlocal install_task, pause_installation, installation_request
         if install_task is None or install_task.done():
             if directions is not None or installation_request is None:
-                installation_request = (None if directions is None else tuple(directions), repair)
+                installation_request = json.dumps(
+                    {"directions": directions, "repair": repair}, separators=(",", ":")
+                )
             pause_installation = False
             install_task = task(install(installation_request))
+
+    def package_requested(request):
+        nonlocal install_task, pause_installation, installation_request
+        if install_task is not None and not install_task.done():
+            return
+        if request is None:
+            installation_request = None
+            components["settings"].installation("idle")
+            return
+        # Serialize now; later UI navigation or selection changes cannot mutate
+        # the request replayed by Resume/Retry, including expectedCurrent.
+        installation_request = json.dumps(request, separators=(",", ":"))
+        pause_installation = False
+        install_task = task(install(installation_request))
+
+    async def preparation_refresh(phase, failure_code):
+        native = {"available": False, "reason": "native-unavailable"}
+        try:
+            observed = await setup_observation(paths, "--check-hy-runtime")
+            if observed == {"available": True, "reason": None}:
+                native = observed
+        except (OSError, ValueError, EOFError, TimeoutError):
+            pass
+        return await host.ask(
+            "translationPreparation",
+            {
+                "phase": phase,
+                "failureCode": failure_code,
+                "hyRuntimeAvailable": native["available"],
+                "hyUnavailableReason": native["reason"],
+            },
+        )
 
     def pause_requested():
         nonlocal pause_installation
@@ -518,10 +725,12 @@ async def desktop(paths, background, lock, tutorial=False):
             stopping.set,
             install_requested,
             pause_requested,
-            lambda text: tutorial_preview(paths, text),
+            lambda text: tutorial_preview(host, text),
             support_view,
             support_action,
             support.component_folder,
+            package_requested,
+            preparation_refresh,
         )
         components["overlay"] = Overlay(
             host, components["input"], task, components["settings"].show
@@ -643,11 +852,26 @@ async def desktop(paths, background, lock, tutorial=False):
                     raise OSError("control-capacity")
                 deadline = None
                 activation_peer = False
+                editor_peer = False
+                accepted_at = time.monotonic()
 
                 async def peer_request(operation, value):
-                    nonlocal deadline, activation_peer
+                    nonlocal deadline, activation_peer, editor_peer
+                    if operation == "translateEditorSnapshot":
+                        if editor_peer or activation_peer:
+                            return None
+                        editor_peer = True
+                        remaining = 215 - (time.monotonic() - accepted_at)
+                        if remaining <= 0:
+                            return None
+                        if deadline is not None:
+                            GLib.source_remove(deadline)
+                        deadline = GLib.timeout_add(
+                            int(remaining * 1000), lambda: (peer.close(), False)[1]
+                        )
+                        return await translate_editor_snapshot(host, value, remaining)
                     if operation == "activateModel":
-                        if activation_peer or not valid_activation(value):
+                        if activation_peer or editor_peer or not valid_activation(value):
                             return "unchanged"
                         activation_peer = True
                         if deadline is not None:
@@ -762,11 +986,7 @@ def main():
     if args.editor_host:
         if args.command:
             parser.error("--editor-host does not accept application arguments")
-        host = paths.home / "app/TypeLay.Linux"
-        os.execv(
-            str(host),
-            [str(host), "--editor-host", str(paths.home), str(paths.config), str(paths.data)],
-        )
+        return editor_host(paths)
     if args.wake or args.direct:
         from niri import contents, request
 

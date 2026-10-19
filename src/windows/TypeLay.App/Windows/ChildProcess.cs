@@ -6,7 +6,10 @@ namespace TypeLay.App;
 internal sealed class ChildProcess : IChildProcess
 {
     private nint _job;
-    private int _disposed;
+    private readonly object _state = new();
+    private bool _assigned;
+    private bool _exitProven;
+    private bool _disposed;
     public Process Process
     {
         get;
@@ -32,16 +35,27 @@ internal sealed class ChildProcess : IChildProcess
             Process = Process.Start(info) ?? throw new IOException("child-start");
         }
         catch { Native.CloseHandle(_job); _job = 0; throw; }
-        if (!AssignProcessToJobObject(_job, Process.Handle))
+        try
         {
-            Process.Kill(true);
-            Process.Dispose();
-            Native.CloseHandle(_job);
-            _job = 0;
-            throw new IOException("job-assign");
+            // Never store native-library exception messages or a request's content.
+            if (info.RedirectStandardError)
+                _ = DrainErrors(Process.StandardError);
+            if (!AssignProcessToJobObject(_job, Process.Handle))
+                throw new IOException("job-assign");
+            _assigned = true;
         }
-        // Never store native-library exception messages or a request's content.
-        _ = DrainErrors(Process.StandardError);
+        catch
+        {
+            // The root may already have run before assignment. An empty job is
+            // not evidence about that unowned family, even if root termination
+            // succeeds. Preserve the owner and block a replacement worker.
+            try
+            {
+                Process.Kill(true);
+            }
+            catch { }
+            throw new ChildProcessCleanupUnconfirmedException(this);
+        }
     }
     private static async Task DrainErrors(StreamReader reader)
     {
@@ -53,57 +67,63 @@ internal sealed class ChildProcess : IChildProcess
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException) { }
     }
-    // The browser fixture needs job-wide completion before deleting its profile.
-    // Existing production callers retain the synchronous Dispose path below.
-    internal async Task TerminateAndWaitAsync(CancellationToken cancellationToken)
+    public async Task TerminateAndWaitAsync(CancellationToken cancellationToken)
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
-            throw new InvalidOperationException("child-job-unavailable");
-        try
+        lock (_state)
         {
-            if (_job == 0)
-                throw new InvalidOperationException("child-job-unavailable");
+            if (_exitProven)
+                return;
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!_assigned || _job == 0)
+                throw new IOException("child-job-unconfirmed");
             if (!TerminateJobObject(_job, 2))
                 throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "child-job-terminate");
-            while (true)
+        }
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_state)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                ObjectDisposedException.ThrowIf(_disposed, this);
                 if (!QueryInformationJobObject(_job, 1, out JobAccounting accounting,
                     (uint)Marshal.SizeOf<JobAccounting>(), 0))
                     throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "child-job-query");
                 if (accounting.ActiveProcesses == 0)
                     break;
-                await Task.Delay(10, cancellationToken);
             }
-            // Job accounting can reach zero before the root process is signaled.
-            await Process.WaitForExitAsync(cancellationToken);
+            await Task.Delay(10, cancellationToken);
         }
-        finally
+        // Job accounting can reach zero before the root process is signaled.
+        await Process.WaitForExitAsync(cancellationToken);
+        lock (_state)
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _exitProven = true;
+        }
+        // Only Dispose closes ownership handles. A cancelled or failed proof
+        // retains the job and root so the same owner can be retried.
+    }
+    public void Dispose()
+    {
+        lock (_state)
+        {
+            if (_disposed)
+                return;
+            _disposed = true;
             if (_job != 0)
             {
                 Native.CloseHandle(_job);
                 _job = 0;
             }
-            Process.Dispose();
+            try
+            {
+                if (!Process.HasExited)
+                    Process.Kill(true);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+            finally { Process.Dispose(); }
         }
-    }
-    public void Dispose()
-    {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
-            return;
-        if (_job != 0)
-        {
-            Native.CloseHandle(_job);
-            _job = 0;
-        }
-        try
-        {
-            if (!Process.HasExited)
-                Process.Kill(true);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception) { }
-        Process.Dispose();
     }
     [StructLayout(LayoutKind.Sequential)]
     private struct BasicLimits

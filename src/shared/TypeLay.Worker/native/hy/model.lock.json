@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "package_id": "hy-mt2-1-8b-q4-k-m",
+  "version": "a0c709d9fac510f2c807aa3af52872340dc37a4a",
+  "abi": 3,
+  "directions": [
+    "zh_ja",
+    "ja_zh",
+    "zh_ko",
+    "ko_zh",
+    "zh_fr",
+    "fr_zh",
+    "zh_es",
+    "es_zh",
+    "zh_de",
+    "de_zh",
+    "zh_pt",
+    "pt_zh"
+  ],
+  "model": {
+    "file": "Hy-MT2-1.8B-Q4_K_M.gguf",
+    "bytes": 1133080448,
+    "sha256": "dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699"
+  },
+  "model_license": {
+    "file": "model_LICENSE.txt",
+    "bytes": 11639,
+    "sha256": "a1d52d448f81c584a47c583e19dfab2d3851c7c84431b07baee093c1113ed114"
+  },
+  "template_sha256": "b7491ec0e9c869dfce20f2176758099bf248d979dd05530ede99deb21698acee"
+}

@@ -2106,6 +2106,42 @@ class BrowserContract(unittest.TestCase):
         self.page.wait_for_function("window.fixtureMotionDone === true")
         return self.page.evaluate("fixtureMotionFrames")
 
+    def test_overlay_language_title_uses_host_labels_without_advertising_extra_browser_choices(
+        self,
+    ):
+        data = self.motion_view()
+        for code, label in (
+            ("ja", "日本語"),
+            ("ko", "한국어"),
+            ("fr", "Français"),
+            ("es", "Español"),
+            ("de", "Deutsch"),
+            ("pt", "Português"),
+        ):
+            with self.subTest(code=code):
+                data["revision"] += 1
+                data["view"].update(
+                    sourceLanguage="zh",
+                    targetLanguage=code,
+                    sourceLanguageLabel="中文",
+                    targetLanguageLabel=label,
+                )
+                self.assertTrue(self.command("overlay-render", data)["visible"])
+                self.overlay_control(f"中文 → {label}")
+                self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+        data["revision"] += 1
+        data["view"].update(targetLanguage="unknown", targetLanguageLabel="")
+        self.assertTrue(self.command("overlay-render", data)["visible"])
+        self.click_overlay_control("中文 → unknown（当前不可用）")
+        self.assertTrue(
+            self.page.evaluate("""fixtureMessages.some(message =>
+          message.event === 'ui' && message.data.operation === 'settings')""")
+        )
+        self.assertFalse(
+            self.page.evaluate("""fixtureMessages.some(message =>
+          message.event === 'ui' && message.data.operation === 'languages')""")
+        )
+
     def test_overlay_resize_has_intermediate_frames_and_preserves_anchors_and_focus(self):
         self.motion_view()
         output = ROOT / "artifacts/linux/browser-native/overlay/motion"

@@ -188,7 +188,7 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                         return {}
 
                 dimensions = None
-                if stage in ("expand", "resume-editor"):
+                if stage in ("expand", "resume-editor", "language-options"):
                     geometry = dict(
                         line.split("=", 1)
                         for line in subprocess.check_output(
@@ -238,6 +238,15 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                     "editorReady": False,
                 }
                 assert source["authority"]["sessionBindings"] == source["sessionBindings"]
+                if stage == "language-options":
+                    check_language_options(
+                        client, source, generation, state, initial, nested, dimensions
+                    )
+                    print(
+                        "GTK language options: real menus and Apply checked without a model",
+                        flush=True,
+                    )
+                    return
                 if stage == "preview-colors":
                     check_preview_colors(client, source, generation, state, initial)
                     print(
@@ -493,6 +502,7 @@ def render_preview(
     text="Read-only fixture preview.",
     theme="system",
     editor_owns_text=None,
+    language_view=None,
 ):
     expires = now_ms() + 800
     if evidence is not None:
@@ -513,6 +523,7 @@ def render_preview(
                 "status": "fixture preview",
                 "sourceLanguage": "en",
                 "targetLanguage": "zh",
+                **(language_view or {}),
                 "presentation": {
                     "visible": True,
                     "editorOwnsText": editor_owns_text
@@ -587,6 +598,164 @@ def check_preview_colors(client, source, generation, state, initial):
         assert actual["candidate"]["foreground"] == foreground, (view_state, actual["candidate"])
         assert actual["focus"] == "fixture-first"
         assert actual["first"] == initial["first"] and actual["second"] == initial["second"]
+
+
+def check_language_options(client, source, generation, state, initial, nested, dimensions):
+    """Real menu widgets and UI events; synthetic view DTO, no installed model claim."""
+    trigger = "typelay-menu-trigger"
+    menu = "typelay-language-menu"
+    source_control, target_control = "typelay-source-language", "typelay-target-language"
+    apply_control = "typelay-apply-languages"
+    choices = {
+        "source": [
+            {"code": "auto", "label": "自动检测"},
+            {"code": "en", "label": "English"},
+            {"code": "ja", "label": "日本語"},
+            {"code": "ko", "label": "한국어"},
+        ],
+        "target": [
+            {"code": "en", "label": "English"},
+            {"code": "ja", "label": "日本語"},
+            {"code": "ko", "label": "한국어"},
+        ],
+    }
+    view = {"sourceLanguage": "en", "targetLanguage": "ja", "languageChoices": choices}
+    revision = 0
+
+    def render():
+        nonlocal revision
+        revision += 1
+        assert render_preview(
+            client, source, generation, revision, "fixture exit", language_view=view
+        )["visible"]
+        rendered = time.monotonic_ns() // 1_000_000
+        return wait_for(
+            lambda: (value := state()).get("observedAtMs", 0) > rendered
+            and value.get("overlayControls", {}).get(trigger, {}).get("visible")
+            and value["overlayControls"],
+            "language controls did not render",
+        )
+
+    def controls():
+        return state().get("overlayControls", {})
+
+    def click(name):
+        actual = state()
+        control = actual["overlayControls"][name]
+        assert control["visible"] and control["width"] > 0 and control["height"] > 0
+        point = click_point(
+            actual,
+            (control["x"] + control["width"] / 2, control["y"] + control["height"] / 2),
+            dimensions,
+        )
+        click_once(nested, point, {})
+
+    def toggle(opened, renew=True):
+        if renew:
+            render()
+        click(trigger)
+        wait_for(
+            lambda: controls().get(menu, {}).get("visible") is opened,
+            "language menu did not open/close",
+        )
+
+    def select(name, index):
+        render()
+        click(name)
+        key("Home")
+        for _ in range(index):
+            key("Down")
+        key("Return")
+        return wait_for(
+            lambda: (value := controls()).get(name, {}).get("selected") == index and value,
+            "actual dropdown selection did not change",
+        )
+
+    def events():
+        client.call("describe")
+        return [
+            event["data"]
+            for event in client.events
+            if event.get("event") == "ui" and event.get("data", {}).get("operation") == "languages"
+        ]
+
+    actual = render()
+    assert actual[trigger]["text"] == "English → 日本語"
+    toggle(True)
+    actual = controls()
+    assert actual[source_control]["items"] == ["自动检测", "English", "日本語", "한국어"]
+    assert actual[target_control]["items"] == ["English", "日本語", "한국어"]
+    assert actual[source_control]["selected"] == 1 and actual[target_control]["selected"] == 1
+    selected = select(source_control, 3)
+    assert selected[source_control]["focused"], "dropdown did not acquire real focus"
+    before_events = events()
+    renewed = render()
+    for name in (source_control, target_control):
+        for field in ("instance", "modelInstance", "selected", "focused"):
+            assert renewed[name][field] == selected[name][field], (name, field)
+    assert events() == before_events, "unapplied selection was sent as a save"
+    view["sourceLanguage"] = "ja"
+    actual = render()
+    assert actual[source_control]["selected"] == 2, "confirmed saved code did not replace draft"
+    select(source_control, 3)
+    toggle(False)
+    toggle(True, renew=False)
+    assert controls()[source_control]["selected"] == 2, "reopening retained an unapplied choice"
+    select(source_control, 3)
+    select(target_control, 0)
+    render()
+    click(apply_control)
+    wait_for(lambda: not controls().get(menu, {}).get("visible"), "Apply did not close menu")
+    emitted = events()
+    assert len(emitted) == len(before_events) + 1
+    assert emitted[-1]["value"] == {"source": "ko", "target": "en"}
+    assert emitted[-1]["generation"] == generation and emitted[-1]["revision"] == revision
+    # The controlled host has not confirmed the requested save. Reopening must
+    # show its last confirmed state, including after a real host save failure.
+    toggle(True, renew=False)
+    assert controls()[source_control]["selected"] == 2
+    assert controls()[target_control]["selected"] == 1
+    view.update(sourceLanguage="ko", targetLanguage="en")
+    actual = render()
+    assert actual[source_control]["selected"] == 3 and actual[target_control]["selected"] == 0
+
+    view.update(
+        sourceLanguage="ja",
+        targetLanguage="ko",
+        languageChoices=choices,
+        sourceLanguageLabel="Saved Japanese",
+        targetLanguageLabel="Saved Korean",
+    )
+    assert render()[trigger]["text"] == "Saved Japanese → Saved Korean"
+    view["languageChoices"] = {}
+    assert render()[trigger]["text"] == "Saved Japanese → Saved Korean"
+    view["languageChoices"] = choices
+    view.pop("sourceLanguageLabel")
+    view.pop("targetLanguageLabel")
+    assert render()[trigger]["text"] == "日本語 → 한국어"
+    view["sourceLanguage"] = "zz"
+    actual = render()
+    assert actual[trigger]["text"] == "zz（当前不可用） → 한국어"
+    assert actual[source_control]["items"][actual[source_control]["selected"]] == "zz（当前不可用）"
+    assert not actual[apply_control]["enabled"]
+    assert select(source_control, 2)[apply_control]["enabled"]
+    toggle(False)
+    toggle(True, renew=False)
+    assert not controls()[apply_control]["enabled"], "unavailable confirmed choice was lost"
+
+    before_events = events()
+    view.update(sourceLanguage="ja", targetLanguage="ko")
+    for invalid in (None, {**choices, "target": choices["target"] * 2}):
+        view["languageChoices"] = invalid
+        actual = render()
+        for name in (source_control, target_control, apply_control):
+            assert not actual[name]["enabled"], name
+    view.pop("languageChoices")
+    actual = render()
+    assert actual[trigger]["text"] == "ja（当前不可用） → ko（当前不可用）"
+    click(apply_control)
+    assert events() == before_events, "invalid choices emitted a language change"
+    assert state()["first"] == initial["first"] and state()["second"] == initial["second"]
 
 
 def check_footer(client, source, generation, runtime, state, initial):

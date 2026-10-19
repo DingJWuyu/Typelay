@@ -1,6 +1,11 @@
+using System.Text.Json.Serialization;
+
 namespace TypeLay.Protocol;
 
 public sealed record ModelRequest(long Id, string Op, string Text = "", string Source = "auto",
     string Target = "en", string? Preserved = null);
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record LoadedModelPackage(string Id, string Version, string[] Directions);
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record ModelResponse(long Id, string Status, string Text = "", string Code = "", double ElapsedMs = 0,
-    string[]? Directions = null);
+    string[]? Directions = null, LoadedModelPackage[]? Packages = null);

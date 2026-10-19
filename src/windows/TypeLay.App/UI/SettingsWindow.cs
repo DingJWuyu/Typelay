@@ -106,6 +106,7 @@ internal sealed class SettingsWindow : Window
     }
     public Action? SessionMustEnd;
     public Func<UserSettings, Task<bool>>? PrepareSettingsChange;
+    public Func<Task<bool>>? PrepareModelChange;
     private bool _savingSettings;
     public SettingsWindow(SettingsStore settings, ModelClient model, Action openPractice, WindowsApplicationSupport? support = null,
         Func<ModelInstaller>? createInstaller = null, Func<Window, string?>? selectApplication = null,
@@ -1270,6 +1271,27 @@ internal sealed class SettingsWindow : Window
             : "准备私有运行组件与中英模型。仅在本机推理；无需自行安装 Python，也不上传输入文字。", 12, true);
         intro.Margin = new(0, 8, 0, 8);
         detailsBody.Children.Add(intro);
+        foreach (var package in ModelCatalog.Packages.Packages.Where(package => package.Preview))
+        {
+            var row = ApplicationSupportPresentation.UnavailableModelPackage(package.Id, "windows-unavailable");
+            var packageBody = new StackPanel { Margin = new(0, 8, 0, 12) };
+            AutomationProperties.SetAutomationId(packageBody, "ModelPackage_" + row.Id);
+            packageBody.Children.Add(UiTheme.Text(row.Title + " · 预览", 13, bold: true));
+            packageBody.Children.Add(UiTheme.Text(row.CoverageText + " · " + row.DownloadText, 12, true));
+            packageBody.Children.Add(UiTheme.Text(row.AvailabilityText, 12, true));
+            var packageDetails = new StackPanel();
+            packageDetails.Children.Add(UiTheme.Text(row.Details, 12, true));
+            if (row.LicenseUrl.Length > 0)
+            {
+                var license = new Hyperlink(new Run("模型许可证"));
+                license.Click += (_, _) => OpenUri(row.LicenseUrl);
+                var label = UiTheme.Text("", 12);
+                label.Inlines.Add(license);
+                packageDetails.Children.Add(label);
+            }
+            packageBody.Children.Add(new Expander { Header = "模型详情与许可", Content = packageDetails });
+            detailsBody.Children.Add(packageBody);
+        }
         _preparationDirections = new StackPanel { Margin = new(0, 0, 0, 8) };
         detailsBody.Children.Add(_preparationDirections);
         var runtime = UiTheme.Button("微软运行库说明", () => OpenUri("https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist"));
@@ -1470,11 +1492,20 @@ internal sealed class SettingsWindow : Window
                 _preparationRequest, repair: _repairInstallation);
             acceptingProgress = false;
             operation.Token.ThrowIfCancellationRequested();
-            SessionMustEnd?.Invoke();
+            var plan = prepared.CreateLoadPlan();
+            if (PrepareModelChange is not null)
+            {
+                if (!await PrepareModelChange())
+                    throw new ModelSetupException(SetupFailureCategory.Runtime, ModelSetupStage.Activate);
+            }
+            else
+                SessionMustEnd?.Invoke();
+            operation.Token.ThrowIfCancellationRequested();
             _startingModel = true;
             _setupStatus = "正在启动本地翻译…";
             RefreshPreparation();
-            if (await _model.ReloadAsync(prepared.Paths, prepared.Publish, operation.Token, expectedDirections: prepared.Directions))
+            var outcome = await _model.ReloadAsync(plan, prepared.PublishConfirmed, prepared.ConfirmCurrent, operation.Token);
+            if (outcome == ModelPublicationOutcome.Confirmed)
             {
                 prepared.Complete();
                 _preparationRequest = null;
@@ -1486,7 +1517,8 @@ internal sealed class SettingsWindow : Window
                 _setupStatus = "本地翻译已就绪。可打开“" + PracticeEntryView().Title + "”。";
             }
             else
-                SetupFailed(SetupFailureCategory.Runtime, "ModelStart");
+                SetupFailed(SetupFailureCategory.Runtime, "ModelStart",
+                    outcome == ModelPublicationOutcome.Unconfirmed ? SetupFailureCategory.Unknown : null);
         }
         catch (OperationCanceledException) when (operation.IsCancellationRequested)
         {

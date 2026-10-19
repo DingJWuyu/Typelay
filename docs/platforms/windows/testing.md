@@ -194,4 +194,16 @@ dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows
 
 `TypeLay.DesktopFixture --verify-browser-cooperation <结果目录> <发行根> <CfT路径>` 使用实际发行 App 的既有 `--automation-test` 入口与 BrowserHost，独立 CfT profile 加载包内标准页扩展。CI 从固定官方版本及摘要取得浏览器，缓存命中仍重新校验；不运行旧浏览器身份研究探针。场景要求当前用户 TypeLay 数据目录和注册为空，仅清理自己创建的资源；使用本轮已校验模型组件并由正式 worker 重新加载。注册写入仅在明确的 `TYPELAY_BROWSER_REGISTRATION_E2E=1` 测试环境启用，普通发行检查默认不写注册。
 
-验收覆盖标准页的自动接受、真实按需直接替换、已受理后原字段后台写入，以及命令前断连拒写。软件按键、显式实验开关和开发扩展属于该场景的前提，不代表物理输入法、品牌 Chrome 扩展安装或默认关闭门已经验收；真实结果以本轮 result.json 为准，未执行的后续阶段不得计作通过。
+验收覆盖标准页的自动接受、真实按需直接替换、已受理后原字段后台写入，以及经正式 UI 主动移除后的无写负控。软件输入和开发扩展不代表物理输入法或品牌 Chrome 扩展安装已经验收；当前结果以本轮 run 的 result.json 为准，未执行的后续阶段不得计作通过。
+
+## 可选 Hy 隔离 adapter 验证
+
+此入口仅验证固定 C ABI、原文控制 token 边界和自有 worker 生命周期，不修改产品 catalog、默认模型、设置、发行包或已安装模型。普通 native fixture 模式不会运行 Hy。
+
+显式运行 `./dev.ps1 build` 后，`./dev.ps1 hy-adapter-prepare` 在600秒总限内下载/完整校验固定 Hy-MT2 GGUF、官方 llama.cpp b11717 Windows CPU ZIP及许可，构造CPU-only私有目录并用官方SDK编译小adapter；`./dev.ps1 hy-adapter-e2e` 在180秒内执行取消/恢复和原中文到日文句子一次真实EOG，再做已有canonical literal/孤立CR拒绝审计。当前实际Windows执行尚未完成；Linux编译不能证明Windows Job、DLL加载或推理通过。
+
+冷GGUF+ZIP+模型许可总1,152,754,477字节；缓存命中仍全量SHA核验，坏缓存明确失败。模型/runtime下载仅进独立 `artifacts/hy-download/`，不进入发行包或artifact上传。CPU按固定上游实际最高正score动态选取，不按机器型号猜ISA。源码仅保留必要头文件及许可，不编译上游llama.cpp，不增加模型框架依赖。
+
+worker先以CREATE_SUSPENDED创建；设置Job的KILL_ON_JOB_CLOSE、ActiveProcessLimit=1、process/job committed-memory 2.5GiB并确认归属后再Resume。真实decode中取消后确认Job活动进程为0且根进程已发信号，再开始下一实例；只发送合成正文到有界stdin，不把正文放argv或临时prompt文件。ctx1024、2计算线程、greedy、192输出token、每请求60秒，只有真实EOG成功，失败不输出部分成功。Windows committed-memory限额不是Linux RLIMIT_AS或RSS硬限。
+
+现有check job在其它真实模型步骤结束后串行调用同一入口，总35分钟不变。缓存restore/save各2分钟、准备10分钟、执行3分钟，另预留2分钟给尾部上传和runner前置计时误差；剩余时间不足则明确失败/未运行，不静默跳过报成功。最早步骤计时不能精确覆盖此前runner初始化，35分钟job硬上限仍保留。仅上传 `artifacts/hy-results/` 中明确的JSON和有界stderr，不上传权重、runtime库或整个artifacts目录。

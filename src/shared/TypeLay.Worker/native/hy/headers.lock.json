@@ -1,0 +1,47 @@
+{
+  "commit": "848bbda9041decd87904f7eb5a2990863ecce03b",
+  "files": [
+    {
+      "file": "ggml-alloc.h",
+      "bytes": 3689,
+      "sha256": "d114067f9099c4a0e2bbc0625c676d4894d9cf0ea27168ee072c7de0e71bb51d",
+      "source": "https://github.com/ggml-org/llama.cpp/blob/848bbda9041decd87904f7eb5a2990863ecce03b/ggml/include/ggml-alloc.h"
+    },
+    {
+      "file": "ggml-backend.h",
+      "bytes": 27570,
+      "sha256": "0e5e8e1f16d11ebbf501e38bc6705d79eee819b5f0b17476533f2100ed9674e2",
+      "source": "https://github.com/ggml-org/llama.cpp/blob/848bbda9041decd87904f7eb5a2990863ecce03b/ggml/include/ggml-backend.h"
+    },
+    {
+      "file": "ggml-cpu.h",
+      "bytes": 7753,
+      "sha256": "316279e004cdeb8e6ef78599acb602bf79a8abdf897fed9fd1914808c1518c6e",
+      "source": "https://github.com/ggml-org/llama.cpp/blob/848bbda9041decd87904f7eb5a2990863ecce03b/ggml/include/ggml-cpu.h"
+    },
+    {
+      "file": "ggml-opt.h",
+      "bytes": 14040,
+      "sha256": "3586de1bc8a934b5c72339e2b6937b0641e8f149b512231e666f67de0736eea2",
+      "source": "https://github.com/ggml-org/llama.cpp/blob/848bbda9041decd87904f7eb5a2990863ecce03b/ggml/include/ggml-opt.h"
+    },
+    {
+      "file": "ggml.h",
+      "bytes": 116595,
+      "sha256": "72b0ee8e38a493bb7f56c71fbea4c0832ae08139b7d3a91ded7c5a2210f58285",
+      "source": "https://github.com/ggml-org/llama.cpp/blob/848bbda9041decd87904f7eb5a2990863ecce03b/ggml/include/ggml.h"
+    },
+    {
+      "file": "gguf.h",
+      "bytes": 11355,
+      "sha256": "e56714aab702e5ce62ee587a409643c08f7e93e8fbb77f48ef7cc85075f96fa4",
+      "source": "https://github.com/ggml-org/llama.cpp/blob/848bbda9041decd87904f7eb5a2990863ecce03b/ggml/include/gguf.h"
+    },
+    {
+      "file": "llama.h",
+      "bytes": 90732,
+      "sha256": "ebdbe8818206aabac2645377bcbc8deda73da2ad97134c398ac4f10830fa2aad",
+      "source": "https://github.com/ggml-org/llama.cpp/blob/848bbda9041decd87904f7eb5a2990863ecce03b/include/llama.h"
+    }
+  ]
+}

@@ -26,9 +26,16 @@ def main() -> int:
             print(json.dumps({"status": "failed", "code": "dependency-or-model-load"}))
         # No stack traces or exception messages cross the privacy boundary.
         return 2
-    if args.self_check:
+    try:
+        return serve(engine, args.self_check)
+    finally:
+        engine.close()
+
+
+def serve(engine, self_check):
+    if self_check:
         results = []
-        for direction in engine.catalog:
+        for direction in engine.self_check_directions:
             if direction.id not in engine.directions:
                 continue
             text, source, target = direction.self_check_text, direction.source, direction.target
@@ -46,11 +53,10 @@ def main() -> int:
         passed = bool(results) and all(
             r["status"] == "translated" and r["nonempty"] and r["differs"] for r in results
         )
-        print(
-            json.dumps(
-                {"status": "passed" if passed else "failed", "device": "cpu", "results": results}
-            )
-        )
+        report = {"status": "passed" if passed else "failed", "device": "cpu", "results": results}
+        if engine.schema == 3:
+            report.update(packages=engine.packages, directions=engine.directions)
+        print(json.dumps(report))
         return 0 if passed else 3
     last_id = 0
     while True:
@@ -64,6 +70,8 @@ def main() -> int:
             operation = request.get("op")
             if operation == "hello":
                 response = {"id": request_id, "status": "ready", "directions": engine.directions}
+                if engine.schema == 3:
+                    response["packages"] = engine.packages
             elif operation == "translate":
                 result = engine.translate(
                     request.get("text"),

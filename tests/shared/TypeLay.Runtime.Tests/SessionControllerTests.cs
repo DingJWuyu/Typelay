@@ -2007,6 +2007,92 @@ public sealed class SessionControllerTests
         Assert.Equal(0, s.Service.Returns);
     }
 
+    [Theory]
+    [InlineData("wake")]
+    [InlineData("direct")]
+    public async Task ModelChangeDiscardsOldUndrainedCommandsButAcceptsNewGenerationCommands(string kind)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Command(kind);
+        Assert.True(await s.Controller.PrepareModelChangeAsync());
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        Assert.Empty(s.Model.Jobs);
+        Assert.Empty(s.Service.DirectWrites);
+        s.Command(kind);
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        Assert.Single(s.Model.Jobs);
+    }
+
+    [Fact]
+    public async Task ModelChangeRetiresDirectTranslationBeforeAnyWrite()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Command("direct");
+        s.Tick();
+        Assert.Single(s.Model.Jobs);
+        Assert.True(await s.Controller.PrepareModelChangeAsync());
+        s.CompleteTranslation("retired result");
+        s.Tick();
+        Assert.Empty(s.Service.DirectWrites);
+    }
+
+    [Fact]
+    public async Task ModelChangeDropsUnsentDirectWorkQueuedBehindAnOldPreview()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Command("wake");
+        s.Tick();
+        s.Tick(Limits.DebounceMs);
+        Assert.Single(s.Model.Jobs);
+        s.Command("direct");
+        s.Tick();
+        Assert.Single(s.Model.Jobs);
+        Assert.True(await s.Controller.PrepareModelChangeAsync());
+        s.CompleteTranslation("retired preview");
+        s.Tick();
+        Assert.Single(s.Model.Jobs);
+        Assert.Empty(s.Service.DirectWrites);
+        Assert.False(s.View.Visible);
+        Assert.Null(s.Input.Permit);
+    }
+
+    [Fact]
+    public async Task ModelChangeCannotAdoptAPreviouslyRequestedWakeCapture()
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Service.PendingCapture = new();
+        s.Command("wake");
+        s.Tick();
+        Assert.True(await s.Controller.PrepareModelChangeAsync());
+        s.CompleteCapture(new(s.Fresh, FocusMember.Source, "controlled", s.Input.UserEpoch, s.Input.ForegroundEpoch));
+        s.Tick(Limits.DebounceMs);
+        Assert.Empty(s.Model.Jobs);
+        Assert.False(s.View.Visible);
+        Assert.Null(s.Input.Permit);
+    }
+
+    [Theory]
+    [InlineData(WriteStatus.Verified, Denial.None)]
+    [InlineData(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome)]
+    public async Task ModelChangePreservesOneSubmittedDirectReceiptWithoutReplayingIt(WriteStatus status, Denial reason)
+    {
+        using var s = new SessionScenario(WorkMode.OnDemand);
+        s.Service.PendingDirectWrite = new();
+        s.Command("direct");
+        s.Tick();
+        s.CompleteTranslation("submitted");
+        Assert.Single(s.Service.DirectWrites);
+        Assert.True(await s.Controller.PrepareModelChangeAsync());
+        s.Service.PendingDirectWrite.SetResult(new(status, reason));
+        s.Tick();
+        Assert.Contains(status == WriteStatus.Verified ? "已直接替换" : "未获确认", s.Controller.OperationStatus);
+        s.Tick(5000);
+        Assert.Single(s.Service.DirectWrites);
+        Assert.Single(s.Model.Jobs);
+    }
+
     [Fact]
     public void SettingsChangeCancelsPendingDirectTranslationBeforeMutation()
     {

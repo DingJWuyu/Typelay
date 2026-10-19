@@ -394,7 +394,7 @@ public sealed class QuickPanelRenderingTests(WpfDesktopFixture desktop)
             // model or starting another program: this owned file is not an exe.
             File.WriteAllText(_python, "not an executable");
             Directory.CreateDirectory(_models);
-            File.WriteAllText(System.IO.Path.Combine(_models, "installed.json"), "{}");
+            File.WriteAllText(System.IO.Path.Combine(_models, "installed.json"), "{\"schema\":1}");
             int changes = 0;
             _model.Changed += () => changes++;
             await _model.StartAsync();

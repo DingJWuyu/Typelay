@@ -7,6 +7,7 @@ namespace TypeLay.Linux;
 internal sealed class DesktopView(DesktopLink link) : ISessionView
 {
     private string? _last;
+    private ModelPackageManagementFact? _packages;
     public SessionViewToken? Token
     {
         get; private set;
@@ -46,6 +47,15 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
     public void Configure(UserSettings settings)
     {
         link.Send("settings", settings);
+        ConfigureGuidance(settings);
+    }
+    public void ConfigureModelPackages(ModelPackageManagementFact packages, UserSettings settings)
+    {
+        _packages = packages;
+        ConfigureGuidance(settings);
+    }
+    private void ConfigureGuidance(UserSettings settings)
+    {
         var guidance = SettingsGuidancePresentation.Create(settings, exclusionsNeedSave: true);
         string defaultTarget = new UserSettings().Target;
         link.Send("settingsGuidance", new
@@ -57,11 +67,30 @@ internal sealed class DesktopView(DesktopLink link) : ISessionView
             SettingsDraftPresentation.UnknownSaveMessage,
             languageChoices = new
             {
-                source = ModelCatalog.SourceChoices.Select(LanguageChoice),
-                target = ModelCatalog.TargetChoices.OrderBy(choice => choice.Code == defaultTarget ? 0 : 1)
-                    .Select(LanguageChoice)
+                source = LanguageChoices(settings.Source, source: true),
+                target = LanguageChoices(settings.Target, source: false).OrderBy(choice => choice.Code == defaultTarget ? 0 : 1)
             }
         });
+    }
+    private ModelLanguageChoice[] LanguageChoices(string saved, bool source)
+    {
+        var legacy = source ? ModelCatalog.SourceChoices : ModelCatalog.TargetChoices;
+        var installed = _packages is { InventoryKnown: true } facts
+            ? facts.InstalledPackages.Where(item => item.Package.Backend == "argos"
+                || facts is { HyRuntimeAvailable: true, HyUnavailableReason: null }).SelectMany(item => item.Directions)
+            : [];
+        var choices = legacy.Concat(installed.Select(direction => source
+                ? new ModelLanguageChoice(direction.Source, direction.SourceName)
+                : new ModelLanguageChoice(direction.Target, direction.TargetName)))
+            .DistinctBy(choice => choice.Code).Select(LanguageChoice).ToList();
+        if (choices.All(choice => choice.Code != saved))
+        {
+            var known = ModelCatalog.Packages.Packages.SelectMany(package => package.Directions)
+                .SelectMany(direction => new[] { new ModelLanguageChoice(direction.Source, direction.SourceName),
+                    new ModelLanguageChoice(direction.Target, direction.TargetName) }).FirstOrDefault(choice => choice.Code == saved);
+            choices.Add(new(saved, (known?.Label ?? saved) + "（当前不可用）"));
+        }
+        return choices.ToArray();
     }
     private static ModelLanguageChoice LanguageChoice(ModelLanguageChoice choice) => choice with
     {

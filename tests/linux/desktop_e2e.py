@@ -21,6 +21,7 @@ from main import control
 from native_e2e import key
 from niri import contents, request
 from paths import Paths
+from setup import model_catalog
 from wire import Decoder, encode, now_ms
 
 
@@ -187,11 +188,19 @@ def prepare_key(stack, name):
     keycode = x11.XKeysymToKeycode(display, x11.XStringToKeysym(name.encode("ascii")))
     assert keycode, f"XTest DISPLAY has no {name} keycode"
 
-    def send_key(down, sync=True):
+    def send_key(down, sync=True, *, timing=None):
+        if timing is not None:
+            timing["downStartedAtMs" if down else "upStartedAtMs"] = now_ms()
         sent = xtst.XTestFakeKeyEvent(display, keycode, int(down), 0)
+        if timing is not None:
+            timing["downReturnedAtMs" if down else "upReturnedAtMs"] = now_ms()
         # Flush and wait only for X server processing, not Wayland delivery.
         if sync:
+            if timing is not None:
+                timing["xSyncStartedAtMs"] = now_ms()
             x11.XSync(display, 0)
+            if timing is not None:
+                timing["xSyncReturnedAtMs"] = now_ms()
         assert sent, f"XTest refused {name} key event"
 
     return send_key
@@ -200,9 +209,9 @@ def prepare_key(stack, name):
 def prepare_tab(stack):
     send_key = prepare_key(stack, "Tab")
 
-    def send_tab():
-        send_key(True, sync=False)
-        send_key(False)
+    def send_tab(*, timing=None):
+        send_key(True, sync=False, timing=timing)
+        send_key(False, timing=timing)
 
     return send_tab
 
@@ -235,14 +244,10 @@ def verify_direction_installation(arguments, environment):
             }
             with patch.dict(os.environ, isolated):
                 paths = Paths(arguments.package)
-            catalog = json.loads((paths.home / "worker/model-catalog.json").read_text())[
-                "directions"
-            ]
-            samples = {item["id"]: item["selfCheckText"] for item in catalog}
+            catalog = model_catalog(paths.home)
+            samples = {item.id: item.self_check_text for item in catalog}
             archives = {
-                item["id"]: paths.cache
-                / "components"
-                / f"{item['id']}-{item['version']}.argosmodel"
+                item.id: paths.cache / "components" / f"{item.id}-{item.version}.argosmodel"
                 for item in catalog
             }
 
@@ -315,20 +320,43 @@ def verify_direction_installation(arguments, environment):
                         await_value(ready, "selected directions did not become ready", remaining())
                         root = paths.models.parent.resolve(strict=True)
                         marker = json.loads((root / "models/installed.json").read_text())
-                        check = json.loads((root / "self-check.json").read_text())
-                        assert marker["schema"] == schema and marker["directions"] == expected
-                        assert check["status"] == "passed" and check["device"] == "cpu"
-                        assert [row["direction"] for row in check["results"]] == expected
-                        assert all(
-                            row["status"] == "translated" and row["nonempty"] and row["differs"]
-                            for row in check["results"]
-                        )
-                        assert {
-                            entry.name for entry in (root / "models").iterdir() if entry.is_dir()
-                        } == set(expected)
-                        assert {
-                            row["name"]: row["observedSha256"] for row in marker["dependencies"]
-                        } == {identity: cached[identity][0] for identity in expected}
+                        assert marker["schema"] == schema
+                        if schema == 3:
+                            expected_packages = [
+                                "argos-" + identity.replace("_", "-") for identity in expected
+                            ]
+                            assert marker["activePackages"] == expected_packages
+                            assert [row["id"] for row in marker["packages"]] == expected_packages
+                            assert [
+                                direction
+                                for row in marker["packages"]
+                                for direction in row["directions"]
+                            ] == expected
+                            for row in marker["packages"]:
+                                assert row["version"] == "1.9" and row["files"]
+                                assert (
+                                    root / "models/packages" / row["id"] / row["version"]
+                                ).is_dir()
+                            assert not (root / "self-check.json").exists(), (
+                                "package preparation started an extra model self-check"
+                            )
+                        else:
+                            check = json.loads((root / "self-check.json").read_text())
+                            assert marker["directions"] == expected
+                            assert check["status"] == "passed" and check["device"] == "cpu"
+                            assert [row["direction"] for row in check["results"]] == expected
+                            assert all(
+                                row["status"] == "translated" and row["nonempty"] and row["differs"]
+                                for row in check["results"]
+                            )
+                            assert {
+                                entry.name
+                                for entry in (root / "models").iterdir()
+                                if entry.is_dir()
+                            } == set(expected)
+                            assert {
+                                row["name"]: row["observedSha256"] for row in marker["dependencies"]
+                            } == {identity: cached[identity][0] for identity in expected}
                         return root
 
                     def inference(expected, requests):
@@ -434,10 +462,10 @@ def verify_direction_installation(arguments, environment):
                     management = item("本地翻译组件管理")
                     if not management.get_state_set().contains(Atspi.StateType.EXPANDED):
                         activate("本地翻译组件管理")
-                    activate("补齐另一方向", capture=True)
-                    item("下载并安装本地翻译组件？")
+                    activate("Argos · English → 中文：下载并使用…", capture=True)
+                    item("下载并使用？")
                     activate(gettext.dgettext("gtk30", "_OK").replace("_", ""))
-                    complete = installed(["zh_en", "en_zh"], 1)
+                    complete = installed(["zh_en", "en_zh"], 3)
                     assert complete != single
                     assert (
                         json.loads((complete / "activation.json").read_text())["previous"]
@@ -1723,6 +1751,20 @@ def run(arguments):
                                 nested[0],
                             )
                         evidence.append("GTK renderer: only nonempty updating previews are muted")
+                        with tempfile.TemporaryDirectory(prefix="tl-gtk-languages-") as directory:
+                            run_case(
+                                fixture_command,
+                                gtk_environment,
+                                arguments.output,
+                                None,
+                                Path(directory),
+                                "language-options",
+                                False,
+                                nested[0],
+                            )
+                        evidence.append(
+                            "GTK renderer: catalog language choices preserve menu drafts and focus"
+                        )
                         fixture = subprocess.Popen(
                             fixture_command,
                             env=gtk_environment,
@@ -1888,13 +1930,14 @@ def run(arguments):
                         )
                         wait_for(ready_to_accept, "GTK acceptance expired while taking evidence")
                         before_write = trace_checkpoint()
+                        key_timing = {}
                         key_started = now_ms()
                         if gtk4:
                             # One preconnected native injection, with no process
                             # startup after readiness. This does not alter TTL.
-                            send_tab()
+                            send_tab(timing=key_timing)
                         else:
-                            key(accept_key)
+                            key(accept_key, timing=key_timing)
                         key_finished = now_ms()
                         gtk_acceptance_phases.append(
                             {
@@ -1903,6 +1946,9 @@ def run(arguments):
                                 "readiness": last_acceptance_observation,
                                 "keySendStartedAtMs": key_started,
                                 "keySendFinishedAtMs": key_finished,
+                                # Helper completion includes GTK3's existing 25 ms
+                                # sleep; GTK4 XSync is not Wayland/GTK delivery.
+                                "injection": key_timing,
                             }
                         )
                         wait_for(
@@ -4285,14 +4331,20 @@ def run(arguments):
                     and trial_area.x + trial_area.width <= clip.x + clip.width
                     and trial_area.y + trial_area.height <= clip.y + clip.height
                 ), "connection choice is clipped before the user scrolls or focuses it"
-            repair = preparation["secondaryActions"]
-            assert len(repair) == 1 and repair[0]["id"] == "Repair"
-            repair_button = named(process.pid, repair[0]["label"])
+            assert preparation["secondaryActions"] == []
+            package = next(row for row in preparation["packageRows"] if row["current"])
+            repair = next(
+                action
+                for action in package["actions"]
+                if action["request"]["operation"] == "Repair"
+            )
+            repair_name = package["title"] + "：" + repair["label"]
+            repair_button = named(process.pid, repair_name)
             assert repair_button is None or not repair_button.get_state_set().contains(
                 Atspi.StateType.SHOWING
             ), "ready repair took over the default preparation screen"
             activate_setting("本地翻译组件管理")
-            repair_button = settings_control(repair[0]["label"])
+            repair_button = settings_control(repair_name)
             wait_for(
                 lambda: repair_button.get_state_set().contains(Atspi.StateType.SHOWING),
                 "ready repair was not available in model management",
@@ -4362,13 +4414,86 @@ def run(arguments):
                 and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE),
                 "fixed source did not restore language swap",
             )
+
+            def visible_language_choice(label):
+                desktop = Atspi.get_desktop(0)
+                pending = [
+                    app
+                    for index in range(desktop.get_child_count())
+                    if (app := desktop.get_child_at_index(index)) is not None
+                    and app.get_process_id() == process.pid
+                ]
+                for _ in range(256):
+                    if not pending:
+                        return None
+                    node = pending.pop()
+                    if node is None:
+                        continue
+                    node.clear_cache()
+                    if node.get_name() == label and node.get_state_set().contains(
+                        Atspi.StateType.SHOWING
+                    ):
+                        return node
+                    pending.extend(
+                        node.get_child_at_index(index) for index in range(node.get_child_count())
+                    )
+                raise AssertionError("language completion exceeds its accessibility tree")
+
+            for name, field, prefix, label, code in (
+                ("源语言", "Source", "U4e2d", "中文", "zh"),
+                ("目标语言", "Target", "U82f1", "英语", "en"),
+            ):
+                picker = settings_control("设置：" + name)
+                pending = [picker]
+                for _ in range(16):
+                    assert pending, "language picker has no editable search field"
+                    editor = pending.pop()
+                    if editor is None:
+                        continue
+                    if editor.get_editable_text_iface() is not None:
+                        break
+                    pending.extend(
+                        editor.get_child_at_index(index)
+                        for index in range(editor.get_child_count())
+                    )
+                else:
+                    raise AssertionError("language picker exceeds its accessibility tree")
+                assert Atspi.Component.grab_focus(editor.get_component_iface())
+                wait_for(lambda: focused(editor), "language search did not receive focus")
+                before_search = paths.settings.read_bytes()
+                key("ctrl+a")
+                key(prefix)
+                wait_for(
+                    lambda: text(editor) == label[0] and visible_language_choice(label),
+                    "typing a language prefix did not expose its native completion",
+                )
+                assert paths.settings.read_bytes() == before_search, (
+                    "language search saved before choosing a match"
+                )
+                key("Down")
+                key("Return")
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text())[field] == code
+                    and text(editor) == label
+                    and focused(editor),
+                    "keyboard completion did not save its language and retain focus",
+                )
+                key("Tab")
+                wait_for(lambda: not focused(editor), "Tab did not leave the language editor")
+            activate_setting("交换语言")
+            wait_for(
+                lambda: (value := json.loads(paths.settings.read_text()))["Source"] == "en"
+                and value["Target"] == "zh",
+                "search choices did not remain compatible with language swap",
+            )
             subprocess.run(
                 ["grim", str(arguments.output / "settings-language.png")], check=True, timeout=3
             )
             evidence.append(
                 "Real GTK settings language swap saves one paired direction change; "
                 "failed persistence retains both saved choices and retries after recovery; "
-                "Auto disables swap and returning to a fixed source enables it"
+                "Auto disables swap and returning to a fixed source enables it; "
+                "native language search saves only the keyboard-selected match and preserves Tab navigation"
             )
             settings_page("应用支持")
             activate_setting(desktop_support["primaryAction"]["label"])

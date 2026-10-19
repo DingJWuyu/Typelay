@@ -993,12 +993,8 @@ internal sealed class OverlayWindow : Window, ISessionView
             _dot.Visibility = display.Dot == StatusDot.None ? Visibility.Collapsed : Visibility.Visible;
             if (idle)
                 _expanded = false;
-            _language.Text = (settings.Source switch
-            {
-                "zh" => "中",
-                "en" => "EN",
-                _ => "Auto"
-            }) + " → " + (settings.Target == "zh" ? "中" : "EN") + "  ⌄";
+            _language.Text = (settings.Source == "zh" ? "中" : ApplicationSupportPresentation.LanguageName(settings.Source))
+                + " → " + (settings.Target == "zh" ? "中" : ApplicationSupportPresentation.LanguageName(settings.Target)) + "  ⌄";
             _status.Text = (statusOverride ?? display.Status) + (_automationTest ? " · 自动化测试" : "");
             string dotBrushKey = display.Dot == StatusDot.Green ? "Good" : display.Dot == StatusDot.Yellow ? "Warn" : "Muted";
             if (_dotBrushKey != dotBrushKey)

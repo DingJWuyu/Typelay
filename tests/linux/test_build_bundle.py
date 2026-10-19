@@ -30,6 +30,53 @@ def digest(content):
     return hashlib.sha256(content).hexdigest()
 
 
+class WorkerBundleTests(unittest.TestCase):
+    def test_argos_only_worker_has_runtime_python_and_locks_without_native_build_inputs(self):
+        with tempfile.TemporaryDirectory(prefix="typelay-worker-") as directory:
+            package = Path(directory) / "发行 包"
+            build.package_worker(package)
+            worker = package / "worker"
+            for name in (
+                "run_worker.py",
+                "model-catalog.json",
+                "requirements.txt",
+                "typelay_worker/hy_assets.py",
+                "typelay_worker/hy_cpu.py",
+                "typelay_worker/engine.py",
+                "typelay_worker/catalog.py",
+            ):
+                self.assertTrue((worker / name).is_file(), name)
+            native = worker / "native/hy"
+            self.assertEqual(
+                {item.name for item in native.iterdir()},
+                {"model.lock.json", "cpu-runtime.lock.json", "LICENSE.llama.cpp"},
+            )
+            self.assertEqual([item.name for item in worker.rglob("*.cpp")], ["LICENSE.llama.cpp"])
+            self.assertFalse(any(worker.rglob("*.h")))
+            self.assertFalse(any(worker.rglob("assets.lock.json")))
+            self.assertFalse(any(worker.rglob("headers.lock.json")))
+            self.assertFalse(any(worker.rglob("__pycache__")))
+            self.assertFalse((native / "production-adapter.json").exists())
+            # Import the relocated runtime, not the checkout's module. Missing
+            # optional native payload fails before any library/model loading.
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    "-c",
+                    "import sys; sys.path.insert(0,sys.argv[1]); "
+                    "from typelay_worker.hy_assets import verify_native; verify_native()",
+                    str(worker),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("production-adapter.json", result.stderr)
+
+
 class BrowserBundleTests(unittest.TestCase):
     def test_browser_payloads_include_the_declared_icons_and_exact_xpi(self):
         with tempfile.TemporaryDirectory(prefix="typelay-browser-") as directory:

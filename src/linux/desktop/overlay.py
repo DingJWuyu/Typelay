@@ -15,6 +15,7 @@ class Overlay:
         self.host, self.input, self.tasks = host, input_service, tasks
         self.settings_requested = settings_requested
         self.value = self.settings = self.peer = None
+        self.language_choices = None
         self.visible = self.editing = self.acceptance_ready = False
         self.revision = 0
         self.visual_expansion = None
@@ -28,6 +29,44 @@ class Overlay:
         self.settings = settings
         if self.value:
             self.schedule()
+
+    def render_guidance(self, guidance):
+        def valid_text(text, maximum):
+            return (
+                isinstance(text, str)
+                and "\0" not in text
+                and not any(0xD800 <= ord(character) <= 0xDFFF for character in text)
+                and 0 < len(text.encode("utf-16-le")) // 2 <= maximum
+            )
+
+        choices = guidance.get("languageChoices") if isinstance(guidance, dict) else None
+        if not isinstance(choices, dict) or any(
+            not isinstance(choices.get(key), list)
+            or not 0 < len(choices[key]) <= 32
+            or any(
+                not isinstance(choice, dict)
+                or not valid_text(choice.get("code"), 16)
+                or not valid_text(choice.get("label"), 80)
+                for choice in choices[key]
+            )
+            or len({choice["code"] for choice in choices[key]}) != len(choices[key])
+            for key in ("source", "target")
+        ):
+            choices = None
+        if choices != self.language_choices:
+            self.language_choices = (
+                {key: [dict(choice) for choice in choices[key]] for key in ("source", "target")}
+                if choices is not None
+                else None
+            )
+            if self.value:
+                self.schedule()
+
+    def language_label(self, code, source):
+        for choice in (self.language_choices or {}).get("source" if source else "target", []):
+            if choice["code"] == code:
+                return choice["label"]
+        return str(code or "") + "（当前不可用）"
 
     def session_token(self):
         context = self.value.get("viewContext") if self.value else None
@@ -89,7 +128,16 @@ class Overlay:
                     "target": record["target"]["value"],
                     "authority": record["authority"],
                     "generation": self.input.shortcut_config.get("generation"),
-                    "view": self.value,
+                    "view": {
+                        **self.value,
+                        "languageChoices": self.language_choices,
+                        "sourceLanguageLabel": self.language_label(
+                            self.value.get("sourceLanguage"), True
+                        ),
+                        "targetLanguageLabel": self.language_label(
+                            self.value.get("targetLanguage"), False
+                        ),
+                    },
                     "revision": revision,
                     "visualExpansionFrom": visual_expansion[1]
                     if visual_expansion and visual_expansion[0] == revision
@@ -334,11 +382,31 @@ class Overlay:
                 self.input.retire_practice(editor["runId"])
 
     async def set_languages(self, value):
-        if self.settings and isinstance(value, dict):
-            await self.host.ask(
-                "settings",
-                {**self.settings, "source": value.get("source"), "target": value.get("target")},
+        if (
+            self.settings
+            and self.language_choices is not None
+            and isinstance(value, dict)
+            and all(
+                isinstance(value.get(key), str)
+                and value[key] in {choice["code"] for choice in self.language_choices[key]}
+                for key in ("source", "target")
             )
+        ):
+            before, view = self.settings, self.value
+            try:
+                saved = await self.host.ask(
+                    "traySettings", {key: value[key] for key in ("source", "target")}
+                )
+            except (OSError, ValueError, EOFError, TimeoutError):
+                saved = None
+            if saved is not True and self.settings is before and self.value is view and view:
+                self.value = {
+                    **view,
+                    "status": "语言设置未保存，请在设置中检查语言方向或保存权限。"
+                    if saved is False
+                    else "语言设置结果未确认，请打开设置检查。",
+                }
+                self.schedule()
 
     def resume(self):
         if self.peer and self.value:

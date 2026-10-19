@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "runtime_archive_sha256": "1fce11be93423044e073a9a967b99998569c4bd343220f60ef98b080385d09cb",
+  "upstream_revision": "848bbda9041decd87904f7eb5a2990863ecce03b",
+  "algorithm": "official ggml_backend_score, maximum positive score with strict >; lexicographic candidate order fixes ties; explicit ggml_backend_load selected CPU only",
+  "files": [
+    {
+      "kind": "cpu_variant",
+      "bytes": 1412200,
+      "sha256": "84f02fee4e4e683859b6daf60fcb5bfc62814c068b1dd143a5981421df841545",
+      "file": "libggml-cpu-alderlake.so"
+    },
+    {
+      "kind": "cpu_variant",
+      "bytes": 1561576,
+      "sha256": "392463cdf9867b7fbb08cbf36587621cf071e97d316c7cd51b7b20f9fd120fdc",
+      "file": "libggml-cpu-cannonlake.so"
+    },
+    {
+      "kind": "cpu_variant",
+      "bytes": 1577664,
+      "sha256": "47b94135ee53c347bf90461ea7f9c3a055fa19b9462ff220c90f4cfdfdf79a5c",
+      "file": "libggml-cpu-cascadelake.so"
+    },
+    {
+      "kind": "cpu_variant",
+      "bytes": 1573640,
+      "sha256": "b8dd831324fcc7e872ed66f840ead7f3cf7c571904db9b61574fb19ce00a935e",
+      "file": "libggml-cpu-cooperlake.so"
+    },
+    {
+      "kind": "cpu_variant",
+      "bytes": 1416296,
+      "sha256": "705fca217be212f1e3d69ffb446f3b224966e7c95123c20e789a06d3938a9aa0",
+      "file": "libggml-cpu-haswell.so"
+    },
+    {
+      "kind": "cpu_variant",
+      "bytes": 1577664,
+      "sha256": "eb79f0f5193557c52480cac8c85deb0f0e6793dd1cbd05793752071e5be10205",
+      "file": "libggml-cpu-icelake.so"
+    },
+    {
+      "kind": "cpu_variant",
+      "bytes": 1351944,
+      "sha256": "d2f79bcea05ed9fcf1b9e25bfaa9725655265cb7d7e0df79ffc9e996d1298820",
+      "file": "libggml-cpu-ivybridge.so"
+    },
+    {
+      "kind": "cpu_variant",
+      "bytes": 1347848,
+      "sha256": "c8fec8f0f12d6a1a222c35d265618c582eacc3fd933a76dbd65c587114ed65f0",
+      "file": "libggml-cpu-piledriver.so"
+    },
+    {
+      "kind": "cpu_variant",
+      "bytes": 1350944,
+      "sha256": "03a91516104c443a739804eef17c2d02bc6fe428b5399813c7e97e2282d29007",
+      "file": "libggml-cpu-sandybridge.so"
+    },
+    {
+      "kind": "cpu_variant",
+      "bytes": 1839968,
+      "sha256": "8a5d42ed076b212839c656d1e20731fb17b57b9f7ada0197680c735d70f15de2",
+      "file": "libggml-cpu-sapphirerapids.so"
+    },
+    {
+      "kind": "cpu_variant",
+      "bytes": 1561576,
+      "sha256": "a7e3e78518913862cb6dba154d2f64c3cd231110569edd94ecce8dd4c1f28e57",
+      "file": "libggml-cpu-skylakex.so"
+    },
+    {
+      "kind": "cpu_variant",
+      "bytes": 954536,
+      "sha256": "81d37cdf3002c8f8f9d44e90fff3d058c4952782aaec1d97bcb375c4db10c659",
+      "file": "libggml-cpu-sse42.so"
+    },
+    {
+      "kind": "cpu_variant",
+      "bytes": 950536,
+      "sha256": "2d1e8194f441ed4263bb28834cf44801a5e5e0a2592732fab5a2adc76b83290f",
+      "file": "libggml-cpu-x64.so"
+    },
+    {
+      "kind": "cpu_variant",
+      "bytes": 1573640,
+      "sha256": "ccb8fff995e04e532dc535eba4d9a84cccd5acd7612326db14710d302f4a8e2f",
+      "file": "libggml-cpu-zen4.so"
+    },
+    {
+      "kind": "dependency",
+      "bytes": 5142848,
+      "sha256": "d97b3673f5e00441842e185d33403cd1913e5022c07f88fa17bb8d9fa9e6bda7",
+      "file": "libllama.so.0"
+    },
+    {
+      "kind": "dependency",
+      "bytes": 51040,
+      "sha256": "8643a58bb37af6fb153e2ea98b48efa227855725ee51c05f4ca76b9867956463",
+      "file": "libggml.so.0"
+    },
+    {
+      "kind": "dependency",
+      "bytes": 897792,
+      "sha256": "3c17974a4c9ed1504f5ab308a16eaccdd87f65400f285f03db830e3acc8b79b0",
+      "file": "libggml-base.so.0"
+    }
+  ],
+  "platform": "linux-x86_64",
+  "upstream_tag": "b11717"
+}

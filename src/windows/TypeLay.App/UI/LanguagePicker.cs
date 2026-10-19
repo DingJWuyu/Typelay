@@ -1,3 +1,4 @@
+using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using TypeLay.Runtime;
@@ -20,10 +21,10 @@ internal sealed class LanguagePicker : ComboBox
         StaysOpenOnEdit = true;
         SetResourceReference(StyleProperty, typeof(ComboBox));
         AutomationProperties.SetName(this, source ? "源语言" : "目标语言");
-        SelectedItem = Items.Cast<LanguageChoice>().First(choice => choice.Code == selectedCode);
+        SelectedItem = ConfirmedChoice(selectedCode);
         SelectionChanged += (_, _) =>
         {
-            if (_synchronizing || SelectedItem is not LanguageChoice choice)
+            if (_synchronizing || SelectedItem is not LanguageChoice { Available: true } choice)
                 return;
             // Unmatched editable search text has no selection. Track the last
             // concrete choice so unchanged status refreshes leave that text alone.
@@ -41,12 +42,34 @@ internal sealed class LanguagePicker : ComboBox
         try
         {
             _selectionCode = confirmedCode;
-            SelectedItem = Items.Cast<LanguageChoice>().First(choice => choice.Code == confirmedCode);
+            SelectedItem = ConfirmedChoice(confirmedCode);
         }
         finally { _synchronizing = false; }
     }
 
-    private sealed record LanguageChoice(string Code, string Label)
+    private LanguageChoice ConfirmedChoice(string code)
+    {
+        var choices = Items.Cast<LanguageChoice>().ToArray();
+        var choice = choices.FirstOrDefault(item => item.Code == code);
+        if (choice is not null)
+            return choice;
+        string label = ModelCatalog.Packages.Packages.SelectMany(package => package.Directions)
+            .SelectMany(direction => new[] { new ModelLanguageChoice(direction.Source, direction.SourceName),
+                new ModelLanguageChoice(direction.Target, direction.TargetName) })
+            .FirstOrDefault(item => item.Code == code)?.Label ?? code;
+        choice = new(code, label + "（当前版本未开放）", false);
+        ItemsSource = choices.Append(choice).ToArray();
+        return choice;
+    }
+
+    protected override void PrepareContainerForItemOverride(DependencyObject element, object item)
+    {
+        base.PrepareContainerForItemOverride(element, item);
+        if (element is ComboBoxItem container && item is LanguageChoice choice)
+            container.IsEnabled = choice.Available;
+    }
+
+    private sealed record LanguageChoice(string Code, string Label, bool Available = true)
     {
         public override string ToString() => Label;
     }

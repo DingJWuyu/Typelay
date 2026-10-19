@@ -88,7 +88,9 @@ internal sealed class BrowserSessionView : ISessionView
             editable = session.Candidate.Length > 0 && context.CanEdit,
             status = statusOverride ?? presentation.Status,
             sourceLanguage = settings.Source,
-            targetLanguage = settings.Target
+            targetLanguage = settings.Target,
+            sourceLanguageLabel = ApplicationSupportPresentation.LanguageName(settings.Source),
+            targetLanguageLabel = ApplicationSupportPresentation.LanguageName(settings.Target)
         };
         string key = JsonSerializer.Serialize(view, BrowserServer.Json);
         if (_last == key)

@@ -32,6 +32,37 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
     private void Stage(string name) => _stages.Enqueue($"{_elapsed.ElapsedMilliseconds} ms: {name}");
 
     [Fact]
+    public Task TheUnavailablePreviewPackageHasDetailsAndNoDownloadOrSelectionButtons() => desktop.RunAsync(async () =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-package-settings-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
+            using var model = new ModelClient(new(Path.Combine(directory, "missing-python"),
+                Path.Combine(directory, "missing-worker"), Path.Combine(directory, "models")), info => new ChildProcess(info));
+            var window = new SettingsWindow(settings, model, () => { });
+            try
+            {
+                window.ShowPage("apps");
+                window.UpdateLayout();
+                var components = Descendants(window).OfType<Expander>().Single(item => Equals(item.Header, "组件与安装说明"));
+                components.IsExpanded = true;
+                await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+                window.UpdateLayout();
+                var package = Descendants(window).OfType<StackPanel>().Single(item =>
+                    AutomationProperties.GetAutomationId(item) == "ModelPackage_hy-mt2-1-8b-q4-k-m");
+                Assert.Contains(Descendants(package).OfType<TextBlock>(), text => text.Text == "Windows 当前版本未开放");
+                Assert.Contains(Descendants(package).OfType<TextBlock>(), text => text.Text.Contains("1.13 GB"));
+                Assert.Empty(Descendants(package).OfType<Button>());
+                Assert.Contains(Descendants(package).OfType<Expander>(), item => Equals(item.Header, "模型详情与许可"));
+            }
+            finally { window.Close(); }
+        }
+        finally { Directory.Delete(directory, recursive: true); }
+    });
+
+    [Fact]
     public Task LanguageChoicesKeepTheSavedDirectionWhenNoModelIsInstalled() => desktop.RunAsync(async () =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-language-settings-" + Guid.NewGuid().ToString("N"));

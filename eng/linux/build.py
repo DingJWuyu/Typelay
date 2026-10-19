@@ -57,7 +57,7 @@ def run(*arguments):
     subprocess.run(list(map(str, arguments)), cwd=ROOT, check=True)
 
 
-def build(output, fixture=False, cooperation_package=None):
+def build(output, fixture=False, cooperation_package=None, hy_runtime=None):
     if platform.system() != "Linux" or platform.machine() != "x86_64":
         raise RuntimeError("build-requires-linux-x86_64")
     identity = source_identity(require_clean=cooperation_package is not None)
@@ -105,11 +105,7 @@ def build(output, fixture=False, cooperation_package=None):
         output / "desktop",
         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
     )
-    shutil.copytree(
-        ROOT / "src/shared/TypeLay.Worker",
-        output / "worker",
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-    )
+    package_worker(output, hy_runtime)
     package_browsers(output)
     package_editor(output)
     for name in ("typelay", "typelay-browser-host", "install.py"):
@@ -128,6 +124,32 @@ def build(output, fixture=False, cooperation_package=None):
     else:
         write_archive(output)
         print("Setup-only build: desktop cooperation payload is not included")
+
+
+def package_worker(output, hy_runtime=None):
+    # Only Python runtime modules and explicitly listed data are distributed.
+    # native/hy also owns C++/headers/build locks in source, never copy that tree.
+    source = ROOT / "src/shared/TypeLay.Worker"
+    worker = output / "worker"
+    (worker / "typelay_worker").mkdir(parents=True)
+    for name in ("run_worker.py", "requirements.txt", "model-catalog.json"):
+        shutil.copyfile(source / name, worker / name)
+    for module in sorted((source / "typelay_worker").glob("*.py")):
+        shutil.copyfile(module, worker / "typelay_worker" / module.name)
+    native = worker / "native/hy"
+    if hy_runtime is not None:
+        from eng.linux.hy.build import build as build_hy
+
+        build_hy(hy_runtime, native)
+    else:
+        # Argos-only builds remain supported. An installed active Hy package
+        # fails closed until a distribution supplies its verified native closure.
+        native.mkdir(parents=True)
+        for name in ("model.lock.json", "cpu-runtime.lock.json"):
+            shutil.copyfile(source / "native/hy" / name, native / name)
+        shutil.copyfile(
+            source / "native/hy/include/LICENSE.llama.cpp", native / "LICENSE.llama.cpp"
+        )
 
 
 def package_browsers(output):
@@ -587,10 +609,21 @@ if __name__ == "__main__":
         action="store_true",
         help="Attach cooperation to --output and rearchive without rebuilding the main application",
     )
+    parser.add_argument(
+        "--hy-runtime",
+        type=Path,
+        help="Optionally bundle Hy using an already prepared fixed CPU-only runtime; no downloads",
+    )
     args = parser.parse_args()
     if args.finalize:
-        if args.cooperation_package is None or args.with_test_fixture:
-            parser.error("--finalize requires --cooperation-package and cannot rebuild fixtures")
+        if (
+            args.cooperation_package is None
+            or args.with_test_fixture
+            or args.hy_runtime is not None
+        ):
+            parser.error(
+                "--finalize requires --cooperation-package and cannot rebuild fixtures or Hy"
+            )
         finalize(args.output, args.cooperation_package)
     else:
-        build(args.output, args.with_test_fixture, args.cooperation_package)
+        build(args.output, args.with_test_fixture, args.cooperation_package, args.hy_runtime)

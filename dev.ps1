@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('help', 'restore', 'build', 'test', 'check', 'shared-check', 'format', 'pack', 'run', 'e2e', 'native-e2e')]
+    [ValidateSet('help', 'restore', 'build', 'test', 'check', 'shared-check', 'format', 'pack', 'run', 'e2e', 'native-e2e', 'hy-adapter-prepare', 'hy-adapter-e2e')]
     [string]$Task = 'help',
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release'

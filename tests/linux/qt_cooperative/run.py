@@ -297,8 +297,231 @@ def stock_sync(out, env, children):
     return result
 
 
-def ordered_controls(out, env, children, delay_finished=False):
-    """Real provider + consumer, synthetic host permits; no model/UI claim."""
+def language_options(native, captured, generation, state, window, environment):
+    """Drive actual native menu buttons; this is view rendering, never model inventory."""
+    from wire import now_ms
+
+    choices = {
+        "source": [
+            {"code": "auto", "label": "自动检测"},
+            {"code": "en", "label": "English"},
+            {"code": "ja", "label": "日本語"},
+            {"code": "ko", "label": "한국어"},
+        ],
+        "target": [
+            {"code": "en", "label": "English"},
+            {"code": "ja", "label": "日本語"},
+            {"code": "ko", "label": "한국어"},
+        ],
+    }
+    view = {
+        "state": "ValidTranslation",
+        "text": "Read-only fixture preview.",
+        "editable": False,
+        "sourceLanguage": "en",
+        "targetLanguage": "ja",
+        "languageChoices": choices,
+        "presentation": {"visible": True, "editorOwnsText": False},
+    }
+    revision = 0
+    original = state()
+
+    def controls():
+        return state().get("overlayControls", {})
+
+    def render():
+        nonlocal revision
+        revision += 1
+        view["viewContext"] = {
+            "token": {
+                "target": {
+                    "backend": "linux-qt6",
+                    "value": captured["target"],
+                    "lifetime": native.hello["lifetime"],
+                },
+                "commandGeneration": generation,
+                "revision": revision,
+            },
+            "bindings": {"accept": "Ctrl+F7", "exit": "Ctrl+F8"},
+            "canEdit": False,
+        }
+        assert native.call(
+            "overlay-render",
+            {
+                "target": captured["target"],
+                "authority": captured["authority"],
+                "generation": generation,
+                "revision": revision,
+                "expiresAtMs": now_ms() + 800,
+                "theme": "light",
+                "view": view,
+            },
+        )["visible"]
+        rendered = now_ms()
+        return wait(
+            lambda: (value := state()).get("observedAtMs", 0) > rendered
+            and value.get("overlayVisible")
+            and value.get("overlayControls")
+            and value,
+            "actual language menu render",
+        )
+
+    def click(name):
+        value = state()
+        control = value["overlayControls"][name]
+        assert control["visible"]
+        bounds = control["geometry"]
+        assert bounds["width"] > 0 and bounds["height"] > 0
+        x, y = bounds["x"] + bounds["width"] / 2, bounds["y"] + bounds["height"] / 2
+        assert 0 <= x < value["width"] and 0 <= y < value["height"]
+        run(
+            [
+                "xdotool",
+                "mousemove",
+                "--window",
+                window,
+                str(int(x * value["scale"])),
+                str(int(y * value["scale"])),
+                "click",
+                "1",
+            ],
+            env=environment,
+        )
+
+    def toggle(opened, renew=True):
+        if renew:
+            render()
+        click("typelay-menu-trigger")
+        wait(lambda: state().get("overlayMenuVisible") is opened, "menu visibility")
+
+    def events():
+        native.call("describe")
+        return [
+            event["data"]
+            for event in native.events
+            if event.get("event") == "ui" and event.get("data", {}).get("operation") == "languages"
+        ]
+
+    def chosen(source, target):
+        actual = controls()
+        for side, code in (("source", source), ("target", target)):
+            checked = [
+                name
+                for name, item in actual.items()
+                if name.startswith(f"typelay-{side}-") and item["checked"]
+            ]
+            assert checked == [f"typelay-{side}-{code}"], (side, checked)
+
+    actual = render()
+    assert actual["overlayControls"]["typelay-menu-trigger"]["text"] == "English → 日本語 ▾"
+    toggle(True)
+    actual = controls()
+    for side in ("source", "target"):
+        items = {
+            name.removeprefix(f"typelay-{side}-"): value["text"]
+            for name, value in actual.items()
+            if name.startswith(f"typelay-{side}-")
+        }
+        assert items == {choice["code"]: choice["label"] for choice in choices[side]}
+    chosen("en", "ja")
+    before = state()
+    renewed = render()
+    for name, control in before["overlayControls"].items():
+        for field in ("instance", "focused", "checked"):
+            assert renewed["overlayControls"][name][field] == control[field], (name, field)
+    assert renewed["first"]["focused"] == before["first"]["focused"]
+    assert renewed["focusTransitions"] == before["focusTransitions"]
+    before_events = events()
+    click("typelay-source-ko")
+    wait(lambda: not state().get("overlayMenuVisible"), "immediate source choice")
+    emitted = events()
+    assert len(emitted) == len(before_events) + 1
+    assert emitted[-1]["value"] == {"source": "ko", "target": "ja"}
+    assert emitted[-1]["revision"] == revision and emitted[-1]["generation"] == generation
+    # No host confirmation was sent. Opening again must not present the request
+    # as saved, even without an intervening render.
+    toggle(True, renew=False)
+    chosen("en", "ja")
+    view["sourceLanguage"] = "ko"
+    render()
+    chosen("ko", "ja")
+    click("typelay-target-en")
+    wait(lambda: not state().get("overlayMenuVisible"), "immediate target choice")
+    assert events()[-1]["value"] == {"source": "ko", "target": "en"}
+    toggle(True, renew=False)
+    chosen("ko", "ja")
+    view["targetLanguage"] = "en"
+    render()
+    chosen("ko", "en")
+    click("typelay-swap")
+    wait(lambda: not state().get("overlayMenuVisible"), "swap choice")
+    assert events()[-1]["value"] == {"source": "en", "target": "ko"}
+    toggle(True, renew=False)
+    chosen("ko", "en")
+    view.update(sourceLanguage="auto", targetLanguage="ko")
+    assert not render()["overlayControls"]["typelay-swap"]["enabled"]
+    chosen("auto", "ko")
+
+    view.update(
+        sourceLanguage="ja",
+        targetLanguage="ko",
+        languageChoices=choices,
+        sourceLanguageLabel="Saved Japanese",
+        targetLanguageLabel="Saved Korean",
+    )
+    assert (
+        render()["overlayControls"]["typelay-menu-trigger"]["text"]
+        == "Saved Japanese → Saved Korean ▾"
+    )
+    view["languageChoices"] = {}
+    assert (
+        render()["overlayControls"]["typelay-menu-trigger"]["text"]
+        == "Saved Japanese → Saved Korean ▾"
+    )
+    view["languageChoices"] = choices
+    view.pop("sourceLanguageLabel")
+    view.pop("targetLanguageLabel")
+    assert render()["overlayControls"]["typelay-menu-trigger"]["text"] == "日本語 → 한국어 ▾"
+    view["sourceLanguage"] = "zz"
+    actual = render()["overlayControls"]
+    assert actual["typelay-menu-trigger"]["text"] == "zz（当前不可用） → 한국어 ▾"
+    assert not any(
+        value["checked"] for name, value in actual.items() if name.startswith("typelay-source-")
+    )
+    assert not actual["typelay-swap"]["enabled"]
+    click("typelay-source-ja")
+    wait(lambda: not state().get("overlayMenuVisible"), "replace unavailable source choice")
+    assert events()[-1]["value"] == {"source": "ja", "target": "ko"}
+    toggle(True, renew=False)
+    assert not any(
+        value["checked"] for name, value in controls().items() if name.startswith("typelay-source-")
+    ), "unconfirmed replacement was presented as saved"
+
+    before_events = events()
+    view.update(sourceLanguage="ja", targetLanguage="ko")
+    for invalid in (None, {**choices, "target": choices["target"] * 2}):
+        view["languageChoices"] = invalid
+        actual = render()["overlayControls"]
+        assert not any(
+            value["enabled"]
+            for name, value in actual.items()
+            if name.startswith(("typelay-source-", "typelay-target-")) or name == "typelay-swap"
+        )
+    view.pop("languageChoices")
+    actual = render()["overlayControls"]
+    assert actual["typelay-menu-trigger"]["text"] == "ja（当前不可用） → ko（当前不可用） ▾"
+    click("typelay-swap")
+    assert events() == before_events
+    assert state()["first"]["text"] == original["first"]["text"]
+    assert state()["second"]["text"] == original["second"]["text"]
+    return {
+        "passed": True,
+        "scope": "actual Qt menu widgets and XTest; synthetic view DTO; no model",
+    }
+
+
+def ordered_controls(out, env, children, delay_finished=False, language_options_only=False):
+    """Real provider/native widgets with controlled host protocol; no model."""
     import hashlib
     import socket
     import uuid
@@ -315,7 +538,13 @@ def ordered_controls(out, env, children, delay_finished=False):
     )
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = directory / "native.sock"
-    mode = "ordered-delayed" if delay_finished else "ordered"
+    mode = (
+        "language-options"
+        if language_options_only
+        else "ordered-delayed"
+        if delay_finished
+        else "ordered"
+    )
     state_path = out / f"{mode}-native-state.json"
     state_path.unlink(missing_ok=True)
     result = {
@@ -486,6 +715,19 @@ def ordered_controls(out, env, children, delay_finished=False):
 
             configure()
             prepare()
+            if language_options_only:
+                description = native.describe()
+                captured = native.call(
+                    "capture",
+                    {"target": description["target"], "authority": description["authority"]},
+                )
+                assert captured and captured["ime"] == "Clear"
+                result = language_options(native, captured, generation, state, window, environment)
+                fixture("quit")
+                assert client.wait(timeout=10) == 0
+                path.unlink(missing_ok=True)
+                (out / f"{mode}-result.json").write_text(json.dumps(result, indent=2) + "\n")
+                return result
             bindings = native.describe()["sessionBindings"]
             assert bindings["sourceReady"] and bindings["editorReady"]
             if delay_finished:
@@ -972,7 +1214,7 @@ def ordered_controls(out, env, children, delay_finished=False):
     return result
 
 
-def session(out, fcitx, forced_sync_diagnostic=False):
+def session(out, fcitx, forced_sync_diagnostic=False, language_options_only=False):
     children = []
     with tempfile.TemporaryDirectory(prefix="typelay-qt-research-") as temporary:
         env = os.environ.copy()
@@ -1022,6 +1264,9 @@ def session(out, fcitx, forced_sync_diagnostic=False):
             )
             children.append(daemon)
             try:
+                if language_options_only:
+                    ordered_controls(out, env, children, language_options_only=True)
+                    return
                 run(
                     [out / "qpa_ack"],
                     env=env | {"QT_IM_MODULE": "compose", "QT_QPA_PLATFORM": "offscreen"},
@@ -1350,11 +1595,12 @@ if __name__ == "__main__":
     parser.add_argument("--fcitx-root", type=Path, required=True)
     parser.add_argument("--session", action="store_true")
     parser.add_argument("--forced-sync-diagnostic", action="store_true")
+    parser.add_argument("--language-options-only", action="store_true")
     args = parser.parse_args()
     out, fcitx = args.out.resolve(), args.fcitx_root.resolve()
     out.mkdir(parents=True, exist_ok=True)
     if args.session:
-        session(out, fcitx, args.forced_sync_diagnostic)
+        session(out, fcitx, args.forced_sync_diagnostic, args.language_options_only)
     else:
         build(out, args.forced_sync_diagnostic)
         subprocess.run(
@@ -1371,6 +1617,7 @@ if __name__ == "__main__":
                 "--fcitx-root",
                 str(fcitx),
                 *(["--forced-sync-diagnostic"] if args.forced_sync_diagnostic else []),
+                *(["--language-options-only"] if args.language_options_only else []),
             ],
             check=True,
             timeout=180,

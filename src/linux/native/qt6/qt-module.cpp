@@ -8,6 +8,8 @@
 #include <QDynamicPropertyChangeEvent>
 #include <QFrame>
 #include <QGenericPlugin>
+#include <QGridLayout>
+#include <QJsonArray>
 #include <QInputMethodEvent>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -22,6 +24,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QScopedValueRollback>
+#include <QScopeGuard>
 #include <QSocketNotifier>
 #include <QStyleHints>
 #include <QStyle>
@@ -1462,6 +1465,8 @@ private:
         card_ = nullptr; editor_ = nullptr; hint_ = nullptr; status_ = nullptr;
         language_ = nullptr; exit_ = nullptr; footer_ = nullptr; menu_ = nullptr; tools_ = nullptr; swap_ = nullptr; resume_ = nullptr;
         sourceLanguages_ = nullptr; targetLanguages_ = nullptr; overlayTarget_ = nullptr;
+        sourceLanguageLayout_ = nullptr; targetLanguageLayout_ = nullptr;
+        sourceChoices_ = {}; targetChoices_ = {}; savedSourceLanguage_.clear(); savedTargetLanguage_.clear();
         overlayView_ = {}; overlayAuthority_ = {}; overlayGeneration_ = QJsonValue(); overlaySourceProvider_ = nullptr; overlayFocused_ = false; composing_ = false;
         overlayTheme_ = QStringLiteral("system");
         pendingEdit_ = false; pendingResume_ = false;
@@ -1602,8 +1607,148 @@ private:
         // widgets. Nothing can show, restore text, focus or renew a hidden view.
         overlayMotion_.start();
     }
+    static QJsonArray languageChoices(const QJsonObject &view, const char *side) {
+        const auto value = view.value("languageChoices").toObject().value(QLatin1String(side));
+        if (!value.isArray()) return {};
+        const auto choices = value.toArray();
+        if (choices.isEmpty() || choices.size() > 32) return {};
+        QJsonArray result;
+        for (const auto &item : choices) {
+            if (!item.isObject()) return {};
+            const auto choice = item.toObject();
+            const auto code = choice.value("code").toString(), label = choice.value("label").toString();
+            if (code.isEmpty() || code.size() > 16 || label.isEmpty() || label.size() > 80
+                || code.contains(QChar::Null) || label.contains(QChar::Null) || languageIndex(result, code) >= 0) return {};
+            result.append(QJsonObject{{"code", code}, {"label", label}});
+        }
+        return result;
+    }
+    static int languageIndex(const QJsonArray &choices, const QString &code) {
+        for (qsizetype index = 0; index < choices.size(); ++index)
+            if (choices[index].toObject().value("code").toString() == code) return int(index);
+        return -1;
+    }
+    static QString languageTitle(const QJsonObject &view, const char *key, const QString &code, const QJsonArray &choices) {
+        const auto label = view.value(QLatin1String(key)).toString();
+        if (!label.isEmpty() && label.size() <= 80 && !label.contains(QChar::Null)) return label;
+        const auto index = languageIndex(choices, code);
+        return index >= 0 ? choices[index].toObject().value("label").toString() : code + QStringLiteral("（当前不可用）");
+    }
+    struct LanguageRender {
+        QPointer<QFrame> card;
+        QJsonObject view;
+        QJsonValue generation;
+        qint64 revision;
+    };
+    LanguageRender languageRender() const { return {card_, overlayView_, overlayGeneration_, overlayRevision_}; }
+    bool languageCurrent(const LanguageRender &rendered) const {
+        return rendered.card && card_ == rendered.card && overlayView_ == rendered.view
+            && overlayGeneration_ == rendered.generation && overlayRevision_ == rendered.revision;
+    }
+    bool selectLanguage(QPointer<QButtonGroup> group, const QJsonArray &choices, const QString &code,
+        const LanguageRender &rendered) {
+        if (!group || !languageCurrent(rendered)) return false;
+        // An unavailable saved code must never select an arbitrary existing language.
+        const bool exclusive = group->exclusive();
+        const auto restoreExclusive = qScopeGuard([group, exclusive] { if (group) group->setExclusive(exclusive); });
+        group->setExclusive(false);
+        QList<QPointer<QAbstractButton>> buttons;
+        for (auto *choice : group->buttons()) buttons.append(choice);
+        const auto selected = languageIndex(choices, code);
+        for (const auto &choice : buttons) {
+            if (!choice || !group || !languageCurrent(rendered)) return false;
+            choice->setChecked(group->id(choice) == selected);
+        }
+        return group && languageCurrent(rendered);
+    }
+    bool resetLanguageSelection() {
+        const auto rendered = languageRender();
+        QScopedValueRollback<bool> setting(settingLanguages_, true);
+        return selectLanguage(sourceLanguages_, sourceChoices_, savedSourceLanguage_, rendered)
+            && selectLanguage(targetLanguages_, targetChoices_, savedTargetLanguage_, rendered);
+    }
+    bool syncLanguageChoices(QPointer<QButtonGroup> group, QPointer<QGridLayout> layout, QJsonArray &previous,
+        QString &saved, const QJsonArray &choices, const QString &code, bool source, bool reset,
+        const LanguageRender &rendered) {
+        if (!group || !layout || !languageCurrent(rendered)) return false;
+        const bool savedChanged = saved != code, choicesChanged = previous != choices;
+        const int selected = group->checkedId();
+        const auto selection = selected >= 0 && selected < previous.size()
+            ? previous[selected].toObject().value("code").toString() : QString();
+        if (choicesChanged) {
+            // Reuse surviving codes, including their actual widget identity.
+            // Updating the catalog must not destroy a still-valid focused choice.
+            QList<QPointer<QAbstractButton>> oldButtons, retained;
+            for (auto *button : group->buttons()) oldButtons.append(button);
+            for (qsizetype index = 0; index < choices.size(); ++index) {
+                const auto choice = choices[index].toObject();
+                const auto name = (source ? QStringLiteral("typelay-source-") : QStringLiteral("typelay-target-"))
+                    + choice.value("code").toString();
+                QPointer<QAbstractButton> button;
+                for (const auto &existing : oldButtons) if (existing && existing->objectName() == name) { button = existing; break; }
+                if (!button) {
+                    button = new QRadioButton(menu_);
+                    if (!button || !group || !layout || !languageCurrent(rendered)) return false;
+                    button->setFocusPolicy(Qt::NoFocus);
+                    button->setObjectName(name);
+                    if (!button || !group || !layout || !languageCurrent(rendered)) return false;
+                    group->addButton(button);
+                }
+                button->setText(choice.value("label").toString());
+                if (!button || !group || !layout || !languageCurrent(rendered)) return false;
+                group->setId(button, int(index));
+                layout->addWidget(button, int(index) / 3, int(index) % 3);
+                if (!button || !group || !layout || !languageCurrent(rendered)) return false;
+                retained.append(button);
+            }
+            for (const auto &button : oldButtons) if (button && !retained.contains(button)) {
+                group->removeButton(button);
+                delete button.data();
+                if (!group || !layout || !languageCurrent(rendered)) return false;
+            }
+            previous = choices;
+        }
+        saved = code;
+        if (reset || savedChanged || choicesChanged)
+            return selectLanguage(group, choices, !reset && !savedChanged && languageIndex(choices, selection) >= 0 ? selection : code, rendered);
+        return true;
+    }
+    bool renderLanguages(const QJsonObject &view) {
+        const auto rendered = languageRender();
+        const bool synchronizing = settingLanguages_;
+        QScopedValueRollback<bool> setting(settingLanguages_, true);
+        const auto sourceChoices = languageChoices(view, "source"), targetChoices = languageChoices(view, "target");
+        const auto source = view.value("sourceLanguage").toString(), target = view.value("targetLanguage").toString();
+        const bool valid = !sourceChoices.isEmpty() && !targetChoices.isEmpty();
+        // Reentrant echoes must finish the confirmed selection, not retain a
+        // partially updated radio group as a user draft.
+        const bool reset = synchronizing || menu_->isHidden() || !valid;
+        if (!syncLanguageChoices(sourceLanguages_, sourceLanguageLayout_, sourceChoices_, savedSourceLanguage_, sourceChoices, source, true, reset, rendered)
+            || !syncLanguageChoices(targetLanguages_, targetLanguageLayout_, targetChoices_, savedTargetLanguage_, targetChoices, target, false, reset, rendered)) return false;
+        QList<QPointer<QAbstractButton>> buttons;
+        for (auto *group : {sourceLanguages_.data(), targetLanguages_.data()})
+            for (auto *choice : group->buttons()) buttons.append(choice);
+        for (const auto &choice : buttons) {
+            if (!choice || !languageCurrent(rendered)) return false;
+            choice->setEnabled(valid);
+        }
+        if (!languageCurrent(rendered)) return false;
+        language_->setText(languageTitle(view, "sourceLanguageLabel", source, sourceChoices)
+            + QStringLiteral(" → ") + languageTitle(view, "targetLanguageLabel", target, targetChoices) + QStringLiteral(" ▾"));
+        if (!languageCurrent(rendered)) return false;
+        swap_->setEnabled(valid && source != QStringLiteral("auto")
+            && languageIndex(sourceChoices, target) >= 0 && languageIndex(targetChoices, source) >= 0);
+        return languageCurrent(rendered);
+    }
     void chooseLanguages(const QString &source, const QString &target) {
+        if (settingLanguages_ || paused() || !menu_ || languageIndex(sourceChoices_, source) < 0 || languageIndex(targetChoices_, target) < 0) return;
+        const auto menu = menu_;
+        const auto card = card_;
+        const auto view = overlayView_;
+        const auto generation = overlayGeneration_;
+        const auto revision = overlayRevision_;
         ui("languages", QJsonObject{{"source", source}, {"target", target}});
+        if (card_ != card || menu_ != menu || overlayView_ != view || overlayGeneration_ != generation || overlayRevision_ != revision) return;
         menu_->hide();
         arrangeOverlay();
     }
@@ -1638,7 +1783,8 @@ private:
                 }
                 if (paused()) return;
                 if (qstrcmp(operation, "menu") == 0) {
-                    menu_->setVisible(!menu_->isVisible());
+                    if (menu_->isHidden() && !resetLanguageSelection()) return;
+                    menu_->setVisible(menu_->isHidden());
                 } else if (qstrcmp(operation, "expand") == 0) {
                     menu_->hide();
                     expanded_ = !expanded_;
@@ -1713,28 +1859,25 @@ private:
         menuLayout->setContentsMargins(0, 8, 0, 0);
         // Keep choices inside the source window without a popup/focus grab.
         // Direction changes still belong to the host's existing settings path.
-        const QStringList codes{QStringLiteral("auto"), QStringLiteral("zh"), QStringLiteral("en")};
-        const QStringList names{QStringLiteral("Auto"), QStringLiteral("中文"), QStringLiteral("英语")};
         for (const bool source : {true, false}) {
-            auto *row = new QHBoxLayout;
-            row->addWidget(new QLabel(source ? QStringLiteral("源语言") : QStringLiteral("目标语言"), menu_));
+            menuLayout->addWidget(new QLabel(source ? QStringLiteral("源语言") : QStringLiteral("目标语言"), menu_));
+            auto *row = new QGridLayout;
             auto *group = new QButtonGroup(menu_);
-            if (source) sourceLanguages_ = group; else targetLanguages_ = group;
-            for (int index = source ? 0 : 1; index < codes.size(); ++index) {
-                auto *choice = new QRadioButton(names[index], menu_);
-                choice->setFocusPolicy(Qt::NoFocus);
-                choice->setObjectName((source ? QStringLiteral("typelay-source-") : QStringLiteral("typelay-target-")) + codes[index]);
-                group->addButton(choice, index);
-                row->addWidget(choice);
-            }
-            row->addStretch();
-            connect(group, &QButtonGroup::idClicked, this, [this, source, codes](int index) {
-                chooseLanguages(source ? codes[index] : overlayView_.value("sourceLanguage").toString(),
-                    source ? overlayView_.value("targetLanguage").toString() : codes[index]);
+            if (source) { sourceLanguages_ = group; sourceLanguageLayout_ = row; }
+            else { targetLanguages_ = group; targetLanguageLayout_ = row; }
+            connect(group, &QButtonGroup::idClicked, this, [this, source, group](int index) {
+                if (!menu_ || group != (source ? sourceLanguages_ : targetLanguages_)) return;
+                const auto &choices = source ? sourceChoices_ : targetChoices_;
+                if (index < 0 || index >= choices.size()) return;
+                const int from = sourceLanguages_->checkedId(), to = targetLanguages_->checkedId();
+                if (from < 0 || from >= sourceChoices_.size() || to < 0 || to >= targetChoices_.size()) return;
+                chooseLanguages(sourceChoices_[from].toObject().value("code").toString(),
+                    targetChoices_[to].toObject().value("code").toString());
             });
             menuLayout->addLayout(row);
         }
         swap_ = new QPushButton(QStringLiteral("交换语言"), menu_);
+        swap_->setObjectName(QStringLiteral("typelay-swap"));
         swap_->setFocusPolicy(Qt::NoFocus);
         connect(swap_, &QPushButton::clicked, this, [this] {
             const auto source = overlayView_.value("sourceLanguage").toString();
@@ -1810,16 +1953,7 @@ private:
                     : editable ? QStringLiteral("点击译文以编辑") : QString();
                 editor_->setToolTip(editHint);
                 editor_->setAccessibleDescription(editHint);
-                const auto source = view.value("sourceLanguage").toString();
-                const auto destination = view.value("targetLanguage").toString();
-                const auto languageName = [](const QString &code) {
-                    return code == QStringLiteral("auto") ? QStringLiteral("Auto")
-                        : code == QStringLiteral("zh") ? QStringLiteral("中文") : QStringLiteral("EN");
-                };
-                language_->setText(languageName(source) + QStringLiteral(" → ") + languageName(destination) + QStringLiteral(" ▾"));
-                sourceLanguages_->button(source == QStringLiteral("auto") ? 0 : source == QStringLiteral("zh") ? 1 : 2)->setChecked(true);
-                targetLanguages_->button(destination == QStringLiteral("zh") ? 1 : 2)->setChecked(true);
-                swap_->setEnabled(source != QStringLiteral("auto"));
+                if (!renderLanguages(view)) return {{"visible", overlayActive()}, {"editing", editor_ && !editor_->isReadOnly()}};
                 status_->setText(isPaused ? QStringLiteral("已暂停") : view.value("status").toString());
                 refreshHint();
                 const bool capsule = isPaused || view.value("state").toString() == "IdleCapsule";
@@ -2181,12 +2315,15 @@ private:
     QPointer<QLabel> hint_, status_;
     QPointer<QPushButton> language_, swap_, resume_, exit_;
     QPointer<QButtonGroup> sourceLanguages_, targetLanguages_;
+    QPointer<QGridLayout> sourceLanguageLayout_, targetLanguageLayout_;
+    QJsonArray sourceChoices_, targetChoices_;
+    QString savedSourceLanguage_, savedTargetLanguage_;
     QPointer<QWidget> footer_, menu_, tools_;
     Target *overlayTarget_ = nullptr;
     qint64 overlayUntil_ = 0, overlayRevision_ = 0;
     QJsonValue overlayGeneration_;
     bool overlayFocused_ = false, composing_ = false, settingText_ = false, pendingEdit_ = false, expanded_ = false;
-    bool pendingResume_ = false;
+    bool pendingResume_ = false, settingLanguages_ = false;
 };
 
 class Plugin final : public QGenericPlugin {

@@ -65,6 +65,39 @@ class DistributionTests(unittest.TestCase):
     def assert_success(self, result):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_relocated_native_availability_check_is_read_only(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                str(self.package / "desktop/setup.py"),
+                "--check-hy-runtime",
+                str(self.package),
+            ],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assert_success(result)
+        observation = json.loads(result.stdout)
+        self.assertIn(
+            observation,
+            (
+                {"available": True, "reason": None},
+                {"available": False, "reason": "native-unavailable"},
+            ),
+        )
+        self.assertEqual(
+            observation["available"],
+            (self.package / "worker/native/hy/production-adapter.json").is_file(),
+        )
+        if os.environ.get("TYPELAY_REQUIRE_HY_RUNTIME") == "1":
+            self.assertEqual(observation, {"available": True, "reason": None})
+        self.assertFalse(any(self.package.rglob("*.gguf")), "model weights entered the release")
+        self.assertTrue(all(not path.exists() for path in self.state_directories))
+
     def test_browser_icons_survive_relocation_in_directories_and_xpi(self):
         expected = {
             "16": "icons/typelay-16.png",

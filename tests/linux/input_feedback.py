@@ -80,12 +80,17 @@ class Host:
         self.pause_allowed = True
         self.capture_allowed = False
         self.begin_edit = None
+        self.settings_result = False
 
     def send(self, operation, data=None):
         self.events.append((operation, data))
 
     async def ask(self, operation, data=None):
         self.requests.append((operation, data))
+        if operation == "traySettings":
+            if isinstance(self.settings_result, Exception):
+                raise self.settings_result
+            return self.settings_result
         if operation == "beginEdit" and self.begin_edit:
             return await self.begin_edit(data)
         return (operation == "allowPauseField" and self.pause_allowed) or (
@@ -1715,6 +1720,96 @@ class InputFeedbackTests(unittest.TestCase):
                         job.result()
         received.extend(self.native_frames(self.peer))
         return received
+
+    def test_overlay_language_options_refresh_without_changing_saved_direction(self):
+        async def exercise():
+            overlay, jobs, _token, view = await self.overlay_scenario()
+            overlay.configure({"source": "zh", "target": "fr"})
+            overlay.render({**view, "sourceLanguage": "zh", "targetLanguage": "fr"})
+            await self.settle_overlay(jobs)
+            choices = {
+                "source": [{"code": "auto", "label": "自动识别"}, {"code": "zh", "label": "中文"}],
+                "target": [{"code": "fr", "label": "Français"}, {"code": "ja", "label": "日本語"}],
+            }
+            overlay.render_guidance({"languageChoices": choices})
+            frames = await self.settle_overlay(jobs)
+            rendered = [
+                frame["data"]["view"] for frame in frames if frame["op"] == "overlay-render"
+            ]
+            self.assertEqual(len(rendered), 1)
+            self.assertEqual(rendered[0]["languageChoices"], choices)
+            self.assertEqual(rendered[0]["targetLanguageLabel"], "Français")
+            self.assertEqual(rendered[0]["targetLanguage"], "fr")
+            overlay.render_guidance({"languageChoices": choices})
+            self.assertEqual(await self.settle_overlay(jobs), [])
+            for invalid in (
+                None,
+                {**choices, "target": []},
+                {**choices, "target": choices["target"] * 2},
+                {**choices, "target": [{"code": "fr", "label": "hidden\0tail"}]},
+                {**choices, "target": [{"code": "😀" * 9, "label": "too long"}]},
+            ):
+                overlay.render_guidance({"languageChoices": choices})
+                await self.settle_overlay(jobs)
+                overlay.render_guidance({"languageChoices": invalid})
+                frames = await self.settle_overlay(jobs)
+                rendered = next(
+                    frame["data"]["view"] for frame in frames if frame["op"] == "overlay-render"
+                )
+                self.assertIsNone(rendered["languageChoices"])
+                self.assertEqual(rendered["targetLanguageLabel"], "fr（当前不可用）")
+                requests = len(self.host.requests)
+                await overlay.set_languages({"source": "zh", "target": "ja"})
+                self.assertEqual(len(self.host.requests), requests)
+            self.assertEqual(overlay.settings, {"source": "zh", "target": "fr"})
+
+        asyncio.run(exercise())
+
+    def test_overlay_language_save_rejection_is_visible_without_changing_confirmed_codes(self):
+        async def exercise():
+            overlay, jobs, _token, view = await self.overlay_scenario()
+            overlay.configure({"source": "zh", "target": "ja"})
+            view = {**view, "sourceLanguage": "zh", "targetLanguage": "ja"}
+            overlay.render(view)
+            overlay.render_guidance(
+                {
+                    "languageChoices": {
+                        "source": [
+                            {"code": "zh", "label": "中文"},
+                            {"code": "fr", "label": "Français"},
+                        ],
+                        "target": [{"code": "ja", "label": "日本語"}],
+                    }
+                }
+            )
+            await self.settle_overlay(jobs)
+            before_requests = len(self.host.requests)
+            await overlay.set_languages({"source": [], "target": "ja"})
+            self.assertEqual(len(self.host.requests), before_requests)
+            # A known language is not evidence that this pair can be saved.
+            await overlay.set_languages({"source": "fr", "target": "ja"})
+            frames = await self.settle_overlay(jobs)
+            rendered = next(
+                frame["data"]["view"] for frame in frames if frame["op"] == "overlay-render"
+            )
+            self.assertEqual((rendered["sourceLanguage"], rendered["targetLanguage"]), ("zh", "ja"))
+            self.assertIn("未保存", rendered["status"])
+            self.assertIn("设置", rendered["status"])
+            self.assertEqual(
+                self.host.requests[-1], ("traySettings", {"source": "fr", "target": "ja"})
+            )
+            overlay.render(view)
+            await self.settle_overlay(jobs)
+            self.host.settings_result = TimeoutError()
+            await overlay.set_languages({"source": "fr", "target": "ja"})
+            frames = await self.settle_overlay(jobs)
+            rendered = next(
+                frame["data"]["view"] for frame in frames if frame["op"] == "overlay-render"
+            )
+            self.assertIn("未确认", rendered["status"])
+            self.assertNotIn("未保存", rendered["status"])
+
+        asyncio.run(exercise())
 
     def test_overlay_return_echoes_displayed_token_and_rejects_old_generation(self):
         async def exercise():

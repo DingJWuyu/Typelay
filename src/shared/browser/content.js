@@ -1007,8 +1007,9 @@
     overlay.editor.title = overlay.editable
       ? view.presentation.editorOwnsText ? "编辑译文" : "点击译文以编辑" : "";
     overlay.host.style.colorScheme = ["light", "dark"].includes(data.theme) ? data.theme : "light dark";
-    const languageName = code => ({auto: "Auto", zh: "中文", en: "EN"})[code] || code;
-    overlay.language.textContent = `${languageName(view.sourceLanguage)} → ${languageName(view.targetLanguage)}`;
+    const languageName = (code, label) => typeof label === "string" && label.length > 0 && label.length <= 80
+      ? label : ({auto: "Auto", zh: "中文", en: "EN"})[code] || `${code || ""}（当前不可用）`;
+    overlay.language.textContent = `${languageName(view.sourceLanguage, view.sourceLanguageLabel)} → ${languageName(view.targetLanguage, view.targetLanguageLabel)}`;
     overlay.status.textContent = paused ? "已暂停" : view.status || "";
     overlay.tabHint = view.presentation.tabHint;
     overlay.editor.hidden = paused || !view.text && view.state === "IdleCapsule";

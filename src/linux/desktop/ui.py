@@ -2,6 +2,7 @@
 
 import asyncio
 import uuid
+from copy import deepcopy
 from pathlib import Path
 
 import gi
@@ -222,6 +223,12 @@ class ApplicationSupportPane:
         )
         self.prepare_actions.pack_start(self.complete_directions_button, False, False, 0)
         self.preparation_body.pack_start(self.prepare_actions, False, False, 0)
+        self.current_model = self.note("", self.preparation_body)
+        self.current_model.set_no_show_all(True)
+        self.package_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.package_box.set_no_show_all(True)
+        self.package_widgets = {}
+        self.preparation_body.pack_start(self.package_box, False, False, 0)
         self.box.pack_start(Gtk.Separator(), False, False, 4)
         connection_heading = Gtk.Box(spacing=12)
         self.connect = self.note("", connection_heading)
@@ -352,16 +359,18 @@ class ApplicationSupportPane:
         primary = view["primaryAction"]
         current = self.owner.preparation_view_revision == self.owner.preparation_revision
         next_step = primary["id"] == "NextStep"
-        if next_step != self.preparation_ready:
-            self.preparation_ready = next_step
-            self.preparation_details.set_expanded(not next_step)
+        ready = self.owner.model_ready and next_step
+        if ready != self.preparation_ready:
+            self.preparation_ready = ready
+            self.preparation_details.set_expanded(not ready)
         style = self.preparation_body.get_style_context()
-        if next_step:
+        if ready:
             style.remove_class("settings-notice")
         else:
             style.add_class("settings-notice")
         actions = [primary, *view["secondaryActions"]]
         self.render_directions(view, current)
+        self.render_packages(view, current)
         install_action = next(
             (
                 action
@@ -398,6 +407,83 @@ class ApplicationSupportPane:
             next_style.add_class("suggested-action")
         else:
             next_style.remove_class("suggested-action")
+
+    def render_packages(self, view, current):
+        self.current_model.set_text(view.get("currentModelText", ""))
+        self.current_model.set_visible(bool(view.get("currentModelText")))
+        rows = view.get("packageRows", [])
+        self.package_box.set_visible(bool(rows))
+        identities = {row["id"] for row in rows}
+        for identity in tuple(self.package_widgets):
+            if identity not in identities:
+                self.package_widgets.pop(identity)["body"].destroy()
+        for row in rows:
+            identity = row["id"]
+            if identity not in self.package_widgets:
+                body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+                title = self.note("", body)
+                title.get_style_context().add_class("settings-section-title")
+                summary = self.note("", body)
+                status = self.note("", body)
+                detail = Gtk.Expander(label="模型详情与许可")
+                details = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+                description = self.note("", details)
+                license_link = Gtk.LinkButton(label="模型许可证")
+                license_link.set_no_show_all(True)
+                license_link.set_halign(Gtk.Align.START)
+                details.pack_start(license_link, False, False, 0)
+                detail.add(details)
+                body.pack_start(detail, False, False, 0)
+                actions = Gtk.Box(spacing=8)
+                body.pack_start(actions, False, False, 0)
+                self.package_box.pack_start(body, False, False, 0)
+                self.package_widgets[identity] = {
+                    "body": body,
+                    "title": title,
+                    "summary": summary,
+                    "status": status,
+                    "details": detail,
+                    "description": description,
+                    "license": license_link,
+                    "actions": actions,
+                    "buttons": {},
+                }
+                body.show_all()
+            widgets = self.package_widgets[identity]
+            widgets["title"].set_text(row["title"] + (" · 预览" if row["preview"] else ""))
+            widgets["summary"].set_text(
+                " · ".join(text for text in (row["coverageText"], row["downloadText"]) if text)
+            )
+            widgets["status"].set_text(row["availabilityText"])
+            widgets["description"].set_text(row["details"])
+            widgets["license"].set_uri(row["licenseUrl"] or "about:blank")
+            widgets["license"].set_visible(bool(row["licenseUrl"]))
+            actions = {action["request"]["operation"]: action for action in row["actions"]}
+            for operation in tuple(widgets["buttons"]):
+                if operation not in actions:
+                    button = widgets["buttons"].pop(operation)
+                    focused = button.has_focus()
+                    button.destroy()
+                    if focused:
+                        widgets["details"].grab_focus()
+            for operation, action in actions.items():
+                if operation not in widgets["buttons"]:
+                    button = Gtk.Button()
+                    button.connect(
+                        "clicked",
+                        lambda _button, package=identity, op=operation: self.owner.package_clicked(
+                            package, op
+                        ),
+                    )
+                    widgets["buttons"][operation] = button
+                    widgets["actions"].pack_start(button, False, False, 0)
+                    button.show()
+                button = widgets["buttons"][operation]
+                button.set_label(action["label"])
+                button.get_accessible().set_name(row["title"] + "：" + action["label"])
+                button.set_sensitive(
+                    current and action["enabled"] and self.owner.package_requested is not None
+                )
 
     def render_directions(self, view, current):
         facts = tuple(
@@ -874,6 +960,83 @@ class ApplicationSupportPane:
             self.render_selected()
 
 
+class LanguagePicker(Gtk.ComboBoxText):
+    """Keep editable search local until a concrete catalog choice is selected."""
+
+    def __init__(self, save):
+        super().__init__(has_entry=True)
+        self.save = save
+        self.selection_code = None
+        self.synchronizing = False
+        self.choices = []
+        completion = Gtk.EntryCompletion()
+        completion.set_model(self.get_model())
+        completion.set_text_column(self.get_entry_text_column())
+        completion.connect("match-selected", self.match_selected)
+        self.get_child().set_completion(completion)
+        self.connect("changed", self.selected)
+
+    def match_selected(self, _completion, _model, iterator):
+        self.set_active_iter(iterator)
+        return True
+
+    def selected(self, *_):
+        code = self.get_active_id()
+        if self.synchronizing or code is None or code == self.selection_code:
+            return
+        self.selection_code = code
+        self.save(code)
+
+    def synchronize(self, code):
+        if self.selection_code == code:
+            return
+        self.synchronizing = True
+        try:
+            self.selection_code = code
+            self.set_active_id(code)
+        finally:
+            self.synchronizing = False
+
+    def configure_choices(self, choices, code):
+        choices = [(choice["code"], choice["label"]) for choice in choices]
+        if choices == self.choices:
+            self.synchronize(code)
+            return
+        editor = self.get_child()
+        searching = (
+            self.get_active_id() is None
+            and self.selection_code == code
+            and any(identity == code for identity, _label in self.choices)
+        )
+        text, position = editor.get_text(), editor.get_position()
+        selection = editor.get_selection_bounds()
+        self.synchronizing = True
+        try:
+            # Keep the same native model and popup. Insert before removing old
+            # rows so a catalog refresh never temporarily empties the choices.
+            current = list(self.choices)
+            for index, choice in enumerate(choices):
+                if index >= len(current) or current[index] != choice:
+                    self.insert(index, *choice)
+                    current.insert(index, choice)
+            for index in range(len(current) - 1, len(choices) - 1, -1):
+                self.remove(index)
+            self.choices = choices
+            self.selection_code = code
+            if searching:
+                self.set_active(-1)
+                if editor.get_text() != text:
+                    editor.set_text(text)
+                if selection:
+                    editor.select_region(*selection)
+                else:
+                    editor.set_position(position)
+            else:
+                self.set_active_id(code)
+        finally:
+            self.synchronizing = False
+
+
 class Settings:
     function_keys = tuple(
         f"{prefix}F{number}" for prefix in ("", "Ctrl+") for number in range(1, 25)
@@ -890,6 +1053,8 @@ class Settings:
         support_refresh,
         support_action,
         support_folder,
+        package_requested=None,
+        preparation_refresh=None,
     ):
         self.host, self.tasks = host, tasks
         self.value = None
@@ -920,6 +1085,9 @@ class Settings:
         self.preparation_pending = False
         self.preparation_error = ""
         self.install_requested, self.pause_requested = install_requested, pause_requested
+        self.package_requested = package_requested
+        self.preparation_refresh = preparation_refresh
+        self.package_confirmation = None
         self.window = Gtk.Window(title="TypeLay 设置")
         self.window.set_default_size(790, 560)
         self.window.get_style_context().add_class("typelay-settings")
@@ -1171,7 +1339,11 @@ class Settings:
                 widget.set_can_focus(True)
                 widget.set_size_request(72, 44)
             elif isinstance(choices, list):
-                widget = Gtk.ComboBoxText()
+                widget = (
+                    LanguagePicker(lambda value, name=key: self.change_control(name, value))
+                    if key in ("source", "target")
+                    else Gtk.ComboBoxText()
+                )
                 for identity, title in choices:
                     widget.append(identity, title)
                 if key in ("source", "target", "acceptShortcut", "exitShortcut"):
@@ -1186,6 +1358,8 @@ class Settings:
             self.controls[key] = widget
             widget.get_accessible().set_name("设置：" + label)
             widget.get_accessible().set_description("保存后生效" if draft else "即时保存")
+            if isinstance(widget, LanguagePicker):
+                widget.get_child().get_accessible().set_name(label)
             if isinstance(widget, Gtk.Switch):
                 widget.connect(
                     "notify::active",
@@ -1195,12 +1369,12 @@ class Settings:
                 )
             elif key in ("acceptShortcut", "exitShortcut"):
                 widget.connect("changed", lambda _control, name=key: self.draft_changed(name))
-            elif isinstance(widget, Gtk.ComboBoxText):
+            elif isinstance(widget, Gtk.ComboBoxText) and not isinstance(widget, LanguagePicker):
                 widget.connect(
                     "changed",
                     lambda control, name=key: self.change_control(name, control.get_active_id()),
                 )
-            else:
+            elif isinstance(widget, Gtk.Entry):
                 widget.connect("changed", lambda _control, name=key: self.draft_changed(name))
             grid.attach(widget, 1, row, 1, 1)
             row += 1
@@ -1410,11 +1584,8 @@ class Settings:
             try:
                 for key in ("source", "target"):
                     widget = self.controls[key]
-                    widget.remove_all()
-                    for choice in choices[key]:
-                        widget.append(choice["code"], choice["label"])
-                    if self.value is not None:
-                        widget.set_active_id(self.pending_settings.get(key, self.value[key]))
+                    code = self.pending_settings.get(key, self.value[key]) if self.value else None
+                    widget.configure_choices(choices[key], code)
             finally:
                 self.configuring = False
             self.render_language_swap()
@@ -1433,6 +1604,9 @@ class Settings:
 
     def configure(self, value):
         first = self.value is None
+        direction_changed = self.value is None or any(
+            self.value[key] != value[key] for key in ("source", "target")
+        )
         self.value = value
         self.configuring = True
         try:
@@ -1443,6 +1617,8 @@ class Settings:
                     continue
                 if isinstance(widget, Gtk.Switch):
                     widget.set_active(value[key])
+                elif isinstance(widget, LanguagePicker):
+                    widget.synchronize(value[key])
                 elif isinstance(widget, Gtk.ComboBoxText):
                     if key in ("acceptShortcut", "exitShortcut"):
                         default = "Tab" if key == "acceptShortcut" else "Esc"
@@ -1465,6 +1641,8 @@ class Settings:
         self.render_language_swap()
         if first and not value["onboardingComplete"]:
             self.pages.set_visible_child_name("application-support")
+        if direction_changed:
+            self.refresh_preparation()
 
     def render_language_swap(self):
         ready = self.value is not None and self.language_choices is not None
@@ -1617,14 +1795,23 @@ class Settings:
         async with self.settings_lock:
             if self.pending_settings.get(key) != value:
                 return
+            language = key in ("source", "target")
             try:
-                saved = await self.host.ask("settings", {**self.value, key: value})
+                saved = await self.host.ask(
+                    "traySettings" if language else "settings",
+                    {key: value} if language else {**self.value, key: value},
+                )
             except (OSError, ValueError, EOFError, TimeoutError):
-                saved = False
+                saved = None if language else False
             if self.pending_settings.get(key) == value:
                 self.pending_settings.pop(key, None)
                 self.configure(self.value)
-            self.report_save_result(saved, "未保存，已恢复原设置。请检查语言方向或系统权限。")
+            self.report_save_result(
+                saved is True,
+                "上次设置操作结果未确认，请打开设置检查。"
+                if saved is None
+                else "未保存，已恢复原设置。请检查语言方向或系统权限。",
+            )
 
     async def save(self):
         if (
@@ -1766,7 +1953,13 @@ class Settings:
             and self.tutorial.state != "translating"
             and bool(self.tutorial.source.get_text().strip())
         )
-        model_facts = (self.model_ready, value.get("modelInstalled", False), self.model_status)
+        model_facts = (
+            self.model_ready,
+            value.get("modelInstalled", False),
+            self.model_status,
+            value.get("modelPackages"),
+            value.get("modelFailureCode"),
+        )
         if model_facts != self.preparation_model_facts:
             self.preparation_model_facts = model_facts
             self.refresh_preparation()
@@ -1815,7 +2008,10 @@ class Settings:
         elif self.installation_state not in ("pausing", "starting"):
             directions = self.application_support.selected_directions()
             if self.installation_state == "failed":
-                self.confirm_install(self.install_requested, directions)
+                if self.package_confirmation is not None:
+                    self.confirm_package(self.package_confirmation, self.install_requested)
+                else:
+                    self.confirm_install(self.install_requested, directions)
                 return
             repair = selected_action["id"] in ("Repair", "Retry")
             if repair:
@@ -1825,14 +2021,81 @@ class Settings:
             if directions:
 
                 def prepare():
+                    self.package_confirmation = None
                     for identity, choice in self.application_support.direction_choices.items():
                         choice.set_active(identity in directions)
                     self.install_requested(directions, repair=repair)
 
                 self.confirm_install(prepare, directions)
 
+    def package_clicked(self, identity, operation):
+        if self.package_requested is None:
+            return
+        action = self.package_action(identity, operation)
+        if action is None:
+            return
+        frozen = deepcopy(action)
+
+        def run():
+            latest = self.package_action(identity, operation)
+            if latest is None or latest["request"] != frozen["request"]:
+                self.preparation_error = "模型状态已变化，请重新选择操作。"
+                self.render_preparation_notice()
+                return
+            self.package_confirmation = frozen
+            self.package_requested(deepcopy(frozen["request"]))
+
+        if action["requiresConfirmation"]:
+            self.confirm_package(frozen, run)
+        else:
+            run()
+
+    def package_action(self, identity, operation):
+        if not self.preparation_view or self.preparation_view_revision != self.preparation_revision:
+            return None
+        return next(
+            (
+                action
+                for row in self.preparation_view.get("packageRows", [])
+                if row["id"] == identity
+                for action in row["actions"]
+                if action["request"]["operation"] == operation and action["enabled"]
+            ),
+            None,
+        )
+
+    def confirm_package(self, action, proceed):
+        dialog = Gtk.MessageDialog(
+            transient_for=self.window,
+            modal=True,
+            message_type=Gtk.MessageType.QUESTION,
+            buttons=Gtk.ButtonsType.OK_CANCEL,
+            text=action["label"].rstrip("…") + "？",
+        )
+        dialog.format_secondary_text(action["confirmationText"])
+        dialog.set_default_response(Gtk.ResponseType.CANCEL)
+
+        def response(widget, result):
+            widget.destroy()
+            if result == Gtk.ResponseType.OK:
+                proceed()
+            else:
+                self.cancel_preparation_request()
+
+        dialog.connect("response", response)
+        dialog.show_all()
+        dialog.get_widget_for_response(Gtk.ResponseType.CANCEL).grab_focus()
+
+    def cancel_preparation_request(self):
+        self.package_confirmation = None
+        if self.package_requested is not None:
+            # main owns the frozen request and clears it only while no task is running.
+            self.package_requested(None)
+
     def installation(self, state, message="", failure=None):
         self.installation_state = state
+        if state in ("ready", "idle"):
+            self.package_confirmation = None
         self.installation_failure = failure
         self.installation_progress(message)
         self.refresh_preparation()
@@ -1858,6 +2121,9 @@ class Settings:
         for choice in self.application_support.direction_choices.values():
             choice.set_sensitive(False)
         self.application_support.next_button.set_sensitive(False)
+        for row in self.application_support.package_widgets.values():
+            for button in row["buttons"].values():
+                button.set_sensitive(False)
         if not self.preparation_pending:
             self.preparation_pending = True
             self.tasks(self.load_preparation())
@@ -1874,10 +2140,14 @@ class Settings:
                     "failed": "Failed",
                 }.get(self.installation_state, "Idle")
                 try:
-                    view = await self.host.ask(
-                        "translationPreparation",
-                        {"phase": phase, "failureCode": self.installation_failure},
-                        timeout=2,
+                    view = (
+                        await self.preparation_refresh(phase, self.installation_failure)
+                        if self.preparation_refresh is not None
+                        else await self.host.ask(
+                            "translationPreparation",
+                            {"phase": phase, "failureCode": self.installation_failure},
+                            timeout=2,
+                        )
                     )
                 except (OSError, ValueError, EOFError, TimeoutError):
                     if revision != self.preparation_revision:
@@ -1959,6 +2229,8 @@ class Settings:
             widget.destroy()
             if result == Gtk.ResponseType.OK:
                 install()
+            else:
+                self.cancel_preparation_request()
 
         dialog.connect("response", response)
         dialog.show_all()

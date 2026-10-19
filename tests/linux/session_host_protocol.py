@@ -7,9 +7,11 @@ covers serialization and owner-loop settings behavior, not native key routing.
 import argparse
 import asyncio
 import fcntl
+import hashlib
 import json
 import os
 import shutil
+import signal
 import struct
 import sys
 import tempfile
@@ -59,14 +61,16 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.process.stdin.write(struct.pack("<I", len(data)) + data)
         await self.process.stdin.drain()
 
-    async def ask(self, operation, data=None):
+    async def ask(self, operation, data=None, *, timeout=3):
         self.sequence += 1
         identity = self.sequence
         await self.send({"id": identity, "op": operation, "data": data})
-        return (await self.receive_until(lambda value: value.get("reply") == identity))["data"]
+        return (
+            await self.receive_until(lambda value: value.get("reply") == identity, timeout=timeout)
+        )["data"]
 
-    async def receive_until(self, predicate):
-        async with asyncio.timeout(3):
+    async def receive_until(self, predicate, *, timeout=3):
+        async with asyncio.timeout(timeout):
             while True:
                 length = struct.unpack("<I", await self.process.stdout.readexactly(4))[0]
                 self.assertLessEqual(length, 256 * 1024)
@@ -83,7 +87,20 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
                     self.assertIn("event", value)
 
     def model_generation(
-        self, *, previous=None, directions=None, held=False, legacy=False, hello_directions=None
+        self,
+        *,
+        previous=None,
+        directions=None,
+        held=False,
+        held_translation=False,
+        legacy=False,
+        hello_directions=None,
+        active_packages=None,
+        hello_packages=None,
+        installed_package_ids=None,
+        package_directions=None,
+        operation="Install",
+        removed_packages=None,
     ):
         # These real Python pipe peers exercise ownership and publication, never
         # claim model inference. Production worker inventory tests live separately.
@@ -94,23 +111,57 @@ class SessionHostProtocolTests(unittest.IsolatedAsyncioTestCase):
         (root / "runtime/venv/bin").mkdir(parents=True)
         shutil.copy2(Path("/usr/bin/python3").resolve(), root / "runtime/python/python")
         (root / "runtime/venv/bin/python").symlink_to("../../python/python")
-        (root / "models/installed.json").write_text(
-            json.dumps(
-                {
-                    "schema": 2 if directions is not None and len(directions) == 1 else 1,
-                    "directions": directions if directions is not None else ["zh_en", "en_zh"],
-                    "held": held,
-                    "helloDirections": hello_directions,
-                }
+        inventory = {
+            "schema": 2 if directions is not None and len(directions) == 1 else 1,
+            "directions": directions if directions is not None else ["zh_en", "en_zh"],
+            "held": held,
+            "heldTranslation": held_translation,
+            "helloDirections": hello_directions,
+            "helloPackages": hello_packages,
+        }
+        activation = {"schema": 1, "previous": previous}
+        if directions is not None and len(directions) == 1:
+            activation.update(schema=2, directions=directions)
+        if active_packages is not None:
+            catalog = json.loads(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "src/shared/TypeLay.Worker/model-catalog.json"
+                ).read_text()
             )
-        )
+            packages = [
+                {
+                    "id": item["id"],
+                    "version": item["version"],
+                    "directions": (package_directions or {}).get(
+                        item["id"], [direction["id"] for direction in item["directions"]]
+                    ),
+                    "files": [{"path": "model-file", "sha256": "0" * 64}],
+                }
+                for item in catalog["packages"]
+                if installed_package_ids is None or item["id"] in installed_package_ids
+            ]
+            inventory.pop("directions")
+            inventory.update(schema=3, packages=packages, activePackages=list(active_packages))
+            activation = {
+                "schema": 3,
+                "previous": previous,
+                "packages": [
+                    {key: item[key] for key in ("id", "version", "directions")}
+                    for item in packages
+                    if item["id"] in active_packages
+                ],
+                "operation": operation,
+                "removedPackages": removed_packages or [],
+                "recoveryPrevious": None if operation == "Remove" else previous,
+            }
+        (root / "models/installed.json").write_text(json.dumps(inventory))
         if not legacy:
-            activation = {"schema": 1, "previous": previous}
-            if directions is not None and len(directions) == 1:
-                activation.update(schema=2, directions=directions)
             (root / "activation.json").write_text(json.dumps(activation))
         if held:
             os.mkfifo(root / "hello-gate")
+        if held_translation:
+            os.mkfifo(root / "translation-gate")
         package = self.home / "package"
         (package / "native").mkdir(parents=True, exist_ok=True)
         if not (package / "native/typelay-supervise").exists():
@@ -121,6 +172,7 @@ import json, os, pathlib, struct, sys
 root = pathlib.Path(sys.argv[sys.argv.index('--models') + 1]).parent
 settings = json.loads((root / 'models/installed.json').read_text())
 (root / 'pid').write_text(str(os.getpid()))
+(root / 'supervisor-pid').write_text(str(os.getppid()))
 while True:
     header = sys.stdin.buffer.read(4)
     if not header: break
@@ -129,8 +181,18 @@ while True:
     if request['op'] == 'hello':
         if settings['held']:
             with (root / 'hello-gate').open() as gate: gate.read(1)
-        response = {'status': 'ready', 'directions': settings['helloDirections'] if settings['helloDirections'] is not None else settings['directions']}
-    else: response = {'status': 'translated', 'text': root.name}
+        if settings['schema'] == 3:
+            packages = [{key: item[key] for key in ('id', 'version', 'directions')} for item in settings['packages'] if item['id'] in settings['activePackages']]
+            directions = [direction for item in packages for direction in item['directions']]
+            response = {'status': 'ready', 'packages': packages if settings['helloPackages'] is None else settings['helloPackages']}
+        else:
+            directions = settings['directions']
+            response = {'status': 'ready'}
+        response['directions'] = settings['helloDirections'] if settings['helloDirections'] is not None else directions
+    else:
+        if settings.get('heldTranslation'):
+            with (root / 'translation-gate').open() as gate: gate.read(1)
+        response = {'status': 'translated', 'text': root.name}
     response['id'] = request['id']
     encoded = json.dumps(response).encode()
     sys.stdout.buffer.write(struct.pack('<I', len(encoded)) + encoded)
@@ -138,11 +200,11 @@ while True:
 """)
         return generation, root
 
-    async def release_hello(self, root):
+    async def release_hello(self, root, gate="hello-gate"):
         async with asyncio.timeout(3):
             while True:
                 try:
-                    fd = os.open(root / "hello-gate", os.O_WRONLY | os.O_NONBLOCK)
+                    fd = os.open(root / gate, os.O_WRONLY | os.O_NONBLOCK)
                     break
                 except OSError as error:
                     if error.errno != 6:  # ENXIO: the candidate has not reached hello yet.
@@ -180,6 +242,561 @@ while True:
             "unchanged",
         )
         self.assertTrue(partial_root.is_dir())
+
+    async def test_schema_three_switches_active_packages_and_restarts_from_the_exact_plan(self):
+        old, old_root = self.model_generation()
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": old}),
+            "confirmed",
+        )
+        hy, hy_root = self.model_generation(previous=old, active_packages=["hy-mt2-1-8b-q4-k-m"])
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": hy}),
+            "confirmed",
+        )
+        self.assertFalse(Path(f"/proc/{old_root.joinpath('pid').read_text()}").exists())
+        self.assertEqual(
+            self.latest("status")["modelDirections"],
+            [
+                "zh_ja",
+                "ja_zh",
+                "zh_ko",
+                "ko_zh",
+                "zh_fr",
+                "fr_zh",
+                "zh_es",
+                "es_zh",
+                "zh_de",
+                "de_zh",
+                "zh_pt",
+                "pt_zh",
+            ],
+        )
+        self.assertEqual(hy_root.joinpath("requests").read_text().splitlines(), ["hello"])
+        argos, argos_root = self.model_generation(
+            previous=hy, active_packages=["argos-zh-en", "argos-en-zh"]
+        )
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": argos}),
+            "confirmed",
+        )
+        self.assertFalse(Path(f"/proc/{hy_root.joinpath('pid').read_text()}").exists())
+        self.assertEqual(os.readlink(argos_root.parent / "current"), argos)
+        await self.asyncTearDown()
+        self.events.clear()
+        await self.start_host()
+        self.assertTrue(await self.ask("start"))
+        await self.receive_until(
+            lambda value: value.get("event") == "status" and value["data"]["modelReady"]
+        )
+        self.assertEqual(
+            argos_root.joinpath("requests").read_text().splitlines(), ["hello", "hello"]
+        )
+        self.assertEqual(self.latest("status")["modelDirections"], ["zh_en", "en_zh"])
+
+    async def test_language_guidance_tracks_installed_capability_without_resetting_saved_values(
+        self,
+    ):
+        generation, _root = self.model_generation(active_packages=["hy-mt2-1-8b-q4-k-m"])
+        self.assertEqual(
+            await self.ask(
+                "activateModel",
+                {
+                    "identity": uuid.uuid4().hex,
+                    "generation": generation,
+                },
+            ),
+            "confirmed",
+        )
+        preparation = {"phase": "Idle", "hyRuntimeAvailable": True, "hyUnavailableReason": None}
+        await self.ask("translationPreparation", preparation)
+        choices = self.latest("settingsGuidance")["languageChoices"]
+        self.assertEqual(
+            [item["code"] for item in choices["source"]],
+            ["auto", "zh", "en", "ja", "ko", "fr", "es", "de", "pt"],
+        )
+        self.assertEqual(
+            [item["code"] for item in choices["target"]],
+            ["en", "zh", "ja", "ko", "fr", "es", "de", "pt"],
+        )
+        self.assertTrue(await self.ask("traySettings", {"source": "zh", "target": "fr"}))
+        saved = (self.home / "config/settings.json").read_bytes()
+        self.assertFalse(await self.ask("traySettings", {"source": "fr", "target": "ja"}))
+        self.assertEqual((self.home / "config/settings.json").read_bytes(), saved)
+        switched, switched_root = self.model_generation(
+            previous=generation, active_packages=["argos-zh-en"], operation="Select"
+        )
+        self.assertEqual(
+            await self.ask(
+                "activateModel",
+                {
+                    "identity": uuid.uuid4().hex,
+                    "generation": switched,
+                },
+            ),
+            "confirmed",
+        )
+        view = await self.ask("translationPreparation", preparation)
+        self.assertIn("当前模型不包含这个方向", view["guidance"])
+        self.assertEqual((self.home / "config/settings.json").read_bytes(), saved)
+        self.assertEqual(self.latest("settingsGuidance")["languageChoices"], choices)
+        prior = json.loads((switched_root / "models/installed.json").read_text())
+        removed_selection = [
+            {key: item[key] for key in ("id", "version", "directions")}
+            for item in prior["packages"]
+            if item["id"] == "hy-mt2-1-8b-q4-k-m"
+        ]
+        removed, _ = self.model_generation(
+            previous=switched,
+            active_packages=["argos-zh-en"],
+            installed_package_ids=["argos-zh-en", "argos-en-zh"],
+            operation="Remove",
+            removed_packages=removed_selection,
+        )
+        self.assertEqual(
+            await self.ask(
+                "activateModel",
+                {
+                    "identity": uuid.uuid4().hex,
+                    "generation": removed,
+                },
+            ),
+            "confirmed",
+        )
+        await self.ask("translationPreparation", preparation)
+        choices = self.latest("settingsGuidance")["languageChoices"]
+        self.assertEqual([item["code"] for item in choices["target"]], ["en", "zh", "fr"])
+        self.assertEqual(choices["target"][-1]["label"], "Français（当前不可用）")
+        self.assertEqual((self.home / "config/settings.json").read_bytes(), saved)
+
+    async def test_old_hy_subset_and_missing_native_do_not_advertise_new_languages(self):
+        generation, _root = self.model_generation(
+            active_packages=["hy-mt2-1-8b-q4-k-m"],
+            package_directions={"hy-mt2-1-8b-q4-k-m": ["zh_ja"]},
+        )
+        self.assertEqual(
+            await self.ask(
+                "activateModel",
+                {
+                    "identity": uuid.uuid4().hex,
+                    "generation": generation,
+                },
+            ),
+            "confirmed",
+        )
+        self.assertTrue(await self.ask("traySettings", {"source": "zh", "target": "ja"}))
+        preparation = {"phase": "Idle", "hyRuntimeAvailable": True, "hyUnavailableReason": None}
+        view = await self.ask("translationPreparation", preparation)
+        choices = self.latest("settingsGuidance")["languageChoices"]
+        self.assertEqual([item["code"] for item in choices["source"]], ["auto", "zh", "en"])
+        self.assertEqual([item["code"] for item in choices["target"]], ["en", "zh", "ja"])
+        self.assertEqual(self.latest("status")["modelDirections"], ["zh_ja"])
+        row = next(row for row in view["packageRows"] if row["preview"])
+        self.assertEqual(row["installedDirectionIds"], ["zh_ja"])
+        self.assertEqual(row["readyDirectionIds"], ["zh_ja"])
+        self.assertEqual(len(row["directionIds"]), 12)
+        await self.ask(
+            "translationPreparation",
+            {
+                **preparation,
+                "hyRuntimeAvailable": False,
+                "hyUnavailableReason": "native-unavailable",
+            },
+        )
+        self.assertEqual(
+            self.latest("settingsGuidance")["languageChoices"]["target"][-1],
+            {"code": "ja", "label": "日本語（当前不可用）"},
+        )
+        self.assertEqual(self.latest("settings")["target"], "ja")
+
+    async def test_remove_cannot_reactivate_removed_history_after_restart_failure(self):
+        selected = ["argos-zh-en", "argos-en-zh"]
+        old, old_root = self.model_generation(active_packages=selected)
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": old}),
+            "confirmed",
+        )
+        prior = json.loads((old_root / "models/installed.json").read_text())
+        removed = [
+            {key: item[key] for key in ("id", "version", "directions")}
+            for item in prior["packages"]
+            if item["id"] == "hy-mt2-1-8b-q4-k-m"
+        ]
+        generation, root = self.model_generation(
+            previous=old,
+            active_packages=selected,
+            installed_package_ids=selected,
+            operation="Remove",
+            removed_packages=removed,
+        )
+        self.assertEqual(
+            await self.ask(
+                "activateModel", {"identity": uuid.uuid4().hex, "generation": generation}
+            ),
+            "confirmed",
+        )
+        await self.asyncTearDown()
+        inventory = json.loads((root / "models/installed.json").read_text())
+        inventory["helloPackages"] = []
+        (root / "models/installed.json").write_text(json.dumps(inventory))
+        self.events.clear()
+        await self.start_host()
+        self.assertTrue(await self.ask("start"))
+        await self.receive_until(
+            lambda value: value.get("event") == "status"
+            and not value["data"]["modelReady"]
+            and value["data"]["model"] != "正在加载模型"
+        )
+        self.assertEqual(os.readlink(root.parent / "current"), generation)
+        if old_root.exists():
+            self.assertEqual(old_root.joinpath("requests").read_text().splitlines(), ["hello"])
+
+    async def test_unknown_current_cannot_be_overwritten_by_legacy_full_repair(self):
+        old, old_root = self.model_generation(active_packages=["argos-zh-en", "argos-en-zh"])
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": old}),
+            "confirmed",
+        )
+        (old_root / "activation.json").unlink()
+        (old_root / "models/installed.json").write_text("invalid")
+        candidate, root = self.model_generation(previous=old)
+        self.assertEqual(
+            await self.ask(
+                "activateModel", {"identity": uuid.uuid4().hex, "generation": candidate}
+            ),
+            "unchanged",
+        )
+        self.assertEqual(os.readlink(old_root.parent / "current"), old)
+        self.assertFalse((root / "pid").exists())
+        self.assertTrue(self.latest("status")["modelReady"])
+        presentation = await self.ask("translationPreparation", {"phase": "Idle"})
+        self.assertTrue(all(not row["actions"] for row in presentation["packageRows"]))
+
+    def editor_request(self):
+        text = "explicit source"
+        return {
+            "id": 1,
+            "operation": "translateEditorSnapshot",
+            "data": {
+                "documentId": str(uuid.uuid4()),
+                "version": 1,
+                "selection": {"start": 0, "length": len(text)},
+                "text": text,
+                "languageId": "plaintext",
+            },
+        }
+
+    async def test_explicit_snapshot_reuses_the_ready_hy_worker_and_exact_source_binding(self):
+        generation, root = self.model_generation(active_packages=["hy-mt2-1-8b-q4-k-m"])
+        self.assertEqual(
+            await self.ask(
+                "activateModel", {"identity": uuid.uuid4().hex, "generation": generation}
+            ),
+            "confirmed",
+        )
+        self.assertTrue(await self.ask("settings", {"source": "zh", "target": "ja"}))
+        request = self.editor_request()
+        response = await self.ask(
+            "translateEditorSnapshot", {"identity": uuid.uuid4().hex, "request": request}
+        )
+        self.assertEqual(
+            response,
+            {
+                "id": 1,
+                "data": {
+                    "documentId": request["data"]["documentId"],
+                    "version": 1,
+                    "selection": request["data"]["selection"],
+                    "translation": generation,
+                },
+            },
+        )
+        self.assertEqual((root / "requests").read_text().splitlines(), ["hello", "translate"])
+        invalid = {**request, "data": {**request["data"], "prompt": "not permitted"}}
+        self.assertEqual(
+            (
+                await self.ask(
+                    "translateEditorSnapshot", {"identity": uuid.uuid4().hex, "request": invalid}
+                )
+            )["error"],
+            "invalid-request",
+        )
+        self.assertEqual((root / "requests").read_text().splitlines(), ["hello", "translate"])
+        source = str(Path(__file__).resolve().parents[2] / "src/linux/desktop")
+        sys.path.insert(0, source)
+        try:
+            from main import tutorial_preview
+        finally:
+            sys.path.remove(source)
+        test = self
+
+        class DesktopHost:
+            async def ask(self, operation, data, *, timeout):
+                return await asyncio.wait_for(test.ask(operation, data), timeout)
+
+        self.assertEqual(await tutorial_preview(DesktopHost(), "本地试译"), generation)
+        self.assertEqual(
+            (root / "requests").read_text().splitlines(), ["hello", "translate", "translate"]
+        )
+
+    async def test_cancelled_or_settings_stale_snapshot_cannot_return_late_translation(self):
+        generation, root = self.model_generation(held_translation=True)
+        self.assertEqual(
+            await self.ask(
+                "activateModel", {"identity": uuid.uuid4().hex, "generation": generation}
+            ),
+            "confirmed",
+        )
+        for change in ("wrong-cancel", "cancel", "settings"):
+            with self.subTest(change=change):
+                identity = uuid.uuid4().hex
+                self.sequence += 1
+                reply = self.sequence
+                before = len((root / "requests").read_text().splitlines())
+                await self.send(
+                    {
+                        "id": reply,
+                        "op": "translateEditorSnapshot",
+                        "data": {"identity": identity, "request": self.editor_request()},
+                    }
+                )
+                async with asyncio.timeout(3):
+                    while len((root / "requests").read_text().splitlines()) == before:
+                        await asyncio.sleep(0.01)
+                if change == "settings":
+                    self.assertTrue(await self.ask("settings", {"source": "en", "target": "zh"}))
+                else:
+                    await self.send(
+                        {
+                            "event": "cancelEditorSnapshot",
+                            "data": identity if change == "cancel" else uuid.uuid4().hex,
+                        }
+                    )
+                    self.assertIsNone(
+                        await self.ask(
+                            "translateEditorSnapshot",
+                            {"identity": uuid.uuid4().hex, "request": self.editor_request()},
+                        )
+                    )
+                await self.release_hello(root, "translation-gate")
+                response = (await self.receive_until(lambda frame: frame.get("reply") == reply))[
+                    "data"
+                ]
+                if change == "wrong-cancel":
+                    self.assertEqual(response["data"]["translation"], generation)
+                else:
+                    self.assertEqual(response, {"id": 1, "error": "translation-failed"})
+        self.assertEqual(
+            (root / "requests").read_text().splitlines(),
+            ["hello", "translate", "translate", "translate"],
+        )
+        self.assertTrue(self.latest("status")["modelReady"])
+
+    async def test_remove_keeps_old_generation_while_another_consumer_holds_its_use_lock(self):
+        selected = ["argos-zh-en", "argos-en-zh"]
+        old, old_root = self.model_generation(active_packages=selected)
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": old}),
+            "confirmed",
+        )
+        prior = json.loads((old_root / "models/installed.json").read_text())
+        removed = [
+            {key: item[key] for key in ("id", "version", "directions")}
+            for item in prior["packages"]
+            if item["id"] == "hy-mt2-1-8b-q4-k-m"
+        ]
+        generation, root = self.model_generation(
+            previous=old,
+            active_packages=selected,
+            installed_package_ids=selected,
+            operation="Remove",
+            removed_packages=removed,
+        )
+        with (old_root / "use.lock").open("r+") as other:
+            fcntl.flock(other, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            self.assertEqual(
+                await self.ask(
+                    "activateModel", {"identity": uuid.uuid4().hex, "generation": generation}
+                ),
+                "confirmed",
+            )
+            self.assertTrue(old_root.exists())
+            self.assertTrue(self.latest("status")["modelReady"])
+            self.assertTrue(self.latest("status")["modelCleanupPending"])
+            self.assertEqual(os.readlink(root.parent / "current"), generation)
+
+    async def test_repair_cannot_change_the_active_model_family(self):
+        old, old_root = self.model_generation(active_packages=["argos-zh-en", "argos-en-zh"])
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": old}),
+            "confirmed",
+        )
+        candidate, root = self.model_generation(
+            previous=old,
+            active_packages=["hy-mt2-1-8b-q4-k-m"],
+            operation="Repair",
+        )
+        self.assertEqual(
+            await self.ask(
+                "activateModel", {"identity": uuid.uuid4().hex, "generation": candidate}
+            ),
+            "unchanged",
+        )
+        self.assertFalse((root / "pid").exists())
+        self.assertEqual(os.readlink(old_root.parent / "current"), old)
+        self.assertTrue(self.latest("status")["modelReady"])
+
+    async def test_remove_cleanup_failure_keeps_confirmed_and_reports_unreleased_space(self):
+        selected = ["argos-zh-en", "argos-en-zh"]
+        ancestor, ancestor_root = self.model_generation(active_packages=selected)
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": ancestor}),
+            "confirmed",
+        )
+        old, old_root = self.model_generation(previous=ancestor, active_packages=selected)
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": old}),
+            "confirmed",
+        )
+        (ancestor_root / "models/installed.json").write_text("invalid")
+        prior = json.loads((old_root / "models/installed.json").read_text())
+        removed = [
+            {key: item[key] for key in ("id", "version", "directions")}
+            for item in prior["packages"]
+            if item["id"] == "hy-mt2-1-8b-q4-k-m"
+        ]
+        generation, root = self.model_generation(
+            previous=old,
+            active_packages=selected,
+            installed_package_ids=selected,
+            operation="Remove",
+            removed_packages=removed,
+        )
+        self.assertEqual(
+            await self.ask(
+                "activateModel", {"identity": uuid.uuid4().hex, "generation": generation}
+            ),
+            "confirmed",
+        )
+        self.assertTrue(self.latest("status")["modelReady"])
+        self.assertTrue(self.latest("status")["modelCleanupPending"])
+        self.assertEqual(os.readlink(root.parent / "current"), generation)
+        self.assertTrue(old_root.exists())
+        self.assertTrue(ancestor_root.exists())
+        self.assertEqual(root.joinpath("requests").read_text().splitlines(), ["hello"])
+
+    async def test_missing_activation_metadata_cannot_turn_schema_three_into_legacy_repair(self):
+        old, old_root = self.model_generation(active_packages=["argos-zh-en", "argos-en-zh"])
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": old}),
+            "confirmed",
+        )
+        (old_root / "activation.json").unlink()
+        candidate, root = self.model_generation(previous=old)
+        self.assertEqual(
+            await self.ask(
+                "activateModel", {"identity": uuid.uuid4().hex, "generation": candidate}
+            ),
+            "unchanged",
+        )
+        self.assertFalse((root / "pid").exists())
+        self.assertTrue(Path(f"/proc/{old_root.joinpath('pid').read_text()}").exists())
+        self.assertTrue(self.latest("status")["modelReady"])
+        self.assertEqual(os.readlink(root.parent / "current"), old)
+
+    async def test_invalid_schema_three_metadata_never_retires_the_live_worker(self):
+        old, old_root = self.model_generation()
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": old}),
+            "confirmed",
+        )
+        candidate, root = self.model_generation(
+            previous=old, active_packages=["hy-mt2-1-8b-q4-k-m"]
+        )
+        metadata = json.loads((root / "activation.json").read_text())
+        metadata["packages"][0]["version"] = "unknown"
+        (root / "activation.json").write_text(json.dumps(metadata))
+        self.assertEqual(
+            await self.ask(
+                "activateModel", {"identity": uuid.uuid4().hex, "generation": candidate}
+            ),
+            "unchanged",
+        )
+        self.assertFalse((root / "pid").exists())
+        self.assertTrue(Path(f"/proc/{old_root.joinpath('pid').read_text()}").exists())
+        self.assertTrue(self.latest("status")["modelReady"])
+        self.assertEqual(os.readlink(root.parent / "current"), old)
+
+    async def test_failed_hy_hello_reaps_candidate_then_reloads_the_exact_old_generation(self):
+        old, old_root = self.model_generation()
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": old}),
+            "confirmed",
+        )
+        first_pid = int((old_root / "pid").read_text())
+        candidate, root = self.model_generation(
+            previous=old, active_packages=["hy-mt2-1-8b-q4-k-m"], hello_packages=[]
+        )
+        self.assertEqual(
+            await self.ask(
+                "activateModel", {"identity": uuid.uuid4().hex, "generation": candidate}
+            ),
+            "unchanged",
+        )
+        self.assertNotEqual(int((old_root / "pid").read_text()), first_pid)
+        self.assertFalse(Path(f"/proc/{first_pid}").exists())
+        self.assertFalse(Path(f"/proc/{root.joinpath('pid').read_text()}").exists())
+        self.assertEqual(old_root.joinpath("requests").read_text().splitlines(), ["hello", "hello"])
+        self.assertEqual(os.readlink(root.parent / "current"), old)
+        self.assertTrue(self.latest("status")["modelReady"])
+
+    async def test_timed_out_owned_exit_retains_its_proof_owner_until_a_successor_reaps_it(self):
+        old, old_root = self.model_generation()
+        self.assertEqual(
+            await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": old}),
+            "confirmed",
+        )
+        supervisor = int((old_root / "supervisor-pid").read_text())
+        os.kill(supervisor, signal.SIGSTOP)
+        self.addCleanup(
+            lambda: os.kill(supervisor, signal.SIGCONT)
+            if Path(f"/proc/{supervisor}").exists()
+            else None
+        )
+        candidate, root = self.model_generation(
+            previous=old, active_packages=["hy-mt2-1-8b-q4-k-m"]
+        )
+        # ModelClient's bounded proof wait is five seconds; ordinary replies retain
+        # their existing three-second budget.
+        self.assertEqual(
+            await self.ask(
+                "activateModel", {"identity": uuid.uuid4().hex, "generation": candidate}, timeout=8
+            ),
+            "unchanged",
+        )
+        self.assertFalse((root / "pid").exists())
+        self.assertFalse(self.latest("status")["modelReady"])
+        self.sequence += 1
+        request = self.sequence
+        await self.send(
+            {
+                "id": request,
+                "op": "activateModel",
+                "data": {"identity": uuid.uuid4().hex, "generation": candidate},
+            }
+        )
+        await self.receive_until(
+            lambda value: value.get("event") == "status"
+            and value["data"]["model"] == "正在切换模型"
+        )
+        self.assertFalse((root / "pid").exists())
+        os.kill(supervisor, signal.SIGCONT)
+        self.assertEqual(
+            (await self.receive_until(lambda value: value.get("reply") == request))["data"],
+            "confirmed",
+        )
+        self.assertFalse(Path(f"/proc/{supervisor}").exists())
+        self.assertTrue(self.latest("status")["modelReady"])
 
     async def test_single_direction_can_be_supplemented_only_after_exact_candidate_hello(self):
         old, old_root = self.model_generation(directions=["zh_en"])
@@ -232,7 +849,8 @@ while True:
         self.assertEqual(self.latest("status")["modelDirections"], ["zh_en", "en_zh"])
         presentation = await self.ask("translationPreparation", {"phase": "Idle"})
         self.assertFalse(presentation["canSelectDirections"])
-        self.assertEqual(presentation["primaryAction"]["id"], "Repair")
+        self.assertFalse(presentation["primaryAction"]["enabled"])
+        self.assertTrue(all(not row["actions"] for row in presentation["packageRows"]))
         full, root = self.model_generation(previous=old)
         self.assertEqual(
             await self.ask("activateModel", {"identity": uuid.uuid4().hex, "generation": full}),
@@ -356,11 +974,11 @@ while True:
                 else:
                     # Wait for the complete startup operation, not the transient
                     # active failure before an explicit previous is considered.
-                    async with asyncio.timeout(3):
-                        while not (await self.ask("translationPreparation", {"phase": "Idle"}))[
-                            "primaryAction"
-                        ]["enabled"]:
-                            await asyncio.sleep(0)
+                    if "无法加载" not in self.latest("status")["model"]:
+                        await self.receive_until(
+                            lambda value: value.get("event") == "status"
+                            and "无法加载" in value["data"]["model"]
+                        )
                     status = self.latest("status")
                     self.assertFalse(status["modelReady"])
                     self.assertIn("无法加载", status["model"])
@@ -429,6 +1047,149 @@ while True:
                 else:
                     self.assertEqual((root / "requests").read_text().splitlines(), ["hello"])
                     self.assertFalse(Path(f"/proc/{root.joinpath('pid').read_text()}").exists())
+
+    def editor_environment(self):
+        runtime = self.home / "run"
+        runtime.mkdir(exist_ok=True)
+        session = runtime / "typelay" / hashlib.sha256(b"\n").hexdigest()[:16]
+        session.mkdir(parents=True, exist_ok=True)
+        return {
+            **os.environ,
+            "TYPELAY_HOME": str(self.home / "package"),
+            "XDG_CONFIG_HOME": str(self.home / "cli-config"),
+            "XDG_DATA_HOME": str(self.home / "cli-data"),
+            "XDG_CACHE_HOME": str(self.home / "cli-cache"),
+            "XDG_RUNTIME_DIR": str(runtime),
+            "WAYLAND_DISPLAY": "",
+            "NIRI_SOCKET": "",
+        }, session
+
+    async def launch_editor(self, environment):
+        source = Path(__file__).resolve().parents[2] / "src/linux/desktop"
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module('main',run_name='__main__')",
+            str(source),
+            "--editor-host",
+            env=environment,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        async def stop():
+            if process.returncode is None:
+                process.terminate()
+                await asyncio.wait_for(process.communicate(), 5)
+
+        self.addAsyncCleanup(stop)
+        return process
+
+    async def test_editor_cli_uses_private_desktop_snapshot_and_never_falls_back_on_connection_failure(
+        self,
+    ):
+        generation, root = self.model_generation()
+        self.assertEqual(
+            await self.ask(
+                "activateModel", {"identity": uuid.uuid4().hex, "generation": generation}
+            ),
+            "confirmed",
+        )
+        package = self.home / "package"
+        (package / "app").mkdir()
+        marker = self.home / "unexpected-one-shot"
+        executable = package / "app/TypeLay.Linux"
+        executable.write_text(
+            f"#!/usr/bin/python3\nfrom pathlib import Path\nPath({str(marker)!r}).touch()\n"
+        )
+        executable.chmod(0o700)
+        environment, session = self.editor_environment()
+        request = self.editor_request()
+        raw = json.dumps(request).encode()
+        calls = []
+
+        async def handle(reader, writer):
+            try:
+                length = struct.unpack("<I", await reader.readexactly(4))[0]
+                frame = json.loads(await reader.readexactly(length))
+                calls.append(frame)
+                response = await self.ask(
+                    "translateEditorSnapshot",
+                    {"identity": uuid.uuid4().hex, "request": frame["data"]},
+                )
+                encoded = json.dumps({"reply": frame["id"], "data": response}).encode()
+                writer.write(struct.pack("<I", len(encoded)) + encoded)
+                await writer.drain()
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await asyncio.start_unix_server(handle, path=session / "control.sock")
+        (session / "control.sock").chmod(0o600)
+        with (session / "desktop.lock").open("w+") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            try:
+                cli = await self.launch_editor(environment)
+                output, error = await asyncio.wait_for(
+                    cli.communicate(struct.pack("<I", len(raw)) + raw), 5
+                )
+                self.assertEqual(cli.returncode, 0, error)
+                self.assertEqual(json.loads(output[4:])["data"]["translation"], generation)
+                self.assertEqual(calls[0]["op"], "translateEditorSnapshot")
+                self.assertEqual(calls[0]["data"], request)
+            finally:
+                server.close()
+                await server.wait_closed()
+            (session / "control.sock").unlink()
+            cli = await self.launch_editor(environment)
+            output, error = await asyncio.wait_for(
+                cli.communicate(struct.pack("<I", len(raw)) + raw), 5
+            )
+            self.assertEqual(cli.returncode, 1, error)
+            self.assertEqual(json.loads(output[4:]), {"id": 1, "error": "host-failed"})
+            self.assertFalse(marker.exists())
+        self.assertEqual((root / "requests").read_text().splitlines(), ["hello", "translate"])
+
+    async def test_editor_without_desktop_keeps_startup_and_generation_locks_until_real_exit(self):
+        generation, root = self.model_generation()
+        (root.parent / "current").symlink_to(generation)
+        environment, session = self.editor_environment()
+        copied = self.home / "cli-data/typelay"
+        shutil.copytree(self.home / "data", copied, symlinks=True)
+        active = copied / "components" / generation
+        inventory = json.loads((active / "models/installed.json").read_text())
+        inventory["heldTranslation"] = True
+        (active / "models/installed.json").write_text(json.dumps(inventory))
+        os.mkfifo(active / "translation-gate")
+        (self.home / "package/app").mkdir()
+        (self.home / "package/app/TypeLay.Linux").symlink_to(HOST)
+        cli = await self.launch_editor(environment)
+        raw = json.dumps(self.editor_request()).encode()
+        result = asyncio.create_task(cli.communicate(struct.pack("<I", len(raw)) + raw))
+        async with asyncio.timeout(5):
+            while (
+                not (active / "requests").exists()
+                or "translate" not in (active / "requests").read_text()
+            ):
+                await asyncio.sleep(0.01)
+        with (
+            (session / "desktop.lock").open("r+") as desktop,
+            (active / "use.lock").open("r+") as use,
+        ):
+            for lock in (desktop, use):
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            await self.release_hello(active, "translation-gate")
+            output, error = await asyncio.wait_for(result, 5)
+            self.assertEqual(cli.returncode, 0, error)
+            self.assertEqual(json.loads(output[4:])["data"]["translation"], generation)
+            for name in ("pid", "supervisor-pid"):
+                self.assertFalse(Path(f"/proc/{(active / name).read_text()}").exists())
+            for lock in (desktop, use):
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     async def test_install_cli_preserves_helper_outcome_without_forwarding_private_output(self):
         generation, root = self.model_generation()
@@ -864,6 +1625,28 @@ while True:
             "操作未完成。请查看详情，处理原因后再试；未将这次操作标为成功。",
         )
 
+    async def test_missing_python_preserves_committed_inventory_without_granting_ready(self):
+        generation, root = self.model_generation(directions=["zh_en"])
+        (root.parent / "current").symlink_to(generation)
+        (root / "runtime/venv/bin/python").unlink()
+        view = await self.ask("translationPreparation", {"phase": "Idle"})
+        self.assertEqual(
+            [item["id"] for item in view["directions"] if item["installed"]], ["zh_en"]
+        )
+        self.assertTrue(await self.ask("start"))
+        self.assertFalse(self.latest("status")["modelReady"])
+        self.assertFalse((root / "pid").exists())
+        candidate, candidate_root = self.model_generation(previous=generation)
+        (candidate_root / "runtime/venv/bin/python").unlink()
+        self.assertEqual(
+            await self.ask(
+                "activateModel", {"identity": uuid.uuid4().hex, "generation": candidate}
+            ),
+            "unchanged",
+        )
+        self.assertFalse((candidate_root / "pid").exists())
+        self.assertEqual(os.readlink(root.parent / "current"), generation)
+
     async def test_preparation_uses_real_installation_facts_and_current_phase(self):
         missing = await self.ask("translationPreparation", {"phase": "Idle"})
         self.assertIsInstance(missing, dict)
@@ -878,7 +1661,21 @@ while True:
         await self.asyncTearDown()
         await self.start_host()
         installed = await self.ask("translationPreparation", {"phase": "Idle"})
-        self.assertNotEqual(installed["primaryAction"]["id"], "NextStep")
+        self.assertEqual(installed["primaryAction"]["id"], "NextStep")
+        self.assertTrue(
+            all(
+                row["installed"] and not row["ready"]
+                for row in installed["packageRows"]
+                if row["id"].startswith("argos-")
+            )
+        )
+        self.assertTrue(
+            any(
+                action["request"]["operation"] == "Repair"
+                for row in installed["packageRows"]
+                for action in row["actions"]
+            )
+        )
         self.assertIn("已安装", installed["statusText"] + installed["guidance"])
         for phase, action, enabled in (
             ("Preparing", "Pause", True),
@@ -1335,6 +2132,144 @@ while True:
         )
         await asyncio.wait_for(self.process.wait(), 3)
         self.assertIsNotNone(self.process.returncode)
+
+
+class OwnedProcessExitTests(unittest.IsolatedAsyncioTestCase):
+    async def launch(self, script, *, proof=True, release=True, inherited=(), environment=None):
+        arguments = [str(SUPERVISOR)]
+        if proof:
+            arguments.append("--require-exit-proof")
+        process = await asyncio.create_subprocess_exec(
+            *arguments,
+            sys.executable,
+            "-c",
+            script,
+            pass_fds=inherited,
+            env=environment,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        self.addAsyncCleanup(self.stop, process)
+        if proof and release:
+            process.stdin.write(b"\x01")
+            await process.stdin.drain()
+        return process
+
+    async def stop(self, process):
+        if process.returncode is None:
+            process.send_signal(signal.SIGCONT)
+            process.terminate()
+        try:
+            await asyncio.wait_for(process.communicate(), 3)
+        except TimeoutError:
+            process.kill()
+            await asyncio.wait_for(process.communicate(), 3)
+
+    async def test_generation_use_lock_is_owned_before_fork_and_until_family_exit(self):
+        with tempfile.TemporaryDirectory(prefix="typelay-use-") as directory:
+            path = Path(directory) / "use.lock"
+            fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+            with os.fdopen(fd, "r+") as lock:
+                environment = {**os.environ, "TYPELAY_MODEL_USE_LOCK": str(path)}
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                rejected = await self.launch(
+                    "print('must-not-start', flush=True)", environment=environment
+                )
+                output, _ = await asyncio.wait_for(rejected.communicate(), 3)
+                self.assertEqual((rejected.returncode, output), (200, b""))
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                active = await self.launch(
+                    "import signal; print('started', flush=True); signal.pause()",
+                    environment=environment,
+                )
+                self.assertEqual(await asyncio.wait_for(active.stdout.readline(), 3), b"started\n")
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                active.terminate()
+                await asyncio.wait_for(active.communicate(), 3)
+                self.assertEqual(active.returncode, 200)
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    async def test_failed_worker_has_exit_proof_without_changing_ordinary_exit_status(self):
+        for proof, expected in ((False, 42), (True, 200)):
+            with self.subTest(proof=proof):
+                process = await self.launch("raise SystemExit(42)", proof=proof)
+                await asyncio.wait_for(process.communicate(), 3)
+                self.assertEqual(process.returncode, expected)
+
+    async def test_worker_waits_for_owner_before_starting(self):
+        process = await self.launch("print('started', flush=True)", release=False)
+        with self.assertRaises(TimeoutError):
+            await asyncio.wait_for(process.stdout.readline(), 0.1)
+        self.assertIsNone(process.returncode)
+        process.stdin.write(b"\x01")
+        await process.stdin.drain()
+        self.assertEqual(await asyncio.wait_for(process.stdout.readline(), 3), b"started\n")
+        await asyncio.wait_for(process.communicate(), 3)
+        self.assertEqual(process.returncode, 200)
+
+    async def test_exit_proof_reaps_descendant_ignoring_term_after_cancelled_wait(self):
+        read, write = os.pipe()
+        # Closing the lifetime writer also releases the descendant if setup or
+        # an assertion fails, before the supervisor cleanup runs.
+        with os.fdopen(read, "rb") as lifetime, os.fdopen(write, "wb"):
+            process = await self.launch(
+                f"""
+import os, signal
+read, write = os.pipe()
+child = os.fork()
+if child == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    os.write(write, b'!')
+    os.read({lifetime.fileno()}, 1)
+    os._exit(0)
+os.read(read, 1)
+print(os.getpid(), child, flush=True)
+while True: signal.pause()
+""",
+                inherited=(lifetime.fileno(),),
+            )
+            root, child = map(int, (await asyncio.wait_for(process.stdout.readline(), 3)).split())
+            process.send_signal(signal.SIGSTOP)
+            process.terminate()
+            with self.assertRaises(TimeoutError):
+                await asyncio.wait_for(process.wait(), 0.1)
+            self.assertTrue(Path(f"/proc/{child}").exists())
+            process.send_signal(signal.SIGCONT)
+            await asyncio.wait_for(process.communicate(), 3)
+            self.assertEqual(process.returncode, 200)
+            self.assertFalse(Path(f"/proc/{root}").exists())
+            self.assertFalse(Path(f"/proc/{child}").exists())
+
+    async def test_empty_group_cannot_prove_exit_while_detached_descendant_remains(self):
+        read, write = os.pipe()
+        with os.fdopen(read, "rb") as lifetime, os.fdopen(write, "wb") as release:
+            process = await self.launch(
+                f"""
+import os, signal
+read, write = os.pipe()
+child = os.fork()
+if child == 0:
+    os.setsid()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    os.write(write, b'!')
+    os.read({lifetime.fileno()}, 1)
+    os._exit(0)
+os.read(read, 1)
+print(child, flush=True)
+raise SystemExit(42)
+""",
+                inherited=(lifetime.fileno(),),
+            )
+            child = int(await asyncio.wait_for(process.stdout.readline(), 3))
+            with self.assertRaises(TimeoutError):
+                await asyncio.wait_for(process.wait(), 0.9)
+            self.assertTrue(Path(f"/proc/{child}").exists())
+            release.close()
+            await asyncio.wait_for(process.communicate(), 3)
+            self.assertEqual(process.returncode, 200)
+            self.assertFalse(Path(f"/proc/{child}").exists())
 
 
 if __name__ == "__main__":

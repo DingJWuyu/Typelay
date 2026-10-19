@@ -43,6 +43,43 @@ public sealed class ModelInstallationStoreTests
     }
 
     [Fact]
+    public async Task WindowsHyInventoryIsRejectedBeforePlanCreationOrStartup()
+    {
+        using var files = new StoreFiles();
+        using (var lease = await files.Store.AcquireAsync(TestContext.Current.CancellationToken))
+        using (var prepared = lease.Prepare())
+        {
+            files.Mark(prepared);
+            WriteHyInventory(prepared.Paths.Models);
+            Assert.Equal("model-platform-unavailable", Assert.Throws<InvalidDataException>(prepared.CreateLoadPlan).Message);
+        }
+        var legacy = files.Store.InitialPaths();
+        Directory.CreateDirectory(Path.GetDirectoryName(legacy.Python)!);
+        Directory.CreateDirectory(legacy.Models);
+        File.WriteAllText(legacy.Python, "marker");
+        WriteHyInventory(legacy.Models);
+        int starts = 0;
+        using var model = new ModelClient(legacy, _ => { starts++; throw new InvalidOperationException("must-not-launch"); });
+        await files.Store.StartModelAsync(model, TestContext.Current.CancellationToken);
+        Assert.Equal(0, starts);
+        Assert.False(model.Ready);
+        Assert.Empty(model.AvailablePackages);
+    }
+
+    private static void WriteHyInventory(string models)
+    {
+        var package = ModelCatalog.Packages.Packages.Single(item => item.Backend == "hy-mt-llama-cpu");
+        File.WriteAllText(Path.Combine(models, "installed.json"), JsonSerializer.Serialize(new
+        {
+            schema = 3,
+            packages = new[] { new { id = package.Id, version = package.Version,
+                directions = package.Directions.Select(item => item.Id).ToArray(),
+                files = new[] { new { path = "model.gguf", sha256 = new string('0', 64) } } } },
+            activePackages = new[] { package.Id }
+        }));
+    }
+
+    [Fact]
     public async Task LegacyPathsStayUntouchedUntilOneWholeGenerationIsPublished()
     {
         using var files = new StoreFiles();
@@ -52,7 +89,7 @@ public sealed class ModelInstallationStoreTests
         using var prepared = lease.Prepare();
         files.Mark(prepared);
         Assert.Equal(legacy, files.Store.InitialPaths());
-        prepared.Publish();
+        Assert.Equal(ModelPublicationOutcome.Confirmed, prepared.PublishConfirmed());
         Assert.Equal(prepared.Paths, files.Store.InitialPaths());
         Assert.Equal("legacy", files.Manifest().GetProperty("previous").GetString());
         prepared.Complete();
@@ -116,7 +153,7 @@ public sealed class ModelInstallationStoreTests
         {
             files.Mark(prepared);
             root = prepared.Root;
-            prepared.Publish();
+            Assert.Equal(ModelPublicationOutcome.Confirmed, prepared.PublishConfirmed());
             prepared.Complete();
         }
         Assert.Equal(Path.Combine(root, "models"), files.Store.InitialPaths().Models);
@@ -136,8 +173,7 @@ public sealed class ModelInstallationStoreTests
         {
             files.Mark(prepared);
             candidate = prepared.Root;
-            var failure = Assert.Throws<ModelSetupException>(prepared.Publish);
-            Assert.Null(failure.RecoveryFailureCategory);
+            Assert.Equal(ModelPublicationOutcome.Unchanged, prepared.PublishConfirmed());
         }
         Assert.False(Directory.Exists(candidate));
         Assert.True(Directory.Exists(first));
@@ -157,32 +193,13 @@ public sealed class ModelInstallationStoreTests
         {
             files.Mark(prepared);
             candidate = prepared.Root;
-            var failure = Assert.Throws<ModelSetupException>(prepared.Publish);
-            Assert.NotNull(failure.RecoveryFailureCategory);
+            Assert.Equal(ModelPublicationOutcome.Unconfirmed, prepared.PublishConfirmed());
         }
         Assert.True(Directory.Exists(oldPrevious));
         Assert.True(Directory.Exists(oldActive));
         Assert.True(Directory.Exists(candidate));
         Assert.DoesNotContain("components", files.Store.InitialPaths().Models);
         await Assert.ThrowsAsync<JsonException>(() => files.Store.AcquireAsync(TestContext.Current.CancellationToken));
-    }
-
-    [Fact]
-    public async Task RestoredPreviousBecomesTheNextInstallationsPrevious()
-    {
-        using var files = new StoreFiles();
-        var good = await files.Publish();
-        var bad = await files.Publish();
-        using (var lease = await files.Store.AcquireAsync(TestContext.Current.CancellationToken))
-        {
-            Assert.Equal(Path.Combine(good, "models"), lease.PreviousPaths!.Models);
-            lease.RestorePrevious(); // Production calls this only after this exact candidate's hello.
-        }
-        var next = await files.Publish();
-        Assert.Equal(Path.GetFileName(good), files.Manifest().GetProperty("previous").GetString());
-        Assert.True(Directory.Exists(good));
-        Assert.True(Directory.Exists(next));
-        Assert.False(Directory.Exists(bad));
     }
 
     [Theory]
@@ -213,7 +230,8 @@ public sealed class ModelInstallationStoreTests
         cancelled.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
         prepared.Dispose();
-        Assert.Throws<ObjectDisposedException>(prepared.Publish);
+        Assert.Equal(ModelPublicationOutcome.Unconfirmed, prepared.PublishConfirmed());
+        Assert.False(File.Exists(Path.Combine(files.Root, "components.json")));
     }
 
     [Fact]
@@ -348,6 +366,14 @@ public sealed class ModelInstallationStoreTests
         private bool _disposed;
         public Process Process { get; } = process;
         public bool Exited => _disposed || Process.HasExited;
+        public async Task TerminateAndWaitAsync(CancellationToken cancellationToken)
+        {
+            if (_disposed)
+                return;
+            if (!Process.HasExited)
+                Process.Kill(true);
+            await Process.WaitForExitAsync(cancellationToken);
+        }
         public void Dispose()
         {
             if (_disposed)
@@ -372,6 +398,7 @@ public sealed class ModelInstallationStoreTests
         public StoreFiles()
         {
             Directory.CreateDirectory(Root);
+            File.WriteAllText(Path.Combine(Root, "worker.py"), "controlled worker port");
             Store = new(Root, Path.Combine(Root, "worker.py"));
         }
         public ModelInstallationStore WithReplace(Action<string, string> replace) => new(Root, Path.Combine(Root, "worker.py"), replace);
@@ -380,7 +407,7 @@ public sealed class ModelInstallationStoreTests
             Directory.CreateDirectory(Path.GetDirectoryName(prepared.Paths.Python)!);
             Directory.CreateDirectory(prepared.Paths.Models);
             File.WriteAllText(prepared.Paths.Python, "marker");
-            File.WriteAllText(Path.Combine(prepared.Paths.Models, "installed.json"), "{}");
+            File.WriteAllText(Path.Combine(prepared.Paths.Models, "installed.json"), "{\"schema\":1}");
         }
         public JsonElement Manifest() => JsonDocument.Parse(File.ReadAllText(Path.Combine(Root, "components.json"))).RootElement.Clone();
         public async Task<string> Publish()
@@ -388,7 +415,7 @@ public sealed class ModelInstallationStoreTests
             using var lease = await Store.AcquireAsync(TestContext.Current.CancellationToken);
             using var prepared = lease.Prepare();
             Mark(prepared);
-            prepared.Publish();
+            Assert.Equal(ModelPublicationOutcome.Confirmed, prepared.PublishConfirmed());
             prepared.Complete();
             return prepared.Root;
         }

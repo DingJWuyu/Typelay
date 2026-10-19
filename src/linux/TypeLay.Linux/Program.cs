@@ -13,7 +13,7 @@ internal static class Program
     private sealed record PlacementRequest(RectPx Input, RectPx Work, double Width, double Height, double Gap, double MinimumHeight);
     private sealed record ApplicationSupportRequest(ApplicationSupportFact[] Facts);
     private sealed record TranslationPreparationRequest(TranslationPreparationPhase Phase,
-        string? FailureCode = null);
+        string? FailureCode = null, bool HyRuntimeAvailable = false, string? HyUnavailableReason = null);
     private sealed record PracticeBindingRequest(Guid RunId, TargetId Target);
     public static int Main(string[] args)
     {
@@ -50,9 +50,22 @@ internal static class Program
         using var model = LinuxModelFactory.Create(home, data);
         var installations = new LinuxModelInstallationStore(home, data);
         (string Identity, CancellationTokenSource Cancellation)? activation = null;
+        (string Identity, CancellationTokenSource Cancellation)? editorSnapshot = null;
+        long modelRevision = 0;
         using var controller = new SessionController(settings, model, view, input, input, loop,
             async binding => (await link.Ask("retireAutomaticPractice", binding, timeoutMs: 2000)).ValueKind == JsonValueKind.True);
         SettingsDraftRequest? pendingSettingsDraft = null;
+        bool hyRuntimeAvailable = false;
+        string? hyUnavailableReason = "native-unavailable";
+        ModelPackageManagementFact PackageFacts(bool busy = false)
+        {
+            var state = installations.ReadInstallationState();
+            return new(state.Generation, state.InventoryKnown, state.InstalledPackages, state.CurrentPackages,
+                model.AvailablePackages, hyRuntimeAvailable, hyUnavailableReason,
+                settings.Value.Source, settings.Value.Target, busy || activation is not null);
+        }
+        void RefreshPackageChoices() => view.ConfigureModelPackages(PackageFacts(), settings.Value);
+
         async Task<bool> ApplySettings(UserSettings next)
         {
             var expected = settings.Value;
@@ -67,6 +80,10 @@ internal static class Program
             modelReady = model.Ready,
             modelInstalled = model.Installed,
             modelDirections = model.AvailableDirections,
+            modelPackages = model.AvailablePackages.Select(item => new { id = item.Package.Id, version = item.Package.Version,
+                directions = item.Directions.Select(direction => direction.Id).ToArray() }),
+            modelFailureCode = model.FailureCode,
+            modelCleanupPending = installations.CleanupPending,
             controller.ServiceStatus,
             controller.ConnectionState,
             controller.ConnectionStatus,
@@ -83,12 +100,17 @@ internal static class Program
                 binding,
                 revision
             });
-        model.Changed += Status;
+        model.Changed += () => { ++modelRevision; RefreshPackageChoices(); Status(); };
         link.Notification = (operation, value) =>
         {
             input.Receive(operation, value);
             switch (operation)
             {
+                case "cancelEditorSnapshot":
+                    if (value.ValueKind == JsonValueKind.String && editorSnapshot is { } editor
+                        && editor.Identity == value.GetString())
+                        editor.Cancellation.Cancel();
+                    break;
                 case "cancelModelActivation":
                     if (value.ValueKind == JsonValueKind.String && activation is { } cancelling
                         && cancelling.Identity == value.GetString())
@@ -339,14 +361,21 @@ internal static class Program
                     return SetupPresentation(value.ValueKind == JsonValueKind.String ? value.GetString() : null);
                 case "translationPreparation":
                     var preparation = DesktopLink.Decode<TranslationPreparationRequest>(value);
-                    var installedDirections = installations.ReadCommittedDirections();
+                    hyRuntimeAvailable = preparation.HyRuntimeAvailable && preparation.HyUnavailableReason is null;
+                    hyUnavailableReason = hyRuntimeAvailable ? null : "native-unavailable";
+                    var effectivePhase = preparation.Phase == TranslationPreparationPhase.Idle && !modelStart.IsCompleted
+                        ? TranslationPreparationPhase.StartingModel : preparation.Phase;
+                    var packageFacts = PackageFacts(effectivePhase is TranslationPreparationPhase.Preparing
+                        or TranslationPreparationPhase.Pausing or TranslationPreparationPhase.StartingModel);
+                    view.ConfigureModelPackages(packageFacts, settings.Value);
+                    var installedDirections = packageFacts.InventoryKnown
+                        ? packageFacts.InstalledPackages.SelectMany(item => item.Directions).Select(item => item.Id).ToArray() : null;
                     return ApplicationSupportPresentation.Preparation(new(model.Ready, model.Installed,
-                        preparation.Phase == TranslationPreparationPhase.Idle && !modelStart.IsCompleted
-                            ? TranslationPreparationPhase.StartingModel : preparation.Phase,
+                        effectivePhase,
                         preparation.FailureCode is null ? null
                             : SetupFailurePresentation.CategoryFromCode(preparation.FailureCode),
                         InstalledDirections: installedDirections, ReadyDirections: model.AvailableDirections,
-                        InstallationIntentKnown: installedDirections is not null),
+                        InstallationIntentKnown: packageFacts.InventoryKnown, Packages: packageFacts),
                         TranslationPreparationNextStep.ChooseConnection);
                 case "applicationSupport":
                     // The desktop owns detection and explicit installation actions.
@@ -373,6 +402,35 @@ internal static class Program
                         || next.Excluded.Length > 256 || next.Excluded.Any(app => string.IsNullOrWhiteSpace(app) || app.Length > 128))
                         return false;
                     return await ApplySettings(next);
+                case "translateEditorSnapshot":
+                    if (editorSnapshot is not null || value.ValueKind != JsonValueKind.Object
+                        || value.EnumerateObject().Count() != 2
+                        || !value.TryGetProperty("identity", out var editorIdentity) || editorIdentity.ValueKind != JsonValueKind.String
+                        || !LinuxModelInstallationStore.ValidId(editorIdentity.GetString())
+                        || !value.TryGetProperty("request", out var editorValue))
+                        return null;
+                    var editorRequest = EditorHost.ReadRequest(editorValue);
+                    if (editorRequest is null)
+                        return EditorHost.Failure(EditorHost.Identity(editorValue), "invalid-request");
+                    var editorSettings = settings.Value;
+                    string? editorGeneration = installations.ReadInstallationState().Generation;
+                    long editorRevision = modelRevision;
+                    using (var editorCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(215)))
+                    {
+                        editorSnapshot = (editorIdentity.GetString()!, editorCancellation);
+                        try
+                        {
+                            return await EditorHost.TranslateAsync(editorRequest, model, editorSettings,
+                                () => ReferenceEquals(settings.Value, editorSettings) && modelRevision == editorRevision
+                                    && installations.ReadInstallationState().Generation == editorGeneration,
+                                editorCancellation.Token);
+                        }
+                        finally
+                        {
+                            if (editorSnapshot?.Cancellation == editorCancellation)
+                                editorSnapshot = null;
+                        }
+                    }
                 case "activateModel":
                     if (activation is not null || value.ValueKind != JsonValueKind.Object
                         || value.EnumerateObject().Count() != 2
@@ -390,14 +448,14 @@ internal static class Program
                             // The store's nonblocking flock precedes the model's
                             // lifecycle gates, including the retirement await.
                             using var lease = installations.Acquire();
-                            if (!await controller.RetireAutomaticPracticeAsync())
-                                return "unchanged";
-                            cancellation.Token.ThrowIfCancellationRequested();
-                            if (activation?.Cancellation != cancellation)
-                                return "unchanged";
-                            controller.StopSession();
-                            return await lease.ActivateAsync(model, request.Generation, cancellation.Token)
-                                ? "confirmed" : "unchanged";
+                            var outcome = await lease.ActivateAsync(model, request.Generation, cancellation.Token,
+                                controller.PrepareModelChangeAsync);
+                            return outcome switch
+                            {
+                                ModelPublicationOutcome.Confirmed => "confirmed",
+                                ModelPublicationOutcome.Unconfirmed => "unconfirmed",
+                                _ => "unchanged"
+                            };
                         }
                         catch (LinuxModelInstallationStore.PublicationUnconfirmedException) { return "unconfirmed"; }
                         catch (Exception activationError) when (activationError is IOException or UnauthorizedAccessException
@@ -409,6 +467,8 @@ internal static class Program
                         {
                             if (activation?.Cancellation == cancellation)
                                 activation = null;
+                            RefreshPackageChoices();
+                            Status();
                         }
                     }
                 default:
@@ -425,7 +485,7 @@ internal static class Program
             Console.Error.WriteLine("TypeLay: desktop session stopped safely.");
             return 1;
         }
-        finally { activation?.Cancellation.Cancel(); }
+        finally { activation?.Cancellation.Cancel(); editorSnapshot?.Cancellation.Cancel(); }
     }
     private static async Task<int> ActivateModel(string home, string data, string generation)
     {
@@ -441,9 +501,18 @@ internal static class Program
             // returning the candidate task. No exception text crosses this port.
             var activating = lease.ActivateAsync(model, generation, cancellation.Token);
             activationRequested = true;
-            result = await activating ? "confirmed" : "unchanged";
-            if (result == "unchanged")
-                failure = "worker-not-ready";
+            result = await activating switch
+            {
+                ModelPublicationOutcome.Confirmed => "confirmed",
+                ModelPublicationOutcome.Unconfirmed => "unconfirmed",
+                _ => "unchanged"
+            };
+            failure = result switch
+            {
+                "unchanged" => "worker-not-ready",
+                "unconfirmed" => "publication-unconfirmed",
+                _ => null
+            };
         }
         catch (LinuxModelInstallationStore.PublicationUnconfirmedException)
         {

@@ -1,25 +1,144 @@
 {
-  "schema": 1,
-  "directions": [
+  "schema": 2,
+  "packages": [
     {
-      "id": "zh_en",
-      "source": "zh",
-      "target": "en",
-      "sourceName": "中文",
-      "targetName": "English",
+      "id": "argos-zh-en",
       "version": "1.9",
+      "backend": "argos",
+      "preview": false,
       "url": "https://argos-net.com/v1/translate-zh_en-1_9.argosmodel",
-      "selfCheckText": "你好，我想确认一下明天下午的会议时间。"
+      "directions": [
+        {
+          "id": "zh_en",
+          "source": "zh",
+          "target": "en",
+          "sourceName": "中文",
+          "targetName": "English",
+          "selfCheckText": "你好，我想确认一下明天下午的会议时间。"
+        }
+      ]
     },
     {
-      "id": "en_zh",
-      "source": "en",
-      "target": "zh",
-      "sourceName": "English",
-      "targetName": "中文",
+      "id": "argos-en-zh",
       "version": "1.9",
+      "backend": "argos",
+      "preview": false,
       "url": "https://argos-net.com/v1/translate-en_zh-1_9.argosmodel",
-      "selfCheckText": "Please send me the final version."
+      "directions": [
+        {
+          "id": "en_zh",
+          "source": "en",
+          "target": "zh",
+          "sourceName": "English",
+          "targetName": "中文",
+          "selfCheckText": "Please send me the final version."
+        }
+      ]
+    },
+    {
+      "id": "hy-mt2-1-8b-q4-k-m",
+      "version": "a0c709d9fac510f2c807aa3af52872340dc37a4a",
+      "backend": "hy-mt-llama-cpu",
+      "preview": true,
+      "url": "https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF/resolve/a0c709d9fac510f2c807aa3af52872340dc37a4a/Hy-MT2-1.8B-Q4_K_M.gguf",
+      "directions": [
+        {
+          "id": "zh_ja",
+          "source": "zh",
+          "target": "ja",
+          "sourceName": "中文",
+          "targetName": "日本語",
+          "selfCheckText": "明天见。"
+        },
+        {
+          "id": "ja_zh",
+          "source": "ja",
+          "target": "zh",
+          "sourceName": "日本語",
+          "targetName": "中文",
+          "selfCheckText": "明日お会いしましょう。"
+        },
+        {
+          "id": "zh_ko",
+          "source": "zh",
+          "target": "ko",
+          "sourceName": "中文",
+          "targetName": "한국어",
+          "selfCheckText": "明天见。"
+        },
+        {
+          "id": "ko_zh",
+          "source": "ko",
+          "target": "zh",
+          "sourceName": "한국어",
+          "targetName": "中文",
+          "selfCheckText": "내일 만나요."
+        },
+        {
+          "id": "zh_fr",
+          "source": "zh",
+          "target": "fr",
+          "sourceName": "中文",
+          "targetName": "Français",
+          "selfCheckText": "明天见。"
+        },
+        {
+          "id": "fr_zh",
+          "source": "fr",
+          "target": "zh",
+          "sourceName": "Français",
+          "targetName": "中文",
+          "selfCheckText": "À demain."
+        },
+        {
+          "id": "zh_es",
+          "source": "zh",
+          "target": "es",
+          "sourceName": "中文",
+          "targetName": "Español",
+          "selfCheckText": "明天见。"
+        },
+        {
+          "id": "es_zh",
+          "source": "es",
+          "target": "zh",
+          "sourceName": "Español",
+          "targetName": "中文",
+          "selfCheckText": "Hasta mañana."
+        },
+        {
+          "id": "zh_de",
+          "source": "zh",
+          "target": "de",
+          "sourceName": "中文",
+          "targetName": "Deutsch",
+          "selfCheckText": "明天见。"
+        },
+        {
+          "id": "de_zh",
+          "source": "de",
+          "target": "zh",
+          "sourceName": "Deutsch",
+          "targetName": "中文",
+          "selfCheckText": "Bis morgen."
+        },
+        {
+          "id": "zh_pt",
+          "source": "zh",
+          "target": "pt",
+          "sourceName": "中文",
+          "targetName": "Português",
+          "selfCheckText": "明天见。"
+        },
+        {
+          "id": "pt_zh",
+          "source": "pt",
+          "target": "zh",
+          "sourceName": "Português",
+          "targetName": "中文",
+          "selfCheckText": "Até amanhã."
+        }
+      ]
     }
   ]
 }

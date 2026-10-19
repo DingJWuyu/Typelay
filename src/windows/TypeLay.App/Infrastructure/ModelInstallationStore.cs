@@ -18,20 +18,40 @@ internal sealed class ModelInstallationStore(string data, string worker,
 
     public async Task StartModelAsync(ModelClient model, CancellationToken ct)
     {
+        ModelLoadPlan? Plan(string id)
+        {
+            try
+            {
+                return ReadPlan(id);
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
+            {
+                return null;
+            }
+        }
         try
         {
             using var installation = await AcquireAsync(ct);
-            // Settings can finish an explicit installation while startup waits for the store.
             if (model.Ready || installation.IsEmptyLegacy)
                 return;
-            if (await model.ReloadAsync(installation.ActivePaths, installation.VerifyActive, ct))
-                return;
-            if (installation.PreviousPaths is { } previous)
+            if (Plan(installation.ActiveId) is { } active)
             {
-                // The same verified candidate is activated only after the pointer is restored.
-                if (!await model.ReloadAsync(previous, installation.RestorePrevious, ct))
-                    throw new ModelSetupException(SetupFailureCategory.Runtime, ModelSetupStage.Activate);
+                var result = await model.ReloadAsync(active,
+                    () => installation.ConfirmCurrent(active) ? ModelPublicationOutcome.Confirmed : ModelPublicationOutcome.Unconfirmed,
+                    installation.ConfirmCurrent, ct);
+                if (result is ModelPublicationOutcome.Confirmed or ModelPublicationOutcome.Unconfirmed)
+                    return;
             }
+            if (installation.PreviousId is { } previous && Plan(previous) is { } prior)
+            {
+                var result = await model.ReloadAsync(prior, () => installation.PublishConfirmed(previous), installation.ConfirmCurrent, ct);
+                if (result == ModelPublicationOutcome.Confirmed)
+                    return;
+                if (result == ModelPublicationOutcome.Unconfirmed)
+                    throw new ModelSetupException(SetupFailureCategory.Unknown, ModelSetupStage.Activate, SetupFailureCategory.Unknown);
+                throw new ModelSetupException(SetupFailureCategory.Runtime, ModelSetupStage.Activate);
+            }
+            await model.ReloadAsync(new ModelRuntimePaths("", "", ""), () => { }, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (Exception error) when (error is not OutOfMemoryException)
@@ -74,7 +94,24 @@ internal sealed class ModelInstallationStore(string data, string worker,
         if (new FileInfo(marker).Length > 8 * 1024 * 1024)
             throw new InvalidDataException("model-inventory");
         using var inventory = JsonDocument.Parse(File.ReadAllText(marker));
-        return ModelCatalog.ReadInstallationDirections(inventory.RootElement);
+        return ModelCatalog.ReadActiveSelection(inventory.RootElement).SelectMany(item => item.Directions).Select(item => item.Id).ToArray();
+    }
+
+    private ModelLoadPlan ReadPlan(string id)
+    {
+        var paths = Paths(id);
+        string marker = Path.Combine(paths.Models, "installed.json");
+        CheckPath(marker);
+        if (new FileInfo(marker).Length > 8 * 1024 * 1024)
+            throw new InvalidDataException("model-inventory");
+        using var inventory = JsonDocument.Parse(File.ReadAllText(marker));
+        // Windows Hy has not passed its real backend gate. Reject before a load
+        // plan or child can exist, including startup and previous-generation repair.
+        if (ModelCatalog.ReadActiveSelection(inventory.RootElement).Any(item => item.Package.Backend == "hy-mt-llama-cpu"))
+            throw new InvalidDataException("model-platform-unavailable");
+        if (!File.Exists(paths.Python) || !File.Exists(paths.Worker))
+            throw new InvalidDataException("model-inventory");
+        return ModelLoadPlan.Create(paths, inventory.RootElement);
     }
 
     public async Task<Lease> AcquireAsync(CancellationToken ct)
@@ -185,8 +222,9 @@ internal sealed class ModelInstallationStore(string data, string worker,
                 return true;
             }
         }
+        internal string ActiveId => _manifest.Active;
+        internal string? PreviousId => _manifest.Previous;
         public ModelRuntimePaths ActivePaths => _store.Paths(_manifest.Active);
-        public ModelRuntimePaths? PreviousPaths => _manifest.Previous is { } previous ? _store.Paths(previous) : null;
         public IReadOnlyList<string> CommittedDirections
         {
             get
@@ -219,13 +257,34 @@ internal sealed class ModelInstallationStore(string data, string worker,
             if (_store.Read() != _manifest)
                 throw new InvalidDataException("installation-changed");
         }
-        public void RestorePrevious()
+        internal bool ConfirmCurrent(ModelLoadPlan plan)
         {
-            if (_manifest.Previous is not { } previous)
-                throw new InvalidOperationException("installation-no-previous");
-            Publish(previous);
+            RequireOwner();
+            return _store.Read() == _manifest && _store.Paths(_manifest.Active) == plan.Paths;
         }
-        internal void Publish(string id)
+        internal ModelLoadPlan ReadPlan(string id)
+        {
+            RequireOwner();
+            return _store.ReadPlan(id);
+        }
+        internal ModelPublicationOutcome PublishConfirmed(string id)
+        {
+            try
+            {
+                Publish(id);
+                return ModelPublicationOutcome.Confirmed;
+            }
+            catch (ModelSetupException error) when (error.RecoveryFailureCategory is null)
+            {
+                return ModelPublicationOutcome.Unchanged;
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                _uncertain = true;
+                return ModelPublicationOutcome.Unconfirmed;
+            }
+        }
+        private void Publish(string id)
         {
             RequireOwner();
             var before = _manifest;
@@ -341,10 +400,19 @@ internal sealed class ModelInstallationStore(string data, string worker,
         public string Root { get; } = root;
         public ModelRuntimePaths Paths { get; } = paths;
         public IReadOnlyList<string> Directions { get; } = directions;
-        public void Publish()
+        public ModelLoadPlan CreateLoadPlan()
         {
-            lease.Publish(id);
-            _published = true;
+            var plan = lease.ReadPlan(id);
+            if (!plan.Directions.ToHashSet(StringComparer.Ordinal).SetEquals(Directions))
+                throw new InvalidDataException("model-directions");
+            return plan;
+        }
+        public bool ConfirmCurrent(ModelLoadPlan plan) => lease.ConfirmCurrent(plan);
+        public ModelPublicationOutcome PublishConfirmed()
+        {
+            var outcome = lease.PublishConfirmed(id);
+            _published = outcome == ModelPublicationOutcome.Confirmed;
+            return outcome;
         }
         public void Complete()
         {

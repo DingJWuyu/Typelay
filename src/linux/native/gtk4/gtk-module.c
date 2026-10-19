@@ -177,6 +177,74 @@ gint64 tl_now(void) {
     if (clock_gettime(CLOCK_BOOTTIME, &value) != 0) return G_MAXINT64;
     return (gint64)value.tv_sec * 1000 + value.tv_nsec / 1000000;
 }
+/* Numeric, bounded pre-Tab history only. Elapsed spans are wall time, not
+ * CPU time; parent sequence/main-loop depth expose nested GTK dispatch. */
+typedef enum {
+    ACCEPTANCE_READ_INPUT = 1, ACCEPTANCE_EXPIRED = 2, ACCEPTANCE_OVERLAY = 3,
+    ACCEPTANCE_DESCRIBE = 4, ACCEPTANCE_CAPTURE = 5, ACCEPTANCE_DIRECT = 6,
+    ACCEPTANCE_RETURN = 7, ACCEPTANCE_QUARANTINE = 8, ACCEPTANCE_CONFIGURE = 9,
+    ACCEPTANCE_TRIGGER = 10, ACCEPTANCE_PUBLISH_SHORTCUT = 11, ACCEPTANCE_REVOKE = 12,
+    ACCEPTANCE_PUBLISH = 13, ACCEPTANCE_UNKNOWN = 14,
+    ACCEPTANCE_TIMER_CANCEL = 15, ACCEPTANCE_TIMER_SET = 16
+} AcceptanceOperation;
+typedef struct {
+    guint64 sequence, parent;
+    AcceptanceOperation operation;
+    gint64 started_at, finished_at, expires_before, expires_after;
+    gint depth_before, depth_after;
+    guint timer_before, timer_after, timer_marks; /* expired=1, cancelled=2, set=4 */
+} AcceptanceSpan;
+typedef struct { guint64 sequence, parent; } AcceptanceSpanScope;
+typedef struct {
+    AcceptanceSpan spans[32];
+    guint64 sequence, active, truncated;
+    guint count;
+    gint depth;
+} AcceptanceDelivery;
+static AcceptanceDelivery acceptance_delivery;
+static AcceptanceSpanScope acceptance_span_begin(AcceptanceOperation operation) {
+    if (!g_getenv("TYPELAY_TRACE")) return (AcceptanceSpanScope){0};
+    AcceptanceSpanScope scope = {.sequence = ++acceptance_delivery.sequence,
+        .parent = acceptance_delivery.active};
+    AcceptanceSpan *span = &acceptance_delivery.spans[(scope.sequence - 1)
+        % G_N_ELEMENTS(acceptance_delivery.spans)];
+    *span = (AcceptanceSpan){.sequence = scope.sequence, .parent = scope.parent,
+        .operation = operation, .started_at = tl_now(), .depth_before = g_main_depth(),
+        .timer_before = publication_timer,
+        .expires_before = tl_integer(tl_object(publication, "permit"), "expiresAtMs", 0),
+        .timer_marks = operation == ACCEPTANCE_EXPIRED ? 1u
+            : operation == ACCEPTANCE_TIMER_CANCEL ? 2u : operation == ACCEPTANCE_TIMER_SET ? 4u : 0u};
+    acceptance_delivery.active = scope.sequence;
+    if (acceptance_delivery.count < G_N_ELEMENTS(acceptance_delivery.spans))
+        acceptance_delivery.count++;
+    else acceptance_delivery.truncated++;
+    return scope;
+}
+static void acceptance_span_end(AcceptanceSpanScope scope) {
+    if (!scope.sequence) return;
+    AcceptanceSpan *span = &acceptance_delivery.spans[(scope.sequence - 1)
+        % G_N_ELEMENTS(acceptance_delivery.spans)];
+    /* A deeply nested callback may have displaced this slot. Never overwrite
+       the newer record, and always restore the enclosing active sequence. */
+    if (span->sequence == scope.sequence) {
+        span->finished_at = tl_now();
+        span->depth_after = g_main_depth();
+        span->timer_after = publication_timer;
+        span->expires_after = tl_integer(tl_object(publication, "permit"), "expiresAtMs", 0);
+    }
+    acceptance_delivery.active = scope.parent;
+}
+static AcceptanceOperation acceptance_command_operation(JsonObject *frame) {
+    const char *operation = tl_string(frame, "op");
+    if (!operation) return ACCEPTANCE_UNKNOWN;
+    if (g_str_has_prefix(operation, "overlay-")) return ACCEPTANCE_OVERLAY;
+    static const char *const names[] = {"describe", "capture", "direct", "return", "quarantine",
+        "configure-shortcuts", "trigger-shortcut", "publish-shortcut", "revoke", "publish"};
+    for (guint index = 0; index < G_N_ELEMENTS(names); index++)
+        if (strcmp(operation, names[index]) == 0)
+            return (AcceptanceOperation)(ACCEPTANCE_DESCRIBE + index);
+    return ACCEPTANCE_UNKNOWN;
+}
 static void trace_publication(const char *stage) {
     static guint count;
     if (!g_getenv("TYPELAY_TRACE") || count >= 512) return;
@@ -189,7 +257,11 @@ static void trace_publication(const char *stage) {
 }
 void tl_drop_publication(void) {
     if (publication) trace_publication("clear");
-    if (publication_timer) { g_source_remove(publication_timer); publication_timer = 0; }
+    if (publication_timer) {
+        AcceptanceSpanScope span = acceptance_span_begin(ACCEPTANCE_TIMER_CANCEL);
+        g_source_remove(publication_timer); publication_timer = 0;
+        acceptance_span_end(span);
+    }
     if (publication) { json_object_unref(publication); publication = NULL; }
     tl_overlay_acceptance();
 }
@@ -537,17 +609,26 @@ gboolean tl_acceptance_ready(Target *target) {
 static void refresh_acceptance(void);
 static gboolean acceptance_expired(gpointer data) {
     (void)data;
+    AcceptanceSpanScope span = acceptance_span_begin(ACCEPTANCE_EXPIRED);
     publication_timer = 0;
     /* Keep the independently timed Escape lease; only Tab readiness expires. */
     refresh_acceptance();
+    acceptance_span_end(span);
     return G_SOURCE_REMOVE;
 }
 static void refresh_acceptance(void) {
-    if (publication_timer) { g_source_remove(publication_timer); publication_timer = 0; }
+    if (publication_timer) {
+        AcceptanceSpanScope span = acceptance_span_begin(ACCEPTANCE_TIMER_CANCEL);
+        g_source_remove(publication_timer); publication_timer = 0;
+        acceptance_span_end(span);
+    }
     tl_overlay_acceptance();
     gint64 now = tl_now(), until = tl_integer(tl_object(publication, "permit"), "expiresAtMs", 0);
-    if (until > now && until - now <= 100)
+    if (until > now && until - now <= 100) {
+        AcceptanceSpanScope span = acceptance_span_begin(ACCEPTANCE_TIMER_SET);
         publication_timer = g_timeout_add((guint)(until - now), acceptance_expired, NULL);
+        acceptance_span_end(span);
+    }
 }
 static JsonObject *publication_state(Target *target) {
     JsonObject *state = json_object_new();
@@ -610,8 +691,44 @@ static void print_acceptance_phase(const char *operation, const AcceptancePhase 
         timing->entered_at, timing->inspect_started_at, timing->inspect_finished_at,
         timing->gate_at, phase->finished_at, phase->expires_at, timing->inspected, phase->allowed);
 }
+static void print_acceptance_delivery(gint64 key_entered_at, const AcceptanceDelivery *delivery) {
+    if (!delivery) return;
+    char output[16384];
+    const gsize limit = sizeof(output) - 256; /* Reserve the explicit truncation footer. */
+    gint written = g_snprintf(output, limit,
+        "TypeLay GTK%d acceptance-timing operation=delivery-window keyEnteredAtMs=%" G_GINT64_FORMAT
+        " activeSequence=%" G_GUINT64_FORMAT " mainDepth=%d spanCount=%u"
+        " truncated=%" G_GUINT64_FORMAT "\n", GTK_MAJOR_VERSION, key_entered_at,
+        delivery->active, delivery->depth, delivery->count, delivery->truncated);
+    if (written < 0 || (gsize)written >= limit) return;
+    gsize used = (gsize)written;
+    guint emitted = 0;
+    for (guint index = 0; index < delivery->count; index++) {
+        guint64 sequence = delivery->sequence - delivery->count + index + 1;
+        const AcceptanceSpan *span = &delivery->spans[(sequence - 1) % G_N_ELEMENTS(delivery->spans)];
+        written = g_snprintf(output + used, limit - used,
+            "TypeLay GTK%d acceptance-timing operation=delivery-span keyEnteredAtMs=%" G_GINT64_FORMAT
+            " sequence=%" G_GUINT64_FORMAT " parentSequence=%" G_GUINT64_FORMAT
+            " spanOperation=%d startedAtMs=%" G_GINT64_FORMAT " finishedAtMs=%" G_GINT64_FORMAT
+            " depthBefore=%d depthAfter=%d timerBefore=%u timerAfter=%u timerMarks=%u"
+            " expiresBeforeMs=%" G_GINT64_FORMAT " expiresAfterMs=%" G_GINT64_FORMAT "\n",
+            GTK_MAJOR_VERSION, key_entered_at, span->sequence, span->parent, (gint)span->operation,
+            span->started_at, span->finished_at, span->depth_before, span->depth_after,
+            span->timer_before, span->timer_after, span->timer_marks,
+            span->expires_before, span->expires_after);
+        if (written < 0 || (gsize)written >= limit - used) break;
+        used += (gsize)written;
+        emitted++;
+    }
+    g_snprintf(output + used, sizeof(output) - used,
+        "TypeLay GTK%d acceptance-timing operation=delivery-end keyEnteredAtMs=%" G_GINT64_FORMAT " omittedSpans=%u\n",
+        GTK_MAJOR_VERSION, key_entered_at, delivery->count - emitted);
+    /* One bounded write at the existing key-timing point, never per callback. */
+    g_printerr("%s", output);
+}
 static void trace_acceptance_timing(const char *operation, JsonObject *request,
-                                   const AcceptanceTiming *timing, gboolean allowed) {
+                                   const AcceptanceTiming *timing, gboolean allowed,
+                                   const AcceptanceDelivery *delivery) {
     static guint key_count;
     JsonObject *permit = tl_object(request, "permit");
     const char *id = tl_string(tl_object(permit, "plan"), "id");
@@ -642,6 +759,10 @@ static void trace_acceptance_timing(const char *operation, JsonObject *request,
         }
     }
     print_acceptance_phase("key", &phase);
+    /* Refusal may not have cleared publication yet, or a write callback may
+       have replaced it. Never add history I/O while any current permit is live. */
+    if (delivery && tl_integer(tl_object(publication, "permit"), "expiresAtMs", 0) <= tl_now())
+        print_acceptance_delivery(timing->entered_at, delivery);
 }
 static void command(JsonObject *frame) {
     const char *operation = tl_string(frame, "op");
@@ -749,10 +870,10 @@ static void command(JsonObject *frame) {
             tl_send_event("publication", state);
         } else json_object_unref(state);
         respond(id, reply);
-        trace_acceptance_timing("publish", data, &timing, published);
+        trace_acceptance_timing("publish", data, &timing, published, NULL);
     } else { disconnect_peer(); }
 }
-static gboolean read_input(GIOChannel *channel, GIOCondition condition, gpointer data) {
+static gboolean read_input_frames(GIOChannel *channel, GIOCondition condition, gpointer data) {
     (void)channel; (void)data;
     if (condition & (G_IO_HUP | G_IO_ERR | G_IO_NVAL)) {
         input_watch = 0; disconnect_peer(); return G_SOURCE_REMOVE;
@@ -783,9 +904,19 @@ static gboolean read_input(GIOChannel *channel, GIOCondition condition, gpointer
         g_clear_error(&error); g_object_unref(parser);
         g_byte_array_remove_range(incoming, 0, length + 4);
         if (!frame) { input_watch = 0; disconnect_peer(); return G_SOURCE_REMOVE; }
-        command(frame); json_object_unref(frame);
+        AcceptanceSpanScope span = {0};
+        if (g_getenv("TYPELAY_TRACE")) span = acceptance_span_begin(acceptance_command_operation(frame));
+        command(frame);
+        acceptance_span_end(span);
+        json_object_unref(frame);
     }
     return connection >= 0 ? G_SOURCE_CONTINUE : G_SOURCE_REMOVE;
+}
+static gboolean read_input(GIOChannel *channel, GIOCondition condition, gpointer data) {
+    AcceptanceSpanScope span = acceptance_span_begin(ACCEPTANCE_READ_INPUT);
+    gboolean result = read_input_frames(channel, condition, data);
+    acceptance_span_end(span);
+    return result;
 }
 static gboolean connect_peer(gpointer data) {
     (void)data;
@@ -1036,7 +1167,8 @@ static gboolean shortcut_event(const KeyEvent *event) {
     if (shortcut_key == event->hardware_keycode) shortcut_consumed = consumed;
     return consumed;
 }
-static gboolean acceptance_event(const KeyEvent *event, gint64 entered_at) {
+static gboolean acceptance_event(const KeyEvent *event, gint64 entered_at,
+                                 const AcceptanceDelivery *delivery) {
     gboolean is_accept = event->keyval == tl_session_keyval(TRUE);
     gboolean is_exit = event->keyval == tl_session_keyval(FALSE);
     if (!is_accept && !is_exit) return FALSE;
@@ -1052,7 +1184,7 @@ static gboolean acceptance_event(const KeyEvent *event, gint64 entered_at) {
     guint modified = event->state & (GDK_SHIFT_MASK | GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK | GDK_HYPER_MASK | GDK_META_MASK);
     if (!clear || !current || publication != current || !tl_session_matches(tl_object(tl_object(current, "authority"), "sessionBindings")) || modified || !event->physical) {
         timing.gate_at = tl_now();
-        if (is_accept) trace_acceptance_timing("key", current, &timing, FALSE);
+        if (is_accept) trace_acceptance_timing("key", current, &timing, FALSE, delivery);
         if (is_accept) trace_tab(!clear ? "ime" : !publication ? "not-published"
             : modified ? "modified" : "nonphysical", target, current, NULL);
         if (current) json_object_unref(current);
@@ -1064,7 +1196,7 @@ static gboolean acceptance_event(const KeyEvent *event, gint64 entered_at) {
         || (gint64)target->focus_revision != tl_integer(basis, "focusRevision", -1)
         || !tl_metadata_matches(target, basis)) {
         timing.gate_at = tl_now();
-        if (is_accept) trace_acceptance_timing("key", current, &timing, FALSE);
+        if (is_accept) trace_acceptance_timing("key", current, &timing, FALSE, delivery);
         if (is_accept) trace_tab("authority", target, current, NULL);
         json_object_unref(current);
         tl_clear_permit(); return FALSE;
@@ -1095,7 +1227,7 @@ static gboolean acceptance_event(const KeyEvent *event, gint64 entered_at) {
     const char *failure = publication_failure(target, current);
     timing.gate_at = tl_now();
     if (failure) {
-        trace_acceptance_timing("key", current, &timing, FALSE);
+        trace_acceptance_timing("key", current, &timing, FALSE, delivery);
         trace_tab(failure, target, current, NULL);
         json_object_unref(current);
         tl_clear_permit(); return FALSE;
@@ -1123,7 +1255,7 @@ static gboolean acceptance_event(const KeyEvent *event, gint64 entered_at) {
         trace_tab("write-rejected", target, current, reply);
         json_object_unref(reply);
     }
-    trace_acceptance_timing("key", current, &timing, TRUE);
+    trace_acceptance_timing("key", current, &timing, TRUE, delivery);
     json_object_unref(current);
     g_free(plan_id);
     return consumed;
@@ -1226,6 +1358,15 @@ gboolean tl_dispatch_key(GdkEvent *event) {
     guint keyval = key.keyval, keycode = key.hardware_keycode;
     gboolean down = key.down, physical = key.physical;
     GdkModifierType state = key.state;
+    AcceptanceDelivery delivery;
+    const AcceptanceDelivery *delivery_at_entry = NULL;
+    if (down && keyval == GDK_KEY_Tab && g_getenv("TYPELAY_TRACE")) {
+        /* Freeze before callbacks, including IME inspection, can reenter GTK.
+           Unfinished spans stay unfinished in this snapshot, not in live state. */
+        delivery = acceptance_delivery;
+        delivery.depth = g_main_depth();
+        delivery_at_entry = &delivery;
+    }
     if (!physical || !keycode) return FALSE;
     gint empty = -1;
     for (guint index = 0; index < G_N_ELEMENTS(held_keys); index++) {
@@ -1271,7 +1412,7 @@ gboolean tl_dispatch_key(GdkEvent *event) {
     gboolean consumed = tl_overlay_key(accept, exit, (modifiers & GDK_CONTROL_MASK) != 0, keycode, sequence);
     tl_overlay_control_cancel();
     consumed = consumed || shortcut_event(&key)
-        || ordered_acceptance(&key, sequence) || acceptance_event(&key, entered_at);
+        || ordered_acceptance(&key, sequence) || acceptance_event(&key, entered_at, delivery_at_entry);
     if (held_keys[empty].keycode == keycode && held_keys[empty].sequence == sequence)
         held_keys[empty].consumed = held_keys[empty].consumed || consumed;
     trace_session_key(keyval, "press", consumed);

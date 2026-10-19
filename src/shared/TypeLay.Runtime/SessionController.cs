@@ -1319,6 +1319,34 @@ public sealed partial class SessionController : IDisposable
         _nextCapture = 0;
         Render();
     }
+    // Model replacement invalidates unsent work without changing ordinary
+    // StopSession's detached direct-write semantics. Submitted writes retain
+    // their original receipt and feedback revision, and are never replayed.
+    public async Task<bool> PrepareModelChangeAsync()
+    {
+        if (_disposed || !await RetireAutomaticPracticeAsync() || _disposed)
+            return false;
+        _pendingPracticeCompletion = null;
+        if (PracticeProgress is { } practice)
+            EndOnDemandPractice(practice.RunId);
+        _configurationRevision++;
+        _pendingWakeCapture = null;
+        _practiceWakeCommand = null;
+        _pendingDirectPractice = null;
+        if (!_directWriteSubmitted)
+        {
+            _commandFeedbackRevision++;
+            if (_pendingDirect is not null)
+                SetServiceStatus("模型已改变，未执行本次直接替换。", "direct-canceled",
+                    _pendingDirectCommandGeneration, _pendingDirectSequence);
+            _pendingDirect = null;
+        }
+        StopSession("model-change");
+        _hook.ConfigureShortcuts(_settings.Value.Enabled && _settings.Value.Mode == WorkMode.OnDemand,
+            _settings.Value.WakeShortcut, _settings.Value.DirectShortcut, CurrentSessionBindings, _settings.Value.Enabled);
+        return true;
+    }
+
     public void StopSession() => StopSession("stop-session");
     private void StopSession(string reason)
     {

@@ -77,6 +77,9 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 35
     steps:
+      - name: Record the Windows check budget start
+        shell: pwsh
+        run: '"TYPELAY_WINDOWS_CHECK_START=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" >> $env:GITHUB_ENV'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -181,6 +184,48 @@ jobs:
         run: |
           dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-browser-cooperation artifacts/browser-cooperation artifacts/package/TypeLay '${{ steps.cooperative-browser-prepare.outputs.chrome }}'
           exit $LASTEXITCODE
+      # Serialized after all existing Argos, package and browser-model consumers.
+      - name: Admit the bounded optional Hy adapter fixture
+        id: hy-admission
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $elapsed = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [long]$env:TYPELAY_WINDOWS_CHECK_START
+          $remaining = 35 * 60 - $elapsed
+          $required = 19 * 60 # cache 2+2m, prepare 10m, execution 3m, tail/setup reserve 2m
+          New-Item -ItemType Directory -Force artifacts/hy-results | Out-Null
+          @{ admitted = ($remaining -ge $required); elapsedSeconds = $elapsed; remainingSeconds = $remaining; requiredSeconds = $required } |
+            ConvertTo-Json | Set-Content artifacts/hy-results/admission.json -Encoding utf8
+          if ($remaining -lt $required) { throw 'Insufficient unchanged 35-minute job budget for the bounded Hy fixture.' }
+          $pin = Get-Content src/shared/TypeLay.Worker/native/hy/assets.lock.json -Raw | ConvertFrom-Json
+          "cache-key=typelay-hy-win-$($pin.model.sha256)-$($pin.runtime_archive.sha256)" >> $env:GITHUB_OUTPUT
+      - name: Restore the fixed Hy model and CPU archive cache
+        id: hy-cache
+        if: ${{ !cancelled() && steps.hy-admission.outcome == 'success' }}
+        timeout-minutes: 2
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: artifacts/hy-download/
+          key: ${{ steps.hy-admission.outputs.cache-key }}
+      - name: Prepare and compile the fixed Hy adapter
+        id: hy-prepare
+        if: ${{ !cancelled() && steps.hy-admission.outcome == 'success' && steps.hy-cache.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: pwsh
+        run: ./dev.ps1 hy-adapter-prepare
+      - name: Verify Hy within one owned Windows Job at a time
+        if: ${{ !cancelled() && steps.hy-prepare.outcome == 'success' }}
+        timeout-minutes: 3
+        shell: pwsh
+        run: ./dev.ps1 hy-adapter-e2e
+      - name: Save only verified Hy download assets to cache
+        if: ${{ !cancelled() && steps.hy-prepare.outcome == 'success' && steps.hy-cache.outputs.cache-hit != 'true' }}
+        timeout-minutes: 2
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: artifacts/hy-download/
+          key: ${{ steps.hy-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -193,6 +238,8 @@ jobs:
             artifacts/continuous-translation/data/setup-self-check.json
             artifacts/browser-cooperation/result.json
             artifacts/browser-cooperation/trace*.jsonl
+            artifacts/hy-results/*.json
+            artifacts/hy-results/*.stderr
             artifacts/TypeLay-Windows-preview.zip
             artifacts/TypeLay-Windows-preview.zip.sha256
           if-no-files-found: warn
@@ -206,7 +253,7 @@ jobs:
       image: archlinux:base-devel
       # Electron's font service exceeds Docker's default 64 MiB /dev/shm.
       options: --shm-size=1g
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       TYPELAY_EXPECT_QT_VERSION: 6.11.2
       CCACHE_DIR: ${{ github.workspace }}/artifacts/ccache
@@ -220,6 +267,8 @@ jobs:
       LIBIME_PACKAGE_SHA256: adacfc6243df2544665a1d4cc8f2bf2ee6d4966fc2c5f2a37a3ff579134b6c67
       CHINESE_PACKAGE_SHA256: cc03b9d1d0bb921d88130e4ef17a4162a1037f6dbb0a165f6a73b83236f06ec4
     steps:
+      - name: Record the Linux check budget start
+        run: echo "TYPELAY_LINUX_CHECK_START=$(date +%s)" >> "$GITHUB_ENV"
       - name: Install target desktop build dependencies
         run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 gtk4 at-spi2-core json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols ccache opencc procps-ng zstd qt6-base libxkbcommon libxcb
       - name: Restore the fixed GTK4 package
@@ -310,6 +359,27 @@ jobs:
           restore-keys: |
             fcitx-ccache-${{ steps.native-sdk.outputs.digest }}-
             fcitx-ccache-
+      - name: Restore the fixed Linux Hy CPU archive
+        id: hy-cpu-cache
+        timeout-minutes: 2
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: artifacts/linux/hy-cpu-download/
+          key: typelay-hy-linux-cpu-${{ hashFiles('eng/linux/hy/runtime-archive.lock.json', 'src/shared/TypeLay.Worker/native/hy/cpu-runtime.lock.json') }}
+      - name: Prepare the fixed official Linux Hy CPU closure
+        id: hy-cpu
+        timeout-minutes: 3
+        run: |
+          python tests/linux/test_hy_preparation.py -v
+          python eng/linux/hy/prepare_runtime.py --cache artifacts/linux/hy-cpu-download --output artifacts/linux/hy-cpu-runtime
+          TYPELAY_HY_CPU_RUNTIME="$PWD/artifacts/linux/hy-cpu-runtime" python tests/linux/test_hy_runtime.py -v
+      - name: Save only the verified Linux Hy CPU archive
+        if: ${{ !cancelled() && steps.hy-cpu.outcome == 'success' && steps.hy-cpu-cache.outputs.cache-hit != 'true' }}
+        timeout-minutes: 2
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: artifacts/linux/hy-cpu-download/
+          key: ${{ steps.hy-cpu-cache.outputs.cache-primary-key }}
       - name: Build the relocatable Linux client
         id: build
         run: |
@@ -322,7 +392,7 @@ jobs:
           python tests/linux/test_practice_session.py -v
           python tests/linux/test_fcitx_session_source.py -v
           python tests/linux/test_gtk_geometry.py -v
-          python eng/linux/build.py --with-test-fixture
+          python eng/linux/build.py --with-test-fixture --hy-runtime artifacts/linux/hy-cpu-runtime
       - name: Verify resumable model downloads over isolated HTTP
         if: ${{ needs.scope.outputs.settings != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}
         run: |
@@ -442,7 +512,7 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.fcitx-package.outcome == 'success' && steps.qt.outcome == 'success' }}
         run: |
           python eng/linux/build.py --finalize --cooperation-package artifacts/TypeLay-Fcitx-cooperative.tar.gz
-          TYPELAY_REQUIRE_DESKTOP_COMPONENT=1 TYPELAY_LINUX_PACKAGE="$PWD/artifacts/TypeLay-Linux-preview-x86_64.tar.gz" python tests/linux/distribution_e2e.py -v
+          TYPELAY_REQUIRE_HY_RUNTIME=1 TYPELAY_REQUIRE_DESKTOP_COMPONENT=1 TYPELAY_LINUX_PACKAGE="$PWD/artifacts/TypeLay-Linux-preview-x86_64.tar.gz" python tests/linux/distribution_e2e.py -v
       - name: Install and verify actual local translation components
         id: models
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
@@ -558,6 +628,43 @@ jobs:
           set -- /usr/lib/electron*/electron
           test "$#" -eq 1
           python tests/linux/vscode_e2e.py --code "$1" --app /usr/lib/code --vsix "$PWD/artifacts/linux/package/vscode/typelay-editor.vsix" --code-cli /usr/bin/code --host "$PWD/artifacts/linux/package/typelay" --model-data "$PWD/artifacts/linux/desktop-data/typelay" --output artifacts/linux/vscode-model
+      # All existing Argos/browser/native consumers finish before this single
+      # model-package lifecycle. The original model and product deadlines stay fixed.
+      - name: Admit the bounded formal Hy package lifecycle
+        id: hy-admission
+        if: ${{ needs.scope.outputs.settings != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.complete-package.outcome == 'success' }}
+        run: |
+          mkdir -p artifacts/linux/hy-package
+          remaining=$((45 * 60 - $(date +%s) + TYPELAY_LINUX_CHECK_START))
+          python tests/linux/hy_package_e2e.py --check-budget --package artifacts/linux/package --data artifacts/linux/desktop-data --remaining-seconds "$remaining" > artifacts/linux/hy-package/admission.json
+      - name: Restore the independently pinned Linux Hy model cache
+        id: hy-model-cache
+        if: ${{ !cancelled() && steps.hy-admission.outcome == 'success' }}
+        timeout-minutes: 2
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: artifacts/linux/hy-model-cache/typelay/components/hy-mt2-1-8b-q4-k-m/
+          key: typelay-hy-linux-model-${{ hashFiles('src/shared/TypeLay.Worker/native/hy/model.lock.json') }}
+      - name: Prepare and verify fixed Hy test data separately from the desktop
+        id: hy-model-prepare
+        if: ${{ !cancelled() && steps.hy-model-cache.outcome == 'success' }}
+        timeout-minutes: 3
+        run: python tests/linux/hy_package_e2e.py --prepare-cache --package artifacts/linux/package --cache artifacts/linux/hy-model-cache > artifacts/linux/hy-package/cache-verification.json
+      - name: Save only fully verified Hy test model data
+        if: ${{ !cancelled() && steps.hy-model-prepare.outcome == 'success' && steps.hy-model-cache.outputs.cache-hit != 'true' }}
+        timeout-minutes: 2
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: artifacts/linux/hy-model-cache/typelay/components/hy-mt2-1-8b-q4-k-m/
+          key: ${{ steps.hy-model-cache.outputs.cache-primary-key }}
+      - name: Exercise formal Python and real GTK Hy install select return and remove
+        if: ${{ !cancelled() && steps.hy-model-prepare.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          export DISPLAY=:99
+          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
+          export XDG_CACHE_HOME="$PWD/artifacts/linux/hy-model-cache"
+          python tests/linux/native_e2e.py --desktop --desktop-scope model-packages --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/hy-package
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -582,6 +689,9 @@ jobs:
             ${{ steps.complete-package.outcome != 'success' && 'artifacts/TypeLay-Fcitx-cooperative.tar.gz' || '' }}
             artifacts/linux/desktop-data/typelay/components/*/self-check.json
             artifacts/linux/model-activation-metadata.json
+            artifacts/linux/hy-package/*.json
+            artifacts/linux/hy-package/*.log
+            artifacts/linux/hy-package/*.png
             artifacts/linux/native/libtypelay-gtk3.so
             artifacts/linux/native/typelay-supervise
             artifacts/TypeLay-Linux-preview-x86_64.tar.gz

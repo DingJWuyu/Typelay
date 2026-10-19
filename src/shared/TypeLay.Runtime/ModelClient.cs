@@ -1,35 +1,42 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using TypeLay.Core;
 using TypeLay.Protocol;
 namespace TypeLay.Runtime;
 
 public sealed class ModelClient : ITranslationService, IDisposable
 {
-    private sealed class Connection(IChildProcess child, IReadOnlyList<string> directions) : IDisposable
+    private sealed class Connection(IChildProcess child, ModelLoadPlan plan)
     {
         public IChildProcess Child { get; } = child;
-        public IReadOnlyList<string> Directions { get; set; } = directions;
+        public ModelLoadPlan Plan { get; } = plan;
+        public IReadOnlyList<string> Directions { get; set; } = NoDirections;
+        public CancellationTokenSource ExchangeCancellation { get; } = new();
         public long Sequence;
         public int Requests;
-        private int _disposed;
+    }
+    private sealed class Operation(CancellationToken request) : IDisposable
+    {
+        public CancellationTokenSource Superseded { get; } = new();
+        private CancellationTokenSource? _linked;
+        public CancellationToken Token => (_linked ??= CancellationTokenSource.CreateLinkedTokenSource(request, Superseded.Token)).Token;
         public void Dispose()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) == 0)
-                try
-                {
-                    Child.Dispose();
-                }
-                catch (Exception error) when (error is IOException or InvalidOperationException or System.ComponentModel.Win32Exception) { }
+            _linked?.Dispose();
+            Superseded.Dispose();
         }
     }
     private readonly object _owner = new();
     private readonly SemaphoreSlim _lifecycle = new(1, 1), _serial = new(1, 1);
     private readonly Func<ProcessStartInfo, IChildProcess> _startProcess;
+    private readonly HashSet<IChildProcess> _retiring = [];
     private ModelRuntimePaths _paths;
     private Connection? _active, _candidate;
-    private CancellationTokenSource? _operation;
+    private Operation? _operation;
+    private bool _disposed, _switching, _unconfirmedFactory;
     private long _admission;
     private string _status = "未安装本地模型";
+    private string? _failureCode;
     private static readonly IReadOnlyList<string> NoDirections = Array.AsReadOnly(Array.Empty<string>());
 
     public ModelClient(ModelRuntimePaths paths, Func<ProcessStartInfo, IChildProcess> startProcess)
@@ -42,7 +49,7 @@ public sealed class ModelClient : ITranslationService, IDisposable
         get
         {
             lock (_owner)
-                return _active is not null;
+                return !_disposed && _active is not null;
         }
     }
     public bool Busy
@@ -50,7 +57,7 @@ public sealed class ModelClient : ITranslationService, IDisposable
         get
         {
             lock (_owner)
-                return _active?.Requests > 0;
+                return _switching || _active?.Requests > 0;
         }
     }
     public string Status
@@ -61,6 +68,14 @@ public sealed class ModelClient : ITranslationService, IDisposable
                 return _status;
         }
     }
+    public string? FailureCode
+    {
+        get
+        {
+            lock (_owner)
+                return _failureCode;
+        }
+    }
     public IReadOnlyList<string> AvailableDirections
     {
         get
@@ -69,8 +84,16 @@ public sealed class ModelClient : ITranslationService, IDisposable
                 return _active?.Directions ?? NoDirections;
         }
     }
+    public IReadOnlyList<ModelPackageSelection> AvailablePackages
+    {
+        get
+        {
+            lock (_owner)
+                return _active?.Plan.ActivePackages ?? Array.Empty<ModelPackageSelection>();
+        }
+    }
     public event Action? Changed;
-    // Installation markers allow a startup attempt; only a live hello verifies capability.
+    // Markers permit an attempt; the immutable plan and actual hello grant Ready.
     public bool Installed
     {
         get
@@ -87,126 +110,282 @@ public sealed class ModelClient : ITranslationService, IDisposable
         Task<bool> starting;
         lock (_owner)
         {
-            if (_active is not null || _operation is not null || !HasMarkers(_paths))
+            if (_disposed || _active is not null || _operation is not null || !HasMarkers(_paths))
                 return;
-            starting = BeginReplacement(_paths, () => { }, CancellationToken.None);
+            try
+            {
+                starting = ReloadAsync(_paths, () => { });
+            }
+            catch (Exception error) when (error is IOException or InvalidDataException or System.Text.Json.JsonException or ArgumentException)
+            {
+                _status = "模型无法加载（请检查本地组件）";
+                _failureCode = "model-inventory";
+                NotifyChanged();
+                return;
+            }
         }
         try
         {
-            await starting;
+            if (!await starting)
+            {
+                bool notify = false;
+                lock (_owner)
+                {
+                    if (!_disposed && _active is null && _operation is null && _status != "模型无法加载（请检查本地组件）")
+                    {
+                        _status = "模型无法加载（请检查本地组件）";
+                        _failureCode = "model-inventory";
+                        notify = true;
+                    }
+                }
+                if (notify)
+                    NotifyChanged();
+            }
         }
-        catch (OperationCanceledException) { /* A newer lifecycle operation owns the client. */ }
+        catch (OperationCanceledException) { /* A newer lifecycle owns the client. */ }
     }
 
-    // The caller owns its installation lease before entering here. Publication is
-    // synchronous and must never acquire a store lock or perform process/UI work.
-    // A publication exception leaves the previous live connection unchanged.
+    // Compatibility for the original Argos API. Validate the inventory before
+    // admission, including rejecting schema3; never infer a package plan from hello.
     public Task<bool> ReloadAsync(ModelRuntimePaths paths, Action publishInstallation, CancellationToken ct = default,
         IEnumerable<string>? expectedDirections = null)
     {
         ArgumentNullException.ThrowIfNull(publishInstallation);
-        // Snapshot and validate before cancelling a healthy lifecycle operation.
         var expected = expectedDirections?.ToArray();
         if (expected is not null && !ModelCatalog.IsValidDirectionSet(expected))
             throw new ArgumentException("model-directions", nameof(expectedDirections));
         lock (_owner)
-            return BeginReplacement(paths, publishInstallation, ct, expected);
+            ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!HasMarkers(paths))
+        {
+            lock (_owner)
+                if (_active is null && _operation is null)
+                {
+                    _status = "模型无法加载（请检查本地组件）";
+                    _failureCode = "model-inventory";
+                }
+            NotifyChanged();
+            return Task.FromResult(false);
+        }
+        var plan = ModelLoadPlan.ReadLegacy(paths);
+        if (expected is not null && !expected.ToHashSet(StringComparer.Ordinal).SetEquals(plan.Directions))
+            return Task.FromResult(false);
+        return ReloadLegacyAsync(plan, publishInstallation, ct);
     }
-    private Task<bool> BeginReplacement(ModelRuntimePaths paths, Action publish, CancellationToken ct, string[]? expected = null)
+    private async Task<bool> ReloadLegacyAsync(ModelLoadPlan plan, Action publish, CancellationToken ct)
     {
-        _operation?.Cancel();
-        var operation = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        _operation = operation;
-        ++_admission; // Reject even unsent requests queued before a failed replacement.
-        if (_active is null)
-            _status = "正在准备翻译";
-        return ReplaceAsync(paths, publish, operation, expected);
+        Exception? publicationFailure = null;
+        var result = await ReloadAsync(plan, () =>
+        {
+            try
+            {
+                publish();
+                return ModelPublicationOutcome.Confirmed;
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                publicationFailure = error;
+                return ModelPublicationOutcome.Unconfirmed;
+            }
+        }, _ => false, ct);
+        if (publicationFailure is not null)
+            ExceptionDispatchInfo.Capture(publicationFailure).Throw();
+        return result == ModelPublicationOutcome.Confirmed;
     }
-    private async Task<bool> ReplaceAsync(ModelRuntimePaths paths, Action publish, CancellationTokenSource operation, string[]? expected)
+
+    // Caller holds its installation lease. Both callbacks are synchronous and
+    // must not acquire store/process/UI locks. Unknown publication is never recovery evidence.
+    public Task<ModelPublicationOutcome> ReloadAsync(ModelLoadPlan plan, Func<ModelPublicationOutcome> publishConfirmed,
+        Func<ModelLoadPlan, bool> confirmCurrent, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(publishConfirmed);
+        ArgumentNullException.ThrowIfNull(confirmCurrent);
+        ct.ThrowIfCancellationRequested();
+        lock (_owner)
+            ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!HasMarkers(plan.Paths) || !File.Exists(plan.Paths.Worker))
+            return Task.FromResult(ModelPublicationOutcome.Unchanged);
+        lock (_owner)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _operation?.Superseded.Cancel();
+            var operation = new Operation(ct);
+            _operation = operation;
+            ++_admission;
+            if (_active is null)
+                _status = "正在准备翻译";
+            return ReplaceAsync(plan, publishConfirmed, confirmCurrent, operation);
+        }
+    }
+    private bool Owns(Operation operation) => !_disposed && ReferenceEquals(_operation, operation);
+    private void RequireOwner(Operation operation)
+    {
+        operation.Token.ThrowIfCancellationRequested();
+        if (!Owns(operation))
+            throw new OperationCanceledException(operation.Token);
+    }
+    private async Task<ModelPublicationOutcome> ReplaceAsync(ModelLoadPlan plan, Func<ModelPublicationOutcome> publish,
+        Func<ModelLoadPlan, bool> confirmCurrent, Operation operation)
     {
         Connection? candidate = null, previous = null;
-        bool lifecycle = false, serial = false, committed = false;
+        bool lifecycle = false, serial = false, committed = false, exclusive = false, reapingFailed = false;
+        var outcome = ModelPublicationOutcome.Unchanged;
         try
         {
             await _lifecycle.WaitAsync(operation.Token);
             lifecycle = true;
+            lock (_owner)
+            {
+                RequireOwner(operation);
+                previous = _active;
+                exclusive = plan.UsesHy || previous?.Plan.UsesHy == true;
+                if (exclusive)
+                {
+                    _switching = true;
+                    _active = null;
+                    _status = "正在切换模型";
+                    if (previous is not null)
+                        Retire(previous);
+                }
+            }
+            // Cancellation precedes waiting for serial: an old blocked read must
+            // not hold the switch hostage until its normal inference deadline.
+            if (exclusive)
+                NotifyChanged();
             await _serial.WaitAsync(operation.Token);
             serial = true;
-            operation.Token.ThrowIfCancellationRequested();
-            if (!HasMarkers(paths))
-                return false;
-            var info = new ProcessStartInfo(paths.Python)
+            if (!await ReapRetiringAsync())
             {
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-            info.ArgumentList.Add("-I");
-            info.ArgumentList.Add("-B");
-            info.ArgumentList.Add(paths.Worker);
-            info.ArgumentList.Add("--models");
-            info.ArgumentList.Add(paths.Models);
-            info.Environment["PYTHONUTF8"] = "1";
-            info.Environment["OMP_NUM_THREADS"] = Math.Max(1, Math.Min(4, Environment.ProcessorCount / 2)).ToString();
-            try
-            {
-                lock (_owner)
-                {
-                    operation.Token.ThrowIfCancellationRequested();
-                    candidate = new(_startProcess(info), NoDirections);
-                    _candidate = candidate;
-                }
-                var hello = await ExchangeAsync(candidate, new(0, "hello"), TimeSpan.FromSeconds(120), operation.Token);
-                operation.Token.ThrowIfCancellationRequested();
-                if (hello.Status != "ready" || !ModelCatalog.IsValidDirectionSet(hello.Directions)
-                    || expected is not null && !expected.ToHashSet(StringComparer.Ordinal).SetEquals(hello.Directions!))
-                    return false;
-                candidate.Directions = Array.AsReadOnly(hello.Directions!.ToArray());
-            }
-            catch (Exception) when (operation.IsCancellationRequested)
-            {
-                throw new OperationCanceledException(operation.Token);
-            }
-            catch (Exception error) when (error is not OutOfMemoryException)
-            {
-                return false;
+                reapingFailed = true;
+                return outcome;
             }
             lock (_owner)
             {
-                operation.Token.ThrowIfCancellationRequested();
-                // No await/cancellation point between durable publication and takeover.
-                publish();
-                previous = _active;
+                RequireOwner(operation);
+                if (!exclusive)
+                    previous = _active;
+            }
+            try
+            {
+                candidate = await StartConnectionAsync(plan, operation, operation.Token);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                RecordFailure(operation, error);
+                return outcome;
+            }
+            lock (_owner)
+            {
+                RequireOwner(operation);
+                try
+                {
+                    outcome = publish();
+                }
+                catch (Exception error) when (error is not OutOfMemoryException)
+                {
+                    outcome = ModelPublicationOutcome.Unconfirmed;
+                }
+                if (outcome is not (ModelPublicationOutcome.Confirmed or ModelPublicationOutcome.Unchanged))
+                {
+                    outcome = ModelPublicationOutcome.Unconfirmed;
+                    _failureCode = "model-publication-unconfirmed";
+                    if (_active is { } active)
+                        Retire(active);
+                    _active = null;
+                    return outcome;
+                }
+                if (outcome == ModelPublicationOutcome.Unchanged || !Owns(operation))
+                    return outcome;
+                // No cancellation/await between confirmed publication and takeover.
                 _active = candidate;
                 _candidate = null;
-                _paths = paths;
+                _paths = plan.Paths;
                 _status = "本地翻译已就绪";
+                _failureCode = null;
                 committed = true;
             }
-            return true;
+            return outcome;
         }
         finally
         {
-            bool notify = false;
-            lock (_owner)
+            if (lifecycle)
             {
-                if (ReferenceEquals(_candidate, candidate))
-                    _candidate = null;
-                if (ReferenceEquals(_operation, operation))
+                lock (_owner)
                 {
-                    _operation = null;
-                    // Preserve the old connection's current health, including an
-                    // in-flight transport failure while this operation was waiting.
-                    if (_active is null)
-                        _status = "模型无法加载（请检查本地组件）";
-                    notify = true;
+                    if (!committed && _candidate is { } pending)
+                        Retire(pending);
+                    if (!committed && candidate is not null)
+                        Retire(candidate);
+                    if (committed && !exclusive && previous is not null)
+                        Retire(previous);
+                    if (ReferenceEquals(_candidate, candidate) || !committed)
+                        _candidate = null;
+                }
+                bool reclaimed = !reapingFailed && await ReapRetiringAsync();
+                bool restore = false;
+                lock (_owner)
+                {
+                    if (!committed && exclusive && reclaimed && previous is not null
+                        && outcome != ModelPublicationOutcome.Unconfirmed && Owns(operation))
+                    {
+                        try
+                        {
+                            restore = confirmCurrent(previous.Plan);
+                        }
+                        catch (Exception error) when (error is not OutOfMemoryException) { }
+                    }
+                }
+                if (restore)
+                {
+                    // User cancellation still permits bounded recovery; a newer
+                    // lifecycle owner or Dispose cancels it independently.
+                    using var recovery = CancellationTokenSource.CreateLinkedTokenSource(operation.Superseded.Token);
+                    recovery.CancelAfter(TimeSpan.FromSeconds(120));
+                    try
+                    {
+                        if (!serial)
+                        {
+                            await _serial.WaitAsync(recovery.Token);
+                            serial = true;
+                        }
+                        var restored = await StartConnectionAsync(previous!.Plan, operation, recovery.Token, recovering: true);
+                        lock (_owner)
+                        {
+                            if (!Owns(operation))
+                                throw new OperationCanceledException(recovery.Token);
+                            _active = restored;
+                            _candidate = null;
+                            _paths = restored.Plan.Paths;
+                            _status = "本地翻译已就绪";
+                        }
+                    }
+                    catch (Exception error) when (error is not OutOfMemoryException)
+                    {
+                        RecordFailure(operation, error);
+                        lock (_owner)
+                        {
+                            if (_candidate is { } failed)
+                                Retire(failed);
+                            _candidate = null;
+                        }
+                        await ReapRetiringAsync();
+                    }
                 }
             }
-            if (!committed)
-                candidate?.Dispose();
-            previous?.Dispose();
+            bool notify;
+            lock (_owner)
+            {
+                notify = Owns(operation);
+                if (notify)
+                {
+                    _operation = null;
+                    _switching = false;
+                    if (_active is null)
+                        _status = "模型无法加载（请检查本地组件）";
+                }
+            }
             if (serial)
                 _serial.Release();
             if (lifecycle)
@@ -216,9 +395,134 @@ public sealed class ModelClient : ITranslationService, IDisposable
                 NotifyChanged();
         }
     }
+    private async Task<Connection> StartConnectionAsync(ModelLoadPlan plan, Operation operation, CancellationToken ct,
+        bool recovering = false)
+    {
+        var paths = plan.Paths;
+        if (!HasMarkers(paths))
+            throw new InvalidDataException("model-inventory");
+        var info = new ProcessStartInfo(paths.Python)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        info.ArgumentList.Add("-I");
+        info.ArgumentList.Add("-B");
+        info.ArgumentList.Add(paths.Worker);
+        info.ArgumentList.Add("--models");
+        info.ArgumentList.Add(paths.Models);
+        info.Environment["PYTHONUTF8"] = "1";
+        info.Environment["OMP_NUM_THREADS"] = Math.Max(1, Math.Min(4, Environment.ProcessorCount / 2)).ToString();
+        Connection connection;
+        lock (_owner)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!Owns(operation) || _unconfirmedFactory || _retiring.Count != 0)
+                throw new IOException("child-cleanup-unconfirmed");
+            if (!recovering)
+                RequireOwner(operation);
+            try
+            {
+                connection = new(_startProcess(info), plan);
+            }
+            catch (ChildProcessCleanupUnconfirmedException error)
+            {
+                if (error.Child is { } child)
+                    _retiring.Add(child);
+                else
+                    _unconfirmedFactory = true;
+                throw;
+            }
+            _candidate = connection;
+        }
+        var hello = await ExchangeAsync(connection, new(0, "hello"), TimeSpan.FromSeconds(120), ct);
+        ct.ThrowIfCancellationRequested();
+        ValidateHello(plan, hello);
+        connection.Directions = Array.AsReadOnly(hello.Directions!.ToArray());
+        return connection;
+    }
+    private static void ValidateHello(ModelLoadPlan plan, ModelResponse hello)
+    {
+        if (hello.Status != "ready")
+            throw new IOException("model-hello-status");
+        if (hello.Directions is not { Length: > 0 } directions || directions.Any(string.IsNullOrEmpty)
+            || directions.Distinct(StringComparer.Ordinal).Count() != directions.Length
+            || !directions.ToHashSet(StringComparer.Ordinal).SetEquals(plan.Directions))
+            throw new IOException("model-hello-directions");
+        if (plan.InventorySchema != 3)
+        {
+            if (hello.Packages is not null)
+                throw new IOException("model-hello-packages");
+            return;
+        }
+        if (hello.Packages is not { Length: > 0 } packages || packages.Length != plan.ActivePackages.Count)
+            throw new IOException("model-hello-packages");
+        HashSet<string> seen = new(StringComparer.Ordinal), union = new(StringComparer.Ordinal);
+        foreach (var package in packages)
+        {
+            var expected = package is null ? null : plan.ActivePackages.FirstOrDefault(item => item.Package.Id == package.Id);
+            if (expected is null || !seen.Add(package!.Id) || expected.Package.Version != package.Version
+                || package.Directions is not { Length: > 0 } selected || selected.Any(string.IsNullOrEmpty)
+                || selected.Distinct(StringComparer.Ordinal).Count() != selected.Length
+                || !selected.ToHashSet(StringComparer.Ordinal).SetEquals(expected.Directions.Select(item => item.Id)))
+                throw new IOException("model-hello-packages");
+            union.UnionWith(selected);
+        }
+        if (!union.SetEquals(directions))
+            throw new IOException("model-hello-directions");
+    }
+    // Called with owner held. A canceled exchange can never be reused.
+    private void Retire(Connection connection)
+    {
+        connection.ExchangeCancellation.Cancel();
+        _retiring.Add(connection.Child);
+    }
+    private async Task<bool> ReapRetiringAsync()
+    {
+        IChildProcess[] children;
+        lock (_owner)
+        {
+            if (_disposed || _unconfirmedFactory)
+                return false;
+            children = _retiring.ToArray();
+        }
+        foreach (var child in children)
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try
+            {
+                await child.TerminateAndWaitAsync(deadline.Token);
+                lock (_owner)
+                    _retiring.Remove(child);
+                child.Dispose();
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            {
+                lock (_owner)
+                {
+                    if (!_disposed)
+                        _failureCode = "child-cleanup-unconfirmed";
+                }
+                return false;
+            }
+        }
+        lock (_owner)
+            return !_disposed && !_unconfirmedFactory && _retiring.Count == 0;
+    }
+    private void RecordFailure(Operation operation, Exception error)
+    {
+        lock (_owner)
+            if (Owns(operation))
+                _failureCode = error is ChildProcessCleanupUnconfirmedException
+                ? "child-cleanup-unconfirmed"
+                : error is IOException && error.Message is "model-hello-packages" or "model-hello-directions" or "model-sequence" or "model-inventory"
+                    ? error.Message : "model-start-failed";
+    }
     public Task<ModelResponse> TranslateAsync(TranslationJob job) => TranslateRequestAsync(
         new(0, "translate", job.SourceText, job.Direction.Source, job.Direction.Target, job.PreservedManualText));
-    // Editor snapshots are explicit user-approved text, not observed input fields.
     public Task<ModelResponse> TranslateTextAsync(string text, LanguageDirection direction) => TranslateRequestAsync(
         new(0, "translate", text, direction.Source, direction.Target));
     private async Task<ModelResponse> TranslateRequestAsync(ModelRequest request)
@@ -227,14 +531,15 @@ public sealed class ModelClient : ITranslationService, IDisposable
         long admission;
         lock (_owner)
         {
-            if (_active is null || _operation is not null)
+            if (_disposed || _active is null || _operation is not null)
                 return new(0, "error", Code: "not-ready");
-            if (!ModelCatalog.IsSupportedSetting(request.Source, request.Target))
+            bool valid = _active.Plan.InventorySchema == 3
+                ? ModelCatalog.IsSupportedPackageRequest(request.Source, request.Target)
+                : ModelCatalog.IsSupportedLegacySetting(request.Source, request.Target);
+            if (!valid)
                 return new(0, "error", Code: "invalid-request");
             connection = _active;
             admission = _admission;
-            // The worker detects same-language text and manual append before it
-            // needs a pair. A missing target direction cannot reject Auto here.
             ++connection.Requests;
         }
         await _serial.WaitAsync();
@@ -252,14 +557,14 @@ public sealed class ModelClient : ITranslationService, IDisposable
             {
                 lock (_owner)
                 {
-                    if (ReferenceEquals(_active, connection))
-                    {
-                        _active = null;
-                        _status = "本地翻译进程已停止";
-                        notify = true;
-                    }
+                    if (!ReferenceEquals(_active, connection))
+                        return new(0, "error", Code: "not-ready");
+                    _active = null;
+                    Retire(connection);
+                    _status = "本地翻译进程已停止";
+                    notify = !_disposed;
                 }
-                connection.Dispose();
+                await ReapRetiringAsync();
                 return new(0, "error", Code: "worker-stopped");
             }
         }
@@ -267,8 +572,6 @@ public sealed class ModelClient : ITranslationService, IDisposable
         {
             lock (_owner)
                 --connection.Requests;
-            // Notify before allowing a successor to own state; an old finally
-            // never writes the successor's status, busy count, or directions.
             try
             {
                 if (notify)
@@ -280,7 +583,7 @@ public sealed class ModelClient : ITranslationService, IDisposable
     private static async Task<ModelResponse> ExchangeAsync(Connection connection, ModelRequest request, TimeSpan timeout, CancellationToken ct)
     {
         long id = ++connection.Sequence;
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct, connection.ExchangeCancellation.Token);
         deadline.CancelAfter(timeout);
         await Wire.WriteAsync(connection.Child.Process.StandardInput.BaseStream, request with
         {
@@ -293,9 +596,6 @@ public sealed class ModelClient : ITranslationService, IDisposable
     }
     private void NotifyChanged()
     {
-        // Observers do not own the transport or publication transaction. A UI
-        // notification failure must not strand a gate or turn a committed switch
-        // into an installation failure; other observers still see current state.
         if (Changed is not { } changed)
             return;
         foreach (Action observer in changed.GetInvocationList())
@@ -307,19 +607,30 @@ public sealed class ModelClient : ITranslationService, IDisposable
     }
     public void Dispose()
     {
-        Connection? active, candidate;
+        IChildProcess[] children;
         lock (_owner)
         {
+            if (_disposed)
+                return;
+            _disposed = true;
             ++_admission;
-            _operation?.Cancel();
+            _operation?.Superseded.Cancel();
             _operation = null;
-            active = _active;
-            candidate = _candidate;
+            if (_active is { } active)
+                Retire(active);
+            if (_candidate is { } candidate)
+                Retire(candidate);
             _active = null;
             _candidate = null;
+            _switching = false;
             _status = "本地翻译已停止";
+            children = _retiring.ToArray();
         }
-        active?.Dispose();
-        candidate?.Dispose();
+        foreach (var child in children)
+            try
+            {
+                child.Dispose();
+            }
+            catch (Exception error) when (error is IOException or InvalidOperationException or System.ComponentModel.Win32Exception) { }
     }
 }

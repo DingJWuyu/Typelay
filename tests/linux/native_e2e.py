@@ -47,11 +47,17 @@ class Native:
         return result
 
 
-def key(value):
+def key(value, *, timing=None):
+    if timing is not None:
+        timing["xdotoolStartedAtMs"] = now_ms()
     subprocess.run(
         ["xdotool", "key", "--clearmodifiers", "--delay", "0", value], check=True, timeout=2
     )
+    if timing is not None:
+        timing["xdotoolReturnedAtMs"] = now_ms()
     time.sleep(0.025)
+    if timing is not None:
+        timing["postKeySleepFinishedAtMs"] = now_ms()
 
 
 def snapshot(native, hello, geometry):
@@ -521,6 +527,8 @@ def outer(arguments, script=None):
             # Setup also installs one direction and completes its union from the
             # existing model cache; that independent real chain is bounded to 120s.
             timeout = 360 if arguments.desktop and arguments.desktop_scope == "setup" else 240
+            if arguments.desktop and arguments.desktop_scope == "model-packages":
+                timeout = 260  # 240 seconds of work, then owned-process cleanup.
             deadline = time.monotonic() + (timeout if arguments.desktop else 45)
             result = arguments.output / result_name
             while (
@@ -551,7 +559,9 @@ if __name__ == "__main__":
     parser.add_argument("--inside", action="store_true")
     parser.add_argument("--desktop", action="store_true")
     parser.add_argument(
-        "--desktop-scope", choices=("all", "browser", "gtk", "gtk4", "qt", "setup"), default="all"
+        "--desktop-scope",
+        choices=("all", "browser", "gtk", "gtk4", "qt", "setup", "model-packages"),
+        default="all",
     )
     parser.add_argument(
         "--gtk-refusal",
@@ -600,7 +610,10 @@ if __name__ == "__main__":
         try:
             if args.desktop:
                 sys.path.insert(0, str(Path(__file__).parent))
-                from desktop_e2e import run
+                if args.desktop_scope == "model-packages":
+                    from hy_package_e2e import run
+                else:
+                    from desktop_e2e import run
 
                 run(args)
             else:

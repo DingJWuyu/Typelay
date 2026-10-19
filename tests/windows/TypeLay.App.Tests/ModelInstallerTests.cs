@@ -199,7 +199,7 @@ public sealed class ModelInstallerTests
             Assert.False(Directory.Exists(Path.Combine(first.Paths.Models, "en_zh")));
             // Commit only the installation intent for the next installer call;
             // the controlled check is not evidence of model/service readiness.
-            first.Publish();
+            Assert.Equal(ModelPublicationOutcome.Confirmed, first.PublishConfirmed());
         }
         string pointer = File.ReadAllText(Path.Combine(files.Root, "components.json"));
         var mismatch = await Assert.ThrowsAsync<ModelSetupException>(() => files.Installer(files.Responses(ModelArchive),
@@ -481,6 +481,7 @@ public sealed class ModelInstallerTests
             get; private set;
         }
         public Process Process => child.Process;
+        public Task TerminateAndWaitAsync(CancellationToken cancellationToken) => child.TerminateAndWaitAsync(cancellationToken);
         public void Dispose()
         {
             if (_disposed)

@@ -1,0 +1,4 @@
+# Byte-pinned upstream b11717 headers, including the two original blank EOF lines.
+*.h -text
+ggml.h whitespace=-blank-at-eof
+llama.h whitespace=-blank-at-eof

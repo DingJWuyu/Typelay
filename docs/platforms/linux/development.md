@@ -30,6 +30,42 @@ finalize 校验主包原始清单、构建提交、合作组件的固定来源�
 
 构建时的外部 .NET SDK/NuGet 获取仍需要网络。模型安装的原生 Python 依赖固定直接版本，通过 uv 为 CPython 3.13 解析 Linux wheel 并生成带哈希的依赖锁。安装记录保留实际解析版本，不声称不同时间解析出的传递依赖完全相同。
 
+## Hy worker 可选构建
+
+默认模型准备继续使用原 Argos。CI 的正式 Linux 候选包通过固定 b11717 官方 CPU 闭包加入 Hy 运行资产，仍需用户在设置中显式选择下载并使用 Hy。手动开发构建只有传入 `python eng/linux/build.py --hy-runtime <已有CPU目录>` 才包含这些资产；该参数不下载、不编译 llama.cpp、不安装模型。设置始终显示固定 Hy 十二方向预览包；只有发行包的 native 闭包通过只读完整性检查后，才开放下载、使用与修复。该目录必须与 `src/shared/TypeLay.Worker/native/hy/cpu-runtime.lock.json` 的17项文件逐字节匹配。
+
+只编生产 adapter 可执行 `python eng/linux/hy/build.py --runtime <已有CPU目录> --output <空输出目录>`。输出包含唯一共享 C++ 源编出的三导出 adapter、固定 CPU 库、模型/CPU 锁、production-adapter 清单与许可证；发布包不带 C++、headers 或 fixture 门。Hy 模型数据单独位于 `models/packages/<id>/<version>/`，精确包含锁定 GGUF 与 `model_LICENSE.txt`。缺少运行资产或固定模型数据时，active Hy 明确启动失败。
+
+发布者显式准备 CPU 资产的入口是 `python eng/linux/hy/prepare_runtime.py --cache artifacts/linux/hy-cpu-download --output artifacts/linux/hy-cpu-runtime`。它只获取固定官方 `llama-b11717-bin-ubuntu-x64.tar.gz`，完整校验下载锁和生产17文件锁后，把实际 ELF 复制为普通文件；不带工具、服务器、其他后端或模型。`--offline` 仅复验已有精确缓存。完整候选包的发行回归设置 `TYPELAY_REQUIRE_HY_RUNTIME=1`，要求搬迁后的 native 可用并拒绝包内 GGUF。
+
+完整 Linux CI 在同一45分钟 job 中、已有 Argos 消费者结束后，仅运行一次 Hy 模型包链。CPU archive 与模型/许可证使用独立精确哈希 cache，无前缀回退；模型不进入源码或上传 artifact。尾段准入要求剩余12分钟，并按当前正式 Argos 代实际大小预算五次事务：当前代字节数 × 5 + 固定 Hy 字节数 × 5 + 2 GiB余量，包含独立下载缓存和移除前保留的恢复代。时间分配为：cache 恢复2分钟、准备3分钟、保存2分钟、GTK及清理5分钟。实际 GTK 工作仍限240秒，随后20秒退出清理；产品请求期限不变。空间和进程采样进入结果 JSON，不以准入预算冒充实测峰值。
+
+本地执行该链先按现正式安装入口准备 Argos 与 CPython 3.13.16，再显式运行 `python tests/linux/hy_package_e2e.py --prepare-cache --package artifacts/linux/package --cache artifacts/linux/hy-model-cache`。随后在隔离 XDG 数据与缓存、现嵌套桌面环境中运行 `tests/linux/native_e2e.py --desktop --desktop-scope model-packages`。该场景从搬迁后的实际用户安装启动，操作 GTK 确认下载并使用、回切 Argos、选择已安装 Hy、再次回切与移除；观察实际包身份和十二方向 hello、一个中译法请求、退出及清理。固定模型缓存准备独立于 GTK 期限；禁止通过改安装标记或换成旧 Python 跳过正式安装。未实际运行的新场景保持未验收，单句成功也不代表十二方向质量或物理桌面验收。
+
+无模型的实际 ELF/搬迁校验可设置 `TYPELAY_HY_CPU_RUNTIME=<已有CPU目录>` 后运行 `python -m unittest discover -s tests/linux -p test_hy_runtime.py -v`；它只核库加载、导出和隔离，不调用 hy_open_v3 或模型推理。
+
+ABI3 真实生产长度帧已在云端 Linux 通过：重新构建生产 adapter 后，普通 hello 精确返回 active 包身份及十二方向且不推理，随后唯一原句“我没有同意删除备份。”中译法以真实 EOG 完成，进程正常退出并回收。测试使用隔离 Python 3.13.5，官方 CPU 库动态选择 zen4；固定2线程、context1024、输出192 token、地址空间上限2.5 GiB、请求60秒/总180秒。本机采样译文耗时1.89秒，峰值 RSS 约1.19 GiB、地址空间约1.43 GiB；唯一临时模型副本已清理，原缓存完整性不变。这只验证精确库存布局下的 worker 加载和单句请求，不作为性能保证、十二方向质量认证、正式 Python 3.13.16 安装事务、包管理交互、物理桌面或 Windows 生产路径验收。
+
+## 模型包事务
+
+新包请求使用固定目录身份，不接受 URL、版本或路径：`format: 1`、`operation: Install|Repair|Select|Remove`、`packageIds`、`activePackages` 和 `expectedCurrent`。安装只增加所选未装包，修复只重建已装包并保留方向子集和当前选择；切换与移除完全离线。移除仅允许一个非当前包，须先切换模型再移除。原默认 Argos 双向及 legacy 方向安装入口保留，但已有 schema 3 库存不能回到旧整库修复路径。
+
+准备期间原代继续服务。请求与 current 比较在同一安装锁内、复制或下载前完成；暂停、继续和重试保留原请求，陈旧请求不能自行改基准重试。普通文件复制形成新代，私有 Python 必须指向新代，复制后离线完成 prefix/import 检查。Install/Repair 发现私有解释器缺失、损坏或依赖检查失败时，可在预留最坏额外空间后重建候选 runtime；权限、空间或超时失败不触发该回退。Select/Remove 的 runtime 失败只报错，不联网修复。新包准备只下载、校验和构建库存，唯一 serving worker 在最后激活时加载模型；用户试译另行验收。
+
+`installed.json` schema 3 保留完整 `packages` 和 `activePackages`。`activation.json` schema 3 仅有 `schema`、`previous`、`packages`、`operation`、`removedPackages`、`recoveryPrevious` 六字段。前两种旧 schema 迁移时须真实复制旧方向文件并重写清单。普通操作保留恢复前代；Remove 的 `recoveryPrevious` 为 null，不能因启动失败复活已移除包。库存记录不可读时显示未知并禁用包操作，不能猜成空库；恢复需要用户显式安排独立重装，不在包管理中自动覆盖。
+
+固定 Hy 文件大小与 SHA 从 worker 的生产 `model.lock.json` 读取，模型和许可证只下载一份，不按两方向重复。准备前按缓存、候选与保留前代保守预算空间，Hy 三份约 3.17 GiB，另加 Argos、runtime 和余量。未知大小的 Argos archive 仍受 1 GiB 上限约束。Confirmed 且旧进程退出已证明后才清历史代；缓存清理另获同一锁，重读 current/recovery 的完整库存引用。清理失败仅报告空间尚未释放，不把已成功切换报成失败。
+
+可用性只读检查为 `python desktop/setup.py --check-hy-runtime <发行目录>`，只调用 native 文件校验，不载入模型。内部 `--cleanup-packages <发行目录> <数据目录> <缓存目录>` 只由确认激活后的客户端调用，按固定包缓存清理，不扫描任意历史目录。缺 native 的发行包仍可删除非当前 Hy 库存，但不能下载、修复或切换到 Hy。
+
+## 显式快照与模型使用寿命
+
+GTK 本地试译通过继承宿主通道发送固定 `translateEditorSnapshot`，外部 `--editor-host` 在桌面已运行时通过既有同 UID、0600 私有 Unix control socket 转发同一快照。该白名单操作包含输入正文，其它控制操作仍仅传元数据。两条入口共用 EditorHost 的精确文档身份、版本、UTF-16 选区和文本校验，不接收任意 prompt 或推理参数。返回还须匹配原设置、模型状态代次及安装代。每个 control peer 只接收一次快照；宿主只保留一个在途显式请求，取消后直到已派发任务实际结束才释放占位。
+
+外部请求总预算为原入口起算的 215 秒，教程为 140 秒；排队或收到分块数据不会重置期限。取消、超时和断开立即撤销该请求结果与后续接受资格，不表示计算即时停止；已派发计算沿既有 worker 期限收束，不强杀共享 serving，也不自动重试。桌面启动锁被占用时，control 连接失败或拒绝不能回退独立加载。无桌面时，外层 supervisor 继承 `desktop.lock`，包住 one-shot 及其后代；只有退出码 200 表示真实退出证明，125、超时或单独 .NET 退出均不算。
+
+每个实际模型 supervisor 在 fork 前取得精确安装代 `use.lock` 的共享锁，直到 ECHILD 且自有进程组消失。Remove 在原安装锁内，先取得全部待删代的非阻塞独占锁，再删除任何目录；占用、链接或权限异常保留全部历史代并提示空间尚未释放。本次已知退出证明失败仍禁止清理，不能用后来锁空洗掉失败。此保证覆盖正常产品生命周期；外部强杀 supervisor 后残留脱离进程组的后代属于未覆盖的异常边界，不能据此声称任意 SIGKILL 都已安全回收。
+
 ## 变更检查
 
 修改安装/启动流程时，用实际 archive 驱动 `tests/linux/distribution_e2e.py`；修改原生输入或界面时，分别运行嵌套原生测试与生产桌面测试。后者只使用明确准备的隔离组件和真实模型；快速检查不下载模型。Python 修改后运行 Ruff check/format，Linux 原生构建与发行验证不能用 Windows check 替代。

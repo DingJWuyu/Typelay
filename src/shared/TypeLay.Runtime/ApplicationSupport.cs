@@ -118,7 +118,8 @@ public sealed record TranslationPreparationFact(
     SetupFailureCategory? RecoveryFailureCategory = null,
     IReadOnlyList<string>? InstalledDirections = null,
     IReadOnlyList<string>? ReadyDirections = null,
-    bool InstallationIntentKnown = true);
+    bool InstallationIntentKnown = true,
+    ModelPackageManagementFact? Packages = null);
 
 public sealed record TranslationPreparationActionView(
     TranslationPreparationAction Id, string Label, bool Enabled = true);
@@ -128,6 +129,8 @@ public sealed record TranslationPreparationView(
     TranslationPreparationActionView[] SecondaryActions)
 {
     public TranslationPreparationDirectionView[] Directions { get; init; } = [];
+    public ModelPackageRow[] PackageRows { get; init; } = [];
+    public string CurrentModelText { get; init; } = "";
     public bool CanSelectDirections
     {
         get; init;
@@ -135,6 +138,37 @@ public sealed record TranslationPreparationView(
 }
 
 public sealed record TranslationPreparationDirectionView(string Id, string Label, bool Installed);
+
+// These are exact inventory/selection/hello observations, never inferred from files or catalog coverage.
+public sealed record ModelPackageManagementFact(
+    string? Generation,
+    bool InventoryKnown,
+    IReadOnlyList<ModelPackageSelection> InstalledPackages,
+    IReadOnlyList<ModelPackageSelection> CurrentPackages,
+    IReadOnlyList<ModelPackageSelection> ReadyPackages,
+    bool HyRuntimeAvailable,
+    string? HyUnavailableReason,
+    string Source,
+    string Target,
+    bool OperationInProgress);
+
+public enum ModelPackageOperation
+{
+    Install, Repair, Select, Remove
+}
+
+// The UI returns this frozen request unchanged. The installer revalidates every field under its lease.
+public sealed record ModelPackageRequest(int Format, ModelPackageOperation Operation,
+    string[] PackageIds, string[] ActivePackages, string? ExpectedCurrent);
+
+public sealed record ModelPackageActionView(string Label, bool Enabled, bool RequiresConfirmation,
+    string ConfirmationText, ModelPackageRequest Request);
+
+public sealed record ModelPackageRow(string Id, string Version, string Title, bool Preview,
+    string[] DirectionIds, string CoverageText, bool Installed, bool Current, bool Ready,
+    string[] InstalledDirectionIds, string[] CurrentDirectionIds, string[] ReadyDirectionIds,
+    long? DownloadBytes, string DownloadText, string LicenseUrl, string Details,
+    string AvailabilityText, ModelPackageActionView[] Actions);
 
 public enum InputConnectionState
 {

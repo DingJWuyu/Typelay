@@ -338,7 +338,16 @@ def main():
             assert (state["source"], state["target"]) == ("en", "zh")
             assert state["theme"] == "dark"
             installations_requested = []
+            packages_requested = []
+            preparation_cancellations = []
             pauses_requested = []
+
+            def package_requested(request):
+                if request is None:
+                    preparation_cancellations.append(True)
+                else:
+                    packages_requested.append(request)
+
             settings_surface = Settings(
                 host,
                 tasks,
@@ -351,6 +360,7 @@ def main():
                 lambda: host.ask("applicationSupport", {"facts": []}),
                 None,
                 None,
+                package_requested=package_requested,
             )
             settings_surface.configure(state)
             settings_surface.render_guidance(tray.guidance)
@@ -398,6 +408,7 @@ def main():
             assert "中英双向模型" not in dialog.get_property("secondary-text")
             dialog.response(Gtk.ResponseType.CANCEL)
             assert not installations_requested, "cancelling installed a direction"
+            assert preparation_cancellations.pop() is True
             settings_surface.install_button.clicked()
             confirmation().response(Gtk.ResponseType.OK)
             assert installations_requested.pop() == (("zh_en",), False)
@@ -444,37 +455,63 @@ def main():
             assert choices["zh_en"].get_active() and not choices["en_zh"].get_active()
             assert not any(choice.get_sensitive() for choice in choices.values())
             assert "已安装" in choices["zh_en"].get_label()
-            assert preparation.complete_directions_button.get_visible()
-            settings_surface.install_button.clicked()
+            assert not preparation.complete_directions_button.get_visible()
+            assert not settings_surface.install_button.get_visible()
+            assert not preparation.preparation_ready, "installed intent collapsed an unready model"
+            repair = preparation.package_widgets["argos-zh-en"]["buttons"]["Repair"]
+            repair.clicked()
             dialog = confirmation()
             assert "中文 → English" in dialog.get_property("secondary-text")
             dialog.response(Gtk.ResponseType.OK)
-            assert installations_requested.pop() == (("zh_en",), True)
-            preparation.complete_directions_button.clicked()
+            assert packages_requested.pop() == {
+                "format": 1,
+                "operation": "Repair",
+                "packageIds": ["argos-zh-en"],
+                "activePackages": ["argos-zh-en"],
+                "expectedCurrent": "c" * 32,
+            }
+            complete = preparation.package_widgets["argos-en-zh"]["buttons"]["Install"]
+            complete.clicked()
             dialog = confirmation()
-            assert "中英双向模型" in dialog.get_property("secondary-text")
+            assert "English → 中文" in dialog.get_property("secondary-text")
             dialog.response(Gtk.ResponseType.CANCEL)
-            assert not installations_requested
-            assert choices["zh_en"].get_active() and not choices["en_zh"].get_active()
-            preparation.complete_directions_button.clicked()
+            assert not packages_requested and not installations_requested
+            assert preparation_cancellations.pop() is True
+            complete.clicked()
             confirmation().response(Gtk.ResponseType.OK)
-            assert installations_requested.pop() == (("zh_en", "en_zh"), False)
+            assert packages_requested.pop() == {
+                "format": 1,
+                "operation": "Install",
+                "packageIds": ["argos-en-zh"],
+                "activePackages": ["argos-zh-en", "argos-en-zh"],
+                "expectedCurrent": "c" * 32,
+            }
             settings_surface.installation("failed", failure="network")
             await settled()
             settings_surface.install_button.clicked()
             dialog = confirmation()
-            assert "中英双向模型" in dialog.get_property("secondary-text")
+            assert "English → 中文" in dialog.get_property("secondary-text")
             dialog.response(Gtk.ResponseType.OK)
             assert installations_requested.pop() == (None, False)
-            inventory.write_text("broken installation record")
             settings_surface.installation("idle")
             await settled()
+            complete.clicked()
+            dialog = confirmation()
+            inventory.write_text("broken installation record")
+            settings_surface.refresh_preparation()
+            await settled()
+            dialog.response(Gtk.ResponseType.OK)
+            assert not packages_requested, "stale confirmation used an unknown inventory"
+            assert "状态已变化" in settings_surface.preparation_error
             assert not any(choice.get_sensitive() for choice in choices.values())
             assert not preparation.complete_directions_button.get_visible()
-            assert settings_surface.install_button.get_label() == "完整修复本地翻译…"
-            settings_surface.install_button.clicked()
-            confirmation().response(Gtk.ResponseType.OK)
-            assert installations_requested.pop() == (("zh_en", "en_zh"), True)
+            assert not settings_surface.install_button.get_sensitive()
+            assert all(not row["buttons"] for row in preparation.package_widgets.values())
+            hy_row = next(
+                row for row in settings_surface.preparation_view["packageRows"] if row["preview"]
+            )
+            assert not hy_row["actions"] and not hy_row["ready"]
+            assert "不含可用" in hy_row["availabilityText"]
             inventory.write_text(json.dumps({"schema": 1}))
             activation.write_text(json.dumps({"schema": 1, "previous": None}))
             settings_surface.refresh_preparation()
@@ -504,6 +541,76 @@ def main():
             settings_surface.configure(state)
             assert not jobs, "rendering catalog choices tried to save settings"
             assert settings_file.read_bytes() == before_refresh
+            for key, replacement, label in (("source", "zh", "中文"), ("target", "en", "英语")):
+                picker = settings_surface.controls[key]
+                editor = picker.get_child()
+                assert isinstance(editor, Gtk.Entry), "language choices cannot be searched"
+                original = state[key]
+                editor.grab_focus()
+                editor.set_text("zz")
+                editor.select_region(0, 1)
+                before_search = settings_file.read_bytes()
+                settings_surface.render_guidance(tray.guidance)
+                settings_surface.configure(state)
+                assert editor.get_text() == "zz" and editor.get_selection_bounds() == (0, 1)
+                assert settings_surface.window.get_focus() is editor
+                assert not jobs and settings_file.read_bytes() == before_search
+                picker.popup()
+                assert picker.get_property("popup-shown")
+                settings_surface.render_guidance(tray.guidance)
+                settings_surface.configure(state)
+                assert picker.get_property("popup-shown")
+                assert editor.get_text() == "zz" and editor.get_selection_bounds() == (0, 1)
+                picker.popdown()
+                assert await host.ask("traySettings", {"enabled": False}) is True
+                await settled()
+                assert editor.get_text() == "zz" and editor.get_selection_bounds() == (0, 1)
+                assert settings_surface.window.get_focus() is editor
+                assert state[key] == original
+                # A real external language save replaces the search on the same
+                # widget, without creating a second save or moving keyboard focus.
+                assert await host.ask("traySettings", {key: replacement}) is True
+                await settled()
+                assert picker.get_active_id() == replacement and editor.get_text() == label
+                assert settings_surface.window.get_focus() is editor
+                blocker = settings_file.with_suffix(".json.tmp")
+                blocker.mkdir()
+                before_failure = settings_file.read_bytes()
+                try:
+                    picker.set_active_id(original)
+                    await settled()
+                    assert picker.get_active_id() == replacement and editor.get_text() == label
+                    assert "未保存" in settings_surface.message.get_text()
+                    assert settings_file.read_bytes() == before_failure
+                    assert settings_surface.window.get_focus() is editor
+                finally:
+                    blocker.rmdir()
+                picker.set_active_id(original)
+                await settled()
+                assert state[key] == original and picker.get_active_id() == original
+                assert settings_surface.window.get_focus() is editor
+                assert state["enabled"] is False and state["theme"] == "dark"
+                assert await host.ask("traySettings", {"enabled": True}) is True
+                await settled()
+            source_picker = settings_surface.controls["source"]
+            target_picker = settings_surface.controls["target"]
+            target_editor = target_picker.get_child()
+            target_editor.grab_focus()
+            target_editor.set_text("zz")
+            target_editor.select_region(0, 1)
+            assert await host.ask("traySettings", {"source": "ja"}) is True
+            await settled()
+            assert source_picker.get_active_id() == "ja"
+            assert source_picker.get_child().get_text() == "日本語（当前不可用）"
+            assert target_editor.get_text() == "zz"
+            assert target_editor.get_selection_bounds() == (0, 1)
+            assert settings_surface.window.get_focus() is target_editor
+            assert await host.ask("traySettings", {"source": "en"}) is True
+            await settled()
+            assert source_picker.get_active_id() == "en"
+            assert target_editor.get_text() == "zz"
+            target_picker.set_active_id("zh")
+            assert not jobs, "selecting the already confirmed language saved the search"
             settings_surface.language_swap.clicked()
             await settled()
             assert (state["source"], state["target"]) == ("zh", "en")
@@ -598,7 +705,7 @@ def main():
             print(
                 "PASS: native tray registration, pause/resume, settings persistence, modes, "
                 "catalog-driven settings/tray languages without a model, language swap, "
-                "explicit direction selection and frozen preparation retries, "
+                "explicit direction/package selection, stale confirmation refusal and frozen preparation retries, "
                 "persistence failure/report/retry, secondary settings action and exit action"
             )
         finally:

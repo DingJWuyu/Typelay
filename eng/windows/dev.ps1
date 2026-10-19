@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('help', 'restore', 'build', 'test', 'check', 'format', 'pack', 'run', 'e2e', 'native-e2e')]
+    [ValidateSet('help', 'restore', 'build', 'test', 'check', 'format', 'pack', 'run', 'e2e', 'native-e2e', 'hy-adapter-prepare', 'hy-adapter-e2e')]
     [string]$Task = 'help',
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release'
@@ -105,11 +105,13 @@ Push-Location $root
 try {
     switch ($Task) {
         help {
-            Write-Output 'Usage: ./dev.ps1 <restore|build|test|check|shared-check|format|pack|run|e2e|native-e2e> [-Configuration Debug|Release]'
+            Write-Output 'Usage: ./dev.ps1 <restore|build|test|check|shared-check|format|pack|run|e2e|native-e2e|hy-adapter-prepare|hy-adapter-e2e> [-Configuration Debug|Release]'
             Write-Output 'check: build, behavior/contract tests, Python tests, compiler/analyzer checks and formatting.'
             Write-Output 'shared-check: portable Core/Runtime/Protocol and worker tests; no Windows desktop or model installation.'
             Write-Output 'pack: self-contained Windows distribution, checksum and relocated-package/process E2E.'
             Write-Output 'native-e2e: controlled Win32 fixture adapter contracts; requires an unlocked Windows desktop.'
+            Write-Output 'hy-adapter-prepare: explicitly download/hash pinned optional Hy fixture assets and build its adapter (600s cap).'
+            Write-Output 'hy-adapter-e2e: explicit isolated Hy Job/cancellation/single-sentence fixture (180s cap); never changes installed models.'
         }
         restore { Restore-Workspace }
         build { Build-Workspace }
@@ -130,6 +132,12 @@ try {
         pack { Publish-Distribution $true }
         run { Publish-Distribution $false }
         e2e { Test-Distribution }
+        hy-adapter-prepare {
+            & (Join-Path $PSScriptRoot 'verify-hy-adapter.ps1') -Phase prepare -Configuration $Configuration
+        }
+        hy-adapter-e2e {
+            & (Join-Path $PSScriptRoot 'verify-hy-adapter.ps1') -Phase run -Configuration $Configuration
+        }
         native-e2e {
             Build-Workspace
             $fixture = Join-Path $root "tests/windows/fixtures/TypeLay.NativeFixture/bin/$Configuration/net10.0/TypeLay.NativeFixture.dll"

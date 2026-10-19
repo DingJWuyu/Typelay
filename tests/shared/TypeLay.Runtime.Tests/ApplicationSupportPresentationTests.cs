@@ -6,6 +6,20 @@ namespace TypeLay.Runtime.Tests;
 public sealed class ApplicationSupportPresentationTests
 {
     [Theory]
+    [InlineData("auto", "Auto")]
+    [InlineData("zh", "中文")]
+    [InlineData("en", "EN")]
+    [InlineData("ja", "日本語")]
+    [InlineData("ko", "한국어")]
+    [InlineData("fr", "Français")]
+    [InlineData("es", "Español")]
+    [InlineData("de", "Deutsch")]
+    [InlineData("pt", "Português")]
+    [InlineData("unknown", "unknown（当前不可用）")]
+    public void LanguageLabelsNeverPresentAnUnknownSavedCodeAsEnglishOrAuto(string code, string expected) =>
+        Assert.Equal(expected, ApplicationSupportPresentation.LanguageName(code));
+
+    [Theory]
     [InlineData(ApplicationSupportState.Connected, ApplicationSupportReason.None,
         "已确认预览、Tab 接受和直接替换。")]
     [InlineData(ApplicationSupportState.Connected, ApplicationSupportReason.LimitedFields,
@@ -31,6 +45,182 @@ public sealed class ApplicationSupportPresentationTests
 
         var wire = JsonSerializer.SerializeToElement(row, new JsonSerializerOptions(JsonSerializerDefaults.Web));
         Assert.Equal(expected, wire.GetProperty("summaryText").GetString());
+    }
+
+    [Fact]
+    public void PackageManagementKeepsInstalledCurrentAndActualHelloDirectionsDistinct()
+    {
+        var installed = PackageSelections("argos-zh-en", "hy-mt2-1-8b-q4-k-m");
+        var current = installed.Where(item => item.Package.Backend == "hy-mt-llama-cpu").ToArray();
+        var ready = PackageSelections("hy-mt2-1-8b-q4-k-m", onlyDirection: "zh_ja");
+        var facts = new ModelPackageManagementFact(new string('a', 32), true, installed, current, ready,
+            true, null, "ja", "zh", false);
+        var view = ApplicationSupportPresentation.Preparation(new(true, true, Packages: facts));
+        var hy = Assert.Single(view.PackageRows, row => row.Preview);
+        Assert.True(hy.Installed);
+        Assert.True(hy.Current);
+        Assert.True(hy.Ready);
+        Assert.Equal(["zh_ja"], hy.ReadyDirectionIds);
+        Assert.Equal("Hy-MT2 1.8B · 中文多语", hy.Title);
+        Assert.Equal("中文 ↔ 日本語、한국어、Français、Español、Deutsch、Português", hy.CoverageText);
+        Assert.Equal(12, hy.DirectionIds.Length);
+        Assert.DoesNotContain("仅开放中日双向", hy.Details);
+        Assert.Contains("当前模型不包含这个方向", view.Guidance);
+        Assert.DoesNotContain("日本語 → 中文", view.StatusText);
+        Assert.DoesNotContain(hy.Actions, action => action.Request.Operation == ModelPackageOperation.Remove);
+        var select = Assert.Single(view.PackageRows[0].Actions, action => action.Request.Operation == ModelPackageOperation.Select);
+        Assert.Equal([], select.Request.PackageIds);
+        Assert.Equal(["argos-zh-en"], select.Request.ActivePackages);
+        Assert.Equal(new string('a', 32), select.Request.ExpectedCurrent);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void DamagedPackageInventoryNeverOffersLegacyRepairOrAnotherMutation(bool nativeAvailable)
+    {
+        var facts = new ModelPackageManagementFact(new string('b', 32), false, [], [], [],
+            nativeAvailable, nativeAvailable ? null : "native-unavailable", "auto", "en", false);
+        var view = ApplicationSupportPresentation.Preparation(new(false, false, Packages: facts));
+        Assert.False(view.PrimaryAction.Enabled);
+        Assert.Empty(view.SecondaryActions);
+        Assert.False(view.CanSelectDirections);
+        Assert.All(view.PackageRows, row =>
+        {
+            Assert.Empty(row.Actions);
+            Assert.Contains("安装状态无法确认", row.AvailabilityText);
+        });
+        if (!nativeAvailable)
+            Assert.Contains("不含可用", Assert.Single(view.PackageRows, row => row.Preview).AvailabilityText);
+        Assert.Contains("无法确认", view.CurrentModelText);
+    }
+
+    [Theory]
+    [InlineData(false, "native-unavailable")]
+    [InlineData(true, "unexpected-reason")]
+    public void UnverifiedNativeRuntimeCannotOfferHyDownloadsOrUsage(bool available, string reason)
+    {
+        var legacy = PackageSelections("argos-zh-en");
+        var facts = new ModelPackageManagementFact(new string('c', 32), true, legacy, legacy, legacy,
+            available, reason, "zh", "en", false);
+        var view = ApplicationSupportPresentation.Preparation(new(true, true, Packages: facts));
+        var hy = Assert.Single(view.PackageRows, row => row.Preview);
+        Assert.Empty(hy.Actions);
+        Assert.Contains("不含可用", hy.AvailabilityText);
+        Assert.Equal(1_133_092_087L, hy.DownloadBytes);
+        Assert.Equal("1.13 GB 下载", hy.DownloadText);
+        Assert.EndsWith("/a0c709d9fac510f2c807aa3af52872340dc37a4a/LICENSE.txt", hy.LicenseUrl);
+        Assert.Equal(TranslationPreparationAction.NextStep, view.PrimaryAction.Id);
+        Assert.Empty(view.SecondaryActions);
+    }
+
+    [Fact]
+    public void PackageRequestsKeepTheObservedGenerationAndExplicitActiveFamily()
+    {
+        var legacy = PackageSelections("argos-zh-en", "argos-en-zh");
+        var initial = new ModelPackageManagementFact(new string('d', 32), true, legacy, legacy, legacy,
+            true, null, "auto", "en", false);
+        var download = Assert.Single(ApplicationSupportPresentation.Preparation(new(true, true, Packages: initial))
+            .PackageRows.Single(row => row.Preview).Actions);
+        Assert.Equal(ModelPackageOperation.Install, download.Request.Operation);
+        Assert.Equal(1, download.Request.Format);
+        Assert.Equal(["hy-mt2-1-8b-q4-k-m"], download.Request.PackageIds);
+        Assert.Equal(download.Request.PackageIds, download.Request.ActivePackages);
+        Assert.True(download.RequiresConfirmation);
+        Assert.Contains("1.13 GB", download.ConfirmationText);
+        var all = legacy.Concat(PackageSelections("hy-mt2-1-8b-q4-k-m")).ToArray();
+        var facts = initial with
+        {
+            InstalledPackages = all
+        };
+        var hy = ApplicationSupportPresentation.Preparation(new(true, true, Packages: facts)).PackageRows.Single(row => row.Preview);
+        Assert.True(hy.Installed);
+        Assert.False(hy.Current);
+        Assert.False(hy.Ready);
+        Assert.Empty(hy.ReadyDirectionIds);
+        var remove = Assert.Single(hy.Actions, action => action.Request.Operation == ModelPackageOperation.Remove);
+        Assert.Equal(["hy-mt2-1-8b-q4-k-m"], remove.Request.PackageIds);
+        Assert.Equal(["argos-zh-en", "argos-en-zh"], remove.Request.ActivePackages);
+        Assert.Equal(new string('d', 32), remove.Request.ExpectedCurrent);
+        var busy = ApplicationSupportPresentation.Preparation(new(true, true, Packages: facts with
+        {
+            OperationInProgress = true
+        }));
+        Assert.All(busy.PackageRows.SelectMany(row => row.Actions), action => Assert.False(action.Enabled));
+    }
+
+    [Fact]
+    public void AnUnavailableInactivePreviewCanStillBeRemovedWhileKeepingArgos()
+    {
+        var installed = PackageSelections("argos-zh-en", "hy-mt2-1-8b-q4-k-m");
+        var active = installed.Where(item => item.Package.Backend == "argos").ToArray();
+        var facts = new ModelPackageManagementFact(new string('f', 32), true, installed, active, active,
+            false, "native-unavailable", "zh", "en", false);
+        var row = ApplicationSupportPresentation.Preparation(new(true, true, Packages: facts)).PackageRows.Single(item => item.Preview);
+        var remove = Assert.Single(row.Actions);
+        Assert.Equal(ModelPackageOperation.Remove, remove.Request.Operation);
+        Assert.Equal(["hy-mt2-1-8b-q4-k-m"], remove.Request.PackageIds);
+        Assert.Equal(["argos-zh-en"], remove.Request.ActivePackages);
+        Assert.Equal(new string('f', 32), remove.Request.ExpectedCurrent);
+    }
+
+    [Theory]
+    [InlineData(TranslationPreparationPhase.Failed)]
+    [InlineData(TranslationPreparationPhase.Paused)]
+    public void MissingCurrentDirectionDoesNotReplaceThePreparationRecoveryReason(TranslationPreparationPhase phase)
+    {
+        var legacy = PackageSelections("argos-zh-en");
+        var facts = new ModelPackageManagementFact(new string('a', 32), true, legacy, legacy, legacy,
+            true, null, "zh", "ja", true);
+        var expected = ApplicationSupportPresentation.Preparation(new(true, true, phase));
+        var actual = ApplicationSupportPresentation.Preparation(new(true, true, phase, Packages: facts));
+        Assert.Equal(expected.Guidance, actual.Guidance);
+    }
+
+    [Fact]
+    public void WindowsCanDescribeAnUnavailablePreviewWithoutFabricatingInventory()
+    {
+        var row = ApplicationSupportPresentation.UnavailableModelPackage("hy-mt2-1-8b-q4-k-m", "windows-unavailable");
+        Assert.Equal("Windows 当前版本未开放", row.AvailabilityText);
+        Assert.True(row.Preview);
+        Assert.False(row.Installed);
+        Assert.False(row.Current);
+        Assert.False(row.Ready);
+        Assert.Empty(row.Actions);
+    }
+
+    [Theory]
+    [InlineData(TranslationPreparationPhase.Paused, TranslationPreparationAction.Resume)]
+    [InlineData(TranslationPreparationPhase.Failed, TranslationPreparationAction.Retry)]
+    public void APackageOperationKeepsTheExistingFrozenRequestRecoveryAction(TranslationPreparationPhase phase,
+        TranslationPreparationAction expected)
+    {
+        var legacy = PackageSelections("argos-zh-en");
+        var facts = new ModelPackageManagementFact(new string('e', 32), true, legacy, legacy, legacy,
+            true, null, "zh", "en", true);
+        var view = ApplicationSupportPresentation.Preparation(new(true, true, phase, Packages: facts));
+        Assert.Equal(expected, view.PrimaryAction.Id);
+        Assert.Empty(view.SecondaryActions);
+        Assert.All(view.PackageRows.SelectMany(row => row.Actions), action => Assert.False(action.Enabled));
+    }
+
+    private static IReadOnlyList<ModelPackageSelection> PackageSelections(string first, string? second = null,
+        string? onlyDirection = null)
+    {
+        string[] ids = second is null ? [first] : [first, second];
+        var inventory = JsonSerializer.SerializeToElement(new
+        {
+            schema = 3,
+            packages = ModelCatalog.Packages.Packages.Where(package => ids.Contains(package.Id)).Select(package => new
+            {
+                id = package.Id,
+                version = package.Version,
+                directions = package.Directions.Where(direction => onlyDirection is null || direction.Id == onlyDirection)
+                    .Select(direction => direction.Id).ToArray(),
+                files = new[] { new { path = "fixture.bin", sha256 = new string('0', 64) } }
+            }).ToArray()
+        });
+        return ModelCatalog.ReadInstallationSelection(inventory);
     }
 
     [Fact]

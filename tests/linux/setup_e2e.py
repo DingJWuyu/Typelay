@@ -67,6 +67,492 @@ class CatalogTests(unittest.TestCase):
                 setup.model_catalog(home)
 
 
+class PackageInstallationTests(unittest.TestCase):
+    def setUp(self):
+        (ROOT / "artifacts/tmp-tests").mkdir(parents=True, exist_ok=True)
+        directory = tempfile.TemporaryDirectory(
+            prefix="typelay-package-", dir=ROOT / "artifacts/tmp-tests"
+        )
+        self.addCleanup(directory.cleanup)
+        self.base = Path(directory.name)
+        self.home, self.data, self.cache = (self.base / name for name in ("home", "data", "cache"))
+        shutil.copytree(ROOT / "src/shared/TypeLay.Worker", self.home / "worker")
+        self.old = self.data / "components" / ("a" * 32)
+        runtime = self.old / "runtime"
+        (runtime / "python/bin").mkdir(parents=True)
+        interpreter = runtime / "python/bin/python3.13"
+        # Controlled executable port: proves relocation and process ownership,
+        # not the availability of the real CPython or inference dependencies.
+        interpreter.write_text(
+            "#!/usr/bin/python3\nimport json,sys\nfrom pathlib import Path\nr=Path(sys.argv[0]).parents[2]\nprint(json.dumps({'prefix':str(r/'venv'),'basePrefix':str(r/'python'),'dependencies':[str(r/'venv/bin/python'),str(r/'venv/bin/python')]}))\n"
+        )
+        interpreter.chmod(0o700)
+        (runtime / "venv/bin").mkdir(parents=True)
+        (runtime / "venv/bin/python").symlink_to(interpreter)
+        (runtime / "venv/pyvenv.cfg").write_text(
+            f"home = {interpreter.parent}\ninclude-system-site-packages = false\n"
+        )
+        (runtime / "requirements.lock").write_text("fixture lock")
+        self.inventory = {
+            "schema": 3,
+            "packages": [],
+            "activePackages": ["argos-zh-en", "argos-en-zh"],
+        }
+        for identity, direction in (("argos-zh-en", "zh_en"), ("argos-en-zh", "en_zh")):
+            folder = self.old / "models/packages" / identity / "1.9"
+            folder.mkdir(parents=True)
+            (folder / "fixture").write_bytes(direction.encode())
+            self.inventory["packages"].append(
+                {
+                    "id": identity,
+                    "version": "1.9",
+                    "directions": [direction],
+                    "files": [
+                        {
+                            "path": "fixture",
+                            "sha256": hashlib.sha256(direction.encode()).hexdigest(),
+                        }
+                    ],
+                }
+            )
+        self.save_inventory()
+        (self.old.parent / "current").symlink_to(self.old.name)
+
+    def save_inventory(self):
+        (self.old / "models/installed.json").write_text(json.dumps(self.inventory))
+        active = [
+            {key: item[key] for key in ("id", "version", "directions")}
+            for item in self.inventory["packages"]
+            if item["id"] in self.inventory["activePackages"]
+        ]
+        (self.old / "activation.json").write_text(
+            json.dumps(
+                {
+                    "schema": 3,
+                    "previous": None,
+                    "packages": active,
+                    "operation": "Install",
+                    "removedPackages": [],
+                    "recoveryPrevious": None,
+                }
+            )
+        )
+
+    def request(self, operation="Select", packages=None, active=None):
+        return {
+            "format": 1,
+            "operation": operation,
+            "packageIds": packages or [],
+            "activePackages": active or ["argos-en-zh"],
+            "expectedCurrent": self.old.name,
+        }
+
+    def prepare(self, request, *, success=True, opener=None):
+        output = io.StringIO()
+        with (
+            patch.object(
+                setup.urllib.request,
+                "build_opener",
+                return_value=opener,
+                side_effect=None
+                if opener
+                else AssertionError("offline operation attempted network"),
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            result = setup.install_packages(self.home, self.data, self.cache, request)
+        self.assertEqual(result, 0 if success else 1, output.getvalue())
+        self.assertEqual(os.readlink(self.old.parent / "current"), self.old.name)
+        if not success:
+            self.assertNotIn(setup.PREPARED_PREFIX, output.getvalue())
+            return None
+        generation = next(
+            line[len(setup.PREPARED_PREFIX) :]
+            for line in output.getvalue().splitlines()
+            if line.startswith(setup.PREPARED_PREFIX)
+        )
+        return self.old.parent / generation
+
+    def test_select_is_offline_and_preserves_exact_inventory_without_self_check(self):
+        candidate = self.prepare(self.request())
+        prepared = json.loads((candidate / "models/installed.json").read_text())
+        self.assertEqual(prepared["packages"], self.inventory["packages"])
+        self.assertEqual(prepared["activePackages"], ["argos-en-zh"])
+        self.assertFalse((candidate / "self-check.json").exists())
+        self.assertFalse((candidate / "runtime/venv/bin/python").is_symlink())
+        self.assertNotIn(str(self.old), (candidate / "runtime/venv/pyvenv.cfg").read_text())
+
+    def test_remove_is_offline_and_cuts_recovery_without_changing_active_package(self):
+        self.inventory["activePackages"] = ["argos-en-zh"]
+        self.save_inventory()
+        candidate = self.prepare(self.request("Remove", ["argos-zh-en"]))
+        prepared = json.loads((candidate / "models/installed.json").read_text())
+        self.assertEqual([item["id"] for item in prepared["packages"]], ["argos-en-zh"])
+        activation = json.loads((candidate / "activation.json").read_text())
+        self.assertIsNone(activation["recoveryPrevious"])
+        self.assertEqual(
+            activation["removedPackages"],
+            [{"id": "argos-zh-en", "version": "1.9", "directions": ["zh_en"]}],
+        )
+        self.assertEqual(activation["previous"], self.old.name)
+
+    def test_new_hy_install_records_twelve_but_repair_and_select_preserve_existing_subset(self):
+        identity = "hy-mt2-1-8b-q4-k-m"
+        assets = setup.hy_assets(self.home)
+        fixed = json.loads((self.home / "worker/native/hy/model.lock.json").read_text())
+        bodies = {"model": b"inert-not-a-model", "model_license": b"inert-license"}
+        for kind, body in bodies.items():
+            fixed[kind].update(bytes=len(body), sha256=hashlib.sha256(body).hexdigest())
+        native = SimpleNamespace(
+            verify_native=lambda: None,
+            read_json=lambda _path: fixed,
+            verify_file=assets.verify_file,
+        )
+        urls = []
+
+        def response(request, timeout):
+            urls.append(request.full_url)
+            body = bodies["model_license" if request.full_url.endswith("LICENSE.txt") else "model"]
+            return Response(body, headers={"Content-Length": len(body)})
+
+        with patch.object(setup, "hy_assets", return_value=native):
+            candidate = self.prepare(
+                self.request("Install", [identity], [identity]),
+                opener=SimpleNamespace(open=response),
+            )
+            installed = json.loads((candidate / "models/installed.json").read_text())
+            selected = next(item for item in installed["packages"] if item["id"] == identity)
+            self.assertEqual(
+                selected["directions"],
+                [
+                    "zh_ja",
+                    "ja_zh",
+                    "zh_ko",
+                    "ko_zh",
+                    "zh_fr",
+                    "fr_zh",
+                    "zh_es",
+                    "es_zh",
+                    "zh_de",
+                    "de_zh",
+                    "zh_pt",
+                    "pt_zh",
+                ],
+            )
+            self.assertEqual(len(urls), 2)
+            self.assertFalse((candidate / "self-check.json").exists())
+            # Existing inventory is a controlled file fixture, not a Ready claim.
+            selected["directions"] = ["zh_ja", "pt_zh"]
+            self.inventory["packages"].append(selected)
+            shutil.copytree(
+                candidate / "models/packages" / identity, self.old / "models/packages" / identity
+            )
+            self.save_inventory()
+            for operation in ("Repair", "Select"):
+                request = self.request(
+                    operation,
+                    [identity] if operation == "Repair" else [],
+                    self.inventory["activePackages"] if operation == "Repair" else [identity],
+                )
+                prepared = self.prepare(request)
+                inventory = json.loads((prepared / "models/installed.json").read_text())
+                preserved = next(item for item in inventory["packages"] if item["id"] == identity)
+                self.assertEqual(preserved["directions"], ["zh_ja", "pt_zh"])
+                self.assertFalse((prepared / "self-check.json").exists())
+            self.assertEqual(len(urls), 2)
+
+    def test_inactive_hy_can_be_removed_without_its_native_runtime(self):
+        package = {
+            "id": "hy-mt2-1-8b-q4-k-m",
+            "version": "a0c709d9fac510f2c807aa3af52872340dc37a4a",
+            "directions": ["zh_ja"],
+            "files": [{"path": "fixture", "sha256": hashlib.sha256(b"inert").hexdigest()}],
+        }
+        self.inventory["packages"].append(package)
+        self.inventory["activePackages"] = ["argos-en-zh"]
+        self.save_inventory()
+        folder = self.old / "models/packages" / package["id"] / package["version"]
+        folder.mkdir(parents=True)
+        (folder / "fixture").write_bytes(b"inert")
+        self.assertFalse(setup.check_hy_runtime(self.home)["available"])
+        candidate = self.prepare(self.request("Remove", [package["id"]]))
+        prepared = json.loads((candidate / "models/installed.json").read_text())
+        self.assertEqual(prepared["activePackages"], ["argos-en-zh"])
+        self.assertNotIn(package["id"], [item["id"] for item in prepared["packages"]])
+
+    def test_stale_request_and_invalid_semantics_fail_before_creating_a_candidate(self):
+        cases = [
+            self.request("Remove", ["argos-en-zh"]),
+            self.request("Install", ["argos-en-zh"]),
+            self.request("Repair", ["hy-mt2-1-8b-q4-k-m"]),
+            {**self.request(), "expectedCurrent": "b" * 32},
+        ]
+        for request in cases:
+            with self.subTest(request=request):
+                self.prepare(request, success=False)
+                self.assertEqual(
+                    {path.name for path in self.old.parent.iterdir()},
+                    {self.old.name, "current", "install.lock"},
+                )
+
+    def test_repair_cannot_change_active_selection_before_copy_or_download(self):
+        with patch.object(setup, "copy_runtime", wraps=setup.copy_runtime) as copy:
+            self.prepare(self.request("Repair", ["argos-zh-en"]), success=False)
+            copy.assert_not_called()
+
+    def test_native_closure_must_pass_before_any_hy_download_or_runtime_copy(self):
+        self.prepare(
+            self.request("Install", ["hy-mt2-1-8b-q4-k-m"], ["hy-mt2-1-8b-q4-k-m"]), success=False
+        )
+        self.assertEqual(
+            {path.name for path in self.old.parent.iterdir()},
+            {self.old.name, "current", "install.lock"},
+        )
+        self.assertEqual(
+            setup.check_hy_runtime(self.home), {"available": False, "reason": "native-unavailable"}
+        )
+
+    def test_legacy_migration_copies_actual_files_and_rewrites_manifest_paths(self):
+        files = []
+        for package in self.inventory["packages"]:
+            direction = package["directions"][0]
+            folder = self.old / "models/packages" / package["id"] / "1.9"
+            folder.rename(self.old / "models" / direction)
+            files += [
+                {"path": direction + "/" + item["path"], "sha256": item["sha256"]}
+                for item in package["files"]
+            ]
+        shutil.rmtree(self.old / "models/packages")
+        (self.old / "models/installed.json").write_text(
+            json.dumps({"schema": 1, "directions": ["zh_en", "en_zh"], "files": files})
+        )
+        (self.old / "activation.json").write_text('{"schema":1,"previous":null}')
+        candidate = self.prepare(self.request())
+        prepared = json.loads((candidate / "models/installed.json").read_text())
+        self.assertEqual(prepared["packages"], self.inventory["packages"])
+        self.assertEqual(
+            (candidate / "models/packages/argos-zh-en/1.9/fixture").read_bytes(), b"zh_en"
+        )
+        self.assertFalse((candidate / "models/zh_en").exists())
+
+    def test_untrusted_model_links_or_external_runtime_links_are_not_copied(self):
+        target = self.old / "models/packages/argos-zh-en/1.9/fixture"
+        original = target.read_bytes()
+        target.unlink()
+        target.symlink_to(self.old / "runtime/requirements.lock")
+        self.prepare(self.request(), success=False)
+        target.unlink()
+        target.write_bytes(original)
+        executable = self.old / "runtime/venv/bin/python"
+        executable.unlink()
+        executable.symlink_to("/usr/bin/python3")
+        self.prepare(self.request(), success=False)
+
+    def test_exact_request_rejects_unknown_fields_duplicates_and_mixed_families(self):
+        catalog = setup.package_catalog(self.home)
+        for request in (
+            {**self.request(), "url": "https://example.com"},
+            {**self.request(), "format": True},
+            self.request(active=["argos-en-zh", "hy-mt2-1-8b-q4-k-m"]),
+            self.request(active=["argos-en-zh", "argos-en-zh"]),
+            self.request("Repair", ["argos-en-zh", "hy-mt2-1-8b-q4-k-m"]),
+        ):
+            with self.subTest(request=request), self.assertRaises(ValueError):
+                setup.validate_package_request(request, catalog)
+        with self.assertRaises(ValueError):
+            json.loads('{"format":1,"format":1}', object_pairs_hook=setup.unique_object)
+
+    def test_repair_fetches_only_the_requested_package_and_never_starts_a_model(self):
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w") as package:
+            package.writestr(
+                "metadata.json",
+                json.dumps({"from_code": "zh", "to_code": "en", "package_version": "1.9"}),
+            )
+            for name in (
+                "sentencepiece.model",
+                "model/config.json",
+                "model/model.bin",
+                "model/shared_vocabulary.json",
+            ):
+                package.writestr(name, b"inert preparation bytes")
+        requests = []
+
+        def open_response(request, timeout):
+            requests.append(request.full_url)
+            return Response(archive.getvalue())
+
+        candidate = self.prepare(
+            self.request("Repair", ["argos-zh-en"], ["argos-zh-en", "argos-en-zh"]),
+            opener=SimpleNamespace(open=open_response),
+        )
+        self.assertEqual(requests, ["https://argos-net.com/v1/translate-zh_en-1_9.argosmodel"])
+        prepared = json.loads((candidate / "models/installed.json").read_text())
+        self.assertEqual(prepared["packages"][1], self.inventory["packages"][1])
+        self.assertFalse((candidate / "self-check.json").exists())
+
+    def test_repair_rebuilds_damaged_runtime_but_select_and_remove_stay_offline(self):
+        self.inventory["activePackages"] = ["argos-en-zh"]
+        self.save_inventory()
+        archive = self.cache / "components/zh_en-1.9.argosmodel"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(archive, "w") as package:
+            package.writestr(
+                "metadata.json",
+                json.dumps({"from_code": "zh", "to_code": "en", "package_version": "1.9"}),
+            )
+            for name in (
+                "sentencepiece.model",
+                "model/config.json",
+                "model/model.bin",
+                "model/shared_vocabulary.json",
+            ):
+                package.writestr(name, b"inert preparation bytes")
+        interpreter = self.old / "runtime/python/bin/python3.13"
+        original = interpreter.read_bytes()
+        real_popen = subprocess.Popen
+        uv_calls = []
+
+        def process(arguments, **options):
+            if arguments[0] != "uv":
+                return real_popen(arguments, **options)
+            uv_calls.append(arguments)
+            python = Path(options["env"]["UV_PYTHON_INSTALL_DIR"]) / "bin/python3.13"
+            output = b""
+            if arguments[1:3] == ["python", "install"]:
+                python.parent.mkdir(parents=True)
+                python.write_bytes(b"controlled new runtime")
+            elif arguments[1:3] == ["python", "find"]:
+                output = str(python).encode()
+            elif arguments[1] == "venv":
+                entry = Path(arguments[2]) / "bin/python"
+                entry.parent.mkdir(parents=True)
+                entry.symlink_to(python)
+            elif arguments[1:3] == ["pip", "compile"]:
+                Path(arguments[arguments.index("--output-file") + 1]).write_text(
+                    "controlled new dependency lock"
+                )
+            return SimpleNamespace(
+                communicate=lambda **_: (output, None), returncode=0, poll=lambda: 0
+            )
+
+        for damage in (None, b"#!/usr/bin/python3\nraise SystemExit(1)\n", b"broken executable"):
+            with (
+                self.subTest(damage=damage),
+                patch.object(setup.subprocess, "Popen", side_effect=process),
+            ):
+                uv_calls.clear()
+                if damage is None:
+                    interpreter.unlink()
+                else:
+                    interpreter.write_bytes(damage)
+                    interpreter.chmod(0o700)
+                for request in (self.request(), self.request("Remove", ["argos-zh-en"])):
+                    self.prepare(request, success=False)
+                    self.assertFalse(uv_calls)
+                candidate = self.prepare(
+                    self.request("Repair", ["argos-zh-en"], self.inventory["activePackages"])
+                )
+                self.assertEqual(
+                    [call[1:3] for call in uv_calls],
+                    [
+                        ["python", "install"],
+                        ["python", "find"],
+                        ["venv", str(candidate / "runtime/venv")],
+                        ["pip", "compile"],
+                        ["pip", "install"],
+                    ],
+                )
+                self.assertFalse((candidate / "self-check.json").exists())
+                if damage is None:
+                    self.assertFalse(interpreter.exists())
+                else:
+                    self.assertEqual(interpreter.read_bytes(), damage)
+                interpreter.write_bytes(original)
+                interpreter.chmod(0o700)
+
+    def test_runtime_permission_failure_does_not_trigger_network_rebuild(self):
+        (self.old / "runtime/python/bin/python3.13").chmod(0o600)
+        with patch.object(setup.subprocess, "Popen", wraps=subprocess.Popen) as process:
+            self.prepare(
+                self.request("Repair", ["argos-zh-en"], self.inventory["activePackages"]),
+                success=False,
+            )
+            self.assertTrue(process.called)
+            self.assertTrue(all(call.args[0][0] != "uv" for call in process.call_args_list))
+
+    def test_runtime_rebuild_budget_is_checked_before_copy_or_network(self):
+        usage = shutil.disk_usage(self.data)
+        with (
+            patch.object(
+                setup.shutil, "disk_usage", return_value=type(usage)(usage.total, 0, 4 * 1024**3)
+            ),
+            patch.object(setup.subprocess, "Popen", wraps=subprocess.Popen) as process,
+        ):
+            self.prepare(
+                self.request("Repair", ["argos-zh-en"], self.inventory["activePackages"]),
+                success=False,
+            )
+            process.assert_not_called()
+        self.assertEqual(
+            {path.name for path in self.old.parent.iterdir()},
+            {self.old.name, "current", "install.lock"},
+        )
+
+    def test_cache_cleanup_keeps_all_inventory_and_recovery_references(self):
+        package_cache = (
+            self.cache / "components/hy-mt2-1-8b-q4-k-m/a0c709d9fac510f2c807aa3af52872340dc37a4a"
+        )
+        package_cache.mkdir(parents=True)
+        cached = package_cache / "Hy-MT2-1.8B-Q4_K_M.gguf"
+        cached.write_bytes(b"inert cache bytes")
+        hy = {
+            "id": "hy-mt2-1-8b-q4-k-m",
+            "version": "a0c709d9fac510f2c807aa3af52872340dc37a4a",
+            "directions": ["zh_ja"],
+            "files": [{"path": "fixture", "sha256": "0" * 64}],
+        }
+        self.inventory["packages"].append(hy)
+        self.save_inventory()
+        self.assertTrue(setup.cleanup_packages(self.home, self.data, self.cache))
+        self.assertTrue(cached.exists())
+        (self.old / "models/installed.json").write_text("invalid")
+        self.assertFalse(setup.cleanup_packages(self.home, self.data, self.cache))
+        self.assertTrue(cached.exists())
+        self.inventory["packages"].pop()
+        self.save_inventory()
+        self.assertTrue(setup.cleanup_packages(self.home, self.data, self.cache))
+        self.assertFalse(cached.exists())
+
+    def test_schema_three_cannot_fall_back_to_legacy_full_repair(self):
+        (self.old / "activation.json").unlink()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                setup.install(self.home, self.data, self.cache, ["zh_en", "en_zh"], True), 1
+            )
+        self.assertEqual(os.readlink(self.old.parent / "current"), self.old.name)
+        self.assertEqual(
+            json.loads((self.old / "models/installed.json").read_text()), self.inventory
+        )
+        (self.old / "models/installed.json").write_text("invalid")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                setup.install(self.home, self.data, self.cache, ["zh_en", "en_zh"], True), 1
+            )
+        self.assertEqual((self.old / "models/installed.json").read_text(), "invalid")
+
+    def test_insufficient_space_is_rejected_before_copy_or_download(self):
+        usage = shutil.disk_usage(self.data)
+        with patch.object(
+            setup.shutil, "disk_usage", return_value=type(usage)(usage.total, usage.total, 0)
+        ):
+            self.prepare(self.request(), success=False)
+        self.assertEqual(
+            {path.name for path in self.old.parent.iterdir()},
+            {self.old.name, "current", "install.lock"},
+        )
+
+
 class DownloadTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="typelay-download-")
@@ -98,6 +584,47 @@ class DownloadTests(unittest.TestCase):
         )
         with self.assertRaises(OSError):
             setup.download(DIRECTIONS["zh_en"], self.cache)
+
+    def test_fixed_artifact_requires_exact_size_and_full_sha_before_cache_publication(self):
+        payload = b"fixed artifact"
+        expected = {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+        archive = self.cache / "fixed.gguf"
+        url = DIRECTIONS["zh_en"].url
+        for body in (b"wrong artifact", payload[:-1]):
+            self.responses.append(Response(body, headers={"Content-Length": len(body)}))
+            with self.assertRaisesRegex(ValueError, "^model-fixed-hash$"):
+                setup.download_resource(
+                    "fixed", url, archive, len(payload) + 65536, expected=expected
+                )
+            self.assertFalse(archive.exists())
+        self.responses.append(Response(payload, headers={"Content-Length": len(payload)}))
+        result, _ = setup.download_resource(
+            "fixed", url, archive, len(payload) + 65536, expected=expected
+        )
+        self.assertEqual(result.read_bytes(), payload)
+        self.assertEqual(len(self.requests), 3)
+        setup.download_resource("fixed", url, archive, len(payload) + 65536, expected=expected)
+        self.assertEqual(len(self.requests), 3)
+        archive.write_bytes(b"changed")
+        self.responses.append(Response(payload, headers={"Content-Length": len(payload)}))
+        setup.download_resource("fixed", url, archive, len(payload) + 65536, expected=expected)
+        self.assertEqual(len(self.requests), 4)
+        self.assertEqual(archive.read_bytes(), payload)
+
+    def test_fixed_artifact_limit_does_not_expand_unknown_argos_archives(self):
+        declared = 1133080448
+        self.responses.append(Response(b"small", headers={"Content-Length": declared}))
+        with self.assertRaisesRegex(ValueError, "^model-download-size$"):
+            setup.download(DIRECTIONS["zh_en"], self.cache)
+        self.responses.append(Response(b"small", headers={"Content-Length": declared}))
+        with self.assertRaisesRegex(OSError, "^model-download-incomplete$"):
+            setup.download_resource(
+                "fixed",
+                DIRECTIONS["zh_en"].url,
+                self.cache / "fixed.gguf",
+                declared + 65536,
+                expected={"bytes": declared, "sha256": "0" * 64},
+            )
 
     def test_interruption_resumes_only_the_same_representation(self):
         self.interrupted()
@@ -1982,6 +2509,7 @@ if __name__ == "__main__":
     options, remaining = parser.parse_known_args()
     suite = [
         "CatalogTests",
+        "PackageInstallationTests",
         "DownloadTests",
         "InstallationFailureTests",
         "ApplicationSupportTests",

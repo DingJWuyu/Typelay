@@ -80,8 +80,8 @@ public slots:
     }
 public:
     void overlayEvent(const char *event, const OverlayObject &object, QJsonObject extra = {}) {
-        // Fixed roles and numeric geometry/timing only. Never log widget text,
-        // labels, arbitrary object names or native addresses.
+        // Owned TypeLay control roles and numeric geometry/timing only. Never
+        // log widget text, unrelated object names or native addresses.
         if (overlayEventCount >= 160) return;
         const auto &bounds = object.bounds;
         extra.insert("sequence", qint64(++overlayEventCount));
@@ -97,9 +97,7 @@ public:
     void observeOverlay(QWidget *widget) {
         if (!widget || !window || widget->window() != window) return;
         const auto name = widget->objectName();
-        const bool control = name == QStringLiteral("typelay-menu-trigger")
-            || name == QStringLiteral("typelay-copy") || name == QStringLiteral("typelay-expand") || name == QStringLiteral("typelay-source-auto")
-            || name == QStringLiteral("typelay-source-en") || name == QStringLiteral("typelay-resume");
+        const bool control = qobject_cast<QAbstractButton *>(widget) && name.startsWith(QStringLiteral("typelay-"));
         if (!control && name != QStringLiteral("typelay-overlay") && name != QStringLiteral("typelay-menu")) return;
         const QRect bounds(widget->mapTo(window, QPoint()), widget->size());
         if (overlayObjects.contains(widget)) { overlayObjects[widget].bounds = bounds; return; }
@@ -378,10 +376,12 @@ int main(int argc, char **argv) {
         observer.observeOverlay(overlay);
         observer.observeOverlay(menu);
         QJsonObject overlayControls;
-        for (const auto *name : {"typelay-menu-trigger", "typelay-copy", "typelay-expand", "typelay-source-auto", "typelay-source-en", "typelay-resume"}) {
-            auto *button = window.findChild<QAbstractButton *>(QLatin1String(name));
+        for (auto *button : window.findChildren<QAbstractButton *>()) {
+            const auto name = button->objectName();
+            if (!name.startsWith(QStringLiteral("typelay-"))) continue;
             observer.observeOverlay(button);
-            if (button) overlayControls.insert(QLatin1String(name), QJsonObject{
+            overlayControls.insert(name, QJsonObject{
+                {"text", button->text()}, {"focused", button->hasFocus()},
                 {"visible", button->isVisible()}, {"enabled", button->isEnabled()},
                 {"underMouse", button->underMouse()},
                 {"checked", button->isChecked()}, {"geometry", rectangle(button)},

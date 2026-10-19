@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .catalog import ModelDirection, load_catalog
+from .catalog import load_package_catalog
+from .inventory import verify_inventory
 from .protocol import valid_text
 
 # Keep original line separators, URLs, @mentions, issue references and emoji byte-for-byte.
@@ -84,6 +84,13 @@ class Ct2Pair:
             intra_threads=threads,
         )
 
+    def close(self):
+        unload = getattr(self._model, "unload_model", None)
+        if unload is not None:
+            unload()
+        self._model = None
+        self._sp = None
+
     def translate(self, text: str) -> str:
         pieces = self._sp.encode(text, out_type=str)
         if not pieces:
@@ -108,110 +115,87 @@ class Ct2Pair:
 
 class LocalEngine:
     def __init__(self, models: Path):
-        self.catalog = load_catalog()
-        selected = self._verify_inventory(models, self.catalog)
-        from lingua import LanguageDetectorBuilder
-
-        # A real offline detector is used; Auto is not a Han/non-Han dictionary substitute.
-        self._detector = (
-            LanguageDetectorBuilder.from_all_languages().with_low_accuracy_mode().build()
+        packages = load_package_catalog()
+        self.catalog = tuple(
+            direction for package in packages.packages for direction in package.directions
         )
-        threads = max(1, min(4, (os.cpu_count() or 2) // 2))
-        self._pairs = {
-            (direction.source, direction.target): Ct2Pair(models / direction.id, threads)
-            for direction in selected
-        }
-
-    @staticmethod
-    def _verify_inventory(
-        models: Path, catalog: tuple[ModelDirection, ...]
-    ) -> tuple[ModelDirection, ...]:
+        self._pairs = {}
+        self._owned = []
+        self._selection = ()
         try:
-            inventory = json.loads((models / "installed.json").read_text(encoding="utf-8"))
-            if not isinstance(inventory, dict):
-                raise EngineError("model-inventory")
-            schema = inventory.get("schema")
-            if type(schema) is not int or schema not in (1, 2):
-                raise EngineError("model-inventory")
-            selected = catalog
-            if schema == 2 or "directions" in inventory:
-                directions = inventory["directions"]
-                if (
-                    not isinstance(directions, list)
-                    or not directions
-                    or any(not isinstance(value, str) for value in directions)
-                    or len(set(directions)) != len(directions)
-                    or not set(directions).issubset(direction.id for direction in catalog)
-                    or (schema == 1 and len(directions) != len(catalog))
-                ):
-                    raise EngineError("model-inventory")
-                selected = tuple(direction for direction in catalog if direction.id in directions)
-            entries = inventory["files"]
-            if not isinstance(entries, list) or not 2 * len(selected) <= len(entries) <= 20000:
-                raise EngineError("model-inventory")
-            seen: set[str] = set()
-            for item in entries:
-                relative, expected = item["path"], item["sha256"]
-                if schema == 2:
-                    if not isinstance(relative, str) or not isinstance(expected, str):
-                        raise EngineError("model-inventory")
-                    parts = relative.split("/")
-                    if (
-                        len(parts) < 2
-                        or parts[0] not in {direction.id for direction in selected}
-                        or any(
-                            part in ("", ".", "..") or "\\" in part or ":" in part for part in parts
+            inventory = verify_inventory(models, packages)
+            self.schema = inventory.schema
+            if self.schema in (1, 2):
+                self.catalog = packages.legacy_directions
+            selected = inventory.packages
+            from lingua import LanguageDetectorBuilder
+
+            self._detector = (
+                LanguageDetectorBuilder.from_all_languages().with_low_accuracy_mode().build()
+            )
+            threads = max(1, min(4, (os.cpu_count() or 2) // 2))
+            for item in selected:
+                if item.selection.package.backend == "argos":
+                    for direction in item.selection.directions:
+                        pair = Ct2Pair(item.root, threads)
+                        self._owned.append(pair)
+                        self._pairs[(direction.source, direction.target)] = pair
+                else:
+                    from .hy import HyModel
+
+                    model = HyModel(item.native)
+                    self._owned.append(model)
+                    for direction in item.selection.directions:
+                        self._pairs[(direction.source, direction.target)] = model.direction(
+                            direction.id
                         )
-                        or not re.fullmatch(r"[0-9a-fA-F]{64}", expected)
-                    ):
-                        raise EngineError("model-inventory")
-                path = (models / relative).resolve()
-                if not path.is_relative_to(models.resolve()) or relative in seen:
-                    raise EngineError("model-inventory")
-                seen.add(relative)
-                with path.open("rb") as file:
-                    actual = hashlib.file_digest(file, "sha256").hexdigest()
-                if actual.lower() != str(expected).lower():
-                    raise EngineError("model-integrity")
-            required = {
-                f"{p}/{f}"
-                for p in (direction.id for direction in selected)
-                for f in ("model/model.bin", "sentencepiece.model")
+            self._selection = tuple(item.selection for item in selected)
+        except Exception as error:
+            self.close()
+            if isinstance(error, ValueError):
+                raise EngineError(str(error)) from None
+            raise
+
+    def close(self):
+        self._pairs.clear()
+        self._selection = ()
+        for model in reversed(self._owned):
+            try:
+                model.close()
+            except Exception:
+                # Continue releasing the other owned resources; process exit is
+                # the final cleanup boundary, and native details stay private.
+                pass
+        self._owned.clear()
+
+    @property
+    def packages(self):
+        return tuple(
+            {
+                "id": item.package.id,
+                "version": item.package.version,
+                "directions": [direction.id for direction in item.directions],
             }
-            if not required.issubset(seen):
-                raise EngineError("model-inventory")
-            if schema == 2:
-                # Every file the selected native models can read must be inventoried;
-                # leftover unselected folders never grant or extend capability.
-                actual_files: set[str] = set()
-                for direction in selected:
-                    directory = models / direction.id
-                    if directory.is_symlink():
-                        raise EngineError("model-inventory")
-                    for path in directory.rglob("*"):
-                        if path.is_symlink():
-                            raise EngineError("model-inventory")
-                        if path.is_file():
-                            actual_files.add(path.relative_to(models).as_posix())
-                if actual_files != seen:
-                    raise EngineError("model-inventory")
-            # A legacy inventory without directions still requires the full bundle.
-            # Native loading must also finish before any hello can advertise it.
-            return selected
-        except (OSError, KeyError, ValueError, TypeError):
-            raise EngineError("model-inventory") from None
+            for item in self._selection
+        )
+
+    @property
+    def self_check_directions(self):
+        directions = tuple(direction for item in self._selection for direction in item.directions)
+        return (
+            directions[:1]
+            if self._selection[0].package.backend == "hy-mt-llama-cpu"
+            else directions
+        )
 
     @property
     def directions(self) -> tuple[str, ...]:
-        return tuple(
-            direction.id
-            for direction in self.catalog
-            if (direction.source, direction.target) in self._pairs
-        )
+        return tuple(direction.id for item in self._selection for direction in item.directions)
 
     def translate(
         self, text: str, source: str, target: str, preserved: str | None = None
     ) -> Result:
+        deadline = time.monotonic() + 60
         sources = {direction.source for direction in self.catalog}
         targets = {direction.target for direction in self.catalog}
         if not valid_text(text) or source not in sources | {"auto"} or target not in targets:
@@ -232,6 +216,8 @@ class LocalEngine:
         if pair is None:
             return Result("error", code="language-unavailable")
         try:
+            if self._selection[0].package.backend == "hy-mt-llama-cpu":
+                pair = pair.request(text, deadline)
             value = preserve_structure(text, pair)
             if preserved is not None:
                 value = merge_manual(preserved, value)

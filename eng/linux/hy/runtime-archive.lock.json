@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "file": "llama-b11717-bin-ubuntu-x64.tar.gz",
+  "bytes": 17969007,
+  "sha256": "1fce11be93423044e073a9a967b99998569c4bd343220f60ef98b080385d09cb",
+  "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11717/llama-b11717-bin-ubuntu-x64.tar.gz"
+}

@@ -19,6 +19,37 @@ namespace TypeLay.App.Tests;
 public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
 {
     [Theory]
+    [InlineData("ja", "日本語")]
+    [InlineData("ko", "한국어")]
+    [InlineData("fr", "Français")]
+    [InlineData("es", "Español")]
+    [InlineData("de", "Deutsch")]
+    [InlineData("pt", "Português")]
+    public Task APreviouslySavedChoiceIsVisibleButCannotAdvertiseNewWindowsSupport(string code, string label) => desktop.RunAsync(async () =>
+    {
+        var saved = new List<string>();
+        var picker = new LanguagePicker(source: false, code, saved.Add);
+        var window = new Window { Content = picker, Width = 320, Height = 120 };
+        try
+        {
+            window.Show();
+            await DrainAsync(window);
+            Assert.Equal(label + "（当前版本未开放）", picker.SelectedItem?.ToString());
+            picker.IsDropDownOpen = true;
+            await DrainAsync(window);
+            var selected = Assert.IsType<ComboBoxItem>(picker.ItemContainerGenerator.ContainerFromItem(picker.SelectedItem));
+            Assert.False(selected.IsEnabled);
+            Assert.Empty(saved);
+            picker.Synchronize(code);
+            Assert.Equal(label + "（当前版本未开放）", picker.SelectedItem?.ToString());
+            picker.SelectedIndex = 0;
+            Assert.Equal(["zh"], saved);
+            Assert.Equal("中文", picker.SelectedItem?.ToString());
+        }
+        finally { window.Close(); }
+    });
+
+    [Theory]
     [InlineData(false, true)]
     [InlineData(false, false)]
     [InlineData(true, true)]
@@ -331,7 +362,7 @@ public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
             _models = System.IO.Path.Combine(_directory, "models");
             File.WriteAllText(_python, "not an executable");
             Directory.CreateDirectory(_models);
-            File.WriteAllText(System.IO.Path.Combine(_models, "installed.json"), "{}");
+            File.WriteAllText(System.IO.Path.Combine(_models, "installed.json"), "{\"schema\":1}");
             _model = new(new(_python, System.IO.Path.Combine(_directory, "missing-worker"), _models), info => new ChildProcess(info));
             if (quickPanel)
             {

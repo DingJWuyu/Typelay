@@ -22,6 +22,39 @@ namespace TypeLay.App.Tests;
 public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
 {
     [Theory]
+    [InlineData("ja", "日本語")]
+    [InlineData("ko", "한국어")]
+    [InlineData("fr", "Français")]
+    [InlineData("es", "Español")]
+    [InlineData("de", "Deutsch")]
+    [InlineData("pt", "Português")]
+    [InlineData("unknown", "unknown（当前不可用）")]
+    public Task SavedLanguageTitlesDoNotPretendWindowsHasAnEnglishDirection(string code, string label) => desktop.RunAsync(() =>
+    {
+        var (window, input, source) = OpenSource();
+        var overlay = new OverlayWindow(clientAreaAnimation: () => false);
+        try
+        {
+            var settings = new UserSettings(Source: "zh", Target: code);
+            overlay.Configure(settings);
+            overlay.Render(Ready(source, "Synthetic preview"), settings, false);
+            overlay.UpdateLayout();
+            Assert.Contains("中 → " + label + "  ⌄", VisibleLabels(overlay));
+            settings = settings with
+            {
+                Source = code,
+                Target = "zh"
+            };
+            overlay.Configure(settings);
+            overlay.Render(Ready(source, "Synthetic preview"), settings, false);
+            overlay.UpdateLayout();
+            Assert.Contains(label + " → 中  ⌄", VisibleLabels(overlay));
+            Assert.True(input.IsKeyboardFocused);
+        }
+        finally { overlay.Close(); window.Close(); }
+    });
+
+    [Theory]
     [InlineData(320, "light")]
     [InlineData(520, "light")]
     [InlineData(320, "dark")]

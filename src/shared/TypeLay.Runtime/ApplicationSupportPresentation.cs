@@ -2,10 +2,22 @@ namespace TypeLay.Runtime;
 
 public static class ApplicationSupportPresentation
 {
+    public static string LanguageName(string code) => code switch
+    {
+        "auto" => "Auto",
+        "en" => "EN",
+        _ => ModelCatalog.Packages.Packages.SelectMany(package => package.Directions)
+            .SelectMany(direction => new[] { new ModelLanguageChoice(direction.Source, direction.SourceName),
+                new ModelLanguageChoice(direction.Target, direction.TargetName) })
+            .FirstOrDefault(language => language.Code == code)?.Label ?? code + "（当前不可用）"
+    };
+
     public static TranslationPreparationView Preparation(TranslationPreparationFact facts,
         TranslationPreparationNextStep nextStep = TranslationPreparationNextStep.TryIt)
     {
         var view = PreparationCore(facts, nextStep);
+        if (facts.Packages is { } packages)
+            return PackagePreparation(facts, packages, view, nextStep);
         var installed = facts.InstalledDirections ?? [];
         if (facts.Phase == TranslationPreparationPhase.Idle && facts.FailureCategory is null)
         {
@@ -41,6 +53,160 @@ public static class ApplicationSupportPresentation
                 && facts.Phase == TranslationPreparationPhase.Idle && facts.FailureCategory is null
         };
     }
+    private static TranslationPreparationView PackagePreparation(TranslationPreparationFact facts,
+        ModelPackageManagementFact packages, TranslationPreparationView view, TranslationPreparationNextStep nextStep)
+    {
+        var rows = ModelCatalog.Packages.Packages.Select(package => PackageRow(package, packages)).ToArray();
+        string currentText = !packages.InventoryKnown ? "当前模型无法确认"
+            : packages.CurrentPackages.Count == 0 ? "尚未选择本地模型"
+            : "当前模型：" + string.Join("、", packages.CurrentPackages.Select(item => PackageTitle(item.Package)));
+        bool idle = facts.Phase == TranslationPreparationPhase.Idle && facts.FailureCategory is null;
+        if (!packages.InventoryKnown)
+            view = view with
+            {
+                StatusText = "本地组件安装记录无法读取",
+                Guidance = "未更改模型。请重新打开 TypeLay 检查安装记录。",
+                PrimaryAction = new(TranslationPreparationAction.Prepare, "暂不可操作", false),
+                SecondaryActions = []
+            };
+        else if (idle && packages.InstalledPackages.Count > 0)
+        {
+            var readyDirections = packages.ReadyPackages.SelectMany(item => item.Directions).ToArray();
+            view = view with
+            {
+                StatusText = facts.ModelReady && readyDirections.Length > 0
+                    ? "本地翻译已就绪 · " + string.Join("、", readyDirections.Select(DirectionLabel))
+                    : "本地翻译尚未就绪",
+                PrimaryAction = new(TranslationPreparationAction.NextStep,
+                    nextStep == TranslationPreparationNextStep.ChooseConnection ? "选择接入方式" : "试一试",
+                    facts.ModelReady || nextStep == TranslationPreparationNextStep.ChooseConnection),
+                SecondaryActions = []
+            };
+        }
+        if (idle && packages.InventoryKnown && packages.CurrentPackages.Count > 0)
+        {
+            // Hello may cover only a subset of a package. Never expand it to catalog coverage.
+            var actual = (facts.ModelReady ? packages.ReadyPackages : packages.CurrentPackages)
+                .SelectMany(item => item.Directions);
+            bool covered = packages.Source == packages.Target || actual.Any(direction =>
+                direction.Target == packages.Target && (packages.Source == "auto" || direction.Source == packages.Source));
+            if (!covered)
+                view = view with
+                {
+                    Guidance = "当前模型不包含这个方向。请切换模型或调整语言。"
+                };
+        }
+        return view with
+        {
+            CurrentModelText = currentText,
+            PackageRows = rows,
+            Directions = ModelCatalog.Directions.Select(direction => new TranslationPreparationDirectionView(
+                direction.Id, DirectionLabel(direction), packages.InstalledPackages.Any(item =>
+                    item.Directions.Any(installed => installed.Id == direction.Id)))).ToArray(),
+            CanSelectDirections = packages.InventoryKnown && packages.InstalledPackages.Count == 0
+                && !packages.OperationInProgress && idle
+        };
+    }
+
+    // A platform without a package workflow can still describe a real catalog entry without inventing inventory.
+    public static ModelPackageRow UnavailableModelPackage(string packageId, string reason)
+    {
+        var package = ModelCatalog.Packages.Packages.Single(item => item.Id == packageId);
+        return PackageRow(package, null) with
+        {
+            AvailabilityText = PackageUnavailableText(reason),
+            Actions = []
+        };
+    }
+
+    private static ModelPackageRow PackageRow(ModelPackage package, ModelPackageManagementFact? facts)
+    {
+        var installed = facts?.InstalledPackages.FirstOrDefault(item => SamePackage(item, package));
+        var current = facts?.CurrentPackages.FirstOrDefault(item => SamePackage(item, package));
+        var ready = facts?.ReadyPackages.FirstOrDefault(item => SamePackage(item, package));
+        bool available = package.Backend == "argos" || facts is { HyRuntimeAvailable: true, HyUnavailableReason: null };
+        string unavailable = available ? "" : PackageUnavailableText(facts?.HyUnavailableReason);
+        string status = facts is { InventoryKnown: false }
+            ? "安装状态无法确认" + (unavailable.Length > 0 ? " · " + unavailable : "")
+            : unavailable.Length > 0 ? unavailable
+            : current is not null ? ready is not null ? "当前 · 已就绪" : "当前 · 尚未就绪"
+            : installed is not null ? "已安装" : "尚未安装";
+        long? bytes = ModelCatalog.PackageDownloadBytes(package);
+        string download = bytes is { } count ? (count / 1_000_000_000d).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture) + " GB 下载" : "";
+        string license = package.Backend == "hy-mt-llama-cpu" ? new Uri(new Uri(package.Url), "LICENSE.txt").AbsoluteUri : "";
+        return new(package.Id, package.Version, PackageTitle(package), package.Preview,
+            package.Directions.Select(direction => direction.Id).ToArray(), PackageCoverage(package),
+            installed is not null, current is not null, ready is not null,
+            installed?.Directions.Select(direction => direction.Id).ToArray() ?? [],
+            current?.Directions.Select(direction => direction.Id).ToArray() ?? [],
+            ready?.Directions.Select(direction => direction.Id).ToArray() ?? [], bytes, download, license,
+            package.Preview ? "预览版可能出现漏译或表达偏差，请核对译文。仅支持列出的中文双向直译，不会经英语中转。模型许可证随包保留。"
+                : "翻译在本机运行，输入内容不会上传。模型许可证随包保留。",
+            status, facts is null || !facts.InventoryKnown ? [] : PackageActions(package, facts, installed is not null, current is not null, available));
+    }
+
+    private static bool SamePackage(ModelPackageSelection selection, ModelPackage package) =>
+        selection.Package.Id == package.Id && selection.Package.Version == package.Version;
+
+    private static string PackageTitle(ModelPackage package) => package.Backend == "hy-mt-llama-cpu"
+        ? "Hy-MT2 1.8B · 中文多语" : "Argos · " + string.Join("、", package.Directions.Select(DirectionLabel));
+    private static string PackageCoverage(ModelPackage package)
+    {
+        var fromChinese = package.Directions.Where(direction => direction.Source == "zh").ToArray();
+        if (package.Backend == "hy-mt-llama-cpu" && fromChinese.Length * 2 == package.Directions.Count
+            && fromChinese.All(direction => package.Directions.Any(reverse =>
+                reverse.Source == direction.Target && reverse.Target == "zh")))
+            return "中文 ↔ " + string.Join("、", fromChinese.Select(direction => direction.TargetName));
+        return string.Join("、", package.Directions.Select(DirectionLabel));
+    }
+    private static string DirectionLabel(ModelDirection direction) => direction.SourceName + " → " + direction.TargetName;
+    private static string PackageUnavailableText(string? reason) => reason == "windows-unavailable"
+        ? "Windows 当前版本未开放" : "当前安装包不含可用的 Hy 运行组件";
+
+    private static ModelPackageActionView[] PackageActions(ModelPackage package, ModelPackageManagementFact facts,
+        bool installed, bool current, bool available)
+    {
+        List<ModelPackageActionView> actions = [];
+        string[] active = facts.CurrentPackages.Select(item => item.Package.Id).ToArray();
+        string[] selected = package.Backend == "argos"
+            ? ModelCatalog.Packages.Packages.Where(item => item.Backend == "argos"
+                && (item.Id == package.Id || facts.InstalledPackages.Any(entry => SamePackage(entry, item))))
+                .Select(item => item.Id).ToArray()
+            : [package.Id];
+        bool enabled = !facts.OperationInProgress;
+        ModelPackageActionView Action(ModelPackageOperation operation, string label, string[] ids,
+            string[] next, string confirmation) => new(label, enabled, true, confirmation,
+                new(1, operation, ids, next, facts.Generation));
+        string size = ModelCatalog.PackageDownloadBytes(package) is { } bytes
+            ? $"下载约 {(bytes / 1_000_000_000d).ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)} GB。" : "";
+        if (!installed && available)
+            actions.Add(Action(ModelPackageOperation.Install, "下载并使用…", [package.Id], selected,
+                "将从 " + (package.Backend == "hy-mt-llama-cpu" ? "Hugging Face" : "Argos")
+                + " 下载并使用 " + PackageTitle(package) + "。" + size
+                + "缺少的私有运行组件由 Astral、PyPI 准备。安装还需要运行组件、缓存和切换副本空间，开始前会检查可用空间。现有模型保留；语言设置不变。"
+                + (package.Preview ? "这是预览版，请核对译文。" : "")
+                + "翻译在本机运行，输入内容不会上传。"));
+        else if (installed)
+        {
+            if (!current && available)
+                actions.Add(Action(ModelPackageOperation.Select, "使用此模型", [], selected,
+                    "将切换到 " + string.Join("、", ModelCatalog.Packages.Packages.Where(item => selected.Contains(item.Id)).Select(PackageTitle))
+                    + "。切换时翻译会短暂不可用；不会下载模型，语言设置不变。"));
+            bool activeAvailable = facts.CurrentPackages.All(item => item.Package.Backend == "argos")
+                || facts is { HyRuntimeAvailable: true, HyUnavailableReason: null };
+            if (activeAvailable && active.Length > 0)
+            {
+                if (available)
+                    actions.Add(Action(ModelPackageOperation.Repair, "修复…", [package.Id], active,
+                        "将重新准备 " + PackageTitle(package) + "，可能需要下载。当前模型选择和语言设置保持不变。"));
+                if (!current)
+                    actions.Add(Action(ModelPackageOperation.Remove, "移除…", [package.Id], active,
+                        "将移除 " + PackageTitle(package) + " 的已安装副本。当前模型继续保留；以后使用时需要重新下载。"));
+            }
+        }
+        return actions.ToArray();
+    }
+
     private static TranslationPreparationView PreparationCore(TranslationPreparationFact facts,
         TranslationPreparationNextStep nextStep)
     {

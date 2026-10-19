@@ -72,7 +72,8 @@ internal static partial class ContinuousTranslationCheck
             {
                 setup.Stage = "start-model";
                 model = new ModelClient(prepared.Paths, info => new ChildProcess(info));
-                Require(await model.ReloadAsync(prepared.Paths, prepared.Publish, all.Token), "model-not-ready");
+                Require(await model.ReloadAsync(prepared.CreateLoadPlan(), prepared.PublishConfirmed, prepared.ConfirmCurrent, all.Token)
+                    == ModelPublicationOutcome.Confirmed, "model-not-ready");
                 prepared.Complete();
             }
             ready = true;
@@ -264,8 +265,8 @@ internal static partial class ContinuousTranslationCheck
 
                 result.Stage = phase.Name + "-activate";
                 model ??= new ModelClient(prepared.Paths, info => new ChildProcess(info));
-                Require(await model.ReloadAsync(prepared.Paths, prepared.Publish, cancellation,
-                    expectedDirections: prepared.Directions), "direction-model-not-ready");
+                Require(await model.ReloadAsync(prepared.CreateLoadPlan(), prepared.PublishConfirmed, prepared.ConfirmCurrent, cancellation)
+                    == ModelPublicationOutcome.Confirmed, "direction-model-not-ready");
                 Require(model.Ready && model.AvailableDirections.SequenceEqual(phase.Expected), "direction-hello-set");
                 prepared.Complete();
                 var committed = new ModelInstallationStore(data, worker).ReadCommittedDirections();

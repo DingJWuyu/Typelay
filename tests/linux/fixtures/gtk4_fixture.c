@@ -163,6 +163,74 @@ static void find_candidate(GtkWidget *widget, gpointer data) {
         find_candidate(child, data);
 }
 
+/* Test-local identities survive observations without exposing native addresses. */
+static guint language_instance(GObject *object) {
+    static guint next;
+    if (!object) return 0;
+    guint instance = GPOINTER_TO_UINT(g_object_get_data(object, "fixture-language-instance"));
+    if (!instance) {
+        instance = ++next;
+        g_object_set_data(object, "fixture-language-instance", GUINT_TO_POINTER(instance));
+    }
+    return instance;
+}
+static gboolean language_control(const char *name) {
+    return g_strcmp0(name, "typelay-menu-trigger") == 0
+        || g_strcmp0(name, "typelay-source-language") == 0
+        || g_strcmp0(name, "typelay-target-language") == 0
+        || g_strcmp0(name, "typelay-apply-languages") == 0
+        || g_strcmp0(name, "typelay-language-menu") == 0;
+}
+static void report_language_control(GtkWidget *widget, gpointer data) {
+    JsonBuilder *builder = data;
+    const char *name = gtk_widget_get_name(widget);
+    if (language_control(name)) {
+        json_builder_set_member_name(builder, name);
+        json_builder_begin_object(builder);
+        json_builder_set_member_name(builder, "instance");
+        json_builder_add_int_value(builder, language_instance(G_OBJECT(widget)));
+        json_builder_set_member_name(builder, "visible");
+        json_builder_add_boolean_value(builder, gtk_widget_get_mapped(widget));
+        json_builder_set_member_name(builder, "enabled");
+        json_builder_add_boolean_value(builder, gtk_widget_is_sensitive(widget));
+        GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(report_window));
+        json_builder_set_member_name(builder, "focused");
+        json_builder_add_boolean_value(builder, focus && (focus == widget || gtk_widget_is_ancestor(focus, widget)));
+        if (GTK_IS_BUTTON(widget)) {
+            const char *label = gtk_button_get_label(GTK_BUTTON(widget));
+            json_builder_set_member_name(builder, "text");
+            json_builder_add_string_value(builder, label ? label : "");
+        }
+        graphene_point_t origin = GRAPHENE_POINT_INIT(0, 0), point;
+        if (gtk_widget_compute_point(widget, report_window, &origin, &point)) {
+            json_builder_set_member_name(builder, "x"); json_builder_add_double_value(builder, point.x);
+            json_builder_set_member_name(builder, "y"); json_builder_add_double_value(builder, point.y);
+            json_builder_set_member_name(builder, "width"); json_builder_add_int_value(builder, gtk_widget_get_width(widget));
+            json_builder_set_member_name(builder, "height"); json_builder_add_int_value(builder, gtk_widget_get_height(widget));
+        }
+        if (GTK_IS_DROP_DOWN(widget)) {
+            GtkDropDown *dropdown = GTK_DROP_DOWN(widget);
+            GListModel *model = gtk_drop_down_get_model(dropdown);
+            json_builder_set_member_name(builder, "modelInstance");
+            json_builder_add_int_value(builder, language_instance(G_OBJECT(model)));
+            json_builder_set_member_name(builder, "selected");
+            json_builder_add_int_value(builder, gtk_drop_down_get_selected(dropdown));
+            json_builder_set_member_name(builder, "items");
+            json_builder_begin_array(builder);
+            if (model) for (guint index = 0; index < g_list_model_get_n_items(model); index++) {
+                GObject *item = g_list_model_get_item(model, index);
+                if (GTK_IS_STRING_OBJECT(item))
+                    json_builder_add_string_value(builder, gtk_string_object_get_string(GTK_STRING_OBJECT(item)));
+                g_object_unref(item);
+            }
+            json_builder_end_array(builder);
+        }
+        json_builder_end_object(builder);
+    }
+    for (GtkWidget *child = gtk_widget_get_first_child(widget); child; child = gtk_widget_get_next_sibling(child))
+        report_language_control(child, data);
+}
+
 #include "gtk_motion.inc"
 
 static gboolean report_state(gpointer unused) {
@@ -226,6 +294,10 @@ static gboolean report_state(gpointer unused) {
         json_builder_add_int_value(builder, gtk_widget_get_height(report_window));
         json_builder_set_member_name(builder, "scale");
         json_builder_add_int_value(builder, gtk_widget_get_scale_factor(report_window));
+        json_builder_set_member_name(builder, "overlayControls");
+        json_builder_begin_object(builder);
+        report_language_control(report_window, builder);
+        json_builder_end_object(builder);
         GtkWidget *candidate = NULL;
         find_candidate(report_window, &candidate);
         graphene_point_t origin = GRAPHENE_POINT_INIT(0, 0), point;

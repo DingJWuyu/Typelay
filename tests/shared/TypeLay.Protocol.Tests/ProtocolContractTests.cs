@@ -39,6 +39,24 @@ public sealed class ProtocolContractTests
         Assert.Null(JsonSerializer.Deserialize<ModelResponse>("""{"id":9,"status":"ready"}""", Wire.Json)!.Directions);
     }
 
+    [Fact]
+    public async Task LoadedPackagesCrossFramesWithoutWeakeningUnknownFieldRejection()
+    {
+        using var stream = new MemoryStream();
+        await Wire.WriteAsync(stream, new ModelResponse(3, "ready", Directions: ["zh_ja"],
+            Packages: [new("known", "fixed-version", ["zh_ja"])]), TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        var response = await Wire.ReadAsync<ModelResponse>(stream, TestContext.Current.CancellationToken);
+        var package = Assert.Single(response.Packages!);
+        Assert.Equal("known", package.Id);
+        Assert.Equal("fixed-version", package.Version);
+        Assert.Equal(["zh_ja"], package.Directions);
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<ModelResponse>(
+            """{"id":3,"status":"ready","packages":[{"id":"known","version":"fixed-version","directions":["zh_ja"],"unknown":true}]}""", Wire.Json));
+        Assert.Throws<JsonException>(() => JsonSerializer.Deserialize<ModelResponse>(
+            """{"id":3,"status":"ready","unknown":true}""", Wire.Json));
+    }
+
     [Fact(DisplayName = "wire-reject-truncated-header")]
     public async Task WireRejectTruncatedHeader()
     {

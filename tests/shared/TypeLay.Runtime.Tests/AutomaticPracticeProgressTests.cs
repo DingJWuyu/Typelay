@@ -1016,6 +1016,25 @@ public sealed class AutomaticPracticeProgressTests
             Assert.Equal(SessionState.OutcomeUnknown, s.View.State);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ModelChangeRequiresTheOwnedPracticeRetirementAcknowledgement(bool confirmed)
+    {
+        var acknowledgement = new TaskCompletionSource<bool>();
+        using var s = new SessionScenario(retireOwnedPractice: _ => acknowledgement.Task);
+        Bind(s);
+        s.ReadyCandidate();
+        var preparing = s.Controller.PrepareModelChangeAsync();
+        Assert.False(preparing.IsCompleted);
+        Assert.Null(s.Input.Permit);
+        acknowledgement.SetResult(confirmed);
+        s.Tick();
+        Assert.Equal(confirmed, await preparing);
+        Assert.Null(s.Controller.AutomaticPracticeProgress);
+        Assert.Empty(s.Service.Writes);
+    }
+
     [Fact]
     public async Task RetirementWaitsForTheExecutorBeforeASettingsChangeOrAnotherRunCanComplete()
     {

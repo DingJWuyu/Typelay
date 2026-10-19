@@ -76,6 +76,7 @@ internal static class Program
             {
                 SessionMustEnd = session.StopSession,
                 PrepareSettingsChange = session.PrepareSettingsChangeAsync,
+                PrepareModelChange = session.PrepareModelChangeAsync,
                 ShortcutStatus = () => session.ShortcutStatus,
                 PracticeProgress = () => session.PracticeProgress,
                 AutomaticPracticeProgress = () => session.AutomaticPracticeProgress
