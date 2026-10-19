@@ -401,10 +401,10 @@ jobs:
       - name: Verify nonblocking IPC and GTK unknown-IME refusal
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
-          python tests/linux/wire.py -v
-          python tests/linux/session_host_protocol.py --host artifacts/linux/package/app/TypeLay.Linux -v
           Xvfb :99 -screen 0 1280x960x24 -nolisten tcp &
           export DISPLAY=:99
+          python tests/linux/wire.py -v
+          python tests/linux/session_host_protocol.py --host artifacts/linux/package/app/TypeLay.Linux -v
           python tests/linux/native_e2e.py --gtk-refusal --native artifacts/linux/native --output artifacts/linux/nested
       - name: Verify tray controls without downloading models
         if: ${{ needs.scope.outputs.settings != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.build.outcome == 'success' }}

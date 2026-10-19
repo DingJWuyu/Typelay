@@ -16,7 +16,11 @@ if (-not $IsWindows -or -not [Environment]::Is64BitProcess) {
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $source = Join-Path $root 'tests/windows/fixtures/TypeLay.NativeFixture/HyAdapter'
 $artifacts = Join-Path $root 'artifacts'
-$python = [IO.Path]::GetFullPath((Get-Command python.exe -CommandType Application -ErrorAction Stop).Source)
+$pythonCommand = Get-Command python.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1
+$python = [IO.Path]::GetFullPath($pythonCommand.Source)
+if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+    throw 'The selected Python application does not exist.'
+}
 
 if ($Phase -eq 'prepare') {
     # Reserve ten seconds within the 600-second wall budget for terminating and

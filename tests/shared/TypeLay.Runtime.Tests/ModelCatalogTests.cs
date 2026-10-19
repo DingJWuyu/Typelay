@@ -123,7 +123,8 @@ public sealed class ModelCatalogTests
         Assert.False(ModelCatalog.IsSupportedSetting("fr", "de"));
         using var old = JsonDocument.Parse(JsonSerializer.Serialize(new
         {
-            schema = 3, activePackages = new[] { package.Id },
+            schema = 3,
+            activePackages = new[] { package.Id },
             packages = new[] { new { id = package.Id, version = package.Version,
                 directions = new[] { "zh_ja", "ja_zh" },
                 files = new[] { new { path = "fixture", sha256 = new string('0', 64) } } } }

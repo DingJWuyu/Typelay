@@ -25,7 +25,10 @@ internal static class EditorHost
             || !data.TryGetProperty("selection", out var selection) || !Fields(selection, "start", "length"))
             return null;
         Request? request;
-        try { request = value.Deserialize<Request>(Wire.Json); }
+        try
+        {
+            request = value.Deserialize<Request>(Wire.Json);
+        }
         catch (JsonException) { return null; }
         var source = request?.Data;
         if (request is null || request.Id <= 0 || request.Operation != "translateEditorSnapshot" || source is null
@@ -56,7 +59,13 @@ internal static class EditorHost
         return new
         {
             id = request.Id,
-            data = new { source.DocumentId, source.Version, source.Selection, translation = response.Text }
+            data = new
+            {
+                source.DocumentId,
+                source.Version,
+                source.Selection,
+                translation = response.Text
+            }
         };
     }
     public static async Task<int> Run(string home, string config, string data)
@@ -90,7 +99,10 @@ internal static class EditorHost
         catch (Exception ex) when (ex is IOException or JsonException or OperationCanceledException
             or UnauthorizedAccessException or ArgumentException)
         {
-            try { await Wire.WriteAsync(output, Failure(identity, "host-failed")); }
+            try
+            {
+                await Wire.WriteAsync(output, Failure(identity, "host-failed"));
+            }
             catch (IOException) { }
             return 1;
         }

@@ -1143,7 +1143,10 @@ while True:
             finally:
                 server.close()
                 await server.wait_closed()
-            (session / "control.sock").unlink()
+            # Python 3.13+ removes the owned socket when the server closes;
+            # older supported interpreters leave the same fixture path behind.
+            (session / "control.sock").unlink(missing_ok=True)
+            self.assertFalse((session / "control.sock").exists())
             cli = await self.launch_editor(environment)
             output, error = await asyncio.wait_for(
                 cli.communicate(struct.pack("<I", len(raw)) + raw), 5
@@ -1573,6 +1576,11 @@ while True:
             json.loads((self.home / "config/settings.json").read_text())["Theme"], "dark"
         )
 
+    async def test_tray_preserves_a_supported_same_language_preference(self):
+        self.assertTrue(await self.ask("traySettings", {"source": "fr", "target": "fr"}))
+        saved = self.latest("settings")
+        self.assertEqual((saved["source"], saved["target"]), ("fr", "fr"))
+
     async def test_tray_rejects_unknown_fields_wrong_types_and_invalid_values_without_writing(self):
         self.assertTrue(await self.ask("settings", {"enabled": True}))
         settings_file = self.home / "config/settings.json"
@@ -1587,7 +1595,7 @@ while True:
             {"target": "auto"},
             {"source": "fr", "target": "en"},
             {"source": "en", "target": "fr"},
-            {"source": "fr", "target": "fr"},
+            {"source": "unknown", "target": "unknown"},
             {},
         ):
             with self.subTest(patch=patch):

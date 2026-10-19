@@ -10,7 +10,10 @@ namespace TypeLay.Linux;
 internal sealed class LinuxModelInstallationStore(string home, string data)
 {
     private readonly string _components = Path.Combine(data, "components");
-    public bool CleanupPending { get; private set; }
+    public bool CleanupPending
+    {
+        get; private set;
+    }
     internal sealed class PublicationUnconfirmedException : IOException
     {
     }
@@ -471,7 +474,9 @@ internal sealed class LinuxModelInstallationStore(string home, string data)
                         _store.CleanupPending = false;
                     }
                     catch (Exception error) when (error is IOException or UnauthorizedAccessException
-                        or InvalidDataException or JsonException or ArgumentException) { }
+                        or InvalidDataException or JsonException or ArgumentException)
+                    {
+                    }
                 }
             }
             return outcome;

@@ -363,7 +363,9 @@ public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
             File.WriteAllText(_python, "not an executable");
             Directory.CreateDirectory(_models);
             File.WriteAllText(System.IO.Path.Combine(_models, "installed.json"), "{\"schema\":1}");
-            _model = new(new(_python, System.IO.Path.Combine(_directory, "missing-worker"), _models), info => new ChildProcess(info));
+            var worker = System.IO.Path.Combine(_directory, "worker.py");
+            File.WriteAllText(worker, "# The invalid interpreter fails before this fixture worker can run.");
+            _model = new(new(_python, worker, _models), info => new ChildProcess(info));
             if (quickPanel)
             {
                 _overlay = new OverlayWindow(automationTest: true);
@@ -390,6 +392,7 @@ public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
                 await _model.StartAsync();
                 await DrainAsync(Window);
                 Assert.False(_model.Ready);
+                Assert.Equal("model-start-failed", _model.FailureCode);
                 Assert.True(notifications > 0);
             }
             finally { _model.Changed -= Changed; }

@@ -258,6 +258,8 @@ public sealed class ModelClient : ITranslationService, IDisposable
             if (!await ReapRetiringAsync())
             {
                 reapingFailed = true;
+                lock (_owner)
+                    RequireOwner(operation);
                 return outcome;
             }
             lock (_owner)
@@ -273,6 +275,10 @@ public sealed class ModelClient : ITranslationService, IDisposable
             catch (OperationCanceledException) { throw; }
             catch (Exception error) when (error is not OutOfMemoryException)
             {
+                // Disposing a pipe can surface as an I/O failure even when its
+                // owning replacement has already been cancelled or superseded.
+                lock (_owner)
+                    RequireOwner(operation);
                 RecordFailure(operation, error);
                 return outcome;
             }

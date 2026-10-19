@@ -80,8 +80,12 @@ internal static class Program
             modelReady = model.Ready,
             modelInstalled = model.Installed,
             modelDirections = model.AvailableDirections,
-            modelPackages = model.AvailablePackages.Select(item => new { id = item.Package.Id, version = item.Package.Version,
-                directions = item.Directions.Select(direction => direction.Id).ToArray() }),
+            modelPackages = model.AvailablePackages.Select(item => new
+            {
+                id = item.Package.Id,
+                version = item.Package.Version,
+                directions = item.Directions.Select(direction => direction.Id).ToArray()
+            }),
             modelFailureCode = model.FailureCode,
             modelCleanupPending = installations.CleanupPending,
             controller.ServiceStatus,
