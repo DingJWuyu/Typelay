@@ -199,11 +199,11 @@ internal static partial class HyPackageCheck
                         return matched;
                     }, ct);
                 }, ct);
-                // Public shortcut registration does not establish source focus.
-                // Posting the fixture request proves queueing, not foreground transfer.
-                scene.Stage = "request-source-refocus";
+                // Return through the visible source field like a user, not a
+                // background fixture message asking Windows for foreground rights.
+                scene.Stage = "click-visible-source";
                 scene.Facts = null;
-                Require(N.PostMessage(root, N.FixtureFocus, (nuint)field, 0), "source-refocus-request");
+                await ClickSourceAsync(root, field, source.Process, ct);
                 scene.Stage = "wait-source-refocus";
                 await WaitAsync(() =>
                 {
@@ -215,6 +215,7 @@ internal static partial class HyPackageCheck
                     scene.Facts = new
                     {
                         publicShortcutStatusMatched = true,
+                        sourceClicks = 1,
                         rootMatched,
                         controlMatched,
                         foregroundPresent = focus.Root != 0,
@@ -228,6 +229,13 @@ internal static partial class HyPackageCheck
                     };
                     return Task.FromResult(rootMatched && controlMatched);
                 }, ct);
+                // The user click establishes focus, but may place the caret in
+                // the text. Restore the original test selection before the key;
+                // this is setup, never evidence of a product write or focus grant.
+                scene.Stage = "restore-source-selection";
+                N.Send(field, N.EM_SETSEL, (nuint)selection.Start, (nint)selection.End);
+                Require(N.ReadText(field, Limits.MaxTextUnits) == text && N.ReadSelection(field) == selection
+                    && N.Focused() == (root, field), "source-click-precondition-changed");
                 scene.Stage = "single-wake-real-preview";
                 SendWakeOnce();
                 string translation = "";
@@ -266,6 +274,7 @@ internal static partial class HyPackageCheck
                     sourceLanguage = "zh",
                     targetLanguage = "fr",
                     wakePresses = 1,
+                    sourceClicks = 1,
                     publicCompletedCandidate = true,
                     sourceUnchanged = true,
                     selectionUnchanged = true,
@@ -736,6 +745,52 @@ internal static partial class HyPackageCheck
         }, ct), ct);
         await UiAsync(() => ((InvokePattern)quit!.GetCurrentPattern(InvokePattern.Pattern)).Invoke(), ct);
     }
+    private static Task ClickSourceAsync(nint root, nint field, Process process, CancellationToken ct) => UiAsync(() =>
+    {
+        int processId = process.Id;
+        bool OwnedField() => !process.HasExited
+            && N.GetWindowThreadProcessId(root, out uint rootPid) != 0 && rootPid == processId
+            && N.GetWindowThreadProcessId(field, out uint fieldPid) != 0 && fieldPid == processId
+            && N.GetAncestor(field, 2) == root;
+        Require(OwnedField(), "source-click-identity-changed");
+        var element = AutomationElement.FromHandle(field);
+        var current = element.Current;
+        Require(current.NativeWindowHandle == field && current.ProcessId == processId
+            && current.ControlType == ControlType.Edit && current.IsEnabled && !current.IsOffscreen,
+            "source-click-control-unavailable");
+        var bounds = current.BoundingRectangle;
+        Require(!bounds.IsEmpty && bounds.Width > 8 && bounds.Height > 8, "source-click-geometry-unavailable");
+        // The settings window may cover the field's center. Inspect points from
+        // this actual rectangle before acting; this never retries a click or focus.
+        var candidates = new[] { bounds.Left + bounds.Width / 2, bounds.Left + 4, bounds.Right - 4 };
+        N.Point? point = null;
+        foreach (double x in candidates)
+        {
+            var candidate = new N.Point { X = (int)x, Y = (int)(bounds.Top + bounds.Height / 2) };
+            if (bounds.Contains(candidate.X, candidate.Y) && WindowFromPoint(candidate) == field)
+            {
+                point = candidate;
+                break;
+            }
+        }
+        Require(point is not null, "source-click-obscured");
+        ct.ThrowIfCancellationRequested();
+        var pixel = point!.Value;
+        Require(new[] { 0x01, 0x02, 0x04, 0x10, 0x11, 0x12, 0x5B, 0x5C }.All(key => GetAsyncKeyState(key) >= 0),
+            "source-click-input-already-held");
+        Require(SetCursorPos(pixel.X, pixel.Y), "source-click-cursor-unavailable");
+        // Recheck after moving the pointer. Refuse an intervening occluder or
+        // replacement window instead of injecting into another application's UI.
+        Require(OwnedField() && element.Current.BoundingRectangle.Contains(pixel.X, pixel.Y)
+            && WindowFromPoint(pixel) == field, "source-click-target-changed");
+        ct.ThrowIfCancellationRequested();
+        var click = new[] { new KeyInput { MouseFlags = 2 }, new KeyInput { MouseFlags = 4 } };
+        uint inserted = SendInput(2, click, Marshal.SizeOf<KeyInput>());
+        if (inserted == 1)
+            Require(SendInput(1, [click[1]], Marshal.SizeOf<KeyInput>()) == 1, "source-click-release-incomplete");
+        Require(inserted == 2, "source-click-incomplete");
+    }, ct);
+    [DllImport("user32.dll")] private static extern nint WindowFromPoint(N.Point point);
     private static void SendWakeOnce()
     {
         Require(new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x78 }.All(key => GetAsyncKeyState(key) >= 0), "wake-key-already-held");

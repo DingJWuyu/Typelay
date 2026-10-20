@@ -14,14 +14,25 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 4 && args[0] is "--verify-continuous" or "--verify-browser-cooperation")
+            return ModelConsumerFixtureOwner.Run(args);
+        if (args.Length == 6 && args[0] == "--owned-model-consumer")
+        {
+            if (!Guid.TryParseExact(args[1], "N", out _)
+                || args[1] != Environment.GetEnvironmentVariable("TYPELAY_FIXTURE_OWNER_NONCE"))
+                return 2;
+            Environment.SetEnvironmentVariable("TYPELAY_FIXTURE_OWNER_NONCE", null);
+            return args[2] switch
+            {
+                "--verify-continuous" => ContinuousTranslationCheck.Run(args[3], args[4], args[5]),
+                "--verify-browser-cooperation" => BrowserCooperationCheck.Run(args[3], args[4], args[5]),
+                _ => 2
+            };
+        }
         if (args.Length == 4 && args[0] == "--verify-hy-production")
             return HyPackageCheck.Run(args[1], args[2], args[3]);
         if (args.Length == 5 && args[0] == "--verify-hy-packages")
             return HyPackageCheck.Run(args[1], args[2], args[3], args[4]);
-        if (args.Length == 4 && args[0] == "--verify-browser-cooperation")
-            return BrowserCooperationCheck.Run(args[1], args[2], args[3]);
-        if (args.Length == 4 && args[0] == "--verify-continuous")
-            return ContinuousTranslationCheck.Run(args[1], args[2], args[3]);
         if (args.Length != 1)
             return 2;
         string artifacts = Path.GetFullPath(args[0]);

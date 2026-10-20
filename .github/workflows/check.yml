@@ -273,9 +273,11 @@ jobs:
             artifacts/test-results/
             artifacts/controller-trace.jsonl*
             artifacts/continuous-translation/result.json
+            artifacts/continuous-translation/consumer-exit.json
             artifacts/continuous-translation/trace*.jsonl
             artifacts/continuous-translation/data/setup-self-check.json
             artifacts/browser-cooperation/result.json
+            artifacts/browser-cooperation/consumer-exit.json
             artifacts/browser-cooperation/trace*.jsonl
             artifacts/hy-results/*.json
             artifacts/hy-results/*.stderr

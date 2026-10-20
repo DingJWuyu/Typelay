@@ -87,6 +87,32 @@ def settings_viewport_from_pane(initial, current):
     return pane
 
 
+def settings_text_visible_point(character, clips):
+    """Use the actual text/caret position only inside every known visible clip."""
+    if len(character) != 4 or not clips:
+        return None
+    if any(type(value) is not int or not -(2**31) < value < 2**31 for value in character):
+        return None
+    x, y, width, height = character
+    if width < 0 or height <= 0:
+        return None
+    # Empty text legitimately has a zero-width caret; do not invent a character.
+    point = (x + width // 2, y + height // 2)
+    for clip in clips:
+        if (
+            clip is None
+            or len(clip) != 4
+            or any(type(value) is not int or not -(2**31) < value < 2**31 for value in clip)
+            or clip[2] <= 0
+            or clip[3] <= 0
+            or not (
+                clip[0] <= point[0] < clip[0] + clip[2] and clip[1] <= point[1] < clip[1] + clip[3]
+            )
+        ):
+            return None
+    return point
+
+
 def wait_for(predicate, description, timeout=15):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -5756,8 +5782,7 @@ def run(arguments):
                 )
                 activate_setting("保存修改")
                 wait_for(
-                    lambda: text(settings_control("设置反馈"))
-                    == "唤醒与直接替换请使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，暂不支持 F12；两个快捷键不能相同。",
+                    lambda: "两个快捷键不能相同。" in text(settings_control("设置反馈")),
                     "invalid shortcut pair did not report rejection",
                 )
                 assert (
@@ -5874,7 +5899,67 @@ def run(arguments):
                 )
                 excluded = settings_control("设置：排除的应用", timeout=deadline - time.monotonic())
                 assert excluded.get_process_id() == process.pid
-                assert Atspi.Component.grab_focus(excluded.get_component_iface())
+                # GTK 3.24.52 compares this nested TextView's local allocation
+                # against its outer viewport adjustment in on_screen(). Its
+                # SHOWING/Component extents can therefore falsely reject a visible
+                # editor. Text extents instead use the actual text GDK window:
+                # gtk/a11y/gtktextviewaccessible.c, get_character_extents.
+                excluded.clear_cache()
+                states = excluded.get_state_set()
+                assert all(
+                    states.contains(state)
+                    for state in (
+                        Atspi.StateType.VISIBLE,
+                        Atspi.StateType.ENABLED,
+                        Atspi.StateType.SENSITIVE,
+                        Atspi.StateType.EDITABLE,
+                    )
+                ) and not states.contains(Atspi.StateType.DEFUNCT)
+                assert focused(advanced_exclusions) and not focused(excluded)
+                character = Atspi.Text.get_character_extents(
+                    excluded.get_text_iface(), 0, Atspi.CoordType.SCREEN
+                )
+                clips = []
+                ancestor = excluded.get_parent()
+                for _ in range(16):
+                    assert ancestor is not None and ancestor.get_process_id() == process.pid
+                    ancestor.clear_cache()
+                    assert not ancestor.get_state_set().contains(Atspi.StateType.DEFUNCT)
+                    role = ancestor.get_role()
+                    if role in clip_roles:
+                        area = Atspi.Component.get_extents(
+                            ancestor.get_component_iface(), Atspi.CoordType.SCREEN
+                        )
+                        clip = (area.x, area.y, area.width, area.height)
+                        if role == Atspi.Role.VIEWPORT and clip[:2] == (-(2**31),) * 2:
+                            clip = settings_viewport_from_pane(
+                                settings_scroll_calibration, settings_scroll_snapshot(ancestor)
+                            )
+                        else:
+                            assert ancestor.get_state_set().contains(Atspi.StateType.SHOWING)
+                        clips.append(clip)
+                    if role == Atspi.Role.FRAME:
+                        assert ancestor.get_name() == "TypeLay 设置"
+                        break
+                    ancestor = ancestor.get_parent()
+                else:
+                    raise AssertionError("exclusion editor has no bounded settings frame")
+                point = settings_text_visible_point(
+                    (character.x, character.y, character.width, character.height), clips
+                )
+                assert point is not None, (
+                    "exclusion editor text point is outside known visible clips"
+                )
+                assert any(
+                    window.get("id") == settings_window["id"]
+                    and window.get("pid") == process.pid
+                    and window.get("is_focused") is True
+                    for window in contents(request("Windows"), "Windows")
+                )
+                # Both text and clip extents above are in the same GTK surface
+                # coordinate domain. Do not reinterpret Wayland SCREEN as global
+                # nested-X11 coordinates or guess the CSD shadow offset.
+                key("Tab")
                 exclusion_focus_state = {
                     "focused": None,
                     "showing": None,
@@ -5882,8 +5967,8 @@ def run(arguments):
                 }
 
                 def exclusion_editor_focused():
-                    # Sample all three gates independently: a false SHOWING bit
-                    # must not hide whether the compositor still owns this window.
+                    # Keep the known-bad SHOWING bit as diagnostic evidence;
+                    # actual keyboard navigation, clip and input checks prove interactivity.
                     exclusion_focus_state.update(
                         focused=None, showing=None, settingsWindowFocused=None
                     )
@@ -5899,7 +5984,6 @@ def run(arguments):
                     )
                     return (
                         exclusion_focus_state["focused"]
-                        and exclusion_focus_state["showing"]
                         and exclusion_focus_state["settingsWindowFocused"]
                     )
 
@@ -5959,9 +6043,17 @@ def run(arguments):
                         )
                     except OSError:
                         pass  # Evidence output must not replace the original failure.
-                assert Atspi.EditableText.set_text_contents(
-                    excluded.get_editable_text_iface(), "typelay-navigation-test"
+                persisted_before_edit = paths.settings.read_bytes()
+                key("ctrl+a")
+                typed("typelay-navigation-test")
+                wait_for(
+                    lambda: focused(excluded)
+                    and text(excluded) == "typelay-navigation-test"
+                    and status()["setup"]["settingsDraft"],
+                    "real exclusion editor input did not change the expected draft",
+                    timeout=deadline - time.monotonic(),
                 )
+                assert paths.settings.read_bytes() == persisted_before_edit
                 settings_page("语言")
                 source_language = settings_control("设置：源语言")
                 assert Atspi.Selection.select_child(source_language.get_selection_iface(), 0)

@@ -14,7 +14,10 @@ public sealed class SuspendedProcessTests
     public void MissingExecutableFailsCreationWithoutReturningOwnershipHandles()
     {
         var start = new ProcessStartInfo(Path.Combine(Path.GetTempPath(),
-            "TypeLay-missing-" + Guid.NewGuid().ToString("N") + ".exe")) { UseShellExecute = false };
+            "TypeLay-missing-" + Guid.NewGuid().ToString("N") + ".exe"))
+        {
+            UseShellExecute = false
+        };
         var startup = new SuspendedProcess.StartupInfoEx
         {
             Startup = new() { Size = Marshal.SizeOf<SuspendedProcess.StartupInfoEx>() }
@@ -28,8 +31,12 @@ public sealed class SuspendedProcessTests
     [Fact]
     public async Task RootCannotResumeUntilItsExactJobOwnsItAndFailedAssignmentRetainsItsIdentity()
     {
-        var start = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "cmd.exe")) { UseShellExecute = false };
-        foreach (string argument in new[] { "/d", "/c", "exit 23" })
+        // Exercise the backend's ordinary argv contract, not cmd.exe's special
+        // raw shell command-line parser.
+        string python = (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator)
+            .Select(path => Path.Combine(path.Trim('"'), "python.exe")).First(File.Exists);
+        var start = new ProcessStartInfo(Path.GetFullPath(python)) { UseShellExecute = false };
+        foreach (string argument in new[] { "-I", "-B", "-c", "import sys; sys.exit(23)" })
             start.ArgumentList.Add(argument);
         using var root = new Root(start);
         // Observe the real OS suspension count without executing the child.
@@ -88,8 +95,14 @@ public sealed class SuspendedProcessTests
 
     private sealed class Root : IDisposable
     {
-        public nint Job { get; }
-        public SuspendedProcess.ProcessInformation Process { get; }
+        public nint Job
+        {
+            get;
+        }
+        public SuspendedProcess.ProcessInformation Process
+        {
+            get;
+        }
         public Root(ProcessStartInfo start)
         {
             Job = CreateJobObjectW(0, null);

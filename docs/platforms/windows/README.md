@@ -71,7 +71,7 @@
 
 ### 当前可验证候选
 
-当前开发源码为 `b114469bc0bb31f661e4d2496a11d36b695f13a6`。[普通运行](https://github.com/DingJWuyu/Typelay/actions/runs/39434470371)与[显式质量运行](https://github.com/DingJWuyu/Typelay/actions/runs/39439291108)的共享检查通过，Windows 完整检查仍失败。最新显式运行中持续真实模型链通过，合作浏览器的 F10 选区替换因 `NativeMissing` / `PolicyAuthorityMissing` 被拒绝，后续 Windows Hy 未运行；App 404/408 项通过，仍有原生消息、焦点等待和探针 DLL 清理失败。普通运行的 Hy 生产闭包与进程所有者检查通过，Settings 安装及模型切换通过，普通预览停在快捷键就绪/源字段回焦边界，未完成整个生命周期。不同运行的局部通过不能拼成全链稳定；Linux 的53次质量采集也不能代替 Windows 验收，质量结论见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
+最近核对的验证基线为 [`0496b0b7`](https://github.com/DingJWuyu/Typelay/actions/runs/39451880118)：共享检查及 Windows 构建通过，完整检查仍失败。App 407/412 项通过；失败包括受控进程退出码测试、原生字段消息、短期许可时序及焦点等待。格式检查停在新增进程测试的空白格式，后续 Python 检查未运行。实际连续预览、普通输入框快捷键、直接替换和按需练习通过，持续链在自有译文编辑单击接管超时；合作浏览器及 Hy 生产闭包/进程所有者检查通过。Hy Settings 安装和模型切换通过，普通预览停在源字段回焦，未发送 F9，返回 Argos、移除和正常退出未运行。后续进程 fixture 所有权、退出证明校验及真实源单击候选尚待 Windows 实测，Hy 安全前置没有放宽。不同运行的局部通过不能拼成全链稳定；Linux 的 53 次质量采集不能代替 Windows 验收，质量结论见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 
 以下保留的是此前已核对的 `54c12e1f` 下载包及其校验证据，不是当前开发分支的最新产物。
 

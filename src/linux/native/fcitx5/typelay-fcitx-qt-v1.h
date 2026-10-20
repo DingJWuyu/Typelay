@@ -8,6 +8,9 @@
 
 inline constexpr char TypeLayFcitxQtProviderPropertyV1[] = "typelay.fcitx.qt.provider.v1";
 inline constexpr char TypeLayFcitxQtConsumerPropertyV1[] = "typelay.fcitx.qt.consumer.v1";
+// Explicit consumer opt-in to the additive retirement cause. Absent/old
+// consumers continue receiving Unknown (0), never an unrecognized safe cause.
+inline constexpr char TypeLayFcitxQtDetachedRetirementPropertyV1[] = "typelay.fcitx.qt.detached-retirement.v1";
 
 // QVariantList of uint native/XKB keyvals from the consumer's host configuration.
 inline constexpr char TypeLayFcitxQtControlKeysPropertyV1[] = "typelay.fcitx.qt.control-keys.v1";
@@ -21,7 +24,10 @@ enum TypeLayFcitxQtFlagV1 : quint32 {
 enum TypeLayFcitxQtCauseV1 : quint32 {
     TlQtInput = 1u, TlQtFocus = 2u, TlQtBinding = 4u, TlQtModifier = 8u,
     // Only the exact original Ctrl submission/replay, not ForwardKey(Control).
-    TlQtOrderedPrefix = 16u
+    TlQtOrderedPrefix = 16u,
+    // Only retirement of a sealed background-write record during setFocusObject.
+    // Not a field input/focus change and not an IME Clear observation.
+    TlQtDetachedRetired = 32u
 };
 struct TypeLayFcitxQtStateV1 {
     quint32 size = sizeof(TypeLayFcitxQtStateV1);

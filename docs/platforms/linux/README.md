@@ -6,7 +6,7 @@
 
 这是正在完成桌面验证的预览客户端，不是已通过完整产品验收的 Linux 正式版。[产品验收入口](https://github.com/DingJWuyu/Typelay/blob/trunk/README.md#产品验收入口)统一规定冻结基线与已接受增量；本页能力表描述实现和证据，不降低产品要求，也不构成永久应用支持名单。
 
-当前已发布开发源码为 `b114469b`。[普通检查运行](https://github.com/DingJWuyu/Typelay/actions/runs/39434470371)与[同提交显式质量运行](https://github.com/DingJWuyu/Typelay/actions/runs/39439291108)的共享检查通过，Windows/Linux 完整检查仍失败。最新显式运行的普通浏览器 DOM、真实浏览器模型链、Qt、VS Code 和正式 Hy 生命周期及质量采集通过；教程在首次 Verified 写回后未推进，GTK3/GTK4 语言控件仍失败，高级排除焦点检查尚未到达。显式运行完成全部 53 次质量响应，但仍发现严重保义问题，三项质量门关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。以下旧包摘要与隔离通过记录只证明各自指定提交，不代表当前全链通过。
+最近核对的验证基线为 [`0496b0b7`](https://github.com/DingJWuyu/Typelay/actions/runs/39451880118)：共享检查通过，Windows/Linux 完整检查仍失败。Linux 普通浏览器 DOM、真实浏览器模型链、VS Code 与独立首次教程通过；独立设置停在重复快捷键错误提示的旧文案断言，GTK3 下拉选择与 GTK4 语言控件仍失败。Qt6 原生模块及 fixture 已编译，新增 `QLineEdit` 源侧术语用例在明确保存时未取得双词 Clear，后续 Qt 真实模型与正式 Hy 生命周期未运行。针对 Qt 能力退役分类、设置提示及嵌套文本可见性的后续候选仍须实际 GUI 回归，不能记为已修复。最近一次显式质量采集仍是 `b114469b` 的 53 次响应，严重保义问题未解决，三项质量门关闭，见[共同产品缺口](../../product/README.md#当前共同开发缺口)。以下旧包摘要与隔离通过记录只证明各自指定提交，不代表当前全链通过。
 
 现役输入路径：
 

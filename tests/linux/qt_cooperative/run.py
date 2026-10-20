@@ -1203,6 +1203,16 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                             and settled(),
                             "first glossary word IM retirement",
                         )
+                        if finish == "absent-opt-in":
+                            fixture("consumer-retirement-opt-in")
+                        elif finish == "false-opt-in":
+                            fixture("consumer-retirement-opt-in", value=False)
+                        elif finish == "wrong-type-opt-in":
+                            fixture("consumer-retirement-opt-in", value="true")
+                        legacy = finish in ("absent-opt-in", "false-opt-in", "wrong-type-opt-in")
+                        renew()
+                        departure_events = len(native.events)
+                        departure = state()["providerSequence"]
                         run(["xdotool", "key", "--delay", "0", "Tab"], env=environment)
                         observe(
                             lambda value: value.get("glossary", {})
@@ -1210,6 +1220,23 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                             .get("focused"),
                             "target word focus",
                         )
+                        retirement = [
+                            item
+                            for item in state()["providerEvents"]
+                            if item["sequence"] > departure and item["role"] == "first"
+                        ]
+                        # The original source's sealed background-write proof is
+                        # retired by this focus change, not an unknown IM reset.
+                        assert retirement and all(
+                            item["causes"] == (0 if legacy else 32) for item in retirement
+                        ), retirement
+                        renew()  # Drain the same public event stream the real host consumes.
+                        assert not [
+                            item
+                            for item in native.events[departure_events:]
+                            if item.get("event") == "input"
+                            and item.get("data", {}).get("target") == target
+                        ], native.events[departure_events:]
                         run(["xdotool", "type", "--delay", "1", "pull request"], env=environment)
                         observe(
                             lambda value: value.get("glossary", {}).get("target", {}).get("text")
@@ -1217,6 +1244,40 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                             and settled(),
                             "second glossary word IM retirement",
                         )
+                        if legacy:
+                            click("typelay-glossary-save")
+                            observe(
+                                lambda value: value.get("glossary", {}).get("feedback")
+                                == "请先完成两个词的输入，确认输入法已结束组合后再保存。",
+                                "absent or invalid opt-in remains Unknown and refuses Save",
+                            )
+                            assert not events("sessionGlossaryAdd")
+                            unchanged()
+                            native.call("overlay-hide")
+                            fixture("consumer-retirement-opt-in", value=True)
+                            return
+                        if finish == "reset":
+                            reset_before = state()["providerSequence"]
+                            fixture("reset-ime")
+                            observe(
+                                lambda value: any(
+                                    item["sequence"] > reset_before
+                                    and item["role"] == "typelay-glossary-target"
+                                    and item["causes"] == 0
+                                    for item in value["providerEvents"]
+                                ),
+                                "actual unknown/reset notification",
+                            )
+                            click("typelay-glossary-save")
+                            observe(
+                                lambda value: value.get("glossary", {}).get("feedback")
+                                == "请先完成两个词的输入，确认输入法已结束组合后再保存。",
+                                "reset revokes the previous word's Clear evidence",
+                            )
+                            assert not events("sessionGlossaryAdd")
+                            unchanged()
+                            native.call("overlay-hide")
+                            return
                         click("typelay-glossary-save")
                         saved = wait(
                             lambda: events("sessionGlossaryAdd"),
@@ -1259,7 +1320,16 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                     native.call("overlay-hide")
 
                 for glossary_state in ("ValidTranslation", "EditedTranslationPending"):
-                    for glossary_finish in ("cancel", "return", "stale", "changed-source"):
+                    for glossary_finish in (
+                        "cancel",
+                        "return",
+                        "stale",
+                        "changed-source",
+                        "reset",
+                        "absent-opt-in",
+                        "false-opt-in",
+                        "wrong-type-opt-in",
+                    ):
                         glossary_source(glossary_state, glossary_finish)
                 result["qlineedit_explicit_source_glossary_zero_write_return_and_refusals"] = True
 

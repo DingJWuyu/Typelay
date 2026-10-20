@@ -5,6 +5,7 @@
 #include <QImage>
 #include <QIntValidator>
 #include <QInputMethodEvent>
+#include <QInputMethod>
 #include <QEventLoop>
 #include <QDynamicPropertyChangeEvent>
 #include <QHash>
@@ -56,6 +57,8 @@ public:
     QHash<QObject *, OverlayObject> overlayObjects;
     quint64 overlayInstance = 0, overlayEventCount = 0, languageClickEventCount = 0;
     QJsonObject counts;
+    QJsonArray providerEvents;
+    quint64 providerSequence = 0;
     quint64 commandSequence = 0;
     bool firstPreedit = false, secondPreedit = false, plainPreedit = false, editorPreedit = false;
     QString shortcutState, commandQueuedAction, commandDispatchedAction, controlAction;
@@ -74,6 +77,18 @@ public:
         }
     }
 public slots:
+    void providerChanged(QObject *field, uint causes) {
+        if (!field) return;
+        const auto name = field->objectName();
+        if (field != first && field != second && field != plain
+            && name != QStringLiteral("typelay-editor")
+            && name != QStringLiteral("typelay-glossary-source")
+            && name != QStringLiteral("typelay-glossary-target")) return;
+        // Bounded real provider notifications, no input text or object addresses.
+        providerEvents.append(QJsonObject{{"sequence", qint64(++providerSequence)},
+            {"atMs", observedAtMs()}, {"role", name}, {"causes", qint64(causes)}});
+        while (providerEvents.size() > 64) providerEvents.removeFirst();
+    }
     void shortcutChanged(const QString &state, quint64 id) {
         shortcutState = state;
         shortcutId = id;
@@ -150,6 +165,12 @@ public:
             auto *native = qApp->property("typelay.qt.native.v1").value<QObject *>();
             if (native) connect(native, SIGNAL(shortcutStateChangedV1(QString,quint64)),
                 this, SLOT(shortcutChanged(QString,quint64)), Qt::UniqueConnection);
+        }
+        if (event->type() == QEvent::DynamicPropertyChange
+            && static_cast<QDynamicPropertyChangeEvent *>(event)->propertyName() == "typelay.fcitx.qt.provider.v1") {
+            auto *provider = object->property("typelay.fcitx.qt.provider.v1").value<QObject *>();
+            if (provider) connect(provider, SIGNAL(typelayStateChangedV1(QObject*,uint)),
+                this, SLOT(providerChanged(QObject*,uint)), Qt::UniqueConnection);
         }
         if (event->type() == QEvent::InputMethod) {
             const bool composing = !static_cast<QInputMethodEvent *>(event)->preeditString().isEmpty();
@@ -381,6 +402,8 @@ int main(int argc, char **argv) {
         QJsonObject glossary;
         auto *form = window.findChild<QWidget *>(QStringLiteral("typelay-glossary"));
         glossary.insert("visible", form && form->isVisible());
+        auto *feedback = form ? form->findChild<QLabel *>(QStringLiteral("typelay-glossary-feedback")) : nullptr;
+        glossary.insert("feedback", feedback ? feedback->text() : QString());
         for (const auto *name : {"source", "target"}) {
             auto *term = form ? form->findChild<QLineEdit *>(QStringLiteral("typelay-glossary-") + QLatin1String(name)) : nullptr;
             if (term) glossary.insert(QLatin1String(name), QJsonObject{{"text", term->text()},
@@ -443,7 +466,8 @@ int main(int argc, char **argv) {
             {"plain", plainState},
             {"first", field(first, firstChanges, firstEdits)},
             {"second", field(second, secondChanges, secondEdits)},
-            {"glossary", glossary},
+            {"glossary", glossary}, {"providerEvents", observer.providerEvents},
+            {"providerSequence", qint64(observer.providerSequence)},
             {"overlayVisible", overlay && overlay->isVisible()},
             {"overlayPalette", overlay ? paletteState(overlay->palette()) : QJsonObject()},
             {"overlayTextColors", overlayTextColors},
@@ -501,7 +525,14 @@ int main(int argc, char **argv) {
             const bool multiline = command.value("field").toString() == "plain";
             auto *field = command.value("field").toString() == "second" ? second : first;
             QWidget *widget = multiline ? static_cast<QWidget *>(plain) : field;
-            if (op == "application-motion") {
+            if (op == "consumer-retirement-opt-in") {
+                auto *consumer = qApp->property("typelay.fcitx.qt.consumer.v1").value<QObject *>();
+                if (!consumer) qFatal("Actual cooperative consumer missing");
+                consumer->setProperty("typelay.fcitx.qt.detached-retirement.v1",
+                    command.contains("value") ? command.value("value").toVariant() : QVariant());
+            }
+            else if (op == "reset-ime") QGuiApplication::inputMethod()->reset();
+            else if (op == "application-motion") {
                 // Exercise Qt's public style preference on this isolated app.
                 // This does not claim the compositor exports an OS preference.
                 app.setStyleSheet(command.value("reduced").toBool()

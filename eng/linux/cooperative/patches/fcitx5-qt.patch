@@ -207,7 +207,7 @@
  
 +    QPointer<QFcitxPlatformInputContext> focusSelf(this);
 +    QPointer<QObject> requestedFocus(realFocusObject), previousFocus(lastObject_);
-+    tlRevokeDetached();
++    tlRevokeDetached(TlQtDetachedRetired);
 +    if (!focusSelf || requestedFocus.data() != realFocusObject ||
 +        focusObjectWrapper() != realFocusObject || previousFocus != lastObject_) return;
 +    auto detached = tlBeginDetach(realFocusObject);
@@ -496,7 +496,7 @@
 +            data.event = tlCopyKey(keyEvent);
  #else
              data.event = std::make_unique<QKeyEvent>(keyEvent);
-@@ -1306,3 +1619,582 @@
+@@ -1306,3 +1619,594 @@
  }
  
 +// TypeLay 2026-10-12: exact-object cooperation for the original async IM path.
@@ -535,12 +535,24 @@
 +}
 +
 +void QFcitxPlatformInputContext::tlRevokeDetached(quint32 causes) {
++    const QPointer<QFcitxPlatformInputContext> self(this);
++    const QPointer<QObject> consumer = causes == TlQtDetachedRetired
++        ? qApp->property(TypeLayFcitxQtConsumerPropertyV1).value<QObject *>() : nullptr;
++    const auto originalOptIn = consumer ? consumer->property(TypeLayFcitxQtDetachedRetirementPropertyV1) : QVariant();
 +    QPointer<QObject> source = tlDetached_.source;
 +    tlDetached_ = {};
 +    if (!source) return;
 +    if (source != tlBound_ &&
 +        source->property(TypeLayFcitxQtProviderPropertyV1).value<QObject *>() == this)
 +        source->setProperty(TypeLayFcitxQtProviderPropertyV1, QVariant());
++    if (!self) return;
++    if (causes == TlQtDetachedRetired) {
++        const auto opted = consumer ? consumer->property(TypeLayFcitxQtDetachedRetirementPropertyV1) : QVariant();
++        if (!source || !consumer || qApp->property(TypeLayFcitxQtConsumerPropertyV1).value<QObject *>() != consumer
++            || originalOptIn.userType() != QMetaType::Bool || !originalOptIn.toBool()
++            || !qobject_cast<TypeLayFcitxQtControlV1 *>(consumer.data())
++            || opted.userType() != QMetaType::Bool || !opted.toBool()) causes = 0;
++    }
 +    if ((causes & TlQtInput) && tlFields_.contains(source)) ++tlFields_[source].inputEpoch;
 +    Q_EMIT typelayStateChangedV1(source, causes);
 +}

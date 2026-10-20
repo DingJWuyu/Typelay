@@ -2096,6 +2096,43 @@ class InputFeedbackTests(unittest.TestCase):
             with self.subTest(state=state):
                 asyncio.run(exercise(state))
 
+    def test_qt6_auxiliary_term_focus_stream_preserves_original_window_identity(self):
+        async def exercise():
+            overlay, jobs, entry, request, emit = await self.native_glossary_scenario(backend="qt6")
+            receipt = {key: entry[key] for key in ("formId", "token")}
+            self.native_glossary_transfer(entry, "Opening")
+            emit("sessionGlossaryFocus", {**receipt, "ime": "Unknown"})
+            self.peer.link.receive({"id": request["id"], "data": {"opened": True}})
+            await self.settle_overlay(jobs)
+            form, window = overlay.glossary, self.input.window_epoch
+            # The paired native socket regression proves word-to-word focus
+            # retires only background authority, with no source input event.
+            # Here feed its public auxiliary-focus stream to the real host.
+            for ime in ("Clear", "Unknown", "Clear"):
+                emit("focus", True)
+                emit("sessionGlossaryFocus", {**receipt, "ime": ime})
+                self.assertEqual(self.input.window_epoch, window)
+                self.assertIs(overlay.glossary, form)
+                self.assertEqual(self.input.focus(), "Overlay")
+            # A genuine unmarked source focus event still retires this identity.
+            self.peer.event(
+                "input",
+                {
+                    "target": entry["token"]["target"]["value"],
+                    "textChanged": False,
+                    "focusChanged": True,
+                    "focused": False,
+                    "inputRevision": 1,
+                    "contentRevision": 1,
+                },
+            )
+            self.assertGreater(self.input.window_epoch, window)
+            emit("sessionGlossaryFocus", {**receipt, "ime": "Clear"})
+            self.assertFalse(overlay.glossary_current(form))
+            await self.settle_overlay(jobs)
+
+        asyncio.run(exercise())
+
     def test_gtk3_source_glossary_opens_without_entering_translation_editor(self):
         async def exercise():
             overlay, jobs, entry, request, emit = await self.native_glossary_scenario()

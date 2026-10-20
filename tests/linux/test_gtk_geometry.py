@@ -6,7 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
-from desktop_e2e import settings_viewport_from_pane  # noqa: E402
+from desktop_e2e import settings_text_visible_point, settings_viewport_from_pane  # noqa: E402
 from gtk_session_reentry import click_point, parent_geometry_ready, validated_geometry  # noqa: E402
 from hy_package_e2e import package_scroll_value, rectangle_contains  # noqa: E402
 
@@ -229,6 +229,38 @@ class SettingsScrollCalibrationTests(unittest.TestCase):
                 self.assertIsNone(
                     settings_viewport_from_pane({**self.initial, **changed}, self.current)
                 )
+
+
+class SettingsTextPointTests(unittest.TestCase):
+    def test_character_and_empty_caret_use_actual_reported_position(self):
+        clips = [(226, 409, 566, 84), (202, 95, 614, 398), (0, 0, 842, 612)]
+        self.assertEqual(settings_text_visible_point((226, 409, 8, 18), clips), (230, 418))
+        self.assertEqual(settings_text_visible_point((226, 409, 0, 18), clips), (226, 418))
+
+    def test_outer_clipping_unknown_geometry_and_empty_clip_fail_closed(self):
+        character = (230, 410, 8, 18)
+        for clips in (
+            [],
+            [None],
+            [(0, 0, 0, 100)],
+            [(-(2**31), 0, 900, 900)],
+            [(226, 409, 566, 84), (202, 95, 614, 300)],
+            [(235, 409, 566, 84)],
+            [(0, 0, 234, 900)],
+        ):
+            with self.subTest(clips=clips):
+                self.assertIsNone(settings_text_visible_point(character, clips))
+
+    def test_invalid_character_rectangle_is_not_replaced_by_parent_center(self):
+        for character in (
+            (0, 0, -1, 18),
+            (0, 0, 1, 0),
+            (-(2**31), 0, 0, 18),
+            (False, 0, 1, 18),
+            (0, 0, 1.0, 18),
+        ):
+            with self.subTest(character=character):
+                self.assertIsNone(settings_text_visible_point(character, [(0, 0, 900, 900)]))
 
 
 if __name__ == "__main__":

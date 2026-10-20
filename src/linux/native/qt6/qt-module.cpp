@@ -193,6 +193,7 @@ class Native final : public QObject, public TypeLayFcitxQtControlV1, public Type
     Q_INTERFACES(TypeLayFcitxQtControlV1 TypeLayFcitxQtOrderedControlV1)
 public:
     explicit Native(QObject *parent) : QObject(parent) {
+        setProperty(TypeLayFcitxQtDetachedRetirementPropertyV1, true);
         qApp->installEventFilter(this);
         connect(qApp, &QApplication::focusChanged, this, [this](QWidget *old, QWidget *current) {
             ++focusGeneration_;
@@ -513,10 +514,13 @@ signals:
 
 private slots:
     void providerChanged(QObject *field, uint causes) {
+        constexpr uint knownCauses = TlQtInput | TlQtFocus | TlQtBinding | TlQtModifier
+            | TlQtOrderedPrefix | TlQtDetachedRetired;
+        const bool unknown = !causes || (causes & ~knownCauses);
         if (glossary_) {
             for (int index = 0; index < 2; ++index) {
                 if ((glossary_->terms[index] == field && (causes & TlQtInput))
-                    || (glossary_->providers[index] == sender() && (!causes || (causes & TlQtBinding))))
+                    || (glossary_->providers[index] == sender() && (unknown || (causes & TlQtBinding))))
                     glossary_->clearTerms[index] = false;
             }
         }
