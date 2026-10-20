@@ -76,7 +76,8 @@ internal static partial class BrowserCooperationCheck
         }
     }
     private sealed record CommandPathEntry(long AtMs, string Stage, string Reason, string Kind,
-        bool? CommandSent, bool? HasNative, long? AgeMs);
+        bool? CommandSent, bool? HasNative, long? AgeMs, double? PolicyAuthorityAgeMs,
+        string? PolicyCheckPhase, string? PolicyRenewalPhase);
     private static bool ObserveDom(PageState state, Scene scene, string expected)
     {
         // The wait already read this state. Preserve those observations even if
@@ -112,8 +113,15 @@ internal static partial class BrowserCooperationCheck
                     && field.ValueKind is JsonValueKind.True or JsonValueKind.False ? field.GetBoolean() : null;
                 long? age = detail.TryGetProperty("ageMs", out var metric) && metric.ValueKind == JsonValueKind.Number && metric.TryGetInt64(out long number)
                     ? Math.Clamp(number, -10000, 10000) : null;
+                double? policyAge = detail.TryGetProperty("policyAuthorityAgeMs", out var policyMetric)
+                    && policyMetric.ValueKind == JsonValueKind.Number && policyMetric.TryGetDouble(out double policyNumber)
+                    && double.IsFinite(policyNumber) ? Math.Round(Math.Clamp(policyNumber, -10000, 10000), 1) : null;
+                string? policyPhase = BrowserInput.String(detail, "policyCheckPhase");
+                string? renewalPhase = BrowserInput.String(detail, "policyRenewalPhase");
                 records.Add(new(value.GetProperty("atMs").GetInt64(), stage!, reason!,
-                    kind is "wake" or "direct" ? kind : "unknown", Flag(detail, "commandSent"), Flag(detail, "hasNative"), age));
+                    kind is "wake" or "direct" ? kind : "unknown", Flag(detail, "commandSent"), Flag(detail, "hasNative"), age,
+                    policyAge, policyPhase is "before-capture" or "after-capture" ? policyPhase : null,
+                    renewalPhase is "idle" or "describe" or "approve" ? renewalPhase : null));
                 if (records.Count == 32)
                     break;
             }

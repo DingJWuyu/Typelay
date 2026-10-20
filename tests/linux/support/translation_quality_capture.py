@@ -18,7 +18,7 @@ RUNNERS = ROOT / "tests/shared/worker"
 RUNNER_SECONDS = 600 + 7
 WORK_SECONDS = 240 + 3 * RUNNER_SECONDS
 CLEANUP_SECONDS = 30
-COLLECTIONS = {"alternative": 32, "styled": 8, "glossary": 5}
+COLLECTIONS = {"alternative": 32, "styled": 16, "glossary": 5}
 
 
 def process_status(pid):
@@ -125,6 +125,7 @@ def inspect_report(name, output):
         "workerExitConfirmed": report.get("workerExitConfirmed"),
         "workerExitCode": report.get("workerExitCode"),
         "inputSha256": report.get("inputSha256"),
+        "holdoutInputSha256": report.get("holdoutInputSha256"),
     }
 
 
@@ -136,7 +137,7 @@ class Capture:
         self.blocked = False
         self.report = {
             "quality": "not-run",
-            "maximumTranslationRequests": 45,
+            "maximumTranslationRequests": sum(COLLECTIONS.values()),
             "actualTranslationRequests": 0,
             "requestCountComplete": True,
             "workerExitConfirmed": True,
@@ -159,6 +160,8 @@ class Capture:
         arguments = ["--python", str(python), "--models", str(models), "--output", str(output)]
         if name != "alternative":
             arguments.extend(["--worker", str(worker)])
+        if name == "styled":
+            arguments.append("--include-holdout")
         entry = {
             "runner": name,
             "output": str(output),
@@ -200,6 +203,13 @@ class Capture:
             raise RuntimeError("quality report missing or unreadable; preserve all data")
         inputs = (RUNNERS / f"{name}_quality_inputs.json").read_bytes()
         expected = json.loads(inputs)["samples"]
+        holdout_matches = True
+        if name == "styled":
+            holdout = (RUNNERS / "styled_quality_holdout_inputs.json").read_bytes()
+            expected.extend(json.loads(holdout)["samples"])
+            holdout_matches = (
+                report.get("holdoutInputSha256") == hashlib.sha256(holdout).hexdigest()
+            )
         if not (
             code == 0
             and report.get("status") == "completed"
@@ -214,6 +224,7 @@ class Capture:
             and len(report["requests"]) == COLLECTIONS[name] + 1
             and report["requests"][0].get("op") == "hello"
             and report.get("inputSha256") == hashlib.sha256(inputs).hexdigest()
+            and holdout_matches
             and len(report.get("cases", [])) == len(expected)
             and all(
                 {key: case.get(key) for key in sample} == sample

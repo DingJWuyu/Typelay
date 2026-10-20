@@ -598,6 +598,7 @@ public sealed class BrowserContractTests
         // These are transport completion barriers, not page approval or clock
         // proofs. The production coordinator must never await the body barrier.
         var refresh = new BrowserPolicyRefresh();
+        Assert.Equal(BrowserPolicyRenewalPhase.Idle, refresh.DiagnosticPhase);
         var description = new TaskCompletionSource<BrowserReply?>();
         var acknowledgement = new TaskCompletionSource();
         var body = new TaskCompletionSource();
@@ -616,9 +617,11 @@ public sealed class BrowserContractTests
             return acknowledgement.Task;
         }
         var round = refresh.Poll(100, Describe, Approve);
+        Assert.Equal(BrowserPolicyRenewalPhase.Describe, refresh.DiagnosticPhase);
         var capturedDescription = refresh.CaptureAsync();
         description.SetResult(first);
         Assert.Same(first, await capturedDescription);
+        Assert.Equal(BrowserPolicyRenewalPhase.Approve, refresh.DiagnosticPhase);
         async Task ReadBody()
         {
             await capturedDescription;
@@ -632,6 +635,7 @@ public sealed class BrowserContractTests
         Assert.Same(first, firstApproval);
         acknowledgement.SetResult();
         await round;
+        Assert.Equal(BrowserPolicyRenewalPhase.Idle, refresh.DiagnosticPhase);
         var nextDescription = new TaskCompletionSource<BrowserReply?>();
         var nextAck = new TaskCompletionSource();
         var next = new BrowserReply(Authority(observed: 300), Route);
@@ -647,12 +651,14 @@ public sealed class BrowserContractTests
         });
         nextDescription.SetResult(next);
         Assert.Same(next, await refresh.CaptureAsync());
+        Assert.Equal(BrowserPolicyRenewalPhase.Approve, refresh.DiagnosticPhase);
         Assert.Equal(2, descriptions);
         Assert.Equal(2, approvals);
         Assert.Same(next, secondApproval);
         Assert.False(reading.IsCompleted); // The scheduler clock advanced by 200ms.
         nextAck.SetResult();
         await nextRound;
+        Assert.Equal(BrowserPolicyRenewalPhase.Idle, refresh.DiagnosticPhase);
         body.SetResult();
         await reading;
     }
@@ -703,13 +709,16 @@ public sealed class BrowserContractTests
         var capture = refresh.CaptureAsync();
         refresh.Invalidate();
         Assert.Null(await capture);
+        Assert.Equal(BrowserPolicyRenewalPhase.Describe, refresh.DiagnosticPhase);
         description.SetResult(new(Authority(), Route));
         await round;
         Assert.False(approved);
+        Assert.Equal(BrowserPolicyRenewalPhase.Idle, refresh.DiagnosticPhase);
 
         var ack = new TaskCompletionSource();
         var second = refresh.Poll(135, () => Task.FromResult<BrowserReply?>(new(Authority(), Route)), _ => ack.Task);
         refresh.Invalidate();
+        Assert.Equal(BrowserPolicyRenewalPhase.Approve, refresh.DiagnosticPhase);
         bool nextStarted = false;
         Assert.Same(second, refresh.Poll(300, () =>
         {
@@ -719,6 +728,7 @@ public sealed class BrowserContractTests
         Assert.False(nextStarted);
         ack.SetResult(); // Includes RequestAsync returning null after its bounded timeout.
         await second;
+        Assert.Equal(BrowserPolicyRenewalPhase.Idle, refresh.DiagnosticPhase);
         await refresh.Poll(300, () =>
         {
             nextStarted = true;

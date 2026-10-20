@@ -49,7 +49,8 @@ internal sealed partial class BrowserInput
     }
     private bool CommandTraceEnabled => !string.IsNullOrWhiteSpace(_tracePath) && TraceBudget.CommandsAvailable;
     private void TraceCommandPath(CommandPathStage stage, CommandPathReason reason, string? kind,
-        bool? commandSent = null, bool? hasNative = null, long? ageMs = null)
+        bool? commandSent = null, bool? hasNative = null, long? ageMs = null,
+        double? policyAuthorityAgeMs = null, string? policyCheckPhase = null, BrowserPolicyRenewalPhase? policyRenewalPhase = null)
     {
         if (!CommandTraceEnabled)
             return;
@@ -62,7 +63,16 @@ internal sealed partial class BrowserInput
                 kind = kind is "wake" or "direct" ? kind : "unknown",
                 commandSent,
                 hasNative,
-                ageMs = ageMs is { } age ? Math.Clamp(age, -10000, 10000) : (long?)null
+                ageMs = ageMs is { } age ? Math.Clamp(age, -10000, 10000) : (long?)null,
+                policyAuthorityAgeMs,
+                policyCheckPhase = policyCheckPhase is "before-capture" or "after-capture" ? policyCheckPhase : null,
+                policyRenewalPhase = policyRenewalPhase switch
+                {
+                    BrowserPolicyRenewalPhase.Idle => "idle",
+                    BrowserPolicyRenewalPhase.Describe => "describe",
+                    BrowserPolicyRenewalPhase.Approve => "approve",
+                    _ => null
+                }
             });
         }
         catch (Exception error) when (error is not OutOfMemoryException) { }
@@ -85,7 +95,9 @@ internal sealed partial class BrowserInput
                 or "PolicyAuthorityMissing" or "PolicyTimeInvalid" or "PolicyClockUnavailable" or "PolicyAuthorityChanged" or "PolicyAuthorityExpired" or "PolicyAuthorityClock"
                 ? Enum.Parse<CommandPathReason>(rawReason) : CommandPathReason.Unknown;
             TraceCommandPath(CommandPathStage.Page, reason, String(data, "kind"),
-                Boolean(data, "commandSent"), Boolean(data, "hasNative"));
+                Boolean(data, "commandSent"), Boolean(data, "hasNative"),
+                policyAuthorityAgeMs: DiagnosticMetric(data, "policyAuthorityAgeMs"),
+                policyCheckPhase: String(data, "policyCheckPhase"));
         }
         catch (Exception error) when (error is not OutOfMemoryException) { }
     }

@@ -40,6 +40,8 @@ python tests/shared/worker/alternative_quality.py \
 
 `tests/shared/worker/styled_quality.py` 是独立于原 Argos 16 句的窄采集入口，不接入 shared-check 或自动 CI。固定 `styled_quality_inputs.json` 的 SHA-256 为 `6d5a77c5369be23cec23e526cb89f102e7c2726e3d84221e48d6572c9b62576c`，只含四个合成日常原句，依次覆盖 zh_ja、ja_zh、zh_fr、fr_zh；每句原源依次请求 Natural、Formal，最多8次翻译，无重试、重启、改题或普通翻译回退。语义锚点用于人工检查否定、主体、数字、状态、时态/条件及承诺强度，不是参考译文或自动评分。
 
+显式 `--include-holdout` 在原四句后追加 `styled_quality_holdout_inputs.json` 的四句，方向及 Natural/Formal 顺序相同，共16次请求。独立样本在候选提示修改前冻结，SHA-256 为 `f837e7a5983bc2303c3c279052cc05166ba2cfe05d6dccd0f364fe15896d3616`；原四句与原 SHA 不变，报告另记 `holdoutInputSha256`。新增样本覆盖不同实体、条件、否定、数字、主体与承诺；没有旧版实测基线，不作为旧版到候选的成对改善证据。该标志不改变单进程、600秒总预算或逐请求/清理限制，不保证所有请求能在时限内完成。
+
 实际执行只接受正式安装器已成功得到的同一代 venv Python 与 models，库存必须是合法 schema3、仅一个 active Hy 包，已选方向须包含这四个方向。`--worker` 指向同期实际发行包的 `worker/run_worker.py`；脚本先逐字节核对入口、Python 模块闭包、requirements/catalog 与模型/CPU固定锁，拒绝额外 Python 包或字节码遮蔽。它不复制资产、安装依赖、下载权重、改库存或制造 Ready。发行 worker 必须自验 runtime-only production-adapter、CPU 库及模型文件并实际加载；真实 hello 必须精确匹配 active 包 id/version/方向及 `styledTranslationVersion=1`。旧源码、旧 ABI adapter、缺失资源或能力均停止，不把旧模型单句结果视为本轮风格证据。
 
 仅启动一个 Linux 独立进程组，地址空间上限2.5 GiB（已有更低限制保持）；实际生产 ABI5 固定单模型、2线程、greedy、context1024、最多192新 token及每请求60秒。外层仅给每次翻译65秒收帧预算，加载与 hello 90秒，总采集600秒含加载；退出另有原有最多7秒的 EOF/TERM/KILL 自有进程组清理，不扩大模型配置。以下路径均须来自已完成的正式安装及同期含 ABI5 native 资产的发行包；脚本不会准备它们：
@@ -53,9 +55,9 @@ python tests/shared/worker/styled_quality.py \
   --output artifacts/hy-styled-quality/result.json
 ```
 
-`--validate-only --output artifacts/hy-styled-quality/inputs-check.json` 只验证固定输入、参数与源码身份记录，不查看安装、不加载 native、不启动 worker；生成 `status=not-run`、`quality=not-run`、`workerStarts=0` JSON 并有意返回2。输出禁止覆盖。正式采集记录完整原源、Natural/Formal原始响应、hello、输入/源码/库存/adapter清单身份、固定预算、逐请求状态/code、worker及端到端耗时、失败阶段与退出证明；未暴露的 native token 指标不伪造。所有逐输出及成对人工复核字段保持 null；`completed` 仅代表8请求采集及清理完成，质量仍为 `not-reviewed`，不是质量 pass。失败保留已完成响应，未确认退出不能完成。
+`--validate-only --output artifacts/hy-styled-quality/inputs-check.json` 只验证固定输入、参数与源码身份记录，不查看安装、不加载 native、不启动 worker；可同时传 `--include-holdout` 检查16请求计划。生成 `status=not-run`、`quality=not-run`、`workerStarts=0` JSON 并有意返回2。输出禁止覆盖。正式采集记录完整原源、Natural/Formal原始响应、hello、输入/源码/库存/adapter清单身份、固定预算、逐请求状态/code、worker及端到端耗时、失败阶段与退出证明；未暴露的 native token 指标不伪造。所有逐输出及成对人工复核字段保持 null；`completed` 仅代表所选8或16请求采集及清理完成，质量仍为 `not-reviewed`，不是质量 pass。失败保留已完成响应，未确认退出不能完成。
 
-当前实际 ABI5 成对推理、资源峰值、语言质量与人工复核均为 not-run。本入口准备及参数检查不构成任何方向的语言质量验收，也不开放四方向、十二方向或用户界面；原 Frozen 产品规格与 Argos 16句保持不变。
+[既有实际采集](https://github.com/DingJWuyu/Typelay/actions/runs/39415329820)已完成原四句的8个 ABI5 响应，保留为原提示基线；原始质量字段仍为 `not-reviewed`。逐句审阅发现自然中译日反转否定、正式中译法增加交付含义，不能视为质量通过。当前候选仅把显式风格前缀调整为[固定官方两行风格骨架](https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF/blob/a0c709d9fac510f2c807aa3af52872340dc37a4a/README.md)，保留可信枚举、各自保义要求、普通/术语提示、literal隔离和greedy预算。提示格式差异与错译的因果尚未建立，候选及新四句真实推理均为 not-run。后续逐项对照原锚点和独立样本，不从文本不同、官方指导或软件合同推断质量，不开放四方向、十二方向或用户界面；原 Frozen 产品规格与 Argos 16句保持不变。
 
 ## Hy 术语窄采集准备
 
@@ -66,7 +68,7 @@ python tests/shared/worker/glossary_quality.py --validate-only \
   --output artifacts/hy-glossary-quality/inputs-check.json
 ```
 
-当前只准备代码与样例，实际采集 not-run。`--validate-only` 不查看安装、不加载 native 或模型、不启动 worker，写出 `status=not-run`、`quality=not-run`、`workerStarts=0` 并有意返回2。以后经授权实际采集时使用上节相同来源的 `--python`、`--models`、`--worker` 参数；不下载、不安装、不改库存、不接自动 CI。预算保持2.5 GiB地址空间、单模型、2线程、greedy、context1024、192新token、worker每请求60秒、收帧65秒、加载/hello90秒、总计600秒及另计最多7秒清理。
+[既有实际采集](https://github.com/DingJWuyu/Typelay/actions/runs/39415329820)已完成五个响应及退出，包含三个翻译结果与两个预期拒绝；原始质量字段仍为 `not-reviewed`，不构成术语能力放行。当前候选的新采集未运行。`--validate-only` 不查看安装、不加载 native 或模型、不启动 worker，写出 `status=not-run`、`quality=not-run`、`workerStarts=0` 并有意返回2。经授权实际采集时使用上节相同来源的 `--python`、`--models`、`--worker` 参数；不下载、不安装、不改库存、不接自动 CI。预算保持2.5 GiB地址空间、单模型、2线程、greedy、context1024、192新token、worker每请求60秒、收帧65秒、加载/hello90秒、总计600秒及另计最多7秒清理。
 
 报告保留完整原始请求（原源、术语、方向及组合字段）、每次完整响应、身份/hello、耗时、拒绝code和退出证明，输出文件禁止覆盖。预期拒绝必须为空text并匹配明确code；意外结果保留后停止，不重试、换题、回退或硬替换输出。`completed` 只表示固定响应采集及清理完成，质量仍为 `not-reviewed`；术语、专属优先、结构、拒绝合理性、原义/数字/否定等人工复核字段始终初始化为null，不能把术语出现或协议拒绝当成质量通过。准备回归仅检查schema、无资产的validate-only及禁止覆盖，不证明真实ABI5推理、资源峰值、语言质量或用户界面可用。
 
@@ -86,15 +88,15 @@ python tests/linux/native_e2e.py --desktop --desktop-scope model-packages \
   --native artifacts/linux/native --output artifacts/linux/quality-capture
 ```
 
-原宿主本轮实际加载 Argos 双向并 Ready 后，先正常退出宿主，核对原 desktop、Host 与 worker 的 PID/starttime 均退休及两个私有 socket 已移除，再执行现 `alternative_quality.py` 的16句/32请求。采集器继续唯一拥有自己的进程组及原 SIG/EOF/TERM/KILL 清理；退出证实后，以未改的库存、设置及精确同一安装代重启真实宿主，再次等待实际 hello Ready。随后沿原 GTK Install Hy 流程，Hy Ready 后同样停服，串行执行 `styled_quality.py` 的8请求和 `glossary_quality.py` 的5请求，每个退出已证实才进入下一个。再次同代重启后，原单句中译法、Select、回切及 Remove 断言全部保留。重启只接受初始化 `idle` 及精确同代；正常包事务仍要求迁代，未放宽原断言。
+原宿主本轮实际加载 Argos 双向并 Ready 后，先正常退出宿主，核对原 desktop、Host 与 worker 的 PID/starttime 均退休及两个私有 socket 已移除，再执行现 `alternative_quality.py` 的16句/32请求。采集器继续唯一拥有自己的进程组及原 SIG/EOF/TERM/KILL 清理；退出证实后，以未改的库存、设置及精确同一安装代重启真实宿主，再次等待实际 hello Ready。随后沿原 GTK Install Hy 流程，Hy Ready 后同样停服，串行执行 `styled_quality.py --include-holdout` 的16请求和 `glossary_quality.py` 的5请求，每个退出已证实才进入下一个。再次同代重启后，原单句中译法、Select、回切及 Remove 断言全部保留。重启只接受初始化 `idle` 及精确同代；正常包事务仍要求迁代，未放宽原断言。
 
 采集期间仅锁住该自有 session、安装器与已实际服务的精确代的现有生产锁，拒绝 Host/installer 并发，不创建锁标记或遍历未知代。runner 在 fixture 进程中同步执行，有限隔离并恢复其 Python 模块、argv 与导入路径，避免已导入的发行包模块遮蔽当前采集源码；不增加 wrapper 模型所有者，不复制采集逻辑。
 
 每个 runner 保持600秒采集及最多7秒清理，原产品每请求期限和模型资源配置不变。fixture 原240秒只扣除实际采集 wall time；外层从启动起共2061秒工作窗口，另30秒退出余量，总2091秒，后3秒留给 compositor 清理。超过工作截止不再启动或恢复进程。compositor 提前退出或外层中断时，仅向本轮已核 PID/starttime 的 inside 进程发 TERM，等待 runner 原清理和 fixture finally；不能把 compositor 已退出当作 worker 退出证明。任意外部 SIGKILL、无法读取身份或缺少最终报告不构成回收保证。
 
-输出的三个原始 JSON 保留完整原有响应及人工复核字段；`hy-package-result.json` 另记录总 wall time、采集时间、非采集时间、最多45个质量请求及实际记录的请求尝试数（包含失败在途请求，hello 另计；不包含原生命周期单句试译）。完成要求逐份 `workerStarts=1`、正常退出码0、`workerExitConfirmed=true`、`status=completed`、精确输入/库存身份，以及32/8/5请求，不能只以“不超过上限”放行。产生响应后 `quality` 保持 `not-reviewed`，尚未采集则如实为 `not-run`；两者都不是语言质量通过。
+输出的三个原始 JSON 保留完整原有响应及人工复核字段；`hy-package-result.json` 另记录总 wall time、采集时间、非采集时间、最多53个质量请求及实际记录的请求尝试数（包含失败在途请求，hello 另计；不包含原生命周期单句试译）。完成要求逐份 `workerStarts=1`、正常退出码0、`workerExitConfirmed=true`、`status=completed`、精确原始/holdout输入与库存身份，以及32/16/5请求，不能只以“不超过上限”放行。产生响应后 `quality` 保持 `not-reviewed`，尚未采集则如实为 `not-run`；两者都不是语言质量通过。
 
-失败不重试，不继续恢复、Select 或 Remove。原 JSON、隔离数据和失败 HOME/搬迁包保留；缺失、坏或空的报告及退出未知均失败。outer 只在 fixture finally 后的本轮完成/失败标记、精确 inside 退出及各份退出证据齐全后收束。本入口的受控测试只证明参数、导入隔离、预算、取消/进程清理和失败保留；实际45请求、GTK全链、资源峰值与语言人工复核仍须分别执行，不能由这些测试推断。
+失败不重试，不继续恢复、Select 或 Remove。原 JSON、隔离数据和失败 HOME/搬迁包保留；缺失、坏或空的报告及退出未知均失败。outer 只在 fixture finally 后的本轮完成/失败标记、精确 inside 退出及各份退出证据齐全后收束。本入口的受控测试只证明参数、导入隔离、预算、取消/进程清理和失败保留；实际53请求、GTK全链、资源峰值与语言人工复核仍须分别执行，不能由这些测试推断。
 
 ## 结果表述
 

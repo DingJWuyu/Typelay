@@ -182,6 +182,30 @@ class CaptureHandoffTests(unittest.TestCase):
         self.assertEqual(output.read_bytes(), original)
         self.assertEqual(marker.read_text(), '{"schema":1}')
 
+    def test_explicit_capture_includes_frozen_styled_holdout_without_starting_missing_assets(self):
+        generation = self.output / "generation"
+        (generation / "models").mkdir(parents=True)
+        marker = generation / "models/installed.json"
+        marker.write_text('{"schema":1}')
+        capture = Capture(self.output, time.monotonic() + 1000)
+        with self.assertRaisesRegex(RuntimeError, "incomplete"):
+            capture.run("styled", generation, self.output / "absent-worker")
+        report = json.loads((self.output / "styled-quality.json").read_text())
+        self.assertEqual(report["workerStarts"], 0)
+        self.assertEqual(report["maximumTranslationRequests"], 16)
+        self.assertEqual(capture.report["maximumTranslationRequests"], 53)
+        self.assertEqual(report["configuredLimits"]["totalTimeoutSeconds"], 600)
+        self.assertEqual(len(report["cases"]), 8)
+        self.assertEqual(
+            report["holdoutInputSha256"],
+            "f837e7a5983bc2303c3c279052cc05166ba2cfe05d6dccd0f364fe15896d3616",
+        )
+        self.assertEqual(
+            capture.report["collections"][0]["holdoutInputSha256"], report["holdoutInputSha256"]
+        )
+        self.assertEqual(capture.report["actualTranslationRequests"], 0)
+        self.assertEqual(marker.read_text(), '{"schema":1}')
+
     def test_unknown_exit_keeps_home_and_no_lock_file_is_manufactured(self):
         capture = Capture(self.output, time.monotonic() + 1000)
         capture.report["workerExitConfirmed"] = False

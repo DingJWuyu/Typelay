@@ -5796,18 +5796,44 @@ def run(arguments):
             excluded = settings_control("设置：排除的应用", timeout=deadline - time.monotonic())
             assert excluded.get_process_id() == process.pid
             assert Atspi.Component.grab_focus(excluded.get_component_iface())
-            wait_for(
-                lambda: focused(excluded)
-                and excluded.get_state_set().contains(Atspi.StateType.SHOWING)
-                and any(
+            exclusion_focus_state = {
+                "focused": None,
+                "showing": None,
+                "settingsWindowFocused": None,
+            }
+
+            def exclusion_editor_focused():
+                # Preserve short-circuit order; skipped observations stay unknown.
+                exclusion_focus_state.update(focused=None, showing=None, settingsWindowFocused=None)
+                exclusion_focus_state["focused"] = focused(excluded)
+                if not exclusion_focus_state["focused"]:
+                    return False
+                exclusion_focus_state["showing"] = excluded.get_state_set().contains(
+                    Atspi.StateType.SHOWING
+                )
+                if not exclusion_focus_state["showing"]:
+                    return False
+                exclusion_focus_state["settingsWindowFocused"] = any(
                     window.get("id") == settings_window["id"]
                     and window.get("pid") == process.pid
                     and window.get("is_focused") is True
                     for window in contents(request("Windows"), "Windows")
-                ),
-                "advanced exclusion editor did not gain visible settings keyboard focus",
-                timeout=deadline - time.monotonic(),
-            )
+                )
+                return exclusion_focus_state["settingsWindowFocused"]
+
+            try:
+                wait_for(
+                    exclusion_editor_focused,
+                    "advanced exclusion editor did not gain visible settings keyboard focus",
+                    timeout=deadline - time.monotonic(),
+                )
+            finally:
+                try:
+                    (arguments.output / "settings-exclusion-focus.json").write_text(
+                        json.dumps(exclusion_focus_state, indent=2)
+                    )
+                except OSError:
+                    pass  # Evidence output must not replace the original failure.
             assert Atspi.EditableText.set_text_contents(
                 excluded.get_editable_text_iface(), "typelay-navigation-test"
             )

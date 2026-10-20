@@ -4,8 +4,10 @@ using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using TypeLay.App;
 using TypeLay.Runtime;
+using N = TypeLay.Platform.Windows.NativeMethods;
 
 // Explicit actual-release checks. Neither mode manufactures inventory, supplies
 // a translator, nor uses the stage-1 audit/NDJSON worker.
@@ -26,6 +28,21 @@ internal static partial class HyPackageCheck
         public string Stage { get; set; } = "not-started";
         public string Failure { get; set; } = "none";
         public string ErrorType { get; set; } = "none";
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public string? NativeOperation
+        {
+            get; set;
+        }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public uint? NativeMessageId
+        {
+            get; set;
+        }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        public int? NativeWin32Error
+        {
+            get; set;
+        }
         public long ElapsedMs
         {
             get; set;
@@ -79,6 +96,12 @@ internal static partial class HyPackageCheck
                 scene.Outcome = "failed";
                 scene.ErrorType = error.GetType().Name;
                 scene.Failure = error is Failure failure ? failure.Code : error is OperationCanceledException ? "deadline" : "operation-failed";
+                if (error is N.NativeMessageException native)
+                {
+                    scene.NativeOperation = native.Operation;
+                    scene.NativeMessageId = native.MessageId;
+                    scene.NativeWin32Error = native.Win32Error; // Zero does not establish a timeout.
+                }
                 throw;
             }
             finally { scene.ElapsedMs = watch.ElapsedMilliseconds; }

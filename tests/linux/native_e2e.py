@@ -525,7 +525,8 @@ def quality_exit(arguments, compositor, work_deadline, result, failure):
                 )
                 assert [item["runner"] for item in quality["collections"]] == list(COLLECTIONS)
                 assert (
-                    quality["actualTranslationRequests"] == 45 and quality["requestCountComplete"]
+                    quality["actualTranslationRequests"] == sum(COLLECTIONS.values())
+                    and quality["requestCountComplete"]
                 )
                 return
             if not cancelled and (

@@ -18,7 +18,7 @@ RUNNERS = Path(__file__).resolve().parent
 
 
 class QualityPreparationTests(unittest.TestCase):
-    def validate(self, runner, output):
+    def validate(self, runner, output, *options):
         return subprocess.run(
             [
                 sys.executable,
@@ -33,6 +33,7 @@ class QualityPreparationTests(unittest.TestCase):
                 str(output.parent / "absent-worker"),
                 "--output",
                 str(output),
+                *options,
             ],
             capture_output=True,
             text=True,
@@ -114,6 +115,50 @@ class QualityPreparationTests(unittest.TestCase):
                 self.assertIsNone(case["natural"])
                 self.assertIsNone(case["formal"])
                 self.assertTrue(all(value is None for value in case["pairReview"].values()))
+
+    def test_explicit_styled_holdout_retains_original_pairs_and_fixed_total_budget(self):
+        (ROOT / "artifacts").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as temporary:
+            output = Path(temporary) / "report.json"
+            result = self.validate("styled_quality.py", output, "--include-holdout")
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertTrue(output.is_file(), result.stderr)
+            report = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual((report["status"], report["quality"]), ("not-run", "not-run"))
+            self.assertEqual(report["workerStarts"], 0)
+            self.assertEqual(report["requests"], [])
+            self.assertEqual(report["maximumTranslationRequests"], 16)
+            self.assertEqual(report["configuredLimits"]["totalTimeoutSeconds"], 600)
+            self.assertEqual(report["configuredLimits"]["workerRequestSeconds"], 60)
+            self.assertEqual(report["configuredLimits"]["cleanupAllowanceSeconds"], 7)
+            self.assertEqual(
+                report["inputSha256"],
+                "6d5a77c5369be23cec23e526cb89f102e7c2726e3d84221e48d6572c9b62576c",
+            )
+            self.assertEqual(
+                report["holdoutInputSha256"],
+                "f837e7a5983bc2303c3c279052cc05166ba2cfe05d6dccd0f364fe15896d3616",
+            )
+            original = json.loads((RUNNERS / "styled_quality_inputs.json").read_text())
+            holdout = json.loads((RUNNERS / "styled_quality_holdout_inputs.json").read_text())
+            expected = original["samples"] + holdout["samples"]
+            self.assertEqual(len(report["cases"]), 8)
+            for case, sample in zip(report["cases"], expected, strict=True):
+                self.assertEqual({key: case[key] for key in sample}, sample)
+                self.assertIsNone(case["natural"])
+                self.assertIsNone(case["formal"])
+                self.assertTrue(all(value is None for value in case["pairReview"].values()))
+                for review in case["manualReview"].values():
+                    self.assertTrue(all(value is None for value in review.values()))
+
+    def test_glossary_rejects_styled_holdout_option(self):
+        (ROOT / "artifacts").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as temporary:
+            output = Path(temporary) / "report.json"
+            result = self.validate("glossary_quality.py", output, "--include-holdout")
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("unrecognized arguments: --include-holdout", result.stderr)
+            self.assertFalse(output.exists())
 
 
 class AlternativeHelloTests(unittest.IsolatedAsyncioTestCase):

@@ -6,6 +6,10 @@ using TypeLay.Windows;
 namespace TypeLay.App;
 
 internal sealed record ShortcutRegistrationFailure(Guid Generation, string Wake, string Direct, bool CanRetry);
+internal enum BrowserPolicyRenewalPhase
+{
+    Idle, Describe, Approve
+}
 
 // Coordinates only outstanding RPCs. Field approval, identity, and the original
 // authority deadline remain BrowserInput's responsibility. No completed round
@@ -21,6 +25,11 @@ internal sealed class BrowserPolicyRefresh
     private Cycle? _cycle;
     private TaskCompletionSource<BrowserReply?>? _capture;
     private long _nextStart;
+    // Diagnostic flow position only; it does not prove a policy is approved or fresh.
+    public BrowserPolicyRenewalPhase DiagnosticPhase
+    {
+        get; private set;
+    }
     private static TaskCompletionSource<BrowserReply?> Completion() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     public Task Poll(long now, Func<Task<BrowserReply?>> describe, Func<BrowserReply, Task> approve)
     {
@@ -33,21 +42,27 @@ internal sealed class BrowserPolicyRefresh
         cycle.Completion = Run(cycle, describe, approve);
         return cycle.Completion;
     }
-    private static async Task Run(Cycle cycle, Func<Task<BrowserReply?>> describe, Func<BrowserReply, Task> approve)
+    private async Task Run(Cycle cycle, Func<Task<BrowserReply?>> describe, Func<BrowserReply, Task> approve)
     {
         try
         {
+            DiagnosticPhase = BrowserPolicyRenewalPhase.Describe;
             var reply = await describe();
             if (cycle.Invalid || reply is null)
                 return;
             // Enqueue the sole approval before waking the body consumer, but do
             // not make that consumer await the policy ACK.
+            DiagnosticPhase = BrowserPolicyRenewalPhase.Approve;
             Task acknowledgement = approve(reply);
             cycle.Description.TrySetResult(reply);
             await acknowledgement;
         }
         catch (Exception error) when (error is not OutOfMemoryException) { }
-        finally { cycle.Description.TrySetResult(null); }
+        finally
+        {
+            DiagnosticPhase = BrowserPolicyRenewalPhase.Idle;
+            cycle.Description.TrySetResult(null);
+        }
     }
     public Task<BrowserReply?> CaptureAsync()
     {
@@ -713,6 +728,7 @@ internal sealed partial class BrowserInput
     {
         var owner = _retiredCommandOwners.Append(_commandOwner).OfType<CommandOwner>().FirstOrDefault(item =>
             item.Peer == peer && item.Route == route && item.Id == String(data, "ownerId"));
+        var renewalPhase = owner?.PolicyRefresh.DiagnosticPhase;
         long commandId = Number(data, "commandId"), t0 = Number(data, "triggeredAtMs"), now = WindowsInterruptClock.NowMs;
         string? kind = String(data, "kind");
         long ownerExpiry = 0;
@@ -729,13 +745,15 @@ internal sealed partial class BrowserInput
             : now - t0 > Limits.ObservationMaxAgeMs ? CommandPathReason.TriggerExpired : CommandPathReason.Queued;
         if (reason != CommandPathReason.Queued)
         {
-            TraceCommandPath(CommandPathStage.Ingress, reason, kind, ageMs: t0 >= 0 ? now - t0 : null);
+            TraceCommandPath(CommandPathStage.Ingress, reason, kind, ageMs: t0 >= 0 ? now - t0 : null,
+                policyRenewalPhase: renewalPhase);
             return;
         }
         owner!.LastCommandId = commandId;
         if (_notices.Count >= 16)
         {
-            TraceCommandPath(CommandPathStage.Ingress, CommandPathReason.NoticeCapacity, kind, ageMs: now - t0);
+            TraceCommandPath(CommandPathStage.Ingress, CommandPathReason.NoticeCapacity, kind, ageMs: now - t0,
+                policyRenewalPhase: renewalPhase);
             return;
         }
         long sequence = _hook.NextCommandSequence();
@@ -743,7 +761,7 @@ internal sealed partial class BrowserInput
         {
             _notices.Enqueue((new(kind!, AcceptedAtMs: t0,
                 CommandGeneration: owner.Generation, Rejection: denial, CommandSequence: sequence), t0 + Limits.ObservationMaxAgeMs));
-            TraceCommandPath(CommandPathStage.Ingress, rejected, kind, ageMs: now - t0);
+            TraceCommandPath(CommandPathStage.Ingress, rejected, kind, ageMs: now - t0, policyRenewalPhase: renewalPhase);
         }
         if (!data.TryGetProperty("native", out var native))
         {
@@ -799,7 +817,8 @@ internal sealed partial class BrowserInput
         _notices.Enqueue((new(kind!, AcceptedAtMs: t0, UserEpoch: epochs.User, ForegroundEpoch: epochs.Foreground,
             Source: source, CommandGeneration: owner.Generation, CommandSequence: sequence, CommandCapture: evidence, Application: "chrome"),
             t0 + Limits.ObservationMaxAgeMs));
-        TraceCommandPath(CommandPathStage.Ingress, CommandPathReason.Queued, kind, hasNative: true, ageMs: now - t0);
+        TraceCommandPath(CommandPathStage.Ingress, CommandPathReason.Queued, kind, hasNative: true, ageMs: now - t0,
+            policyRenewalPhase: renewalPhase);
     }
     public async Task<WriteReceipt> WriteDirectAsync(WritePlan plan, string[] excluded)
     {

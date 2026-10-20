@@ -519,12 +519,23 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(len(commands), 1)
         command = commands[0]["data"]
         self.assertEqual(command["kind"], "direct")
-        self.assertEqual(
-            self.page.evaluate(
-                "fixtureMessages.filter(item => item.event === 'source-command-diagnostic').map(item => item.data)"
-            ),
-            [{"kind": "direct", "firstReason": "Sent", "commandSent": True, "hasNative": True}],
+        diagnostics = self.page.evaluate(
+            "fixtureMessages.filter(item => item.event === 'source-command-diagnostic').map(item => item.data)"
         )
+        self.assertEqual(len(diagnostics), 1)
+        diagnostic = diagnostics[0]
+        self.assertEqual(
+            {key: value for key, value in diagnostic.items() if key != "policyAuthorityAgeMs"},
+            {
+                "kind": "direct",
+                "firstReason": "Sent",
+                "commandSent": True,
+                "hasNative": True,
+                "policyCheckPhase": "after-capture",
+            },
+        )
+        self.assertGreaterEqual(diagnostic["policyAuthorityAgeMs"], 0)
+        self.assertLessEqual(diagnostic["policyAuthorityAgeMs"], 146)
         self.assertEqual(command["native"]["text"], "Hello now")
         self.assertEqual(command["native"]["selection"], {"start": 9, "end": 9})
         self.assertEqual(command["policyToken"], result["owner"]["authority"]["token"])
@@ -573,6 +584,8 @@ class BrowserContract(unittest.TestCase):
                     "firstReason": "OwnerUnavailable",
                     "commandSent": False,
                     "hasNative": False,
+                    "policyAuthorityAgeMs": None,
+                    "policyCheckPhase": None,
                 }
             ],
         )
@@ -588,12 +601,23 @@ class BrowserContract(unittest.TestCase):
         commands = self.source_commands()
         self.assertEqual(len(commands), 1)
         self.assertEqual(commands[0]["data"]["reason"], "PolicyUnavailable")
-        self.assertEqual(
-            self.page.evaluate(
-                "fixtureMessages.filter(item => item.event === 'source-command-diagnostic').map(item => item.data.firstReason)"
-            ),
-            ["PolicyAuthorityExpired"],
+        diagnostics = self.page.evaluate(
+            "fixtureMessages.filter(item => item.event === 'source-command-diagnostic').map(item => item.data)"
         )
+        self.assertEqual(len(diagnostics), 1)
+        diagnostic = diagnostics[0]
+        self.assertEqual(
+            {key: value for key, value in diagnostic.items() if key != "policyAuthorityAgeMs"},
+            {
+                "kind": "direct",
+                "firstReason": "PolicyAuthorityExpired",
+                "commandSent": True,
+                "hasNative": False,
+                "policyCheckPhase": "before-capture",
+            },
+        )
+        self.assertGreater(diagnostic["policyAuthorityAgeMs"], 146)
+        self.assertLessEqual(diagnostic["policyAuthorityAgeMs"], 10000)
         self.assertNotIn("native", commands[0]["data"])
         self.assertEqual(self.page.evaluate("fixturePassedCommandKeys"), [])
         self.command("deactivate-command-owner", {**owner, "grantSequence": 2})

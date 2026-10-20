@@ -1,7 +1,8 @@
-"""Collect four fixed Natural/Formal pairs through one installed Hy worker on Linux.
+"""Collect fixed Natural/Formal pairs through one installed Hy worker on Linux.
 
 Only production translate-styled-v1 is used. No download, installation, self-check,
 model substitution, retry, fallback, or automated language-quality verdict.
+Four original pairs are always kept; --include-holdout appends four frozen pairs.
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ from typelay_worker.protocol import valid_text
 
 INPUTS = Path(__file__).with_name("styled_quality_inputs.json")
 INPUT_SHA256 = "6d5a77c5369be23cec23e526cb89f102e7c2726e3d84221e48d6572c9b62576c"
+HOLDOUT_INPUTS = Path(__file__).with_name("styled_quality_holdout_inputs.json")
+HOLDOUT_SHA256 = "f837e7a5983bc2303c3c279052cc05166ba2cfe05d6dccd0f364fe15896d3616"
 DIRECTIONS = ("zh_ja", "ja_zh", "zh_fr", "fr_zh")
 STYLES = ("natural", "formal")
 ADDRESS_SPACE_BYTES = 5 * 1024**3 // 2
@@ -35,7 +38,7 @@ class CollectionError(ValueError):
     """Only fixed, non-private failure codes are exposed in the report."""
 
 
-def arguments(description=__doc__):
+def arguments(description=__doc__, *, allow_holdout=False):
     parser = argparse.ArgumentParser(description=description, allow_abbrev=False)
     parser.add_argument("--python", type=Path, help="existing official installation's venv Python")
     parser.add_argument(
@@ -48,6 +51,12 @@ def arguments(description=__doc__):
     parser.add_argument(
         "--validate-only", action="store_true", help="inputs only; no worker startup"
     )
+    if allow_holdout:
+        parser.add_argument(
+            "--include-holdout",
+            action="store_true",
+            help="append four frozen pairs; at most 16 requests within the same 600 seconds",
+        )
     args = parser.parse_args()
     args.output = args.output.resolve()
     if not args.output.is_relative_to(ROOT / "artifacts") or args.output.suffix != ".json":
@@ -115,22 +124,30 @@ def collection_report(input_sha256, maximum_requests):
     }
 
 
-def prepare_report():
-    raw = INPUTS.read_bytes()
-    if hashlib.sha256(raw).hexdigest() != INPUT_SHA256:
-        raise CollectionError("fixed-input-sha256")
-    inputs = json.loads(raw)
-    samples = inputs["samples"]
-    if (
-        inputs["schema"] != 1
-        or len(samples) != 4
-        or tuple(sample["direction"] for sample in samples) != DIRECTIONS
-        or len({sample["id"] for sample in samples}) != 4
-        or any(not valid_text(sample["text"]) for sample in samples)
-    ):
+def prepare_report(*, include_holdout=False):
+    sources = [(INPUTS, INPUT_SHA256)]
+    if include_holdout:
+        sources.append((HOLDOUT_INPUTS, HOLDOUT_SHA256))
+    samples = []
+    for path, expected_sha256 in sources:
+        raw = path.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != expected_sha256:
+            raise CollectionError("fixed-input-sha256")
+        inputs = json.loads(raw)
+        selected = inputs["samples"]
+        if (
+            inputs["schema"] != 1
+            or len(selected) != 4
+            or tuple(sample["direction"] for sample in selected) != DIRECTIONS
+            or any(not valid_text(sample["text"]) for sample in selected)
+        ):
+            raise CollectionError("fixed-input-schema-count-or-order")
+        samples.extend(selected)
+    if len({sample["id"] for sample in samples}) != len(samples):
         raise CollectionError("fixed-input-schema-count-or-order")
     return {
-        **collection_report(INPUT_SHA256, 8),
+        **collection_report(INPUT_SHA256, len(samples) * len(STYLES)),
+        **({"holdoutInputSha256": HOLDOUT_SHA256} if include_holdout else {}),
         "method": "production-translate-styled-v1-natural-then-formal",
         "requiredStyledTranslationVersion": 1,
         "cases": [
@@ -411,8 +428,8 @@ async def collect(
                 signal.signal(signum, handler)
 
 
-def main(prepare=prepare_report, collector=collect, description=__doc__):
-    args = arguments(description)
+def main(prepare=prepare_report, collector=collect, description=__doc__, *, allow_holdout=False):
+    args = arguments(description, allow_holdout=allow_holdout)
     report = {
         "schema": 1,
         "status": "not-run",
@@ -423,7 +440,9 @@ def main(prepare=prepare_report, collector=collect, description=__doc__):
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x", encoding="utf8") as output:
         try:
-            report.update(prepare())
+            report.update(
+                prepare(include_holdout=args.include_holdout) if allow_holdout else prepare()
+            )
             if not args.validate_only:
                 asyncio.run(collector(args, report))
         except (KeyboardInterrupt, asyncio.CancelledError):
@@ -449,4 +468,4 @@ def main(prepare=prepare_report, collector=collect, description=__doc__):
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(allow_holdout=True))
