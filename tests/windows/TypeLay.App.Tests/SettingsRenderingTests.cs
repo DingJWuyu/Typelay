@@ -235,7 +235,11 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                         AutomationProperties.GetAutomationId(control) == "ChromeConnectionPrimary");
                     Assert.Equal("查看详情", chromePrimary.Content);
                     Assert.True(chromePrimary.IsEnabled); // Model/Enabled never hide connection management.
-                    Assert.Contains(Descendants(chrome).OfType<TextBlock>(), text => text.Text == "待发布扩展");
+                    Assert.Contains(Descendants(chrome).OfType<TextBlock>(), text => text.Text == "待启用扩展");
+                    Assert.Contains(Descendants(chrome).OfType<Button>(), button =>
+                        AutomationProperties.GetAutomationId(button) == "ChromeConnectionCopyManagement");
+                    Assert.Contains(Descendants(chrome).OfType<Button>(), button =>
+                        AutomationProperties.GetAutomationId(button) == "ChromeConnectionCopyDirectory");
                     Assert.DoesNotContain(Descendants(chrome).OfType<Button>(), button => button.Visibility == Visibility.Visible
                         && AutomationProperties.GetAutomationId(button) == "ChromeConnectionConnect");
                     var chromeFact = new WindowsApplicationSupport().Read(settings.Value).Rows.Single(row => row.Id == "google-chrome");

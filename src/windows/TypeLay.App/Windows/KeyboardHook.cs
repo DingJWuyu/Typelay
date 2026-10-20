@@ -60,6 +60,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     // commands advertise separate capabilities.
     internal void ConfigureSessionShortcuts(SessionShortcutBindings bindings)
     {
+        Volatile.Read(ref _sourceGlossaryReceipt)?.Revoke();
         RevokeOwnedPrefix();
         InvalidateOrdinaryChord();
         _gate.Revoke();
@@ -114,15 +115,20 @@ internal sealed partial class KeyboardHook : IInputMonitor
         _ownedGate = new(allowInjectedInput);
         _callback = OnKey;
         _mouseCallback = OnMouse;
-        _focusCallback = (_, ev, window, _, _, _, _) =>
+        _focusCallback = (_, ev, window, _, _, _, eventTime) =>
         {
-            if (ev == 3)
-                Interlocked.Increment(ref _windowEpoch);
-            Interlocked.Increment(ref _foregroundEpoch);
-            _gate.Revoke();
-            _ownedGate.Revoke();
-            RevokeOwnedPrefix();
-            InvalidateOrdinaryChord();
+            lock (_sourceGlossarySync)
+            {
+                if (ev == 3)
+                    Interlocked.Increment(ref _windowEpoch);
+                Interlocked.Increment(ref _foregroundEpoch);
+                _gate.Revoke();
+                _ownedGate.Revoke();
+                RevokeOwnedPrefix();
+                InvalidateOrdinaryChord();
+                if (ev == 3)
+                    ObserveSourceGlossaryForeground(window, eventTime);
+            }
             if (ev == 3)
                 ObserveEditorForeground(window);
         };
@@ -167,6 +173,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     }
     public void SetShortcuts(RegisteredShortcut[] shortcuts)
     {
+        Volatile.Read(ref _sourceGlossaryReceipt)?.Revoke();
         InvalidateOrdinaryChord();
         var configuration = new ShortcutConfiguration(Guid.NewGuid(), shortcuts);
         Interlocked.Exchange(ref _shortcuts, configuration);
@@ -757,6 +764,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     }
     public void Dispose()
     {
+        Interlocked.Exchange(ref _sourceGlossaryReceipt, null)?.Revoke();
         _hotkeys.Dispose();
         Revoke();
         if (_threadId != 0)

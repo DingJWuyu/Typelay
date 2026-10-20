@@ -134,8 +134,6 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
         "TYPELAY_FIXTURE_REENTRY_TEXT": replacement,
     }
     child_environment.pop("TYPELAY_FIXTURE_TWO_WINDOWS", None)
-    if stage == "language-options":
-        child_environment["TYPELAY_TRACE_LANGUAGE_RENDER"] = "1"
 
     if stage == "footer":
         child_environment["G_DEBUG"] = "fatal-criticals"
@@ -573,19 +571,33 @@ def render_preview(
 def check_preview_colors(client, source, generation, state, initial):
     # DTO-to-widget rendering only. Actual editing/return remains in desktop_e2e.
     normal, muted = "rgb(34,35,39)", "rgb(102,103,113)"
-    for revision, (view_state, text, owns_text, foreground) in enumerate(
-        (
-            ("ValidTranslation", "Existing translation.", False, normal),
-            ("Translating", "Existing translation.", False, muted),
-            ("ValidTranslation", "Updated translation.", False, normal),
-            ("Translating", "", False, normal),
-            ("Translating", "Manual draft.", True, normal),
-            ("EditingTranslation", "Manual draft.", True, normal),
-            ("ReturningToSource", "Manual draft.", True, normal),
-            ("EditedTranslationPending", "Manual draft.", False, normal),
-        ),
-        1,
-    ):
+    cases = [
+        ("ValidTranslation", "Existing translation.", False, normal, "light"),
+        ("Translating", "Existing translation.", False, muted, "light"),
+        ("ValidTranslation", "Updated translation.", False, normal, "light"),
+        ("Translating", "", False, normal, "light"),
+        ("Translating", "Manual draft.", True, normal, "light"),
+        ("EditingTranslation", "Manual draft.", True, normal, "light"),
+        ("ReturningToSource", "Manual draft.", True, normal, "light"),
+        ("EditedTranslationPending", "Manual draft.", False, normal, "light"),
+    ]
+    short_text = "Renewed preview."
+    long_text = "\n".join(["A longer translated line."] * 8)
+    if client.hello["backend"] == "gtk4":
+        # Exercise actual mapped widgets across renewal, theme changes and
+        # grow/shrink requests. No layout measurement or native trace probe.
+        cases.extend(
+            [
+                ("ValidTranslation", short_text, False, normal, "light"),
+                ("ValidTranslation", short_text, False, normal, "light"),
+                ("ValidTranslation", short_text, False, "rgb(244,244,246)", "dark"),
+                ("Translating", short_text, False, "rgb(182,183,192)", "dark"),
+                ("ValidTranslation", long_text, False, normal, "light"),
+                ("ValidTranslation", short_text, False, normal, "light"),
+            ]
+        )
+    short_height = None
+    for revision, (view_state, text, owns_text, foreground, theme) in enumerate(cases, 1):
         assert render_preview(
             client,
             source,
@@ -594,18 +606,42 @@ def check_preview_colors(client, source, generation, state, initial):
             "fixture exit",
             view_state=view_state,
             text=text,
-            theme="light",
+            theme=theme,
             editor_owns_text=owns_text,
         )["visible"]
         rendered_at = time.monotonic_ns() // 1_000_000
+
+        def rendered_state():
+            value = state()
+            candidate = value.get("candidate")
+            if (
+                value.get("observedAtMs", 0) <= rendered_at
+                or not candidate
+                or candidate["text"] != text
+                or candidate["foreground"] != foreground
+            ):
+                return None
+            if text == long_text and (short_height is None or candidate["height"] <= short_height):
+                return None
+            if text == short_text and theme == "light" and short_height is not None:
+                if candidate["height"] != short_height:
+                    return None
+            return value
+
         actual = wait_for(
-            lambda: (value := state()).get("observedAtMs", 0) > rendered_at
-            and value.get("candidate")
-            and value["candidate"]["text"] == text
-            and value,
-            f"{view_state}: actual candidate was not observed after rendering",
+            rendered_state,
+            f"{view_state}/{theme}: rendered candidate style/size was not observed",
         )
         assert actual["candidate"]["foreground"] == foreground, (view_state, actual["candidate"])
+        if text == short_text and theme == "light":
+            if short_height is None:
+                short_height = actual["candidate"]["height"]
+            else:
+                assert actual["candidate"]["height"] == short_height, actual["candidate"]
+        if text == long_text:
+            assert short_height is not None and actual["candidate"]["height"] > short_height, (
+                actual["candidate"]
+            )
         assert actual["focus"] == "fixture-first"
         assert actual["first"] == initial["first"] and actual["second"] == initial["second"]
 

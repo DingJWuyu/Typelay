@@ -69,18 +69,54 @@ public sealed class ModelConsumerFixtureOwnerTests(ITestOutputHelper output)
     [InlineData(23)]
     public async Task NaturalExitProofPreservesTheFixtureResult(int code)
     {
-        using var owner = new ModelConsumerFixtureOwner();
         string python = (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator)
             .Select(path => Path.Combine(path.Trim('"'), "python.exe")).First(File.Exists);
-        var start = new ProcessStartInfo(Path.GetFullPath(python)) { UseShellExecute = false };
-        foreach (string argument in new[] { "-I", "-B", "-c", "import sys; sys.exit(int(sys.argv[1]))", code.ToString(System.Globalization.CultureInfo.InvariantCulture) })
-            start.ArgumentList.Add(argument);
-        var result = await owner.ExecuteAsync(start, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
-        output.WriteLine(JsonSerializer.Serialize(result));
-        Assert.True(result.NoActiveOwnedConsumers);
-        Assert.Equal("natural", result.CleanupMode);
-        Assert.Equal(code, result.RootExitCode);
-        Assert.Equal(code, result.ExitCode);
+        string identityPath = Path.Combine(Path.GetTempPath(), "TypeLay-owner-identity-" + Guid.NewGuid().ToString("N") + ".json");
+        bool failed = false;
+        try
+        {
+            using var owner = new ModelConsumerFixtureOwner();
+            var start = new ProcessStartInfo(Path.GetFullPath(python)) { UseShellExecute = false };
+            foreach (string argument in new[] { "-I", "-B", "-c", """
+                import json, os, sys
+                with open(sys.argv[2], 'x', encoding='utf-8') as identity:
+                    json.dump(dict(pid=os.getpid(), executable=sys.executable,
+                        base_executable=getattr(sys, '_base_executable', None)), identity)
+                sys.exit(int(sys.argv[1]))
+                """, code.ToString(System.Globalization.CultureInfo.InvariantCulture), identityPath })
+                start.ArgumentList.Add(argument);
+            var result = await owner.ExecuteAsync(start, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            output.WriteLine(JsonSerializer.Serialize(result));
+            // The selected image and the executing payload may differ for a
+            // launcher. Observe that distinction without changing either binding
+            // or the owner proof. This does not identify any other job member.
+            using var identity = JsonDocument.Parse(File.ReadAllText(identityPath));
+            output.WriteLine(JsonSerializer.Serialize(new
+            {
+                selectedPython = start.FileName,
+                payload = identity.RootElement
+            }));
+            Assert.True(result.NoActiveOwnedConsumers);
+            Assert.Equal("natural", result.CleanupMode);
+            Assert.Equal(code, result.RootExitCode);
+            Assert.Equal(code, result.ExitCode);
+        }
+        catch
+        {
+            failed = true;
+            throw;
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(identityPath);
+            }
+            catch (Exception error) when (failed)
+            {
+                output.WriteLine($"Owner identity cleanup also failed: {error.GetType().Name}");
+            }
+        }
     }
 
     [Theory]

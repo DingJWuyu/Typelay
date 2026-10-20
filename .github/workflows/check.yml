@@ -32,6 +32,7 @@ jobs:
       linux: ${{ steps.select.outputs.linux }}
       qt: ${{ steps.select.outputs.qt }}
       quality_only: ${{ steps.select.outputs.quality_only }}
+      collect_quality: ${{ steps.select.outputs.collect_quality }}
       practice: ${{ steps.select.outputs.practice }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -116,11 +117,20 @@ jobs:
         shell: pwsh
         run: ./dev.ps1 build
       - name: Verify Windows behavior and contracts
+        id: windows-contracts
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
         env:
           TYPELAY_TRACE: ${{ github.workspace }}/artifacts/controller-trace.jsonl
         run: dotnet test TypeLay.slnx -c Release --no-build --no-restore --logger trx --results-directory artifacts/test-results
+      - name: Preserve early Windows contract failure evidence
+        if: ${{ !cancelled() && steps.windows-contracts.outcome == 'failure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: typelay-windows-contracts-failure-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/test-results/*.trx
+          if-no-files-found: error
+          retention-days: 14
       - name: Verify formatting and Python behavior
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
@@ -299,10 +309,10 @@ jobs:
       image: archlinux:base-devel
       # Electron's font service exceeds Docker's default 64 MiB /dev/shm.
       options: --shm-size=1g
-    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.collect_translation_quality && 70 || 45 }}
+    timeout-minutes: ${{ needs.scope.outputs.collect_quality == 'true' && 70 || 45 }}
     env:
-      TYPELAY_COLLECT_TRANSLATION_QUALITY: ${{ github.event_name == 'workflow_dispatch' && inputs.collect_translation_quality }}
-      TYPELAY_LINUX_CHECK_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.collect_translation_quality && 4200 || 2700 }}
+      TYPELAY_COLLECT_TRANSLATION_QUALITY: ${{ needs.scope.outputs.collect_quality == 'true' }}
+      TYPELAY_LINUX_CHECK_SECONDS: ${{ needs.scope.outputs.collect_quality == 'true' && 4200 || 2700 }}
       TYPELAY_EXPECT_QT_VERSION: 6.11.2
       CCACHE_DIR: ${{ github.workspace }}/artifacts/ccache
       CCACHE_BASEDIR: ${{ github.workspace }}
@@ -499,6 +509,28 @@ jobs:
         id: qt
         if: ${{ !cancelled() && steps.fcitx.outcome == 'success' }}
         run: python tests/linux/qt_cooperative/run.py --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22
+      - name: Preserve early Qt probe failure evidence
+        if: ${{ !cancelled() && steps.qt.outcome == 'failure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: typelay-linux-qt-probe-failure-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/linux/qt-cooperative/versions.json
+            artifacts/linux/qt-cooperative/result.json
+            artifacts/linux/qt-cooperative/framework.log
+            artifacts/linux/qt-cooperative/async-runtime.json
+            artifacts/linux/qt-cooperative/async-state.json
+            artifacts/linux/qt-cooperative/async-transition.json
+            artifacts/linux/qt-cooperative/async-result.json
+            artifacts/linux/qt-cooperative/async-client.log
+            artifacts/linux/qt-cooperative/ordered-result.json
+            artifacts/linux/qt-cooperative/ordered-native-state.json
+            artifacts/linux/qt-cooperative/ordered-native.log
+            artifacts/linux/qt-cooperative/ordered-delayed-result.json
+            artifacts/linux/qt-cooperative/ordered-delayed-native-state.json
+            artifacts/linux/qt-cooperative/ordered-delayed-native.log
+          if-no-files-found: error
+          retention-days: 14
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: ${{ !cancelled() && (steps.fcitx.outcome == 'success' || steps.fcitx.outcome == 'failure') && steps.fcitx-cache.outputs.cache-hit != 'true' }}
         with:
@@ -691,7 +723,7 @@ jobs:
         id: hy-admission
         if: ${{ needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.complete-package.outcome == 'success' }}
         env:
-          PYTHONDONTWRITEBYTECODE: ${{ github.event_name == 'workflow_dispatch' && inputs.collect_translation_quality && '1' || '' }}
+          PYTHONDONTWRITEBYTECODE: ${{ needs.scope.outputs.collect_quality == 'true' && '1' || '' }}
         run: |
           mkdir -p artifacts/linux/hy-package
           set --
@@ -713,7 +745,7 @@ jobs:
         if: ${{ !cancelled() && steps.hy-model-cache.outcome == 'success' }}
         timeout-minutes: 3
         env:
-          PYTHONDONTWRITEBYTECODE: ${{ github.event_name == 'workflow_dispatch' && inputs.collect_translation_quality && '1' || '' }}
+          PYTHONDONTWRITEBYTECODE: ${{ needs.scope.outputs.collect_quality == 'true' && '1' || '' }}
         run: python tests/linux/hy_package_e2e.py --prepare-cache --package artifacts/linux/package --cache artifacts/linux/hy-model-cache > artifacts/linux/hy-package/cache-verification.json
       - name: Save only fully verified Hy test model data
         if: ${{ !cancelled() && steps.hy-model-prepare.outcome == 'success' && steps.hy-model-cache.outputs.cache-hit != 'true' }}
@@ -724,7 +756,7 @@ jobs:
           key: ${{ steps.hy-model-cache.outputs.cache-primary-key }}
       - name: Exercise formal Python and real GTK Hy install select return and remove
         if: ${{ !cancelled() && steps.hy-model-prepare.outcome == 'success' }}
-        timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.collect_translation_quality && 36 || 5 }}
+        timeout-minutes: ${{ needs.scope.outputs.collect_quality == 'true' && 36 || 5 }}
         run: |
           export DISPLAY=:99
           export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"

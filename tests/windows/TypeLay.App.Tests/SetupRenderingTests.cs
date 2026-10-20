@@ -119,8 +119,17 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
                     Assert.True(button.Current.IsEnabled);
                     Assert.False(button.Current.IsOffscreen);
                     Assert.True(button.TryGetClickablePoint(out Point point));
-                    var viewport = root.FindFirst(TreeScope.Descendants,
-                        new PropertyCondition(AutomationElement.ClassNameProperty, "ScrollViewer"));
+                    AutomationElement? viewport = null;
+                    var ancestor = button;
+                    for (int depth = 0; depth < 64 && ancestor is not null; depth++)
+                    {
+                        ancestor = TreeWalker.RawViewWalker.GetParent(ancestor);
+                        if (ancestor is not null && ancestor.TryGetCurrentPattern(ScrollPattern.Pattern, out _))
+                        {
+                            viewport = ancestor;
+                            break;
+                        }
+                    }
                     Assert.NotNull(viewport);
                     Assert.True(viewport.Current.BoundingRectangle.Contains(point));
                 });

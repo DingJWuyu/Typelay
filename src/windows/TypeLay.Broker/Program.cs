@@ -41,7 +41,7 @@ internal static class Program
                         "direct-clear" => ClearDirect(provider, request),
                         "write" => new(BrokerProtocol.Version, request.Id, "receipt", Receipt: provider.Write(request)),
                         "direct-write" => new(BrokerProtocol.Version, request.Id, "receipt", Receipt: provider.WriteDirect(request)),
-                        "return" => new(BrokerProtocol.Version, request.Id,
+                        "return" or "return-glossary" => new(BrokerProtocol.Version, request.Id,
                             provider.ReturnToSource(request, out returnReason) ? "focused" : "denied"),
                         "capture" => Observe(provider, request),
                         "capture-owned" => ObserveOwned(provider, request),
@@ -52,10 +52,10 @@ internal static class Program
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
-                    if (request.Op == "return")
+                    if (request.Op is "return" or "return-glossary")
                         returnErrorType = ex.GetType().Name;
                     string? trace = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
-                    if (request.Op != "return" && !string.IsNullOrWhiteSpace(trace))
+                    if (request.Op is not ("return" or "return-glossary") && !string.IsNullOrWhiteSpace(trace))
                     {
                         try
                         {
@@ -69,7 +69,7 @@ internal static class Program
                 Wire.WriteAsync(output, response).AsTask().GetAwaiter().GetResult();
                 // Log only after replying so diagnostic disk I/O cannot delay the result.
                 // Opt-in outcomes only: no source, target, selection, exception text or identities.
-                if (request.Op == "return"
+                if (request.Op is ("return" or "return-glossary")
                     && Environment.GetEnvironmentVariable("TYPELAY_TRACE") is { Length: > 0 } returnTracePath)
                 {
                     try

@@ -310,33 +310,7 @@ internal static partial class BrowserCooperationCheck
             await Task.Delay(10, ct);
         }
     }
-    private static async Task ReplaceConnectionConfigurationAsync(string path, byte[] expected, byte[] replacement, CancellationToken ct)
-    {
-        string temporary = path + ".fixture-" + Guid.NewGuid().ToString("N");
-        bool ownTemporary = false;
-        try
-        {
-            using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
-            {
-                ownTemporary = true;
-                await stream.WriteAsync(replacement, ct);
-                await stream.FlushAsync(ct);
-                stream.Flush(flushToDisk: true);
-            }
-            ct.ThrowIfCancellationRequested();
-            Require((await File.ReadAllBytesAsync(path, ct)).AsSpan().SequenceEqual(expected), "release-configuration-ownership-changed");
-            ct.ThrowIfCancellationRequested();
-            // Same-directory replacement publishes only a complete file. A
-            // cancelled temporary write leaves the original release untouched.
-            File.Move(temporary, path, overwrite: true);
-            ownTemporary = false;
-        }
-        finally
-        {
-            if (ownTemporary)
-                File.Delete(temporary);
-        }
-    }
+
     private static async Task<AutomationElement> FindSettingsAsync(Process app, CancellationToken ct)
     {
         // UIA only drives the shipped settings window. It neither reads browser

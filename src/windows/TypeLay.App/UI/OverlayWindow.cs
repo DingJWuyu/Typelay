@@ -16,7 +16,7 @@ using System.Windows.Media.Effects;
 using TypeLay.Core;
 namespace TypeLay.App;
 
-internal sealed class OverlayWindow : Window, ISessionView
+internal sealed partial class OverlayWindow : Window, ISessionView
 {
     private readonly TextBox _editor;
     private readonly TextBlock _language, _status, _tabHint;
@@ -124,7 +124,9 @@ internal sealed class OverlayWindow : Window, ISessionView
         get; set;
     }
     public SessionGlossaryFocus? GlossaryEntryFocus => _glossary is { } form && IsVisible
-        && _sessionState == SessionState.EditingTranslation && _viewContext?.Token == form.Entry.Token
+        && (form.Entry.SourceOrigin ? _sessionState is SessionState.ValidTranslation or SessionState.EditedTranslationPending
+            && _sourceGlossaryTransfer?.IsAuxiliary(form.Entry) == true : _sessionState == SessionState.EditingTranslation)
+        && _viewContext?.Token == form.Entry.Token
         && Native.GetForegroundWindow() == _hwnd && form.OwnsFocus(Keyboard.FocusedElement)
         ? new(form.Entry.FormId, form.Entry.Token, form.Composing ? ImeState.Composing : ImeState.Clear) : null;
     public Action? ExcludeRequested
@@ -528,6 +530,8 @@ internal sealed class OverlayWindow : Window, ISessionView
         };
         Closed += (_, _) =>
         {
+            _sourceGlossaryTransfer?.Dispose();
+            _sourceGlossaryTransfer = null;
             InvalidateOwnedEditor(OwnedEditorReason.UiClosed);
             CancelHeightTransition();
         };
@@ -989,11 +993,13 @@ internal sealed class OverlayWindow : Window, ISessionView
     {
         _viewContext = context is not null && session.Current?.Target == context.Token.Target ? context : null;
         _sessionState = session.State;
+        _sourceGlossarySnapshot = session.Current;
         if (!PreservesGlossaryEditor)
             _glossaryEditorToken = null;
         _sourceAnchor = session.Current is { } anchor ? (anchor.Target, anchor.Bounds) : null;
         if (_glossary is { } glossary && (_viewContext?.Token != glossary.Entry.Token
-            || session.State != SessionState.EditingTranslation
+            || (glossary.Entry.SourceOrigin ? session.State is not (SessionState.ValidTranslation or SessionState.EditedTranslationPending)
+                : session.State != SessionState.EditingTranslation)
             || _viewContext.TranslationActions?.GlossaryReleased != true))
             CloseGlossary(glossary, restoreEditor: false);
         if (_ownedEditor is { } attempt)
@@ -1086,7 +1092,7 @@ internal sealed class OverlayWindow : Window, ISessionView
                 _editor.IsReadOnly = true;
                 _editor.IsUndoEnabled = false;
                 _editor.Focusable = false;
-                SetNoActivate(true);
+                SetNoActivate(_glossary?.Entry.SourceOrigin != true);
                 long textStarted = trace ? Stopwatch.GetTimestamp() : 0;
                 string value = idle ? "" : session.Preview.Length > 0 ? session.Preview : statusOverride is not null ? statusOverride + "…" : "正在翻译…";
                 if (_editor.Text != value)
@@ -1372,26 +1378,52 @@ internal sealed class OverlayWindow : Window, ISessionView
         finally { _rendering = false; }
         SetNoActivate(true);
     }
-    private void OpenGlossary(SessionViewToken token)
+    private async Task OpenGlossaryAsync(SessionViewToken token)
     {
-        if (_glossary is not null || !_editing || _composing || _ownedEditor is not null
+        bool sourceOrigin = _sessionState is SessionState.ValidTranslation or SessionState.EditedTranslationPending;
+        if (_glossary is not null || _composing || _ownedEditor is not null
             || _ownedEditorHost?.IsOwnedEditorTarget(token.Target) == true
-            || _sessionState != SessionState.EditingTranslation || _viewContext?.Token != token
+            || _viewContext?.Token != token
             || _viewContext.TranslationActions is not { GlossaryReleased: true, CanOpenGlossary: true }
-            || Native.GetForegroundWindow() != _hwnd)
+            || (sourceOrigin ? !SupportsSourceGlossaryEntry(token)
+                || !KeyboardHook.ExactNativeFieldFocused(token.Target.AsWindows())
+                : !_editing || _sessionState != SessionState.EditingTranslation || Native.GetForegroundWindow() != _hwnd))
             return;
-        var entry = BeginGlossaryRequested?.Invoke(token);
-        if (entry is null)
-            return;
-        if (entry.FormId == Guid.Empty || entry.Token != token || entry.SettingsRevision < 0
-            || _viewContext?.Token != token || _sessionState != SessionState.EditingTranslation)
+        SessionGlossaryEntry? entry;
+        NativeSourceGlossaryTransfer? transfer = null;
+        _sourceGlossaryOpeningToken = sourceOrigin ? token : null;
+        _sourceGlossaryOpeningEntry = null;
+        try
         {
-            CloseGlossaryRequested?.Invoke(entry.FormId);
-            return;
+            entry = BeginGlossaryRequested?.Invoke(token);
+            if (entry is null)
+                return;
+            if (entry.FormId == Guid.Empty || entry.Token != token || entry.SettingsRevision < 0
+                || entry.SourceOrigin != sourceOrigin || _viewContext?.Token != token
+                || sourceOrigin && _sourceGlossaryOpeningEntry is { } opening && !ReferenceEquals(opening, entry))
+            {
+                CloseGlossaryRequested?.Invoke(entry.FormId);
+                return;
+            }
+            if (sourceOrigin)
+            {
+                transfer = NativeSourceGlossaryTransfer.TryArm(_ordinaryInput!, entry, _sourceGlossarySnapshot!, _hwnd);
+                if (transfer is null)
+                {
+                    CloseGlossaryRequested?.Invoke(entry.FormId);
+                    return;
+                }
+            }
+        }
+        finally
+        {
+            _sourceGlossaryOpeningToken = null;
+            _sourceGlossaryOpeningEntry = null;
         }
         var form = new InlineGlossaryForm(entry);
         _glossary = form;
-        _glossaryEditorToken = token;
+        _sourceGlossaryTransfer = transfer;
+        _glossaryEditorToken = sourceOrigin ? null : token;
         _ordinaryInput?.SetOrdinaryEditor(null);
         KeyboardNavigation.SetTabNavigation(form.Panel, KeyboardNavigationMode.Cycle);
         AutomationProperties.SetName(form.Panel, "加入术语表");
@@ -1428,20 +1460,29 @@ internal sealed class OverlayWindow : Window, ISessionView
             TextCompositionManager.AddPreviewTextInputUpdateHandler(field, (_, _) => form.Composing = true);
             TextCompositionManager.AddPreviewTextInputHandler(field, (_, _) => form.Composing = false);
         }
-        form.Panel.PreviewKeyDown += (_, e) =>
+        form.Panel.PreviewKeyDown += async (_, e) =>
         {
             if (e.Key != Key.Escape || e.IsRepeat || Keyboard.Modifiers != ModifierKeys.None
                 || form.Scope.IsDropDownOpen || GlossaryEntryFocus is not { Ime: ImeState.Clear })
                 return;
             e.Handled = true;
-            CloseGlossary(form, restoreEditor: true);
+            await CancelGlossaryAsync(form);
         };
         form.Save.Click += async (_, _) => await SaveGlossaryAsync(form);
-        form.Cancel.Click += (_, _) => CloseGlossary(form, restoreEditor: true);
+        form.Cancel.Click += async (_, _) => await CancelGlossaryAsync(form);
         Grid.SetRow(form.Panel, 3);
         _surface.Children.Add(form.Panel);
         RepositionGlossary();
-        if (!form.Source.Focus())
+        if (sourceOrigin)
+        {
+            SetNoActivate(false);
+            if (!Activate())
+            {
+                CloseGlossary(form, restoreEditor: false);
+                return;
+            }
+        }
+        if (!form.Source.Focus() || sourceOrigin && !await transfer!.ConfirmOpenedAsync())
             CloseGlossary(form, restoreEditor: false);
     }
 
@@ -1508,6 +1549,10 @@ internal sealed class OverlayWindow : Window, ISessionView
         if (!restore && Native.GetForegroundWindow() == _hwnd && form.OwnsFocus(Keyboard.FocusedElement))
             Keyboard.ClearFocus();
         _glossary = null;
+        _sourceGlossaryTransfer?.Dispose();
+        _sourceGlossaryTransfer = null;
+        if (form.Entry.SourceOrigin)
+            SetNoActivate(true);
         _surface.Children.Remove(form.Panel);
         CloseGlossaryRequested?.Invoke(form.Entry.FormId);
         RepositionGlossary();
@@ -1596,17 +1641,18 @@ internal sealed class OverlayWindow : Window, ISessionView
                 var glossary = new MenuItem
                 {
                     Header = "加入术语表",
-                    IsEnabled = translation.CanOpenGlossary && _sessionState == SessionState.EditingTranslation
-                        && _editing && _ownedEditor is null && _glossary is null && !EditingComposition,
+                    IsEnabled = translation.CanOpenGlossary
+                        && (_sessionState == SessionState.EditingTranslation && _editing || SupportsSourceGlossaryEntry(viewToken))
+                        && _ownedEditor is null && _glossary is null && !EditingComposition,
                     ToolTip = translation.GlossaryUnavailableReason
                 };
                 ToolTipService.SetShowOnDisabled(glossary, true);
-                glossary.Click += (_, _) =>
+                glossary.Click += async (_, _) =>
                 {
                     if (!glossary.IsEnabled)
                         return;
                     menu.IsOpen = false;
-                    OpenGlossary(viewToken);
+                    await OpenGlossaryAsync(viewToken);
                 };
                 menu.Items.Add(glossary);
             }

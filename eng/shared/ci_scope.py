@@ -1,8 +1,10 @@
 """Select platform checks from verified push evidence, failing closed to full jobs."""
 
+import json
 import os
 import re
 import subprocess
+from pathlib import Path
 
 QT_BASELINE = "d607db1b8a3fc882cfd4a9c19a6e454d9b610189"
 PRACTICE_PATHS = {
@@ -50,6 +52,59 @@ def touched_paths(before, after):
         ).split(b"\0")
         if path
     }
+
+
+def valid_push(before, after):
+    return (
+        os.environ.get("CREATED") == "false"
+        and os.environ.get("FORCED") == "false"
+        and commit_exists(before)
+        and commit_exists(after)
+        and after == git("rev-parse", "HEAD").decode().strip()
+        and succeeds("merge-base", "--is-ancestor", before, after)
+    )
+
+
+def quality_collection():
+    """Return collection and full-check requirements; never infer a past request."""
+    event = os.environ.get("EVENT_NAME")
+    if event == "workflow_dispatch":
+        return os.environ.get("COLLECT_TRANSLATION_QUALITY") == "true", False
+    if event != "push":
+        return False, False
+    try:
+        message = git("show", "-s", "--format=%B", "HEAD").decode("utf-8")
+        marker = "TypeLay-Quality-Capture: true"
+        lines = message.rstrip("\n").split("\n")
+        # Only a final plain-text footer is an explicit request. Treat fenced
+        # examples (even unclosed ones) conservatively as documentation, not a
+        # command; no Markdown parser or interpretation of quoted prose needed.
+        if marker not in lines or lines[-1] != marker or "```" in message or "~~~" in message:
+            return False, False
+        if lines.count(marker) != 1:
+            return False, True
+        if len(lines) < 3 or lines[-2] != "":
+            return False, False
+        # A malformed or unverified explicit request never narrows normal checks.
+        if os.environ.get("BRANCH") != "work/linux-usability":
+            return False, True
+        before, after = os.environ.get("BEFORE", ""), os.environ.get("AFTER", "")
+        if before == after or not valid_push(before, after):
+            return False, True
+        event_path = Path(os.environ["GITHUB_EVENT_PATH"])
+        if event_path.stat().st_size > 4 * 1024 * 1024:
+            return False, True
+        payload = json.loads(event_path.read_text(encoding="utf-8"))
+        head = payload.get("head_commit")
+        return (
+            isinstance(head, dict)
+            and head.get("id") == after
+            and isinstance(head.get("message"), str)
+            and head["message"].rstrip("\n") == message.rstrip("\n"),
+            True,
+        )
+    except (OSError, ValueError, KeyError, AttributeError, subprocess.CalledProcessError):
+        return False, True
 
 
 def neutral(path):
@@ -109,15 +164,7 @@ def select():
         if os.environ.get("EVENT_NAME") != "push":
             return windows, linux, qt, quality_only, practice
         if branch in ("work/linux-usability", "work/windows-experience"):
-            valid_push = (
-                os.environ.get("CREATED") == "false"
-                and os.environ.get("FORCED") == "false"
-                and commit_exists(before)
-                and commit_exists(after)
-                and after == git("rev-parse", "HEAD").decode().strip()
-                and succeeds("merge-base", "--is-ancestor", before, after)
-            )
-            if valid_push:
+            if valid_push(before, after):
                 touched = touched_paths(before, after)
                 paths = {path for path in touched if not neutral(path)}
                 if touched and not paths:
@@ -137,9 +184,14 @@ def select():
 
 
 def main():
+    selection = select()
+    collect, require_full = quality_collection()
+    if require_full:
+        selection = True, True, False, False, False
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
-        for name, value in zip(("windows", "linux", "qt", "quality_only", "practice"), select()):
+        for name, value in zip(("windows", "linux", "qt", "quality_only", "practice"), selection):
             stream.write(f"{name}={str(value).lower()}\n")
+        stream.write(f"collect_quality={str(collect).lower()}\n")
 
 
 if __name__ == "__main__":

@@ -1161,29 +1161,54 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                         + $"flags={(chordKey ? ((long)lParam >> 29) & 7 : 0)}");
                 return 0; // Observation only: never claim, reroute or synthesize input.
             }
+            var rejected = new List<KeyEventArgs>();
+            var queued = new List<N.MessageStruct>();
+            QueueHook observeQueue = (code, remove, pointer) =>
+            {
+                if (code >= 0 && remove == 1 && queued.Count < 32)
+                {
+                    var message = Marshal.PtrToStructure<N.MessageStruct>(pointer);
+                    if (message.Message is 0x100 or 0x101 or 0x104 or 0x105
+                        && message.WParam is 0x11 or 0x79)
+                        queued.Add(message);
+                }
+                return CallNextHookEx(0, code, remove, pointer);
+            };
+            nint queueHook = SetWindowsHookExW(3, observeQueue, 0, GetCurrentThreadId()); // WH_GETMESSAGE, this UI thread only.
+            Assert.NotEqual(nint.Zero, queueHook);
             overlaySource.AddHook(ObserveNative);
             sourceWindow.AddHook(ObserveNative);
-            var rejected = new List<KeyEventArgs>();
-            bool rejectedControlReleased = false;
+            int FunctionDowns() => queued.Count(message => message.WParam == 0x79 && message.Message is 0x100 or 0x104);
+            bool ControlReleased() => queued.Any(message => message.WParam == 0x11 && message.Message is 0x101 or 0x105);
             KeyEventHandler observeRejected = (_, args) =>
             {
                 if ((args.Key == Key.System ? args.SystemKey : args.Key) == Key.F10)
                     rejected.Add(args);
-                else if (args.Key == Key.LeftCtrl && args.RoutedEvent == Keyboard.PreviewKeyUpEvent)
-                    rejectedControlReleased = true;
             };
             // Revoking editability makes the old TextBox unfocusable. Observe
             // the real window route, including its new keyboard-focus target.
             overlay.AddHandler(Keyboard.PreviewKeyDownEvent, observeRejected, handledEventsToo: true);
             overlay.AddHandler(Keyboard.PreviewKeyUpEvent, observeRejected, handledEventsToo: true);
+            Exception? rejectedFailure = null;
             try
             {
                 // This next independent group has no editable token. Its first
                 // down, repeat and up must not inherit the old consumed mirror.
-                Send([Scan(0x1D, true), Scan(0x44, true), Scan(0x44, true), Scan(0x44, false), Scan(0x1D, false)]);
+                // Observe each real down before submitting its repeat, so native
+                // message coalescing cannot erase the independent repeat evidence.
+                Send([Scan(0x1D, true), Scan(0x44, true)]);
+                held = true;
+                await Wait(() => FunctionDowns() == 1);
+                Send([Scan(0x44, true)]);
+                await Wait(() => FunctionDowns() == 2);
+                Send([Scan(0x44, false), Scan(0x1D, false)]);
+                held = false;
                 try
                 {
-                    await Wait(() => rejectedControlReleased);
+                    // An unclaimed F10 is entitled to activate the native menu.
+                    // That menu loop need not route Ctrl up through WPF, but it
+                    // must receive the original release in this real UI queue.
+                    await Wait(ControlReleased);
                 }
                 catch (OperationCanceledException error)
                 {
@@ -1191,18 +1216,43 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                         + $"before=[{beforeRejected}]; after=[{FocusEvidence()}]; "
                         + $"routedF10={rejected.Count}; native=[{string.Join(" | ", nativeMessages)}]", error);
                 }
-                Assert.Equal(3, rejected.Count);
+                var function = queued.Where(message => message.WParam == 0x79).ToArray();
+                Assert.Equal(3, function.Length);
+                Assert.All(function, message =>
+                {
+                    Assert.Equal(overlay.Handle, message.Hwnd);
+                    Assert.Equal(1UL, unchecked((ulong)(long)message.LParam) & 0xffff);
+                });
+                Assert.True(function[0].Message is 0x100 or 0x104);
+                Assert.True(function[1].Message is 0x100 or 0x104);
+                Assert.True(function[2].Message is 0x101 or 0x105);
+                Assert.Equal(0UL, (unchecked((ulong)(long)function[0].LParam) >> 30) & 1);
+                Assert.Equal(1UL, (unchecked((ulong)(long)function[1].LParam) >> 30) & 1);
+                Assert.Equal(1UL, (unchecked((ulong)(long)function[2].LParam) >> 30) & 1);
+                var routedDowns = rejected.Where(args => args.RoutedEvent == Keyboard.PreviewKeyDownEvent).ToArray();
+                Assert.Equal(2, routedDowns.Length);
                 Assert.All(rejected, args => Assert.False(args.Handled));
-                Assert.False(rejected[0].IsRepeat);
-                Assert.True(rejected[1].IsRepeat);
+                Assert.False(routedDowns[0].IsRepeat);
+                Assert.True(routedDowns[1].IsRepeat);
                 Assert.Equal(2, returns);
+            }
+            catch (Exception error)
+            {
+                rejectedFailure = error;
+                throw;
             }
             finally
             {
+                bool removed = UnhookWindowsHookEx(queueHook);
+                GC.KeepAlive(observeQueue);
                 overlaySource.RemoveHook(ObserveNative);
                 sourceWindow.RemoveHook(ObserveNative);
                 overlay.RemoveHandler(Keyboard.PreviewKeyDownEvent, observeRejected);
                 overlay.RemoveHandler(Keyboard.PreviewKeyUpEvent, observeRejected);
+                if (rejectedFailure is not null && !removed)
+                    rejectedFailure.Data["QueueObserverCleanupFailed"] = true;
+                else
+                    Assert.True(removed);
             }
             Assert.Equal("Source text", input.Text);
             Assert.Equal("A locally editable draft", editor.Text);
@@ -2065,6 +2115,18 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         [FieldOffset(12)] public uint Flags;
         [FieldOffset(20)] public uint MouseFlags;
     }
+
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate nint QueueHook(int code, nint wParam, nint lParam);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern nint SetWindowsHookExW(int kind, QueueHook callback, nint module, uint thread);
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UnhookWindowsHookEx(nint hook);
+    [DllImport("user32.dll")]
+    private static extern nint CallNextHookEx(nint hook, int code, nint wParam, nint lParam);
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
 
     [DllImport("user32.dll")]
     private static extern nint WindowFromPoint(Native.Point point);

@@ -84,10 +84,28 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
             return new(false);
         if (broker.ProcessId != 0)
             Native.AllowSetForegroundWindow((uint)broker.ProcessId);
-        Native.SetForegroundWindow((nint)target.RootHwnd);
+        // Native bindings must be revalidated by their original Broker before
+        // any focus move. A stale HWND/cookie must not receive focus first.
+        if (target.Provider != "win32-edit-transaction-v2")
+            Native.SetForegroundWindow((nint)target.RootHwnd);
         if (!SessionConfigurationCurrent(context))
             return new(false);
         return new((await broker.CallAsync(Request("return", context), TimeSpan.FromMilliseconds(800))).Status == "focused");
+    }
+    internal async Task<InputReturn> ReturnGlossaryToSourceAsync(InputContext context,
+        SourceGlossaryReturnAuthorization authorization, long expiresAtMs)
+    {
+        if (!SessionConfigurationCurrent(context) || context.BoundTarget is not { } id
+            || practice?.IsOwnedEditorTarget(id) == true || !WindowsTarget.TryDecode(id, out var target)
+            || target.Provider != "win32-edit-transaction-v2" || !authorization.IsValid)
+            return new(false);
+        if (broker.ProcessId != 0)
+            Native.AllowSetForegroundWindow((uint)broker.ProcessId);
+        return new((await broker.CallAsync(Request("return-glossary", context) with
+        {
+            SourceGlossaryReturn = authorization,
+            ExpiresAtMs = expiresAtMs
+        }, TimeSpan.FromMilliseconds(SourceGlossaryReturnAuthorization.MaximumAgeMs))).Status == "focused");
     }
     private bool SessionConfigurationCurrent(InputContext context) => context.SessionShortcuts is { } configuration
         && monitor?.HasSessionConfiguration(configuration) == true;

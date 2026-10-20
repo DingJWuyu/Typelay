@@ -6,7 +6,7 @@ using TypeLay.Windows.Contracts;
 
 namespace TypeLay.App;
 
-// Release identity, never a page claim, user setting or environment override.
+// Optional published release identity, never a page claim or environment override.
 internal sealed record BrowserConnectionConfiguration(string? ExtensionId, string? StoreUrl)
 {
     public static BrowserConnectionConfiguration Parse(string json)
@@ -48,7 +48,7 @@ internal sealed class BrowserConnection
     private readonly BrowserConnectionConfiguration? _configuration;
     private Task _pending = Task.CompletedTask;
     private bool _busy, _mutationLocked;
-    private string? _origin, _error;
+    private string? _origin, _error, _discoveredExtensionId;
     private bool _known;
     private ApplicationSupportCapabilities _lastCapabilities = new();
     private bool _lastConnected;
@@ -60,7 +60,8 @@ internal sealed class BrowserConnection
         && (_origin is null || _origin == BrowserHostProtocol.OriginForExtensionId(ExtensionId) && Suspended)
         && (!_input.Connected || Suspended);
     public bool CanRemove => _known && !_mutationLocked && _origin is not null;
-    public string? ExtensionId => _configuration?.ExtensionId;
+    public string? ExtensionId => _configuration?.ExtensionId ?? _discoveredExtensionId;
+    public string ExtensionDirectory { get; } = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "browser", "chromium"));
     public string? StoreUrl => _configuration?.StoreUrl;
     public string? RegisteredOrigin => _origin;
     public string HostPath => _host;
@@ -98,8 +99,17 @@ internal sealed class BrowserConnection
     {
         if (Busy)
             return _pending;
+        // Recheck after the user confirmation. A changed/ambiguous installation
+        // must not register the identity from an older settings view.
+        if (_configuration is { ExtensionId: null })
+            _discoveredExtensionId = BrowserExtensionInstallation.FindUnique(ExtensionDirectory,
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "User Data"));
         if (action == "register" && (!CanConnect || confirmed != ExtensionId))
+        {
+            _error = "扩展安装或连接状态已变化。请刷新状态后重新确认接入。";
+            Changed?.Invoke();
             return Task.CompletedTask;
+        }
         if (action == "unregister" && (!CanRemove || confirmed != _origin))
             return Task.CompletedTask;
         _busy = true;
@@ -244,8 +254,13 @@ internal sealed class BrowserConnection
         actions.Add(ApplicationSupportAction.OpenInstructions);
         bool suspended = _origin is not null && _input.OriginSuspended(_origin);
         string details = _configuration is null ? "发行连接配置不可用，请重新解压完整安装包。"
-            : ExtensionId is null ? "此发行版尚未配置正式 Chrome 扩展身份。商店发布完成后可在这里接入；已有自有注册仍可移除。"
-            : StoreUrl is null ? "此发行版用于开发加载。请先在 Chrome 扩展页面加载发行目录 browser/chromium，再确认接入。不是商店安装。"
+            : StoreUrl is null ? "此发行版仅提供手动开发加载，不是商店安装。\n"
+                + "1. 复制下方管理地址，在 Chrome 地址栏粘贴打开；开启开发者模式，选择加载已解压的扩展程序。\n"
+                + "2. 选择下方本包组件目录，在浏览器确认网页访问权限。不要移动或删除此目录。\n"
+                + "3. 保存工作，正常退出并重新打开 Chrome；回到此页刷新状态，再确认接入。无需填写扩展 ID。\n"
+                + "4. 保存网页工作后刷新普通 HTTP(S) 网页，在文本框输入并检查实际连接。\n"
+                + (ExtensionId is null ? "尚未找到与本包目录唯一匹配的已加载扩展。只检查标准 Chrome 配置；缺少或多条身份记录时不会注册。\n" : "已识别本包的扩展，仍须确认本地接入。\n")
+                + "移除连接只撤销 TypeLay 的本地注册；扩展须在 Chrome 中移除。升级或搬迁后先移除旧连接和旧扩展，再加载新目录。浏览器策略禁用开发加载时，此路线不可用。"
             : "先从 Chrome 网上应用店安装扩展并完成 Chrome 的确认，再在此接入。";
         if (_origin is not null && ExtensionId is not null && _origin != BrowserHostProtocol.OriginForExtensionId(ExtensionId))
             details += " 当前注册属于先前扩展。请先移除此连接，再接入当前发行版。";

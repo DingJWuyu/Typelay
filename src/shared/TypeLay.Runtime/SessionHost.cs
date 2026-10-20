@@ -71,6 +71,10 @@ public interface ISessionView
     // Capability is presentation only. Opening and returning still require the
     // original source/form identity and actual focus at the platform seam.
     bool SupportsSourceGlossaryEntry(SessionViewToken token) => false;
+    // A trusted platform may attest only this form's exact source/auxiliary
+    // foreground transfers. This must not alter global input epochs or grant
+    // capture/write authority. Other platforms retain strict window identity.
+    bool IsGlossarySourceWindowCurrent(SessionGlossaryEntry entry, long original, long current) => original == current;
     Task<bool> ReturnGlossaryToSourceAsync(SessionGlossaryEntry entry) => Task.FromResult(false);
     Action? ExcludeRequested
     {

@@ -133,7 +133,7 @@ public sealed partial class SessionController
     private bool SourceGlossaryBasisCurrent(GlossaryEntrySession form) =>
         form.Source is { } basis && _session.Current is { } current && _session.State == form.OriginState
         && _session.Revision == form.SessionRevision && _configurationRevision == form.ConfigurationRevision
-        && _hook.WindowEpoch == form.WindowEpoch
+        && _overlay.IsGlossarySourceWindowCurrent(form.Entry, form.WindowEpoch, _hook.WindowEpoch)
         && current.Target == basis.Target && current.Text == basis.Text && current.InputEpoch == basis.InputEpoch
         && current.Selection == basis.Selection && current.TranslationScope == basis.TranslationScope
         && current.Multiline == basis.Multiline && _session.Style == form.Style

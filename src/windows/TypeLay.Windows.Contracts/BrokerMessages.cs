@@ -13,7 +13,8 @@ public static class BrokerProtocol
 public sealed record BrokerRequest(int Version, long Id, string Op, string Token,
     long UserEpoch = 0, long ForegroundEpoch = 0, long OverlayHwnd = 0,
     TargetId? BoundTarget = null, WritePlan? Plan = null, string[]? Excluded = null,
-    long ExpiresAtMs = 0, long SourceUserEpoch = 0, bool CaptureDirect = false, OwnedCaptureDescriptor? OwnedCapture = null);
+    long ExpiresAtMs = 0, long SourceUserEpoch = 0, bool CaptureDirect = false, OwnedCaptureDescriptor? OwnedCapture = null,
+    SourceGlossaryReturnAuthorization? SourceGlossaryReturn = null);
 public sealed record BrokerResponse(int Version, long Id, string Status,
     InputSnapshot? Snapshot = null, FocusMember Focus = FocusMember.Other,
     WriteReceipt? Receipt = null, string? Application = null,
@@ -27,4 +28,13 @@ public sealed record OwnedCaptureDescriptor(int ProcessId, long ProcessStartUtcT
 {
     public bool IsValid => ProcessId > 0 && ProcessStartUtcTicks > 0 && RootHwnd != 0 && ControlHwnd != 0
         && ThreadId != 0 && NativeCookie != 0 && NativeFocusRevision > 0 && BeginSequence > 0;
+}
+
+// One no-write auxiliary return. The named cancellation event is created by
+// the authenticated App, never reset, and held open by Broker during preflight.
+public sealed record SourceGlossaryReturnAuthorization(Guid Attempt, int ProcessId, long ProcessStartUtcTicks)
+{
+    public const int MaximumAgeMs = 800;
+    public bool IsValid => Attempt != Guid.Empty && ProcessId > 0 && ProcessStartUtcTicks > 0;
+    public string CancellationEventName => FormattableString.Invariant($"Local\\TypeLay.SourceGlossary.{ProcessId}.{Attempt:N}");
 }

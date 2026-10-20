@@ -57,10 +57,7 @@ internal static class SettingsPackageActions
             }
 
             stage("scroll-package-action-into-view");
-            var viewport = settings.FindFirst(TreeScope.Descendants,
-                new PropertyCondition(AutomationElement.ClassNameProperty, "ScrollViewer"));
-            if (viewport is null)
-                throw new InvalidOperationException("package-viewport-unavailable");
+            var viewport = FindViewport(button, settings, token);
             while (button.Current.BoundingRectangle.IsEmpty || button.Current.BoundingRectangle.Height <= 0
                 || viewport.Current.BoundingRectangle.IsEmpty || viewport.Current.BoundingRectangle.Height <= 0)
                 await Task.Delay(40, token);
@@ -101,4 +98,33 @@ internal static class SettingsPackageActions
             throw new TimeoutException("The package action did not become available through the settings controls.");
         }
     }, ct).WaitAsync(ct);
+
+    private static AutomationElement FindViewport(AutomationElement button, AutomationElement settings, CancellationToken ct)
+    {
+        int[] owner = settings.GetRuntimeId();
+        if (owner.Length == 0)
+            throw new InvalidOperationException("package-viewport-owner-unknown");
+        AutomationElement? viewport = null;
+        var visited = new List<int[]>();
+        var ancestor = button;
+        // Use this button's real ancestry, not an unrelated scrollbar earlier
+        // in the settings tree. Keep walking after finding a viewport to prove
+        // that it belongs to the supplied settings window.
+        for (int depth = 0; depth < 64; depth++)
+        {
+            ct.ThrowIfCancellationRequested();
+            ancestor = TreeWalker.RawViewWalker.GetParent(ancestor);
+            if (ancestor is null)
+                break;
+            int[] identity = ancestor.GetRuntimeId();
+            if (identity.Length == 0 || visited.Any(previous => previous.SequenceEqual(identity)))
+                break;
+            if (identity.SequenceEqual(owner))
+                return viewport ?? throw new InvalidOperationException("package-viewport-unavailable");
+            visited.Add(identity);
+            if (viewport is null && ancestor.TryGetCurrentPattern(ScrollPattern.Pattern, out _))
+                viewport = ancestor;
+        }
+        throw new InvalidOperationException("package-viewport-ancestry-unconfirmed");
+    }
 }

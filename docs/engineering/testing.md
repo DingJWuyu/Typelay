@@ -80,6 +80,8 @@ python tests/shared/worker/glossary_quality.py --validate-only \
 
 明确选择 `check_mode=quality-only` 且 `collect_translation_quality=true` 才启用非验收采集；未同时确认采集或未知模式直接失败，不默认为缩减检查。该模式保留共享检查、同一 SHA 的 Linux 构建与完整包组装、原生 ABI/manifest/模型固定锁验证、正式 Argos 安装、GTK 运行基础及原 Hy 安装/切换/退出与53响应采集。包组装依赖的 Fcitx/Qt 构建探针仍运行；仅跳过 Windows 和无关浏览器、托盘、教程、GTK/Qt真实模型及 VS Code 交互场景。不复制模型或制造库存，不增加旁路质量执行器；名称与摘要明确标注不构成完整产品验收。该显式模式不改变 push/PR 的分流和失败封闭规则。
 
+没有手动 dispatch 入口时，可在已授权的 `work/linux-usability` 新提交的纯文本正文末尾，以空行分隔的最后一段仅写 `TypeLay-Quality-Capture: true`，明确请求同一次完整检查附带采集。仅已存在分支的非强推、有效祖先到新 HEAD、push 的 `after` 与 HEAD 相同，且事件 `head_commit` 的 ID 和完整正文与 Git HEAD 一致时生效。它强制保留共享、Windows 和 Linux 完整检查，不启用 Qt/练习部分验收，也不是 quality-only。普通提交、旧历史中的标记、正文中途/标题/引用/缩进文本、含反引号或波浪线代码围栏的正文、重复标记、PR、其它分支及证据不全均不启用采集；未验证的显式请求仍保留完整检查。采集布尔值由同一个 scope 输出驱动原有预算、无字节码准备及正式生命周期入口，不新增模型或另一套 runner。只为已有明确实验假设添加标记；后续普通提交不会继承采集请求。仍须等待同分支上一轮完成，避免并发组取消有价值的验证。
+
 ```sh
 # 明确的非验收采集；不会修改默认 full 模式。
 gh workflow run check.yml --repo DingJWuyu/Typelay --ref work/linux-usability \

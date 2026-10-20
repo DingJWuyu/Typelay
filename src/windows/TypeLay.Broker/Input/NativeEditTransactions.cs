@@ -120,7 +120,7 @@ internal sealed class NativeEditTransactions : IDisposable
 
     // Zero-write return confirmation uses only an already captured ordinary
     // lifetime. It cannot install a cookie, refresh a binding or read the body.
-    public bool ConfirmsReturnFocus(WindowsTarget target)
+    public bool ConfirmsReturnIdentity(WindowsTarget target)
     {
         if (target.Provider != Provider || !_bindings.TryGetValue(target.ControlHwnd, out var binding)
             || binding.Target != target || !binding.Initialized || binding.Owned is not null)
@@ -139,10 +139,33 @@ internal sealed class NativeEditTransactions : IDisposable
         using var process = Process.GetProcessById(target.ProcessId);
         if (process.StartTime.ToUniversalTime().Ticks != target.ProcessStartUtcTicks)
             return false;
+        return true;
+    }
+
+    // The original Broker-owned binding is the authority, not a newly observed
+    // cookie on a possibly reused HWND. op4 is read-only and cannot initialize
+    // a binding. Check the original text, selection and real IME before any
+    // foreground/focus side effect; the caller still captures freshly afterward.
+    public bool ConfirmsReturnSource(InputSnapshot source)
+    {
+        if (!WindowsTarget.TryDecode(source.Target, out var target) || !ConfirmsReturnIdentity(target))
+            return false;
+        var binding = _bindings[target.ControlHwnd];
+        var observed = Invoke(binding, 4u);
+        return observed.Status == 1 && observed.Ime == ImeState.Clear
+            && observed.Text == source.Text && observed.Selection == source.Selection
+            && observed.Multiline == source.Multiline && ConfirmsReturnIdentity(target);
+    }
+
+    public bool ConfirmsReturnFocus(WindowsTarget target)
+    {
+        if (!ConfirmsReturnIdentity(target))
+            return false;
+        var binding = _bindings[target.ControlHwnd];
         var gui = new GuiThreadInfo { Size = (uint)Marshal.SizeOf<GuiThreadInfo>() };
-        return GetGUIThreadInfo(binding.Thread, ref gui) && gui.Focus == control
-            && GetForegroundWindow() == root
-            && unchecked((ulong)(long)GetPropW(control, "TypeLay.NativeInput.Lifetime.v2")) == binding.Cookie;
+        return GetGUIThreadInfo(binding.Thread, ref gui) && gui.Focus == (nint)target.ControlHwnd
+            && GetForegroundWindow() == (nint)target.RootHwnd
+            && unchecked((ulong)(long)GetPropW((nint)target.ControlHwnd, "TypeLay.NativeInput.Lifetime.v2")) == binding.Cookie;
     }
 
     public WriteReceipt Write(WritePlan plan) => Write(plan, 2, 0);

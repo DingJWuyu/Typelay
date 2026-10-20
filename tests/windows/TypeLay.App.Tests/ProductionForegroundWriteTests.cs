@@ -22,6 +22,24 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class ProductionForegroundWriteTests
 {
+    [Fact]
+    public async Task NativeReturnRejectsTheOriginalBindingAfterCookieLossBeforeMovingFocus()
+    {
+        await using var desktop = await Desktop.Start();
+        await desktop.Prepare(desktop.A, "A🙂你好Z", new(3, 5));
+        var source = await desktop.Capture();
+        await desktop.Focus(desktop.B);
+        Assert.NotEqual(nint.Zero, N.RemoveProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2"));
+
+        var returned = await desktop.Call(new(BrokerProtocol.Version, 0, "return", "", BoundTarget: source.Target));
+
+        Assert.Equal("denied", returned.Status);
+        Assert.Equal((desktop.Root, desktop.B), N.Focused());
+        Assert.Equal(source.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));
+        Assert.Equal(source.Selection, N.ReadSelection(desktop.A));
+        desktop.AssertZeroSubmits();
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -597,7 +615,7 @@ public sealed class ProductionForegroundWriteTests
         }
     }
 
-    private sealed class Desktop : IAsyncDisposable
+    internal sealed class Desktop : IAsyncDisposable
     {
         private readonly StockFixture _fixture;
         private readonly Process _broker;
@@ -610,6 +628,7 @@ public sealed class ProductionForegroundWriteTests
         public nint A => _fixture.A;
         public nint B => _fixture.Field("b");
         public int FixtureProcessId => _fixture.ProcessId;
+        internal int BrokerProcessId => _broker.Id;
         private Desktop(StockFixture fixture, Process broker, CancellationTokenSource deadline, string? isolatedDirectory)
         {
             _fixture = fixture;
@@ -693,13 +712,14 @@ public sealed class ProductionForegroundWriteTests
             Assert.NotNull(reply.Receipt);
             return reply.Receipt;
         }
-        public async Task<BrokerResponse> Call(BrokerRequest request)
+        public async Task<BrokerResponse> Call(BrokerRequest request, Action? dispatched = null)
         {
             await Wire.WriteAsync(_broker.StandardInput.BaseStream, request with
             {
                 Id = ++_id,
                 Token = _pipeToken
             }, Token);
+            dispatched?.Invoke();
             return await Wire.ReadAsync<BrokerResponse>(_broker.StandardOutput.BaseStream, Token);
         }
         public void AssertZeroSubmits() => _fixture.AssertZeroSubmits();

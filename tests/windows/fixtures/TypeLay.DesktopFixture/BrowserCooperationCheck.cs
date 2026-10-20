@@ -163,10 +163,15 @@ internal static partial class BrowserCooperationCheck
         string ownerToken = Guid.NewGuid().ToString("N"), ownerFile = Path.Combine(data, "browser-fixture-owner");
         string host = Path.Combine(distribution, "app", "TypeLay.BrowserHost.exe");
         bool ownData = false, registrationAttempted = false, registrationAbsent = true;
-        bool appStopped = true, browserStopped = true, modelPreviewObserved = false;
+        bool modelPreviewObserved = false;
+        var appLifetime = new BrowserFixtureProcess();
+        var browserLifetime = new BrowserFixtureProcess();
         string connectionFile = Path.Combine(distribution, "browser", "chromium", "connection.json");
-        byte[]? originalConnection = null, injectedConnection = null;
-        bool connectionInjected = false, uiConnectCancelled = false, uiConnectConfirmed = false, uiRemoveConfirmed = false;
+        byte[]? originalConnection = null;
+        string profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "User Data");
+        string profileOwnerFile = Path.Combine(profile, "typelay-browser-fixture-owner");
+        bool ownProfile = false, settingsIdentityDiscovered = false, releaseConnectionUnmodified = false;
+        bool uiConnectCancelled = false, uiConnectConfirmed = false, uiRemoveConfirmed = false;
         ChildProcess? app = null, browser = null;
         BrowserWindows? windows = null;
         PageServer? server = null;
@@ -235,15 +240,18 @@ internal static partial class BrowserCooperationCheck
                 setup.Stage = "check-shipped-extension";
                 string extension = Path.Combine(distribution, "browser", "chromium");
                 Require(File.Exists(Path.Combine(extension, "manifest.json")), "shipped-extension-missing");
-                string profile = Path.Combine(directory, "profile");
+                // Never merge a test browser into an existing user's Chrome state.
+                Directory.CreateDirectory(Path.GetDirectoryName(profile)!);
+                Require(CreateDirectoryW(profile, 0), "standard-chrome-profile-already-exists");
+                ownProfile = true;
+                await File.WriteAllTextAsync(profileOwnerFile, ownerToken, ct);
                 var chromeStart = StartInfo(chrome);
                 foreach (string argument in new[] { "--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check",
                     "--disable-search-engine-choice-screen", "--remote-debugging-port=0", "--load-extension=" + extension,
                     "--disable-extensions-except=" + extension, "--new-window", "about:blank" })
                     chromeStart.ArgumentList.Add(argument);
                 setup.Stage = "start-cft";
-                browser = new ChildProcess(chromeStart);
-                browserStopped = false;
+                browser = browserLifetime.Start(() => new ChildProcess(chromeStart));
                 setup.Stage = "identify-cft-process";
                 windows = new BrowserWindows(browser.Process, "TypeLay cooperation");
                 cdp = await Cdp.ConnectAsync(profile, stage => setup.Stage = stage, ct);
@@ -264,24 +272,19 @@ internal static partial class BrowserCooperationCheck
                 originalConnection = await File.ReadAllBytesAsync(connectionFile, ct);
                 var released = BrowserConnectionConfiguration.Parse(System.Text.Encoding.UTF8.GetString(originalConnection));
                 Require(released.ExtensionId is null && released.StoreUrl is null, "test-release-identity-already-configured");
-                injectedConnection = JsonSerializer.SerializeToUtf8Bytes(new
-                {
-                    version = 1,
-                    extensionId,
-                    storeUrl = (string?)null
-                });
-                // Only this exclusive test release is changed. The original bytes
-                // are restored after confirmed App exit, before any artifact ships.
-                await ReplaceConnectionConfigurationAsync(connectionFile, originalConnection, injectedConnection, ct);
-                connectionInjected = true;
+                setup.Stage = "discover-standard-profile-installation";
+                // Observe only Chrome's real on-disk installation record. No test
+                // ID, release configuration edit or production profile override.
+                while (BrowserExtensionInstallation.FindUnique(extension, profile) != extensionId)
+                    await Task.Delay(40, ct);
+                settingsIdentityDiscovered = true;
                 setup.Stage = "start-shipped-app";
                 var appStart = StartInfo(Path.Combine(distribution, "app", "TypeLay.App.exe"));
                 appStart.ArgumentList.Add("--automation-test");
                 // This is the shipped launcher's resource root, not a user-data override.
                 appStart.Environment["TYPELAY_HOME"] = distribution;
                 appStart.Environment["TYPELAY_TRACE"] = trace;
-                app = new ChildProcess(appStart);
-                appStopped = false;
+                app = appLifetime.Start(() => new ChildProcess(appStart));
                 registrationAttempted = true; // Also reconcile an unexpected registration after cancellation.
                 registrationAbsent = false;
                 await BrowserConnectionActionAsync(app.Process, "接入", step => setup.Stage = "cancel-connect-" + step, ct, accept: false);
@@ -460,40 +463,27 @@ internal static partial class BrowserCooperationCheck
                 catch (Exception error) when (error is not OutOfMemoryException) { cleanupErrors.Add(new(resource, error.GetType().Name)); }
             }
             await Clean("cdp", () => { cdp?.Dispose(); return Task.CompletedTask; });
-            await Clean("browser-process-family", async () =>
+            await Clean("browser-process-family", () => browserLifetime.StopAsync(async child =>
             {
-                if (browser is not null)
-                {
-                    if (windows is not null)
-                        await windows.StopAsync(browser, Console.WriteLine);
-                    else
-                    {
-                        using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                        await browser.TerminateAndWaitAsync(limit.Token);
-                    }
-                    browserStopped = true;
-                }
-            });
-            await Clean("app-process-family", async () =>
-            {
-                if (app is not null)
+                if (windows is not null && browser is not null)
+                    await windows.StopAsync(browser, Console.WriteLine);
+                else
                 {
                     using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                    await app.TerminateAndWaitAsync(limit.Token);
-                    appStopped = true;
+                    await child.TerminateAndWaitAsync(limit.Token);
                 }
-            });
+            }));
+            await Clean("app-process-family", () => appLifetime.StopAsync(async child =>
+            {
+                using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await child.TerminateAndWaitAsync(limit.Token);
+            }));
             await Clean("loopback-page", async () => { if (server is not null) await server.DisposeAsync(); });
-            if (connectionInjected)
-                await Clean("release-connection-configuration", async () =>
+            if (originalConnection is not null)
+                await Clean("release-connection-configuration-unchanged", async () =>
                 {
-                    Require(appStopped, "app-exit-unconfirmed-configuration-preserved");
-                    Require((await File.ReadAllBytesAsync(connectionFile)).AsSpan().SequenceEqual(injectedConnection),
-                        "release-configuration-ownership-changed");
-                    using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-                    await ReplaceConnectionConfigurationAsync(connectionFile, injectedConnection!, originalConnection!, limit.Token);
-                    Require((await File.ReadAllBytesAsync(connectionFile)).AsSpan().SequenceEqual(originalConnection),
-                        "release-configuration-restoration-unconfirmed");
+                    releaseConnectionUnmodified = (await File.ReadAllBytesAsync(connectionFile)).AsSpan().SequenceEqual(originalConnection);
+                    Require(releaseConnectionUnmodified, "release-configuration-changed");
                 });
             if (registrationAttempted)
                 await Clean("native-host-registration", async () =>
@@ -512,7 +502,7 @@ internal static partial class BrowserCooperationCheck
                     Require(!status.RootElement.GetProperty("registered").GetBoolean(), "registration-cleanup-unconfirmed");
                     registrationAbsent = true;
                 });
-            if (ownData && registrationAbsent && appStopped)
+            if (ownData && registrationAbsent && appLifetime.ExitConfirmed)
                 await Clean("owned-user-data", () =>
             {
                 Require(File.ReadAllText(ownerFile) == ownerToken, "data-ownership-lost");
@@ -520,19 +510,17 @@ internal static partial class BrowserCooperationCheck
                 Directory.Delete(data, true);
                 return Task.CompletedTask;
             });
-            if (ownData && (!registrationAbsent || !appStopped))
+            if (ownData && (!registrationAbsent || !appLifetime.ExitConfirmed))
                 cleanupErrors.Add(new("owned-user-data-preserved", !registrationAbsent ? "RegistrationAbsenceUnconfirmed" : "AppExitUnconfirmed"));
-            await Clean("owned-browser-profile", () =>
-            {
-                string profile = Path.Combine(directory, "profile");
-                Require(browserStopped, "browser-exit-unconfirmed-profile-preserved");
-                if (Directory.Exists(profile))
+            if (ownProfile)
+                await Clean("owned-browser-profile", () =>
                 {
+                    Require(browserLifetime.ExitConfirmed, "browser-exit-unconfirmed-profile-preserved");
+                    Require(File.ReadAllText(profileOwnerFile) == ownerToken, "browser-profile-ownership-lost");
                     CheckTree(profile);
                     Directory.Delete(profile, true);
-                }
-                return Task.CompletedTask;
-            });
+                    return Task.CompletedTask;
+                });
             try
             {
                 commandPath = ReadCommandPath(trace);
@@ -560,6 +548,8 @@ internal static partial class BrowserCooperationCheck
             extensionDistribution = "unpacked-development-validation-not-store-install",
             extensionId,
             extensionDiscovery = cdp?.Discovery,
+            settingsIdentityDiscovered,
+            releaseConnectionUnmodified,
             modelSource = "same-run-verified-installation",
             realModelPreviewObserved = modelPreviewObserved,
             noModelDownloads = true,

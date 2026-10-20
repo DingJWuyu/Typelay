@@ -1050,6 +1050,10 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                             lambda: state().get(field, {}).get("focused") and settled(),
                             "multiline source focus",
                         )
+                        assert any(
+                            item["role"] == field and item["causes"] == 2
+                            for item in state()["providerEvents"]
+                        ), "fixture must observe the real multiline provider before form transfer"
                     else:
                         prepare()
                     publication = publish()
@@ -1258,11 +1262,15 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                             for item in state()["providerEvents"]
                             if item["sequence"] > departure and item["role"] == field
                         ]
-                        # The original source's sealed background-write proof is
-                        # retired by this focus change, not an unknown IM reset.
-                        assert retirement and all(
-                            item["causes"] == (0 if legacy else 32) for item in retirement
-                        ), retirement
+                        # Only exact QLineEdit -> QLineEdit can seal a detached
+                        # background-write proof. Plain source -> first term must
+                        # not invent that proof (or its retirement notification).
+                        if field == "first":
+                            assert retirement and all(
+                                item["causes"] == (0 if legacy else 32) for item in retirement
+                            ), retirement
+                        else:
+                            assert retirement == [], retirement
                         renew()  # Drain the same public event stream the real host consumes.
                         assert not [
                             item
@@ -1277,8 +1285,27 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                             and settled(),
                             "second glossary word IM retirement",
                         )
-                        if legacy:
+
+                        def save_with_term_retirement():
+                            save_departure = state()["providerSequence"]
                             click("typelay-glossary-save")
+                            if field == "plain":
+                                # Both form terms are exact QLineEdits. Their
+                                # sealed proof is retired when Save takes focus,
+                                # even though the multiline source had no seal.
+                                term_retirement = [
+                                    item
+                                    for item in state()["providerEvents"]
+                                    if item["sequence"] > save_departure
+                                    and item["role"] == "typelay-glossary-source"
+                                ]
+                                assert term_retirement and all(
+                                    item["causes"] == (0 if legacy else 32)
+                                    for item in term_retirement
+                                ), term_retirement
+
+                        if legacy:
+                            save_with_term_retirement()
                             observe(
                                 lambda value: value.get("glossary", {}).get("feedback")
                                 == "请先完成两个词的输入，确认输入法已结束组合后再保存。",
@@ -1311,7 +1338,7 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                             unchanged()
                             native.call("overlay-hide")
                             return
-                        click("typelay-glossary-save")
+                        save_with_term_retirement()
                         saved = wait(
                             lambda: events("sessionGlossaryAdd"),
                             "explicit Save with both words Clear",

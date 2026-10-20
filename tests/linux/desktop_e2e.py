@@ -4135,8 +4135,8 @@ def run(arguments):
                 )
 
             def calibrate_settings_scroll(trial):
-                # Called only at an already-opened instance's first unscrolled
-                # support page, never as a rescue after a failed focus/scroll.
+                # Called only at this support-page layout's initial unscrolled
+                # observation, never as a rescue after a failed focus/scroll.
                 nonlocal settings_scroll_calibration
                 settings_scroll_calibration = None
                 trial.clear_cache()
@@ -5987,6 +5987,29 @@ def run(arguments):
                     direct.get_editable_text_iface(), "Ctrl+Shift+F7"
                 )
                 settings_page("应用支持")
+                # The earlier browser-page calibration was deliberately retired.
+                # Establish this draft layout from its own visible top control,
+                # before scrolling to exclusions, never by rescuing a failed clip.
+                trial = settings_control(next_step_label)
+                assert Atspi.Component.grab_focus(trial.get_component_iface())
+                viewport = trial.get_parent()
+                for _ in range(16):
+                    assert viewport is not None and viewport.get_process_id() == process.pid
+                    viewport.clear_cache()
+                    if viewport.get_role() in clip_roles:
+                        assert viewport.get_role() == Atspi.Role.VIEWPORT
+                        break
+                    viewport = viewport.get_parent()
+                else:
+                    raise AssertionError("draft support page has no bounded viewport")
+                wait_for(
+                    lambda: focused(trial)
+                    and (measured := settings_scroll_snapshot(viewport)) is not None
+                    and measured["viewport"] == measured["pane"]
+                    and measured["viewport"][0] != -(2**31),
+                    "draft support page did not expose its own first-screen geometry",
+                )
+                calibrate_settings_scroll(trial)
                 advanced_exclusions = settings_control("高级编辑排除应用")
                 assert advanced_exclusions.get_process_id() == process.pid
                 assert not advanced_exclusions.get_state_set().contains(Atspi.StateType.EXPANDED)
@@ -6024,6 +6047,10 @@ def run(arguments):
                     "focused": None,
                     "showing": None,
                     "settingsWindowFocused": None,
+                    "calibratedBounds": {
+                        name: settings_scroll_calibration[name]
+                        for name in ("viewport", "pane", "frame")
+                    },
                 }
 
                 def exclusion_editor_focused():

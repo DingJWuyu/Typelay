@@ -39,7 +39,9 @@ internal static class WindowsRuntime
         support?.BindBrowser(browser);
         var browserView = new BrowserSessionView(browser, () => overlay.LanguageRequested?.Invoke());
         var view = new WindowsSessionView(overlay, browserView);
-        var input = new WindowsInputRouter(new WindowsInputService(broker, overlay.Handle, support, monitor, practice), monitor, browser);
+        var nativeInput = new WindowsInputService(broker, overlay.Handle, support, monitor, practice);
+        overlay.ConfigureSourceGlossary(nativeInput, settings);
+        var input = new WindowsInputRouter(nativeInput, monitor, browser);
         loop.Tick += browser.Poll;
         loop.Tick += browserView.Poll;
         var controller = new SessionController(settings, model, view, input, input, loop,

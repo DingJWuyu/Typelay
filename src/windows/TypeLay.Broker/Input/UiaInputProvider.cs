@@ -563,6 +563,11 @@ internal sealed class UiaInputProvider : IDisposable
     public bool ReturnToSource(BrokerRequest request, out string reason)
     {
         // Fixed outcome/stage names only. The caller writes them after replying.
+        bool glossary = request.Op == "return-glossary";
+        using var authorization = glossary ? SourceGlossaryReturnGuard.TryOpen(request) : null;
+        reason = "return-authorization";
+        if (glossary && authorization is null)
+            return false;
         var target = request.BoundTarget;
         reason = "target-missing";
         if (target is null)
@@ -576,23 +581,39 @@ internal sealed class UiaInputProvider : IDisposable
         reason = "target-invalid";
         if (!WindowsTarget.TryDecode(target.Value, out var binding))
             return false;
+        if (glossary && binding.Provider != NativeEditTransactions.Provider)
+            return false;
         reason = "element-identity";
         if (string.Join('.', _element.GetRuntimeId()) != binding.ElementToken)
         {
             reason = "element-identity-changed";
             return false;
         }
+        reason = "native-source-changed";
+        if (binding.Provider == NativeEditTransactions.Provider
+            && (glossary ? !_edits.ConfirmsReturnSource(_previous) : !_edits.ConfirmsReturnIdentity(binding)))
+            return false;
+        reason = "return-canceled";
+        if (glossary && !authorization!.BeforeFocus((nint)request.OverlayHwnd))
+            return false;
         reason = "foreground";
         if (GetForegroundWindow() != (nint)binding.RootHwnd && !SetForegroundWindow((nint)binding.RootHwnd))
         {
             reason = "foreground-denied";
             return false;
         }
+        reason = "return-canceled";
+        if (glossary && (!_edits.ConfirmsReturnFocus(binding)
+            || !authorization!.BeforeFocus((nint)binding.RootHwnd)))
+            return false;
         reason = "set-focus";
-        _element.SetFocus();
+        // A glossary return never corrects another field's focus. The native
+        // host must have restored this exact original control on activation.
+        if (!glossary)
+            _element.SetFocus();
         reason = "focus-recheck";
         bool focused = string.Join('.', AutomationElement.FocusedElement.GetRuntimeId()) == binding.ElementToken;
-        if (focused)
+        if (focused && (binding.Provider != NativeEditTransactions.Provider || _edits.ConfirmsReturnFocus(binding)))
         {
             reason = "focused";
             return true;

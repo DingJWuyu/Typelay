@@ -172,9 +172,7 @@ int32_t translate(hy_handle *h,uint32_t dir,const uint8_t *p,uint32_t len,uint8_
    const char *style_name=style==HY_NATURAL
     ? "自然、地道的表达，保留原文的语气和礼貌程度"
     : "正式、得体的表达";
-   const char *constraint=style==HY_NATURAL
-    ? "忠实保留原意、否定、主体、数字、时态、条件和承诺。只输出译文，不要解释、增补或省略：\n\n"
-    : "忠实保留原意、否定、主体、数字、时态、条件和承诺，不强化或弱化原有承诺。只输出译文，不要解释、增补或省略：\n\n";
+   const char *constraint="忠实保留原意、否定、主体、数字、时态、条件和承诺，不强化或弱化原有承诺。只输出译文，不要解释、增补或省略：\n\n";
    instruction=std::string("请将以下文本翻译为")+target+"。\n注意翻译的风格要严格符合〖"+style_name+"〗\n"+constraint;
   }
   auto prompt=h->prefix_control;

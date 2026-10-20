@@ -8,6 +8,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="TypeLay.App.Tests" />
     <Compile Include="../shared/WindowsInterruptClock.cs" Link="Interop/WindowsInterruptClock.cs" />
     <ProjectReference Include="../TypeLay.Windows.Contracts/TypeLay.Windows.Contracts.csproj" />
     <ProjectReference Include="../../shared/TypeLay.Core/TypeLay.Core.csproj" />

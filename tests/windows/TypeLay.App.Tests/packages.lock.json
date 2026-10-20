@@ -171,6 +171,14 @@
           "TypeLay.Windows.Contracts": "[0.2.0-dev, )"
         }
       },
+      "typelay.broker": {
+        "type": "Project",
+        "dependencies": {
+          "TypeLay.Core": "[0.2.0-dev, )",
+          "TypeLay.Protocol": "[0.2.0-dev, )",
+          "TypeLay.Windows.Contracts": "[0.2.0-dev, )"
+        }
+      },
       "typelay.core": {
         "type": "Project"
       },

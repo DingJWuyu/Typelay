@@ -8,6 +8,33 @@ namespace TypeLay.Windows.Contracts.Tests;
 public sealed class BrokerContractTests
 {
     [Fact]
+    public async Task SourceGlossaryReturnCarriesOnlyOneCancelableFocusAttempt()
+    {
+        var authorization = new SourceGlossaryReturnAuthorization(Guid.NewGuid(), 123, 456);
+        Assert.True(authorization.IsValid);
+        Assert.NotEqual(authorization.CancellationEventName,
+            (authorization with
+            {
+                Attempt = Guid.NewGuid()
+            }).CancellationEventName);
+        var request = new BrokerRequest(BrokerProtocol.Version, 9, "return-glossary", "", OverlayHwnd: 44,
+            ExpiresAtMs: 1000, SourceGlossaryReturn: authorization);
+        using var stream = new MemoryStream();
+        await Wire.WriteAsync(stream, request, TestContext.Current.CancellationToken);
+        stream.Position = 0;
+        var received = await Wire.ReadAsync<BrokerRequest>(stream, TestContext.Current.CancellationToken);
+        Assert.Equal(authorization, received.SourceGlossaryReturn);
+        Assert.Equal(44, received.OverlayHwnd);
+        Assert.Equal(1000, received.ExpiresAtMs);
+        Assert.Null(received.Plan);
+        Assert.Null(received.OwnedCapture);
+        Assert.False((authorization with
+        {
+            Attempt = Guid.Empty
+        }).IsValid);
+    }
+
+    [Fact]
     public async Task PausedAnchorRoundTripsWithoutATextSnapshotOrWriteReceipt()
     {
         TargetId target = new WindowsTarget(1, 2, 3, 4, "uia-pause-anchor-v1", "field", Guid.NewGuid());

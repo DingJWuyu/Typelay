@@ -1256,6 +1256,32 @@ internal sealed class SettingsWindow : Window
         foreach (var button in buttons.Values)
             actions.Children.Add(button);
         detailsBody.Children.Add(actions);
+        var localInstall = new WrapPanel();
+        void CopyInstallValue(string value)
+        {
+            try
+            {
+                Clipboard.SetText(value);
+            }
+            catch (System.Runtime.InteropServices.ExternalException)
+            {
+                explanation.Text = "无法复制，请稍后重试。";
+            }
+        }
+        var copyManagement = UiTheme.Button("复制扩展管理地址", () => CopyInstallValue("chrome://extensions/"));
+        AutomationProperties.SetAutomationId(copyManagement, "ChromeConnectionCopyManagement");
+        var copyDirectory = UiTheme.Button("复制组件目录", () =>
+        {
+            if (_support?.Browser is { } browser)
+                CopyInstallValue(browser.ExtensionDirectory);
+        });
+        AutomationProperties.SetAutomationId(copyDirectory, "ChromeConnectionCopyDirectory");
+        foreach (var button in new[] { copyManagement, copyDirectory })
+        {
+            button.Margin = new(0, 8, 8, 0);
+            localInstall.Children.Add(button);
+        }
+        detailsBody.Children.Add(localInstall);
         var store = UiTheme.Button("打开 Chrome 网上应用店", () =>
         {
             if (_support?.Browser?.StoreUrl is { } url)
@@ -1301,7 +1327,7 @@ internal sealed class SettingsWindow : Window
             status.Text = browser?.MutationUnavailable == true ? "操作结果未确认" : busy ? "正在更新连接…"
                 : browser?.Suspended == true ? "注册仍在，连接已停止"
                 : current.State is ApplicationSupportState.Connected or ApplicationSupportState.Registered or ApplicationSupportState.Error
-                ? current.StatusText : browser?.ExtensionId is null ? "待发布扩展" : current.StatusText;
+                ? current.StatusText : browser?.ExtensionId is null ? "待启用扩展" : current.StatusText;
             summary.Text = browser?.Suspended == true ? "可重试移除，或确认重新接入。"
                 : current.State == ApplicationSupportState.Connected ? "浏览器已连接，当前输入框的支持情况见详情。"
                 : current.State == ApplicationSupportState.Registered ? "已接入，等待浏览器连接。" : "在详情中查看接入方式。";
@@ -1322,6 +1348,8 @@ internal sealed class SettingsWindow : Window
             primary.IsEnabled = !busy;
             AutomationProperties.SetAutomationId(primary, "ChromeConnectionPrimary");
             store.Visibility = browser?.StoreUrl is not null ? Visibility.Visible : Visibility.Collapsed;
+            localInstall.Visibility = browser?.StoreUrl is null ? Visibility.Visible : Visibility.Collapsed;
+            copyDirectory.IsEnabled = browser is not null;
         }
         _refreshBrowserRow = Update;
         Update();

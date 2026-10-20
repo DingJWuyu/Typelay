@@ -31,6 +31,7 @@ internal static partial class ContinuousTranslationCheck
         int firstCompletedReceipts = 0;
         var elapsed = Stopwatch.StartNew();
         long? firstPreviewMs = null, acceptanceReadyMs = null, acceptedMs = null;
+        long? acceptancePressStartedAtMs = null, acceptancePressCompletedAtMs = null;
         ChildProcess? child = null;
         PracticeHost? host = null;
         OverlayWindow? overlay = null;
@@ -184,29 +185,38 @@ internal static partial class ContinuousTranslationCheck
             result.Stage = "owned-public-acceptance-ready";
             original = N.ReadText(field, Limits.MaxTextUnits);
             selection = N.ReadSelection(field);
+            // Keep synchronous source verification before the final public cue:
+            // these four cross-process reads must not age a just-observed ticket
+            // while blocking the UI that would otherwise refresh that cue.
+            sourceUnchanged = N.ReadText(field, Limits.MaxTextUnits) == original && N.ReadSelection(field) == selection;
+            Require(sourceUnchanged, "owned-preview-capabilities");
+            Require(!settings.Value.ExperimentalWriteback && settings.Value.Mode == WorkMode.Automatic,
+                "owned-global-permission-changed");
             // Esc was followed by real source input. The first source write
             // uses that new candidate and the same public cue a user sees.
             await UntilAsync(() =>
             {
                 Require(feedbackCode is null, "owned-preview-feedback");
                 Require(N.Focused() == (root, field), "owned-preview-focus");
-                return input.LastCapture?.Snapshot?.Text == original && VisibleTranslation(overlay, editor)
-                    && OwnedAcceptanceVisible(overlay);
+                Require(new[] { 0x76, 0x77, 0x10, 0x11, 0x12, 0x5B, 0x5C }.All(key => GetAsyncKeyState(key) >= 0),
+                    "owned-key-already-down");
+                return input.LastCapture?.Snapshot is { } captured && captured.Text == original
+                    && captured.Selection == selection && VisibleTranslation(overlay, editor) && OwnedAcceptanceVisible(overlay);
             }, cancellation);
             acceptanceReadyMs = elapsed.ElapsedMilliseconds;
             string candidate = editor.Text;
             var progress = controller.AutomaticPracticeProgress!;
-            sourceUnchanged = N.ReadText(field, Limits.MaxTextUnits) == original && N.ReadSelection(field) == selection;
             sourceReady = input.LastCapture?.SessionShortcuts is { SourceReady: true };
             editorReady = input.LastCapture?.SessionShortcuts is { EditorReady: true };
             Require(sourceUnchanged && sourceReady && editorReady, "owned-preview-capabilities");
-            Require(!settings.Value.ExperimentalWriteback && settings.Value.Mode == WorkMode.Automatic,
-                "owned-global-permission-changed");
-            Require(new[] { 0x76, 0x77, 0x10, 0x11, 0x12, 0x5B, 0x5C }.All(key => GetAsyncKeyState(key) >= 0),
-                "owned-key-already-down");
             result.Stage = "owned-first-tab";
             injectedTabPresses++;
-            SendOwnedAcceptance(result.CleanupErrors);
+            acceptancePressStartedAtMs = WindowsInterruptClock.NowMs;
+            try
+            {
+                SendOwnedAcceptance(result.CleanupErrors);
+            }
+            finally { acceptancePressCompletedAtMs = WindowsInterruptClock.NowMs; }
             await UntilAsync(() =>
             {
                 Require(feedbackCode is null, "owned-accept-feedback");
@@ -322,6 +332,8 @@ internal static partial class ContinuousTranslationCheck
                 submitCounterAvailable = false,
                 firstPreviewMs,
                 acceptanceReadyMs,
+                acceptancePressStartedAtMs,
+                acceptancePressCompletedAtMs,
                 acceptedMs,
                 feedbackCode,
                 previewFocusFailure,

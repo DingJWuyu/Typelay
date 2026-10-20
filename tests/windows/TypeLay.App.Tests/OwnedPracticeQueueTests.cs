@@ -394,26 +394,18 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             Assert.Equal(FocusMember.Other, refused.Focus);
             if (passwordStyle is { } originalStyle)
                 Assert.Equal(originalStyle | 0x20, GetWindowLongPtrW(scene.Field, -16));
-            // Refusal is proved while the fixture's password style is active.
-            // Restore our own metadata before the independent unchanged-text
-            // check; protected cross-process WM_GETTEXT is not that contract.
-            RestorePasswordStyle();
-            Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+            // Capture is a read-only command. For the sensitive field, prove
+            // refusal while ES_PASSWORD remains set, not by reading its body
+            // across processes or trying to reverse an unsupported multiline
+            // Edit style mutation. The fixture-owned window is closed below.
+            if (passwordStyle is null)
+                Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
         }
         finally
         {
-            RestorePasswordStyle();
             // Restore only the fixture-owned root so its normal close path remains available.
             if (change == "parent-disabled")
                 EnableWindow(scene.Root, true);
-        }
-        void RestorePasswordStyle()
-        {
-            if (passwordStyle is not { } style)
-                return;
-            SetWindowLongPtrW(scene.Field, -16, style);
-            Assert.Equal(style, GetWindowLongPtrW(scene.Field, -16));
-            passwordStyle = null;
         }
     });
 

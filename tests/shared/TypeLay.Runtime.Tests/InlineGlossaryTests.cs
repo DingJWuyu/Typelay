@@ -62,6 +62,66 @@ public sealed class InlineGlossaryTests
         Assert.Equal(0, s.Service.Returns);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExactFormWindowReceiptDoesNotGrantWritingOrAuthorizeAnotherWindow(bool foreignWindow)
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        long original = s.Input.WindowEpoch;
+        var entry = Open(s);
+        s.Input.InEditor = true;
+        s.Input.WindowEpoch++;
+        // Trusted platform evidence at the view seam. These controlled ports do
+        // not prove a real foreground event or IME; Windows tests own that part.
+        s.View.GlossarySourceWindow = (form, before, current) => ReferenceEquals(form, entry)
+            && before == original && (current == original + 1 || current == original + 2);
+        int returns = 0;
+        s.View.ReturnGlossary = form =>
+        {
+            returns++;
+            Assert.Same(entry, form);
+            Assert.Null(s.Input.Permit);
+            s.Input.InEditor = false;
+            s.View.GlossaryEntryFocus = null;
+            s.Input.WindowEpoch += foreignWindow ? 2 : 1;
+            return Task.FromResult(true);
+        };
+        var result = await Add(s, entry);
+        Assert.Equal(!foreignWindow, result.Saved);
+        Assert.Equal(1, returns);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+        if (foreignWindow)
+            Assert.Null(s.ReloadSettings().Glossary);
+        else
+            Assert.Equal("fixed", Assert.Single(s.ReloadSettings().Glossary!.Rules).TargetTerm);
+    }
+
+    [Fact]
+    public async Task RevokedFormWindowReceiptCannotFallBackToEqualEpochs()
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var entry = Open(s);
+        s.Input.InEditor = true;
+        s.View.GlossarySourceWindow = (_, original, current) =>
+        {
+            Assert.Equal(original, current);
+            return false;
+        };
+        s.View.ReturnGlossary = _ => throw new InvalidOperationException("Revoked form cannot return.");
+        Assert.False((await Add(s, entry)).Saved);
+        Assert.Null(s.ReloadSettings().Glossary);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+    }
+
     [Fact]
     public async Task SourceFormRejectsWindowChangesBeforeReturn()
     {

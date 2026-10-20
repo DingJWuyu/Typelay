@@ -1,5 +1,6 @@
 """Exercise the Actions selector against real, isolated Git histories."""
 
+import json
 import os
 import subprocess
 import sys
@@ -14,12 +15,13 @@ FULL = {
     "qt": "false",
     "quality_only": "false",
     "practice": "false",
+    "collect_quality": "false",
 }
 LINUX = {**FULL, "windows": "false"}
 WINDOWS = {**FULL, "linux": "false"}
 SHARED_ONLY = {**FULL, "windows": "false", "linux": "false"}
 QT = {**LINUX, "linux": "false", "qt": "true"}
-QUALITY_ONLY = {**LINUX, "quality_only": "true"}
+QUALITY_ONLY = {**LINUX, "quality_only": "true", "collect_quality": "true"}
 PRACTICE = {**LINUX, "practice": "true"}
 QT_BASELINE = "d607db1b8a3fc882cfd4a9c19a6e454d9b610189"
 
@@ -57,7 +59,7 @@ class ScopeTests(unittest.TestCase):
         self.git("update-ref", "HEAD", ref)
         self.git("read-tree", ref)
 
-    def commit(self, files, parents=None):
+    def commit(self, files, parents=None, message="scope fixture"):
         # Index-only files let Git's legal path names work on every test host.
         for path, content in files.items():
             if content is None:
@@ -76,7 +78,7 @@ class ScopeTests(unittest.TestCase):
             )
             parents = [head.stdout.decode().strip()] if head.returncode == 0 else []
         arguments = [argument for parent in parents for argument in ("-p", parent)]
-        commit = self.git("commit-tree", tree, *arguments, "-m", "scope fixture")
+        commit = self.git("commit-tree", tree, *arguments, "-m", message)
         self.git("update-ref", "HEAD", commit)
         return commit
 
@@ -305,10 +307,82 @@ class ScopeTests(unittest.TestCase):
                         COLLECT_TRANSLATION_QUALITY=collect,
                     )
 
+    def test_explicit_current_push_quality_trailer_keeps_full_checks(self):
+        message = "对照风格保义约束\n\nTypeLay-Quality-Capture: true"
+        head = self.commit({"docs/note.md": "explicit experiment"}, message=message)
+        payload = self.root / "event.json"
+        payload.write_text(json.dumps({"head_commit": {"id": head, "message": message}}))
+        self.assertEqual(
+            {**FULL, "collect_quality": "true"},
+            self.select(self.base, GITHUB_EVENT_PATH=str(payload)),
+        )
+
+    def test_quality_push_requires_exact_current_event_and_valid_branch_history(self):
+        message = "experiment\n\nTypeLay-Quality-Capture: true"
+        head = self.commit({"src/linux/only.py": "change"}, message=message)
+        payload = self.root / "event.json"
+        payload.write_text(json.dumps({"head_commit": {"id": head, "message": message}}))
+        for event in (
+            {"CREATED": "true"},
+            {"FORCED": "true"},
+            {"AFTER": self.base},
+            {"BEFORE": head},
+            {"BEFORE": "0" * 40},
+            {"BEFORE": "a" * 40},
+            {"EVENT_NAME": "pull_request"},
+            {"GITHUB_EVENT_PATH": str(self.root / "missing.json")},
+        ):
+            with self.subTest(event=event):
+                self.assertEqual(
+                    FULL,
+                    self.select(self.base, **{"GITHUB_EVENT_PATH": str(payload), **event}),
+                )
+        self.assertEqual(
+            FULL,
+            self.select(self.base, "work/windows-experience", GITHUB_EVENT_PATH=str(payload)),
+        )
+        for value in (
+            {},
+            [],
+            {"head_commit": None},
+            {"head_commit": {"id": self.base, "message": message}},
+            {"head_commit": {"id": head, "message": message + " not exact"}},
+        ):
+            with self.subTest(value=value):
+                payload.write_text(json.dumps(value))
+                self.assertEqual(FULL, self.select(self.base, GITHUB_EVENT_PATH=str(payload)))
+        for raw in ("{", " " * (4 * 1024 * 1024 + 1)):
+            payload.write_text(raw)
+            self.assertEqual(FULL, self.select(self.base, GITHUB_EVENT_PATH=str(payload)))
+
+    def test_old_quoted_or_duplicate_quality_markers_do_not_trigger_collection(self):
+        marker = "TypeLay-Quality-Capture: true"
+        old = self.commit({"docs/old.md": "old request"}, message=f"old\n\n{marker}")
+        self.commit({"docs/current.md": "ordinary follow-up"})
+        payload = self.root / "event.json"
+        payload.write_text(json.dumps({"head_commit": {"id": old, "message": marker}}))
+        self.assertEqual(SHARED_ONLY, self.select(old, GITHUB_EVENT_PATH=str(payload)))
+        for message, expected in (
+            (f"Discuss {marker}", SHARED_ONLY),
+            (f"quoted\n\n> {marker}", SHARED_ONLY),
+            (f"indented\n\n {marker}", SHARED_ONLY),
+            (f"documentation example\n\n```text\n{marker}\n```\n\nNot a request.", SHARED_ONLY),
+            (f"unclosed code example\n\n```text\n\n{marker}", SHARED_ONLY),
+            (f"tilde code example\n\n~~~text\n\n{marker}", SHARED_ONLY),
+            (f"middle paragraph\n\n{marker}\n\nNot a request.", SHARED_ONLY),
+            (marker, SHARED_ONLY),
+            (f"duplicate\n\n{marker}\n{marker}", FULL),
+        ):
+            with self.subTest(message=message):
+                self.reset(self.base)
+                head = self.commit({"docs/new.md": "new"}, message=message)
+                payload.write_text(json.dumps({"head_commit": {"id": head, "message": message}}))
+                self.assertEqual(expected, self.select(self.base, GITHUB_EVENT_PATH=str(payload)))
+
     def test_full_collection_preserves_full_platform_checks(self):
         for collect in ("true", "false", ""):
             self.assertEqual(
-                FULL,
+                {**FULL, "collect_quality": str(collect == "true").lower()},
                 self.select(
                     self.base,
                     EVENT_NAME="workflow_dispatch",
