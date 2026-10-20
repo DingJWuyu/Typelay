@@ -1917,7 +1917,7 @@ class InputFeedbackTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-    def test_source_glossary_native_capability_is_only_exact_gtk3_entry(self):
+    def test_source_glossary_native_capability_requires_backend_specific_identity(self):
         async def exercise(backend, aria, capable):
             self.peer = self.connect_peer(backend)
             original = self.description
@@ -1927,7 +1927,10 @@ class InputFeedbackTests(unittest.TestCase):
                 value["metadata"]["aria"] = aria
                 value["geometry"]["space"] = self.peer.anchor_space
                 value["sourceGlossarySupported"] = capable
-                value["authority"]["contextStamp"] = {"context": 7}
+                value["authority"]["contextStamp"] = (
+                    {"context": 7, "field": 3, "input": 2} if backend == "qt6" else {"context": 7}
+                )
+                value["metadata"]["documentGeneration"] = 0
                 return value
 
             self.description = description
@@ -1943,27 +1946,35 @@ class InputFeedbackTests(unittest.TestCase):
             ("gtk3", "GtkEntry", False, False),
             ("gtk4", "GtkEntry", True, False),
             ("qt6", "GtkEntry", True, False),
+            ("qt6", "QLineEdit", True, True),
+            ("qt6", "QLineEdit", False, False),
         ):
             with self.subTest(backend=backend, aria=aria, capable=capable):
                 target = asyncio.run(exercise(backend, aria, capable))
                 self.assertEqual(target is not None, expected)
 
-    async def gtk3_glossary_scenario(self, *, revoke=False, invalidation=None):
+    async def native_glossary_scenario(
+        self, *, revoke=False, invalidation=None, backend="gtk3", state="ValidTranslation"
+    ):
         self.input.set_overlay_focus(False)
-        self.peer = self.connect_peer("gtk3")
+        self.peer = self.connect_peer(backend)
         original = InputFeedbackTests.description
 
         def description():
             value = original(self)
-            value["metadata"]["aria"] = "GtkEntry"
-            value["geometry"]["space"] = "gtk-toplevel"
+            value["metadata"]["aria"] = "QLineEdit" if backend == "qt6" else "GtkEntry"
+            value["metadata"]["documentGeneration"] = 0
+            value["geometry"]["space"] = self.peer.anchor_space
             value["sourceGlossarySupported"] = True
-            value["authority"]["contextStamp"] = {"context": 7}
+            value["authority"]["contextStamp"] = (
+                {"context": 7, "field": 3, "input": 2} if backend == "qt6" else {"context": 7}
+            )
             return value
 
         self.description = description
         overlay, jobs, token, view = await self.overlay_scenario()
         view = copy.deepcopy(view)
+        view["state"] = state
         view["text"] = "保留的人工候选"
         view["editable"] = True
         view["source"]["ime"] = "Clear"
@@ -2043,7 +2054,7 @@ class InputFeedbackTests(unittest.TestCase):
         )
         return overlay, jobs, entry, request, emit
 
-    def gtk3_glossary_transfer(self, entry, phase, ordinal=1, count=1, **changes):
+    def native_glossary_transfer(self, entry, phase, ordinal=1, count=1, **changes):
         marker = {key: entry[key] for key in ("formId", "token")}
         marker.update(phase=phase, ordinal=ordinal, count=count)
         self.peer.event(
@@ -2060,12 +2071,37 @@ class InputFeedbackTests(unittest.TestCase):
             },
         )
 
+    def test_qt6_source_glossary_opens_without_fabricating_editor_ownership(self):
+        async def exercise(state):
+            overlay, jobs, entry, request, emit = await self.native_glossary_scenario(
+                backend="qt6", state=state, revoke=True
+            )
+            self.assertIsNotNone(request)
+            window = self.input.window_epoch
+            self.native_glossary_transfer(entry, "Opening", 1, 2)
+            self.native_glossary_transfer(entry, "Opening", 2, 2)
+            emit(
+                "sessionGlossaryFocus",
+                {"formId": entry["formId"], "token": entry["token"], "ime": "Unknown"},
+            )
+            self.peer.link.receive({"id": request["id"], "data": {"opened": True}})
+            await self.settle_overlay(jobs)
+            self.assertEqual(self.input.window_epoch, window)
+            self.assertEqual(self.input.focus(), "Overlay")
+            self.assertEqual(overlay.value["state"], state)
+            self.assertFalse(overlay.value["presentation"]["editorOwnsText"])
+            self.assertNotIn("beginEdit", [operation for operation, _ in self.host.requests])
+
+        for state in ("ValidTranslation", "EditedTranslationPending"):
+            with self.subTest(state=state):
+                asyncio.run(exercise(state))
+
     def test_gtk3_source_glossary_opens_without_entering_translation_editor(self):
         async def exercise():
-            overlay, jobs, entry, request, emit = await self.gtk3_glossary_scenario()
+            overlay, jobs, entry, request, emit = await self.native_glossary_scenario()
             window = self.input.window_epoch
-            self.gtk3_glossary_transfer(entry, "Opening", 1, 2)
-            self.gtk3_glossary_transfer(entry, "Opening", 2, 2)
+            self.native_glossary_transfer(entry, "Opening", 1, 2)
+            self.native_glossary_transfer(entry, "Opening", 2, 2)
             emit(
                 "sessionGlossaryFocus",
                 {"formId": entry["formId"], "token": entry["token"], "ime": "Unknown"},
@@ -2081,9 +2117,9 @@ class InputFeedbackTests(unittest.TestCase):
 
     def test_gtk3_glossary_begin_survives_its_own_acceptance_revocation_render(self):
         async def exercise():
-            overlay, jobs, entry, request, emit = await self.gtk3_glossary_scenario(revoke=True)
+            overlay, jobs, entry, request, emit = await self.native_glossary_scenario(revoke=True)
             self.assertIsNotNone(request)
-            self.gtk3_glossary_transfer(entry, "Opening")
+            self.native_glossary_transfer(entry, "Opening")
             emit(
                 "sessionGlossaryFocus",
                 {"formId": entry["formId"], "token": entry["token"], "ime": "Unknown"},
@@ -2096,10 +2132,10 @@ class InputFeedbackTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-    def test_gtk3_glossary_pending_begin_rejects_other_changes_and_closed_attempt(self):
-        async def exercise(case):
-            overlay, jobs, entry, request, _ = await self.gtk3_glossary_scenario(
-                revoke=True, invalidation=case
+    def test_native_glossary_pending_begin_rejects_other_changes_and_closed_attempt(self):
+        async def exercise(case, backend):
+            overlay, jobs, entry, request, _ = await self.native_glossary_scenario(
+                revoke=True, invalidation=case, backend=backend
             )
             self.assertIsNone(request)
             await self.settle_overlay(jobs)
@@ -2117,13 +2153,14 @@ class InputFeedbackTests(unittest.TestCase):
             "repeat",
             "close",
         ):
-            with self.subTest(case=case):
-                asyncio.run(exercise(case))
+            for backend in ("gtk3", "qt6"):
+                with self.subTest(case=case, backend=backend):
+                    asyncio.run(exercise(case, backend))
 
     def test_gtk3_glossary_auxiliary_render_allows_only_exact_ack_withdrawal(self):
         async def exercise(case):
-            overlay, jobs, entry, request, emit = await self.gtk3_glossary_scenario(revoke=True)
-            self.gtk3_glossary_transfer(entry, "Opening")
+            overlay, jobs, entry, request, emit = await self.native_glossary_scenario(revoke=True)
+            self.native_glossary_transfer(entry, "Opening")
             emit(
                 "sessionGlossaryFocus",
                 {"formId": entry["formId"], "token": entry["token"], "ime": "Unknown"},
@@ -2179,24 +2216,26 @@ class InputFeedbackTests(unittest.TestCase):
             with self.subTest(case=case):
                 asyncio.run(exercise(case))
 
-    def test_gtk3_glossary_transfer_rejects_incomplete_replayed_and_external_sequences(self):
-        async def exercise(case):
-            overlay, jobs, entry, request, emit = await self.gtk3_glossary_scenario()
+    def test_native_glossary_transfer_rejects_incomplete_replayed_and_external_sequences(self):
+        async def exercise(case, backend):
+            overlay, jobs, entry, request, emit = await self.native_glossary_scenario(
+                backend=backend
+            )
             window = self.input.window_epoch
             if case == "missing":
-                self.gtk3_glossary_transfer(entry, "Opening", 1, 2)
+                self.native_glossary_transfer(entry, "Opening", 1, 2)
             elif case == "out-of-order":
-                self.gtk3_glossary_transfer(entry, "Opening", 2, 2)
+                self.native_glossary_transfer(entry, "Opening", 2, 2)
             elif case == "boolean":
-                self.gtk3_glossary_transfer(entry, "Opening", True, 1)
+                self.native_glossary_transfer(entry, "Opening", True, 1)
             elif case == "changed-count":
-                self.gtk3_glossary_transfer(entry, "Opening", 1, 2)
-                self.gtk3_glossary_transfer(entry, "Opening", 2, 3)
+                self.native_glossary_transfer(entry, "Opening", 1, 2)
+                self.native_glossary_transfer(entry, "Opening", 2, 3)
             elif case == "replay":
-                self.gtk3_glossary_transfer(entry, "Opening")
-                self.gtk3_glossary_transfer(entry, "Opening")
+                self.native_glossary_transfer(entry, "Opening")
+                self.native_glossary_transfer(entry, "Opening")
             elif case == "external":
-                self.gtk3_glossary_transfer(entry, "Opening", 1, 2)
+                self.native_glossary_transfer(entry, "Opening", 1, 2)
                 self.peer.event(
                     "input",
                     {
@@ -2206,13 +2245,13 @@ class InputFeedbackTests(unittest.TestCase):
                         "focused": True,
                     },
                 )
-                self.gtk3_glossary_transfer(entry, "Opening", 2, 2)
+                self.native_glossary_transfer(entry, "Opening", 2, 2)
             elif case == "input":
-                self.gtk3_glossary_transfer(entry, "Opening", inputRevision=2)
+                self.native_glossary_transfer(entry, "Opening", inputRevision=2)
             elif case == "old-form":
-                self.gtk3_glossary_transfer({**entry, "formId": str(uuid.uuid4())}, "Opening")
+                self.native_glossary_transfer({**entry, "formId": str(uuid.uuid4())}, "Opening")
             elif case == "old-token":
-                self.gtk3_glossary_transfer(
+                self.native_glossary_transfer(
                     {**entry, "token": {**entry["token"], "revision": 8}}, "Opening"
                 )
             elif case == "no-witness":
@@ -2236,14 +2275,15 @@ class InputFeedbackTests(unittest.TestCase):
             "old-token",
             "no-witness",
         ):
-            with self.subTest(case=case):
-                asyncio.run(exercise(case))
+            for backend in ("gtk3", "qt6"):
+                with self.subTest(case=case, backend=backend):
+                    asyncio.run(exercise(case, backend))
 
     def test_gtk3_auxiliary_external_focus_retires_form_without_another_source_event(self):
         async def exercise():
-            overlay, jobs, entry, request, emit = await self.gtk3_glossary_scenario()
+            overlay, jobs, entry, request, emit = await self.native_glossary_scenario()
             receipt = {key: entry[key] for key in ("formId", "token")}
-            self.gtk3_glossary_transfer(entry, "Opening")
+            self.native_glossary_transfer(entry, "Opening")
             emit("sessionGlossaryFocus", {**receipt, "ime": "Clear"})
             self.peer.link.receive({"id": request["id"], "data": {"opened": True}})
             await self.settle_overlay(jobs)
@@ -2272,11 +2312,13 @@ class InputFeedbackTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-    def test_gtk3_glossary_return_needs_fresh_original_source_clear_read_only_capture(self):
+    def native_glossary_return_capture(self, backend):
         async def exercise():
-            overlay, jobs, entry, request, emit = await self.gtk3_glossary_scenario()
+            overlay, jobs, entry, request, emit = await self.native_glossary_scenario(
+                backend=backend
+            )
             receipt = {key: entry[key] for key in ("formId", "token")}
-            self.gtk3_glossary_transfer(entry, "Opening")
+            self.native_glossary_transfer(entry, "Opening")
             emit("sessionGlossaryFocus", {**receipt, "ime": "Clear"})
             self.peer.link.receive({"id": request["id"], "data": {"opened": True}})
             await self.settle_overlay(jobs)
@@ -2345,6 +2387,29 @@ class InputFeedbackTests(unittest.TestCase):
                             sourceReady=True
                         ),
                     }
+                    if backend == "qt6":
+                        mutations.update(
+                            {
+                                "Qt unknown stamp": lambda value: value["authority"].update(
+                                    contextStamp=None
+                                ),
+                                "Qt boolean generation": lambda value: value["authority"][
+                                    "contextStamp"
+                                ].update(field=True),
+                                "Qt field generation": lambda value: value["authority"][
+                                    "contextStamp"
+                                ].update(field=4),
+                                "Qt provider input": lambda value: value["authority"][
+                                    "contextStamp"
+                                ].update(input=3),
+                                "Qt document identity": lambda value: value["metadata"].update(
+                                    documentGeneration=1
+                                ),
+                                "GTK identity on Qt": lambda value: value["metadata"].update(
+                                    aria="GtkEntry"
+                                ),
+                            }
+                        )
                     for name, mutation in mutations.items():
                         with self.subTest(refusal=name):
                             self.assertIsNone(await capture(mutation))
@@ -2380,8 +2445,8 @@ class InputFeedbackTests(unittest.TestCase):
                 if frame["op"] == "overlay-glossary-return"
             )
             window = self.input.window_epoch
-            self.gtk3_glossary_transfer(entry, "Returning", 1, 2, focused=False)
-            self.gtk3_glossary_transfer(entry, "Returning", 2, 2)
+            self.native_glossary_transfer(entry, "Returning", 1, 2, focused=False)
+            self.native_glossary_transfer(entry, "Returning", 2, 2)
             emit("sessionGlossaryFocus", None)
             emit("focus", False)
             self.assertEqual(self.input.window_epoch, window)
@@ -2398,6 +2463,12 @@ class InputFeedbackTests(unittest.TestCase):
             )
 
         asyncio.run(exercise())
+
+    def test_gtk3_glossary_return_needs_fresh_original_source_clear_read_only_capture(self):
+        self.native_glossary_return_capture("gtk3")
+
+    def test_qt6_glossary_return_needs_fresh_original_source_clear_read_only_capture(self):
+        self.native_glossary_return_capture("qt6")
 
     def test_source_glossary_return_capture_is_read_only_and_original_save_reply_survives_retirement(
         self,

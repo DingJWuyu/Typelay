@@ -606,14 +606,21 @@ def run(arguments):
     process = None
     evidence = []
     original = "Please send me the final version."
+    # Each split invocation starts its own isolated desktop and performs the
+    # same real installation/approval prerequisites. Neither imports another
+    # scope's completion. The legacy setup entry still runs both areas.
+    setup_scope = arguments.desktop_scope in ("setup", "setup-settings", "setup-tutorial")
+    settings_scope = arguments.desktop_scope in ("setup", "setup-settings")
+    tutorial_scope = arguments.desktop_scope in ("setup", "setup-tutorial")
     settings = {
         "Schema": 1,
         "Enabled": True,
         "Source": "en",
         "Target": "zh",
-        "OnboardingComplete": arguments.desktop_scope != "setup",
-        "ExperimentalWriteback": arguments.desktop_scope not in ("setup", "all", "browser"),
-        "Mode": 1 if arguments.desktop_scope == "setup" else 0,
+        "OnboardingComplete": not setup_scope,
+        "ExperimentalWriteback": not setup_scope
+        and arguments.desktop_scope not in ("all", "browser"),
+        "Mode": 1 if setup_scope else 0,
     }
 
     session_bindings = getattr(arguments, "gtk_session_bindings", False)
@@ -754,7 +761,9 @@ def run(arguments):
             pass  # Observability must not replace the original browser failure.
 
     try:
-        if arguments.desktop_scope == "setup":
+        if settings_scope:
+            # This installation regression owns a separate temporary data root;
+            # it is not the tutorial host's model preparation or Ready proof.
             evidence.append(verify_direction_installation(arguments, environment))
         send_tab = (
             prepare_tab(resources)
@@ -3902,24 +3911,25 @@ def run(arguments):
                     verified_write=verified_write,
                 )
             )
-        if arguments.desktop_scope == "setup":
-            # A separate GTK process exercises only the lesson's asynchronous
-            # control replies. Its private socket cannot touch the managed run.
-            subprocess.run(
-                [
-                    sys.executable,
-                    str(Path(__file__).with_name("practice_window.py")),
-                    json.dumps(control(paths, "practiceStatus")["presentation"]),
-                ],
-                env={**environment, "GTK3_MODULES": "", "GTK_MODULES": ""},
-                check=True,
-                timeout=25,
-            )
-            evidence.append(
-                "real GTK practice controls reject retired status replies, clear restart "
-                "progress immediately, preserve source selection, recover failed starts "
-                "and ignore replies after close; controlled socket, no model/input proof"
-            )
+        if setup_scope:
+            if tutorial_scope:
+                # A separate GTK process exercises only the lesson's asynchronous
+                # control replies. Its private socket cannot touch the managed run.
+                subprocess.run(
+                    [
+                        sys.executable,
+                        str(Path(__file__).with_name("practice_window.py")),
+                        json.dumps(control(paths, "practiceStatus")["presentation"]),
+                    ],
+                    env={**environment, "GTK3_MODULES": "", "GTK_MODULES": ""},
+                    check=True,
+                    timeout=25,
+                )
+                evidence.append(
+                    "real GTK practice controls reject retired status replies, clear restart "
+                    "progress immediately, preserve source selection, recover failed starts "
+                    "and ignore replies after close; controlled socket, no model/input proof"
+                )
             assert not status().get("setup", {}).get("tutorialVisible")
             support = wait_for(
                 lambda: status().get("setup", {}).get("applicationSupport"),
@@ -4383,244 +4393,252 @@ def run(arguments):
                 ), "connection choice is clipped before the user scrolls or focuses it"
             calibrate_settings_scroll(trial)
             assert preparation["secondaryActions"] == []
-            current_package = next(row for row in preparation["packageRows"] if row["current"])
-            repair = next(
-                action
-                for action in current_package["actions"]
-                if action["request"]["operation"] == "Repair"
-            )
-            repair_name = current_package["title"] + "：" + repair["label"]
-            repair_button = named(process.pid, repair_name)
-            assert repair_button is None or not repair_button.get_state_set().contains(
-                Atspi.StateType.SHOWING
-            ), "ready repair took over the default preparation screen"
-            for expanded in (True, False):
-                deadline = time.monotonic() + 15
-                manager = settings_control("本地翻译组件管理", timeout=deadline - time.monotonic())
-                manager.clear_cache()
-                assert manager.get_process_id() == process.pid
-                manager_states = manager.get_state_set()
-                assert manager_states.contains(Atspi.StateType.SHOWING)
-                assert not manager_states.contains(Atspi.StateType.DEFUNCT)
-                assert manager_states.contains(Atspi.StateType.EXPANDED) != expanded
-                action = manager.get_action_iface()
-                assert time.monotonic() < deadline
-                assert action is not None and Atspi.Action.do_action(action, 0)
-
-                def management_settled():
-                    # The exact production Gtk.Expander owns EXPANDED. A
-                    # clipped/cached repair button alone cannot prove collapse,
-                    # and Action completion does not prove fresh GTK allocation.
-                    assert named(process.pid, "本地翻译组件管理") == manager
-                    manager.clear_cache()
-                    states = manager.get_state_set()
-                    assert not states.contains(Atspi.StateType.DEFUNCT)
-                    if states.contains(Atspi.StateType.EXPANDED) != expanded:
-                        return False
-                    current_repair = named(process.pid, repair_name)
-                    repair_showing = (
-                        current_repair is not None
-                        and current_repair.get_state_set().contains(Atspi.StateType.SHOWING)
-                    )
-                    if repair_showing != expanded:
-                        return False
-                    if expanded:
-                        return True
-                    current_trial = named(process.pid, next_step_label)
-                    if current_trial is None:
-                        return False
-                    assert current_trial == trial
-                    if not current_trial.get_state_set().contains(Atspi.StateType.SHOWING):
-                        return False
-                    area = Atspi.Component.get_extents(
-                        current_trial.get_component_iface(), Atspi.CoordType.SCREEN
-                    )
-                    measured = settings_scroll_snapshot(
-                        settings_scroll_calibration["ancestry"][0][0]
-                    )
-                    if (
-                        measured is None
-                        or not measured["alive"]
-                        or measured["showing"] != (True, True)
-                        or measured["ancestry"] != settings_scroll_calibration["ancestry"]
-                        or area.x == -(2**31)
-                        or area.y == -(2**31)
-                        or area.width <= 0
-                        or area.height <= 0
-                    ):
-                        return False
-                    return all(
-                        x != -(2**31)
-                        and y != -(2**31)
-                        and width > 0
-                        and height > 0
-                        and x <= area.x <= x + width - area.width
-                        and y <= area.y <= y + height - area.height
-                        for x, y, width, height in (
-                            measured[key] for key in ("viewport", "pane", "frame")
-                        )
-                    )
-
-                wait_for(
-                    management_settled,
-                    "model management did not finish expanding with its repair action"
-                    if expanded
-                    else "model management did not finish collapsing with connection choice visible",
-                    timeout=deadline - time.monotonic(),
+            if settings_scope:
+                current_package = next(row for row in preparation["packageRows"] if row["current"])
+                repair = next(
+                    action
+                    for action in current_package["actions"]
+                    if action["request"]["operation"] == "Repair"
                 )
-                assert time.monotonic() < deadline
-            evidence.append(
-                "Connection choice and selected application primary action fully visible "
-                "in the real 790 x 560 GTK viewport; ready repair stays available in collapsed model management"
-            )
-            settings_page("语言")
-            source_language = settings_control("设置：源语言")
-            target_language = settings_control("设置：目标语言")
-            swap_language = settings_control("交换语言")
-            before_language = json.loads(paths.settings.read_text())
-            assert (before_language["Source"], before_language["Target"]) == ("en", "zh")
-            revision = status()["commandFeedbackRevision"]
-            activate_setting("交换语言")
-            wait_for(
-                lambda: (value := json.loads(paths.settings.read_text()))["Source"] == "zh"
-                and value["Target"] == "en"
-                and Atspi.Selection.is_child_selected(source_language.get_selection_iface(), 1)
-                and Atspi.Selection.is_child_selected(target_language.get_selection_iface(), 0)
-                and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE)
-                and status()["commandFeedbackRevision"] == revision + 1,
-                "settings language swap did not save and display one paired direction change",
-            )
-            before_swap_failure = paths.settings.read_bytes()
-            blocker = paths.settings.with_suffix(".json.tmp")
-            blocker.mkdir()
-            try:
+                repair_name = current_package["title"] + "：" + repair["label"]
+                repair_button = named(process.pid, repair_name)
+                assert repair_button is None or not repair_button.get_state_set().contains(
+                    Atspi.StateType.SHOWING
+                ), "ready repair took over the default preparation screen"
+                for expanded in (True, False):
+                    deadline = time.monotonic() + 15
+                    manager = settings_control(
+                        "本地翻译组件管理", timeout=deadline - time.monotonic()
+                    )
+                    manager.clear_cache()
+                    assert manager.get_process_id() == process.pid
+                    manager_states = manager.get_state_set()
+                    assert manager_states.contains(Atspi.StateType.SHOWING)
+                    assert not manager_states.contains(Atspi.StateType.DEFUNCT)
+                    assert manager_states.contains(Atspi.StateType.EXPANDED) != expanded
+                    action = manager.get_action_iface()
+                    assert time.monotonic() < deadline
+                    assert action is not None and Atspi.Action.do_action(action, 0)
+
+                    def management_settled():
+                        # The exact production Gtk.Expander owns EXPANDED. A
+                        # clipped/cached repair button alone cannot prove collapse,
+                        # and Action completion does not prove fresh GTK allocation.
+                        assert named(process.pid, "本地翻译组件管理") == manager
+                        manager.clear_cache()
+                        states = manager.get_state_set()
+                        assert not states.contains(Atspi.StateType.DEFUNCT)
+                        if states.contains(Atspi.StateType.EXPANDED) != expanded:
+                            return False
+                        current_repair = named(process.pid, repair_name)
+                        repair_showing = (
+                            current_repair is not None
+                            and current_repair.get_state_set().contains(Atspi.StateType.SHOWING)
+                        )
+                        if repair_showing != expanded:
+                            return False
+                        if expanded:
+                            return True
+                        current_trial = named(process.pid, next_step_label)
+                        if current_trial is None:
+                            return False
+                        assert current_trial == trial
+                        if not current_trial.get_state_set().contains(Atspi.StateType.SHOWING):
+                            return False
+                        area = Atspi.Component.get_extents(
+                            current_trial.get_component_iface(), Atspi.CoordType.SCREEN
+                        )
+                        measured = settings_scroll_snapshot(
+                            settings_scroll_calibration["ancestry"][0][0]
+                        )
+                        if (
+                            measured is None
+                            or not measured["alive"]
+                            or measured["showing"] != (True, True)
+                            or measured["ancestry"] != settings_scroll_calibration["ancestry"]
+                            or area.x == -(2**31)
+                            or area.y == -(2**31)
+                            or area.width <= 0
+                            or area.height <= 0
+                        ):
+                            return False
+                        return all(
+                            x != -(2**31)
+                            and y != -(2**31)
+                            and width > 0
+                            and height > 0
+                            and x <= area.x <= x + width - area.width
+                            and y <= area.y <= y + height - area.height
+                            for x, y, width, height in (
+                                measured[key] for key in ("viewport", "pane", "frame")
+                            )
+                        )
+
+                    wait_for(
+                        management_settled,
+                        "model management did not finish expanding with its repair action"
+                        if expanded
+                        else "model management did not finish collapsing with connection choice visible",
+                        timeout=deadline - time.monotonic(),
+                    )
+                    assert time.monotonic() < deadline
+                evidence.append(
+                    "Connection choice and selected application primary action fully visible "
+                    "in the real 790 x 560 GTK viewport; ready repair stays available in collapsed model management"
+                )
+                settings_page("语言")
+                source_language = settings_control("设置：源语言")
+                target_language = settings_control("设置：目标语言")
+                swap_language = settings_control("交换语言")
+                before_language = json.loads(paths.settings.read_text())
+                assert (before_language["Source"], before_language["Target"]) == ("en", "zh")
+                revision = status()["commandFeedbackRevision"]
                 activate_setting("交换语言")
                 wait_for(
-                    lambda: "未保存" in text(settings_control("设置反馈"))
-                    and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE)
+                    lambda: (value := json.loads(paths.settings.read_text()))["Source"] == "zh"
+                    and value["Target"] == "en"
                     and Atspi.Selection.is_child_selected(source_language.get_selection_iface(), 1)
-                    and Atspi.Selection.is_child_selected(target_language.get_selection_iface(), 0),
-                    "failed language swap did not retain the actual saved direction",
+                    and Atspi.Selection.is_child_selected(target_language.get_selection_iface(), 0)
+                    and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE)
+                    and status()["commandFeedbackRevision"] == revision + 1,
+                    "settings language swap did not save and display one paired direction change",
                 )
-                assert paths.settings.read_bytes() == before_swap_failure
-                assert status()["commandFeedbackRevision"] == revision + 1
-            finally:
-                blocker.rmdir()
-            activate_setting("交换语言")
-            wait_for(
-                lambda: (value := json.loads(paths.settings.read_text()))["Source"] == "en"
-                and value["Target"] == "zh"
-                and Atspi.Selection.is_child_selected(source_language.get_selection_iface(), 2)
-                and Atspi.Selection.is_child_selected(target_language.get_selection_iface(), 1)
-                and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE),
-                "language swap could not recover after the save blocker was removed",
-            )
-            assert Atspi.Selection.select_child(source_language.get_selection_iface(), 0)
-            wait_for(
-                lambda: json.loads(paths.settings.read_text())["Source"] == "auto"
-                and not swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE),
-                "Auto source did not disable language swap",
-            )
-            assert json.loads(paths.settings.read_text())["Target"] == "zh"
-            assert Atspi.Selection.select_child(source_language.get_selection_iface(), 2)
-            wait_for(
-                lambda: json.loads(paths.settings.read_text())["Source"] == "en"
-                and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE),
-                "fixed source did not restore language swap",
-            )
-
-            def visible_language_choice(label):
-                desktop = Atspi.get_desktop(0)
-                pending = [
-                    app
-                    for index in range(desktop.get_child_count())
-                    if (app := desktop.get_child_at_index(index)) is not None
-                    and app.get_process_id() == process.pid
-                ]
-                for _ in range(256):
-                    if not pending:
-                        return None
-                    node = pending.pop()
-                    if node is None:
-                        continue
-                    node.clear_cache()
-                    if node.get_name() == label and node.get_state_set().contains(
-                        Atspi.StateType.SHOWING
-                    ):
-                        return node
-                    pending.extend(
-                        node.get_child_at_index(index) for index in range(node.get_child_count())
+                before_swap_failure = paths.settings.read_bytes()
+                blocker = paths.settings.with_suffix(".json.tmp")
+                blocker.mkdir()
+                try:
+                    activate_setting("交换语言")
+                    wait_for(
+                        lambda: "未保存" in text(settings_control("设置反馈"))
+                        and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE)
+                        and Atspi.Selection.is_child_selected(
+                            source_language.get_selection_iface(), 1
+                        )
+                        and Atspi.Selection.is_child_selected(
+                            target_language.get_selection_iface(), 0
+                        ),
+                        "failed language swap did not retain the actual saved direction",
                     )
-                raise AssertionError("language completion exceeds its accessibility tree")
+                    assert paths.settings.read_bytes() == before_swap_failure
+                    assert status()["commandFeedbackRevision"] == revision + 1
+                finally:
+                    blocker.rmdir()
+                activate_setting("交换语言")
+                wait_for(
+                    lambda: (value := json.loads(paths.settings.read_text()))["Source"] == "en"
+                    and value["Target"] == "zh"
+                    and Atspi.Selection.is_child_selected(source_language.get_selection_iface(), 2)
+                    and Atspi.Selection.is_child_selected(target_language.get_selection_iface(), 1)
+                    and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE),
+                    "language swap could not recover after the save blocker was removed",
+                )
+                assert Atspi.Selection.select_child(source_language.get_selection_iface(), 0)
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text())["Source"] == "auto"
+                    and not swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE),
+                    "Auto source did not disable language swap",
+                )
+                assert json.loads(paths.settings.read_text())["Target"] == "zh"
+                assert Atspi.Selection.select_child(source_language.get_selection_iface(), 2)
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text())["Source"] == "en"
+                    and swap_language.get_state_set().contains(Atspi.StateType.SENSITIVE),
+                    "fixed source did not restore language swap",
+                )
 
-            for name, field, prefix, label, code in (
-                ("源语言", "Source", "4e2d", "中文", "zh"),
-                ("目标语言", "Target", "82f1", "英语", "en"),
-            ):
-                picker = settings_control("设置：" + name)
-                pending = [picker]
-                for _ in range(16):
-                    assert pending, "language picker has no editable search field"
-                    editor = pending.pop()
-                    if editor is None:
-                        continue
-                    if editor.get_editable_text_iface() is not None:
-                        break
-                    pending.extend(
-                        editor.get_child_at_index(index)
-                        for index in range(editor.get_child_count())
+                def visible_language_choice(label):
+                    desktop = Atspi.get_desktop(0)
+                    pending = [
+                        app
+                        for index in range(desktop.get_child_count())
+                        if (app := desktop.get_child_at_index(index)) is not None
+                        and app.get_process_id() == process.pid
+                    ]
+                    for _ in range(256):
+                        if not pending:
+                            return None
+                        node = pending.pop()
+                        if node is None:
+                            continue
+                        node.clear_cache()
+                        if node.get_name() == label and node.get_state_set().contains(
+                            Atspi.StateType.SHOWING
+                        ):
+                            return node
+                        pending.extend(
+                            node.get_child_at_index(index)
+                            for index in range(node.get_child_count())
+                        )
+                    raise AssertionError("language completion exceeds its accessibility tree")
+
+                for name, field, prefix, label, code in (
+                    ("源语言", "Source", "4e2d", "中文", "zh"),
+                    ("目标语言", "Target", "82f1", "英语", "en"),
+                ):
+                    picker = settings_control("设置：" + name)
+                    pending = [picker]
+                    for _ in range(16):
+                        assert pending, "language picker has no editable search field"
+                        editor = pending.pop()
+                        if editor is None:
+                            continue
+                        if editor.get_editable_text_iface() is not None:
+                            break
+                        pending.extend(
+                            editor.get_child_at_index(index)
+                            for index in range(editor.get_child_count())
+                        )
+                    else:
+                        raise AssertionError("language picker exceeds its accessibility tree")
+                    assert Atspi.Component.grab_focus(editor.get_component_iface())
+                    wait_for(lambda: focused(editor), "language search did not receive focus")
+                    before_search = paths.settings.read_bytes()
+                    search_deadline = time.monotonic() + 15
+                    key("ctrl+a")
+                    # Use GTK's native Unicode composition with ordinary keycodes.
+                    # An xdotool Uxxxx keysym remaps only the outer X server; the
+                    # nested Wayland client's keymap need not receive that change.
+                    key("ctrl+shift+u")
+                    typed(prefix)
+                    key("space")
+                    wait_for(
+                        lambda: text(editor) == label[0] and focused(editor),
+                        "GTK Unicode composition did not commit the language search prefix",
+                        timeout=search_deadline - time.monotonic(),
                     )
-                else:
-                    raise AssertionError("language picker exceeds its accessibility tree")
-                assert Atspi.Component.grab_focus(editor.get_component_iface())
-                wait_for(lambda: focused(editor), "language search did not receive focus")
-                before_search = paths.settings.read_bytes()
-                search_deadline = time.monotonic() + 15
-                key("ctrl+a")
-                # Use GTK's native Unicode composition with ordinary keycodes.
-                # An xdotool Uxxxx keysym remaps only the outer X server; the
-                # nested Wayland client's keymap need not receive that change.
-                key("ctrl+shift+u")
-                typed(prefix)
-                key("space")
+                    wait_for(
+                        lambda: text(editor) == label[0] and visible_language_choice(label),
+                        "typing a language prefix did not expose its native completion",
+                        timeout=search_deadline - time.monotonic(),
+                    )
+                    assert paths.settings.read_bytes() == before_search, (
+                        "language search saved before choosing a match"
+                    )
+                    key("Down")
+                    key("Return")
+                    wait_for(
+                        lambda: json.loads(paths.settings.read_text())[field] == code
+                        and text(editor) == label
+                        and focused(editor),
+                        "keyboard completion did not save its language and retain focus",
+                    )
+                    key("Tab")
+                    wait_for(lambda: not focused(editor), "Tab did not leave the language editor")
+                activate_setting("交换语言")
                 wait_for(
-                    lambda: text(editor) == label[0] and focused(editor),
-                    "GTK Unicode composition did not commit the language search prefix",
-                    timeout=search_deadline - time.monotonic(),
+                    lambda: (value := json.loads(paths.settings.read_text()))["Source"] == "en"
+                    and value["Target"] == "zh",
+                    "search choices did not remain compatible with language swap",
                 )
-                wait_for(
-                    lambda: text(editor) == label[0] and visible_language_choice(label),
-                    "typing a language prefix did not expose its native completion",
-                    timeout=search_deadline - time.monotonic(),
+                subprocess.run(
+                    ["grim", str(arguments.output / "settings-language.png")], check=True, timeout=3
                 )
-                assert paths.settings.read_bytes() == before_search, (
-                    "language search saved before choosing a match"
+                evidence.append(
+                    "Real GTK settings language swap saves one paired direction change; "
+                    "failed persistence retains both saved choices and retries after recovery; "
+                    "Auto disables swap and returning to a fixed source enables it; "
+                    "native language search saves only the keyboard-selected match and preserves Tab navigation"
                 )
-                key("Down")
-                key("Return")
-                wait_for(
-                    lambda: json.loads(paths.settings.read_text())[field] == code
-                    and text(editor) == label
-                    and focused(editor),
-                    "keyboard completion did not save its language and retain focus",
-                )
-                key("Tab")
-                wait_for(lambda: not focused(editor), "Tab did not leave the language editor")
-            activate_setting("交换语言")
-            wait_for(
-                lambda: (value := json.loads(paths.settings.read_text()))["Source"] == "en"
-                and value["Target"] == "zh",
-                "search choices did not remain compatible with language swap",
-            )
-            subprocess.run(
-                ["grim", str(arguments.output / "settings-language.png")], check=True, timeout=3
-            )
-            evidence.append(
-                "Real GTK settings language swap saves one paired direction change; "
-                "failed persistence retains both saved choices and retries after recovery; "
-                "Auto disables swap and returning to a fixed source enables it; "
-                "native language search saves only the keyboard-selected match and preserves Tab navigation"
-            )
             settings_page("应用支持")
             activate_setting(desktop_support["primaryAction"]["label"])
             bundled_component = (package / "support/desktop/component.json").is_file()
@@ -4664,8 +4682,8 @@ def run(arguments):
                     "approval safely unpacks the shipped archive without claiming a connection"
                 )
 
-                # Exercise the newly prepared application's main path before
-                # unrelated legacy settings and tutorial regressions.
+                # Both scopes use the same real managed-component ownership,
+                # explicit recovery acknowledgement and cleanup helpers.
                 from desktop_session import process_identity, receipts
 
                 def desktop_row():
@@ -4801,1546 +4819,23 @@ def run(arguments):
                     "prepared component did not offer the explicit practice connection",
                 )
 
-                # Complete automatic/editing evidence before unrelated selector,
-                # advanced-setting and scrolling regressions. This window uses
-                # the same shipped preparation/connection actions and native path.
-                def practice_has_keyboard_focus():
-                    return any(
-                        window["id"] == managed_window["id"]
-                        and window.get("pid") == managed_window["pid"]
-                        and window.get("is_focused") is True
-                        for window in contents(request("Windows"), "Windows")
-                    )
-
-                desktop_action("Connect", cancel=True)
-                assert not any(
-                    window.get("title") == "TypeLay 实操练习"
-                    for window in contents(request("Windows"), "Windows")
-                )
-                desktop_action("Connect")
-                managed_window = wait_for(
-                    lambda: next(
-                        (
-                            window
-                            for window in contents(request("Windows"), "Windows")
-                            if window.get("title") == "TypeLay 实操练习"
-                        ),
-                        None,
-                    ),
-                    "prepared component did not open the complete lesson",
-                    timeout=60,
-                )
-                try:
-                    source = wait_for(
-                        lambda: named(managed_window["pid"], "练习输入框"),
-                        "complete lesson source missing",
-                    )
-                    # Cold preparation has the same documented token-expiry
-                    # fallback as the existing managed-practice scenario.
-                    request({"Action": {"FocusWindow": {"id": managed_window["id"]}}})
-                    request({"Action": {"FullscreenWindow": {"id": managed_window["id"]}}})
-                    wait_for(
-                        lambda: practice_has_keyboard_focus()
-                        and focused(source)
-                        and status().get("sourceSupported"),
-                        "complete lesson source not connected",
-                    )
-
-                    def start_automatic_lesson():
-                        wait_for(
-                            practice_has_keyboard_focus,
-                            "automatic lesson did not naturally return to its practice window",
-                            timeout=confirmation_deadline - time.monotonic(),
-                        )
-                        start = wait_for(
-                            lambda: named(managed_window["pid"], automatic_view["startLabel"]),
-                            "automatic lesson start action missing",
-                            timeout=confirmation_deadline - time.monotonic(),
-                        )
-                        wait_for(
-                            lambda: practice_has_keyboard_focus()
-                            and (focused(source) or focused(start)),
-                            "automatic lesson did not naturally return to its source or start action",
-                            timeout=confirmation_deadline - time.monotonic(),
-                        )
-                        if not focused(start):
-                            key("Tab")
-                        wait_for(
-                            lambda: practice_has_keyboard_focus()
-                            and focused(start)
-                            and start.get_state_set().contains(Atspi.StateType.SHOWING),
-                            "automatic start action lacks actual practice keyboard focus",
-                            timeout=confirmation_deadline - time.monotonic(),
-                        )
-                        key("space")
-
-                    automatic_view = control(paths, "practiceStatus", {"lesson": "automatic"})[
-                        "presentation"
-                    ]
-                    typed(original)
-                    wait_for(lambda: text(source) == original, "practice lost keyboard input")
-                    assert (
-                        control(paths, "startAutomaticPractice", {"confirmedSwitch": True}) is False
-                    )
-                    assert (
-                        control(
-                            paths,
-                            "startAutomaticPractice",
-                            {"confirmedSwitch": True, "target": {"value": "caller-chosen"}},
-                        )
-                        is False
-                    ), "ordinary control caller supplied its own practice target"
-                    assert json.loads(paths.settings.read_text())["Mode"] == 1
-                    confirmation_deadline = time.monotonic() + 15
-                    start_automatic_lesson()
-                    cancel = wait_for(
-                        lambda: named(managed_window["pid"], automatic_view["cancelLabel"]),
-                        "automatic lesson cancel action missing",
-                        timeout=confirmation_deadline - time.monotonic(),
-                    )
-                    wait_for(
-                        lambda: focused(cancel)
-                        and cancel.get_state_set().contains(Atspi.StateType.SHOWING)
-                        and any(
-                            window.get("pid") == managed_window["pid"]
-                            and window["id"] != managed_window["id"]
-                            and window.get("is_focused") is True
-                            for window in contents(request("Windows"), "Windows")
-                        ),
-                        "automatic cancel action lacks actual dialog keyboard focus",
-                        timeout=confirmation_deadline - time.monotonic(),
-                    )
-                    key("space")
-                    assert json.loads(paths.settings.read_text())["Mode"] == 1
-                    start_automatic_lesson()
-                    cancel = wait_for(
-                        lambda: named(managed_window["pid"], automatic_view["cancelLabel"]),
-                        "automatic lesson confirmation missing",
-                        timeout=confirmation_deadline - time.monotonic(),
-                    )
-                    actions = cancel.get_parent()
-                    confirm = next(
-                        actions.get_child_at_index(index)
-                        for index in range(actions.get_child_count())
-                        if actions.get_child_at_index(index).get_name()
-                        == automatic_view["startLabel"]
-                    )
-                    wait_for(
-                        lambda: (focused(confirm) or focused(cancel))
-                        and any(
-                            window.get("pid") == managed_window["pid"]
-                            and window["id"] != managed_window["id"]
-                            and window.get("is_focused") is True
-                            for window in contents(request("Windows"), "Windows")
-                        ),
-                        "automatic confirmation did not focus either action",
-                        timeout=confirmation_deadline - time.monotonic(),
-                    )
-                    if not focused(confirm):
-                        key("Tab")
-                    wait_for(
-                        lambda: focused(confirm)
-                        and confirm.get_state_set().contains(Atspi.StateType.SHOWING)
-                        and any(
-                            window.get("pid") == managed_window["pid"]
-                            and window["id"] != managed_window["id"]
-                            and window.get("is_focused") is True
-                            for window in contents(request("Windows"), "Windows")
-                        ),
-                        "automatic confirmation lacks actual dialog keyboard focus",
-                        timeout=confirmation_deadline - time.monotonic(),
-                    )
-                    # As with Connect above, activate only this observed button
-                    # through niri's real seat input, not an AT-SPI clicked signal.
-                    key("space")
-                    wait_for(
-                        lambda: json.loads(paths.settings.read_text())["Mode"] == 0
-                        and focused(source),
-                        "confirmed automatic lesson did not switch mode and return to source",
-                        timeout=confirmation_deadline - time.monotonic(),
-                    )
-                    assert json.loads(paths.settings.read_text())["ExperimentalWriteback"] is False
-                    key("ctrl+a")
-                    typed(original)
-                    wait_for(
-                        ready_to_accept, "owned automatic lesson did not acquire a real candidate"
-                    )
-                    checkpoint = trace_checkpoint()
-                    key("Tab")
-                    wait_for(
-                        lambda: translated(text(source)) and verified_write(checkpoint),
-                        "owned lesson first Tab was not verified",
-                    )
-                    wait_for(
-                        lambda: named(
-                            managed_window["pid"],
-                            "已验证第一次接受。请在原输入框输入新的原文，等待译文后进入编辑。",
-                        ),
-                        "first verified acceptance did not advance the lesson",
-                    )
-                    assert json.loads(paths.settings.read_text())["OnboardingComplete"] is False
-                    editing_source = "Please review this note."
-                    key("ctrl+a")
-                    typed(editing_source)
-                    wait_for(
-                        lambda: text(source) == editing_source and ready_to_accept(),
-                        "new source did not generate the lesson's fresh editing candidate",
-                    )
-                    candidate = wait_for(
-                        lambda: named(managed_window["pid"], "TypeLay 译文候选"),
-                        "managed editing candidate was not accessible",
-                    )
-                    current_window = next(
-                        window
-                        for window in contents(request("Windows"), "Windows")
-                        if window["id"] == managed_window["id"]
-                    )
-                    area, _frame = bounds(
-                        candidate, managed_window["pid"], current_window["layout"]["window_size"]
-                    )
-                    x, y, width, height = area
-                    subprocess.run(
-                        [
-                            "xdotool",
-                            "mousemove",
-                            "--window",
-                            nested[0],
-                            str(x + width // 2),
-                            str(y + height // 2),
-                            "click",
-                            "1",
-                        ],
-                        check=True,
-                        timeout=3,
-                    )
-                    wait_for(
-                        lambda: focused(candidate) and view("EditingTranslation"),
-                        "real managed candidate click did not enter editing",
-                    )
-                    draft = "Edited practice translation."
-                    key("ctrl+a")
-                    typed(draft)
-                    wait_for(lambda: text(candidate) == draft, "managed editor lost the real draft")
-                    assert text(source) == editing_source
-                    checkpoint = trace_checkpoint()
-                    key("Tab")
-                    wait_for(
-                        lambda: focused(source) and ready_to_accept("EditedTranslationPending"),
-                        "edited practice did not return and acquire a fresh source observation",
-                    )
-                    assert text(source) == editing_source and not new_write_outcomes(checkpoint)
-                    checkpoint = trace_checkpoint()
-                    key("Tab")
-                    wait_for(
-                        lambda: text(source) == draft and verified_write(checkpoint),
-                        "second edited Tab did not verify the actual draft",
-                    )
-                    wait_for(
-                        lambda: named(
-                            managed_window["pid"], "完整练习已完成：已验证自动接受和编辑后接受。"
-                        ),
-                        "real automatic/editing receipts did not complete this lesson",
-                    )
-                    complete = named(managed_window["pid"], "完成并关闭")
-                    assert complete and complete.get_state_set().contains(Atspi.StateType.SENSITIVE)
-                    assert json.loads(paths.settings.read_text())["ExperimentalWriteback"] is False
-                    assert json.loads(paths.settings.read_text())["OnboardingComplete"] is False
-                    subprocess.run(
-                        ["grim", str(arguments.output / "managed-automatic-practice.png")],
-                        check=True,
-                        timeout=3,
-                    )
-                    before_finish_settings = paths.settings.read_bytes()
-                    assert practice_has_keyboard_focus() and focused(source)
-                    key("alt+d")
-                    wait_for(
-                        lambda: not any(
+                if tutorial_scope:
+                    # The tutorial scope owns automatic/editing completion; the
+                    # settings scope reaches its independent controls without it.
+                    # Both use the shipped preparation/connection actions.
+                    def practice_has_keyboard_focus():
+                        return any(
                             window["id"] == managed_window["id"]
+                            and window.get("pid") == managed_window["pid"]
+                            and window.get("is_focused") is True
                             for window in contents(request("Windows"), "Windows")
                         )
-                        and json.loads(paths.settings.read_text())["OnboardingComplete"] is True,
-                        "completed automatic lesson did not save and naturally close",
-                    )
-                    wait_for(
-                        lambda: not any(
-                            item["kind"] == "application"
-                            and (item.get("child") or {}).get("pid") == managed_window["pid"]
-                            for item in receipts(paths.data)
-                        ),
-                        "completed automatic lesson retained its owned process receipt",
-                    )
-                    completed_settings = paths.settings.read_bytes()
-                    assert json.loads(completed_settings) == {
-                        **json.loads(before_finish_settings),
-                        "OnboardingComplete": True,
-                    }, "Finish changed settings other than the onboarding preference"
-                    evidence.append(
-                        "Owned GTK3 complete lesson: explicit Automatic confirmation, real CPU preview, "
-                        "Verified Tab, new source, actual edited draft, return without write, fresh capture "
-                        "and second Verified Tab; real Finish saves and naturally closes; "
-                        "global ExperimentalWriteback remains false"
-                    )
-                except BaseException:
-                    try:
-                        (arguments.output / "managed-automatic-failure.json").write_text(
-                            json.dumps(
-                                {
-                                    "mode": json.loads(paths.settings.read_text())["Mode"],
-                                    "windows": contents(request("Windows"), "Windows"),
-                                    "status": status(),
-                                },
-                                indent=2,
-                            )
-                        )
-                        subprocess.run(
-                            ["grim", str(arguments.output / "managed-automatic-failure.png")],
-                            check=False,
-                            timeout=3,
-                        )
-                    except (OSError, EOFError, ValueError, subprocess.SubprocessError):
-                        pass  # Keep the original failure before normal window cleanup.
-                    raise
-                finally:
-                    close_managed_window()
-                wait_for(
-                    lambda: not any(
-                        window["id"] == managed_window["id"]
-                        for window in contents(request("Windows"), "Windows")
-                    ),
-                    "complete lesson did not close its native source",
-                )
-                stopped = cleanup_managed_session()
-                assert stopped and stopped["ok"], "complete lesson retained its owned session"
-                managed_window = None
-                stop()
-                start(write_settings=False)
-                assert paths.settings.read_bytes() == completed_settings
-                assert status()["setup"]["onboardingComplete"] is True
-                assert not status()["setup"]["tutorialVisible"]
-                unopened_settings = named(process.pid, "TypeLay 设置")
-                assert unopened_settings is None or not unopened_settings.get_state_set().contains(
-                    Atspi.StateType.SHOWING
-                ), "completed automatic lesson reopened first-run settings after restart"
-                evidence.append("Automatic lesson Finish preference survives a real client restart")
 
-                # Restore only this isolated fixture's pre-Finish settings. Later
-                # first-run regressions keep their original, incomplete preference.
-                stop()
-                paths.settings.write_bytes(before_finish_settings)
-                start(write_settings=False)
-                assert paths.settings.read_bytes() == before_finish_settings
-                assert status()["setup"]["onboardingComplete"] is False
-                assert json.loads(paths.settings.read_text())["ExperimentalWriteback"] is False
-                assert user_profile.read_bytes() == before_profile
-                assert control(paths, "settings") is True
-                settings_window = wait_for(
-                    lambda: next(
-                        (
-                            item
-                            for item in contents(request("Windows"), "Windows")
-                            if item.get("pid") == process.pid
-                            and item.get("title") == "TypeLay 设置"
-                        ),
-                        None,
-                    ),
-                    "restored fixture settings window did not map",
-                )
-                if not settings_window["is_floating"]:
-                    request({"Action": {"ToggleWindowFloating": {"id": settings_window["id"]}}})
-                for action, pixels in (("SetWindowWidth", 790), ("SetWindowHeight", 560)):
-                    request(
-                        {
-                            "Action": {
-                                action: {
-                                    "id": settings_window["id"],
-                                    "change": {"SetFixed": pixels},
-                                }
-                            }
-                        }
-                    )
-                wait_for(
-                    lambda: any(
-                        item["id"] == settings_window["id"]
-                        and item["is_floating"]
-                        and item["layout"]["window_size"] == [790, 560]
-                        for item in contents(request("Windows"), "Windows")
-                    ),
-                    "restored fixture settings did not retain the small-window test size",
-                )
-                request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
-                settings_page("应用支持")
-                # Every proxy and scroll observation below belongs to this new
-                # process/window, never the closed pre-Finish settings instance.
-                selection, rows = wait_for(
-                    lambda: settings_navigation(process.pid), "restored settings sidebar missing"
-                )
-                trial = settings_control(next_step_label)
-                calibrate_settings_scroll(trial)
-                # Restart does not retain the user's per-client recovery confirmation.
-                activate_scrolled_setting("我已记下原输入法的启动方式，并知道如何恢复")
-                wait_for(
-                    lambda: any(a["id"] == "Connect" for a in desktop_row()["actions"]),
-                    "restored client still requires input-method recovery confirmation",
-                )
-
-                # One owned, ordinary GTK ELF registered in this isolated HOME.
-                # Exercise the real selector and guardian, never a desktop-file
-                # path/argv command or an app-name-based capability exception.
-                application_id = "org.typelay.RegisteredFixture.desktop"
-                registration = Path(os.environ["XDG_DATA_HOME"]) / "applications" / application_id
-                registration.parent.mkdir(parents=True, exist_ok=True)
-                executable = str((arguments.native / "gtk-fixture").resolve())
-                assert not any(character in executable for character in ('"', "\\", "$", "`", "%"))
-                registration.write_text(
-                    "[Desktop Entry]\nType=Application\nName=TypeLay Registered Fixture\n"
-                    f'Exec="{executable}" %U\n'
-                )
-                resources.callback(registration.unlink, missing_ok=True)
-
-                def application_view():
-                    return status()["setup"]["applicationSupport"]["installedApplication"]
-
-                def select_registered_fixture():
-                    search = settings_control("搜索已安装的本机应用")
-                    assert Atspi.EditableText.set_text_contents(
-                        search.get_editable_text_iface(), "TypeLay Registered Fixture"
-                    )
-                    chosen = settings_control("TypeLay Registered Fixture")
-                    for _ in range(4):
-                        if chosen.get_role() == Atspi.Role.LIST_ITEM:
-                            break
-                        chosen = chosen.get_parent()
-                    assert chosen.get_role() == Atspi.Role.LIST_ITEM
-                    listing = chosen.get_parent().get_selection_iface()
-                    assert listing is not None
-                    assert Atspi.Selection.select_child(listing, chosen.get_index_in_parent())
-
-                before_exclusions = json.loads(paths.settings.read_text()).get(
-                    "ExcludedApplications"
-                )
-                before_exclusion_save = paths.settings.read_bytes()
-                activate_scrolled_setting("添加排除应用")
-                settings_control("搜索已安装的本机应用")
-                activate_setting("取消")
-                assert not status()["setup"]["settingsDraft"]
-                assert paths.settings.read_bytes() == before_exclusion_save
-                activate_scrolled_setting("添加排除应用")
-                select_registered_fixture()
-                activate_setting("选择")
-                wait_for(
-                    lambda: status()["setup"]["settingsDraft"]
-                    and named(process.pid, "移除排除项：gtk-fixture"),
-                    "registered application was not added to the unsaved exclusion list",
-                )
-                assert paths.settings.read_bytes() == before_exclusion_save
-                blocker = paths.settings.with_suffix(".json.tmp")
-                blocker.mkdir()
-                try:
-                    activate_setting("保存修改")
-                    wait_for(
-                        lambda: "未保存" in text(settings_control("设置反馈")),
-                        "failed exclusion save did not report failure",
-                    )
-                    assert status()["setup"]["settingsDraft"]
-                    assert named(process.pid, "移除排除项：gtk-fixture")
-                    assert paths.settings.read_bytes() == before_exclusion_save
-                finally:
-                    blocker.rmdir()
-                activate_setting("保存修改")
-                wait_for(
-                    lambda: json.loads(paths.settings.read_text()).get("ExcludedApplications")
-                    == [*(before_exclusions or []), "gtk-fixture"]
-                    and not status()["setup"]["settingsDraft"],
-                    "exclusion list did not save after persistence recovered",
-                )
-                before_excluded_captures = status()["input"]["captureCounts"].get("supported", 0)
-                before_selection = receipts(paths.data)
-                activate_scrolled_setting("选择应用…")
-                settings_control("搜索已安装的本机应用")
-                activate_setting("取消")
-                assert application_view()["id"] is None
-                assert receipts(paths.data) == before_selection, "cancelled chooser launched an app"
-                activate_scrolled_setting("选择应用…")
-                select_registered_fixture()
-                subprocess.run(
-                    ["grim", str(arguments.output / "installed-application-choice.png")],
-                    check=True,
-                    timeout=3,
-                )
-                activate_setting("选择")
-                wait_for(
-                    lambda: application_view()["id"] == application_id
-                    and application_view()["canOpen"],
-                    "selected application did not become available",
-                )
-                assert desktop_row()["state"] != "Connected", "selection alone claimed connection"
-                activate_scrolled_setting("通过 TypeLay 打开")
-                activate_setting(support["labels"]["cancel"])
-                assert receipts(paths.data) == before_selection, (
-                    "cancelled launch created a process"
-                )
-                activate_scrolled_setting("通过 TypeLay 打开")
-                activate_setting(support["labels"]["confirm"])
-
-                def registered_application_window():
-                    launched = [
-                        item
-                        for item in receipts(paths.data)
-                        if item["kind"] == "application"
-                        and item["state"] == "running"
-                        and all(item["name"] != previous["name"] for previous in before_selection)
-                    ]
-                    assert len(launched) <= 1, "multiple applications launched from one selection"
-                    if not launched:
-                        return None
-                    child = launched[0]["child"]
-                    if process_identity(child["pid"]) != child or Path(
-                        f"/proc/{child['pid']}/exe"
-                    ).resolve() != Path(executable):
-                        return None
-                    windows = [
-                        window
-                        for window in contents(request("Windows"), "Windows")
-                        if window.get("pid") == child["pid"]
-                    ]
-                    assert len(windows) <= 1, "registered fixture opened multiple windows"
-                    return windows[0] if windows else None
-
-                managed_window = wait_for(
-                    registered_application_window,
-                    "registered fixture did not open through TypeLay",
-                    timeout=60,
-                )
-                try:
-                    request({"Action": {"FocusWindow": {"id": managed_window["id"]}}})
-                    wait_for(
-                        lambda: desktop_row()["state"] == "Connected"
-                        and application_view()["id"] == application_id
-                        and application_view()["result"] == "",
-                        "owned registered fixture did not connect",
-                    )
-                    assert any(
-                        item["kind"] == "application"
-                        and item.get("child", {}).get("pid") == managed_window["pid"]
-                        for item in receipts(paths.data)
-                    )
-                    wait_for(
-                        lambda: status()["input"]["captureStatus"] == "excluded-or-sensitive",
-                        "saved application exclusion did not refuse the real fixture before capture",
-                    )
-                    assert (
-                        status()["input"]["captureCounts"].get("supported", 0)
-                        == before_excluded_captures
-                    )
-                    assert not status()["overlayVisible"] and not status()["acceptanceReady"]
-                    assert control(paths, "settings") is True
-                    settings_focus_deadline = time.monotonic() + 15
-                    assert any(
-                        window.get("id") == settings_window["id"]
-                        and window.get("pid") == process.pid
-                        and window.get("title") == "TypeLay 设置"
-                        for window in contents(request("Windows"), "Windows")
-                    ), "registered application flow lost its original settings window"
-                    # Returning to edit exclusions is an explicit window switch;
-                    # the tokenless settings IPC does not promise activation.
-                    request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
-                    wait_for(
-                        lambda: any(
-                            window.get("id") == settings_window["id"]
-                            and window.get("pid") == process.pid
-                            and window.get("title") == "TypeLay 设置"
-                            and window.get("is_focused")
-                            for window in contents(request("Windows"), "Windows")
-                        ),
-                        "settings did not become visible for connected-application evidence",
-                        timeout=settings_focus_deadline - time.monotonic(),
-                    )
-                    subprocess.run(
-                        ["grim", str(arguments.output / "installed-application-connected.png")],
-                        check=True,
-                        timeout=3,
-                    )
-                    activate_scrolled_setting("移除排除项：gtk-fixture")
-                    assert (
-                        "gtk-fixture"
-                        in json.loads(paths.settings.read_text())["ExcludedApplications"]
-                    )
-                    assert status()["setup"]["settingsDraft"]
-                    activate_setting("保存修改")
-                    wait_for(
-                        lambda: json.loads(paths.settings.read_text()).get("ExcludedApplications")
-                        == (before_exclusions or [])
-                        and not status()["setup"]["settingsDraft"],
-                        "removing an exclusion did not require and complete explicit save",
-                    )
-                finally:
-                    close_managed_window()
-                wait_for(
-                    lambda: desktop_row()["state"] != "Connected"
-                    and any(a["id"] == "Remove" for a in desktop_row()["actions"]),
-                    "closed registered fixture retained a live connection or component lease",
-                )
-                evidence.append(
-                    "Registered local GTK fixture: searchable selection, chooser cancellation changes no exclusion draft; failed save retains the list; saved exclusion refuses source capture and overlay; per-item removal requires save; real guardian-owned connection and normal close; screenshots retained"
-                )
-                stopped = cleanup_managed_session()
-                assert stopped and stopped["ok"], (
-                    "registered fixture left its private session running"
-                )
-                managed_window = None
-                assert (paths.data / "components/desktop-text/current").is_dir()
-                assert user_profile.read_bytes() == before_profile
-
-            # Use the real GTK selection/action interfaces and paste the system
-            # clipboard into the existing practice field after closing each dialog.
-            # This does not load an extension or complete browser approval.
-            choices = [row for row in support["rows"] if not row["showInMore"]]
-            chromium = next(row for row in choices if row["id"] == "chromium")
-            selector = settings_control(desktop_support["title"])
-            assert selector.get_role() == Atspi.Role.COMBO_BOX
-            states = selector.get_state_set()
-            assert all(
-                states.contains(state)
-                for state in (
-                    Atspi.StateType.SHOWING,
-                    Atspi.StateType.ENABLED,
-                    Atspi.StateType.SENSITIVE,
-                )
-            )
-            assert Atspi.Selection.select_child(
-                selector.get_selection_iface(), choices.index(chromium)
-            )
-            selected = Atspi.Selection.get_selected_child(selector.get_selection_iface(), 0)
-            assert selected and selected.get_name() == chromium["title"]
-            activate_setting(support["labels"]["details"])
-            instructions = next(
-                action
-                for action in [chromium["primaryAction"], *chromium["secondaryActions"]]
-                if action and action["id"] == "OpenInstructions"
-            )
-            for index, expected in enumerate(
-                ("chrome://extensions/", str(package.resolve() / "browser/chromium"))
-            ):
-                activate_scrolled_setting(
-                    instructions["label"],
-                    evidence_name="application-support-instructions-scroll" if index == 0 else None,
-                )
-                copy_name = support["labels"]["copy"] + "：" + expected
-                copy_button = settings_control(copy_name)
-                assert copy_button.get_state_set().contains(Atspi.StateType.SHOWING)
-                if index == 0:
-                    subprocess.run(
-                        ["grim", str(arguments.output / "application-support-instructions.png")],
-                        check=True,
-                        timeout=3,
-                    )
-                assert Atspi.Component.grab_focus(copy_button.get_component_iface())
-                key("space")
-                settings_control("已复制。")
-                activate_setting(support["labels"]["cancel"])
-                wait_for(
-                    lambda: named(process.pid, copy_name) is None,
-                    "closed instructions retained their copy control",
-                )
-                assert control(paths, "tutorial") is True
-                practice_window = wait_for(
-                    lambda: (
-                        window
-                        if (
-                            window := contents(request("FocusedWindow"), "FocusedWindow") or {}
-                        ).get("title")
-                        == "TypeLay 首次使用"
-                        else None
-                    ),
-                    "clipboard practice field did not gain compositor focus",
-                )
-                source = settings_control("教程练习原文")
-                assert text(source) == ""
-                assert Atspi.Component.grab_focus(source.get_component_iface())
-                key("ctrl+v")
-                wait_for(
-                    lambda: text(source) == expected,
-                    "copy button did not place the exact address or folder on the clipboard",
-                )
-                request({"Action": {"CloseWindow": {"id": practice_window["id"]}}})
-                wait_for(
-                    lambda: not status()["setup"]["tutorialVisible"],
-                    "closing clipboard practice did not dismiss the window",
-                )
-                assert not status()["setup"]["onboardingComplete"]
-            # The observed fixed layout belongs only to the browser-instructions
-            # interactions above, never later page edits or a reopened window.
-            settings_scroll_calibration = None
-            assert Atspi.Selection.select_child(selector.get_selection_iface(), 0)
-            evidence.append(
-                "Real GTK browser instructions: both copy buttons paste the exact management "
-                "address and component folder after dialog dismissal; reopening works and "
-                "closing practice does not complete onboarding"
-            )
-            general_row = settings_page("常规")
-            # Native sidebar rows retain selection, keyboard focus, and page
-            # visibility together. Arrow navigation must not invoke our handlers.
-            assert Atspi.Component.grab_focus(general_row.get_component_iface())
-            for title in ("语言", "快捷键", "应用支持"):
-                key("Down")
-                index, row = settings_page_row(rows, title)
-                wait_for(
-                    lambda index=index, row=row: Atspi.Selection.is_child_selected(selection, index)
-                    and row.get_state_set().contains(Atspi.StateType.FOCUSED)
-                    and settings_control("设置页：" + title)
-                    .get_state_set()
-                    .contains(Atspi.StateType.SHOWING),
-                    "sidebar keyboard navigation did not select and show " + title,
-                )
-            key("Up")
-            shortcuts_index, _ = settings_page_row(rows, "快捷键")
-            wait_for(
-                lambda: Atspi.Selection.is_child_selected(selection, shortcuts_index),
-                "sidebar reverse keyboard navigation did not select shortcuts",
-            )
-            settings_page("常规")
-            themes = {
-                value: settings_control("设置：翻译浮层主题：" + label)
-                for value, label in (("system", "跟随系统"), ("light", "浅色"), ("dark", "深色"))
-            }
-            original_theme = json.loads(paths.settings.read_text()).get("Theme", "system")
-            # niri reports the visual window geometry; GTK's FRAME also includes
-            # CSD shadows. Keep the exact compositor size check separate from
-            # containment in this page's real scroll pane, in GTK coordinates.
-            current_window = next(
-                item
-                for item in contents(request("Windows"), "Windows")
-                if item["id"] == settings_window["id"]
-                and item.get("pid") == process.pid
-                and item.get("title") == "TypeLay 设置"
-            )
-            assert current_window["is_floating"]
-            assert current_window["layout"]["window_size"] == [790, 560]
-            general_page = settings_control("设置页：常规")
-            assert general_page.get_process_id() == process.pid
-            assert general_page.get_role() == Atspi.Role.SCROLL_PANE
-            assert general_page.get_state_set().contains(Atspi.StateType.SHOWING)
-            general_area = Atspi.Component.get_extents(
-                general_page.get_component_iface(), Atspi.CoordType.SCREEN
-            )
-            assert general_area.x != -(2**31) and general_area.y != -(2**31)
-            assert general_area.width > 0 and general_area.height > 0
-            theme_layout = {
-                "niriWindow": current_window,
-                "generalScrollPane": [
-                    general_area.x,
-                    general_area.y,
-                    general_area.width,
-                    general_area.height,
-                ],
-                "themeRadios": {},
-            }
-            for value, option in themes.items():
-                assert option.get_process_id() == process.pid
-                assert option.get_role() == Atspi.Role.RADIO_BUTTON
-                assert option.get_state_set().contains(Atspi.StateType.FOCUSABLE)
-                assert option.get_state_set().contains(Atspi.StateType.SHOWING)
-                assert option.get_state_set().contains(Atspi.StateType.CHECKED) == (
-                    value == original_theme
-                )
-                area = Atspi.Component.get_extents(
-                    option.get_component_iface(), Atspi.CoordType.SCREEN
-                )
-                theme_layout["themeRadios"][value] = [area.x, area.y, area.width, area.height]
-                (arguments.output / "settings-general-layout.json").write_text(
-                    json.dumps(theme_layout, indent=2, ensure_ascii=False)
-                )
-                assert area.width > 0 and area.height > 0
-                assert general_area.x <= area.x <= general_area.x + general_area.width - area.width
-                assert (
-                    general_area.y <= area.y <= general_area.y + general_area.height - area.height
-                ), "theme preview was clipped on the first general screen"
-            subprocess.run(
-                ["grim", str(arguments.output / "settings-general-790.png")],
-                check=True,
-                timeout=3,
-            )
-            selected_theme = "dark" if original_theme != "dark" else "light"
-            revision = status()["commandFeedbackRevision"]
-            assert Atspi.Component.grab_focus(themes[selected_theme].get_component_iface())
-            key("space")
-            # A valid pre-save file can omit Theme; the loader treats that as
-            # system until this asynchronous save replaces it with the full value.
-            wait_for(
-                lambda: json.loads(paths.settings.read_text()).get("Theme", "system")
-                == selected_theme
-                and themes[selected_theme].get_state_set().contains(Atspi.StateType.CHECKED)
-                and status()["commandFeedbackRevision"] == revision + 1,
-                "native theme choice did not save one effective settings change",
-            )
-            settings_before_failure = paths.settings.read_bytes()
-            blocker = paths.settings.with_suffix(".json.tmp")
-            blocker.mkdir()
-            try:
-                assert Atspi.Component.grab_focus(themes[original_theme].get_component_iface())
-                key("space")
-                wait_for(
-                    lambda: "未保存" in text(settings_control("设置反馈"))
-                    and themes[selected_theme].get_state_set().contains(Atspi.StateType.CHECKED)
-                    and not themes[original_theme]
-                    .get_state_set()
-                    .contains(Atspi.StateType.CHECKED),
-                    "failed native theme choice did not roll back to the saved option",
-                )
-                assert paths.settings.read_bytes() == settings_before_failure
-                assert status()["commandFeedbackRevision"] == revision + 1
-            finally:
-                blocker.rmdir()
-            assert Atspi.Component.grab_focus(themes[original_theme].get_component_iface())
-            key("space")
-            wait_for(
-                lambda: json.loads(paths.settings.read_text()).get("Theme", "system")
-                == original_theme
-                and themes[original_theme].get_state_set().contains(Atspi.StateType.CHECKED)
-                and (
-                    (feedback := named(process.pid, "设置反馈")) is None
-                    or not feedback.get_state_set().contains(Atspi.StateType.SHOWING)
-                ),
-                "theme choice could not retry after persistence recovered",
-            )
-            evidence.append(
-                "Three native theme radios fit the unscrolled 790 x 560 general page; keyboard choice "
-                "persists once, actual file failure restores the saved choice, and retry recovers"
-            )
-            enabled = settings_control("设置：启用 TypeLay")
-            wait_for(
-                lambda: enabled.get_state_set().contains(Atspi.StateType.SHOWING),
-                "general settings page did not become visible",
-            )
-            assert enabled.get_state_set().contains(Atspi.StateType.CHECKED)
-            assert enabled.get_state_set().contains(Atspi.StateType.FOCUSABLE)
-            assert enabled.get_description() == "即时保存"
-            assert Atspi.Component.grab_focus(enabled.get_component_iface())
-            wait_for(
-                lambda: enabled.get_state_set().contains(Atspi.StateType.FOCUSED),
-                "native settings switch did not receive keyboard focus",
-            )
-            enabled_area = Atspi.Component.get_extents(
-                enabled.get_component_iface(), Atspi.CoordType.SCREEN
-            )
-            assert enabled_area.width >= 72 and enabled_area.height >= 44
-            subprocess.run(
-                ["grim", str(arguments.output / "settings-switch-focus.png")],
-                check=True,
-                timeout=3,
-            )
-            revision = status()["commandFeedbackRevision"]
-            key("space")
-            wait_for(
-                lambda: not json.loads(paths.settings.read_text())["Enabled"],
-                "switch did not save immediately",
-            )
-            wait_for(
-                lambda: not enabled.get_state_set().contains(Atspi.StateType.CHECKED),
-                "native switch accessibility state did not follow the saved disabled value",
-            )
-            saved = json.loads(paths.settings.read_text())
-            assert control(paths, "startOnDemandPractice", {"confirmedSwitch": True}) is False, (
-                "practice silently enabled a paused client"
-            )
-            assert not json.loads(paths.settings.read_text())["Enabled"]
-            wait_for(
-                lambda: "已暂停" in text(settings_control("当前工作模式说明")),
-                "saved switch state did not reach its adjacent guidance",
-            )
-            wait_for(
-                lambda: status()["commandFeedbackRevision"] >= revision + 1,
-                "saved switch state did not reach the controller status",
-            )
-            assert status()["commandFeedbackRevision"] == revision + 1, (
-                "one keyboard switch activation persisted more than one settings change"
-            )
-            assert named(process.pid, "设置保存范围") is None
-            settings_page("快捷键")
-            wake = settings_control("设置：唤醒翻译")
-            direct = settings_control("设置：直接翻译替换")
-            assert Atspi.EditableText.set_text_contents(
-                wake.get_editable_text_iface(), "Ctrl+Shift+F8"
-            )
-            wait_for(
-                lambda: status()["setup"]["settingsDraft"],
-                "shortcut edit was not retained as draft",
-            )
-            assert "离开此页后仍会保留" in text(settings_control("设置草稿"))
-            settings_page("常规")
-            assert saved["WakeShortcut"] in settings_control("当前工作模式说明").get_description()
-            assert "Ctrl+Shift+F8" not in settings_control("当前工作模式说明").get_description()
-            activate_setting("设置：启用 TypeLay")
-            wait_for(
-                lambda: json.loads(paths.settings.read_text())["Enabled"],
-                "second switch change was not saved",
-            )
-            assert text(wake) == "Ctrl+Shift+F8", (
-                "settings notification overwrote the pending shortcut"
-            )
-            settings_page("快捷键")
-            assert Atspi.EditableText.set_text_contents(
-                direct.get_editable_text_iface(), "Ctrl+Shift+F8"
-            )
-            activate_setting("保存修改")
-            wait_for(
-                lambda: text(settings_control("设置反馈"))
-                == "唤醒与直接替换请使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，暂不支持 F12；两个快捷键不能相同。",
-                "invalid shortcut pair did not report rejection",
-            )
-            assert json.loads(paths.settings.read_text())["WakeShortcut"] == saved["WakeShortcut"]
-            assert status()["setup"]["settingsDraft"], "invalid shortcut pair discarded the draft"
-            assert Atspi.EditableText.set_text_contents(
-                direct.get_editable_text_iface(), saved["DirectShortcut"]
-            )
-            activate_setting("保存修改")
-            wait_for(
-                lambda: json.loads(paths.settings.read_text())["WakeShortcut"] == "Ctrl+Shift+F8",
-                "valid shortcut pair did not persist",
-            )
-            settings_page("常规")
-            wait_for(
-                lambda: "Ctrl+Shift+F8" in settings_control("当前工作模式说明").get_description(),
-                "saved wake shortcut was not shown in the mode guidance",
-            )
-            settings_page("快捷键")
-            assert Atspi.EditableText.set_text_contents(
-                wake.get_editable_text_iface(), saved["WakeShortcut"]
-            )
-            activate_setting("保存修改")
-            wait_for(
-                lambda: not status()["setup"]["settingsDraft"]
-                and (
-                    (feedback := named(process.pid, "设置反馈")) is None
-                    or not feedback.get_state_set().contains(Atspi.StateType.SHOWING)
-                ),
-                "saved shortcuts still appeared dirty",
-            )
-            accept_key = settings_control("设置：接受译文")
-            exit_key = settings_control("设置：退出当前翻译")
-            assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 7)
-            assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 7)
-            wait_for(
-                lambda: status()["setup"]["settingsDraft"],
-                "session key choice saved without explicit draft submission",
-            )
-            assert json.loads(paths.settings.read_text())["AcceptShortcut"] == "Tab"
-            activate_setting("保存修改")
-            wait_for(
-                lambda: text(settings_control("设置反馈")) == "接受与退出请选择有效且不同的主键。",
-                "duplicate session key did not reject the complete draft",
-            )
-            assert status()["setup"]["settingsDraft"]
-            assert json.loads(paths.settings.read_text())["ExitShortcut"] == "Esc"
-            assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 8)
-            activate_setting("保存修改")
-            wait_for(
-                lambda: json.loads(paths.settings.read_text())["AcceptShortcut"] == "F7"
-                and json.loads(paths.settings.read_text())["ExitShortcut"] == "F8"
-                and not status()["setup"]["settingsDraft"],
-                "valid session key pair was not persisted together",
-            )
-            assert "F7" in text(settings_control("当前接受与退出说明"))
-            assert "F8" in text(settings_control("当前接受与退出说明"))
-            assert "Tab" not in text(settings_control("当前接受与退出说明"))
-            assert (
-                json.loads(paths.settings.read_text())["ExperimentalWriteback"]
-                == saved["ExperimentalWriteback"]
-            ), "saving session keys changed experimental writeback"
-            assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 0)
-            assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 0)
-            activate_setting("保存修改")
-            wait_for(
-                lambda: json.loads(paths.settings.read_text())["AcceptShortcut"] == "Tab"
-                and json.loads(paths.settings.read_text())["ExitShortcut"] == "Esc"
-                and not status()["setup"]["settingsDraft"],
-                "default session keys were not restored for later desktop scenarios",
-            )
-            # One global draft spans all four shortcuts and the separate support
-            # page's exclusions. A language change must save without consuming it.
-            assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 12)
-            assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 11)
-            assert Atspi.EditableText.set_text_contents(
-                wake.get_editable_text_iface(), "Ctrl+Shift+F8"
-            )
-            assert Atspi.EditableText.set_text_contents(
-                direct.get_editable_text_iface(), "Ctrl+Shift+F7"
-            )
-            settings_page("应用支持")
-            advanced_exclusions = settings_control("高级编辑排除应用")
-            assert advanced_exclusions.get_process_id() == process.pid
-            assert not advanced_exclusions.get_state_set().contains(Atspi.StateType.EXPANDED)
-            deadline = time.monotonic() + 15
-            assert Atspi.Component.grab_focus(advanced_exclusions.get_component_iface())
-            wait_for(
-                lambda: advanced_exclusions.get_state_set().contains(Atspi.StateType.SHOWING)
-                and advanced_exclusions.get_state_set().contains(Atspi.StateType.FOCUSED)
-                and any(
-                    window.get("id") == settings_window["id"]
-                    and window.get("pid") == process.pid
-                    and window.get("is_focused") is True
-                    for window in contents(request("Windows"), "Windows")
-                ),
-                "advanced exclusions did not gain actual settings keyboard focus",
-                timeout=deadline - time.monotonic(),
-            )
-            # Exercise the focused native expander's keyboard binding; no hidden
-            # action or later-layout reuse of the earlier viewport calibration.
-            key("space")
-            wait_for(
-                lambda: focused(advanced_exclusions)
-                and advanced_exclusions.get_state_set().contains(Atspi.StateType.EXPANDED),
-                "Space did not expand the advanced exclusion section",
-                timeout=deadline - time.monotonic(),
-            )
-            excluded = settings_control("设置：排除的应用", timeout=deadline - time.monotonic())
-            assert excluded.get_process_id() == process.pid
-            assert Atspi.Component.grab_focus(excluded.get_component_iface())
-            exclusion_focus_state = {
-                "focused": None,
-                "showing": None,
-                "settingsWindowFocused": None,
-            }
-
-            def exclusion_editor_focused():
-                # Sample all three gates independently: a false SHOWING bit
-                # must not hide whether the compositor still owns this window.
-                exclusion_focus_state.update(focused=None, showing=None, settingsWindowFocused=None)
-                exclusion_focus_state["focused"] = focused(excluded)
-                exclusion_focus_state["showing"] = excluded.get_state_set().contains(
-                    Atspi.StateType.SHOWING
-                )
-                exclusion_focus_state["settingsWindowFocused"] = any(
-                    window.get("id") == settings_window["id"]
-                    and window.get("pid") == process.pid
-                    and window.get("is_focused") is True
-                    for window in contents(request("Windows"), "Windows")
-                )
-                return (
-                    exclusion_focus_state["focused"]
-                    and exclusion_focus_state["showing"]
-                    and exclusion_focus_state["settingsWindowFocused"]
-                )
-
-            try:
-                wait_for(
-                    exclusion_editor_focused,
-                    "advanced exclusion editor did not gain visible settings keyboard focus",
-                    timeout=deadline - time.monotonic(),
-                )
-            finally:
-                # Observe after the verdict without changing the acceptance gate.
-                # A screenshot alone cannot distinguish stale AT-SPI state from
-                # GTK's on_screen/viewport calculation or a clipped editor.
-                try:
-                    ancestry = []
-                    exclusion_focus_state["freshAncestry"] = ancestry
-                    exclusion_focus_state["frameReached"] = False
-                    ancestor = excluded
-                    for _ in range(16):
-                        if ancestor is None:
-                            break
-                        ancestor.clear_cache()
-                        states = ancestor.get_state_set()
-                        role = ancestor.get_role()
-                        observation = {
-                            "role": ancestor.get_role_name(),
-                            "pidMatches": ancestor.get_process_id() == process.pid,
-                            "focused": states.contains(Atspi.StateType.FOCUSED),
-                            "showing": states.contains(Atspi.StateType.SHOWING),
-                            "visible": states.contains(Atspi.StateType.VISIBLE),
-                            "defunct": states.contains(Atspi.StateType.DEFUNCT),
-                        }
-                        ancestry.append(observation)
-                        component = ancestor.get_component_iface()
-                        if component is not None:
-                            rect = Atspi.Component.get_extents(component, Atspi.CoordType.SCREEN)
-                            observation["screenBounds"] = [rect.x, rect.y, rect.width, rect.height]
-                        if role == Atspi.Role.FRAME:
-                            exclusion_focus_state["frameReached"] = observation["pidMatches"]
-                            break
-                        if not observation["pidMatches"]:
-                            break
-                        ancestor = ancestor.get_parent()
-                except Exception as error:
-                    # Diagnostic failures must not mask the actual focus failure.
-                    exclusion_focus_state["observationError"] = type(error).__name__
-                try:
-                    (arguments.output / "settings-exclusion-focus.json").write_text(
-                        json.dumps(exclusion_focus_state, indent=2)
-                    )
-                except OSError:
-                    pass  # Evidence output must not replace the original failure.
-            assert Atspi.EditableText.set_text_contents(
-                excluded.get_editable_text_iface(), "typelay-navigation-test"
-            )
-            settings_page("语言")
-            source_language = settings_control("设置：源语言")
-            assert Atspi.Selection.select_child(source_language.get_selection_iface(), 0)
-            wait_for(
-                lambda: json.loads(paths.settings.read_text())["Source"] == "auto",
-                "language page did not save its choice independently",
-            )
-            assert status()["setup"]["settingsDraft"]
-            assert json.loads(paths.settings.read_text())["WakeShortcut"] == saved["WakeShortcut"]
-            assert (
-                json.loads(paths.settings.read_text())["ExcludedApplications"]
-                == saved["ExcludedApplications"]
-            )
-            settings_page("常规")
-            activate_setting("保存修改")
-            wait_for(
-                lambda: (value := json.loads(paths.settings.read_text()))["WakeShortcut"]
-                == "Ctrl+Shift+F8"
-                and value["DirectShortcut"] == "Ctrl+Shift+F7"
-                and value["AcceptShortcut"] == "F12"
-                and value["ExitShortcut"] == "F11"
-                and value["ExcludedApplications"] == ["typelay-navigation-test"]
-                and value["Source"] == "auto"
-                and not status()["setup"]["settingsDraft"],
-                "global save did not persist the complete cross-page draft",
-            )
-            settings_page("应用支持")
-            assert text(excluded) == "typelay-navigation-test"
-            assert Atspi.EditableText.set_text_contents(
-                excluded.get_editable_text_iface(),
-                "TYPELAY-NAVIGATION-TEST\ntypelay-navigation-test",
-            )
-            wait_for(
-                lambda: not status()["setup"]["settingsDraft"]
-                and text(excluded) == "typelay-navigation-test",
-                "equivalent ASCII exclusions incorrectly created an unsaved draft",
-            )
-            saved_exclusions = saved["ExcludedApplications"]
-            assert saved_exclusions is None or (
-                isinstance(saved_exclusions, list)
-                and all(isinstance(item, str) for item in saved_exclusions)
-            ), "saved application exclusions must be null or a list of executable names"
-            assert Atspi.EditableText.set_text_contents(
-                excluded.get_editable_text_iface(),
-                "\n".join([] if saved_exclusions is None else saved_exclusions),
-            )
-            settings_page("快捷键")
-            assert Atspi.Selection.is_child_selected(accept_key.get_selection_iface(), 12)
-            assert Atspi.Selection.is_child_selected(exit_key.get_selection_iface(), 11)
-            assert Atspi.EditableText.set_text_contents(
-                wake.get_editable_text_iface(), saved["WakeShortcut"]
-            )
-            assert Atspi.EditableText.set_text_contents(
-                direct.get_editable_text_iface(), saved["DirectShortcut"]
-            )
-            assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 0)
-            assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 0)
-            activate_setting("保存修改")
-            wait_for(
-                lambda: not status()["setup"]["settingsDraft"],
-                "restoring the cross-page draft did not finish",
-            )
-            settings_page("语言")
-            original_source = ("auto", "zh", "en").index(saved["Source"])
-            assert Atspi.Selection.select_child(
-                source_language.get_selection_iface(), original_source
-            )
-            wait_for(
-                lambda: json.loads(paths.settings.read_text())["Source"] == saved["Source"],
-                "language page did not restore the original source",
-            )
-            evidence.append(
-                "Four real sidebar pages: accessibility selection and Up/Down keyboard focus; "
-                "one visible save action persists four shortcut drafts and exclusions across "
-                "pages without overwriting an immediately saved language change"
-            )
-            settings_page("快捷键")
-            assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 12)
-            assert Atspi.EditableText.set_text_contents(
-                wake.get_editable_text_iface(), "Ctrl+Shift+F8"
-            )
-            settings_page("应用支持")
-            assert (
-                settings_control("设置页：应用支持")
-                .get_state_set()
-                .contains(Atspi.StateType.SHOWING)
-            )
-            assert status()["setup"]["settingsDraft"]
-            settings_page("快捷键")
-            assert text(wake) == "Ctrl+Shift+F8", "page navigation discarded the shortcut draft"
-            window = wait_for(
-                lambda: next(
-                    (
-                        window
-                        for window in (contents(request("Windows"), "Windows") or [])
-                        if window.get("title") == "TypeLay 设置"
-                    ),
-                    None,
-                ),
-                "settings window missing before close",
-            )
-            request({"Action": {"CloseWindow": {"id": window["id"]}}})
-            keep_editing = settings_control("继续编辑")
-            wait_for(
-                lambda: keep_editing.get_state_set().contains(Atspi.StateType.FOCUSED),
-                "closing a draft did not default to keeping the user's work",
-            )
-            key("Return")
-
-            def close_prompt_gone():
-                try:
-                    return named(process.pid, "放弃修改") is None
-                except GLib.Error as error:
-                    # Only the known closing-dialog child race is transient.
-                    # Re-read the real tree; a vanished child is not proof that
-                    # every copy of the prompt has closed.
-                    if error.domain == "atspi_error" and re.fullmatch(
-                        r'Method "GetChildAtIndex".*object /org/a11y/atspi/accessible/\d+ does not exist\s*',
-                        error.message,
-                        flags=re.DOTALL,
-                    ):
-                        return False
-                    raise
-
-            wait_for(
-                close_prompt_gone,
-                "default keep-editing action did not dismiss the close prompt",
-            )
-            assert status()["setup"]["settingsDraft"]
-            assert text(wake) == "Ctrl+Shift+F8"
-            request({"Action": {"CloseWindow": {"id": window["id"]}}})
-            activate_setting("放弃修改")
-            wait_for(
-                lambda: not status()["setup"]["settingsDraft"],
-                "explicit discard retained the unsaved draft",
-            )
-            assert json.loads(paths.settings.read_text())["WakeShortcut"] == saved["WakeShortcut"]
-            assert control(paths, "settings") is True
-            wake = settings_control("设置：唤醒翻译")
-            assert text(wake) == saved["WakeShortcut"]
-            assert json.loads(paths.settings.read_text())["AcceptShortcut"] == "Tab"
-            assert Atspi.Selection.is_child_selected(accept_key.get_selection_iface(), 0)
-            assert "Tab" in text(settings_control("当前接受与退出说明"))
-            settings_page("常规")
-            assert saved["WakeShortcut"] in settings_control("当前工作模式说明").get_description()
-            settings_page("应用支持")
-            assert Atspi.Component.grab_focus(trial.get_component_iface())
-            activate_setting(next_step_label)
-            assert not status()["setup"]["tutorialVisible"]
-            assert selector.get_name() == desktop_support["title"]
-            assert control(paths, "tutorial") is True
-            wait_for(
-                lambda: status().get("setup", {}).get("tutorialVisible"),
-                "explicit local-model trial did not open",
-            )
-            wait_for(
-                lambda: (contents(request("FocusedWindow"), "FocusedWindow") or {}).get("title")
-                == "TypeLay 首次使用",
-                "tutorial did not gain real compositor focus before typing",
-            )
-            assert not status()["setup"]["onboardingComplete"]
-            key("ctrl+a")
-            typed("Please send me the final version.")
-            key("alt+g")
-            wait_for(
-                lambda: status().get("setup", {}).get("tutorialState") == "preview",
-                "explicit tutorial preview did not use the actual local model",
-                125,
-            )
-            subprocess.run(
-                ["grim", str(arguments.output / "tutorial-preview.png")], check=True, timeout=3
-            )
-            assert not status()["setup"]["onboardingComplete"]
-            key("alt+d")
-            wait_for(
-                lambda: status().get("setup", {}).get("onboardingComplete")
-                and not status()["setup"]["tutorialVisible"],
-                "explicit tutorial completion was not saved",
-            )
-            settings = json.loads(paths.settings.read_text())
-            assert settings["OnboardingComplete"] is True
-            stop()
-            start()
-            assert not status().get("setup", {}).get("tutorialVisible")
-            unopened_settings = named(process.pid, "TypeLay 设置")
-            assert unopened_settings is None or not unopened_settings.get_state_set().contains(
-                Atspi.StateType.SHOWING
-            ), "completed onboarding unexpectedly opened settings at background startup"
-            assert control(paths, "tutorial") is True
-            wait_for(
-                lambda: status().get("setup", {}).get("tutorialVisible"),
-                "completed tutorial could not be reopened explicitly",
-            )
-            wait_for(
-                lambda: (contents(request("FocusedWindow"), "FocusedWindow") or {}).get("title")
-                == "TypeLay 首次使用",
-                "reopened tutorial did not gain real compositor focus",
-            )
-            activate_setting(support["labels"]["connectApplications"])
-            wait_for(
-                lambda: settings_control("设置页：应用支持")
-                .get_state_set()
-                .contains(Atspi.StateType.SHOWING),
-                "tutorial opened before settings did not route to application support",
-            )
-            navigation = wait_for(
-                lambda: settings_navigation(process.pid),
-                "tutorial connection route did not expose the settings sidebar",
-            )
-            support_index, _ = settings_page_row(navigation[1], "应用支持")
-            assert Atspi.Selection.is_child_selected(navigation[0], support_index)
-            assert not status()["setup"]["tutorialVisible"]
-            assert control(paths, "tutorial") is True
-            wait_for(
-                lambda: (contents(request("FocusedWindow"), "FocusedWindow") or {}).get("title")
-                == "TypeLay 首次使用",
-                "tutorial did not regain focus after opening application support",
-            )
-            key("alt+s")
-            wait_for(
-                lambda: not status().get("setup", {}).get("tutorialVisible"),
-                "explicit tutorial skip did not close the practice window",
-            )
-            evidence.append(
-                "First-run application support stays separate from model readiness; explicit local-model trial, completion, persisted restart and optional reopening without intercepting target-app Tab"
-            )
-            if bundled_component:
-                # Keep the earlier explicit tutorial-dismissal coverage, then
-                # start this independent managed lesson with its prompt pending.
-                # First-run Settings opens Application Support; no skip/dismiss
-                # action is taken before the real two-step completion below.
-                settings = json.loads(paths.settings.read_text())
-                stop()
-                settings["OnboardingComplete"] = False
-                settings["ExperimentalWriteback"] = False
-                settings["Mode"] = 0
-                start()
-                assert not status()["setup"]["onboardingComplete"]
-
-                assert control(paths, "settings") is True
-                # First-run Settings already selected Application Support.
-
-                wait_for(
-                    lambda: (row := desktop_row())
-                    and not any(a["id"] == "Connect" for a in row["actions"]),
-                    "fresh client must require the user's original input-method acknowledgement",
-                )
-                calibrate_settings_scroll(settings_control(next_step_label))
-                activate_scrolled_setting(
-                    "我已记下原输入法的启动方式，并知道如何恢复",
-                    evidence_name="application-support-recovery-acknowledgement-scroll",
-                )
-                wait_for(
-                    lambda: (row := desktop_row())
-                    and any(a["id"] == "Connect" for a in row["actions"]),
-                    "prepared component did not offer the explicit practice connection",
-                )
-
-                managed_window = None
-
-                def practice_has_keyboard_focus():
-                    return any(
-                        window["id"] == managed_window["id"]
-                        and window.get("pid") == managed_window["pid"]
-                        and window.get("is_focused") is True
+                    desktop_action("Connect", cancel=True)
+                    assert not any(
+                        window.get("title") == "TypeLay 实操练习"
                         for window in contents(request("Windows"), "Windows")
                     )
-
-                desktop_action("Connect", cancel=True)
-                assert not any(
-                    window.get("title") == "TypeLay 实操练习"
-                    for window in contents(request("Windows"), "Windows")
-                ), "cancelled connection launched practice"
-                desktop_action("Connect")
-                managed_window = wait_for(
-                    lambda: next(
-                        (
-                            window
-                            for window in contents(request("Windows"), "Windows")
-                            if window.get("title") == "TypeLay 实操练习"
-                        ),
-                        None,
-                    ),
-                    "approved connection did not open the shipped practice window",
-                    timeout=60,
-                )
-
-                try:
-                    source = wait_for(
-                        lambda: named(managed_window["pid"], "练习输入框"),
-                        "managed practice field missing",
-                    )
-                    # Cold preparation can outlast the compositor's token. This
-                    # verifies the documented manual fallback, not activation.
-                    request({"Action": {"FocusWindow": {"id": managed_window["id"]}}})
-                    wait_for(
-                        lambda: practice_has_keyboard_focus()
-                        and focused(source)
-                        and status().get("sourceSupported"),
-                        "managed practice did not connect through the production adapter",
-                    )
-
-                    def practice_action(label):
-                        node = wait_for(
-                            lambda: named(managed_window["pid"], label),
-                            f"practice action missing: {label}",
-                        )
-                        assert Atspi.Action.do_action(node.get_action_iface(), 0)
-                        return node
-
-                    # Keep the existing independent F9/F10 lesson in this same
-                    # shipped window, with no inherited completion or authority.
-                    choice = named(managed_window["pid"], "练习内容")
-                    assert Atspi.Selection.select_child(choice.get_selection_iface(), 1)
-                    practice_view = control(paths, "practiceStatus")["presentation"]
-                    wait_for(
-                        lambda: named(managed_window["pid"], practice_view["title"]),
-                        "on-demand lesson selection did not update the shared presentation",
-                    )
-                    latest_preferences = json.loads(paths.settings.read_text())
-                    assert (
-                        control(paths, "startOnDemandPractice", {"confirmedSwitch": False}) is False
-                    )
-                    assert json.loads(paths.settings.read_text())["Mode"] == 0
-
-                    practice_action(practice_view["startLabel"])
-                    practice_action(practice_view["cancelLabel"])
-                    assert json.loads(paths.settings.read_text())["Mode"] == 0
-                    practice_action(practice_view["startLabel"])
-                    cancel = wait_for(
-                        lambda: named(managed_window["pid"], practice_view["cancelLabel"]),
-                        "practice mode confirmation missing",
-                    )
-                    # Pick the affirmative action in this real dialog, not the
-                    # identically labelled start button behind its modal window.
-                    actions = cancel.get_parent()
-                    confirm = next(
-                        actions.get_child_at_index(index)
-                        for index in range(actions.get_child_count())
-                        if actions.get_child_at_index(index).get_name()
-                        == practice_view["startLabel"]
-                    )
-                    assert Atspi.Action.do_action(confirm.get_action_iface(), 0)
-                    wait_for(
-                        lambda: json.loads(paths.settings.read_text())["Mode"] == 1
-                        and focused(source),
-                        "confirmed practice did not persist OnDemand mode and return to its field",
-                    )
-                    assert json.loads(paths.settings.read_text()) == {
-                        **latest_preferences,
-                        "Mode": 1,
-                    }, "starting practice overwrote another saved preference"
-                    practice_view = control(paths, "practiceStatus")["presentation"]
-                    for key_name in ("previewStep", "replaceStep", "capabilityNote"):
-                        wait_for(
-                            lambda name=key_name: named(managed_window["pid"], practice_view[name]),
-                            f"practice did not render the shared {key_name}",
-                        )
-
-                    def restart_ready():
-                        close = named(managed_window["pid"], practice_view["closeLabel"])
-                        if close is None:
-                            return False
-                        actions = close.get_parent()
-                        for index in range(actions.get_child_count()):
-                            action = actions.get_child_at_index(index)
-                            if action is None:
-                                continue
-                            action.clear_cache()
-                            if action.get_name() == practice_view["restartLabel"]:
-                                return action.get_state_set().contains(Atspi.StateType.SENSITIVE)
-                        return False
-
-                    # The initial Begin can still be completing after Mode is
-                    # saved. Wait for the actual bottom-row restart action.
-                    wait_for(restart_ready, "managed practice restart did not become ready")
-                    restarted_notice = "练习进度已重置。请按上方第 1 步重新生成预览。"
-                    assert named(managed_window["pid"], restarted_notice) is None
-                    before_restart = text(source)
-                    key("alt+r")
-                    wait_for(
-                        lambda: named(managed_window["pid"], restarted_notice)
-                        and named(managed_window["pid"], "已识别练习输入框，尚未生成预览。")
-                        and restart_ready(),
-                        "this practice restart did not finish binding its new run",
-                    )
-                    assert text(source) == before_restart and focused(source), (
-                        "practice restart did not preserve the user's text and return focus"
-                    )
-                    key("ctrl+a")
-                    typed(original)
-                    wait_for(lambda: text(source) == original, "on-demand practice lost source")
-                    wait_for(
-                        lambda: named(managed_window["pid"], "已识别练习输入框，尚未生成预览。"),
-                        "practice identity was not bound before the first command",
-                    )
-                    assert control(paths, "finishOnboarding", {"outcome": "completed"}) is False
-                    key("ctrl+shift+F9")
-                    wait_for(
-                        lambda: view("ValidTranslation"),
-                        "practice F9 did not produce the real model preview",
-                    )
-                    assert not status()["acceptanceReady"], (
-                        "metadata-only F9 progress granted Tab permission"
-                    )
-                    assert text(source) == original, "practice preview changed the source"
-                    wait_for(
-                        lambda: named(
-                            managed_window["pid"],
-                            "已生成预览。请回到练习输入框，完成第 2 步直接替换。",
-                        ),
-                        "real practice preview did not advance step one",
-                    )
-                    candidate = wait_for(
-                        lambda: named(managed_window["pid"], "TypeLay 译文候选"),
-                        "practice model preview was not accessible",
-                    )
-                    expected_translation = text(candidate)
-                    assert translated(expected_translation)
-                    direct_replaced = "已直接替换原输入框文字。"
-                    assert status().get("operationStatus") != direct_replaced
-                    before_direct = status().get("commandFeedbackRevision", 0)
-                    checkpoint = trace_checkpoint()
-                    key("ctrl+shift+F10")
-                    # Direct replacement has its own terminal feedback, not the
-                    # Tab acceptance write outcome recorded by verified_write.
-                    wait_for(
-                        lambda: (value := status()).get("operationStatus") == direct_replaced
-                        and value.get("commandFeedbackRevision", 0) > before_direct
-                        and text(source) == expected_translation
-                        and focused(source),
-                        "practice F10 did not replace through the production model/input path",
-                    )
-                    assert not new_write_outcomes(checkpoint), (
-                        "practice F10 used the Tab write path"
-                    )
-                    wait_for(
-                        lambda: named(
-                            managed_window["pid"], "按需练习已完成：已生成预览，并已验证直接替换。"
-                        ),
-                        "verified direct receipt did not complete the current practice",
-                    )
-                    assert control(paths, "finishOnboarding", {"outcome": "completed"}) is False, (
-                        "unowned control client claimed completion"
-                    )
-                    practice_text = text(source)
-                    finished_window = managed_window
-                    assert not status()["setup"]["onboardingComplete"]
-                    assert json.loads(paths.settings.read_text())["OnboardingComplete"] is False
-                    key("alt+d")
-                    wait_for(
-                        lambda: not any(
-                            window["id"] == finished_window["id"]
-                            for window in contents(request("Windows"), "Windows")
-                        ),
-                        "completed managed practice did not save the prompt preference and close",
-                    )
-                    assert json.loads(paths.settings.read_text())["OnboardingComplete"] is True
-                    wait_for(
-                        lambda: not any(
-                            item["kind"] == "application"
-                            and (item.get("child") or {}).get("pid") == finished_window["pid"]
-                            for item in receipts(paths.data)
-                        ),
-                        "completed practice did not naturally release its owned process receipt",
-                    )
-                    assert control(paths, "settings") is True
                     desktop_action("Connect")
                     managed_window = wait_for(
                         lambda: next(
@@ -6348,156 +4843,1767 @@ def run(arguments):
                                 window
                                 for window in contents(request("Windows"), "Windows")
                                 if window.get("title") == "TypeLay 实操练习"
-                                and window["id"] != finished_window["id"]
                             ),
                             None,
                         ),
-                        "reopening practice did not create a fresh owned window",
+                        "prepared component did not open the complete lesson",
                         timeout=60,
                     )
-                    source = wait_for(
-                        lambda: named(managed_window["pid"], "练习输入框"),
-                        "reopened practice field missing",
-                    )
-                    # The already-running private session does not need cold
-                    # startup. No test FocusWindow may rescue this activation.
+                    try:
+                        source = wait_for(
+                            lambda: named(managed_window["pid"], "练习输入框"),
+                            "complete lesson source missing",
+                        )
+                        # Cold preparation has the same documented token-expiry
+                        # fallback as the existing managed-practice scenario.
+                        request({"Action": {"FocusWindow": {"id": managed_window["id"]}}})
+                        request({"Action": {"FullscreenWindow": {"id": managed_window["id"]}}})
+                        wait_for(
+                            lambda: practice_has_keyboard_focus()
+                            and focused(source)
+                            and status().get("sourceSupported"),
+                            "complete lesson source not connected",
+                        )
+
+                        def start_automatic_lesson():
+                            wait_for(
+                                practice_has_keyboard_focus,
+                                "automatic lesson did not naturally return to its practice window",
+                                timeout=confirmation_deadline - time.monotonic(),
+                            )
+                            start = wait_for(
+                                lambda: named(managed_window["pid"], automatic_view["startLabel"]),
+                                "automatic lesson start action missing",
+                                timeout=confirmation_deadline - time.monotonic(),
+                            )
+                            wait_for(
+                                lambda: practice_has_keyboard_focus()
+                                and (focused(source) or focused(start)),
+                                "automatic lesson did not naturally return to its source or start action",
+                                timeout=confirmation_deadline - time.monotonic(),
+                            )
+                            if not focused(start):
+                                key("Tab")
+                            wait_for(
+                                lambda: practice_has_keyboard_focus()
+                                and focused(start)
+                                and start.get_state_set().contains(Atspi.StateType.SHOWING),
+                                "automatic start action lacks actual practice keyboard focus",
+                                timeout=confirmation_deadline - time.monotonic(),
+                            )
+                            key("space")
+
+                        automatic_view = control(paths, "practiceStatus", {"lesson": "automatic"})[
+                            "presentation"
+                        ]
+                        typed(original)
+                        wait_for(lambda: text(source) == original, "practice lost keyboard input")
+                        assert (
+                            control(paths, "startAutomaticPractice", {"confirmedSwitch": True})
+                            is False
+                        )
+                        assert (
+                            control(
+                                paths,
+                                "startAutomaticPractice",
+                                {"confirmedSwitch": True, "target": {"value": "caller-chosen"}},
+                            )
+                            is False
+                        ), "ordinary control caller supplied its own practice target"
+                        assert json.loads(paths.settings.read_text())["Mode"] == 1
+                        confirmation_deadline = time.monotonic() + 15
+                        start_automatic_lesson()
+                        cancel = wait_for(
+                            lambda: named(managed_window["pid"], automatic_view["cancelLabel"]),
+                            "automatic lesson cancel action missing",
+                            timeout=confirmation_deadline - time.monotonic(),
+                        )
+                        wait_for(
+                            lambda: focused(cancel)
+                            and cancel.get_state_set().contains(Atspi.StateType.SHOWING)
+                            and any(
+                                window.get("pid") == managed_window["pid"]
+                                and window["id"] != managed_window["id"]
+                                and window.get("is_focused") is True
+                                for window in contents(request("Windows"), "Windows")
+                            ),
+                            "automatic cancel action lacks actual dialog keyboard focus",
+                            timeout=confirmation_deadline - time.monotonic(),
+                        )
+                        key("space")
+                        assert json.loads(paths.settings.read_text())["Mode"] == 1
+                        start_automatic_lesson()
+                        cancel = wait_for(
+                            lambda: named(managed_window["pid"], automatic_view["cancelLabel"]),
+                            "automatic lesson confirmation missing",
+                            timeout=confirmation_deadline - time.monotonic(),
+                        )
+                        actions = cancel.get_parent()
+                        confirm = next(
+                            actions.get_child_at_index(index)
+                            for index in range(actions.get_child_count())
+                            if actions.get_child_at_index(index).get_name()
+                            == automatic_view["startLabel"]
+                        )
+                        wait_for(
+                            lambda: (focused(confirm) or focused(cancel))
+                            and any(
+                                window.get("pid") == managed_window["pid"]
+                                and window["id"] != managed_window["id"]
+                                and window.get("is_focused") is True
+                                for window in contents(request("Windows"), "Windows")
+                            ),
+                            "automatic confirmation did not focus either action",
+                            timeout=confirmation_deadline - time.monotonic(),
+                        )
+                        if not focused(confirm):
+                            key("Tab")
+                        wait_for(
+                            lambda: focused(confirm)
+                            and confirm.get_state_set().contains(Atspi.StateType.SHOWING)
+                            and any(
+                                window.get("pid") == managed_window["pid"]
+                                and window["id"] != managed_window["id"]
+                                and window.get("is_focused") is True
+                                for window in contents(request("Windows"), "Windows")
+                            ),
+                            "automatic confirmation lacks actual dialog keyboard focus",
+                            timeout=confirmation_deadline - time.monotonic(),
+                        )
+                        # As with Connect above, activate only this observed button
+                        # through niri's real seat input, not an AT-SPI clicked signal.
+                        key("space")
+                        wait_for(
+                            lambda: json.loads(paths.settings.read_text())["Mode"] == 0
+                            and focused(source),
+                            "confirmed automatic lesson did not switch mode and return to source",
+                            timeout=confirmation_deadline - time.monotonic(),
+                        )
+                        assert (
+                            json.loads(paths.settings.read_text())["ExperimentalWriteback"] is False
+                        )
+                        key("ctrl+a")
+                        typed(original)
+                        wait_for(
+                            ready_to_accept,
+                            "owned automatic lesson did not acquire a real candidate",
+                        )
+                        checkpoint = trace_checkpoint()
+                        key("Tab")
+                        wait_for(
+                            lambda: translated(text(source)) and verified_write(checkpoint),
+                            "owned lesson first Tab was not verified",
+                        )
+                        wait_for(
+                            lambda: named(
+                                managed_window["pid"],
+                                "已验证第一次接受。请在原输入框输入新的原文，等待译文后进入编辑。",
+                            ),
+                            "first verified acceptance did not advance the lesson",
+                        )
+                        assert json.loads(paths.settings.read_text())["OnboardingComplete"] is False
+                        editing_source = "Please review this note."
+                        key("ctrl+a")
+                        typed(editing_source)
+                        wait_for(
+                            lambda: text(source) == editing_source and ready_to_accept(),
+                            "new source did not generate the lesson's fresh editing candidate",
+                        )
+                        candidate = wait_for(
+                            lambda: named(managed_window["pid"], "TypeLay 译文候选"),
+                            "managed editing candidate was not accessible",
+                        )
+                        current_window = next(
+                            window
+                            for window in contents(request("Windows"), "Windows")
+                            if window["id"] == managed_window["id"]
+                        )
+                        area, _frame = bounds(
+                            candidate,
+                            managed_window["pid"],
+                            current_window["layout"]["window_size"],
+                        )
+                        x, y, width, height = area
+                        subprocess.run(
+                            [
+                                "xdotool",
+                                "mousemove",
+                                "--window",
+                                nested[0],
+                                str(x + width // 2),
+                                str(y + height // 2),
+                                "click",
+                                "1",
+                            ],
+                            check=True,
+                            timeout=3,
+                        )
+                        wait_for(
+                            lambda: focused(candidate) and view("EditingTranslation"),
+                            "real managed candidate click did not enter editing",
+                        )
+                        draft = "Edited practice translation."
+                        key("ctrl+a")
+                        typed(draft)
+                        wait_for(
+                            lambda: text(candidate) == draft, "managed editor lost the real draft"
+                        )
+                        assert text(source) == editing_source
+                        checkpoint = trace_checkpoint()
+                        key("Tab")
+                        wait_for(
+                            lambda: focused(source) and ready_to_accept("EditedTranslationPending"),
+                            "edited practice did not return and acquire a fresh source observation",
+                        )
+                        assert text(source) == editing_source and not new_write_outcomes(checkpoint)
+                        checkpoint = trace_checkpoint()
+                        key("Tab")
+                        wait_for(
+                            lambda: text(source) == draft and verified_write(checkpoint),
+                            "second edited Tab did not verify the actual draft",
+                        )
+                        wait_for(
+                            lambda: named(
+                                managed_window["pid"],
+                                "完整练习已完成：已验证自动接受和编辑后接受。",
+                            ),
+                            "real automatic/editing receipts did not complete this lesson",
+                        )
+                        complete = named(managed_window["pid"], "完成并关闭")
+                        assert complete and complete.get_state_set().contains(
+                            Atspi.StateType.SENSITIVE
+                        )
+                        assert (
+                            json.loads(paths.settings.read_text())["ExperimentalWriteback"] is False
+                        )
+                        assert json.loads(paths.settings.read_text())["OnboardingComplete"] is False
+                        subprocess.run(
+                            ["grim", str(arguments.output / "managed-automatic-practice.png")],
+                            check=True,
+                            timeout=3,
+                        )
+                        before_finish_settings = paths.settings.read_bytes()
+                        assert practice_has_keyboard_focus() and focused(source)
+                        key("alt+d")
+                        wait_for(
+                            lambda: not any(
+                                window["id"] == managed_window["id"]
+                                for window in contents(request("Windows"), "Windows")
+                            )
+                            and json.loads(paths.settings.read_text())["OnboardingComplete"]
+                            is True,
+                            "completed automatic lesson did not save and naturally close",
+                        )
+                        wait_for(
+                            lambda: not any(
+                                item["kind"] == "application"
+                                and (item.get("child") or {}).get("pid") == managed_window["pid"]
+                                for item in receipts(paths.data)
+                            ),
+                            "completed automatic lesson retained its owned process receipt",
+                        )
+                        completed_settings = paths.settings.read_bytes()
+                        assert json.loads(completed_settings) == {
+                            **json.loads(before_finish_settings),
+                            "OnboardingComplete": True,
+                        }, "Finish changed settings other than the onboarding preference"
+                        evidence.append(
+                            "Owned GTK3 complete lesson: explicit Automatic confirmation, real CPU preview, "
+                            "Verified Tab, new source, actual edited draft, return without write, fresh capture "
+                            "and second Verified Tab; real Finish saves and naturally closes; "
+                            "global ExperimentalWriteback remains false"
+                        )
+                    except BaseException:
+                        try:
+                            (arguments.output / "managed-automatic-failure.json").write_text(
+                                json.dumps(
+                                    {
+                                        "mode": json.loads(paths.settings.read_text())["Mode"],
+                                        "windows": contents(request("Windows"), "Windows"),
+                                        "status": status(),
+                                    },
+                                    indent=2,
+                                )
+                            )
+                            subprocess.run(
+                                ["grim", str(arguments.output / "managed-automatic-failure.png")],
+                                check=False,
+                                timeout=3,
+                            )
+                        except (OSError, EOFError, ValueError, subprocess.SubprocessError):
+                            pass  # Keep the original failure before normal window cleanup.
+                        raise
+                    finally:
+                        close_managed_window()
                     wait_for(
-                        lambda: practice_has_keyboard_focus() and focused(source),
-                        "explicitly reopened practice did not gain compositor keyboard focus",
+                        lambda: not any(
+                            window["id"] == managed_window["id"]
+                            for window in contents(request("Windows"), "Windows")
+                        ),
+                        "complete lesson did not close its native source",
                     )
-                    wait_for(
-                        lambda: named(managed_window["pid"], "开始练习后，这里会显示进度。"),
-                        "reopened practice inherited old completion",
+                    stopped = cleanup_managed_session()
+                    assert stopped and stopped["ok"], "complete lesson retained its owned session"
+                    managed_window = None
+                    stop()
+                    start(write_settings=False)
+                    assert paths.settings.read_bytes() == completed_settings
+                    assert status()["setup"]["onboardingComplete"] is True
+                    assert not status()["setup"]["tutorialVisible"]
+                    unopened_settings = named(process.pid, "TypeLay 设置")
+                    assert (
+                        unopened_settings is None
+                        or not unopened_settings.get_state_set().contains(Atspi.StateType.SHOWING)
+                    ), "completed automatic lesson reopened first-run settings after restart"
+                    evidence.append(
+                        "Automatic lesson Finish preference survives a real client restart"
                     )
-                    # Nested XTest does not carry temporary Unicode key mappings
-                    # into niri. Check reopened input with the original ASCII sample.
-                    practice_text = original
-                    typed(practice_text)
-                    wait_for(lambda: text(source) == practice_text, "reopened practice lost input")
-                    key("ctrl+a")
-                    settings_scroll_calibration = None
+
+                    # Restore only this isolated fixture's pre-Finish settings. Later
+                    # first-run regressions keep their original, incomplete preference.
+                    stop()
+                    paths.settings.write_bytes(before_finish_settings)
+                    start(write_settings=False)
+                    assert paths.settings.read_bytes() == before_finish_settings
+                    assert status()["setup"]["onboardingComplete"] is False
+                    assert json.loads(paths.settings.read_text())["ExperimentalWriteback"] is False
+                    assert user_profile.read_bytes() == before_profile
                     assert control(paths, "settings") is True
-                    selected_settings = wait_for(
+                    settings_window = wait_for(
+                        lambda: next(
+                            (
+                                item
+                                for item in contents(request("Windows"), "Windows")
+                                if item.get("pid") == process.pid
+                                and item.get("title") == "TypeLay 设置"
+                            ),
+                            None,
+                        ),
+                        "restored fixture settings window did not map",
+                    )
+                    if not settings_window["is_floating"]:
+                        request({"Action": {"ToggleWindowFloating": {"id": settings_window["id"]}}})
+                    for action, pixels in (("SetWindowWidth", 790), ("SetWindowHeight", 560)):
+                        request(
+                            {
+                                "Action": {
+                                    action: {
+                                        "id": settings_window["id"],
+                                        "change": {"SetFixed": pixels},
+                                    }
+                                }
+                            }
+                        )
+                    wait_for(
+                        lambda: any(
+                            item["id"] == settings_window["id"]
+                            and item["is_floating"]
+                            and item["layout"]["window_size"] == [790, 560]
+                            for item in contents(request("Windows"), "Windows")
+                        ),
+                        "restored fixture settings did not retain the small-window test size",
+                    )
+                    request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
+                    settings_page("应用支持")
+                    # Every proxy and scroll observation below belongs to this new
+                    # process/window, never the closed pre-Finish settings instance.
+                    selection, rows = wait_for(
+                        lambda: settings_navigation(process.pid),
+                        "restored settings sidebar missing",
+                    )
+                    trial = settings_control(next_step_label)
+                    calibrate_settings_scroll(trial)
+                    # Restart does not retain the user's per-client recovery confirmation.
+                    activate_scrolled_setting("我已记下原输入法的启动方式，并知道如何恢复")
+                    wait_for(
+                        lambda: any(a["id"] == "Connect" for a in desktop_row()["actions"]),
+                        "restored client still requires input-method recovery confirmation",
+                    )
+
+                if settings_scope:
+                    # One owned, ordinary GTK ELF registered in this isolated HOME.
+                    # Exercise the real selector and guardian, never a desktop-file
+                    # path/argv command or an app-name-based capability exception.
+                    application_id = "org.typelay.RegisteredFixture.desktop"
+                    registration = (
+                        Path(os.environ["XDG_DATA_HOME"]) / "applications" / application_id
+                    )
+                    registration.parent.mkdir(parents=True, exist_ok=True)
+                    executable = str((arguments.native / "gtk-fixture").resolve())
+                    assert not any(
+                        character in executable for character in ('"', "\\", "$", "`", "%")
+                    )
+                    registration.write_text(
+                        "[Desktop Entry]\nType=Application\nName=TypeLay Registered Fixture\n"
+                        f'Exec="{executable}" %U\n'
+                    )
+                    resources.callback(registration.unlink, missing_ok=True)
+
+                    def application_view():
+                        return status()["setup"]["applicationSupport"]["installedApplication"]
+
+                    def select_registered_fixture():
+                        search = settings_control("搜索已安装的本机应用")
+                        assert Atspi.EditableText.set_text_contents(
+                            search.get_editable_text_iface(), "TypeLay Registered Fixture"
+                        )
+                        chosen = settings_control("TypeLay Registered Fixture")
+                        for _ in range(4):
+                            if chosen.get_role() == Atspi.Role.LIST_ITEM:
+                                break
+                            chosen = chosen.get_parent()
+                        assert chosen.get_role() == Atspi.Role.LIST_ITEM
+                        listing = chosen.get_parent().get_selection_iface()
+                        assert listing is not None
+                        assert Atspi.Selection.select_child(listing, chosen.get_index_in_parent())
+
+                    before_exclusions = json.loads(paths.settings.read_text()).get(
+                        "ExcludedApplications"
+                    )
+                    before_exclusion_save = paths.settings.read_bytes()
+                    activate_scrolled_setting("添加排除应用")
+                    settings_control("搜索已安装的本机应用")
+                    activate_setting("取消")
+                    assert not status()["setup"]["settingsDraft"]
+                    assert paths.settings.read_bytes() == before_exclusion_save
+                    activate_scrolled_setting("添加排除应用")
+                    select_registered_fixture()
+                    activate_setting("选择")
+                    wait_for(
+                        lambda: status()["setup"]["settingsDraft"]
+                        and named(process.pid, "移除排除项：gtk-fixture"),
+                        "registered application was not added to the unsaved exclusion list",
+                    )
+                    assert paths.settings.read_bytes() == before_exclusion_save
+                    blocker = paths.settings.with_suffix(".json.tmp")
+                    blocker.mkdir()
+                    try:
+                        activate_setting("保存修改")
+                        wait_for(
+                            lambda: "未保存" in text(settings_control("设置反馈")),
+                            "failed exclusion save did not report failure",
+                        )
+                        assert status()["setup"]["settingsDraft"]
+                        assert named(process.pid, "移除排除项：gtk-fixture")
+                        assert paths.settings.read_bytes() == before_exclusion_save
+                    finally:
+                        blocker.rmdir()
+                    activate_setting("保存修改")
+                    wait_for(
+                        lambda: json.loads(paths.settings.read_text()).get("ExcludedApplications")
+                        == [*(before_exclusions or []), "gtk-fixture"]
+                        and not status()["setup"]["settingsDraft"],
+                        "exclusion list did not save after persistence recovered",
+                    )
+                    before_excluded_captures = status()["input"]["captureCounts"].get(
+                        "supported", 0
+                    )
+                    before_selection = receipts(paths.data)
+                    activate_scrolled_setting("选择应用…")
+                    settings_control("搜索已安装的本机应用")
+                    activate_setting("取消")
+                    assert application_view()["id"] is None
+                    assert receipts(paths.data) == before_selection, (
+                        "cancelled chooser launched an app"
+                    )
+                    activate_scrolled_setting("选择应用…")
+                    select_registered_fixture()
+                    subprocess.run(
+                        ["grim", str(arguments.output / "installed-application-choice.png")],
+                        check=True,
+                        timeout=3,
+                    )
+                    activate_setting("选择")
+                    wait_for(
+                        lambda: application_view()["id"] == application_id
+                        and application_view()["canOpen"],
+                        "selected application did not become available",
+                    )
+                    assert desktop_row()["state"] != "Connected", (
+                        "selection alone claimed connection"
+                    )
+                    activate_scrolled_setting("通过 TypeLay 打开")
+                    activate_setting(support["labels"]["cancel"])
+                    assert receipts(paths.data) == before_selection, (
+                        "cancelled launch created a process"
+                    )
+                    activate_scrolled_setting("通过 TypeLay 打开")
+                    activate_setting(support["labels"]["confirm"])
+
+                    def registered_application_window():
+                        launched = [
+                            item
+                            for item in receipts(paths.data)
+                            if item["kind"] == "application"
+                            and item["state"] == "running"
+                            and all(
+                                item["name"] != previous["name"] for previous in before_selection
+                            )
+                        ]
+                        assert len(launched) <= 1, (
+                            "multiple applications launched from one selection"
+                        )
+                        if not launched:
+                            return None
+                        child = launched[0]["child"]
+                        if process_identity(child["pid"]) != child or Path(
+                            f"/proc/{child['pid']}/exe"
+                        ).resolve() != Path(executable):
+                            return None
+                        windows = [
+                            window
+                            for window in contents(request("Windows"), "Windows")
+                            if window.get("pid") == child["pid"]
+                        ]
+                        assert len(windows) <= 1, "registered fixture opened multiple windows"
+                        return windows[0] if windows else None
+
+                    managed_window = wait_for(
+                        registered_application_window,
+                        "registered fixture did not open through TypeLay",
+                        timeout=60,
+                    )
+                    try:
+                        request({"Action": {"FocusWindow": {"id": managed_window["id"]}}})
+                        wait_for(
+                            lambda: desktop_row()["state"] == "Connected"
+                            and application_view()["id"] == application_id
+                            and application_view()["result"] == "",
+                            "owned registered fixture did not connect",
+                        )
+                        assert any(
+                            item["kind"] == "application"
+                            and item.get("child", {}).get("pid") == managed_window["pid"]
+                            for item in receipts(paths.data)
+                        )
+                        wait_for(
+                            lambda: status()["input"]["captureStatus"] == "excluded-or-sensitive",
+                            "saved application exclusion did not refuse the real fixture before capture",
+                        )
+                        assert (
+                            status()["input"]["captureCounts"].get("supported", 0)
+                            == before_excluded_captures
+                        )
+                        assert not status()["overlayVisible"] and not status()["acceptanceReady"]
+                        assert control(paths, "settings") is True
+                        settings_focus_deadline = time.monotonic() + 15
+                        assert any(
+                            window.get("id") == settings_window["id"]
+                            and window.get("pid") == process.pid
+                            and window.get("title") == "TypeLay 设置"
+                            for window in contents(request("Windows"), "Windows")
+                        ), "registered application flow lost its original settings window"
+                        # Returning to edit exclusions is an explicit window switch;
+                        # the tokenless settings IPC does not promise activation.
+                        request({"Action": {"FocusWindow": {"id": settings_window["id"]}}})
+                        wait_for(
+                            lambda: any(
+                                window.get("id") == settings_window["id"]
+                                and window.get("pid") == process.pid
+                                and window.get("title") == "TypeLay 设置"
+                                and window.get("is_focused")
+                                for window in contents(request("Windows"), "Windows")
+                            ),
+                            "settings did not become visible for connected-application evidence",
+                            timeout=settings_focus_deadline - time.monotonic(),
+                        )
+                        subprocess.run(
+                            ["grim", str(arguments.output / "installed-application-connected.png")],
+                            check=True,
+                            timeout=3,
+                        )
+                        activate_scrolled_setting("移除排除项：gtk-fixture")
+                        assert (
+                            "gtk-fixture"
+                            in json.loads(paths.settings.read_text())["ExcludedApplications"]
+                        )
+                        assert status()["setup"]["settingsDraft"]
+                        activate_setting("保存修改")
+                        wait_for(
+                            lambda: json.loads(paths.settings.read_text()).get(
+                                "ExcludedApplications"
+                            )
+                            == (before_exclusions or [])
+                            and not status()["setup"]["settingsDraft"],
+                            "removing an exclusion did not require and complete explicit save",
+                        )
+                    finally:
+                        close_managed_window()
+                    wait_for(
+                        lambda: desktop_row()["state"] != "Connected"
+                        and any(a["id"] == "Remove" for a in desktop_row()["actions"]),
+                        "closed registered fixture retained a live connection or component lease",
+                    )
+                    evidence.append(
+                        "Registered local GTK fixture: searchable selection, chooser cancellation changes no exclusion draft; failed save retains the list; saved exclusion refuses source capture and overlay; per-item removal requires save; real guardian-owned connection and normal close; screenshots retained"
+                    )
+                    stopped = cleanup_managed_session()
+                    assert stopped and stopped["ok"], (
+                        "registered fixture left its private session running"
+                    )
+                    managed_window = None
+                    assert (paths.data / "components/desktop-text/current").is_dir()
+                    assert user_profile.read_bytes() == before_profile
+
+            if settings_scope:
+                # Use the real GTK selection/action interfaces and paste the system
+                # clipboard into the existing practice field after closing each dialog.
+                # This does not load an extension or complete browser approval.
+                choices = [row for row in support["rows"] if not row["showInMore"]]
+                chromium = next(row for row in choices if row["id"] == "chromium")
+                selector = settings_control(desktop_support["title"])
+                assert selector.get_role() == Atspi.Role.COMBO_BOX
+                states = selector.get_state_set()
+                assert all(
+                    states.contains(state)
+                    for state in (
+                        Atspi.StateType.SHOWING,
+                        Atspi.StateType.ENABLED,
+                        Atspi.StateType.SENSITIVE,
+                    )
+                )
+                assert Atspi.Selection.select_child(
+                    selector.get_selection_iface(), choices.index(chromium)
+                )
+                selected = Atspi.Selection.get_selected_child(selector.get_selection_iface(), 0)
+                assert selected and selected.get_name() == chromium["title"]
+                activate_setting(support["labels"]["details"])
+                instructions = next(
+                    action
+                    for action in [chromium["primaryAction"], *chromium["secondaryActions"]]
+                    if action and action["id"] == "OpenInstructions"
+                )
+                for index, expected in enumerate(
+                    ("chrome://extensions/", str(package.resolve() / "browser/chromium"))
+                ):
+                    activate_scrolled_setting(
+                        instructions["label"],
+                        evidence_name="application-support-instructions-scroll"
+                        if index == 0
+                        else None,
+                    )
+                    copy_name = support["labels"]["copy"] + "：" + expected
+                    copy_button = settings_control(copy_name)
+                    assert copy_button.get_state_set().contains(Atspi.StateType.SHOWING)
+                    if index == 0:
+                        subprocess.run(
+                            [
+                                "grim",
+                                str(arguments.output / "application-support-instructions.png"),
+                            ],
+                            check=True,
+                            timeout=3,
+                        )
+                    assert Atspi.Component.grab_focus(copy_button.get_component_iface())
+                    key("space")
+                    settings_control("已复制。")
+                    activate_setting(support["labels"]["cancel"])
+                    wait_for(
+                        lambda: named(process.pid, copy_name) is None,
+                        "closed instructions retained their copy control",
+                    )
+                    assert control(paths, "tutorial") is True
+                    practice_window = wait_for(
+                        lambda: (
+                            window
+                            if (
+                                window := contents(request("FocusedWindow"), "FocusedWindow") or {}
+                            ).get("title")
+                            == "TypeLay 首次使用"
+                            else None
+                        ),
+                        "clipboard practice field did not gain compositor focus",
+                    )
+                    source = settings_control("教程练习原文")
+                    assert text(source) == ""
+                    assert Atspi.Component.grab_focus(source.get_component_iface())
+                    key("ctrl+v")
+                    wait_for(
+                        lambda: text(source) == expected,
+                        "copy button did not place the exact address or folder on the clipboard",
+                    )
+                    request({"Action": {"CloseWindow": {"id": practice_window["id"]}}})
+                    wait_for(
+                        lambda: not status()["setup"]["tutorialVisible"],
+                        "closing clipboard practice did not dismiss the window",
+                    )
+                    assert not status()["setup"]["onboardingComplete"]
+                # The observed fixed layout belongs only to the browser-instructions
+                # interactions above, never later page edits or a reopened window.
+                settings_scroll_calibration = None
+                assert Atspi.Selection.select_child(selector.get_selection_iface(), 0)
+                evidence.append(
+                    "Real GTK browser instructions: both copy buttons paste the exact management "
+                    "address and component folder after dialog dismissal; reopening works and "
+                    "closing practice does not complete onboarding"
+                )
+                general_row = settings_page("常规")
+                # Native sidebar rows retain selection, keyboard focus, and page
+                # visibility together. Arrow navigation must not invoke our handlers.
+                assert Atspi.Component.grab_focus(general_row.get_component_iface())
+                for title in ("语言", "快捷键", "应用支持"):
+                    key("Down")
+                    index, row = settings_page_row(rows, title)
+                    wait_for(
+                        lambda index=index, row=row: Atspi.Selection.is_child_selected(
+                            selection, index
+                        )
+                        and row.get_state_set().contains(Atspi.StateType.FOCUSED)
+                        and settings_control("设置页：" + title)
+                        .get_state_set()
+                        .contains(Atspi.StateType.SHOWING),
+                        "sidebar keyboard navigation did not select and show " + title,
+                    )
+                key("Up")
+                shortcuts_index, _ = settings_page_row(rows, "快捷键")
+                wait_for(
+                    lambda: Atspi.Selection.is_child_selected(selection, shortcuts_index),
+                    "sidebar reverse keyboard navigation did not select shortcuts",
+                )
+                settings_page("常规")
+                themes = {
+                    value: settings_control("设置：翻译浮层主题：" + label)
+                    for value, label in (
+                        ("system", "跟随系统"),
+                        ("light", "浅色"),
+                        ("dark", "深色"),
+                    )
+                }
+                original_theme = json.loads(paths.settings.read_text()).get("Theme", "system")
+                # niri reports the visual window geometry; GTK's FRAME also includes
+                # CSD shadows. Keep the exact compositor size check separate from
+                # containment in this page's real scroll pane, in GTK coordinates.
+                current_window = next(
+                    item
+                    for item in contents(request("Windows"), "Windows")
+                    if item["id"] == settings_window["id"]
+                    and item.get("pid") == process.pid
+                    and item.get("title") == "TypeLay 设置"
+                )
+                assert current_window["is_floating"]
+                assert current_window["layout"]["window_size"] == [790, 560]
+                general_page = settings_control("设置页：常规")
+                assert general_page.get_process_id() == process.pid
+                assert general_page.get_role() == Atspi.Role.SCROLL_PANE
+                assert general_page.get_state_set().contains(Atspi.StateType.SHOWING)
+                general_area = Atspi.Component.get_extents(
+                    general_page.get_component_iface(), Atspi.CoordType.SCREEN
+                )
+                assert general_area.x != -(2**31) and general_area.y != -(2**31)
+                assert general_area.width > 0 and general_area.height > 0
+                theme_layout = {
+                    "niriWindow": current_window,
+                    "generalScrollPane": [
+                        general_area.x,
+                        general_area.y,
+                        general_area.width,
+                        general_area.height,
+                    ],
+                    "themeRadios": {},
+                }
+                for value, option in themes.items():
+                    assert option.get_process_id() == process.pid
+                    assert option.get_role() == Atspi.Role.RADIO_BUTTON
+                    assert option.get_state_set().contains(Atspi.StateType.FOCUSABLE)
+                    assert option.get_state_set().contains(Atspi.StateType.SHOWING)
+                    assert option.get_state_set().contains(Atspi.StateType.CHECKED) == (
+                        value == original_theme
+                    )
+                    area = Atspi.Component.get_extents(
+                        option.get_component_iface(), Atspi.CoordType.SCREEN
+                    )
+                    theme_layout["themeRadios"][value] = [area.x, area.y, area.width, area.height]
+                    (arguments.output / "settings-general-layout.json").write_text(
+                        json.dumps(theme_layout, indent=2, ensure_ascii=False)
+                    )
+                    assert area.width > 0 and area.height > 0
+                    assert (
+                        general_area.x <= area.x <= general_area.x + general_area.width - area.width
+                    )
+                    assert (
+                        general_area.y
+                        <= area.y
+                        <= general_area.y + general_area.height - area.height
+                    ), "theme preview was clipped on the first general screen"
+                subprocess.run(
+                    ["grim", str(arguments.output / "settings-general-790.png")],
+                    check=True,
+                    timeout=3,
+                )
+                selected_theme = "dark" if original_theme != "dark" else "light"
+                revision = status()["commandFeedbackRevision"]
+                assert Atspi.Component.grab_focus(themes[selected_theme].get_component_iface())
+                key("space")
+                # A valid pre-save file can omit Theme; the loader treats that as
+                # system until this asynchronous save replaces it with the full value.
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text()).get("Theme", "system")
+                    == selected_theme
+                    and themes[selected_theme].get_state_set().contains(Atspi.StateType.CHECKED)
+                    and status()["commandFeedbackRevision"] == revision + 1,
+                    "native theme choice did not save one effective settings change",
+                )
+                settings_before_failure = paths.settings.read_bytes()
+                blocker = paths.settings.with_suffix(".json.tmp")
+                blocker.mkdir()
+                try:
+                    assert Atspi.Component.grab_focus(themes[original_theme].get_component_iface())
+                    key("space")
+                    wait_for(
+                        lambda: "未保存" in text(settings_control("设置反馈"))
+                        and themes[selected_theme].get_state_set().contains(Atspi.StateType.CHECKED)
+                        and not themes[original_theme]
+                        .get_state_set()
+                        .contains(Atspi.StateType.CHECKED),
+                        "failed native theme choice did not roll back to the saved option",
+                    )
+                    assert paths.settings.read_bytes() == settings_before_failure
+                    assert status()["commandFeedbackRevision"] == revision + 1
+                finally:
+                    blocker.rmdir()
+                assert Atspi.Component.grab_focus(themes[original_theme].get_component_iface())
+                key("space")
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text()).get("Theme", "system")
+                    == original_theme
+                    and themes[original_theme].get_state_set().contains(Atspi.StateType.CHECKED)
+                    and (
+                        (feedback := named(process.pid, "设置反馈")) is None
+                        or not feedback.get_state_set().contains(Atspi.StateType.SHOWING)
+                    ),
+                    "theme choice could not retry after persistence recovered",
+                )
+                evidence.append(
+                    "Three native theme radios fit the unscrolled 790 x 560 general page; keyboard choice "
+                    "persists once, actual file failure restores the saved choice, and retry recovers"
+                )
+                enabled = settings_control("设置：启用 TypeLay")
+                wait_for(
+                    lambda: enabled.get_state_set().contains(Atspi.StateType.SHOWING),
+                    "general settings page did not become visible",
+                )
+                assert enabled.get_state_set().contains(Atspi.StateType.CHECKED)
+                assert enabled.get_state_set().contains(Atspi.StateType.FOCUSABLE)
+                assert enabled.get_description() == "即时保存"
+                assert Atspi.Component.grab_focus(enabled.get_component_iface())
+                wait_for(
+                    lambda: enabled.get_state_set().contains(Atspi.StateType.FOCUSED),
+                    "native settings switch did not receive keyboard focus",
+                )
+                enabled_area = Atspi.Component.get_extents(
+                    enabled.get_component_iface(), Atspi.CoordType.SCREEN
+                )
+                assert enabled_area.width >= 72 and enabled_area.height >= 44
+                subprocess.run(
+                    ["grim", str(arguments.output / "settings-switch-focus.png")],
+                    check=True,
+                    timeout=3,
+                )
+                revision = status()["commandFeedbackRevision"]
+                key("space")
+                wait_for(
+                    lambda: not json.loads(paths.settings.read_text())["Enabled"],
+                    "switch did not save immediately",
+                )
+                wait_for(
+                    lambda: not enabled.get_state_set().contains(Atspi.StateType.CHECKED),
+                    "native switch accessibility state did not follow the saved disabled value",
+                )
+                saved = json.loads(paths.settings.read_text())
+                assert (
+                    control(paths, "startOnDemandPractice", {"confirmedSwitch": True}) is False
+                ), "practice silently enabled a paused client"
+                assert not json.loads(paths.settings.read_text())["Enabled"]
+                wait_for(
+                    lambda: "已暂停" in text(settings_control("当前工作模式说明")),
+                    "saved switch state did not reach its adjacent guidance",
+                )
+                wait_for(
+                    lambda: status()["commandFeedbackRevision"] >= revision + 1,
+                    "saved switch state did not reach the controller status",
+                )
+                assert status()["commandFeedbackRevision"] == revision + 1, (
+                    "one keyboard switch activation persisted more than one settings change"
+                )
+                assert named(process.pid, "设置保存范围") is None
+                settings_page("快捷键")
+                wake = settings_control("设置：唤醒翻译")
+                direct = settings_control("设置：直接翻译替换")
+                assert Atspi.EditableText.set_text_contents(
+                    wake.get_editable_text_iface(), "Ctrl+Shift+F8"
+                )
+                wait_for(
+                    lambda: status()["setup"]["settingsDraft"],
+                    "shortcut edit was not retained as draft",
+                )
+                assert "离开此页后仍会保留" in text(settings_control("设置草稿"))
+                settings_page("常规")
+                assert (
+                    saved["WakeShortcut"] in settings_control("当前工作模式说明").get_description()
+                )
+                assert "Ctrl+Shift+F8" not in settings_control("当前工作模式说明").get_description()
+                activate_setting("设置：启用 TypeLay")
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text())["Enabled"],
+                    "second switch change was not saved",
+                )
+                assert text(wake) == "Ctrl+Shift+F8", (
+                    "settings notification overwrote the pending shortcut"
+                )
+                settings_page("快捷键")
+                assert Atspi.EditableText.set_text_contents(
+                    direct.get_editable_text_iface(), "Ctrl+Shift+F8"
+                )
+                activate_setting("保存修改")
+                wait_for(
+                    lambda: text(settings_control("设置反馈"))
+                    == "唤醒与直接替换请使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，暂不支持 F12；两个快捷键不能相同。",
+                    "invalid shortcut pair did not report rejection",
+                )
+                assert (
+                    json.loads(paths.settings.read_text())["WakeShortcut"] == saved["WakeShortcut"]
+                )
+                assert status()["setup"]["settingsDraft"], (
+                    "invalid shortcut pair discarded the draft"
+                )
+                assert Atspi.EditableText.set_text_contents(
+                    direct.get_editable_text_iface(), saved["DirectShortcut"]
+                )
+                activate_setting("保存修改")
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text())["WakeShortcut"]
+                    == "Ctrl+Shift+F8",
+                    "valid shortcut pair did not persist",
+                )
+                settings_page("常规")
+                wait_for(
+                    lambda: "Ctrl+Shift+F8"
+                    in settings_control("当前工作模式说明").get_description(),
+                    "saved wake shortcut was not shown in the mode guidance",
+                )
+                settings_page("快捷键")
+                assert Atspi.EditableText.set_text_contents(
+                    wake.get_editable_text_iface(), saved["WakeShortcut"]
+                )
+                activate_setting("保存修改")
+                wait_for(
+                    lambda: not status()["setup"]["settingsDraft"]
+                    and (
+                        (feedback := named(process.pid, "设置反馈")) is None
+                        or not feedback.get_state_set().contains(Atspi.StateType.SHOWING)
+                    ),
+                    "saved shortcuts still appeared dirty",
+                )
+                accept_key = settings_control("设置：接受译文")
+                exit_key = settings_control("设置：退出当前翻译")
+                assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 7)
+                assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 7)
+                wait_for(
+                    lambda: status()["setup"]["settingsDraft"],
+                    "session key choice saved without explicit draft submission",
+                )
+                assert json.loads(paths.settings.read_text())["AcceptShortcut"] == "Tab"
+                activate_setting("保存修改")
+                wait_for(
+                    lambda: text(settings_control("设置反馈"))
+                    == "接受与退出请选择有效且不同的主键。",
+                    "duplicate session key did not reject the complete draft",
+                )
+                assert status()["setup"]["settingsDraft"]
+                assert json.loads(paths.settings.read_text())["ExitShortcut"] == "Esc"
+                assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 8)
+                activate_setting("保存修改")
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text())["AcceptShortcut"] == "F7"
+                    and json.loads(paths.settings.read_text())["ExitShortcut"] == "F8"
+                    and not status()["setup"]["settingsDraft"],
+                    "valid session key pair was not persisted together",
+                )
+                assert "F7" in text(settings_control("当前接受与退出说明"))
+                assert "F8" in text(settings_control("当前接受与退出说明"))
+                assert "Tab" not in text(settings_control("当前接受与退出说明"))
+                assert (
+                    json.loads(paths.settings.read_text())["ExperimentalWriteback"]
+                    == saved["ExperimentalWriteback"]
+                ), "saving session keys changed experimental writeback"
+                assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 0)
+                assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 0)
+                activate_setting("保存修改")
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text())["AcceptShortcut"] == "Tab"
+                    and json.loads(paths.settings.read_text())["ExitShortcut"] == "Esc"
+                    and not status()["setup"]["settingsDraft"],
+                    "default session keys were not restored for later desktop scenarios",
+                )
+                # One global draft spans all four shortcuts and the separate support
+                # page's exclusions. A language change must save without consuming it.
+                assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 12)
+                assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 11)
+                assert Atspi.EditableText.set_text_contents(
+                    wake.get_editable_text_iface(), "Ctrl+Shift+F8"
+                )
+                assert Atspi.EditableText.set_text_contents(
+                    direct.get_editable_text_iface(), "Ctrl+Shift+F7"
+                )
+                settings_page("应用支持")
+                advanced_exclusions = settings_control("高级编辑排除应用")
+                assert advanced_exclusions.get_process_id() == process.pid
+                assert not advanced_exclusions.get_state_set().contains(Atspi.StateType.EXPANDED)
+                deadline = time.monotonic() + 15
+                assert Atspi.Component.grab_focus(advanced_exclusions.get_component_iface())
+                wait_for(
+                    lambda: advanced_exclusions.get_state_set().contains(Atspi.StateType.SHOWING)
+                    and advanced_exclusions.get_state_set().contains(Atspi.StateType.FOCUSED)
+                    and any(
+                        window.get("id") == settings_window["id"]
+                        and window.get("pid") == process.pid
+                        and window.get("is_focused") is True
+                        for window in contents(request("Windows"), "Windows")
+                    ),
+                    "advanced exclusions did not gain actual settings keyboard focus",
+                    timeout=deadline - time.monotonic(),
+                )
+                # Exercise the focused native expander's keyboard binding; no hidden
+                # action or later-layout reuse of the earlier viewport calibration.
+                key("space")
+                wait_for(
+                    lambda: focused(advanced_exclusions)
+                    and advanced_exclusions.get_state_set().contains(Atspi.StateType.EXPANDED),
+                    "Space did not expand the advanced exclusion section",
+                    timeout=deadline - time.monotonic(),
+                )
+                excluded = settings_control("设置：排除的应用", timeout=deadline - time.monotonic())
+                assert excluded.get_process_id() == process.pid
+                assert Atspi.Component.grab_focus(excluded.get_component_iface())
+                exclusion_focus_state = {
+                    "focused": None,
+                    "showing": None,
+                    "settingsWindowFocused": None,
+                }
+
+                def exclusion_editor_focused():
+                    # Sample all three gates independently: a false SHOWING bit
+                    # must not hide whether the compositor still owns this window.
+                    exclusion_focus_state.update(
+                        focused=None, showing=None, settingsWindowFocused=None
+                    )
+                    exclusion_focus_state["focused"] = focused(excluded)
+                    exclusion_focus_state["showing"] = excluded.get_state_set().contains(
+                        Atspi.StateType.SHOWING
+                    )
+                    exclusion_focus_state["settingsWindowFocused"] = any(
+                        window.get("id") == settings_window["id"]
+                        and window.get("pid") == process.pid
+                        and window.get("is_focused") is True
+                        for window in contents(request("Windows"), "Windows")
+                    )
+                    return (
+                        exclusion_focus_state["focused"]
+                        and exclusion_focus_state["showing"]
+                        and exclusion_focus_state["settingsWindowFocused"]
+                    )
+
+                try:
+                    wait_for(
+                        exclusion_editor_focused,
+                        "advanced exclusion editor did not gain visible settings keyboard focus",
+                        timeout=deadline - time.monotonic(),
+                    )
+                finally:
+                    # Observe after the verdict without changing the acceptance gate.
+                    # A screenshot alone cannot distinguish stale AT-SPI state from
+                    # GTK's on_screen/viewport calculation or a clipped editor.
+                    try:
+                        ancestry = []
+                        exclusion_focus_state["freshAncestry"] = ancestry
+                        exclusion_focus_state["frameReached"] = False
+                        ancestor = excluded
+                        for _ in range(16):
+                            if ancestor is None:
+                                break
+                            ancestor.clear_cache()
+                            states = ancestor.get_state_set()
+                            role = ancestor.get_role()
+                            observation = {
+                                "role": ancestor.get_role_name(),
+                                "pidMatches": ancestor.get_process_id() == process.pid,
+                                "focused": states.contains(Atspi.StateType.FOCUSED),
+                                "showing": states.contains(Atspi.StateType.SHOWING),
+                                "visible": states.contains(Atspi.StateType.VISIBLE),
+                                "defunct": states.contains(Atspi.StateType.DEFUNCT),
+                            }
+                            ancestry.append(observation)
+                            component = ancestor.get_component_iface()
+                            if component is not None:
+                                rect = Atspi.Component.get_extents(
+                                    component, Atspi.CoordType.SCREEN
+                                )
+                                observation["screenBounds"] = [
+                                    rect.x,
+                                    rect.y,
+                                    rect.width,
+                                    rect.height,
+                                ]
+                            if role == Atspi.Role.FRAME:
+                                exclusion_focus_state["frameReached"] = observation["pidMatches"]
+                                break
+                            if not observation["pidMatches"]:
+                                break
+                            ancestor = ancestor.get_parent()
+                    except Exception as error:
+                        # Diagnostic failures must not mask the actual focus failure.
+                        exclusion_focus_state["observationError"] = type(error).__name__
+                    try:
+                        (arguments.output / "settings-exclusion-focus.json").write_text(
+                            json.dumps(exclusion_focus_state, indent=2)
+                        )
+                    except OSError:
+                        pass  # Evidence output must not replace the original failure.
+                assert Atspi.EditableText.set_text_contents(
+                    excluded.get_editable_text_iface(), "typelay-navigation-test"
+                )
+                settings_page("语言")
+                source_language = settings_control("设置：源语言")
+                assert Atspi.Selection.select_child(source_language.get_selection_iface(), 0)
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text())["Source"] == "auto",
+                    "language page did not save its choice independently",
+                )
+                assert status()["setup"]["settingsDraft"]
+                assert (
+                    json.loads(paths.settings.read_text())["WakeShortcut"] == saved["WakeShortcut"]
+                )
+                assert (
+                    json.loads(paths.settings.read_text())["ExcludedApplications"]
+                    == saved["ExcludedApplications"]
+                )
+                settings_page("常规")
+                activate_setting("保存修改")
+                wait_for(
+                    lambda: (value := json.loads(paths.settings.read_text()))["WakeShortcut"]
+                    == "Ctrl+Shift+F8"
+                    and value["DirectShortcut"] == "Ctrl+Shift+F7"
+                    and value["AcceptShortcut"] == "F12"
+                    and value["ExitShortcut"] == "F11"
+                    and value["ExcludedApplications"] == ["typelay-navigation-test"]
+                    and value["Source"] == "auto"
+                    and not status()["setup"]["settingsDraft"],
+                    "global save did not persist the complete cross-page draft",
+                )
+                settings_page("应用支持")
+                assert text(excluded) == "typelay-navigation-test"
+                assert Atspi.EditableText.set_text_contents(
+                    excluded.get_editable_text_iface(),
+                    "TYPELAY-NAVIGATION-TEST\ntypelay-navigation-test",
+                )
+                wait_for(
+                    lambda: not status()["setup"]["settingsDraft"]
+                    and text(excluded) == "typelay-navigation-test",
+                    "equivalent ASCII exclusions incorrectly created an unsaved draft",
+                )
+                saved_exclusions = saved["ExcludedApplications"]
+                assert saved_exclusions is None or (
+                    isinstance(saved_exclusions, list)
+                    and all(isinstance(item, str) for item in saved_exclusions)
+                ), "saved application exclusions must be null or a list of executable names"
+                assert Atspi.EditableText.set_text_contents(
+                    excluded.get_editable_text_iface(),
+                    "\n".join([] if saved_exclusions is None else saved_exclusions),
+                )
+                settings_page("快捷键")
+                assert Atspi.Selection.is_child_selected(accept_key.get_selection_iface(), 12)
+                assert Atspi.Selection.is_child_selected(exit_key.get_selection_iface(), 11)
+                assert Atspi.EditableText.set_text_contents(
+                    wake.get_editable_text_iface(), saved["WakeShortcut"]
+                )
+                assert Atspi.EditableText.set_text_contents(
+                    direct.get_editable_text_iface(), saved["DirectShortcut"]
+                )
+                assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 0)
+                assert Atspi.Selection.select_child(exit_key.get_selection_iface(), 0)
+                activate_setting("保存修改")
+                wait_for(
+                    lambda: not status()["setup"]["settingsDraft"],
+                    "restoring the cross-page draft did not finish",
+                )
+                settings_page("语言")
+                original_source = ("auto", "zh", "en").index(saved["Source"])
+                assert Atspi.Selection.select_child(
+                    source_language.get_selection_iface(), original_source
+                )
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text())["Source"] == saved["Source"],
+                    "language page did not restore the original source",
+                )
+                evidence.append(
+                    "Four real sidebar pages: accessibility selection and Up/Down keyboard focus; "
+                    "one visible save action persists four shortcut drafts and exclusions across "
+                    "pages without overwriting an immediately saved language change"
+                )
+                settings_page("快捷键")
+                assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 12)
+                assert Atspi.EditableText.set_text_contents(
+                    wake.get_editable_text_iface(), "Ctrl+Shift+F8"
+                )
+                settings_page("应用支持")
+                assert (
+                    settings_control("设置页：应用支持")
+                    .get_state_set()
+                    .contains(Atspi.StateType.SHOWING)
+                )
+                assert status()["setup"]["settingsDraft"]
+                settings_page("快捷键")
+                assert text(wake) == "Ctrl+Shift+F8", "page navigation discarded the shortcut draft"
+                window = wait_for(
+                    lambda: next(
+                        (
+                            window
+                            for window in (contents(request("Windows"), "Windows") or [])
+                            if window.get("title") == "TypeLay 设置"
+                        ),
+                        None,
+                    ),
+                    "settings window missing before close",
+                )
+                request({"Action": {"CloseWindow": {"id": window["id"]}}})
+                keep_editing = settings_control("继续编辑")
+                wait_for(
+                    lambda: keep_editing.get_state_set().contains(Atspi.StateType.FOCUSED),
+                    "closing a draft did not default to keeping the user's work",
+                )
+                key("Return")
+
+                def close_prompt_gone():
+                    try:
+                        return named(process.pid, "放弃修改") is None
+                    except GLib.Error as error:
+                        # Only the known closing-dialog child race is transient.
+                        # Re-read the real tree; a vanished child is not proof that
+                        # every copy of the prompt has closed.
+                        if error.domain == "atspi_error" and re.fullmatch(
+                            r'Method "GetChildAtIndex".*object /org/a11y/atspi/accessible/\d+ does not exist\s*',
+                            error.message,
+                            flags=re.DOTALL,
+                        ):
+                            return False
+                        raise
+
+                wait_for(
+                    close_prompt_gone,
+                    "default keep-editing action did not dismiss the close prompt",
+                )
+                assert status()["setup"]["settingsDraft"]
+                assert text(wake) == "Ctrl+Shift+F8"
+                request({"Action": {"CloseWindow": {"id": window["id"]}}})
+                activate_setting("放弃修改")
+                wait_for(
+                    lambda: not status()["setup"]["settingsDraft"],
+                    "explicit discard retained the unsaved draft",
+                )
+                assert (
+                    json.loads(paths.settings.read_text())["WakeShortcut"] == saved["WakeShortcut"]
+                )
+                assert control(paths, "settings") is True
+                wake = settings_control("设置：唤醒翻译")
+                assert text(wake) == saved["WakeShortcut"]
+                assert json.loads(paths.settings.read_text())["AcceptShortcut"] == "Tab"
+                assert Atspi.Selection.is_child_selected(accept_key.get_selection_iface(), 0)
+                assert "Tab" in text(settings_control("当前接受与退出说明"))
+                settings_page("常规")
+                assert (
+                    saved["WakeShortcut"] in settings_control("当前工作模式说明").get_description()
+                )
+                settings_page("应用支持")
+                assert Atspi.Component.grab_focus(trial.get_component_iface())
+                activate_setting(next_step_label)
+                assert not status()["setup"]["tutorialVisible"]
+                assert selector.get_name() == desktop_support["title"]
+            if tutorial_scope:
+                assert control(paths, "tutorial") is True
+                wait_for(
+                    lambda: status().get("setup", {}).get("tutorialVisible"),
+                    "explicit local-model trial did not open",
+                )
+                wait_for(
+                    lambda: (contents(request("FocusedWindow"), "FocusedWindow") or {}).get("title")
+                    == "TypeLay 首次使用",
+                    "tutorial did not gain real compositor focus before typing",
+                )
+                assert not status()["setup"]["onboardingComplete"]
+                key("ctrl+a")
+                typed("Please send me the final version.")
+                key("alt+g")
+                wait_for(
+                    lambda: status().get("setup", {}).get("tutorialState") == "preview",
+                    "explicit tutorial preview did not use the actual local model",
+                    125,
+                )
+                subprocess.run(
+                    ["grim", str(arguments.output / "tutorial-preview.png")], check=True, timeout=3
+                )
+                assert not status()["setup"]["onboardingComplete"]
+                key("alt+d")
+                wait_for(
+                    lambda: status().get("setup", {}).get("onboardingComplete")
+                    and not status()["setup"]["tutorialVisible"],
+                    "explicit tutorial completion was not saved",
+                )
+                settings = json.loads(paths.settings.read_text())
+                assert settings["OnboardingComplete"] is True
+                stop()
+                start()
+                assert not status().get("setup", {}).get("tutorialVisible")
+                unopened_settings = named(process.pid, "TypeLay 设置")
+                assert unopened_settings is None or not unopened_settings.get_state_set().contains(
+                    Atspi.StateType.SHOWING
+                ), "completed onboarding unexpectedly opened settings at background startup"
+                assert control(paths, "tutorial") is True
+                wait_for(
+                    lambda: status().get("setup", {}).get("tutorialVisible"),
+                    "completed tutorial could not be reopened explicitly",
+                )
+                wait_for(
+                    lambda: (contents(request("FocusedWindow"), "FocusedWindow") or {}).get("title")
+                    == "TypeLay 首次使用",
+                    "reopened tutorial did not gain real compositor focus",
+                )
+                activate_setting(support["labels"]["connectApplications"])
+                wait_for(
+                    lambda: settings_control("设置页：应用支持")
+                    .get_state_set()
+                    .contains(Atspi.StateType.SHOWING),
+                    "tutorial opened before settings did not route to application support",
+                )
+                navigation = wait_for(
+                    lambda: settings_navigation(process.pid),
+                    "tutorial connection route did not expose the settings sidebar",
+                )
+                support_index, _ = settings_page_row(navigation[1], "应用支持")
+                assert Atspi.Selection.is_child_selected(navigation[0], support_index)
+                assert not status()["setup"]["tutorialVisible"]
+                assert control(paths, "tutorial") is True
+                wait_for(
+                    lambda: (contents(request("FocusedWindow"), "FocusedWindow") or {}).get("title")
+                    == "TypeLay 首次使用",
+                    "tutorial did not regain focus after opening application support",
+                )
+                key("alt+s")
+                wait_for(
+                    lambda: not status().get("setup", {}).get("tutorialVisible"),
+                    "explicit tutorial skip did not close the practice window",
+                )
+                evidence.append(
+                    "First-run application support stays separate from model readiness; explicit local-model trial, completion, persisted restart and optional reopening without intercepting target-app Tab"
+                )
+                if bundled_component:
+                    # Keep the earlier explicit tutorial-dismissal coverage, then
+                    # start this independent managed lesson with its prompt pending.
+                    # First-run Settings opens Application Support; no skip/dismiss
+                    # action is taken before the real two-step completion below.
+                    settings = json.loads(paths.settings.read_text())
+                    stop()
+                    settings["OnboardingComplete"] = False
+                    settings["ExperimentalWriteback"] = False
+                    settings["Mode"] = 0
+                    start()
+                    assert not status()["setup"]["onboardingComplete"]
+
+                    assert control(paths, "settings") is True
+                    # First-run Settings already selected Application Support.
+
+                    wait_for(
+                        lambda: (row := desktop_row())
+                        and not any(a["id"] == "Connect" for a in row["actions"]),
+                        "fresh client must require the user's original input-method acknowledgement",
+                    )
+                    calibrate_settings_scroll(settings_control(next_step_label))
+                    activate_scrolled_setting(
+                        "我已记下原输入法的启动方式，并知道如何恢复",
+                        evidence_name="application-support-recovery-acknowledgement-scroll",
+                    )
+                    wait_for(
+                        lambda: (row := desktop_row())
+                        and any(a["id"] == "Connect" for a in row["actions"]),
+                        "prepared component did not offer the explicit practice connection",
+                    )
+
+                    managed_window = None
+
+                    def practice_has_keyboard_focus():
+                        return any(
+                            window["id"] == managed_window["id"]
+                            and window.get("pid") == managed_window["pid"]
+                            and window.get("is_focused") is True
+                            for window in contents(request("Windows"), "Windows")
+                        )
+
+                    desktop_action("Connect", cancel=True)
+                    assert not any(
+                        window.get("title") == "TypeLay 实操练习"
+                        for window in contents(request("Windows"), "Windows")
+                    ), "cancelled connection launched practice"
+                    desktop_action("Connect")
+                    managed_window = wait_for(
                         lambda: next(
                             (
                                 window
                                 for window in contents(request("Windows"), "Windows")
-                                if window.get("pid") == process.pid
-                                and window.get("title") == "TypeLay 设置"
+                                if window.get("title") == "TypeLay 实操练习"
                             ),
                             None,
                         ),
-                        "settings did not reopen after practice activation",
+                        "approved connection did not open the shipped practice window",
+                        timeout=60,
                     )
-                    request({"Action": {"FocusWindow": {"id": selected_settings["id"]}}})
-                    settings_page("语言")
-                    language = settings_control("设置：源语言")
-                    assert Atspi.Selection.select_child(language.get_selection_iface(), 1)
-                    wait_for(
-                        lambda: json.loads(paths.settings.read_text())["Source"] == "zh",
-                        "practice language change did not save",
-                    )
-                    changed_view = control(paths, "practiceStatus", {"lesson": "automatic"})[
-                        "presentation"
-                    ]
-                    assert changed_view["languageNeedsChange"]
-                    assert changed_view["sampleText"] != practice_view["sampleText"]
-                    assert (
-                        control(paths, "startOnDemandPractice", {"confirmedSwitch": True}) is False
-                    ), "practice accepted equal source and target languages"
-                    assert any(
-                        window["id"] == selected_settings["id"]
-                        and window.get("pid") == process.pid
-                        and window.get("is_focused") is True
-                        for window in contents(request("Windows"), "Windows")
-                    ), "practice pulled focus back after switching to settings"
-                    request({"Action": {"FocusWindow": {"id": managed_window["id"]}}})
-                    wait_for(
-                        lambda: practice_has_keyboard_focus()
-                        and focused(source)
-                        and named(managed_window["pid"], changed_view["currentStateNotice"]),
-                        "practice did not refresh the shared language notice",
-                    )
-                    # Changing the sample changes only the placeholder. Actual
-                    # typing replaces the preserved selection, rather than appending.
-                    assert text(source) == practice_text
-                    typed("Selection survived")
-                    wait_for(
-                        lambda: text(source) == "Selection survived",
-                        "practice settings refresh changed the source selection",
-                    )
-                    assert control(paths, "settings") is True
-                    assert Atspi.Selection.select_child(language.get_selection_iface(), 2)
-                    wait_for(
-                        lambda: json.loads(paths.settings.read_text())["Source"] == "en",
-                        "restoring the source language did not save",
-                    )
-                    assert json.loads(paths.settings.read_text())["Mode"] == 1
-                    evidence.append(
-                        "Shared on-demand practice: cancel and stale unconfirmed start preserve mode; "
-                        "explicit confirmation persists mode; real F9 previews without writes and "
-                        "real F10 retranslates/replaces; presentation refresh preserves source/selection"
-                    )
-                    settings = json.loads(paths.settings.read_text())
-                    settings_scroll_calibration = None
-                    stop()
-                    assert any(
-                        window["id"] == managed_window["id"]
-                        and window.get("pid") == managed_window["pid"]
-                        for window in contents(request("Windows"), "Windows")
-                    ), "closing TypeLay closed the user's practice application"
-                    start()
-                    assert control(paths, "settings") is True
-                    settings_page("应用支持")
+
+                    try:
+                        source = wait_for(
+                            lambda: named(managed_window["pid"], "练习输入框"),
+                            "managed practice field missing",
+                        )
+                        # Cold preparation can outlast the compositor's token. This
+                        # verifies the documented manual fallback, not activation.
+                        request({"Action": {"FocusWindow": {"id": managed_window["id"]}}})
+                        wait_for(
+                            lambda: practice_has_keyboard_focus()
+                            and focused(source)
+                            and status().get("sourceSupported"),
+                            "managed practice did not connect through the production adapter",
+                        )
+
+                        def practice_action(label):
+                            node = wait_for(
+                                lambda: named(managed_window["pid"], label),
+                                f"practice action missing: {label}",
+                            )
+                            assert Atspi.Action.do_action(node.get_action_iface(), 0)
+                            return node
+
+                        # Keep the existing independent F9/F10 lesson in this same
+                        # shipped window, with no inherited completion or authority.
+                        choice = named(managed_window["pid"], "练习内容")
+                        assert Atspi.Selection.select_child(choice.get_selection_iface(), 1)
+                        practice_view = control(paths, "practiceStatus")["presentation"]
+                        wait_for(
+                            lambda: named(managed_window["pid"], practice_view["title"]),
+                            "on-demand lesson selection did not update the shared presentation",
+                        )
+                        latest_preferences = json.loads(paths.settings.read_text())
+                        assert (
+                            control(paths, "startOnDemandPractice", {"confirmedSwitch": False})
+                            is False
+                        )
+                        assert json.loads(paths.settings.read_text())["Mode"] == 0
+
+                        practice_action(practice_view["startLabel"])
+                        practice_action(practice_view["cancelLabel"])
+                        assert json.loads(paths.settings.read_text())["Mode"] == 0
+                        practice_action(practice_view["startLabel"])
+                        cancel = wait_for(
+                            lambda: named(managed_window["pid"], practice_view["cancelLabel"]),
+                            "practice mode confirmation missing",
+                        )
+                        # Pick the affirmative action in this real dialog, not the
+                        # identically labelled start button behind its modal window.
+                        actions = cancel.get_parent()
+                        confirm = next(
+                            actions.get_child_at_index(index)
+                            for index in range(actions.get_child_count())
+                            if actions.get_child_at_index(index).get_name()
+                            == practice_view["startLabel"]
+                        )
+                        assert Atspi.Action.do_action(confirm.get_action_iface(), 0)
+                        wait_for(
+                            lambda: json.loads(paths.settings.read_text())["Mode"] == 1
+                            and focused(source),
+                            "confirmed practice did not persist OnDemand mode and return to its field",
+                        )
+                        assert json.loads(paths.settings.read_text()) == {
+                            **latest_preferences,
+                            "Mode": 1,
+                        }, "starting practice overwrote another saved preference"
+                        practice_view = control(paths, "practiceStatus")["presentation"]
+                        for key_name in ("previewStep", "replaceStep", "capabilityNote"):
+                            wait_for(
+                                lambda name=key_name: named(
+                                    managed_window["pid"], practice_view[name]
+                                ),
+                                f"practice did not render the shared {key_name}",
+                            )
+
+                        def restart_ready():
+                            close = named(managed_window["pid"], practice_view["closeLabel"])
+                            if close is None:
+                                return False
+                            actions = close.get_parent()
+                            for index in range(actions.get_child_count()):
+                                action = actions.get_child_at_index(index)
+                                if action is None:
+                                    continue
+                                action.clear_cache()
+                                if action.get_name() == practice_view["restartLabel"]:
+                                    return action.get_state_set().contains(
+                                        Atspi.StateType.SENSITIVE
+                                    )
+                            return False
+
+                        # The initial Begin can still be completing after Mode is
+                        # saved. Wait for the actual bottom-row restart action.
+                        wait_for(restart_ready, "managed practice restart did not become ready")
+                        restarted_notice = "练习进度已重置。请按上方第 1 步重新生成预览。"
+                        assert named(managed_window["pid"], restarted_notice) is None
+                        before_restart = text(source)
+                        key("alt+r")
+                        wait_for(
+                            lambda: named(managed_window["pid"], restarted_notice)
+                            and named(managed_window["pid"], "已识别练习输入框，尚未生成预览。")
+                            and restart_ready(),
+                            "this practice restart did not finish binding its new run",
+                        )
+                        assert text(source) == before_restart and focused(source), (
+                            "practice restart did not preserve the user's text and return focus"
+                        )
+                        key("ctrl+a")
+                        typed(original)
+                        wait_for(lambda: text(source) == original, "on-demand practice lost source")
+                        wait_for(
+                            lambda: named(
+                                managed_window["pid"], "已识别练习输入框，尚未生成预览。"
+                            ),
+                            "practice identity was not bound before the first command",
+                        )
+                        assert control(paths, "finishOnboarding", {"outcome": "completed"}) is False
+                        key("ctrl+shift+F9")
+                        wait_for(
+                            lambda: view("ValidTranslation"),
+                            "practice F9 did not produce the real model preview",
+                        )
+                        assert not status()["acceptanceReady"], (
+                            "metadata-only F9 progress granted Tab permission"
+                        )
+                        assert text(source) == original, "practice preview changed the source"
+                        wait_for(
+                            lambda: named(
+                                managed_window["pid"],
+                                "已生成预览。请回到练习输入框，完成第 2 步直接替换。",
+                            ),
+                            "real practice preview did not advance step one",
+                        )
+                        candidate = wait_for(
+                            lambda: named(managed_window["pid"], "TypeLay 译文候选"),
+                            "practice model preview was not accessible",
+                        )
+                        expected_translation = text(candidate)
+                        assert translated(expected_translation)
+                        direct_replaced = "已直接替换原输入框文字。"
+                        assert status().get("operationStatus") != direct_replaced
+                        before_direct = status().get("commandFeedbackRevision", 0)
+                        checkpoint = trace_checkpoint()
+                        key("ctrl+shift+F10")
+                        # Direct replacement has its own terminal feedback, not the
+                        # Tab acceptance write outcome recorded by verified_write.
+                        wait_for(
+                            lambda: (value := status()).get("operationStatus") == direct_replaced
+                            and value.get("commandFeedbackRevision", 0) > before_direct
+                            and text(source) == expected_translation
+                            and focused(source),
+                            "practice F10 did not replace through the production model/input path",
+                        )
+                        assert not new_write_outcomes(checkpoint), (
+                            "practice F10 used the Tab write path"
+                        )
+                        wait_for(
+                            lambda: named(
+                                managed_window["pid"],
+                                "按需练习已完成：已生成预览，并已验证直接替换。",
+                            ),
+                            "verified direct receipt did not complete the current practice",
+                        )
+                        assert (
+                            control(paths, "finishOnboarding", {"outcome": "completed"}) is False
+                        ), "unowned control client claimed completion"
+                        practice_text = text(source)
+                        finished_window = managed_window
+                        assert not status()["setup"]["onboardingComplete"]
+                        assert json.loads(paths.settings.read_text())["OnboardingComplete"] is False
+                        key("alt+d")
+                        wait_for(
+                            lambda: not any(
+                                window["id"] == finished_window["id"]
+                                for window in contents(request("Windows"), "Windows")
+                            ),
+                            "completed managed practice did not save the prompt preference and close",
+                        )
+                        assert json.loads(paths.settings.read_text())["OnboardingComplete"] is True
+                        wait_for(
+                            lambda: not any(
+                                item["kind"] == "application"
+                                and (item.get("child") or {}).get("pid") == finished_window["pid"]
+                                for item in receipts(paths.data)
+                            ),
+                            "completed practice did not naturally release its owned process receipt",
+                        )
+                        assert control(paths, "settings") is True
+                        desktop_action("Connect")
+                        managed_window = wait_for(
+                            lambda: next(
+                                (
+                                    window
+                                    for window in contents(request("Windows"), "Windows")
+                                    if window.get("title") == "TypeLay 实操练习"
+                                    and window["id"] != finished_window["id"]
+                                ),
+                                None,
+                            ),
+                            "reopening practice did not create a fresh owned window",
+                            timeout=60,
+                        )
+                        source = wait_for(
+                            lambda: named(managed_window["pid"], "练习输入框"),
+                            "reopened practice field missing",
+                        )
+                        # The already-running private session does not need cold
+                        # startup. No test FocusWindow may rescue this activation.
+                        wait_for(
+                            lambda: practice_has_keyboard_focus() and focused(source),
+                            "explicitly reopened practice did not gain compositor keyboard focus",
+                        )
+                        wait_for(
+                            lambda: named(managed_window["pid"], "开始练习后，这里会显示进度。"),
+                            "reopened practice inherited old completion",
+                        )
+                        # Nested XTest does not carry temporary Unicode key mappings
+                        # into niri. Check reopened input with the original ASCII sample.
+                        practice_text = original
+                        typed(practice_text)
+                        wait_for(
+                            lambda: text(source) == practice_text, "reopened practice lost input"
+                        )
+                        key("ctrl+a")
+                        settings_scroll_calibration = None
+                        assert control(paths, "settings") is True
+                        selected_settings = wait_for(
+                            lambda: next(
+                                (
+                                    window
+                                    for window in contents(request("Windows"), "Windows")
+                                    if window.get("pid") == process.pid
+                                    and window.get("title") == "TypeLay 设置"
+                                ),
+                                None,
+                            ),
+                            "settings did not reopen after practice activation",
+                        )
+                        request({"Action": {"FocusWindow": {"id": selected_settings["id"]}}})
+                        settings_page("语言")
+                        language = settings_control("设置：源语言")
+                        assert Atspi.Selection.select_child(language.get_selection_iface(), 1)
+                        wait_for(
+                            lambda: json.loads(paths.settings.read_text())["Source"] == "zh",
+                            "practice language change did not save",
+                        )
+                        changed_view = control(paths, "practiceStatus", {"lesson": "automatic"})[
+                            "presentation"
+                        ]
+                        assert changed_view["languageNeedsChange"]
+                        assert changed_view["sampleText"] != practice_view["sampleText"]
+                        assert (
+                            control(paths, "startOnDemandPractice", {"confirmedSwitch": True})
+                            is False
+                        ), "practice accepted equal source and target languages"
+                        assert any(
+                            window["id"] == selected_settings["id"]
+                            and window.get("pid") == process.pid
+                            and window.get("is_focused") is True
+                            for window in contents(request("Windows"), "Windows")
+                        ), "practice pulled focus back after switching to settings"
+                        request({"Action": {"FocusWindow": {"id": managed_window["id"]}}})
+                        wait_for(
+                            lambda: practice_has_keyboard_focus()
+                            and focused(source)
+                            and named(managed_window["pid"], changed_view["currentStateNotice"]),
+                            "practice did not refresh the shared language notice",
+                        )
+                        # Changing the sample changes only the placeholder. Actual
+                        # typing replaces the preserved selection, rather than appending.
+                        assert text(source) == practice_text
+                        typed("Selection survived")
+                        wait_for(
+                            lambda: text(source) == "Selection survived",
+                            "practice settings refresh changed the source selection",
+                        )
+                        assert control(paths, "settings") is True
+                        assert Atspi.Selection.select_child(language.get_selection_iface(), 2)
+                        wait_for(
+                            lambda: json.loads(paths.settings.read_text())["Source"] == "en",
+                            "restoring the source language did not save",
+                        )
+                        assert json.loads(paths.settings.read_text())["Mode"] == 1
+                        evidence.append(
+                            "Shared on-demand practice: cancel and stale unconfirmed start preserve mode; "
+                            "explicit confirmation persists mode; real F9 previews without writes and "
+                            "real F10 retranslates/replaces; presentation refresh preserves source/selection"
+                        )
+                        settings = json.loads(paths.settings.read_text())
+                        settings_scroll_calibration = None
+                        stop()
+                        assert any(
+                            window["id"] == managed_window["id"]
+                            and window.get("pid") == managed_window["pid"]
+                            for window in contents(request("Windows"), "Windows")
+                        ), "closing TypeLay closed the user's practice application"
+                        start()
+                        assert control(paths, "settings") is True
+                        settings_page("应用支持")
+                        wait_for(
+                            lambda: (row := desktop_row())
+                            and row["details"]
+                            and not any(a["id"] == "Remove" for a in row["actions"]),
+                            "an application still using the components was offered removal",
+                        )
+                        calibrate_settings_scroll(settings_control(next_step_label))
+                        settings_page("常规")
+                        mode = settings_control("设置：工作模式")
+                        assert Atspi.Selection.select_child(mode.get_selection_iface(), 0)
+                        wait_for(
+                            lambda: json.loads(paths.settings.read_text())["Mode"] == 0,
+                            "the user's later mode change did not save",
+                        )
+                        settings_page("应用支持")
+                    finally:
+                        # A cleanup error must not replace the original test failure.
+                        if sys.exc_info()[0] is None:
+                            close_managed_window()
+                        else:
+                            try:
+                                close_managed_window()
+                            except (OSError, EOFError, ValueError):
+                                print("Managed practice close was not confirmed", flush=True)
                     wait_for(
                         lambda: (row := desktop_row())
-                        and row["details"]
-                        and not any(a["id"] == "Remove" for a in row["actions"]),
-                        "an application still using the components was offered removal",
+                        and any(a["id"] == "Remove" for a in row["actions"]),
+                        "normally closed practice did not release its component lease",
                     )
-                    calibrate_settings_scroll(settings_control(next_step_label))
-                    settings_page("常规")
-                    mode = settings_control("设置：工作模式")
-                    assert Atspi.Selection.select_child(mode.get_selection_iface(), 0)
+                    desktop_action("Remove")
                     wait_for(
-                        lambda: json.loads(paths.settings.read_text())["Mode"] == 0,
-                        "the user's later mode change did not save",
+                        lambda: (row := desktop_row()) and row["state"] == "NeedsInstall",
+                        "explicit removal did not finish the private session and remove components",
+                        timeout=30,
                     )
-                    settings_page("应用支持")
-                finally:
-                    # A cleanup error must not replace the original test failure.
-                    if sys.exc_info()[0] is None:
-                        close_managed_window()
-                    else:
-                        try:
-                            close_managed_window()
-                        except (OSError, EOFError, ValueError):
-                            print("Managed practice close was not confirmed", flush=True)
-                wait_for(
-                    lambda: (row := desktop_row())
-                    and any(a["id"] == "Remove" for a in row["actions"]),
-                    "normally closed practice did not release its component lease",
-                )
-                desktop_action("Remove")
-                wait_for(
-                    lambda: (row := desktop_row()) and row["state"] == "NeedsInstall",
-                    "explicit removal did not finish the private session and remove components",
-                    timeout=30,
-                )
-                settings_scroll_calibration = None
-                assert user_profile.read_bytes() == before_profile
-                assert json.loads(paths.settings.read_text())["Mode"] == 0, (
-                    "closing practice overwrote the user's later mode change"
-                )
-                assert paths.settings.is_file() and status().get("modelReady")
-                assert not (paths.data / "components/desktop-text/current").exists()
-                assert (paths.data / "components/desktop-text/practice-profile").is_dir()
-                evidence.append(
-                    "Managed desktop connection: explicit approval opens the shipped practice, "
-                    "real model and one Tab verify; normal client quit preserves the application; normal "
-                    "application close permits explicit private-session stop and component removal, "
-                    "with original user profile, models, settings and practice configuration retained"
-                )
+                    settings_scroll_calibration = None
+                    assert user_profile.read_bytes() == before_profile
+                    assert json.loads(paths.settings.read_text())["Mode"] == 0, (
+                        "closing practice overwrote the user's later mode change"
+                    )
+                    assert paths.settings.is_file() and status().get("modelReady")
+                    assert not (paths.data / "components/desktop-text/current").exists()
+                    assert (paths.data / "components/desktop-text/practice-profile").is_dir()
+                    evidence.append(
+                        "Managed desktop connection: explicit approval opens the shipped practice, "
+                        "real model and one Tab verify; normal client quit preserves the application; normal "
+                        "application close permits explicit private-session stop and component removal, "
+                        "with original user profile, models, settings and practice configuration retained"
+                    )
         assert control(paths, "settings") is True
         time.sleep(0.3)
         subprocess.run(["grim", str(arguments.output / "settings.png")], check=True, timeout=3)

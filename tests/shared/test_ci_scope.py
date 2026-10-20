@@ -8,15 +8,20 @@ import unittest
 from pathlib import Path
 
 SELECTOR = Path(__file__).resolve().parents[2] / "eng/shared/ci_scope.py"
-FULL = {"windows": "true", "linux": "true", "qt": "false", "settings": "false", "practice": "false"}
+FULL = {
+    "windows": "true",
+    "linux": "true",
+    "qt": "false",
+    "quality_only": "false",
+    "practice": "false",
+}
 LINUX = {**FULL, "windows": "false"}
 WINDOWS = {**FULL, "linux": "false"}
 SHARED_ONLY = {**FULL, "windows": "false", "linux": "false"}
 QT = {**LINUX, "linux": "false", "qt": "true"}
-SETTINGS = {**LINUX, "settings": "true"}
+QUALITY_ONLY = {**LINUX, "quality_only": "true"}
 PRACTICE = {**LINUX, "practice": "true"}
 QT_BASELINE = "d607db1b8a3fc882cfd4a9c19a6e454d9b610189"
-SETTINGS_BASELINE = "79965d49ea1ed8494fa917cd2a3ffb669b3e093a"
 
 
 class ScopeTests(unittest.TestCase):
@@ -283,42 +288,39 @@ class ScopeTests(unittest.TestCase):
         self.git("update-ref", "-d", "refs/remotes/origin/trunk")
         self.assertEqual(LINUX, self.select(before))  # No whole-branch evidence.
 
-    def test_settings_partial_preserves_reviewed_first_parent_and_later_push_limits(self):
-        self.git("update-ref", "refs/replace/" + SETTINGS_BASELINE, self.base)
-        first = self.commit(
-            {
-                "src/linux/desktop/ui.py": "settings",
-                ".github/workflows/check.yml": "reviewed first wiring",
-            },
-            parents=[SETTINGS_BASELINE],
+    def test_quality_only_requires_explicit_dispatch_and_collection(self):
+        event = {"CHECK_MODE": "quality-only", "COLLECT_TRANSLATION_QUALITY": "true"}
+        self.assertEqual(
+            QUALITY_ONLY, self.select(self.base, EVENT_NAME="workflow_dispatch", **event)
         )
-        branch = "work/linux-settings"
-        self.assertEqual(SETTINGS, self.select("0" * 40, branch, CREATED="true"))
-        self.commit({"tests/linux/desktop_e2e.py": "settings test", "docs/settings.md": "notes"})
-        self.assertEqual(SETTINGS, self.select(first, branch))
-        for path in (
-            "src/linux/desktop/other.py",
-            "src/shared/core.cs",
-            "global.json",
-            "eng/shared/ci_scope.py",
-            ".github/workflows/check.yml",
-        ):
-            with self.subTest(path=path):
-                self.reset(first)
-                self.commit({path: "unreviewed change"})
-                self.assertEqual(FULL, self.select(first, branch))
-        self.reset(first)
-        self.commit({".github/workflows/check.yml": "temporary wiring"})
-        self.commit({".github/workflows/check.yml": "reviewed first wiring"})
-        self.assertEqual(FULL, self.select(first, branch))
-        self.reset(self.base)
+        for name in ("push", "pull_request"):
+            self.assertEqual(FULL, self.select(self.base, EVENT_NAME=name, **event))
+        for mode, collect in (("quality-only", "false"), ("quality-only", ""), ("unknown", "true")):
+            with self.subTest(mode=mode, collect=collect):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.select(
+                        self.base,
+                        EVENT_NAME="workflow_dispatch",
+                        CHECK_MODE=mode,
+                        COLLECT_TRANSLATION_QUALITY=collect,
+                    )
+
+    def test_full_collection_preserves_full_platform_checks(self):
+        for collect in ("true", "false", ""):
+            self.assertEqual(
+                FULL,
+                self.select(
+                    self.base,
+                    EVENT_NAME="workflow_dispatch",
+                    CHECK_MODE="full",
+                    COLLECT_TRANSLATION_QUALITY=collect,
+                ),
+            )
+
+    def test_retired_settings_branch_has_no_partial_exception(self):
+        before = self.base
         self.commit({"src/linux/desktop/ui.py": "settings"})
-        self.assertEqual(FULL, self.select("0" * 40, branch))  # Wrong first parent.
-        self.reset(first)
-        for before in ("", "not-a-sha", "f" * 40):
-            self.assertEqual(FULL, self.select(before, branch))
-        self.git("update-ref", "-d", "refs/replace/" + SETTINGS_BASELINE)
-        self.assertEqual(FULL, self.select("0" * 40, branch))
+        self.assertEqual(FULL, self.select(before, "work/linux-settings"))
 
 
 if __name__ == "__main__":

@@ -1035,6 +1035,234 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                 native.call("overlay-hide")
                 result["updating_translation_muted_and_manual_states_normal"] = True
 
+                # Controlled view data exercises the real QLineEdit/Fcitx/JSON
+                # adapter. It never enables a production gate or claims model quality.
+                def glossary_source(view_state, finish):
+                    import uuid
+
+                    prepare()
+                    publication = publish()
+                    target = publication["target"]
+                    actions = {
+                        "settingsRevision": 12,
+                        "styleReleased": False,
+                        "canChangeStyle": False,
+                        "canInheritStyle": False,
+                        "applicationStyle": None,
+                        "styleUnavailableReason": None,
+                        "inheritUnavailableReason": None,
+                        "alternativeReleased": False,
+                        "canRequestAlternative": False,
+                        "alternativeUnavailableReason": None,
+                        "feedback": None,
+                        "glossaryReleased": True,
+                        "canOpenGlossary": True,
+                        "glossaryUnavailableReason": None,
+                    }
+                    assert native.describe(target)["sourceGlossarySupported"] is True
+                    assert render_view(
+                        publication, view_state, "Kept candidate", False, 1, actions
+                    )["visible"]
+                    original = state()["first"]
+                    before = len(native.events)
+
+                    def renew():
+                        native.call(
+                            "overlay-renew",
+                            {
+                                "target": target,
+                                "generation": generation,
+                                "revision": 1,
+                                "authority": publication["authority"],
+                                "expiresAtMs": now_ms() + 800,
+                            },
+                        )
+
+                    def observe(predicate, message):
+                        def check():
+                            renew()
+                            return predicate(state())
+
+                        return wait(check, message)
+
+                    def click(name):
+                        renew()
+                        control = state()["overlayControls"][name]
+                        assert control["visible"] and control["enabled"]
+                        bounds, scale = control["geometry"], state()["scale"]
+                        run(
+                            [
+                                "xdotool",
+                                "mousemove",
+                                "--window",
+                                window,
+                                str(int((bounds["x"] + bounds["width"] / 2) * scale)),
+                                str(int((bounds["y"] + bounds["height"] / 2) * scale)),
+                                "click",
+                                "1",
+                            ],
+                            env=environment,
+                        )
+
+                    def events(operation):
+                        renew()
+                        return [
+                            item["data"]
+                            for item in native.events[before:]
+                            if item.get("event") == "ui"
+                            and item["data"].get("operation") == operation
+                        ]
+
+                    def unchanged():
+                        actual = state()["first"]
+                        for key in (
+                            "text",
+                            "cursor",
+                            "selectionStart",
+                            "selectionLength",
+                            "changes",
+                            "edits",
+                            "undoAvailable",
+                        ):
+                            assert actual[key] == original[key], (
+                                view_state,
+                                finish,
+                                key,
+                                actual,
+                                original,
+                            )
+                        assert state()["editorText"] == "Kept candidate"
+                        assert state()["editorReadOnly"] and not state()["editorFocused"]
+                        assert not events("beginEdit")
+                        assert not [
+                            item
+                            for item in native.events[before:]
+                            if item.get("event") == "accepted"
+                        ]
+
+                    observe(lambda value: value.get("overlayVisible"), "source glossary preview")
+                    click("typelay-menu-trigger")
+                    observe(lambda value: value.get("overlayMenuVisible"), "source glossary menu")
+                    click("typelay-glossary-open")
+                    event = wait(
+                        lambda: events("sessionGlossaryBegin"),
+                        "explicit source glossary activation",
+                    )[-1]
+                    token = {
+                        "target": publication["permit"]["plan"]["expected"]["target"],
+                        "commandGeneration": generation,
+                        "revision": 1,
+                    }
+                    entry = {
+                        "formId": str(uuid.uuid4()),
+                        "token": token,
+                        "settingsRevision": 12,
+                        "directions": [],
+                        "sourceOrigin": True,
+                    }
+                    request = {
+                        "target": target,
+                        "generation": generation,
+                        "revision": event["revision"],
+                        "entry": entry,
+                    }
+                    if finish == "stale":
+                        request["entry"] = {**entry, "token": {**token, "revision": 2}}
+                        assert native.call("overlay-glossary-open", request)["opened"] is False
+                        unchanged()
+                        native.call("overlay-hide")
+                        return
+                    renew()
+                    assert native.call("overlay-glossary-open", request)["opened"] is True
+                    observe(
+                        lambda value: value.get("glossary", {}).get("source", {}).get("focused"),
+                        "real source-word focus without translation editing",
+                    )
+                    unchanged()
+                    if finish == "cancel":
+                        click("typelay-glossary-cancel")
+                        observe(
+                            lambda value: not value.get("glossary", {}).get("visible")
+                            and value["first"]["focused"],
+                            "cancel restores the exact source without writing",
+                        )
+                    elif finish == "changed-source":
+                        fixture("set", field="first", text="Changed externally")
+                        observe(
+                            lambda value: not value.get("glossary", {}).get("visible"),
+                            "changed source retires glossary",
+                        )
+                        assert not events("sessionGlossaryAdd")
+                        native.call("overlay-hide")
+                        return
+                    else:
+                        run(["xdotool", "type", "--delay", "1", "PR"], env=environment)
+                        observe(
+                            lambda value: value.get("glossary", {}).get("source", {}).get("text")
+                            == "PR"
+                            and settled(),
+                            "first glossary word IM retirement",
+                        )
+                        run(["xdotool", "key", "--delay", "0", "Tab"], env=environment)
+                        observe(
+                            lambda value: value.get("glossary", {})
+                            .get("target", {})
+                            .get("focused"),
+                            "target word focus",
+                        )
+                        run(["xdotool", "type", "--delay", "1", "pull request"], env=environment)
+                        observe(
+                            lambda value: value.get("glossary", {}).get("target", {}).get("text")
+                            == "pull request"
+                            and settled(),
+                            "second glossary word IM retirement",
+                        )
+                        click("typelay-glossary-save")
+                        saved = wait(
+                            lambda: events("sessionGlossaryAdd"),
+                            "explicit Save with both words Clear",
+                        )[-1]["value"]
+                        assert saved["formId"] == entry["formId"] and saved["token"] == token
+                        receipt = {"formId": entry["formId"], "token": token}
+                        renew()
+                        assert native.call(
+                            "overlay-glossary-return",
+                            {
+                                **receipt,
+                                "target": target,
+                                "generation": generation,
+                                "revision": 1,
+                            },
+                        ) == {**receipt, "returned": True}
+                        actual = observe(
+                            lambda value: value["first"]["focused"] and value,
+                            "original source refocused",
+                        )
+                        description = native.describe(target)
+                        assert description["glossarySource"] == receipt
+                        assert not description["sessionBindings"]["sourceReady"]
+                        assert not description["sessionBindings"]["editorReady"]
+                        captured = native.call(
+                            "capture", {"target": target, "authority": description["authority"]}
+                        )
+                        assert (
+                            captured
+                            and captured["ime"] == "Clear"
+                            and not captured["writeSupported"]
+                        )
+                        assert (
+                            captured["glossarySource"] == receipt
+                            and captured["text"] == original["text"]
+                        )
+                        assert actual["first"]["selectionStart"] == original["selectionStart"]
+                    unchanged()
+                    native.call("overlay-hide")
+
+                for glossary_state in ("ValidTranslation", "EditedTranslationPending"):
+                    for glossary_finish in ("cancel", "return", "stale", "changed-source"):
+                        glossary_source(glossary_state, glossary_finish)
+                result["qlineedit_explicit_source_glossary_zero_write_return_and_refusals"] = True
+
                 def editor_view():
                     prepare()
                     publication = publish()

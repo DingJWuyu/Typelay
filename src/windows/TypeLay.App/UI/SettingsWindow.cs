@@ -584,7 +584,7 @@ internal sealed class SettingsWindow : Window
                 return false;
             _settingsError = !ModelCatalog.IsSupportedSetting(value.Source, value.Target)
                 ? "请选择支持的源语言和目标语言。"
-                : "请使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，排除 F12。两个按需快捷键不能相同。";
+                : SettingsDraftPresentation.ShortcutErrorMessage(ShortcutDraftError.InvalidOnDemandBindings);
             Refresh();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
@@ -890,7 +890,7 @@ internal sealed class SettingsWindow : Window
         _shortcutRetryButton.Margin = new(0, 0, 0, 14);
         _content.Children.Add(_shortcutRetryButton);
         Note("直接替换的当前范围", "Windows x64 中通过运行时校验的原生 Edit 控件支持后台写回。翻译时可以切换焦点，结果仍只写回原输入框；冲突、输入法状态不明或不兼容控件会安全拒写。不会抢回焦点，也不使用实验性 Tab 写回作为后备。结果与失败原因可在托盘快速面板查看。");
-        Note("组合键格式", "唤醒与直接替换支持 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24，当前不支持 F12。组合键被其他应用占用时，设置仍保存，但对应命令不会启用。");
+        Note("组合键格式", "唤醒与直接替换支持 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，也支持 Shift+功能键；当前不支持 F12。组合键被其他应用占用时，设置仍保存，但对应命令不会启用。");
         Rule();
         Note("保留原应用快捷键", "仅精确匹配已设置的接受或退出键；其余 Ctrl / Alt / Shift / Win 组合交还原应用。没有有效候选时，接受键不执行写回。");
         RefreshShortcuts();

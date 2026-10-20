@@ -54,6 +54,7 @@
 #include <time.h>
 #include <typeinfo>
 #include <unistd.h>
+#include <utility>
 
 namespace {
 constexpr qsizetype MaxFrame = 256 * 1024;
@@ -195,10 +196,14 @@ public:
         qApp->installEventFilter(this);
         connect(qApp, &QApplication::focusChanged, this, [this](QWidget *old, QWidget *current) {
             ++focusGeneration_;
+            if (glossaryTransfer_) {
+                ++glossaryTransfer_->focusChanges;
+                if (old != glossaryTransfer_->from || current != glossaryTransfer_->to)
+                    glossaryTransfer_->failed = true;
+            }
             revokeEditorOrdered();
             for (auto *widget : {old, current}) if (auto *target = discover(widget)) invalidate(target, false, true);
-            syncOverlay();
-            refreshGlossaryFocus();
+            if (!glossaryTransfer_) { syncOverlay(); refreshGlossaryFocus(); }
         });
         connect(QGuiApplication::styleHints(), &QStyleHints::colorSchemeChanged, this,
             [this](Qt::ColorScheme) { refreshSystemTheme(); });
@@ -295,7 +300,8 @@ public:
         const bool enabled = sessionCurrent(shortcutConfiguration_.value("generation"));
         const bool sourceRoute = target && sessionProvider(target->field);
         const bool editing = target == overlayTarget_ && editor_ && editor_->hasFocus();
-        const bool auxiliary = target == overlayTarget_ && insideGlossary(QApplication::focusWidget());
+        const bool auxiliary = target == overlayTarget_ && (insideGlossary(QApplication::focusWidget())
+            || (glossary_ && glossary_->source && glossary_->returnStarted));
         return {{"generation", shortcutConfiguration_.value("generation")},
             {"accept", shortcutConfiguration_.value("accept")}, {"exit", shortcutConfiguration_.value("exit")},
             {"sourceReady", enabled && !auxiliary && (sourceRoute || editorRoute)},
@@ -866,9 +872,14 @@ private:
         if (!target || target->mutating || target->probing) return {};
         inspect(target);
         if (!supported(target)) return {};
-        return {{"target", target->id}, {"metadata", metadata(target)}, {"authority", authority(target)},
+        QJsonObject result{{"target", target->id}, {"metadata", metadata(target)}, {"authority", authority(target)},
             {"geometry", geometry(target)}, {"focused", target == focused()}, {"publication", publicationState(target)},
-            {"sessionBindings", sessionBindings(target)}};
+            {"sessionBindings", sessionBindings(target)}, {"sourceGlossarySupported", sourceGlossarySupported(target)}};
+        if (glossaryCurrent(glossary_) && glossary_->source && glossary_->returned
+            && glossary_->source->target == target && target == focused()
+            && glossary_->returnedFocus == target->focus && clear(target->state))
+            result.insert("glossarySource", glossaryReceipt(glossary_));
+        return result;
     }
     QJsonObject selection(Target *target) const {
         if (const auto *line = target->line()) {
@@ -1477,6 +1488,7 @@ private:
         stopOverlayMotion();
         if (!card_) return;
         glossaryOpening_.reset();
+        glossaryOpeningSource_.reset();
         glossaryEditorContext_.reset();
         glossaryOwnedEditor_ = nullptr;
         if (glossary_) closeGlossary(glossary_, false, true);
@@ -1810,9 +1822,30 @@ private:
         QJsonObject token, actions;
         QJsonValue generation;
         qint64 revision;
+        QString state;
+    };
+    struct GlossarySource {
+        Target *target = nullptr;
+        QPointer<QWidget> field, top;
+        QPointer<QObject> provider;
+        QPointer<QTextDocument> draft;
+        QJsonObject authority, view;
+        quint64 storage = 0, selection = 0;
+        int draftRevision = 0;
+    };
+    struct GlossaryTransfer {
+        QPointer<QWidget> from, to;
+        QString target;
+        QJsonObject marker;
+        QList<QJsonObject> frames;
+        int focusChanges = 0;
+        bool failed = false;
     };
     struct GlossaryForm {
         TranslationActionMenu context;
+        std::optional<GlossarySource> source;
+        bool returnStarted = false, returned = false;
+        quint64 returnedFocus = 0;
         QJsonObject entry;
         QPointer<QWidget> panel;
         QPointer<QPlainTextEdit> editor;
@@ -1834,7 +1867,10 @@ private:
         return context.card && context.card == card_ && overlayTarget_ && context.target == overlayTarget_->id
             && context.generation == overlayGeneration_ && (!exactRevision || context.revision == overlayRevision_)
             && !context.token.isEmpty() && context.token == overlayView_.value("viewContext").toObject().value("token").toObject()
-            && overlayView_.value("state").toString() == QStringLiteral("EditingTranslation")
+            && overlayView_.value("state").toString() == context.state
+            && (context.state == QStringLiteral("EditingTranslation")
+                || context.state == QStringLiteral("ValidTranslation")
+                || context.state == QStringLiteral("EditedTranslationPending"))
             && sessionCurrent(context.generation) && overlayActive();
     }
     bool glossaryCurrent(const std::shared_ptr<GlossaryForm> &form) const {
@@ -1844,7 +1880,110 @@ private:
             && form->terms[0]->parentWidget() == form->panel && form->terms[1]->parentWidget() == form->panel
             && form->scope->parentWidget() == form->panel && form->save->parentWidget() == form->panel
             && form->cancel->parentWidget() == form->panel
-            && glossaryContextCurrent(form->context);
+            && glossaryContextCurrent(form->context)
+            && (!form->source || glossarySourceCurrent(*form->source));
+    }
+    bool sourceGlossarySupported(Target *target) const {
+        if (!supported(target) || !target->line() || target->quarantined || target->mutating) return false;
+        const auto value = metadata(target);
+        return value.value("password") == false && value.value("readOnly") == false
+            && value.value("enabled") == true && target->observed && target->provider
+            && target->state.contextGeneration && target->state.fieldGeneration;
+    }
+    bool glossarySourceCurrent(const GlossarySource &source) const {
+        auto *target = source.target;
+        if (!sourceGlossarySupported(target) || target != overlayTarget_ || !source.field || !source.top
+            || target->field != source.field || target->field->window() != source.top
+            || !source.provider || target->provider != source.provider || overlaySourceProvider_ != source.provider
+            || !editor_ || !source.draft || editor_->document() != source.draft
+            || source.draft->revision() != source.draftRevision || target->storage != source.storage
+            || target->selection != source.selection || !metadataMatches(target, source.authority)
+            || integer(source.authority, "inputRevision") != qint64(target->input)
+            || integer(source.authority, "contentRevision") != qint64(target->content)) return false;
+        auto *bound = source.field->property(ProviderProperty).value<QObject *>();
+        const auto stamp = source.authority.value("contextStamp").toObject();
+        return (!bound || bound == source.provider)
+            && integer(stamp, "context") == qint64(target->state.contextGeneration)
+            && integer(stamp, "field") == qint64(target->state.fieldGeneration)
+            && integer(stamp, "input") == qint64(target->state.inputEpoch);
+    }
+    bool glossaryOriginReady(const TranslationActionMenu &context) {
+        if (!glossaryContextCurrent(context) || !translationMenuCurrent(context) || !editor_) return false;
+        if (context.state == QStringLiteral("EditingTranslation")) {
+            const auto editor = editor_;
+            TypeLayFcitxQtStateV1 state{};
+            return !editor->isReadOnly() && editor->hasFocus() && widgetClear(editor, &state)
+                && editor && editor == editor_ && editor->hasFocus() && glossaryContextCurrent(context)
+                && translationMenuCurrent(context);
+        }
+        auto *target = overlayTarget_;
+        const auto basis = overlayAuthority_;
+        return sourceGlossarySupported(target) && focused() == target && inspect(target)
+            && clear(target->state) && sourceAuthorityMatches(target, basis, true) && local(target, target->state)
+            && focused() == target && glossaryContextCurrent(context) && translationMenuCurrent(context);
+    }
+    QJsonObject glossaryReceipt(const std::shared_ptr<GlossaryForm> &form) const {
+        return {{"formId", form->entry.value("formId")}, {"token", form->context.token}};
+    }
+    bool glossarySourceRender(const std::shared_ptr<GlossaryForm> &form, Target *target, const QJsonObject &data) const {
+        if (!form || !form->source || !glossaryCurrent(form) || form->source->target != target
+            || form->context.generation != data.value("generation")
+            || form->context.revision != integer(data, "revision", -1)) return false;
+        const auto basis = data.value("authority").toObject();
+        for (const auto *key : {"target", "metadataKey", "inputRevision", "contentRevision"})
+            if (basis.value(QLatin1String(key)) != form->source->authority.value(QLatin1String(key))) return false;
+        for (const auto *key : {"context", "field", "input"})
+            if (basis.value("contextStamp").toObject().value(QLatin1String(key))
+                != form->source->authority.value("contextStamp").toObject().value(QLatin1String(key))) return false;
+        const auto before = form->source->view;
+        auto after = data.value("view").toObject();
+        auto context = after.value("viewContext").toObject();
+        const auto oldContext = before.value("viewContext").toObject();
+        if (overlayView_.value("editable") == false && after.value("editable") == true) return false;
+        if (overlayView_.value("viewContext").toObject().value("canEdit") == false && context.value("canEdit") == true) return false;
+        if (before.value("editable") == true && after.value("editable") == false) after.insert("editable", true);
+        if (oldContext.value("canEdit") == true && context.value("canEdit") == false) context.insert("canEdit", true);
+        auto actions = context.value("translationActions").toObject();
+        const auto oldActions = oldContext.value("translationActions").toObject();
+        const QString pending = QStringLiteral("请先完成当前术语表单"), stale = QStringLiteral("内容或设置已变化，请重新打开表单");
+        if (translationActions(overlayView_).value("glossaryUnavailableReason") == stale
+            && actions.value("glossaryUnavailableReason") == pending) return false;
+        if (oldActions.value("glossaryUnavailableReason") == pending && actions.value("glossaryUnavailableReason") == stale)
+            actions.insert("glossaryUnavailableReason", pending);
+        context.insert("translationActions", actions); after.insert("viewContext", context);
+        return before == after;
+    }
+    void flushGlossaryTransfer(GlossaryTransfer &transfer, bool marked) {
+        const auto frames = std::exchange(transfer.frames, {});
+        for (qsizetype index = 0; index < frames.size(); ++index) {
+            auto frame = frames[index];
+            if (marked) {
+                auto marker = transfer.marker;
+                marker.insert("ordinal", int(index + 1)); marker.insert("count", int(frames.size()));
+                auto data = frame.value("data").toObject(); data.insert("glossaryTransfer", marker);
+                frame.insert("data", data);
+            }
+            sendFrame(frame);
+        }
+    }
+    bool transferGlossary(const std::shared_ptr<GlossaryForm> &form, bool returning) {
+        if (glossaryTransfer_ || !glossaryCurrent(form) || !form->source) return false;
+        const QPointer<QWidget> from = QApplication::focusWidget();
+        const QPointer<QWidget> to = returning ? form->source->field : QPointer<QWidget>(form->terms[0]);
+        if (!from || !to || (returning ? !insideGlossary(from) : from != form->source->field)) return false;
+        GlossaryTransfer transfer;
+        transfer.from = from; transfer.to = to; transfer.target = form->context.target;
+        transfer.marker = glossaryReceipt(form);
+        transfer.marker.insert("phase", returning ? "Returning" : "Opening");
+        glossaryTransfer_ = &transfer;
+        to->setFocus(Qt::OtherFocusReason);
+        glossaryTransfer_ = nullptr;
+        const bool valid = !transfer.failed && transfer.focusChanges == 1 && !transfer.frames.isEmpty()
+            && glossaryCurrent(form) && to && QApplication::focusWidget() == to
+            && QGuiApplication::focusObject() == to && overlayActive();
+        flushGlossaryTransfer(transfer, valid);
+        syncOverlay();
+        return valid && glossaryCurrent(form);
     }
     bool insideGlossary(QObject *object) const {
         const auto form = glossary_;
@@ -1907,7 +2046,7 @@ private:
     }
     void refreshGlossaryFocus() {
         const auto form = glossary_;
-        if (!form || probingGlossary_) return;
+        if (!form || probingGlossary_ || glossaryTransfer_) return;
         QScopedValueRollback<bool> probing(probingGlossary_, true);
         if (!glossaryCurrent(form)) { closeGlossary(form, false, true); return; }
         const auto focus = QApplication::focusWidget();
@@ -1927,6 +2066,7 @@ private:
         const QPointer<QWidget> focusedControl = QApplication::focusWidget();
         const bool ownsFocus = insideGlossary(focusedControl);
         const bool returnEditor = restore && glossaryCurrent(form) && ownsFocus;
+        const QPointer<QWidget> destination = form->source ? form->source->field : QPointer<QWidget>(form->editor);
         revokeEditorOrdered();
         glossary_.reset();
         glossaryEvent(form->context, "sessionGlossaryFocus");
@@ -1934,7 +2074,8 @@ private:
         // Check before hiding, since hide itself may move focus. Never restore
         // a stale form or reclaim focus from an intervening user/app action.
         if (returnEditor && glossaryContextCurrent(form->context) && form->editor == editor_
-            && focusedControl && QApplication::focusWidget() == focusedControl) form->editor->setFocus(Qt::OtherFocusReason);
+            && (!form->source || glossarySourceCurrent(*form->source)) && destination
+            && focusedControl && QApplication::focusWidget() == focusedControl) destination->setFocus(Qt::OtherFocusReason);
         else if (ownsFocus && focusedControl && QApplication::focusWidget() == focusedControl) focusedControl->clearFocus();
         if (form->panel) { form->panel->hide(); form->panel->deleteLater(); }
         if (card_ == form->context.card) arrangeOverlay();
@@ -1993,12 +2134,15 @@ private:
         if (!translationActionMenu_ || !menu_ || menu_->isHidden() || glossary_ || glossaryOpening_) return;
         const auto context = *translationActionMenu_;
         const auto actions = translationActions(overlayView_);
-        if (!translationMenuCurrent(context) || !glossaryContextCurrent(context)
-            || !actions.value("glossaryReleased").toBool() || !actions.value("canOpenGlossary").toBool()
-            || !editor_ || !editor_->hasFocus() || editor_->isReadOnly()) return;
-        TypeLayFcitxQtStateV1 state{};
-        if (!widgetClear(editor_, &state) || !translationMenuCurrent(context) || !glossaryContextCurrent(context)
-            || !editor_ || !editor_->hasFocus()) return;
+        if (!actions.value("glossaryReleased").toBool() || !actions.value("canOpenGlossary").toBool()
+            || !glossaryOriginReady(context)) return;
+        glossaryOpeningSource_.reset();
+        if (context.state != QStringLiteral("EditingTranslation")) {
+            auto *target = overlayTarget_;
+            glossaryOpeningSource_ = GlossarySource{target, target->field, target->field->window(),
+                target->provider, editor_->document(), overlayAuthority_, overlayView_, target->storage,
+                target->selection, editor_->document()->revision()};
+        }
         revokeEditorOrdered();
         clearPermit();
         glossaryOpening_ = context;
@@ -2066,11 +2210,13 @@ private:
         if (!glossaryOpening_ || glossary_ || !overlayCurrent(data)) return;
         const auto context = *glossaryOpening_;
         glossaryOpening_.reset();
+        auto source = std::exchange(glossaryOpeningSource_, std::nullopt);
         const auto entry = data.value("entry").toObject();
         const auto directions = entry.value("directions");
         const auto actions = translationActions(overlayView_);
         if (glossaryOpeningFocus_ != focusGeneration_ || !glossaryContextCurrent(context)
-            || !translationMenuCurrent(context) || !editor_ || !editor_->hasFocus()
+            || !glossaryOriginReady(context) || (source && !glossarySourceCurrent(*source))
+            || entry.value("sourceOrigin").toBool() != bool(source)
             || !actions.value("glossaryReleased").toBool()
             || !entry.value("formId").isString() || QUuid(entry.value("formId").toString()).isNull()
             || entry.value("token").toObject() != context.token
@@ -2086,7 +2232,8 @@ private:
         revokeEditorOrdered();
         clearPermit();
         auto form = std::make_shared<GlossaryForm>();
-        form->context = context; form->entry = entry; form->editor = editor_;
+        form->context = context; form->entry = entry; form->editor = editor_; form->source = source;
+        if (form->source) form->source->view = overlayView_;
         auto *panel = new QWidget(card_);
         panel->setObjectName(QStringLiteral("typelay-glossary"));
         panel->setAccessibleName(QStringLiteral("加入术语表"));
@@ -2154,14 +2301,15 @@ private:
         QWidget::setTabOrder(scope, save);
         QWidget::setTabOrder(save, cancel);
         glossary_ = form;
-        glossaryEditorContext_ = context;
-        glossaryOwnedEditor_ = editor_;
+        if (!source) { glossaryEditorContext_ = context; glossaryOwnedEditor_ = editor_; }
         card_->layout()->addWidget(panel);
         panel->show();
         if (!glossaryCurrent(form)) { closeGlossary(form, false, true); return; }
         {
             QScopedValueRollback<bool> moving(movingGlossaryFocus_, true);
-            form->terms[0]->setFocus(Qt::OtherFocusReason);
+            if (source) {
+                if (!transferGlossary(form, false)) { closeGlossary(form, false, true); return; }
+            } else form->terms[0]->setFocus(Qt::OtherFocusReason);
         }
         if (glossaryCurrent(form)) { arrangeOverlay(); refreshGlossaryFocus(); }
     }
@@ -2228,7 +2376,10 @@ private:
         glossaryAction_->setVisible(actions.value("glossaryReleased").toBool());
         if (!languageCurrent(rendered) || !glossaryAction_) return false;
         glossaryAction_->setEnabled(current && !glossary_ && !glossaryOpening_
-            && rendered.view.value("state").toString() == QStringLiteral("EditingTranslation")
+            && (rendered.view.value("state").toString() == QStringLiteral("EditingTranslation")
+                || ((rendered.view.value("state").toString() == QStringLiteral("ValidTranslation")
+                    || rendered.view.value("state").toString() == QStringLiteral("EditedTranslationPending"))
+                    && sourceGlossarySupported(overlayTarget_)))
             && actions.value("glossaryReleased").toBool() && actions.value("canOpenGlossary").toBool());
         if (!languageCurrent(rendered) || !glossaryAction_) return false;
         glossaryAction_->setToolTip(actions.value("glossaryUnavailableReason").toString());
@@ -2302,7 +2453,7 @@ private:
                         if (!resetLanguageSelection() || !languageCurrent(rendered) || !overlayTarget_) return;
                         translationActionMenu_ = TranslationActionMenu{card_, overlayTarget_->id,
                             rendered.view.value("viewContext").toObject().value("token").toObject(),
-                            translationActions(rendered.view), rendered.generation, rendered.revision};
+                            translationActions(rendered.view), rendered.generation, rendered.revision, rendered.view.value("state").toString()};
                         if (!renderTranslationActions()) return;
                     } else translationActionMenu_.reset();
                     menu_->setVisible(menu_->isHidden());
@@ -2476,9 +2627,10 @@ private:
                 && presentation.value("editorOwnsText").toBool() && target->field
                 && integer(basis, "inputRevision") == qint64(target->input)
                 && integer(basis, "contentRevision") == qint64(target->content);
+            const bool retainedSourceForm = glossarySourceRender(glossary_, target, data);
             const bool valid = metadataMatches(target, basis) && presentation.value("visible").toBool()
                 && until >= current && until - current <= 1000
-                && (isPaused ? pauseCurrent(target, basis) : retainEditor || (inspect(target) && clear(target->state)))
+                && (isPaused ? pauseCurrent(target, basis) : retainedSourceForm || retainEditor || (inspect(target) && clear(target->state)))
                 && (focused() == target || (!isPaused && target == overlayTarget_ && overlayFocused_))
                 && target->field->window()->isActiveWindow() && !geometry(target).isEmpty() && viewCurrent(target, data);
             if (!valid) hideOverlay();
@@ -2486,6 +2638,7 @@ private:
                 const bool menuOnly = card_ && overlayTarget_ == target
                     && overlayGeneration_ == data.value("generation") && overlayRevision_ == integer(data, "revision", 0)
                     && data.value("theme").toString(QStringLiteral("system")) == overlayTheme_
+                    && (!glossary_ || !glossary_->source || retainedSourceForm)
                     && overlayView_ != view && editorViewIdentity(overlayView_) == editorViewIdentity(view);
                 if (menuOnly) {
                     // Keep the original editor control ticket and its deadline.
@@ -2514,11 +2667,14 @@ private:
                 if (glossary_ && (glossary_->context.token != nextToken
                     || glossary_->context.generation != data.value("generation")
                     || glossary_->context.revision != integer(data, "revision", 0)
-                    || view.value("state").toString() != QStringLiteral("EditingTranslation"))) closeGlossary(glossary_, false, true);
+                    || view.value("state").toString() != glossary_->context.state
+                    || (glossary_->source && !retainedSourceForm))) closeGlossary(glossary_, false, true);
                 if (glossaryOpening_ && (glossaryOpening_->token != nextToken
                     || glossaryOpening_->generation != data.value("generation")
                     || glossaryOpening_->revision != integer(data, "revision", 0)
-                    || view.value("state").toString() != QStringLiteral("EditingTranslation"))) glossaryOpening_.reset();
+                    || view.value("state").toString() != glossaryOpening_->state)) {
+                    glossaryOpening_.reset(); glossaryOpeningSource_.reset();
+                }
                 if (glossaryEditorContext_ && (glossaryEditorContext_->token != nextToken
                     || glossaryEditorContext_->generation != data.value("generation")
                     || glossaryOwnedEditor_ != editor_
@@ -2548,7 +2704,7 @@ private:
                     if (editor_->toPlainText() != text) {
                         // Once editing starts, the native editor owns its text,
                         // caret and undo history. A delayed draft echo is not an edit.
-                        const bool retained = editing && !editor_->isReadOnly();
+                        const bool retained = retainedSourceForm || (editing && !editor_->isReadOnly());
                         if (qEnvironmentVariableIsSet("TYPELAY_QT_PROBE")) {
                             const auto *counter = retained ? "tlqtEditorOwnedRenderSkips" : "tlqtEditorProgrammaticSets";
                             qApp->setProperty(counter, qApp->property(counter).toInt() + 1);
@@ -2556,8 +2712,10 @@ private:
                         if (!retained) editor_->setPlainText(text);
                     }
                 }
-                editor_->setReadOnly(!editing);
-                editor_->setFocusPolicy(editing ? Qt::StrongFocus : Qt::NoFocus);
+                if (!retainedSourceForm) {
+                    editor_->setReadOnly(!editing);
+                    editor_->setFocusPolicy(editing ? Qt::StrongFocus : Qt::NoFocus);
+                }
                 const bool editable = !isPaused && view.value("editable").toBool()
                     && view.value("viewContext").toObject().value("canEdit").toBool();
                 const auto editHint = editing ? QStringLiteral("编辑译文")
@@ -2729,6 +2887,37 @@ private:
         }
         return false; // Ordinary Qt/Fcitx input is never replayed or swallowed here.
     }
+    void returnGlossary(Target *target, const QJsonObject &data, qint64 id) {
+        const auto form = glossary_;
+        const auto receipt = QJsonObject{{"formId", data.value("formId")}, {"token", data.value("token")}};
+        const auto reply = [this, id, receipt](bool returned) {
+            auto value = receipt; value.insert("returned", returned); respond(id, value);
+        };
+        if (!glossaryCurrent(form) || !form->source || form->source->target != target
+            || !form->pending || form->returnStarted || !overlayCurrent(data)
+            || receipt != glossaryReceipt(form) || glossaryIme(form) != QStringLiteral("Clear")
+            || form->reportedFocus.toObject().value("ime") != QStringLiteral("Clear")) { reply(false); return; }
+        form->returnStarted = true;
+        clearPermit(); revokeEditorOrdered();
+        if (!transferGlossary(form, true)) { closeGlossary(form, false, true); reply(false); return; }
+        const auto generation = ++returnGeneration_, connection = connectionGeneration_, focus = focusGeneration_;
+        const qint64 until = now() + 450;
+        auto *timer = new QTimer(this);
+        connect(timer, &QTimer::timeout, this, [this, timer, target, form, reply, generation, connection, focus, until] {
+            const bool same = generation == returnGeneration_ && connection == connectionGeneration_
+                && focus == focusGeneration_
+                && glossaryCurrent(form) && form->pending && form->source && focused() == target;
+            const bool done = same && inspect(target) && clear(target->state) && glossaryCurrent(form)
+                && local(target, target->state) && focused() == target && glossaryCurrent(form)
+                && focus == focusGeneration_ && generation == returnGeneration_ && connection == connectionGeneration_;
+            if (!done && same && now() < until) return;
+            timer->stop(); timer->deleteLater();
+            const bool returned = done && now() <= until;
+            if (returned) { form->returned = true; form->returnedFocus = target->focus; }
+            if (connection == connectionGeneration_) reply(returned);
+        });
+        timer->start(10);
+    }
     void returnSource(Target *target, const QJsonObject &basis, const QJsonValue &bindingGeneration, qint64 id) {
         if (!sessionCurrent(bindingGeneration)) { respond(id, QJsonObject{{"returned", false}}); return; }
         clearPermit();
@@ -2783,7 +2972,8 @@ private:
         const auto targetId = data.value("target").toString();
         if (targetId.isEmpty()) target = focused();
         else for (auto *candidate : targets_) if (candidate->id == targetId) { target = candidate; break; }
-        if (op.startsWith("overlay-")) respond(id, overlayCommand(op, target, data));
+        if (op == "overlay-glossary-return") returnGlossary(target, data, id);
+        else if (op.startsWith("overlay-")) respond(id, overlayCommand(op, target, data));
         else if (op == "describe") respondObject(id, describe(target));
         else if (op == "capture") respondObject(id, capture(target, data.value("authority").toObject()));
         else if (op == "direct") { revokeEditorOrdered(); respond(id, write(target, data, true)); }
@@ -2854,7 +3044,16 @@ private:
         respond(id, value.isEmpty() ? QJsonValue() : QJsonValue(value));
     }
     void sendEvent(const char *event, const QJsonObject &data) {
-        sendFrame({{"event", QLatin1String(event)}, {"data", data}});
+        const QJsonObject frame{{"event", QLatin1String(event)}, {"data", data}};
+        if (glossaryTransfer_ && !glossaryTransfer_->failed) {
+            auto &transfer = *glossaryTransfer_;
+            if (qstrcmp(event, "input") == 0 && transfer.frames.size() < 8
+                && data.value("target") == transfer.target && data.value("focusChanged") == true
+                && data.value("textChanged") == false) { transfer.frames.append(frame); return; }
+            transfer.failed = true;
+            flushGlossaryTransfer(transfer, false);
+        }
+        sendFrame(frame);
     }
     void sendFrame(const QJsonObject &frame) {
         if (fd_ < 0) return;
@@ -2980,6 +3179,8 @@ private:
     QPointer<QWidget> footer_, menu_, tools_, styleOptions_;
     std::optional<TranslationActionMenu> translationActionMenu_;
     std::optional<TranslationActionMenu> glossaryOpening_, glossaryEditorContext_;
+    std::optional<GlossarySource> glossaryOpeningSource_;
+    GlossaryTransfer *glossaryTransfer_ = nullptr;
     QPointer<QPlainTextEdit> glossaryOwnedEditor_;
     quint64 glossaryOpeningFocus_ = 0;
     std::shared_ptr<GlossaryForm> glossary_;

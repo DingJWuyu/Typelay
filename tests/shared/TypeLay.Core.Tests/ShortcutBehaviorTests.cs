@@ -9,6 +9,8 @@ public sealed class ShortcutBehaviorTests
     [InlineData("shift + ctrl + f9", "Ctrl+Shift+F9")]
     [InlineData("alt+ctrl+k", "Ctrl+Alt+K")]
     [InlineData("Alt+F24", "Alt+F24")]
+    [InlineData("shift+f1", "Shift+F1")]
+    [InlineData("Shift+F24", "Shift+F24")]
     [InlineData("Ctrl+7", "Ctrl+7")]
     public void ConfiguredChordsHaveOneCanonicalSpelling(string text, string canonical)
     {
@@ -23,6 +25,13 @@ public sealed class ShortcutBehaviorTests
     [InlineData("")]
     [InlineData("A")]
     [InlineData("Shift+A")]
+    [InlineData("Shift+7")]
+    [InlineData("Shift+F12")]
+    [InlineData("Shift+Tab")]
+    [InlineData("Shift+Esc")]
+    [InlineData("Shift+F01")]
+    [InlineData("Shift+F25")]
+    [InlineData("Shift+Shift+F8")]
     [InlineData("Ctrl+Tab")]
     [InlineData("Ctrl+Esc")]
     [InlineData("Win+K")]

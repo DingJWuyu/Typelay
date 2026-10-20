@@ -38,6 +38,26 @@ public sealed class HotkeyRegistrationTests
     }
 
     [Fact]
+    public void ShiftFunctionCommandsReserveOnlyTheirExactModifierCombination()
+    {
+        var attempts = new List<(uint Modifiers, uint Key)>();
+        using var hotkeys = new OnDemandHotkeys(0, (_, _, modifiers, key) =>
+        {
+            attempts.Add((modifiers, key));
+            return true;
+        }, (_, _) => true);
+        hotkeys.Configure(true, "Shift+F1", "Shift+F24");
+        Assert.True(hotkeys.Registered);
+        Assert.Equal(new[] { (4u | 0x4000u, 0x70u), (4u | 0x4000u, 0x87u) }, attempts);
+        Assert.Collection(hotkeys.Bindings,
+            wake => Assert.Equal(new RegisteredShortcut("wake", 0x70, TypeLay.Core.ShortcutModifiers.Shift), wake),
+            direct => Assert.Equal(new RegisteredShortcut("direct", 0x87, TypeLay.Core.ShortcutModifiers.Shift), direct));
+        hotkeys.Configure(false, "Shift+F1", "Shift+F24");
+        Assert.Empty(hotkeys.Bindings);
+        Assert.False(hotkeys.HasRegistration);
+    }
+
+    [Fact]
     public void RetryKeepsSuccessfulReservationsAndDoesNotProbeUnrelatedChords()
     {
         var attempts = new List<uint>();

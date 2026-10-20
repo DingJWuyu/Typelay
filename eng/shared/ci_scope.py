@@ -5,7 +5,6 @@ import re
 import subprocess
 
 QT_BASELINE = "d607db1b8a3fc882cfd4a9c19a6e454d9b610189"
-SETTINGS_BASELINE = "79965d49ea1ed8494fa917cd2a3ffb669b3e093a"
 PRACTICE_PATHS = {
     "src/linux/desktop/practice.py",
     "tests/linux/practice_window.py",
@@ -93,36 +92,22 @@ def qt_only_branch():
         return False
 
 
-def settings_only_push(previous):
-    # Preserve the temporary settings branch's reviewed first-parent exception.
-    parents = git("rev-list", "--parents", "-n", "1", "HEAD").decode().split()[1:]
-    wiring_unchanged = previous == "0" * 40 and parents == [SETTINGS_BASELINE]
-    if commit_exists(previous) and succeeds("merge-base", "--is-ancestor", previous, "HEAD"):
-        wiring_unchanged = not any(
-            path.startswith(".github/") for path in touched_paths(previous, "HEAD")
-        )
-    return wiring_unchanged and succeeds(
-        "diff",
-        "--quiet",
-        SETTINGS_BASELINE,
-        "HEAD",
-        "--",
-        ".",
-        ":!src/linux/desktop/ui.py",
-        ":!tests/linux/desktop_e2e.py",
-        ":!.github/workflows/check.yml",
-        ":!docs/**",
-    )
-
-
 def select():
-    windows, linux, qt, settings, practice = True, True, False, False, False
+    windows, linux, qt, quality_only, practice = True, True, False, False, False
     branch = os.environ.get("BRANCH", "")
     before = os.environ.get("BEFORE", "")
     after = os.environ.get("AFTER", "")
+    if os.environ.get("EVENT_NAME") == "workflow_dispatch":
+        mode = os.environ.get("CHECK_MODE", "full")
+        if mode not in ("full", "quality-only"):
+            raise ValueError("Unknown explicit check mode")
+        if mode == "quality-only":
+            if os.environ.get("COLLECT_TRANSLATION_QUALITY") != "true":
+                raise ValueError("quality-only requires explicit translation quality collection")
+            return False, True, False, True, False
     try:
         if os.environ.get("EVENT_NAME") != "push":
-            return windows, linux, qt, settings, practice
+            return windows, linux, qt, quality_only, practice
         if branch in ("work/linux-usability", "work/windows-experience"):
             valid_push = (
                 os.environ.get("CREATED") == "false"
@@ -145,17 +130,15 @@ def select():
                         linux = not qt
                 elif paths and all(path.startswith(WINDOWS_PATHS) for path in paths):
                     linux = False
-        elif branch == "work/linux-settings" and settings_only_push(before):
-            windows, linux, qt, settings = False, True, False, True
     except (OSError, subprocess.CalledProcessError):
         # Missing Git objects or failed comparisons never authorize skipping jobs.
         return True, True, False, False, False
-    return windows, linux, qt, settings, practice
+    return windows, linux, qt, quality_only, practice
 
 
 def main():
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
-        for name, value in zip(("windows", "linux", "qt", "settings", "practice"), select()):
+        for name, value in zip(("windows", "linux", "qt", "quality_only", "practice"), select()):
             stream.write(f"{name}={str(value).lower()}\n")
 
 

@@ -76,7 +76,15 @@ python tests/shared/worker/glossary_quality.py --validate-only \
 
 `tests/linux/native_e2e.py --desktop --desktop-scope model-packages --collect-translation-quality` 是显式入口。仅此 scope 接受采集标志；不传标志时，原240秒生命周期、260秒外层和原安装/切换/移除链不变。需先完成正式 Argos 双向安装，并有同期含 ABI5 的发行包、已验证的 Hy 模型/许可证缓存及现嵌套桌面依赖。数据和缓存都必须是本 checkout 的 `artifacts/` 下已存在、当前用户拥有的隔离目录，不能指向用户数据或缓存；输出目录必须全新，已有质量 JSON 不覆盖。入口本身不准备模型、复制权重或制造库存/Ready。
 
-现有 `check.yml` 的手动 `workflow_dispatch` 可明确选择默认 false 的 `collect_translation_quality`。只有该输入为 true，才将现唯一 Linux 模型包生命周期调用切换为上述采集模式，输出到全新 `artifacts/linux/quality-capture`；不在成功移除 Hy 及缓存之后重复执行。共享、Windows 与 Linux 完整检查的选择不变，push、PR 及默认手动执行均不采集。仅显式运行的 Linux job 为70分钟、该步骤为36分钟；原自动路径仍为45分钟、5分钟。采集前 admission 保留原磁盘检查，并要求至少2760秒：缓存恢复120秒、准备180秒、缓存保存120秒、采集及退出2091秒、步骤启动/收尾69秒、artifact余量180秒，不再叠加原5分钟生命周期。未准入即停止，不开始缓存准备。
+现有 `check.yml` 的手动 `workflow_dispatch` 提供默认 `full` 的 `check_mode`，并可明确选择默认 false 的 `collect_translation_quality`。只有该输入为 true，才将现唯一 Linux 模型包生命周期调用切换为上述采集模式，输出到全新 `artifacts/linux/quality-capture`；不在成功移除 Hy 及缓存之后重复执行。`check_mode=full` 保持共享、Windows 与 Linux 原检查选择；只设置 `collect_translation_quality=true` 仍运行原完整检查。push、PR 及默认手动执行均不采集。仅显式运行的 Linux job 为70分钟、该步骤为36分钟；原自动路径仍为45分钟、5分钟。采集前 admission 保留原磁盘检查，并要求至少2760秒：缓存恢复120秒、准备180秒、缓存保存120秒、采集及退出2091秒、步骤启动/收尾69秒、artifact余量180秒，不再叠加原5分钟生命周期。未准入即停止，不开始缓存准备。
+
+明确选择 `check_mode=quality-only` 且 `collect_translation_quality=true` 才启用非验收采集；未同时确认采集或未知模式直接失败，不默认为缩减检查。该模式保留共享检查、同一 SHA 的 Linux 构建与完整包组装、原生 ABI/manifest/模型固定锁验证、正式 Argos 安装、GTK 运行基础及原 Hy 安装/切换/退出与53响应采集。包组装依赖的 Fcitx/Qt 构建探针仍运行；仅跳过 Windows 和无关浏览器、托盘、教程、GTK/Qt真实模型及 VS Code 交互场景。不复制模型或制造库存，不增加旁路质量执行器；名称与摘要明确标注不构成完整产品验收。该显式模式不改变 push/PR 的分流和失败封闭规则。
+
+```sh
+# 明确的非验收采集；不会修改默认 full 模式。
+gh workflow run check.yml --repo DingJWuyu/Typelay --ref work/linux-usability \
+  -f check_mode=quality-only -f collect_translation_quality=true
+```
 
 显式采集的 admission、缓存准备和隔离 inside Python 均禁止生成字节码，避免这些只读导入在发行 worker 中添加 `__pycache__`；隔离进程使用 `-B`，因为 `-I` 会忽略 Python 环境选项。已有字节码仍被 runner 的精确目录身份核验拒绝，不清理后假称原包未变。上传只增加采集输出目录顶层 JSON、日志和截图，不包含模型、runtime 或失败 HOME；完整原始合成响应保留 `quality=not-reviewed`，不构成语言质量通过。
 
@@ -101,3 +109,7 @@ python tests/linux/native_e2e.py --desktop --desktop-scope model-packages \
 ## 结果表述
 
 在任务回复或 CI 结果中分别说明构建、行为/协议、分发/进程、模型推理、真实桌面交互与视觉结果，使用 passed/failed/not-run 并明确范围。结果属于执行时的提交，不能外推到其它版本；不新增仓库内验收报告或空白验收模板。
+
+## Linux 设置与教程独立验收
+
+完整检查及 practice 部分验收分别执行 `native_e2e.py --desktop --desktop-scope setup-settings` 和 `--desktop-scope setup-tutorial`，两者都要求原真实模型安装成功，使用独立 config、输出目录及各自隔离 HOME/退出清理。设置失败不阻止教程，教程失败也不抹去设置结果；单个作用域通过不能替代另一项。设置保留360秒原预算与方向安装回归，教程使用240秒桌面预算并核验实际主 host Ready，两者合计最大600秒工作预算及各自原清理余量，不扩大单场景期限。Linux job及质量采集 admission 总预算不变；quality-only 跳过两项，不将其计作通过。

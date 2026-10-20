@@ -93,13 +93,15 @@ public sealed class SettingsDraftPresentationTests
         Assert.Equal(exit, draft.Exit);
     }
 
-    [Fact]
-    public void DistinctModifiersMayShareAMainKeyAcrossCommandAndSessionRoles()
+    [Theory]
+    [InlineData("shift+ctrl+f7", "Ctrl+Shift+F7")]
+    [InlineData("shift+f7", "Shift+F7")]
+    public void DistinctModifiersMayShareAMainKeyAcrossCommandAndSessionRoles(string wake, string canonicalWake)
     {
-        var draft = new ShortcutSettingsDraft("shift+ctrl+f7", "alt+f8", "ctrl+f7", "f8");
+        var draft = new ShortcutSettingsDraft(wake, "alt+f8", "ctrl+f7", "f8");
         Assert.True(draft.TryApply(new UserSettings(), out var result, out var error));
         Assert.Equal(ShortcutDraftError.None, error);
-        Assert.Equal("Ctrl+Shift+F7", result!.WakeShortcut);
+        Assert.Equal(canonicalWake, result!.WakeShortcut);
         Assert.Equal("Alt+F8", result.DirectShortcut);
         Assert.Equal("Ctrl+F7", result.AcceptShortcut);
         Assert.Equal("F8", result.ExitShortcut);
@@ -111,6 +113,7 @@ public sealed class SettingsDraftPresentationTests
         string message = SettingsDraftPresentation.ShortcutErrorMessage(ShortcutDraftError.InvalidOnDemandBindings);
         Assert.Contains("唤醒与直接替换", message);
         Assert.Contains("暂不支持 F12", message);
+        Assert.Contains("Shift+功能键", message);
         Assert.Contains("不能相同", message);
         Assert.True(TypeLay.Core.SessionShortcutBindings.TryParse("F12", "F7", out _));
     }
@@ -127,6 +130,7 @@ public sealed class SettingsDraftPresentationTests
         Assert.Contains("Ctrl+F1-F24", view.ScopeNote);
         Assert.Contains("不同主键", view.ScopeNote);
         Assert.Contains("当前输入适配器", view.ScopeNote);
+        Assert.Contains("唤醒与直接替换另支持 Shift+功能键（不含 F12），不适用于接受与退出", view.ScopeNote);
         var defaults = SettingsDraftPresentation.SessionShortcuts(TypeLay.Core.SessionShortcutBindings.Default);
         Assert.Equal("Tab", defaults.AcceptKey);
         Assert.Equal("Esc", defaults.ExitKey);

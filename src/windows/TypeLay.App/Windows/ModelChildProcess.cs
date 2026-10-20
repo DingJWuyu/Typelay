@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Text;
 using Microsoft.Win32.SafeHandles;
 using TypeLay.Runtime;
 
@@ -35,7 +34,7 @@ internal sealed class ModelChildProcess : IChildProcess
             || info.Arguments.Length != 0)
             throw new ArgumentException("model-process-start", nameof(info));
         nint childIn = 0, parentIn = 0, parentOut = 0, childOut = 0, parentErr = 0, childErr = 0;
-        nint attributes = 0, handles = 0, environment = 0, thread = 0;
+        nint attributes = 0, handles = 0, thread = 0;
         bool attributesInitialized = false;
         try
         {
@@ -74,11 +73,11 @@ internal sealed class ModelChildProcess : IChildProcess
             Marshal.WriteIntPtr(handles, 2 * nint.Size, childErr);
             if (!UpdateProcThreadAttribute(attributes, 0, (nuint)0x20002, handles, (nuint)(3 * nint.Size), 0, 0))
                 throw Failure("stdio-handle-allowlist");
-            var startup = new StartupInfoEx
+            var startup = new SuspendedProcess.StartupInfoEx
             {
-                Startup = new StartupInfo
+                Startup = new SuspendedProcess.StartupInfo
                 {
-                    Size = Marshal.SizeOf<StartupInfoEx>(),
+                    Size = Marshal.SizeOf<SuspendedProcess.StartupInfoEx>(),
                     Flags = 0x100,
                     Input = childIn,
                     Output = childOut,
@@ -86,17 +85,11 @@ internal sealed class ModelChildProcess : IChildProcess
                 },
                 Attributes = attributes
             };
-            environment = Marshal.StringToHGlobalUni(EnvironmentBlock(info));
-            var command = new StringBuilder(string.Join(' ', new[] { info.FileName }.Concat(info.ArgumentList).Select(Quote)));
-            const uint suspendedUnicodeExtendedNoWindow = 4 | 0x400 | 0x80000 | 0x08000000;
-            if (!CreateProcessW(info.FileName, command, 0, 0, true, suspendedUnicodeExtendedNoWindow,
-                environment, string.IsNullOrEmpty(info.WorkingDirectory) ? null : info.WorkingDirectory, ref startup, out var process))
-                throw Failure("worker-create");
+            var process = SuspendedProcess.Create(info, ref startup, inheritHandles: true);
             // Retain these exact handles even if assignment, pipe ownership or resume fails.
             _process = process.Process;
             thread = process.Thread;
-            if (!AssignProcessToJobObject(_job, _process) || !IsProcessInJob(_process, _job, out bool belongs) || !belongs)
-                throw Failure("worker-job-membership");
+            SuspendedProcess.AssignToJob(_job, _process);
             if (!QueryInformationJobObject(_job, 9, out ExtendedLimits actual, (uint)Marshal.SizeOf<ExtendedLimits>(), 0) ||
                 actual.Basic.Flags != limits.Basic.Flags || actual.Basic.ActiveProcessLimit != limits.Basic.ActiveProcessLimit ||
                 actual.ProcessMemory != limits.ProcessMemory || actual.JobMemory != limits.JobMemory)
@@ -110,8 +103,7 @@ internal sealed class ModelChildProcess : IChildProcess
             _observation = Process.GetProcessById(checked((int)process.ProcessId));
             // A bounded, body-free drain never runs on the protocol or UI thread.
             _ = Task.Run(DrainErrorsAsync);
-            if (ResumeThread(thread) == uint.MaxValue)
-                throw Failure("worker-resume");
+            SuspendedProcess.Resume(_job, _process, thread);
         }
         catch
         {
@@ -143,8 +135,6 @@ internal sealed class ModelChildProcess : IChildProcess
                 Marshal.FreeHGlobal(attributes);
             if (handles != 0)
                 Marshal.FreeHGlobal(handles);
-            if (environment != 0)
-                Marshal.FreeHGlobal(environment);
         }
     }
 
@@ -290,39 +280,6 @@ internal sealed class ModelChildProcess : IChildProcess
         catch { safe.Dispose(); throw; }
     }
 
-    private static string EnvironmentBlock(ProcessStartInfo info)
-    {
-        var environment = new SortedDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in info.Environment)
-            if (item.Value is { } value)
-            {
-                if (item.Key.Contains('\0') || value.Contains('\0'))
-                    throw new ArgumentException("model-process-environment", nameof(info));
-                environment[item.Key] = value;
-            }
-        return string.Join('\0', environment.Select(item => item.Key + "=" + item.Value)) + "\0\0";
-    }
-
-    private static string Quote(string value)
-    {
-        if (value.Contains('\0'))
-            throw new ArgumentException("model-process-argument");
-        var result = new StringBuilder("\"");
-        int slashes = 0;
-        foreach (char c in value)
-        {
-            if (c == '\\')
-            {
-                slashes++;
-                continue;
-            }
-            result.Append('\\', c == '\"' ? slashes * 2 + 1 : slashes);
-            result.Append(c);
-            slashes = 0;
-        }
-        result.Append('\\', slashes * 2);
-        return result.Append('\"').ToString();
-    }
     private static Win32Exception Failure(string code) => new(Marshal.GetLastWin32Error(), code);
     private static void Close(ref nint handle)
     {
@@ -337,22 +294,6 @@ internal sealed class ModelChildProcess : IChildProcess
     private struct SecurityAttributes
     {
         public int Size; public nint Descriptor; [MarshalAs(UnmanagedType.Bool)] public bool Inherit;
-    }
-    [StructLayout(LayoutKind.Sequential)]
-    private struct StartupInfo
-    {
-        public int Size; public nint Reserved, Desktop, Title; public uint X, Y, Width, Height, XChars, YChars, Fill, Flags;
-        public ushort Show, ReservedSize; public nint ReservedBytes, Input, Output, Error;
-    }
-    [StructLayout(LayoutKind.Sequential)]
-    private struct StartupInfoEx
-    {
-        public StartupInfo Startup; public nint Attributes;
-    }
-    [StructLayout(LayoutKind.Sequential)]
-    private struct ProcessInformation
-    {
-        public nint Process, Thread; public uint ProcessId, ThreadId;
     }
     [StructLayout(LayoutKind.Sequential)]
     private struct BasicLimits
@@ -383,10 +324,6 @@ internal sealed class ModelChildProcess : IChildProcess
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool InitializeProcThreadAttributeList(nint list, int count, uint flags, ref nuint bytes);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool UpdateProcThreadAttribute(nint list, uint flags, nuint attribute, nint value, nuint size, nint previous, nint returnedSize);
     [DllImport("kernel32.dll")] private static extern void DeleteProcThreadAttributeList(nint list);
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool CreateProcessW(string application, StringBuilder command, nint processSecurity, nint threadSecurity, bool inherit, uint flags, nint environment, string? directory, ref StartupInfoEx startup, out ProcessInformation process);
-    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AssignProcessToJobObject(nint job, nint process);
-    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool IsProcessInJob(nint process, nint job, out bool belongs);
-    [DllImport("kernel32.dll", SetLastError = true)] private static extern uint ResumeThread(nint thread);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateJobObject(nint job, uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateProcess(nint process, uint exitCode);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint WaitForSingleObject(nint handle, uint milliseconds);

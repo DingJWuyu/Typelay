@@ -378,6 +378,14 @@ int main(int argc, char **argv) {
         auto *overlay = window.findChild<QWidget *>(QStringLiteral("typelay-overlay"));
         auto *editor = window.findChild<QPlainTextEdit *>(QStringLiteral("typelay-editor"));
         auto *menu = window.findChild<QWidget *>(QStringLiteral("typelay-menu"));
+        QJsonObject glossary;
+        auto *form = window.findChild<QWidget *>(QStringLiteral("typelay-glossary"));
+        glossary.insert("visible", form && form->isVisible());
+        for (const auto *name : {"source", "target"}) {
+            auto *term = form ? form->findChild<QLineEdit *>(QStringLiteral("typelay-glossary-") + QLatin1String(name)) : nullptr;
+            if (term) glossary.insert(QLatin1String(name), QJsonObject{{"text", term->text()},
+                {"focused", term->hasFocus()}, {"geometry", rectangle(term)}});
+        }
         QJsonObject overlayTextColors;
         for (const auto *name : {"typelay-status", "typelay-hint"}) {
             const auto *label = window.findChild<QLabel *>(QLatin1String(name));
@@ -435,6 +443,7 @@ int main(int argc, char **argv) {
             {"plain", plainState},
             {"first", field(first, firstChanges, firstEdits)},
             {"second", field(second, secondChanges, secondEdits)},
+            {"glossary", glossary},
             {"overlayVisible", overlay && overlay->isVisible()},
             {"overlayPalette", overlay ? paletteState(overlay->palette()) : QJsonObject()},
             {"overlayTextColors", overlayTextColors},

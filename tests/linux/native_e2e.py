@@ -558,6 +558,37 @@ def quality_exit(arguments, compositor, work_deadline, result, failure):
 
 
 def outer(arguments, script=None):
+    if not arguments.desktop or arguments.desktop_scope not in (
+        "setup",
+        "setup-settings",
+        "setup-tutorial",
+    ):
+        return run_outer(arguments, script)
+    arguments.output.mkdir(parents=True, exist_ok=True)
+    report = arguments.output / "scope-result.json"
+    result = {"schema": 1, "scope": arguments.desktop_scope, "status": "not-run"}
+
+    def record(status):
+        result["status"] = status
+        pending = report.with_suffix(".json.tmp")
+        pending.write_text(json.dumps(result, indent=2))
+        pending.replace(report)
+
+    record("not-run")
+    try:
+        run_outer(arguments, script)
+    except BaseException:
+        try:
+            record("failed")
+        except OSError:
+            pass  # Preserve the original preparation, execution or cleanup failure.
+        raise
+    # The inside success receipt and the existing compositor cleanup have both
+    # completed. This separate report is never an inside completion signal.
+    record("passed")
+
+
+def run_outer(arguments, script=None):
     arguments.output.mkdir(parents=True, exist_ok=True)
     quality = getattr(arguments, "collect_translation_quality", False)
     if quality and any(arguments.output.iterdir()):
@@ -639,9 +670,14 @@ def outer(arguments, script=None):
             start_new_session=True,
         )
         try:
-            # Setup also installs one direction and completes its union from the
-            # existing model cache; that independent real chain is bounded to 120s.
-            timeout = 360 if arguments.desktop and arguments.desktop_scope == "setup" else 240
+            # Settings owns the independent direction-installation regression
+            # (120s); tutorial keeps the ordinary 240s desktop budget. Split full
+            # acceptance budgets 360s + 240s, not one shared deadline.
+            timeout = (
+                360
+                if arguments.desktop and arguments.desktop_scope in ("setup", "setup-settings")
+                else 240
+            )
             if arguments.desktop and arguments.desktop_scope == "model-packages":
                 timeout = 260  # 240 seconds of work, then owned-process cleanup.
             deadline = time.monotonic() + (timeout if arguments.desktop else 45)
@@ -695,8 +731,19 @@ if __name__ == "__main__":
     parser.add_argument("--quality-work-deadline", type=float, help=argparse.SUPPRESS)
     parser.add_argument(
         "--desktop-scope",
-        choices=("all", "browser", "gtk", "gtk4", "qt", "setup", "model-packages"),
+        choices=(
+            "all",
+            "browser",
+            "gtk",
+            "gtk4",
+            "qt",
+            "setup",
+            "setup-settings",
+            "setup-tutorial",
+            "model-packages",
+        ),
         default="all",
+        help="setup combines settings and tutorial; split full acceptance requires both setup-settings and setup-tutorial",
     )
     parser.add_argument(
         "--gtk-refusal",

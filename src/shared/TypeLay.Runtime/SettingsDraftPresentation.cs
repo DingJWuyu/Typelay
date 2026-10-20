@@ -23,7 +23,7 @@ public static class SettingsDraftPresentation
 
     public static string ShortcutErrorMessage(ShortcutDraftError error) => error switch
     {
-        ShortcutDraftError.InvalidOnDemandBindings => "唤醒与直接替换请使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，暂不支持 F12；两个快捷键不能相同。",
+        ShortcutDraftError.InvalidOnDemandBindings => "唤醒与直接替换请使用 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，也支持 Shift+功能键，暂不支持 F12；两个快捷键不能相同。",
         ShortcutDraftError.InvalidSessionBindings => "接受与退出请选择有效且不同的主键。",
         ShortcutDraftError.ConflictingBindings => "唤醒、直接替换、接受与退出不能使用相同的快捷键组合。草稿仍保留。",
         _ => Create().InvalidMessage
@@ -32,7 +32,7 @@ public static class SettingsDraftPresentation
     public static SessionShortcutMessages SessionShortcuts(TypeLay.Core.SessionShortcutBindings keys) => new(
         "接受译文", keys.Accept, $"{keys.Accept} 接受译文", $"{keys.Accept} 返回原输入框",
         "退出当前翻译", keys.Exit, $"{keys.Exit} 退出当前翻译",
-        "接受默认使用 Tab，退出默认使用 Esc；也可选择 F1-F24 或 Ctrl+F1-F24。接受与退出须使用不同主键；当前输入适配器须确认实际键对。",
+        "接受默认使用 Tab，退出默认使用 Esc；也可选择 F1-F24 或 Ctrl+F1-F24。接受与退出须使用不同主键；当前输入适配器须确认实际键对。唤醒与直接替换另支持 Shift+功能键（不含 F12），不适用于接受与退出。",
         TypeLay.Core.Presentation.From(TypeLay.Core.SessionState.IdleCapsule, false, shortcuts: keys).TabHint);
 }
 

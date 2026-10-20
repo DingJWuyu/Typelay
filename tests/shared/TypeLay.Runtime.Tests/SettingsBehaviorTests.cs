@@ -90,6 +90,27 @@ public sealed class SettingsBehaviorTests : IDisposable
     }
 
     [Fact]
+    public void ShiftFunctionCommandDraftPersistsWithoutChangingSessionKeysOrSafetySettings()
+    {
+        var store = new SettingsStore(SettingsPath);
+        var draft = ShortcutSettingsDraft.From(store.Value) with
+        {
+            Wake = "shift+f1",
+            Direct = "shift+f24"
+        };
+        Assert.True(draft.TryApply(store.Value, out var updated, out var error));
+        Assert.Equal(ShortcutDraftError.None, error);
+        store.Update(updated!);
+        var reloaded = new SettingsStore(SettingsPath).Value;
+        Assert.Equal("Shift+F1", reloaded.WakeShortcut);
+        Assert.Equal("Shift+F24", reloaded.DirectShortcut);
+        Assert.Equal("Tab", reloaded.AcceptShortcut);
+        Assert.Equal("Esc", reloaded.ExitShortcut);
+        Assert.False(reloaded.ExperimentalWriteback);
+        Assert.Equal(WorkMode.Automatic, reloaded.Mode);
+    }
+
+    [Fact]
     public void ModeAndIndependentShortcutsPersistAcrossRestart()
     {
         var store = new SettingsStore(SettingsPath);
@@ -108,6 +129,8 @@ public sealed class SettingsBehaviorTests : IDisposable
 
     [Theory]
     [InlineData("Ctrl+Tab", "Alt+F8")]
+    [InlineData("Shift+A", "Shift+F8")]
+    [InlineData("Shift+F8", "shift+f8")]
     [InlineData("Ctrl+K", "ctrl+k")]
     public void InvalidOrDuplicateChordsDoNotPartiallySave(string wake, string direct)
     {

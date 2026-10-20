@@ -33,14 +33,14 @@ public sealed record TranslationShortcut(ShortcutModifiers Modifiers, string Key
                 return false;
             modifiers |= modifier;
         }
-        if ((modifiers & (ShortcutModifiers.Control | ShortcutModifiers.Alt)) == 0)
-            return false;
         string key = parts[^1].ToUpperInvariant();
         bool character = key.Length == 1 && (key[0] is >= 'A' and <= 'Z' or >= '0' and <= '9');
         bool function = key.StartsWith('F') && int.TryParse(key.AsSpan(1), NumberStyles.None,
             CultureInfo.InvariantCulture, out int number) && number is >= 1 and <= 24 and not 12
             && key == "F" + number.ToString(CultureInfo.InvariantCulture);
-        if (!character && !function)
+        // Shift alone is permitted only with a function key, never ordinary typing.
+        if ((!character && !function)
+            || (character && (modifiers & (ShortcutModifiers.Control | ShortcutModifiers.Alt)) == 0))
             return false;
         shortcut = new(modifiers, key);
         return true;

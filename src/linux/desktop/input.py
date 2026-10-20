@@ -1203,9 +1203,10 @@ class Input:
         if not current:
             return False
         peer = record["peer"]
-        if peer.backend == "gtk3":
+        if peer.backend in ("gtk3", "qt6"):
             return bool(
-                record.get("gtk3SourceGlossary") is True
+                record.get("gtk3SourceGlossary" if peer.backend == "gtk3" else "qt6SourceGlossary")
+                is True
                 and record.get("route") is None
                 and record["target"]["lifetime"] == peer.lifetime
                 and record["window"]["id"] == self.niri.focused["id"]
@@ -1234,6 +1235,30 @@ class Input:
             and authority.get("target") == native.get("target")
             and type(context) is int
             and context > 0
+        )
+
+    @staticmethod
+    def qt6_source_glossary(peer, native):
+        metadata, authority = native.get("metadata", {}), native.get("authority", {})
+        stamp = authority.get("contextStamp", {})
+        # Qt's field/provider generations are not GTK context identities. The
+        # initial native slice is exact QLineEdit only, not subclasses/rich text.
+        return bool(
+            peer.backend == "qt6"
+            and getattr(native, "route", None) is None
+            and native.get("sourceGlossarySupported") is True
+            and metadata.get("aria") == "QLineEdit"
+            and metadata.get("password") is False
+            and metadata.get("readOnly") is False
+            and metadata.get("enabled") is True
+            and metadata.get("multiline") is False
+            and type(metadata.get("documentGeneration")) is int
+            and metadata["documentGeneration"] == 0
+            and authority.get("target") == native.get("target")
+            and isinstance(stamp, dict)
+            and all(type(stamp.get(key)) is int and stamp[key] > 0 for key in ("context", "field"))
+            and type(stamp.get("input")) is int
+            and stamp["input"] >= 0
         )
 
     def source_glossary_return_current(self, receipt, peer, native):
@@ -1274,6 +1299,21 @@ class Input:
                 )
                 and authority.get("contextStamp", {}).get("context")
                 == basis.get("contextStamp", {}).get("context")
+            )
+        if peer.backend == "qt6":
+            basis, authority = receipt.get("sourceAuthority", {}), native.get("authority", {})
+            return bool(
+                self.qt6_source_glossary(peer, native)
+                and receipt["token"]["target"]["lifetime"] == peer.lifetime
+                and all(
+                    authority.get(key) == basis.get(key)
+                    for key in ("target", "metadataKey", "inputRevision", "contentRevision")
+                )
+                and all(
+                    authority.get("contextStamp", {}).get(key)
+                    == basis.get("contextStamp", {}).get(key)
+                    for key in ("context", "field", "input")
+                )
             )
         return peer.backend == "browser" and self.browser_source_local(peer, native)
 
@@ -1981,12 +2021,19 @@ class Input:
         record["gtk3SourceGlossary"] = self.gtk3_source_glossary(
             peer, description
         ) and self.gtk3_source_glossary(peer, native)
-        record["sourceGlossarySupported"] = record["gtk3SourceGlossary"] or (
-            peer.backend == "browser"
-            and description.get("sourceGlossarySupported") is True
-            and native.get("sourceGlossarySupported") is True
-            and getattr(description, "route", None) == getattr(native, "route", None)
-            and self.browser_source_local(peer, native)
+        record["qt6SourceGlossary"] = self.qt6_source_glossary(
+            peer, description
+        ) and self.qt6_source_glossary(peer, native)
+        record["sourceGlossarySupported"] = (
+            record["gtk3SourceGlossary"]
+            or record["qt6SourceGlossary"]
+            or (
+                peer.backend == "browser"
+                and description.get("sourceGlossarySupported") is True
+                and native.get("sourceGlossarySupported") is True
+                and getattr(description, "route", None) == getattr(native, "route", None)
+                and self.browser_source_local(peer, native)
+            )
         )
         record["sessionShortcuts"] = acknowledgement
         if acknowledgement and acknowledgement["sourceLocalAcceptanceVersion"] == 1:
