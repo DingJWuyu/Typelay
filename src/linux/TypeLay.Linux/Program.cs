@@ -647,7 +647,14 @@ internal static class Program
                     if (next.Schema != 1 || next.Theme is not ("system" or "light" or "dark")
                         || next.Excluded.Length > 256 || next.Excluded.Any(app => string.IsNullOrWhiteSpace(app) || app.Length > 128))
                         return false;
-                    return await ApplySettings(next);
+                    try
+                    {
+                        return await ApplySettings(next);
+                    }
+                    catch (SettingsPersistenceException)
+                    {
+                        return false;
+                    }
                 case "translateEditorSnapshot":
                     if (editorSnapshot is not null || value.ValueKind != JsonValueKind.Object
                         || value.EnumerateObject().Count() != 2

@@ -1923,6 +1923,40 @@ while True:
             {"saved": False, "retrySave": False},
         )
 
+    async def test_theme_persistence_failure_is_confirmed_and_allows_explicit_retry(self):
+        self.assertIs(await self.ask("settings", {"theme": "dark"}), True)
+        saved = self.latest("settings")
+        revision = self.latest("status")["commandFeedbackRevision"]
+        settings_file = self.home / "config/settings.json"
+        before = settings_file.read_bytes()
+        requested = {**saved, "theme": "system"}
+        blocker = settings_file.with_suffix(".json.tmp")
+        blocker.mkdir()
+        try:
+            self.events.clear()
+            self.assertIs(await self.ask("settings", requested), False)
+            self.assertEqual(settings_file.read_bytes(), before)
+            self.assertEqual(self.events, [], "failed persistence reconfigured the session")
+        finally:
+            blocker.rmdir()
+        self.assertIs(await self.ask("settings", requested), True)
+        self.assertEqual(self.latest("settings")["theme"], "system")
+        self.assertEqual(json.loads(settings_file.read_text())["Theme"], "system")
+        self.assertEqual(self.latest("status")["commandFeedbackRevision"], revision + 1)
+
+    async def test_ordinary_settings_host_side_effect_failure_remains_unconfirmed(self):
+        self.assertIs(await self.ask("settings", {"theme": "dark"}), True)
+        saved = self.latest("settings")
+        settings_file = self.home / "config/settings.json"
+        before = settings_file.read_bytes()
+        # A failure outside SettingsStore's atomic file write cannot be reported
+        # as a confirmed persistence failure by the ordinary settings endpoint.
+        (self.home / "autostart").write_text("not a directory")
+        self.events.clear()
+        self.assertIsNone(await self.ask("settings", {**saved, "startup": True}))
+        self.assertEqual(settings_file.read_bytes(), before)
+        self.assertEqual(self.events, [])
+
     async def test_tray_persistence_failure_keeps_current_settings_and_allows_explicit_retry(self):
         self.assertTrue(await self.ask("settings", {"enabled": True, "theme": "dark"}))
         settings_file = self.home / "config/settings.json"

@@ -171,11 +171,34 @@ internal static partial class HyPackageCheck
                 Require(ReadSettings(data) is { Source: "zh", Target: "fr", ExperimentalWriteback: false, Mode: WorkMode.OnDemand }, "preview-settings-changed");
                 await NavigateWithoutFocusAsync(settings!, "⌨  快捷键", ct);
                 scene.Stage = "wait-public-shortcut-status";
-                await WaitAsync(async () => await UiAsync(() =>
+                await WaitAsync(async () =>
                 {
-                    var status = settings!.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text));
-                    return status.Cast<AutomationElement>().Any(item => item.Current.Name == "两个快捷键已启用；操作不会切换工作模式。");
-                }, ct), ct);
+                    var observation = new ShortcutObservation();
+                    scene.Facts = observation;
+                    return await UiAsync(() =>
+                    {
+                        var status = settings!.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text));
+                        observation.TextCount = status.Count;
+                        var categories = new List<string>();
+                        bool headingFound = false;
+                        // Keep the original Name reads and Any short circuit. Only
+                        // fixed public status categories survive this poll; no UI text.
+                        bool matched = status.Cast<AutomationElement>().Any(item =>
+                        {
+                            string name = item.Current.Name;
+                            if (name == "按需快捷键状态")
+                                headingFound = true;
+                            if (ShortcutCategory(name) is { } category)
+                                categories.Add(category);
+                            return name == "两个快捷键已启用；操作不会切换工作模式。";
+                        });
+                        ct.ThrowIfCancellationRequested();
+                        observation.HeadingFound = headingFound;
+                        observation.Statuses = categories.Distinct().ToArray();
+                        observation.ExpectedTextMatched = matched;
+                        return matched;
+                    }, ct);
+                }, ct);
                 // Navigation can end a session but cannot grant source readiness.
                 Require(N.PostMessage(root, N.FixtureFocus, (nuint)field, 0), "source-refocus-request");
                 await WaitAsync(() => Task.FromResult(N.Focused() == (root, field)), ct);
@@ -369,6 +392,52 @@ internal static partial class HyPackageCheck
             }),
             installed = state.InstalledPackages.Select(item => item.Package.Id),
             workerPid = pid
+        };
+    }
+    // One snapshot from the current public-text predicate. Null means that
+    // query/read did not complete; an empty status array means no known status
+    // was encountered. Registration is not evidence of a fresh source lease.
+    private sealed class ShortcutObservation
+    {
+        public int? TextCount
+        {
+            get; set;
+        }
+        public bool? HeadingFound
+        {
+            get; set;
+        }
+        public string[]? Statuses
+        {
+            get; set;
+        }
+        public bool? ExpectedTextMatched
+        {
+            get; set;
+        }
+    }
+    private static string? ShortcutCategory(string name)
+    {
+        const string registrationFailure = "未能注册，可能被系统或其他应用占用。可重试启用快捷键或修改组合键。";
+        const string handoffPending = " 请释放全部按键并等待快捷键交接完成，再重试。";
+        return name switch
+        {
+            "两个快捷键已启用；操作不会切换工作模式。" => "native-registered",
+            "快捷键输入观察未就绪，当前不会执行按需命令。" => "input-observation-unavailable",
+            "新增快捷键仅在按需模式下启用。" => "not-configured",
+            "新增快捷键仅在启用 TypeLay 的按需模式下生效。" => "disabled",
+            "快捷键注销未确认，当前不会执行按需命令。" => "unregister-unconfirmed",
+            "浏览器快捷键连接中。" => "browser-connecting",
+            "浏览器快捷键已就绪。" => "browser-ready",
+            "浏览器快捷键尚未就绪，请返回受支持的输入框。" => "browser-not-ready",
+            "仅在启用 TypeLay 的按需模式下生效。自动模式不注册这两个快捷键。" => "status-provider-unavailable",
+            _ when name.StartsWith("设置已保存，但", StringComparison.Ordinal)
+                && name.EndsWith(registrationFailure, StringComparison.Ordinal) => "initial-registration-failed",
+            _ when name.StartsWith("快捷键当前不可用：", StringComparison.Ordinal)
+                && name.EndsWith(registrationFailure, StringComparison.Ordinal) => "restored-registration-failed",
+            _ when (name.StartsWith("设置已保存，但", StringComparison.Ordinal) || name.StartsWith("快捷键当前不可用：", StringComparison.Ordinal))
+                && name.EndsWith(registrationFailure + handoffPending, StringComparison.Ordinal) => "registration-failed-handoff-pending",
+            _ => null
         };
     }
     private sealed class ActiveObservation(int expectedReadyRows)
