@@ -78,9 +78,10 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
     }
     public async Task<InputReturn> ReturnToSourceAsync(InputContext context)
     {
+        long expiresAtMs = WindowsInterruptClock.NowMs + 800;
         if (context.BoundTarget is { } owned && practice?.IsOwnedEditorTarget(owned) == true)
             return await practice.ReturnOwnedAsync(context);
-        if (!SessionConfigurationCurrent(context) || context.BoundTarget is not { } id || !WindowsTarget.TryDecode(id, out var target))
+        if (WindowsInterruptClock.NowMs >= expiresAtMs || !SessionConfigurationCurrent(context) || context.BoundTarget is not { } id || !WindowsTarget.TryDecode(id, out var target))
             return new(false);
         if (broker.ProcessId != 0)
             Native.AllowSetForegroundWindow((uint)broker.ProcessId);
@@ -88,9 +89,15 @@ internal sealed class WindowsInputService(IInputBroker broker, nint overlay,
         // any focus move. A stale HWND/cookie must not receive focus first.
         if (target.Provider != "win32-edit-transaction-v2")
             Native.SetForegroundWindow((nint)target.RootHwnd);
-        if (!SessionConfigurationCurrent(context))
+        if (WindowsInterruptClock.NowMs >= expiresAtMs || !SessionConfigurationCurrent(context))
             return new(false);
-        return new((await broker.CallAsync(Request("return", context), TimeSpan.FromMilliseconds(800))).Status == "focused");
+        long remaining = expiresAtMs - WindowsInterruptClock.NowMs;
+        if (remaining <= 0)
+            return new(false);
+        return new((await broker.CallAsync(Request("return", context) with
+        {
+            ExpiresAtMs = expiresAtMs
+        }, TimeSpan.FromMilliseconds(remaining))).Status == "focused");
     }
     internal async Task<InputReturn> ReturnGlossaryToSourceAsync(InputContext context,
         SourceGlossaryReturnAuthorization authorization, long expiresAtMs)

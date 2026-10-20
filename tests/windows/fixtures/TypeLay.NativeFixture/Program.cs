@@ -18,6 +18,9 @@ internal static class Program
             Console.Error.WriteLine("Native fixture requires Windows x64.");
             return 2;
         }
+        if (args.Length == 3 && args[0] == "--broker-queue-probe" && Guid.TryParse(args[1], out _)
+            && Path.IsPathFullyQualified(args[2]))
+            return BrokerQueueProbe.Run(args[1], args[2]).GetAwaiter().GetResult();
         if (args.Length == 7 && args[0] == "--verify-hy-adapter")
             return HyAdapterCheck.Run(args[1..]);
         if (args.Length == 2 && args[0] == "--winevent-stack-probe" && Path.IsPathFullyQualified(args[1]))
@@ -32,7 +35,11 @@ internal static class Program
             _ownedPath = args[1];
             _retirementProbePath = args.Length == 5 ? args[4] : null;
         }
-        bool stockControls = ownedControls || (args.Length == 1 && args[0] == "--stock-controls");
+        bool returnFocusCase = args.Length == 3 && args[0] == "--stock-controls"
+            && args[1] == "--return-focus" && args[2] is "root" or "second";
+        if (returnFocusCase)
+            _returnFocusCase = args[2];
+        bool stockControls = ownedControls || returnFocusCase || (args.Length == 1 && args[0] == "--stock-controls");
         if (args.Length != 0 && !hookTest && !stockControls)
             return 2;
         return RunWindows(hookTest, args.Contains("--hook-test-automation", StringComparer.Ordinal), stockControls);
@@ -206,6 +213,7 @@ internal static class Program
     private const uint ReadyMessage = 0x8054;
     private static FixtureDescriptor? _readyDescriptor;
     private static nint _root, _submit;
+    private static string? _returnFocusCase;
     private static nint _replayField, _secondField, _replayStatus, _lastFocusedField;
     private static int _replayIndex, _focusSwitches;
     private static long _focusStarted;
@@ -215,6 +223,7 @@ internal static class Program
     private static HookHarness? _hookHarness;
     private static EventWaitHandle? _barrierEntered, _barrierRelease, _barrierDrained;
     private static int _barrierStatus;
+    private static bool _blockNextNull;
     private static readonly Dictionary<nint, nint> PreviousProcedures = new();
     private static readonly HashSet<nint> StockFields = new();
     // Keep delegates alive as long as the HWNDs exist.
@@ -229,9 +238,16 @@ internal static class Program
             N.PostQuitMessage(0);
             return 0;
         }
+        // Stock Edit reports its actual focus through the normal parent
+        // notification. Do not subclass it or synthesize IME/lifetime evidence.
+        if (message == 0x0111 && ((wParam >> 16) & 0xffff) == 0x0100 && StockFields.Contains(lParam))
+            _lastFocusedField = lParam; // EN_SETFOCUS
         if (message == 0x0007 && _lastFocusedField != 0 && N.IsWindow(_lastFocusedField))
         {
-            N.SetFocus(_lastFocusedField);
+            // Controlled host policies exercise refusal when activation does
+            // not restore the original field. Broker must not correct either.
+            if (_returnFocusCase != "root")
+                N.SetFocus(_returnFocusCase == "second" ? _secondField : _lastFocusedField);
             return 0;
         }
         if (message == 0x0113 && wParam == 1)
@@ -278,8 +294,18 @@ internal static class Program
             return (nint)WinEventStackProbe.Arm(_root, _replayField, wParam, lParam);
         if (message == WinEventStackProbe.FinishRetirementMessage && _retirementProbePath is not null)
             return (nint)WinEventStackProbe.Finish();
-        if (message == N.FixtureBlockGui && _barrierEntered is not null && _barrierRelease is not null)
+        if (message == N.FixtureArmNullBarrier && _barrierEntered is not null && _barrierRelease is not null)
         {
+            _barrierEntered.Reset();
+            _barrierRelease.Reset();
+            _barrierStatus = 0;
+            _blockNextNull = true;
+            return 1;
+        }
+        if ((message == N.FixtureBlockGui || (message == 0 && _blockNextNull))
+            && _barrierEntered is not null && _barrierRelease is not null)
+        {
+            _blockNextNull = false;
             _barrierEntered.Set();
             // Non-alertable kernel wait: no sent messages may reenter the GUI
             // thread here. The bounded escape prevents a failed test hanging it.

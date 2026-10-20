@@ -338,6 +338,23 @@ static void refresh_language_apply(void) {
             && selected_language(overlay.destination, &overlay.target_languages));
 }
 static gboolean active(void);
+static gboolean language_focus_current(void);
+static gboolean language_handoff_current(JsonObject *view) {
+    return overlay.view == view && overlay.popover && overlay.menu && overlay.language
+        && !overlay.glossary && active() && tl_now() <= overlay.expires
+        && gtk_widget_get_mapped(overlay.language)
+        && tl_configuration_current(overlay.generation)
+        && tl_view_context_matches(overlay.target, view)
+        && tl_metadata_matches(overlay.target, overlay.authority);
+}
+static void close_language_menu(JsonObject *view) {
+    GtkWidget *menu = overlay.menu;
+    /* Only the user's close/Apply/Escape inside this live language family may
+     * hand focus to its trigger. Outside focus and expired views stay untouched. */
+    if (language_handoff_current(view) && gtk_widget_get_mapped(menu) && language_focus_current())
+        gtk_widget_grab_focus(overlay.language);
+    if (overlay.view == view && overlay.menu == menu && menu) gtk_widget_hide(menu);
+}
 static void language_selection_changed(GtkTreeSelection *selection, gpointer data) {
     GtkWidget *button = data;
     if (!overlay.popover || (button != overlay.source && button != overlay.destination)) return;
@@ -517,21 +534,27 @@ static gboolean active(void) {
     return overlay.target && !overlay.target->dead && overlay.top
         && gtk_window_is_active(GTK_WINDOW(overlay.top));
 }
-static void close_language_popups_outside(GtkWidget *widget) {
+static void close_language_popups_outside(GtkWidget *widget, gboolean trigger_click) {
     for (guint index = 0; index < 2; index++) {
         GtkWidget *button = index == 0 ? overlay.source : overlay.destination;
         if (!button || !gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(button))) continue;
         GtkWidget *popup = GTK_WIDGET(gtk_menu_button_get_popover(GTK_MENU_BUTTON(button)));
         if (widget && (widget == button || gtk_widget_is_ancestor(widget, button)
             || widget == popup || gtk_widget_is_ancestor(widget, popup))) continue;
-        /* No focus restoration: the incoming pointer/focus transition owns its
-         * destination. In particular an external click must never be stolen. */
+        /* A real trigger click closes this menu; preserve its owned focus
+         * before hiding the child popup. Every other destination owns its own
+         * transition and must never be stolen, including external clicks. */
+        if (trigger_click && widget && overlay.language && (widget == overlay.language
+            || gtk_widget_is_ancestor(widget, overlay.language))
+            && language_handoff_current(overlay.view) && language_focus_current())
+            gtk_widget_grab_focus(overlay.language);
+        if (!overlay.popover || (button != overlay.source && button != overlay.destination)) return;
         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(button), FALSE);
         if (!overlay.popover) return;
     }
 }
 void tl_overlay_pointer(GdkEvent *event) {
-    if (event->type == GDK_BUTTON_PRESS) close_language_popups_outside(gtk_get_event_widget(event));
+    if (event->type == GDK_BUTTON_PRESS) close_language_popups_outside(gtk_get_event_widget(event), TRUE);
 }
 static gboolean paused(void) {
     return g_strcmp0(tl_string(overlay.view, "state"), "Paused") == 0;
@@ -967,6 +990,11 @@ gboolean tl_overlay_auxiliary_key(guint keyval, GdkModifierType modifiers) {
                 language_row_activated(NULL, NULL, NULL, button);
                 return TRUE;
             }
+        }
+        if (overlay.menu && gtk_widget_get_mapped(overlay.menu) && language_focus_current()
+            && language_handoff_current(overlay.view)) {
+            close_language_menu(overlay.view);
+            return TRUE;
         }
     }
     GlossaryForm *form = glossary_ref(overlay.glossary);
@@ -1450,7 +1478,7 @@ static void emit_editor_focus(GtkWidget *widget) {
 static void focus_changed(GtkWindow *window, GtkWidget *widget, gpointer data) {
     (void)data;
     if (glossary_handoff) return;
-    close_language_popups_outside(widget);
+    close_language_popups_outside(widget, FALSE);
     tl_overlay_control_cancel();
     if (widget != overlay.text) overlay.pending_glossary = FALSE;
     glossary_sync();
@@ -1674,8 +1702,20 @@ static void button_clicked(GtkButton *button, gpointer data) {
             freeze_translation_menu(clicked_view);
             current = reset_language_selection(clicked_view) && render_translation_actions(clicked_view);
         }
-        if (current && overlay.view == clicked_view)
-            gtk_widget_set_visible(overlay.menu, !gtk_widget_get_visible(overlay.menu));
+        if (current && overlay.view == clicked_view) {
+            if (gtk_widget_get_visible(overlay.menu)) close_language_menu(clicked_view);
+            else {
+                gboolean trigger_owned = language_handoff_current(clicked_view)
+                    && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == overlay.language;
+                gtk_widget_show(overlay.menu);
+                /* Reopening a collapsed owned menu restores navigation, not
+                 * source focus. The ordinary first open still leaves source alone. */
+                if (trigger_owned && language_handoff_current(clicked_view)
+                    && gtk_window_get_focus(GTK_WINDOW(overlay.top)) == overlay.language
+                    && overlay.source && gtk_widget_get_mapped(overlay.source))
+                    gtk_widget_grab_focus(overlay.source);
+            }
+        }
     } else if (strcmp(operation, "style-inherit") == 0 || strcmp(operation, "style-natural") == 0
         || strcmp(operation, "style-formal") == 0 || strcmp(operation, "alternative") == 0
         || strcmp(operation, "glossary") == 0) {
@@ -1702,7 +1742,7 @@ static void button_clicked(GtkButton *button, gpointer data) {
         JsonNode *node = json_node_new(JSON_NODE_OBJECT);
         json_node_take_object(node, value);
         emit(operation, node);
-        if (overlay.view == clicked_view) gtk_widget_hide(overlay.menu);
+        if (overlay.view == clicked_view) close_language_menu(clicked_view);
     } else {
         gtk_widget_hide(overlay.menu);
         if (overlay.view == clicked_view && tl_configuration_current(overlay.generation))
@@ -1785,6 +1825,9 @@ static void create(Target *target) {
     gtk_box_pack_start(GTK_BOX(overlay.card), overlay.header, FALSE, FALSE, 0);
     overlay.language = button(overlay.header, "", "menu");
     gtk_widget_set_name(overlay.language, "typelay-menu-trigger");
+    /* No focus-on-click: source acceptance must not be stolen on first open.
+     * A live language menu explicitly hands focus here before it is hidden. */
+    gtk_widget_set_can_focus(overlay.language, TRUE);
     overlay.status = gtk_label_new("");
     gtk_label_set_line_wrap(GTK_LABEL(overlay.status), TRUE);
     gtk_label_set_line_wrap_mode(GTK_LABEL(overlay.status), PANGO_WRAP_WORD_CHAR);
@@ -1911,7 +1954,9 @@ static gboolean refresh_translation_actions(JsonObject *value, JsonObject *autho
 }
 static gboolean language_focus_current(void) {
     GtkWidget *focus = overlay.top ? gtk_window_get_focus(GTK_WINDOW(overlay.top)) : NULL;
-    if (!focus || !overlay.menu || !gtk_widget_get_mapped(overlay.menu)) return FALSE;
+    if (!focus || !overlay.menu) return FALSE;
+    if (!gtk_widget_get_mapped(overlay.menu))
+        return focus == overlay.language && overlay.language && gtk_widget_get_mapped(overlay.language);
     GtkWidget *buttons[] = {overlay.source, overlay.destination};
     for (guint index = 0; index < G_N_ELEMENTS(buttons); index++) {
         if (!buttons[index]) continue;

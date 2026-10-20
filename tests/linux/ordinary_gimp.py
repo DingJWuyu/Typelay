@@ -18,6 +18,15 @@ from niri import contents, request
 from registered_applications import resolve_application
 
 
+def launched_application(child, executable):
+    """A running guardian receipt precedes the launcher's final exec."""
+    assert process_identity(child["pid"]) == child, "application identity changed during launch"
+    actual = Path(f"/proc/{child['pid']}/exe").resolve(strict=True)
+    expected = Path(executable).resolve(strict=True)
+    assert process_identity(child["pid"]) == child, "application identity changed during launch"
+    return child if actual == expected else None
+
+
 def session_exit_confirmed(data, identities):
     """A removed receipt is not proof that its guardian finished final cleanup."""
     if receipts(data):
@@ -425,11 +434,7 @@ def run_gimp(
             if not matches:
                 return None
             child = matches[0]
-            assert process_identity(child["pid"]) == child
-            assert (
-                Path(f"/proc/{child['pid']}/exe").resolve() == Path(selected["argv"][0]).resolve()
-            )
-            return child
+            return launched_application(child, selected["argv"][0])
 
         application = wait_for(
             launched, "registered GIMP not launched through Settings", timeout=60

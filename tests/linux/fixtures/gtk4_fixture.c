@@ -208,22 +208,29 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
             json_builder_set_member_name(builder, "width"); json_builder_add_int_value(builder, gtk_widget_get_width(widget));
             json_builder_set_member_name(builder, "height"); json_builder_add_int_value(builder, gtk_widget_get_height(widget));
         }
-        if (GTK_IS_DROP_DOWN(widget)) {
-            GtkDropDown *dropdown = GTK_DROP_DOWN(widget);
-            GListModel *model = gtk_drop_down_get_model(dropdown);
-            json_builder_set_member_name(builder, "modelInstance");
-            json_builder_add_int_value(builder, language_instance(G_OBJECT(model)));
-            json_builder_set_member_name(builder, "selected");
-            json_builder_add_int_value(builder, gtk_drop_down_get_selected(dropdown));
-            json_builder_set_member_name(builder, "items");
-            json_builder_begin_array(builder);
-            if (model) for (guint index = 0; index < g_list_model_get_n_items(model); index++) {
-                GObject *item = g_list_model_get_item(model, index);
-                if (GTK_IS_STRING_OBJECT(item))
-                    json_builder_add_string_value(builder, gtk_string_object_get_string(GTK_STRING_OBJECT(item)));
-                g_object_unref(item);
+        if (GTK_IS_MENU_BUTTON(widget)) {
+            GtkPopover *popup = gtk_menu_button_get_popover(GTK_MENU_BUTTON(widget));
+            GtkWidget *scroll = popup ? gtk_popover_get_child(popup) : NULL;
+            GtkWidget *list = GTK_IS_SCROLLED_WINDOW(scroll) ? gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(scroll)) : NULL;
+            if (GTK_IS_LIST_VIEW(list)) {
+                GtkSingleSelection *selection = GTK_SINGLE_SELECTION(gtk_list_view_get_model(GTK_LIST_VIEW(list)));
+                GListModel *model = gtk_single_selection_get_model(selection);
+                json_builder_set_member_name(builder, "modelInstance");
+                json_builder_add_int_value(builder, language_instance(G_OBJECT(model)));
+                json_builder_set_member_name(builder, "selected");
+                json_builder_add_int_value(builder, gtk_single_selection_get_selected(selection));
+                json_builder_set_member_name(builder, "popupVisible");
+                json_builder_add_boolean_value(builder, gtk_widget_get_mapped(GTK_WIDGET(popup)));
+                json_builder_set_member_name(builder, "items");
+                json_builder_begin_array(builder);
+                if (model) for (guint index = 0; index < g_list_model_get_n_items(model); index++) {
+                    GObject *item = g_list_model_get_item(model, index);
+                    if (GTK_IS_STRING_OBJECT(item))
+                        json_builder_add_string_value(builder, gtk_string_object_get_string(GTK_STRING_OBJECT(item)));
+                    g_object_unref(item);
+                }
+                json_builder_end_array(builder);
             }
-            json_builder_end_array(builder);
         }
         json_builder_end_object(builder);
     }

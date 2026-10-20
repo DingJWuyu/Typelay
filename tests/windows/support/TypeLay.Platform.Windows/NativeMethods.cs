@@ -15,6 +15,8 @@ public static class NativeMethods
     public const uint FixtureFocus = 0x8001, FixtureSubmitCount = 0x8002, FixtureClearPassword = 0x8003;
     public const uint FixtureBlockGui = 0x8004, FixtureGuiDrained = 0x8005, FixtureBarrierStatus = 0x8006;
 
+    public const uint FixtureArmNullBarrier = 0x8007;
+
     public static string FixtureGuiBarrierName(int processId, string state) =>
         $"Local\\TypeLay.Fixture.GuiBarrier.{processId}.{state}";
 

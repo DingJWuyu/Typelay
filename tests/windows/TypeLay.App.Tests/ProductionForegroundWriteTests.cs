@@ -31,11 +31,90 @@ public sealed class ProductionForegroundWriteTests
         await desktop.Focus(desktop.B);
         Assert.NotEqual(nint.Zero, N.RemoveProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2"));
 
-        var returned = await desktop.Call(new(BrokerProtocol.Version, 0, "return", "", BoundTarget: source.Target));
+        var returned = await desktop.Call(new(BrokerProtocol.Version, 0, "return", "", BoundTarget: source.Target,
+            ExpiresAtMs: WindowsInterruptClock.NowMs + 800));
 
         Assert.Equal("denied", returned.Status);
         Assert.Equal((desktop.Root, desktop.B), N.Focused());
         Assert.Equal(source.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));
+        Assert.Equal(source.Selection, N.ReadSelection(desktop.A));
+        desktop.AssertZeroSubmits();
+    }
+
+    [Theory]
+    [InlineData("expired")]
+    [InlineData("wrong-target")]
+    public async Task NativeReturnRejectsInvalidRequestBeforeMovingFocus(string change)
+    {
+        await using var desktop = await Desktop.Start();
+        await desktop.Prepare(desktop.A, "A🙂你好Z", new(3, 5));
+        var source = await desktop.Capture();
+        await desktop.Focus(desktop.B);
+        string otherText = N.ReadText(desktop.B, Limits.MaxTextUnits);
+        var target = change == "wrong-target"
+            ? (source.Target.AsWindows() with
+            {
+                ControlHwnd = (long)desktop.B
+            }).Id : source.Target;
+        var returned = await desktop.Call(new(BrokerProtocol.Version, 0, "return", "", BoundTarget: target,
+            ExpiresAtMs: WindowsInterruptClock.NowMs + (change == "expired" ? -1 : 800)));
+        Assert.Equal("denied", returned.Status);
+        Assert.Equal((desktop.Root, desktop.B), N.Focused());
+        Assert.Equal(source.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));
+        Assert.Equal(otherText, N.ReadText(desktop.B, Limits.MaxTextUnits));
+        Assert.Equal(source.Selection, N.ReadSelection(desktop.A));
+        desktop.AssertZeroSubmits();
+    }
+
+    [Theory]
+    [InlineData("success")]
+    [InlineData("timeout")]
+    [InlineData("cookie-lost")]
+    public async Task NativeReturnWaitsForOneRootMessageAndRechecksOriginalBinding(string change)
+    {
+        await using var desktop = await Desktop.Start();
+        await desktop.Prepare(desktop.A, "A🙂你好Z", new(3, 5));
+        var source = await desktop.Capture();
+        await desktop.Focus(desktop.B);
+        string otherText = N.ReadText(desktop.B, Limits.MaxTextUnits);
+        using var entered = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(desktop.FixtureProcessId, "entered"));
+        using var release = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(desktop.FixtureProcessId, "release"));
+        Assert.Equal((nuint)1, N.Send(desktop.Root, N.FixtureArmNullBarrier));
+        long expiresAt = WindowsInterruptClock.NowMs + 800;
+        var pending = desktop.Call(new(BrokerProtocol.Version, 0, "return", "", BoundTarget: source.Target,
+            ExpiresAtMs: expiresAt));
+        BrokerResponse returned;
+        try
+        {
+            Assert.True(await Task.Run(() => entered.WaitOne(TimeSpan.FromSeconds(2)), desktop.Token),
+                "The original root must receive the real no-op completion message.");
+            if (change == "timeout")
+            {
+                // Keep the real receiver blocked until the original request's
+                // budget ends. No delay, renewed request or extra activation.
+                returned = await pending;
+                Assert.Equal("denied", returned.Status);
+            }
+            else
+            {
+                Assert.False(pending.IsCompleted);
+                if (change == "cookie-lost")
+                    Assert.NotEqual(nint.Zero, N.RemoveProp(desktop.A, "TypeLay.NativeInput.Lifetime.v2"));
+                release.Set();
+                returned = await pending;
+                Assert.Equal(change == "success" ? "focused" : "denied", returned.Status);
+            }
+        }
+        finally { release.Set(); }
+        // A successful explicit release, not the fixture's two-second escape,
+        // must have completed the receiver even in the request-timeout case.
+        Assert.Equal((nuint)1, N.Send(desktop.Root, N.FixtureBarrierStatus));
+        // Denial does not undo the already requested focus operation. Only a
+        // verified reply may acknowledge success; no case may modify the body.
+        if (change == "success")
+            Assert.Equal((desktop.Root, desktop.A), N.Focused());
+        Assert.Equal(source.Text, N.ReadText(desktop.A, Limits.MaxTextUnits));
+        Assert.Equal(otherText, N.ReadText(desktop.B, Limits.MaxTextUnits));
         Assert.Equal(source.Selection, N.ReadSelection(desktop.A));
         desktop.AssertZeroSubmits();
     }
@@ -637,7 +716,7 @@ public sealed class ProductionForegroundWriteTests
             _pipeToken = broker.StartInfo.Environment["TYPELAY_PIPE_TOKEN"]!;
             _isolatedDirectory = isolatedDirectory;
         }
-        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null)
+        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null)
         {
             var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(30));
@@ -646,7 +725,7 @@ public sealed class ProductionForegroundWriteTests
             string? isolatedDirectory = null;
             try
             {
-                fixture = await StockFixture.Start(deadline.Token, owned, retirementProbe);
+                fixture = await StockFixture.Start(deadline.Token, owned, retirementProbe, returnFocus);
                 string directory = Path.Combine(Repository(), "src/windows/TypeLay.Broker/bin/Release/net10.0-windows");
                 if (withoutNativeDll)
                 {
@@ -770,7 +849,7 @@ public sealed class ProductionForegroundWriteTests
         public nint Field(string name) => (nint)host.Fields.Single(value => value.Name == name).Hwnd;
         private Guid _connection, _run;
         private long _sequence = 1;
-        public static async Task<StockFixture> Start(CancellationToken token, bool owned = false, string? retirementProbe = null)
+        public static async Task<StockFixture> Start(CancellationToken token, bool owned = false, string? retirementProbe = null, string? returnFocus = null)
         {
             Guid connection = Guid.NewGuid(), run = Guid.NewGuid();
             string assembly = Path.Combine(Repository(),
@@ -782,6 +861,12 @@ public sealed class ProductionForegroundWriteTests
             {
                 Assert.True(owned);
                 arguments = [.. arguments, retirementProbe];
+            }
+            if (returnFocus is not null)
+            {
+                Assert.False(owned);
+                Assert.Contains(returnFocus, new[] { "root", "second" });
+                arguments = [.. arguments, "--return-focus", returnFocus];
             }
             var process = StartProcess(arguments);
             try

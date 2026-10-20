@@ -121,7 +121,7 @@ class AlternativeTests(unittest.TestCase):
                     (
                         [["你好"]],
                         {
-                            "beam_size": 4,
+                            "beam_size": 2,
                             "patience": 1,
                             "num_hypotheses": 2,
                             "max_input_length": 0,
@@ -219,7 +219,7 @@ class AlternativeTests(unittest.TestCase):
                     (
                         [["你好"]],
                         {
-                            "beam_size": 4,
+                            "beam_size": 2,
                             "max_input_length": 0,
                             "max_decoding_length": 512,
                             "repetition_penalty": 1.05,

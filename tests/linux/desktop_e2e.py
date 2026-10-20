@@ -1933,31 +1933,35 @@ def run(arguments):
                         evidence.append(
                             "GTK renderer: catalog language choices preserve menu drafts and focus"
                         )
-                        if not gtk4:
-                            for refusal in (
-                                "body",
-                                "authority",
-                                "permissions",
-                                "external-focus",
-                                "source-input",
-                            ):
-                                with tempfile.TemporaryDirectory(
-                                    prefix="tl-gtk-language-refusal-"
-                                ) as directory:
-                                    run_case(
-                                        fixture_command,
-                                        gtk_environment,
-                                        arguments.output,
-                                        None,
-                                        Path(directory),
-                                        "language-retention-" + refusal,
-                                        False,
-                                        nested[0],
-                                    )
-                            evidence.append(
-                                "GTK3 language preview: detached renewal rejects changed body, authority, "
-                                "editing permission, external focus and source input"
-                            )
+                        refusals = [
+                            "body",
+                            "authority",
+                            "permissions",
+                            "external-focus",
+                            "source-input",
+                            "trigger-authority",
+                            "trigger-permissions",
+                            "trigger-external-focus",
+                            "trigger-expired",
+                        ]
+                        for refusal in refusals:
+                            with tempfile.TemporaryDirectory(
+                                prefix="tl-gtk-language-refusal-"
+                            ) as directory:
+                                run_case(
+                                    fixture_command,
+                                    gtk_environment,
+                                    arguments.output,
+                                    None,
+                                    Path(directory),
+                                    "language-retention-" + refusal,
+                                    False,
+                                    nested[0],
+                                )
+                        evidence.append(
+                            "GTK language preview: detached renewal rejects changed body, authority, "
+                            "editing permission, external focus and source input"
+                        )
                         fixture = subprocess.Popen(
                             fixture_command,
                             env=gtk_environment,

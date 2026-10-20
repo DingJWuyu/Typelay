@@ -66,6 +66,8 @@ void tl_drop_publication(void);
 gboolean tl_return(Target *target, JsonObject *authority);
 gboolean tl_metadata_matches(Target *target, JsonObject *authority);
 gboolean tl_ime_clear(Target *target);
+/* Read-only existing preview retention only; never a source-write permit. */
+gboolean tl_preview_detached_current(Target *target, JsonObject *basis);
 gboolean tl_widget_ime_clear(GtkWidget *widget);
 gboolean tl_return_ready(Target *target, JsonObject *authority);
 void tl_clear_permit(void);

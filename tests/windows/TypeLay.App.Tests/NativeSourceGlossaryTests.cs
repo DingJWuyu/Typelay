@@ -22,7 +22,7 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
     public static IEnumerable<object[]> SourceFormCases()
     {
         foreach (string action in new[] { "save", "cancel", "foreign", "source-changed", "selection-changed", "readonly",
-            "wrong-source-field", "foreign-pending", "foreign-back-pending", "close-pending", "config-pending" })
+            "wrong-source-field", "return-root", "return-second", "foreign-pending", "foreign-back-pending", "close-pending", "config-pending" })
             foreach (bool editedPending in new[] { false, true })
                 yield return new object[] { action, editedPending };
     }
@@ -31,7 +31,8 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
     [MemberData(nameof(SourceFormCases))]
     public Task SourceFormUsesRealForegroundAndBrokerWithoutWritingSource(string action, bool editedPending) => desktop.RunAsync(async () =>
     {
-        await using var native = await ProductionForegroundWriteTests.Desktop.Start();
+        string? returnFocus = action.StartsWith("return-", StringComparison.Ordinal) ? action[7..] : null;
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start(returnFocus: returnFocus);
         var overlay = new OverlayWindow(clientAreaAnimation: () => false);
         using var monitor = new KeyboardHook(allowInjectedInput: true, editorHwnd: overlay.Handle);
         while (!monitor.ShortcutsReady)
@@ -202,6 +203,8 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
                     Assert.Equal((native.Root, native.A), N.Focused());
                     Assert.Equal(initialEpoch + 2, monitor.WindowEpoch);
                 }
+                else if (returnFocus is not null)
+                    Assert.Equal((native.Root, returnFocus == "root" ? native.Root : native.B), N.Focused());
                 else
                     Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
             }

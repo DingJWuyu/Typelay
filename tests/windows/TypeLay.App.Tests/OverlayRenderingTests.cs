@@ -1101,7 +1101,23 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
         deadline.CancelAfter(TimeSpan.FromSeconds(10));
         await Wait(() => hook.ShortcutsReady && editor.IsKeyboardFocused);
         Assert.All(new[] { Key.F10, Key.LeftCtrl }, key => Assert.False(Native.GetAsyncKeyState(KeyInterop.VirtualKeyFromKey(key)) < 0));
+        // Installed after the production hook: this observer sees the original
+        // injected edge before TypeLay may consume its owned release.
+        var originalEdges = new List<(uint Message, Native.KeyData Key)>();
+        Native.HookProc observeOriginal = (code, message, pointer) =>
+        {
+            if (code >= 0 && originalEdges.Count < 16)
+            {
+                var key = Marshal.PtrToStructure<Native.KeyData>(pointer);
+                if (key.Key == 0x79)
+                    originalEdges.Add(((uint)message, key));
+            }
+            return Native.CallNextHookEx(0, code, message, pointer);
+        };
+        nint originalHook = Native.SetWindowsHookExW(13, observeOriginal, Native.GetModuleHandleW(null), 0);
+        Assert.NotEqual(nint.Zero, originalHook);
         bool held = false;
+        Exception? primaryFailure = null;
         try
         {
             for (int attempt = 1; attempt <= 2; attempt++)
@@ -1226,7 +1242,31 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 Assert.True(function[0].Message is 0x100 or 0x104);
                 Assert.True(function[1].Message is 0x100 or 0x104);
                 Assert.True(function[2].Message is 0x101 or 0x105);
-                Assert.Equal(0UL, (unchecked((ulong)(long)function[0].LParam) >> 30) & 1);
+                Assert.Equal(7, originalEdges.Count);
+                Assert.Equal(new[] { false, true, false, true, false, false, true },
+                    originalEdges.Select(edge => (edge.Key.Flags & 0x80) != 0));
+                Assert.All(originalEdges, edge =>
+                {
+                    Assert.Equal(0x79u, edge.Key.Key);
+                    Assert.Equal(0x44u, edge.Key.Scan);
+                    Assert.Equal(originalEdges[0].Key.Flags & ~0x80u, edge.Key.Flags & ~0x80u);
+                    Assert.True((edge.Key.Flags & 0x10) != 0); // This fixture explicitly admits SendInput.
+                    Assert.Equal((edge.Key.Flags & 0x80) != 0, edge.Message is 0x101 or 0x105);
+                });
+                for (int index = 0; index < function.Length; index++)
+                {
+                    var original = originalEdges[index + 4];
+                    var queuedMessage = function[index];
+                    ulong flags = unchecked((ulong)(long)queuedMessage.LParam);
+                    Assert.Equal(original.Key.Time, queuedMessage.Time);
+                    Assert.Equal((nuint)original.Key.Key, queuedMessage.WParam);
+                    Assert.Equal((ulong)original.Key.Scan, (flags >> 16) & 0xff);
+                    Assert.Equal((ulong)(original.Key.Flags & 1), (flags >> 24) & 1);
+                    Assert.Equal((ulong)((original.Key.Flags >> 7) & 1), (flags >> 31) & 1);
+                }
+                // The first raw bit 30 may retain the previously consumed Fn up.
+                // Independent LL edges plus exact MSG identity prove a fresh press;
+                // WPF's semantic first/repeat contract is asserted below.
                 Assert.Equal(1UL, (unchecked((ulong)(long)function[1].LParam) >> 30) & 1);
                 Assert.Equal(1UL, (unchecked((ulong)(long)function[2].LParam) >> 30) & 1);
                 var routedDowns = rejected.Where(args => args.RoutedEvent == Keyboard.PreviewKeyDownEvent).ToArray();
@@ -1257,13 +1297,24 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             Assert.Equal("Source text", input.Text);
             Assert.Equal("A locally editable draft", editor.Text);
         }
+        catch (Exception error)
+        {
+            primaryFailure = error;
+            throw;
+        }
         finally
         {
+            bool removed = Native.UnhookWindowsHookEx(originalHook);
+            GC.KeepAlive(observeOriginal);
             if (held)
                 Send([Scan(0x44, false), Scan(0x1D, false)]);
             // This isolated Hook has no Runtime poller. The existing reader
             // flushes its bounded trace even when the first assertion fails.
             hook.TryRead(out _);
+            if (primaryFailure is not null && !removed)
+                primaryFailure.Data["OriginalEdgeObserverCleanupFailed"] = true;
+            else
+                Assert.True(removed);
         }
         async Task Wait(Func<bool> condition)
         {

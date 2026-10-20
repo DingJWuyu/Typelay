@@ -612,8 +612,24 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                     long foreground = scene.ForegroundEpoch;
                     Assert.True(other.Activate());
                     Assert.True(otherInput!.Focus());
-                    await scene.Wait(() => otherInput.IsKeyboardFocused && Native.GetForegroundWindow() != scene.Root
-                        && scene.ForegroundEpoch > foreground);
+                    // Across input queues activation is asynchronous. Prove the
+                    // source GUI actually processed departure before returning;
+                    // the other thread's focus/WinEvent alone is not that receipt.
+                    // https://learn.microsoft.com/windows/win32/inputdev/wm-activate
+                    try
+                    {
+                        await scene.Wait(() => otherInput.IsKeyboardFocused && Native.GetForegroundWindow() != scene.Root
+                            && scene.ForegroundEpoch > foreground
+                            && (long)N.GetProp(scene.Field, "TypeLay.OwnedFocusRevision.v1")
+                                > scene.Plan!.Descriptor.NativeFocusRevision);
+                    }
+                    catch (OperationCanceledException error)
+                    {
+                        throw new InvalidOperationException("Source GUI did not acknowledge focus departure: "
+                            + $"otherFocused={otherInput.IsKeyboardFocused}; foregroundLeft={Native.GetForegroundWindow() != scene.Root}; "
+                            + $"nativeRevision={(long)N.GetProp(scene.Field, "TypeLay.OwnedFocusRevision.v1")}; "
+                            + $"planRevision={scene.Plan!.Descriptor.NativeFocusRevision}", error);
+                    }
                     await scene.Focus(afterRevision: scene.Plan!.Descriptor.NativeFocusRevision);
                     other.Close();
                 }
@@ -717,7 +733,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             Assert.False(Native.GetAsyncKeyState(9) < 0);
             var first = await CapturePlan();
             hook.Publish(first.Lease, first.Permit);
-            await Until(() => Ready(first));
+            await UntilReady(first, WindowsInterruptClock.NowMs);
             string original = N.ReadText(field, Limits.MaxTextUnits);
             Assert.True(host.EditorReady(first.Lease.Source.Target));
             if (!allowInjectedInput)
@@ -748,7 +764,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
 
             var current = await CapturePlan();
             hook.Publish(current.Lease, current.Permit);
-            await Until(() => Ready(current));
+            await UntilReady(current, WindowsInterruptClock.NowMs);
             long contentEpoch = hook.ContentEpoch;
             // A real unmatched mouse release changes the LL content watermark,
             // without changing this field's text, selection or focus. It denies
@@ -788,13 +804,14 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             Assert.True(N.PostMessage(root, 0x0010, 0, 0));
             await child!.Process.WaitForExitAsync(deadline.Token);
 
-            bool Ready((InputLease Lease, AcceptancePermit Permit) plan) => hook.AcceptanceReady(
+            bool Ready((InputLease Lease, AcceptancePermit Permit, long CapturedAtMs) plan) => hook.AcceptanceReady(
                 new(plan.Lease.Source.Target, plan.Lease.CommandGeneration, plan.Lease.SessionRevision),
                 plan.Permit, WindowsInterruptClock.NowMs);
-            async Task<(InputLease Lease, AcceptancePermit Permit)> CapturePlan()
+            async Task<(InputLease Lease, AcceptancePermit Permit, long CapturedAtMs)> CapturePlan()
             {
                 var captured = await input.CaptureAsync(new(hook.UserEpoch, hook.ForegroundEpoch, hook.SourceUserEpoch,
                     null, [], false)).WaitAsync(deadline.Token);
+                long capturedAtMs = WindowsInterruptClock.NowMs;
                 var source = Assert.IsType<InputSnapshot>(captured.Snapshot);
                 Assert.Equal(ImeState.Clear, source.Ime);
                 Assert.True(source.WriteSupported);
@@ -804,7 +821,28 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                     QueueScene.Replacement, QueueScene.Replacement, QueueScene.Replacement.Length);
                 return (new(source, captured.UserEpoch, captured.ForegroundEpoch, true,
                     hook.CommandGeneration, 1, binding.RunId, binding.ConnectionId),
-                    new(plan, source.InputEpoch, source.FocusEpoch, source.ObservedAtMs, source.ObservedAtMs + Limits.PermitMaxAgeMs));
+                    new(plan, source.InputEpoch, source.FocusEpoch, source.ObservedAtMs, source.ObservedAtMs + Limits.PermitMaxAgeMs), capturedAtMs);
+            }
+            async Task UntilReady((InputLease Lease, AcceptancePermit Permit, long CapturedAtMs) plan, long publishedAtMs)
+            {
+                // One original plan only: after its exact deadline no later ACK
+                // can make this readiness predicate true. Never refresh or retry.
+                while (!Ready(plan))
+                {
+                    long now = WindowsInterruptClock.NowMs;
+                    if (now > plan.Permit.ExpiresAtMs)
+                        Assert.Fail(
+                        $"Original acceptance expired before Ready; injected={allowInjectedInput}; "
+                        + $"observed={plan.Permit.ObservedAtMs}; captured={plan.CapturedAtMs}; "
+                        + $"published={publishedAtMs}; expires={plan.Permit.ExpiresAtMs}; now={now}; "
+                        + $"userEpochMatched={hook.UserEpoch == plan.Lease.UserEpoch}; "
+                        + $"foregroundEpochMatched={hook.ForegroundEpoch == plan.Lease.ForegroundEpoch}; "
+                        + $"focus={hook.GetFocus(plan.Lease.Source.Target)}; "
+                        + $"sourceReady={host.SourceReady(plan.Lease.Source.Target)}; "
+                        + $"editorReady={host.EditorReady(plan.Lease.Source.Target)}");
+                    Assert.False(child!.Process.HasExited);
+                    await Task.Delay(1, deadline.Token);
+                }
             }
             async Task Until(Func<bool> condition)
             {

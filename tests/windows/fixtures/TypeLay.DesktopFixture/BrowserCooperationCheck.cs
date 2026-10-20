@@ -242,7 +242,12 @@ internal static partial class BrowserCooperationCheck
                 Require(File.Exists(Path.Combine(extension, "manifest.json")), "shipped-extension-missing");
                 // Never merge a test browser into an existing user's Chrome state.
                 Directory.CreateDirectory(Path.GetDirectoryName(profile)!);
-                Require(CreateDirectoryW(profile, 0), "standard-chrome-profile-already-exists");
+                if (!CreateDirectoryW(profile, 0))
+                {
+                    int error = Marshal.GetLastWin32Error();
+                    throw new Failure(error == 183 ? "standard-chrome-profile-already-exists"
+                        : "standard-chrome-profile-create-failed-" + error);
+                }
                 ownProfile = true;
                 await File.WriteAllTextAsync(profileOwnerFile, ownerToken, ct);
                 var chromeStart = StartInfo(chrome);

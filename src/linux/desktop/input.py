@@ -1856,6 +1856,8 @@ class Input:
             glossary_return, peer, description
         ):
             return self.captured("glossary-return-identity-lost")
+        policy_user_epoch = self.user_epoch
+        policy_record = peer.shortcut
         if not await self.approve(peer, description):
             return self.captured("excluded-or-sensitive")
         if peer.browser_retired:
@@ -1869,6 +1871,47 @@ class Input:
             return self.captured("window-changing")
         if self.enabled is False or settings_generation != self.settings_generation:
             return self.captured("settings-changed")
+        # Reading a rapidly changing body can fail after allowField has already
+        # approved fresh metadata. Keep the existing GTK3 command target's policy
+        # current independently of that read, without retaining body/write rights.
+        # This is a new Core approval with its original observation time, never a
+        # renewed old lease. The native key still captures synchronously and checks
+        # its original 150 ms age, IME, metadata and command-local revisions.
+        authority = description.get("authority", {})
+        policy_stamp = authority.get("observedAtMs")
+        if (
+            peer.backend == "gtk3"
+            and policy_record is not None
+            and peer.shortcut is policy_record
+            and self.shortcut_config.get("enabled")
+            and command_generation == self.shortcut_config.get("generation")
+            and focus == "Source"
+            and not self.overlay_focused
+            and peer in self.peers
+            and self.focused_peer() is peer
+            and description.get("focused") is True
+            and window_epoch == self.window_epoch
+            and foreground_epoch == self.foreground_epoch
+            and policy_user_epoch == self.user_epoch
+            and self.fresh()
+            and policy_record["target"] == target_id(peer, description["target"])
+            and policy_record["window"]["id"] == window["id"]
+            and type(policy_stamp) is int
+            and 0 <= now_ms() - policy_stamp <= 150
+        ):
+            peer.shortcut = {
+                "target": policy_record["target"],
+                "window": window,
+                "authority": authority,
+            }
+            peer.link.command(
+                "publish-shortcut",
+                {
+                    "target": description["target"],
+                    "authority": authority,
+                    "generation": command_generation,
+                },
+            )
         capture_data = {
             "target": description["target"],
             "authority": description["authority"],

@@ -17,7 +17,8 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
     private uint? _processId;
     internal sealed record ExitResult(uint? RootProcessId, int? RootExitCode, bool RootKernelSignaled,
         uint? ActiveProcesses, bool AssignedBeforeResume, bool Interrupted,
-        string CleanupMode, string? Failure, uint? TotalProcessesAtRootExit, uint? ActiveProcessesAtRootExit)
+        string CleanupMode, string? Failure, uint? TotalProcessesAtRootExit, uint? ActiveProcessesAtRootExit,
+        bool? MemberQuerySucceeded, uint? AssignedMembers, uint? ListedMembers, ulong? SoleMemberProcessId)
     {
         public bool NoActiveOwnedConsumers => AssignedBeforeResume && RootKernelSignaled
             && ActiveProcesses == 0 && !Interrupted && Failure is null;
@@ -109,6 +110,8 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
         int? exitCode = null;
         uint? active = null, totalAtRootExit = null, activeAtRootExit = null;
         bool soleExitedRoot = false;
+        bool? memberQuerySucceeded = null;
+        ProcessIdList members = default;
         string cleanupMode = "unconfirmed";
         string? failure = null;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
@@ -127,10 +130,17 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
             Accounting accounting = ReadAccounting();
             active = activeAtRootExit = accounting.ActiveProcesses;
             totalAtRootExit = accounting.TotalProcesses;
-            // A signaled sole root cannot create another process. Job accounting
-            // may still retain its association after the process has exited.
-            // This is not evidence about jobs that have ever contained a child.
-            soleExitedRoot = accounting.TotalProcesses == 1 && active == 1;
+            // Lifetime association counts do not identify the remaining member.
+            // Only a complete current list containing our retained, signaled root
+            // can authorize the original bounded accounting drain. A live child,
+            // incomplete list or query failure retains immediate job termination.
+            if (active == 1)
+            {
+                memberQuerySucceeded = QueryInformationJobObject(_job, 3, out members,
+                    (uint)Marshal.SizeOf<ProcessIdList>(), 0);
+                soleExitedRoot = IsSoleRetainedRoot(memberQuerySucceeded == true,
+                    members.Assigned, members.Listed, members.ProcessId, _processId!.Value);
+            }
             cleanupMode = active == 0 ? "natural" : "unconfirmed";
         }
         catch (OperationCanceledException) { interrupted = true; }
@@ -175,8 +185,15 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
         }
         interrupted |= cancellation.IsCancellationRequested || deadline.IsCancellationRequested;
         return new(_processId, exitCode, signaled, active, _assigned, interrupted, cleanupMode, failure,
-            totalAtRootExit, activeAtRootExit);
+            totalAtRootExit, activeAtRootExit, memberQuerySucceeded,
+            memberQuerySucceeded is null ? null : members.Assigned,
+            memberQuerySucceeded is null ? null : members.Listed,
+            memberQuerySucceeded == true && members.Listed == 1 ? (ulong)members.ProcessId : null);
     }
+
+    internal static bool IsSoleRetainedRoot(bool querySucceeded, uint assigned, uint listed,
+        nuint member, uint retainedRoot) => querySucceeded && assigned == 1 && listed == 1
+            && retainedRoot != 0 && member == retainedRoot;
 
     private void Start(ProcessStartInfo start)
     {
@@ -324,6 +341,12 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
     {
         public long User, Kernel, PeriodUser, PeriodKernel; public uint PageFaults, TotalProcesses, ActiveProcesses, TerminatedProcesses;
     }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessIdList
+    {
+        public uint Assigned, Listed; public nuint ProcessId;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool QueryInformationJobObject(nint job, int kind, out ProcessIdList value, uint size, nint length);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern nint CreateJobObjectW(nint attributes, string? name);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetInformationJobObject(nint job, int kind, ref ExtendedLimits value, uint size);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool QueryInformationJobObject(nint job, int kind, out ExtendedLimits value, uint size, nint length);

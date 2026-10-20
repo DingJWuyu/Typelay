@@ -134,9 +134,6 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
         "TYPELAY_FIXTURE_REENTRY_TEXT": replacement,
     }
     child_environment.pop("TYPELAY_FIXTURE_TWO_WINDOWS", None)
-    child_environment.pop("TYPELAY_TRACE_GTK4_LANGUAGE_RETIRE", None)
-    if stage == "language-options":
-        child_environment["TYPELAY_TRACE_GTK4_LANGUAGE_RETIRE"] = "1"
 
     if stage == "footer":
         child_environment["G_DEBUG"] = "fatal-criticals"
@@ -661,7 +658,7 @@ def check_language_retention_refusal(
     client, source, generation, state, initial, nested, dimensions, stage
 ):
     """Exercise the real detached source and own language focus, not a fake IME."""
-    assert client.hello["backend"] == "gtk3"
+    assert client.hello["backend"] in ("gtk3", "gtk4")
     trigger, menu, control = (
         "typelay-menu-trigger",
         "typelay-language-menu",
@@ -713,6 +710,29 @@ def check_language_retention_refusal(
         "visible"
     ]
     wait_for(detached_menu, "read-only renewal changed source/menu focus")
+    trigger_case = stage.startswith("language-retention-trigger-")
+    if trigger_case:
+        key("Escape")
+        wait_for(
+            lambda: controls().get(control, {}).get("focused")
+            and not controls().get(control, {}).get("popupVisible"),
+            "Escape did not return from child popup",
+        )
+        key("Escape")
+        wait_for(
+            lambda: controls().get(trigger, {}).get("focused")
+            and not controls().get(menu, {}).get("visible"),
+            "menu Escape did not hand focus to its trigger",
+        )
+        assert render_preview(
+            client, source, generation, 3, "fixture exit", language_view=languages
+        )["visible"]
+        assert not state()["imeClear"], "collapsed menu fabricated source Clear"
+        key("F1")  # The configured source acceptance must not be minted by menu focus.
+        client.call("describe")
+        assert not any(event.get("event") == "accepted" for event in client.events)
+        assert state()["first"] == initial["first"]
+        stage = stage.replace("language-retention-trigger-", "language-retention-", 1)
     changed_source = json.loads(json.dumps(source))
     kwargs = {}
     expected_first = initial["first"]
@@ -725,6 +745,8 @@ def check_language_retention_refusal(
     elif stage == "language-retention-external-focus":
         click("secondEntry", field=True)
         wait_for(lambda: state().get("focus") == "fixture-second", "external field not focused")
+    elif stage == "language-retention-expired":
+        wait_for(lambda: state().get("candidate") is None, "original menu lease did not expire")
     elif stage == "language-retention-source-input":
         click("firstEntry", field=True)
         wait_for(
@@ -748,7 +770,13 @@ def check_language_retention_refusal(
     else:
         raise AssertionError(f"unknown language retention stage: {stage}")
     result = render_preview(
-        client, changed_source, generation, 3, "fixture exit", language_view=languages, **kwargs
+        client,
+        changed_source,
+        generation,
+        4 if trigger_case else 3,
+        "fixture exit",
+        language_view=languages,
+        **kwargs,
     )
     assert result == {"visible": False, "editing": False}, (stage, result)
     final = wait_for(
@@ -934,13 +962,23 @@ def check_language_options(
     assert actual[source_control]["selected"] == 2, "confirmed saved code did not replace draft"
     select(source_control, 3)
     toggle(False)
+    if client.hello["backend"] in ("gtk3", "gtk4"):
+        wait_for(lambda: controls()[trigger]["focused"], "closing menu lost real language focus")
+        assert render()[trigger]["focused"], "collapsed renewal lost owned trigger focus"
     toggle(True, renew=False)
+    if client.hello["backend"] in ("gtk3", "gtk4"):
+        wait_for(
+            lambda: controls()[source_control]["focused"],
+            "reopening did not restore language navigation",
+        )
     assert controls()[source_control]["selected"] == 2, "reopening retained an unapplied choice"
     select(source_control, 3)
     select(target_control, 0)
     render()
     click(apply_control)
     wait_for(lambda: not controls().get(menu, {}).get("visible"), "Apply did not close menu")
+    if client.hello["backend"] in ("gtk3", "gtk4"):
+        wait_for(lambda: controls()[trigger]["focused"], "Apply lost owned language focus")
     emitted = events()
     assert len(emitted) == len(before_events) + 1
     assert emitted[-1]["value"] == {"source": "ko", "target": "en"}
@@ -978,7 +1016,7 @@ def check_language_options(
     toggle(True, renew=False)
     assert not controls()[apply_control]["enabled"], "unavailable confirmed choice was lost"
 
-    if client.hello["backend"] == "gtk3":
+    if client.hello["backend"] in ("gtk3", "gtk4"):
         before_popup_events = events()
         render()
         click(source_control)
@@ -1037,7 +1075,7 @@ def check_language_options(
     assert actual[trigger]["text"] == "ja（当前不可用） → ko（当前不可用）"
     click(apply_control)
     assert events() == before_events, "invalid choices emitted a language change"
-    if client.hello["backend"] == "gtk3":
+    if client.hello["backend"] in ("gtk3", "gtk4"):
         view["languageChoices"] = choices
         render()
         click(source_control)

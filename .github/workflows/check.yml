@@ -106,6 +106,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.13'
+      - name: Observe standard Chrome profile before Windows tests
+        shell: pwsh
+        run: python eng/windows/observe-browser-profile.py --stage before-tests --output artifacts/browser-profile/before-tests.json
       - name: Install developer tooling
         shell: pwsh
         run: |
@@ -131,6 +134,10 @@ jobs:
           path: artifacts/test-results/*.trx
           if-no-files-found: error
           retention-days: 14
+      - name: Observe standard Chrome profile after behavior tests
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        shell: pwsh
+        run: python eng/windows/observe-browser-profile.py --stage after-behavior-tests --output artifacts/browser-profile/after-behavior-tests.json
       - name: Verify formatting and Python behavior
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         shell: pwsh
@@ -140,6 +147,8 @@ jobs:
           dotnet format TypeLay.slnx --verify-no-changes --no-restore
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s tests/shared/worker -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/windows/test_browser_profile_observation.py -v
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m ruff check .
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -157,6 +166,10 @@ jobs:
         run: |
           dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-continuous artifacts/continuous-translation src/shared/TypeLay.Worker/run_worker.py tests/windows/fixtures/TypeLay.NativeFixture/bin/Release/net10.0/TypeLay.NativeFixture.dll
           exit $LASTEXITCODE
+      - name: Observe standard Chrome profile after continuous translation
+        if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
+        shell: pwsh
+        run: python eng/windows/observe-browser-profile.py --stage after-continuous --output artifacts/browser-profile/after-continuous.json
       - name: Restore the pinned cooperative-browser test archive
         if: ${{ !cancelled() && steps.windows-build.outcome == 'success' }}
         id: cooperative-browser-cache
@@ -243,6 +256,8 @@ jobs:
         env:
           TYPELAY_BROWSER_REGISTRATION_E2E: "1"
         run: |
+          python eng/windows/observe-browser-profile.py --stage before-browser-cooperation --output artifacts/browser-profile/before-browser-cooperation.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-browser-cooperation artifacts/browser-cooperation artifacts/package/TypeLay '${{ steps.cooperative-browser-prepare.outputs.chrome }}'
           exit $LASTEXITCODE
       - name: Verify real classic Notepad through shipped app Settings
@@ -295,6 +310,7 @@ jobs:
             artifacts/continuous-translation/consumer-exit.json
             artifacts/continuous-translation/trace*.jsonl
             artifacts/continuous-translation/data/setup-self-check.json
+            artifacts/browser-profile/*.json
             artifacts/browser-cooperation/result.json
             artifacts/browser-cooperation/consumer-exit.json
             artifacts/browser-cooperation/trace*.jsonl

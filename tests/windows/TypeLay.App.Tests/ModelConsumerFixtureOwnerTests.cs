@@ -9,6 +9,21 @@ namespace TypeLay.App.Tests;
 public sealed class ModelConsumerFixtureOwnerTests(ITestOutputHelper output)
 {
     [Theory]
+    [InlineData(true, 1u, 1u, 42u, 42u, true)]
+    [InlineData(false, 1u, 1u, 42u, 42u, false)]
+    [InlineData(true, 2u, 1u, 42u, 42u, false)]
+    [InlineData(true, 1u, 0u, 42u, 42u, false)]
+    [InlineData(true, 1u, 1u, 43u, 42u, false)]
+    [InlineData(true, 0u, 0u, 0u, 42u, false)]
+    [InlineData(true, 1u, 1u, 0u, 0u, false)]
+    public void OnlyACompleteCurrentListOfTheRetainedRootAllowsNaturalDrain(
+        bool queried, uint assigned, uint listed, uint member, uint root, bool expected)
+    {
+        Assert.Equal(expected, ModelConsumerFixtureOwner.IsSoleRetainedRoot(
+            queried, assigned, listed, member, root));
+    }
+
+    [Theory]
     [InlineData("--verify-continuous", 2)]
     [InlineData("--verify-browser-cooperation", 1)]
     public async Task RealFixtureEntryWritesOnlyThisAttemptProofAndPreservesPrerequisiteFailure(string mode, int expectedCode)
@@ -65,9 +80,10 @@ public sealed class ModelConsumerFixtureOwnerTests(ITestOutputHelper output)
     }
 
     [Theory]
-    [InlineData(0)]
-    [InlineData(23)]
-    public async Task NaturalExitProofPreservesTheFixtureResult(int code)
+    [InlineData(0, false)]
+    [InlineData(23, false)]
+    [InlineData(0, true)]
+    public async Task NaturalExitProofPreservesTheFixtureResult(int code, bool exitedChild)
     {
         string python = (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator)
             .Select(path => Path.Combine(path.Trim('"'), "python.exe")).First(File.Exists);
@@ -78,12 +94,15 @@ public sealed class ModelConsumerFixtureOwnerTests(ITestOutputHelper output)
             using var owner = new ModelConsumerFixtureOwner();
             var start = new ProcessStartInfo(Path.GetFullPath(python)) { UseShellExecute = false };
             foreach (string argument in new[] { "-I", "-B", "-c", """
-                import json, os, sys
+                import json, os, subprocess, sys
+                if sys.argv[3] == 'True':
+                    # Real child completion, not a timing sleep or a fabricated counter.
+                    subprocess.run([sys.executable, '-I', '-B', '-c', 'raise SystemExit(0)'], check=True)
                 with open(sys.argv[2], 'x', encoding='utf-8') as identity:
                     json.dump(dict(pid=os.getpid(), executable=sys.executable,
                         base_executable=getattr(sys, '_base_executable', None)), identity)
                 sys.exit(int(sys.argv[1]))
-                """, code.ToString(System.Globalization.CultureInfo.InvariantCulture), identityPath })
+                """, code.ToString(System.Globalization.CultureInfo.InvariantCulture), identityPath, exitedChild.ToString() })
                 start.ArgumentList.Add(argument);
             var result = await owner.ExecuteAsync(start, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
             output.WriteLine(JsonSerializer.Serialize(result));

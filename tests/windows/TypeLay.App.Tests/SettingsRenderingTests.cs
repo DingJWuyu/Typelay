@@ -236,6 +236,11 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
                     Assert.Equal("查看详情", chromePrimary.Content);
                     Assert.True(chromePrimary.IsEnabled); // Model/Enabled never hide connection management.
                     Assert.Contains(Descendants(chrome).OfType<TextBlock>(), text => text.Text == "待启用扩展");
+                    // These actions live in the initially collapsed details. Use
+                    // the public primary action before inspecting its visual tree.
+                    chromePrimary.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    window.UpdateLayout();
+                    Assert.True(Descendants(chrome).OfType<Expander>().Single().IsExpanded);
                     Assert.Contains(Descendants(chrome).OfType<Button>(), button =>
                         AutomationProperties.GetAutomationId(button) == "ChromeConnectionCopyManagement");
                     Assert.Contains(Descendants(chrome).OfType<Button>(), button =>

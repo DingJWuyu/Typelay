@@ -596,6 +596,9 @@ internal sealed class UiaInputProvider : IDisposable
         reason = "return-canceled";
         if (glossary && !authorization!.BeforeFocus((nint)request.OverlayHwnd))
             return false;
+        reason = "return-expired";
+        if (!glossary && (request.ExpiresAtMs <= 0 || request.ExpiresAtMs - WindowsInterruptClock.NowMs is <= 0 or > 800))
+            return false;
         reason = "foreground";
         if (GetForegroundWindow() != (nint)binding.RootHwnd && !SetForegroundWindow((nint)binding.RootHwnd))
         {
@@ -606,15 +609,48 @@ internal sealed class UiaInputProvider : IDisposable
         if (glossary && (!_edits.ConfirmsReturnFocus(binding)
             || !authorization!.BeforeFocus((nint)binding.RootHwnd)))
             return false;
+        reason = "return-expired";
+        if (!glossary && WindowsInterruptClock.NowMs >= request.ExpiresAtMs)
+            return false;
         reason = "set-focus";
         // A glossary return never corrects another field's focus. The native
         // host must have restored this exact original control on activation.
         if (!glossary)
             _element.SetFocus();
+        if (!glossary)
+        {
+            // Cross-input-queue activation is asynchronous. A single no-op sent
+            // to the already validated root completes the original focus operations;
+            // it is not another activation attempt and grants no write authority.
+            long remaining = request.ExpiresAtMs - WindowsInterruptClock.NowMs;
+            reason = "return-expired";
+            if (remaining <= 0 || remaining > 800)
+                return false;
+            reason = "activation-barrier";
+            // ABORTIFHUNG | ERRORONEXIT; never NOTIMEOUTIFNOTHUNG. The target is
+            // one exact source root, not a broadcast or a newly observed HWND.
+            if (SendMessageTimeoutW((nint)binding.RootHwnd, 0, 0, 0, 0x22, (uint)remaining, out _) == 0)
+                return false;
+            reason = "return-expired";
+            if (WindowsInterruptClock.NowMs >= request.ExpiresAtMs)
+                return false;
+            reason = "activation-target-changed";
+            if (GetForegroundWindow() != (nint)binding.RootHwnd
+                || (binding.Provider == NativeEditTransactions.Provider && !_edits.ConfirmsReturnIdentity(binding)))
+                return false;
+        }
+        reason = "return-expired";
+        if (!glossary && WindowsInterruptClock.NowMs >= request.ExpiresAtMs)
+            return false;
         reason = "focus-recheck";
         bool focused = string.Join('.', AutomationElement.FocusedElement.GetRuntimeId()) == binding.ElementToken;
         if (focused && (binding.Provider != NativeEditTransactions.Provider || _edits.ConfirmsReturnFocus(binding)))
         {
+            if (!glossary && WindowsInterruptClock.NowMs >= request.ExpiresAtMs)
+            {
+                reason = "return-expired";
+                return false;
+            }
             reason = "focused";
             return true;
         }
@@ -652,6 +688,11 @@ internal sealed class UiaInputProvider : IDisposable
             return false;
         // This acknowledges focus only. The next ordinary capture and Core's
         // saved edit basis still decide whether the draft may be retained.
+        if (!glossary && WindowsInterruptClock.NowMs >= request.ExpiresAtMs)
+        {
+            reason = "return-expired";
+            return false;
+        }
         reason = "focused-native";
         return true;
     }
@@ -714,4 +755,7 @@ internal sealed class UiaInputProvider : IDisposable
     [DllImport("user32.dll", SetLastError = true)] private static extern nint GetWindowLongPtrW(nint hwnd, int index);
     [DllImport("user32.dll")][return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetWindowRect(nint hwnd, out Rectangle rect);
     [DllImport("user32.dll")][return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetForegroundWindow(nint hwnd);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern nint SendMessageTimeoutW(nint hwnd, uint message, nuint wParam, nint lParam,
+        uint flags, uint timeoutMs, out nuint result);
 }

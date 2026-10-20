@@ -630,6 +630,199 @@ class InputFeedbackTests(unittest.TestCase):
             },
         }
 
+    async def approved_shortcut_capture(
+        self, *, mutation=None, allowed=True, stamp=1200, target="ordinary-field", prior=True
+    ):
+        self.peer = self.connect_peer("gtk3")
+        original_description = self.description
+
+        def description():
+            value = original_description()
+            value["geometry"]["space"] = "gtk-toplevel"
+            return value
+
+        self.description = description
+        publication = (await self.publish_acceptance(pause=False))[0]["data"]
+        if prior:
+            self.input.notification(
+                "publishShortcut", {"lease": publication["lease"], "generation": self.generation}
+            )
+        self.native_frames(self.peer)
+        issued = set(self.input.issued)
+        self.clock.return_value = 1200
+        self.input.niri.observed_at = 1200
+        self.host.capture_allowed = allowed
+        original_ask = self.host.ask
+
+        async def ask(operation, data=None):
+            result = await original_ask(operation, data)
+            if operation == "allowField" and mutation:
+                mutation()
+            return result
+
+        self.host.ask = ask
+        operation = asyncio.create_task(self.input.request("capture", {}))
+        async with asyncio.timeout(1):
+            while not (frames := self.native_frames(self.peer)):
+                await asyncio.sleep(0)
+        self.assertEqual([frame["op"] for frame in frames], ["describe"])
+        current = description()
+        current["target"] = target
+        current["authority"]["target"] = target
+        current["authority"].update(observedAtMs=stamp, inputRevision=8, contentRevision=8)
+        self.peer.link.receive({"id": frames[0]["id"], "data": current})
+        published = []
+        async with asyncio.timeout(1):
+            while not operation.done():
+                await asyncio.sleep(0)
+                for frame in self.native_frames(self.peer):
+                    if frame["op"] == "publish-shortcut":
+                        published.append(frame["data"])
+                    elif frame["op"] == "capture":
+                        self.peer.link.receive({"id": frame["id"], "data": None})
+        self.assertIsNone(operation.result())
+        self.assertLessEqual(set(self.input.issued), issued)
+        return published, current
+
+    def test_approved_metadata_refreshes_command_before_a_declined_body_capture(self):
+        published, current = asyncio.run(self.approved_shortcut_capture(stamp=1190))
+        self.assertEqual(
+            published,
+            [
+                {
+                    "target": "ordinary-field",
+                    "authority": current["authority"],
+                    "generation": self.generation,
+                }
+            ],
+        )
+        self.assertEqual(set(self.peer.shortcut), {"target", "window", "authority"})
+        self.assertEqual(self.peer.shortcut["authority"]["observedAtMs"], 1190)
+        self.input.notification("revoke", None)
+        self.assertIsNotNone(self.peer.shortcut)
+        self.assertEqual(self.host.notices, [])
+        self.input.notification("settings", {"enabled": False})
+        self.assertIsNone(self.peer.shortcut)
+
+    def test_excluded_metadata_does_not_refresh_a_command(self):
+        published, _ = asyncio.run(self.approved_shortcut_capture(allowed=False))
+        self.assertEqual(published, [])
+
+    def test_expired_metadata_does_not_refresh_a_command(self):
+        published, _ = asyncio.run(self.approved_shortcut_capture(stamp=1049))
+        self.assertEqual(published, [])
+
+    def test_input_during_policy_approval_does_not_refresh_a_command(self):
+        published, _ = asyncio.run(
+            self.approved_shortcut_capture(
+                mutation=lambda: setattr(self.input, "user_epoch", self.input.user_epoch + 1)
+            )
+        )
+        self.assertEqual(published, [])
+
+    def test_settings_during_policy_approval_do_not_refresh_a_command(self):
+        published, _ = asyncio.run(
+            self.approved_shortcut_capture(
+                mutation=lambda: self.input.notification("settings", {"enabled": True})
+            )
+        )
+        self.assertEqual(published, [])
+
+    def test_focus_during_policy_approval_does_not_refresh_a_command(self):
+        published, _ = asyncio.run(
+            self.approved_shortcut_capture(
+                mutation=lambda: setattr(self.input, "window_epoch", self.input.window_epoch + 1)
+            )
+        )
+        self.assertEqual(published, [])
+
+    def test_changed_target_does_not_inherit_the_previous_command_policy(self):
+        published, _ = asyncio.run(self.approved_shortcut_capture(target="another-field"))
+        self.assertEqual(published, [])
+
+    def test_future_metadata_does_not_refresh_a_command(self):
+        published, _ = asyncio.run(self.approved_shortcut_capture(stamp=1201))
+        self.assertEqual(published, [])
+
+    def test_new_configuration_during_policy_approval_does_not_refresh_a_command(self):
+        def configure():
+            self.generation = str(uuid.uuid4())
+            self.configure()
+
+        published, _ = asyncio.run(self.approved_shortcut_capture(mutation=configure))
+        self.assertEqual(published, [])
+
+    def test_new_metadata_policy_still_requires_the_native_direct_command_capture(self):
+        published, current = asyncio.run(self.approved_shortcut_capture())
+        self.assertEqual(len(published), 1)
+        self.assertEqual(self.host.notices, [])
+        command = self.command(kind="direct", stamp=1200, focus=False)
+        self.peer.event("shortcut-rejected", {**command, "reason": "ImeUnclear"})
+        self.assertEqual(self.host.notices[-1]["rejection"], "ImeUnclear")
+        self.assertNotIn("source", self.host.notices[-1])
+        self.assertFalse(self.input.frozen)
+
+    def test_metadata_approval_without_prior_policy_cannot_create_a_command_target(self):
+        published, _ = asyncio.run(self.approved_shortcut_capture(prior=False))
+        self.assertEqual(published, [])
+        self.assertIsNone(self.peer.shortcut)
+
+    def test_revoked_policy_is_not_restored_by_an_inflight_approval(self):
+        published, _ = asyncio.run(
+            self.approved_shortcut_capture(mutation=lambda: self.input.revoke(shortcuts=True))
+        )
+        self.assertEqual(published, [])
+        self.assertIsNone(self.peer.shortcut)
+
+    def test_disconnected_peer_cannot_publish_an_inflight_policy_approval(self):
+        published, _ = asyncio.run(
+            self.approved_shortcut_capture(mutation=lambda: self.input.lost(self.peer))
+        )
+        self.assertEqual(published, [])
+        self.assertNotIn(self.peer, self.input.peers)
+
+    def completed_metadata_command(self, kind, *, target="ordinary-field"):
+        published, current = asyncio.run(self.approved_shortcut_capture())
+        self.assertEqual(len(published), 1)
+        command = self.command(kind=kind, stamp=1200, focus=False)
+        native = {
+            **current,
+            "target": target,
+            "text": "Current source, not the previous capture",
+            "selection": {"start": 8, "end": 14},
+            "ime": "Clear",
+            "observedAtMs": 1200,
+            "writeSupported": True,
+        }
+        self.peer.event("shortcut", {**command, "acceptedAtMs": 1200, "native": native})
+        self.assertEqual(len(self.host.notices), 1)
+        self.assertIsNone(self.peer.shortcut)
+        return self.host.notices[0], native
+
+    def test_fresh_metadata_wake_uses_only_the_native_commands_new_capture(self):
+        notice, native = self.completed_metadata_command("wake")
+        self.assertEqual(notice["source"]["text"], native["text"])
+        self.assertEqual(notice["source"]["selection"], {"start": 8, "end": 14})
+        self.assertEqual(notice["source"]["inputEpoch"], 8)
+        self.assertEqual(notice["kind"], "wake")
+        self.assertFalse(self.input.frozen)
+
+    def test_fresh_metadata_direct_freezes_only_the_native_commands_new_capture(self):
+        notice, native = self.completed_metadata_command("direct")
+        source = notice["source"]
+        self.assertEqual(source["text"], native["text"])
+        self.assertEqual(source["selection"], {"start": 8, "end": 14})
+        self.assertEqual(len(self.input.frozen), 1)
+        frozen = next(iter(self.input.frozen.values()))
+        self.assertEqual(frozen["target"], source["target"])
+        self.assertEqual(frozen["authority"], native["authority"])
+
+    def test_fresh_metadata_cannot_freeze_another_targets_direct_capture(self):
+        notice, _ = self.completed_metadata_command("direct", target="another-field")
+        self.assertEqual(notice["rejection"], "TargetChanged")
+        self.assertNotIn("source", notice)
+        self.assertFalse(self.input.frozen)
+
     def test_declined_capture_keeps_null_and_only_fixed_failure_metadata(self):
         async def exercise():
             peer = self.connect_peer("gtk3")

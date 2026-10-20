@@ -135,6 +135,7 @@ public sealed partial class NativeSourceGlossaryTests
                   {"id":"hy-mt2-1-8b-q4-k-m","version":"a0c709d9fac510f2c807aa3af52872340dc37a4a",
                    "directions":["zh_ja"],"files":[{"path":"model.gguf","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}]}]}
                 """);
+            File.WriteAllText(Path.Combine(directory, "installed.json"), inventory.RootElement.GetRawText());
             var paths = new ModelRuntimePaths(python, script, directory);
             var model = new ModelClient(paths, _ =>
             {
