@@ -5,6 +5,12 @@ on:
   pull_request:
     branches: [trunk, windows-preview, cachyos-preview]
   workflow_dispatch:
+    inputs:
+      collect_translation_quality:
+        description: Collect the fixed Linux translation responses once for manual review
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -278,8 +284,10 @@ jobs:
       image: archlinux:base-devel
       # Electron's font service exceeds Docker's default 64 MiB /dev/shm.
       options: --shm-size=1g
-    timeout-minutes: 45
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.collect_translation_quality && 70 || 45 }}
     env:
+      TYPELAY_COLLECT_TRANSLATION_QUALITY: ${{ github.event_name == 'workflow_dispatch' && inputs.collect_translation_quality }}
+      TYPELAY_LINUX_CHECK_SECONDS: ${{ github.event_name == 'workflow_dispatch' && inputs.collect_translation_quality && 4200 || 2700 }}
       TYPELAY_EXPECT_QT_VERSION: 6.11.2
       CCACHE_DIR: ${{ github.workspace }}/artifacts/ccache
       CCACHE_BASEDIR: ${{ github.workspace }}
@@ -658,10 +666,16 @@ jobs:
       - name: Admit the bounded formal Hy package lifecycle
         id: hy-admission
         if: ${{ needs.scope.outputs.settings != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.complete-package.outcome == 'success' }}
+        env:
+          PYTHONDONTWRITEBYTECODE: ${{ github.event_name == 'workflow_dispatch' && inputs.collect_translation_quality && '1' || '' }}
         run: |
           mkdir -p artifacts/linux/hy-package
-          remaining=$((45 * 60 - $(date +%s) + TYPELAY_LINUX_CHECK_START))
-          python tests/linux/hy_package_e2e.py --check-budget --package artifacts/linux/package --data artifacts/linux/desktop-data --remaining-seconds "$remaining" > artifacts/linux/hy-package/admission.json
+          set --
+          if [ "$TYPELAY_COLLECT_TRANSLATION_QUALITY" = true ]; then
+            set -- --collect-translation-quality
+          fi
+          remaining=$((TYPELAY_LINUX_CHECK_SECONDS - $(date +%s) + TYPELAY_LINUX_CHECK_START))
+          python tests/linux/hy_package_e2e.py --check-budget --package artifacts/linux/package --data artifacts/linux/desktop-data --remaining-seconds "$remaining" "$@" > artifacts/linux/hy-package/admission.json
       - name: Restore the independently pinned Linux Hy model cache
         id: hy-model-cache
         if: ${{ !cancelled() && steps.hy-admission.outcome == 'success' }}
@@ -674,6 +688,8 @@ jobs:
         id: hy-model-prepare
         if: ${{ !cancelled() && steps.hy-model-cache.outcome == 'success' }}
         timeout-minutes: 3
+        env:
+          PYTHONDONTWRITEBYTECODE: ${{ github.event_name == 'workflow_dispatch' && inputs.collect_translation_quality && '1' || '' }}
         run: python tests/linux/hy_package_e2e.py --prepare-cache --package artifacts/linux/package --cache artifacts/linux/hy-model-cache > artifacts/linux/hy-package/cache-verification.json
       - name: Save only fully verified Hy test model data
         if: ${{ !cancelled() && steps.hy-model-prepare.outcome == 'success' && steps.hy-model-cache.outputs.cache-hit != 'true' }}
@@ -684,12 +700,21 @@ jobs:
           key: ${{ steps.hy-model-cache.outputs.cache-primary-key }}
       - name: Exercise formal Python and real GTK Hy install select return and remove
         if: ${{ !cancelled() && steps.hy-model-prepare.outcome == 'success' }}
-        timeout-minutes: 5
+        timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.collect_translation_quality && 36 || 5 }}
         run: |
           export DISPLAY=:99
           export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
           export XDG_CACHE_HOME="$PWD/artifacts/linux/hy-model-cache"
-          python tests/linux/native_e2e.py --desktop --desktop-scope model-packages --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/hy-package
+          set --
+          output=artifacts/linux/hy-package
+          if [ "$TYPELAY_COLLECT_TRANSLATION_QUALITY" = true ]; then
+            set -- --collect-translation-quality
+            output=artifacts/linux/quality-capture
+          fi
+          python tests/linux/native_e2e.py --desktop --desktop-scope model-packages --package artifacts/linux/package --native artifacts/linux/native --output "$output" "$@"
+          if [ "$TYPELAY_COLLECT_TRANSLATION_QUALITY" = true ]; then
+            printf '%s\n' 'Fixed translation responses collected: quality remains not-reviewed. This is not language-quality acceptance.' >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -717,6 +742,9 @@ jobs:
             artifacts/linux/hy-package/*.json
             artifacts/linux/hy-package/*.log
             artifacts/linux/hy-package/*.png
+            artifacts/linux/quality-capture/*.json
+            artifacts/linux/quality-capture/*.log
+            artifacts/linux/quality-capture/*.png
             artifacts/linux/native/libtypelay-gtk3.so
             artifacts/linux/native/typelay-supervise
             artifacts/TypeLay-Linux-preview-x86_64.tar.gz

@@ -25,7 +25,7 @@
 
 ## Argos 另述真实质量采集
 
-`tests/shared/worker/alternative_quality.py` 属于共享 worker 的人工质量采集，当前只在 Linux 执行；它不在 shared-check 或 CI 自动运行。仅复用正式安装器成功得到的同一代合法 schema1/2 或 schema3 Argos 双向模型和 venv，不下载依赖或权重、不改 installed.json、不手造 Ready，也不接受替代来源。固定输入 `alternative_quality_inputs.json` 的 SHA-256 为 `87452b28c414bc964afbd84542480dd46a65c0b4e15c42ad36422270413bcbe5`；文件只保留 schema 与 samples，16句、方向、顺序和语义锚点保持固定。生产 op 不暴露原始双候选，因此只启动一次生产 worker，完整校验后各方向初始化一次；schema1/2 hello 核对双向方向，并精确核对可选的已验证包身份；schema3 必须核对精确包身份；hello 不推理，每句原普通翻译后请求一次另述，最多32次翻译请求。无重试、重启、改题或挑选。每请求默认90秒、采集总计600秒，退出另有最多7秒的自有进程组清理，清理期间延后处理 Ctrl-C/TERM；失败仍保存已完成结果、失败阶段和进程退出码，未确认退出不算完成。正式 CI 的现有 `Install and verify actual local translation components` 步骤成功后可手动复用以下路径，当前不接入工作流：
+`tests/shared/worker/alternative_quality.py` 属于共享 worker 的人工质量采集，当前只在 Linux 执行；它不在 shared-check 或 CI 自动运行。仅复用正式安装器成功得到的同一代合法 schema1/2 或 schema3 Argos 双向模型和 venv，不下载依赖或权重、不改 installed.json、不手造 Ready，也不接受替代来源。固定输入 `alternative_quality_inputs.json` 的 SHA-256 为 `87452b28c414bc964afbd84542480dd46a65c0b4e15c42ad36422270413bcbe5`；文件只保留 schema 与 samples，16句、方向、顺序和语义锚点保持固定。生产 op 不暴露原始双候选，因此只启动一次生产 worker，完整校验后各方向初始化一次；schema1/2 hello 核对双向方向，并精确核对可选的已验证包身份；schema3 必须核对精确包身份；hello 不推理，每句原普通翻译后请求一次另述，最多32次翻译请求。无重试、重启、改题或挑选。每请求默认90秒、采集总计600秒，退出另有最多7秒的自有进程组清理，清理期间延后处理 Ctrl-C/TERM；失败仍保存已完成结果、失败阶段和进程退出码，未确认退出不算完成。正式 CI 的现有 `Install and verify actual local translation components` 步骤成功后可手动复用以下路径；工作流的显式采集见本页“Linux 模型包生命周期中的显式质量采集”：
 
 ```sh
 components="$PWD/artifacts/linux/desktop-data/typelay/components/current"
@@ -38,7 +38,7 @@ python tests/shared/worker/alternative_quality.py \
 
 ## Hy 自然/正式成对质量采集
 
-`tests/shared/worker/styled_quality.py` 是独立于原 Argos 16 句的窄采集入口，不接入 shared-check 或 CI。固定 `styled_quality_inputs.json` 的 SHA-256 为 `6d5a77c5369be23cec23e526cb89f102e7c2726e3d84221e48d6572c9b62576c`，只含四个合成日常原句，依次覆盖 zh_ja、ja_zh、zh_fr、fr_zh；每句原源依次请求 Natural、Formal，最多8次翻译，无重试、重启、改题或普通翻译回退。语义锚点用于人工检查否定、主体、数字、状态、时态/条件及承诺强度，不是参考译文或自动评分。
+`tests/shared/worker/styled_quality.py` 是独立于原 Argos 16 句的窄采集入口，不接入 shared-check 或自动 CI。固定 `styled_quality_inputs.json` 的 SHA-256 为 `6d5a77c5369be23cec23e526cb89f102e7c2726e3d84221e48d6572c9b62576c`，只含四个合成日常原句，依次覆盖 zh_ja、ja_zh、zh_fr、fr_zh；每句原源依次请求 Natural、Formal，最多8次翻译，无重试、重启、改题或普通翻译回退。语义锚点用于人工检查否定、主体、数字、状态、时态/条件及承诺强度，不是参考译文或自动评分。
 
 实际执行只接受正式安装器已成功得到的同一代 venv Python 与 models，库存必须是合法 schema3、仅一个 active Hy 包，已选方向须包含这四个方向。`--worker` 指向同期实际发行包的 `worker/run_worker.py`；脚本先逐字节核对入口、Python 模块闭包、requirements/catalog 与模型/CPU固定锁，拒绝额外 Python 包或字节码遮蔽。它不复制资产、安装依赖、下载权重、改库存或制造 Ready。发行 worker 必须自验 runtime-only production-adapter、CPU 库及模型文件并实际加载；真实 hello 必须精确匹配 active 包 id/version/方向及 `styledTranslationVersion=1`。旧源码、旧 ABI adapter、缺失资源或能力均停止，不把旧模型单句结果视为本轮风格证据。
 
@@ -66,13 +66,17 @@ python tests/shared/worker/glossary_quality.py --validate-only \
   --output artifacts/hy-glossary-quality/inputs-check.json
 ```
 
-当前只准备代码与样例，实际采集 not-run。`--validate-only` 不查看安装、不加载 native 或模型、不启动 worker，写出 `status=not-run`、`quality=not-run`、`workerStarts=0` 并有意返回2。以后经授权实际采集时使用上节相同来源的 `--python`、`--models`、`--worker` 参数；不下载、不安装、不改库存、不接 CI。预算保持2.5 GiB地址空间、单模型、2线程、greedy、context1024、192新token、worker每请求60秒、收帧65秒、加载/hello90秒、总计600秒及另计最多7秒清理。
+当前只准备代码与样例，实际采集 not-run。`--validate-only` 不查看安装、不加载 native 或模型、不启动 worker，写出 `status=not-run`、`quality=not-run`、`workerStarts=0` 并有意返回2。以后经授权实际采集时使用上节相同来源的 `--python`、`--models`、`--worker` 参数；不下载、不安装、不改库存、不接自动 CI。预算保持2.5 GiB地址空间、单模型、2线程、greedy、context1024、192新token、worker每请求60秒、收帧65秒、加载/hello90秒、总计600秒及另计最多7秒清理。
 
 报告保留完整原始请求（原源、术语、方向及组合字段）、每次完整响应、身份/hello、耗时、拒绝code和退出证明，输出文件禁止覆盖。预期拒绝必须为空text并匹配明确code；意外结果保留后停止，不重试、换题、回退或硬替换输出。`completed` 只表示固定响应采集及清理完成，质量仍为 `not-reviewed`；术语、专属优先、结构、拒绝合理性、原义/数字/否定等人工复核字段始终初始化为null，不能把术语出现或协议拒绝当成质量通过。准备回归仅检查schema、无资产的validate-only及禁止覆盖，不证明真实ABI5推理、资源峰值、语言质量或用户界面可用。
 
 ## Linux 模型包生命周期中的显式质量采集
 
-`tests/linux/native_e2e.py --desktop --desktop-scope model-packages --collect-translation-quality` 是手动入口，不接入 CI。仅此 scope 接受采集标志；不传标志时，原240秒生命周期、260秒外层和原安装/切换/移除链不变。需先完成正式 Argos 双向安装，并有同期含 ABI5 的发行包、已验证的 Hy 模型/许可证缓存及现嵌套桌面依赖。数据和缓存都必须是本 checkout 的 `artifacts/` 下已存在、当前用户拥有的隔离目录，不能指向用户数据或缓存；输出目录必须全新，已有质量 JSON 不覆盖。入口本身不准备模型、复制权重或制造库存/Ready。
+`tests/linux/native_e2e.py --desktop --desktop-scope model-packages --collect-translation-quality` 是显式入口。仅此 scope 接受采集标志；不传标志时，原240秒生命周期、260秒外层和原安装/切换/移除链不变。需先完成正式 Argos 双向安装，并有同期含 ABI5 的发行包、已验证的 Hy 模型/许可证缓存及现嵌套桌面依赖。数据和缓存都必须是本 checkout 的 `artifacts/` 下已存在、当前用户拥有的隔离目录，不能指向用户数据或缓存；输出目录必须全新，已有质量 JSON 不覆盖。入口本身不准备模型、复制权重或制造库存/Ready。
+
+现有 `check.yml` 的手动 `workflow_dispatch` 可明确选择默认 false 的 `collect_translation_quality`。只有该输入为 true，才将现唯一 Linux 模型包生命周期调用切换为上述采集模式，输出到全新 `artifacts/linux/quality-capture`；不在成功移除 Hy 及缓存之后重复执行。共享、Windows 与 Linux 完整检查的选择不变，push、PR 及默认手动执行均不采集。仅显式运行的 Linux job 为70分钟、该步骤为36分钟；原自动路径仍为45分钟、5分钟。采集前 admission 保留原磁盘检查，并要求至少2760秒：缓存恢复120秒、准备180秒、缓存保存120秒、采集及退出2091秒、步骤启动/收尾69秒、artifact余量180秒，不再叠加原5分钟生命周期。未准入即停止，不开始缓存准备。
+
+显式采集的 admission、缓存准备和隔离 inside Python 均禁止生成字节码，避免这些只读导入在发行 worker 中添加 `__pycache__`；隔离进程使用 `-B`，因为 `-I` 会忽略 Python 环境选项。已有字节码仍被 runner 的精确目录身份核验拒绝，不清理后假称原包未变。上传只增加采集输出目录顶层 JSON、日志和截图，不包含模型、runtime 或失败 HOME；完整原始合成响应保留 `quality=not-reviewed`，不构成语言质量通过。
 
 ```sh
 export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"

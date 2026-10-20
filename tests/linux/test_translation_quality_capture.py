@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import os
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests/shared/worker"))
 from alternative_quality import collect, prepare_report  # noqa: E402
-from native_e2e import quality_exit  # noqa: E402
+from native_e2e import outer, quality_exit  # noqa: E402
 from support.translation_quality_capture import (  # noqa: E402
     Capture,
     exclusive_inventory,
@@ -60,6 +61,61 @@ class CaptureHandoffTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(dir=ROOT / "artifacts")
         self.addCleanup(temporary.cleanup)
         self.output = Path(temporary.name)
+
+    def test_quality_inside_keeps_imported_bundle_free_of_bytecode(self):
+        from importlib.util import module_from_spec, spec_from_file_location
+
+        spec = spec_from_file_location("typelay_test_build", ROOT / "eng/linux/build.py")
+        build = module_from_spec(spec)
+        spec.loader.exec_module(build)
+        package = self.output / "package"
+        build.package_worker(package)
+        probe = self.output / "inside.py"
+        probe.write_text(
+            "import sys\nfrom pathlib import Path\n"
+            f"sys.path.insert(0, {str(ROOT / 'src/linux/desktop')!r})\n"
+            "from setup import hy_assets\n"
+            f"hy_assets(Path({str(package)!r}))\n"
+        )
+        arguments = types.SimpleNamespace(
+            output=self.output / "capture",
+            collect_translation_quality=True,
+            desktop=True,
+            desktop_scope="model-packages",
+            package=package,
+            native=self.output / "unused-native",
+            fcitx_cooperative=None,
+            qt_cooperative=None,
+            editor_bundle=None,
+        )
+        popen = subprocess.Popen
+
+        class ProbeFinished(Exception):
+            pass
+
+        def compositor(command, **options):
+            # Exercise the actual child command exported to niri, but only run the
+            # read-only import probe. No compositor, worker, or model is started.
+            config = Path(command[-1]).read_text().splitlines()
+            child = shlex.split(
+                next(line for line in config if line.startswith("spawn-at-startup"))
+            )[1:]
+            process = popen(child, env=options["env"])
+            try:
+                self.assertEqual(process.wait(timeout=10), 0)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=3)
+            raise ProbeFinished
+
+        with (
+            patch.dict(os.environ, DISPLAY=":unused"),
+            patch("native_e2e.subprocess.Popen", side_effect=compositor),
+            self.assertRaises(ProbeFinished),
+        ):
+            outer(arguments, script=probe)
+        self.assertEqual(list((package / "worker").rglob("__pycache__")), [])
 
     def test_actual_validate_only_is_isolated_from_imported_bundle_and_restores_modules(self):
         sentinel = types.ModuleType("typelay_worker.catalog")

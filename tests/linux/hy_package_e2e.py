@@ -27,6 +27,7 @@ from main import control  # noqa: E402
 from paths import Paths  # noqa: E402
 from setup import download_resource, hy_assets, package_catalog  # noqa: E402
 from support.translation_quality_capture import (  # noqa: E402
+    CLEANUP_SECONDS,
     WORK_SECONDS,
     Capture,
     exclusive_inventory,
@@ -968,7 +969,10 @@ if __name__ == "__main__":
     parser.add_argument("--cache", type=Path)
     parser.add_argument("--data", type=Path)
     parser.add_argument("--remaining-seconds", type=int)
+    parser.add_argument("--collect-translation-quality", action="store_true")
     args = parser.parse_args()
+    if args.collect_translation_quality and not args.check_budget:
+        parser.error("--collect-translation-quality is only valid with --check-budget")
     if args.prepare_cache:
         if args.cache is None:
             parser.error("--prepare-cache requires --cache")
@@ -982,6 +986,17 @@ if __name__ == "__main__":
             "requiredSeconds": 12 * 60,
             "freeBytes": shutil.disk_usage(args.data).free,
         }
+        if args.collect_translation_quality:
+            # Replace the ordinary five-minute lifecycle allowance, not append it.
+            # Cache restore, preparation and cache save keep their original bounds.
+            capture = WORK_SECONDS + CLEANUP_SECONDS
+            report.update(
+                preparationSeconds=7 * 60,
+                captureSeconds=capture,
+                captureStepOverheadSeconds=36 * 60 - capture,
+                artifactSeconds=3 * 60,
+                requiredSeconds=7 * 60 + capture + (36 * 60 - capture) + 3 * 60,
+            )
         report["admitted"] = (
             report["remainingSeconds"] >= report["requiredSeconds"]
             and report["freeBytes"] >= report["requiredCacheAndDesktopFreeBytes"]

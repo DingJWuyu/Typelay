@@ -2,11 +2,16 @@
 
 import hashlib
 import io
+import json
+import runpy
 import sys
 import tarfile
 import tempfile
+import types
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -63,6 +68,76 @@ class RuntimePreparationTests(unittest.TestCase):
                 "requiredCacheAndDesktopFreeBytes": 7812944108,
             },
         )
+
+    def test_explicit_quality_admission_reserves_capture_cleanup_and_workflow_tail(self):
+        package = self.root / "package"
+        package_worker(package)
+        data = self.root / "data"
+        generation = data / "typelay/components/original"
+        generation.mkdir(parents=True)
+        (generation / "runtime").write_bytes(b"abc")
+        (generation.parent / "current").symlink_to("original")
+        for quality, remaining, free, admitted in (
+            (False, 719, 16 * 1024**3, False),
+            (False, 720, 16 * 1024**3, True),
+            (True, 2759, 16 * 1024**3, False),
+            (True, 2760, 16 * 1024**3, True),
+            (True, 2760, 0, False),
+        ):
+            with self.subTest(quality=quality, remaining=remaining, free=free):
+                command = [
+                    str(ROOT / "tests/linux/hy_package_e2e.py"),
+                    "--check-budget",
+                    "--package",
+                    str(package),
+                    "--data",
+                    str(data),
+                    "--remaining-seconds",
+                    str(remaining),
+                ]
+                if quality:
+                    command.append("--collect-translation-quality")
+                output = io.StringIO()
+                exit_code = 0
+                with (
+                    patch.object(sys, "argv", command),
+                    patch("shutil.disk_usage", return_value=types.SimpleNamespace(free=free)),
+                    redirect_stdout(output),
+                ):
+                    try:
+                        runpy.run_path(command[0], run_name="__main__")
+                    except SystemExit as error:
+                        exit_code = error.code
+                report = json.loads(output.getvalue())
+                self.assertEqual(report["admitted"], admitted)
+                self.assertEqual(report["requiredSeconds"], 2760 if quality else 720)
+                self.assertEqual(exit_code == 0, admitted)
+                if quality:
+                    self.assertEqual(report["captureSeconds"], 2091)
+                    self.assertEqual(report["captureStepOverheadSeconds"], 69)
+                    self.assertEqual(report["preparationSeconds"], 420)
+                    self.assertEqual(report["artifactSeconds"], 180)
+
+    def test_quality_budget_flag_cannot_prepare_or_download_assets(self):
+        command = [
+            str(ROOT / "tests/linux/hy_package_e2e.py"),
+            "--prepare-cache",
+            "--collect-translation-quality",
+            "--package",
+            str(self.root / "absent-package"),
+            "--cache",
+            str(self.root / "absent-cache"),
+        ]
+        error = io.StringIO()
+        with (
+            patch.object(sys, "argv", command),
+            redirect_stderr(error),
+            self.assertRaises(SystemExit) as stopped,
+        ):
+            runpy.run_path(command[0], run_name="__main__")
+        self.assertEqual(stopped.exception.code, 2)
+        self.assertIn("only valid with --check-budget", error.getvalue())
+        self.assertEqual(list(self.root.iterdir()), [])
 
     def test_offline_cache_miss_does_not_create_runtime(self):
         with self.assertRaises(FileNotFoundError):

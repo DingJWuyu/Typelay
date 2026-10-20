@@ -5,9 +5,35 @@ using TypeLay.Runtime;
 namespace TypeLay.Windows.Testing;
 
 // Public UIA navigation shared by the actual-release lifecycle and its WPF
-// regression. It only reveals an existing action; it never enables or invokes it.
+// regression. It only reveals existing details/actions; it never enables or invokes an action.
 internal static class SettingsPackageActions
 {
+    public static Task<AutomationElement> OpenDetailsAsync(AutomationElement settings,
+        Action<string> stage, CancellationToken ct) =>
+        Task.Run(() => OpenDetailsCoreAsync(settings, stage, ct), ct).WaitAsync(ct);
+
+    private static async Task<AutomationElement> OpenDetailsCoreAsync(AutomationElement settings,
+        Action<string> stage, CancellationToken ct)
+    {
+        stage("expand-package-details");
+        ct.ThrowIfCancellationRequested();
+        var details = settings.FindFirst(TreeScope.Descendants, new AndCondition(
+            new PropertyCondition(AutomationElement.NameProperty, "组件与安装说明"),
+            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Group)));
+        if (details is null || !details.Current.IsEnabled)
+            throw new InvalidOperationException("package-details-unavailable");
+        var expand = (ExpandCollapsePattern)details.GetCurrentPattern(ExpandCollapsePattern.Pattern);
+        if (expand.Current.ExpandCollapseState == ExpandCollapseState.Collapsed)
+        {
+            ct.ThrowIfCancellationRequested();
+            expand.Expand();
+        }
+        while (expand.Current.ExpandCollapseState != ExpandCollapseState.Expanded)
+            await Task.Delay(40, ct);
+        ct.ThrowIfCancellationRequested();
+        return details;
+    }
+
     public static Task<AutomationElement> FindAsync(AutomationElement settings, string package,
         ModelPackageOperation operation, Action<string> stage, CancellationToken ct) => Task.Run(async () =>
     {
@@ -16,20 +42,7 @@ internal static class SettingsPackageActions
         var token = limit.Token;
         try
         {
-            stage("expand-package-details");
-            var details = settings.FindFirst(TreeScope.Descendants, new AndCondition(
-                new PropertyCondition(AutomationElement.NameProperty, "组件与安装说明"),
-                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Group)));
-            if (details is null || !details.Current.IsEnabled)
-                throw new InvalidOperationException("package-details-unavailable");
-            var expand = (ExpandCollapsePattern)details.GetCurrentPattern(ExpandCollapsePattern.Pattern);
-            if (expand.Current.ExpandCollapseState == ExpandCollapseState.Collapsed)
-            {
-                token.ThrowIfCancellationRequested();
-                expand.Expand();
-            }
-            while (expand.Current.ExpandCollapseState != ExpandCollapseState.Expanded)
-                await Task.Delay(40, token);
+            var details = await OpenDetailsCoreAsync(settings, stage, token);
 
             stage("find-package-action-missing");
             AutomationElement? button;

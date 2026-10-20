@@ -4381,6 +4381,7 @@ def run(arguments):
                     and trial_area.x + trial_area.width <= clip.x + clip.width
                     and trial_area.y + trial_area.height <= clip.y + clip.height
                 ), "connection choice is clipped before the user scrolls or focuses it"
+            calibrate_settings_scroll(trial)
             assert preparation["secondaryActions"] == []
             package = next(row for row in preparation["packageRows"] if row["current"])
             repair = next(
@@ -4393,18 +4394,81 @@ def run(arguments):
             assert repair_button is None or not repair_button.get_state_set().contains(
                 Atspi.StateType.SHOWING
             ), "ready repair took over the default preparation screen"
-            activate_setting("本地翻译组件管理")
-            repair_button = settings_control(repair_name)
-            wait_for(
-                lambda: repair_button.get_state_set().contains(Atspi.StateType.SHOWING),
-                "ready repair was not available in model management",
-            )
-            activate_setting("本地翻译组件管理")
-            wait_for(
-                lambda: not repair_button.get_state_set().contains(Atspi.StateType.SHOWING),
-                "closing model management left its repair action visible",
-            )
-            calibrate_settings_scroll(trial)
+            for expanded in (True, False):
+                deadline = time.monotonic() + 15
+                manager = settings_control("本地翻译组件管理", timeout=deadline - time.monotonic())
+                manager.clear_cache()
+                assert manager.get_process_id() == process.pid
+                manager_states = manager.get_state_set()
+                assert manager_states.contains(Atspi.StateType.SHOWING)
+                assert not manager_states.contains(Atspi.StateType.DEFUNCT)
+                assert manager_states.contains(Atspi.StateType.EXPANDED) != expanded
+                action = manager.get_action_iface()
+                assert time.monotonic() < deadline
+                assert action is not None and Atspi.Action.do_action(action, 0)
+
+                def management_settled():
+                    # The exact production Gtk.Expander owns EXPANDED. A
+                    # clipped/cached repair button alone cannot prove collapse,
+                    # and Action completion does not prove fresh GTK allocation.
+                    assert named(process.pid, "本地翻译组件管理") == manager
+                    manager.clear_cache()
+                    states = manager.get_state_set()
+                    assert not states.contains(Atspi.StateType.DEFUNCT)
+                    if states.contains(Atspi.StateType.EXPANDED) != expanded:
+                        return False
+                    current_repair = named(process.pid, repair_name)
+                    repair_showing = (
+                        current_repair is not None
+                        and current_repair.get_state_set().contains(Atspi.StateType.SHOWING)
+                    )
+                    if repair_showing != expanded:
+                        return False
+                    if expanded:
+                        return True
+                    current_trial = named(process.pid, next_step_label)
+                    if current_trial is None:
+                        return False
+                    assert current_trial == trial
+                    if not current_trial.get_state_set().contains(Atspi.StateType.SHOWING):
+                        return False
+                    area = Atspi.Component.get_extents(
+                        current_trial.get_component_iface(), Atspi.CoordType.SCREEN
+                    )
+                    measured = settings_scroll_snapshot(
+                        settings_scroll_calibration["ancestry"][0][0]
+                    )
+                    if (
+                        measured is None
+                        or not measured["alive"]
+                        or measured["showing"] != (True, True)
+                        or measured["ancestry"] != settings_scroll_calibration["ancestry"]
+                        or area.x == -(2**31)
+                        or area.y == -(2**31)
+                        or area.width <= 0
+                        or area.height <= 0
+                    ):
+                        return False
+                    return all(
+                        x != -(2**31)
+                        and y != -(2**31)
+                        and width > 0
+                        and height > 0
+                        and x <= area.x <= x + width - area.width
+                        and y <= area.y <= y + height - area.height
+                        for x, y, width, height in (
+                            measured[key] for key in ("viewport", "pane", "frame")
+                        )
+                    )
+
+                wait_for(
+                    management_settled,
+                    "model management did not finish expanding with its repair action"
+                    if expanded
+                    else "model management did not finish collapsing with connection choice visible",
+                    timeout=deadline - time.monotonic(),
+                )
+                assert time.monotonic() < deadline
             evidence.append(
                 "Connection choice and selected application primary action fully visible "
                 "in the real 790 x 560 GTK viewport; ready repair stays available in collapsed model management"

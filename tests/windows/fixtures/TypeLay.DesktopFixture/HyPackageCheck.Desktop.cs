@@ -415,6 +415,7 @@ internal static partial class HyPackageCheck
     private static async Task<int> ObserveActiveAsync(Process app, AutomationElement settings, WorkerObserver workers,
         string data, string worker, string[] expected, int priorPid, HashSet<string> generations, Scene scene, CancellationToken ct)
     {
+        AutomationElement? details = null;
         await WaitAsync(async () =>
         {
             // Retain only the current poll's existing predicate results. A null
@@ -442,8 +443,17 @@ internal static partial class HyPackageCheck
             observation.PublicReady = status.StartsWith("本地翻译已就绪", StringComparison.Ordinal);
             if (observation.PublicReady != true)
                 return false;
+            // The successful first install saves OnboardingComplete and rebuilds
+            // the apps page with collapsed details. Reveal that current container
+            // once, after real publication/exit/Ready, using the original deadline.
+            if (details is null)
+            {
+                observation.Gate = "expand-package-details";
+                details = await SettingsPackageActions.OpenDetailsAsync(settings, stage => scene.Stage = stage, ct);
+            }
+            scene.Stage = "await-real-ready-package-rows";
             observation.Gate = "ready-rows";
-            observation.ReadyRowCount = await UiAsync(() => settings.FindAll(TreeScope.Descendants, new AndCondition(
+            observation.ReadyRowCount = await UiAsync(() => details.FindAll(TreeScope.Descendants, new AndCondition(
                 new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text),
                 new PropertyCondition(AutomationElement.NameProperty, "当前 · 已就绪"))).Count, ct);
             return observation.ReadyRowCount == expected.Length;

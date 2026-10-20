@@ -26,6 +26,65 @@ namespace TypeLay.App.Tests;
 public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
 {
     [Fact]
+    public Task PackageDetailsReopenAfterSettingsSaveRebuildsApplicationsPage() => desktop.RunAsync(async () =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-package-refresh-" + Guid.NewGuid().ToString("N"));
+        SettingsWindow? window = null;
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        limit.CancelAfter(TimeSpan.FromSeconds(5));
+        var ct = limit.Token;
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
+            using var model = Model(directory);
+            window = new SettingsWindow(settings, model, () => { }, installations: Installations(directory),
+                createInstaller: () => throw new InvalidOperationException("Opening details must not start installation."));
+            window.ShowPage("apps");
+            window.UpdateLayout();
+            nint handle = new WindowInteropHelper(window).Handle;
+            var root = await Task.Run(() => AutomationElement.FromHandle(handle), ct).WaitAsync(ct);
+            var previous = await SettingsPackageActions.OpenDetailsAsync(root, _ => { }, ct);
+            int[] previousId = await Task.Run(previous.GetRuntimeId, ct).WaitAsync(ct);
+
+            // Successful model adoption saves this same public setting and publishes
+            // Changed. Exercise the real WPF rebuild without manufacturing model Ready.
+            settings.Update(settings.Value with
+            {
+                OnboardingComplete = true
+            });
+            window.UpdateLayout();
+            int[] currentId = await Task.Run(() =>
+            {
+                var current = root.FindFirst(TreeScope.Descendants, new AndCondition(
+                    new PropertyCondition(AutomationElement.NameProperty, "组件与安装说明"),
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Group)));
+                Assert.NotNull(current);
+                Assert.False(current.GetRuntimeId().SequenceEqual(previousId));
+                Assert.Equal(ExpandCollapseState.Collapsed,
+                    ((ExpandCollapsePattern)current.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Current.ExpandCollapseState);
+                return current.GetRuntimeId();
+            }, ct).WaitAsync(ct);
+            var details = await SettingsPackageActions.OpenDetailsAsync(root, _ => { }, ct);
+            window.UpdateLayout();
+            await Task.Run(() =>
+            {
+                Assert.Equal(currentId, details.GetRuntimeId());
+                Assert.Equal(ExpandCollapseState.Expanded,
+                    ((ExpandCollapsePattern)details.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Current.ExpandCollapseState);
+                Assert.Equal(2, details.FindAll(TreeScope.Descendants, new AndCondition(
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text),
+                    new PropertyCondition(AutomationElement.NameProperty, "尚未安装"))).Count);
+                Assert.Empty(details.FindAll(TreeScope.Descendants, new AndCondition(
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text),
+                    new PropertyCondition(AutomationElement.NameProperty, "当前 · 已就绪"))).Cast<AutomationElement>());
+            }, ct).WaitAsync(ct);
+            Assert.False(model.Ready);
+            Assert.False(Directory.Exists(Path.Combine(directory, "components")));
+        }
+        finally { await ClosePreparation(window, directory); }
+    });
+
+    [Fact]
     public Task PackageActionsOpenTheCollapsedDetailsAndScrollIntoViewAfterNavigation() => desktop.RunAsync(async () =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-package-navigation-" + Guid.NewGuid().ToString("N"));

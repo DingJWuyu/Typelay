@@ -568,6 +568,9 @@ def outer(arguments, script=None):
     if quality:
         from support.translation_quality_capture import WORK_SECONDS
 
+        # -I ignores the workflow's bytecode environment setting. This process
+        # reads the exact shipped worker closure before the quality runners do.
+        command.insert(2, "-B")
         quality_deadline = time.monotonic() + WORK_SECONDS
         command.extend(
             ["--collect-translation-quality", "--quality-work-deadline", str(quality_deadline)]
