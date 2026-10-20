@@ -87,6 +87,7 @@ internal static partial class HyPackageCheck
                 var info = StartInfo(Path.Combine(distribution, "app", "TypeLay.App.exe"));
                 info.ArgumentList.Add("--automation-test");
                 info.Environment["TYPELAY_HOME"] = distribution; // The real launcher's resource root; never a data override.
+                info.Environment["TYPELAY_TRACE"] = Path.Combine(directory, "trace.jsonl"); // Opt-in metadata for this owned test process only.
                 app = StartOwned(info);
                 workers = new WorkerObserver(app.Process, data);
                 workers.Start();

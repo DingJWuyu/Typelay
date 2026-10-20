@@ -5,6 +5,38 @@ namespace TypeLay.Runtime.Tests;
 public sealed class SettingsDraftPresentationTests
 {
     [Fact]
+    public void CommonApplicationChordRequiresExplicitWarningButUnknownBindingsAreNotClaimedConflictFree()
+    {
+        var latest = new UserSettings();
+        var risky = ShortcutSettingsDraft.From(latest) with
+        {
+            Wake = "ctrl+c"
+        };
+        Assert.True(risky.TryApply(latest, out var canonical, out _));
+        var warning = SettingsDraftPresentation.ShortcutConflicts(ShortcutSettingsDraft.From(canonical!));
+        Assert.Contains("Ctrl+C", warning.Message);
+        Assert.Contains("可能", warning.Message);
+        Assert.True(warning.RequiresConfirmation);
+        Assert.Contains("不能完整检测", warning.ScopeNote);
+        Assert.Equal("强制保存", warning.SaveLabel);
+        Assert.Equal("继续编辑", warning.CancelLabel);
+        var ordinary = SettingsDraftPresentation.ShortcutConflicts(ShortcutSettingsDraft.From(latest));
+        Assert.False(ordinary.RequiresConfirmation);
+        Assert.Contains("不能完整检测", ordinary.ScopeNote);
+    }
+
+    [Fact]
+    public void ObservedRegistrationFailureIsSeparateFromCommonApplicationRiskAndNeverPromisesActivation()
+    {
+        var draft = ShortcutSettingsDraft.From(new UserSettings());
+        var warning = SettingsDraftPresentation.ShortcutConflicts(draft, [draft.Wake]);
+        Assert.True(warning.RequiresConfirmation);
+        Assert.Contains(draft.Wake, warning.Message);
+        Assert.Contains("无法注册", warning.Message);
+        Assert.Contains("不保证启用", warning.Message);
+    }
+
+    [Fact]
     public void SettingsRecoveryMessagesDistinguishFailedPersistenceFromAnUnknownReceipt()
     {
         Assert.Equal("设置保存未能确认。请检查设置目录权限或磁盘空间，再重新选择需要的设置。",

@@ -1888,7 +1888,7 @@ private:
             && (!form->source || glossarySourceCurrent(*form->source));
     }
     bool sourceGlossarySupported(Target *target) const {
-        if (!supported(target) || !target->line() || target->quarantined || target->mutating) return false;
+        if (!supported(target) || target->quarantined || target->mutating) return false;
         const auto value = metadata(target);
         return value.value("password") == false && value.value("readOnly") == false
             && value.value("enabled") == true && target->observed && target->provider

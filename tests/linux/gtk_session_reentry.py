@@ -829,6 +829,53 @@ def check_language_options(
     toggle(True, renew=False)
     assert not controls()[apply_control]["enabled"], "unavailable confirmed choice was lost"
 
+    if client.hello["backend"] == "gtk3":
+        before_popup_events = events()
+        render()
+        click(source_control)
+        wait_for(lambda: controls()[source_control]["popupVisible"], "language popup did not open")
+        key("Home")
+        key("Escape")
+        wait_for(
+            lambda: (value := controls())[source_control]["focused"]
+            and not value[source_control]["popupVisible"],
+            "Escape did not close the language popup and return focus",
+        )
+        assert events() == before_popup_events, "cancelled popup saved a language"
+        toggle(False)
+        toggle(True, renew=False)
+        assert not controls()[apply_control]["enabled"], "cancel/reopen lost the saved unknown code"
+        render()
+        click(source_control)
+        wait_for(
+            lambda: controls()[source_control]["popupVisible"], "language popup did not reopen"
+        )
+        click(trigger)
+        wait_for(
+            lambda: not controls()[source_control]["popupVisible"]
+            and not controls()[menu]["visible"],
+            "outside menu click left the language popup open",
+        )
+        toggle(True)
+        # A full 32-choice list must remain scrollable and keyboard reachable.
+        view["languageChoices"] = {
+            **choices,
+            "source": choices["source"]
+            + [{"code": f"lang-{index}", "label": f"Language {index}"} for index in range(28)],
+        }
+        view["sourceLanguage"] = "ja"
+        render()
+        click(source_control)
+        key("End")
+        key("Return")
+        wait_for(
+            lambda: (value := controls())[source_control]["selected"] == 31
+            and value[source_control]["focused"]
+            and not value[source_control]["popupVisible"],
+            "last language in a scrolling popup was not keyboard reachable",
+        )
+        assert events() == before_popup_events, "unapplied scrolling choice was saved"
+
     before_events = events()
     view.update(sourceLanguage="ja", targetLanguage="ko")
     for invalid in (None, {**choices, "target": choices["target"] * 2}):
@@ -841,6 +888,26 @@ def check_language_options(
     assert actual[trigger]["text"] == "ja（当前不可用） → ko（当前不可用）"
     click(apply_control)
     assert events() == before_events, "invalid choices emitted a language change"
+    if client.hello["backend"] == "gtk3":
+        view["languageChoices"] = choices
+        render()
+        click(source_control)
+        wait_for(
+            lambda: controls()[source_control]["popupVisible"], "language popup did not reopen"
+        )
+        bounds = source["geometry"]["bounds"]
+        point = click_point(
+            state(),
+            (bounds["x"] + bounds["width"] / 4, bounds["y"] + bounds["height"] / 2),
+            dimensions,
+        )
+        click_once(nested, point, {})
+        wait_for(
+            lambda: state().get("focus") == "fixture-first"
+            and not controls().get(source_control, {}).get("popupVisible", False),
+            "outside source click did not close the popup without stealing focus",
+        )
+        assert events() == before_events, "outside click saved a language"
     assert state()["first"] == initial["first"] and state()["second"] == initial["second"]
 
 

@@ -28,6 +28,9 @@ internal sealed class SettingsWindow : Window
     private readonly StackPanel _nav;
     private readonly Border _draftBar;
     private readonly Button _saveDraftButton;
+    private readonly Button _forceShortcutButton, _editShortcutButton;
+    private ShortcutSettingsDraft? _shortcutConflictDraft, _shortcutConflictBaseline;
+    private string? _shortcutConflictMessage;
     private readonly TextBlock _draftNotice;
     private readonly Func<Window, string?> _selectApplication;
     private readonly List<RadioButton> _themeChoices = [];
@@ -203,6 +206,19 @@ internal sealed class SettingsWindow : Window
         _saveDraftButton.Margin = new(18, 0, 0, 0);
         DockPanel.SetDock(_saveDraftButton, Dock.Right);
         draftActions.Children.Add(_saveDraftButton);
+        _forceShortcutButton = UiTheme.Button("强制保存", async () => await SaveDraftAsync(forceShortcutSave: true));
+        AutomationProperties.SetAutomationId(_forceShortcutButton, "ForceSaveShortcuts");
+        DockPanel.SetDock(_forceShortcutButton, Dock.Right);
+        draftActions.Children.Add(_forceShortcutButton);
+        _editShortcutButton = UiTheme.Button("继续编辑", () =>
+        {
+            ClearShortcutConfirmation();
+            RefreshDraftBar();
+            _wakeShortcutInput?.Focus();
+        });
+        AutomationProperties.SetAutomationId(_editShortcutButton, "EditConflictingShortcuts");
+        DockPanel.SetDock(_editShortcutButton, Dock.Right);
+        draftActions.Children.Add(_editShortcutButton);
         _draftNotice = UiTheme.Text("", 12);
         _draftNotice.VerticalAlignment = VerticalAlignment.Center;
         draftActions.Children.Add(_draftNotice);
@@ -285,6 +301,7 @@ internal sealed class SettingsWindow : Window
             return false;
         _startupPresentationAllowed = false;
         _translationRequest?.Cancel();
+        ClearShortcutConfirmation();
         _shortcutDraft = null;
         _exclusionDraft = null;
         _glossaryDraft = null;
@@ -890,8 +907,9 @@ internal sealed class SettingsWindow : Window
         _shortcutRetryButton.Margin = new(0, 0, 0, 14);
         _content.Children.Add(_shortcutRetryButton);
         Note("直接替换的当前范围", "Windows x64 中通过运行时校验的原生 Edit 控件支持后台写回。翻译时可以切换焦点，结果仍只写回原输入框；冲突、输入法状态不明或不兼容控件会安全拒写。不会抢回焦点，也不使用实验性 Tab 写回作为后备。结果与失败原因可在托盘快速面板查看。");
-        Note("组合键格式", "唤醒与直接替换支持 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，也支持 Shift+功能键；当前不支持 F12。组合键被其他应用占用时，设置仍保存，但对应命令不会启用。");
+        Note("组合键格式", "唤醒与直接替换支持 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24 的组合，也支持 Shift+功能键；当前不支持 F12。组合键存在冲突时，可确认后强制保存，但未能注册的命令不会启用。");
         Rule();
+        Note("冲突检测范围", SettingsDraftPresentation.ShortcutConflicts(draft).ScopeNote);
         Note("保留原应用快捷键", "仅精确匹配已设置的接受或退出键；其余 Ctrl / Alt / Shift / Win 组合交还原应用。没有有效候选时，接受键不执行写回。");
         RefreshShortcuts();
     }
@@ -902,6 +920,7 @@ internal sealed class SettingsWindow : Window
             return;
         var value = new ShortcutSettingsDraft(_wakeShortcutInput.Text, _directShortcutInput.Text,
             _acceptShortcutInput.SelectedItem as string ?? "", _exitShortcutInput.SelectedItem as string ?? "");
+        ClearShortcutConfirmation();
         _shortcutDraft = value == ShortcutSettingsDraft.From(_settings.Value) ? null : value;
         _draftFeedback = null;
         _settingsError = null;
@@ -932,7 +951,13 @@ internal sealed class SettingsWindow : Window
         RefreshDraftBar();
         RefreshShortcutStatus();
     }
-    private async Task SaveDraftAsync()
+    private void ClearShortcutConfirmation()
+    {
+        _shortcutConflictDraft = null;
+        _shortcutConflictBaseline = null;
+        _shortcutConflictMessage = null;
+    }
+    private async Task SaveDraftAsync(bool forceShortcutSave = false)
     {
         if (_savingSettings || _savingTranslation || !HasDraft)
             return;
@@ -956,12 +981,47 @@ internal sealed class SettingsWindow : Window
             RefreshDraftBar();
             return;
         }
+        var canonical = ShortcutSettingsDraft.From(latest!);
+        var baseline = ShortcutSettingsDraft.From(_settings.Value);
+        if (canonical != baseline)
+        {
+            bool confirmed = forceShortcutSave && _shortcutConflictDraft == canonical
+                && _shortcutConflictBaseline == baseline;
+            if (!confirmed)
+            {
+                IReadOnlyList<string> unavailable;
+                try
+                {
+                    unavailable = ShortcutRecovery?.InspectConflicts?.Invoke(canonical)
+                        ?? ShortcutConflictProbe.Inspect(canonical);
+                }
+                catch (System.ComponentModel.Win32Exception)
+                {
+                    _settingsError = "无法完成快捷键注册检查，设置未保存。请稍后重试。";
+                    RefreshDraftBar();
+                    return;
+                }
+                var warning = SettingsDraftPresentation.ShortcutConflicts(canonical, unavailable);
+                if (warning.RequiresConfirmation)
+                {
+                    _shortcutConflictDraft = canonical;
+                    _shortcutConflictBaseline = baseline;
+                    _shortcutConflictMessage = warning.Message;
+                    _draftFeedback = null;
+                    _settingsError = null;
+                    RefreshDraftBar();
+                    return;
+                }
+            }
+        }
+        ClearShortcutConfirmation();
         long submission = ++_draftSubmissionGeneration;
         bool saved = await SaveAsync(latest!, submission);
         if (submission != _draftSubmissionGeneration)
             return;
         if (saved)
         {
+            ClearShortcutConfirmation();
             _shortcutDraft = null;
             _exclusionDraft = null;
             _draftFeedback = _draftMessages.SavedMessage;
@@ -974,9 +1034,13 @@ internal sealed class SettingsWindow : Window
     }
     private void RefreshDraftBar()
     {
-        _draftNotice.Text = _settingsError is { } error
+        _forceShortcutButton.Visibility = _shortcutConflictDraft is not null ? Visibility.Visible : Visibility.Collapsed;
+        _editShortcutButton.Visibility = _forceShortcutButton.Visibility;
+        _saveDraftButton.Visibility = _shortcutConflictDraft is null ? Visibility.Visible : Visibility.Collapsed;
+        _forceShortcutButton.IsEnabled = !_savingSettings && !_savingTranslation;
+        _draftNotice.Text = _shortcutConflictMessage ?? (_settingsError is { } error
             ? (_draftFeedback == _draftMessages.InvalidMessage ? _draftMessages.InvalidMessage : "设置未保存") + "\n" + error
-            : _draftFeedback ?? (HasDraft ? _draftMessages.UnsavedNotice : "");
+            : _draftFeedback ?? (HasDraft ? _draftMessages.UnsavedNotice : ""));
         _draftBar.Visibility = HasDraft || _draftFeedback is not null || _settingsError is not null
             ? Visibility.Visible : Visibility.Collapsed;
         _saveDraftButton.IsEnabled = HasDraft && !_savingSettings && !_savingTranslation;
@@ -1395,24 +1459,6 @@ internal sealed class SettingsWindow : Window
                 _model.AvailablePackages, canPrepareHy,
                 canPrepareHy ? null : "native-unavailable",
                 _settings.Value.Source, _settings.Value.Target, _install is not null, "NuGet、PyPI")));
-        if (state.InventoryKnown && _model.Ready && _model.AvailablePackages.Count == 0
-            && phase == TranslationPreparationPhase.Idle && _model.AvailableDirections.Count > 0)
-        {
-            // Legacy hello proves ordinary directions, not exact package identity.
-            // Keep that working readiness without inventing schema3 ReadyPackages.
-            var ready = _model.AvailableDirections.Select(ModelCatalog.Get).ToArray();
-            bool covered = _settings.Value.Source == _settings.Value.Target || ready.Any(direction =>
-                direction.Target == _settings.Value.Target && (_settings.Value.Source == "auto" || direction.Source == _settings.Value.Source));
-            view = view with
-            {
-                StatusText = "本地翻译已就绪 · " + string.Join("、", ready.Select(direction => direction.SourceName + " → " + direction.TargetName)),
-                Guidance = covered ? "旧安装尚未提供精确包身份，可明确选择修复以升级安装记录。" : "当前模型不包含这个方向。请切换模型或调整语言。",
-                PackageRows = view.PackageRows.Select(row => row.Current ? row with
-                {
-                    AvailabilityText = "当前 · 旧版方向已加载，包身份未验证"
-                } : row).ToArray()
-            };
-        }
         return _setupFailure is not null && _packageRequest is null && installed.Length > 0
             ? view with
             {

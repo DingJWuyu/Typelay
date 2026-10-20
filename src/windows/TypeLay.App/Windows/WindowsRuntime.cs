@@ -5,7 +5,8 @@ using TypeLay.Runtime;
 
 namespace TypeLay.App;
 
-internal sealed record ShortcutRegistrationRecovery(Func<ShortcutRegistrationFailure?> Read, Action<Guid> Retry);
+internal sealed record ShortcutRegistrationRecovery(Func<ShortcutRegistrationFailure?> Read, Action<Guid> Retry,
+    Func<ShortcutSettingsDraft, IReadOnlyList<string>>? InspectConflicts = null);
 
 // Composition and native side effects only. Product sequencing lives in TypeLay.Runtime.
 internal static class WindowsRuntime
@@ -34,7 +35,7 @@ internal static class WindowsRuntime
         if (support is not null)
             loop.Tick += support.Poll;
         var browser = new BrowserInput(new BrowserServer(overlay.Dispatcher), monitor);
-        bindShortcutRecovery?.Invoke(new(() => browser.CommandRegistrationFailure, browser.RetryCommandRegistration));
+        bindShortcutRecovery?.Invoke(new(() => browser.CommandRegistrationFailure, browser.RetryCommandRegistration, draft => ShortcutConflictProbe.Inspect(draft, monitor.RegisteredShortcuts)));
         support?.BindBrowser(browser);
         var browserView = new BrowserSessionView(browser, () => overlay.LanguageRequested?.Invoke());
         var view = new WindowsSessionView(overlay, browserView);

@@ -751,6 +751,7 @@ class Overlay:
                 "state": self.value["state"],
                 "route": copy.deepcopy(self.current_record().get("route")),
                 "sourceAuthority": copy.deepcopy(self.current_record()["authority"]),
+                "sourceDocumentGeneration": self.current_record().get("documentGeneration"),
                 "sourceView": copy.deepcopy(self.value),
                 "window": self.input.window_epoch,
                 "foreground": self.input.foreground_epoch,
@@ -872,6 +873,7 @@ class Overlay:
             "windowEpoch": window,
             "foregroundEpoch": foreground,
             "sourceAuthority": copy.deepcopy(form["sourceAuthority"]),
+            "sourceDocumentGeneration": form["sourceDocumentGeneration"],
         }
         self.input.set_overlay_focus(False)
         self.host.send("sessionGlossaryFocus", None)

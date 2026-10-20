@@ -6,7 +6,7 @@ using Xunit;
 
 namespace TypeLay.App.Tests;
 
-public sealed class ModelConsumerFixtureOwnerTests
+public sealed class ModelConsumerFixtureOwnerTests(ITestOutputHelper output)
 {
     [Theory]
     [InlineData("--verify-continuous", 2)]
@@ -76,6 +76,7 @@ public sealed class ModelConsumerFixtureOwnerTests
         foreach (string argument in new[] { "-I", "-B", "-c", "import sys; sys.exit(int(sys.argv[1]))", code.ToString(System.Globalization.CultureInfo.InvariantCulture) })
             start.ArgumentList.Add(argument);
         var result = await owner.ExecuteAsync(start, TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        output.WriteLine(JsonSerializer.Serialize(result));
         Assert.True(result.NoActiveOwnedConsumers);
         Assert.Equal("natural", result.CleanupMode);
         Assert.Equal(code, result.RootExitCode);

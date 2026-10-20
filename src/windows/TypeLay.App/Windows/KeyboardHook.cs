@@ -55,6 +55,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
     internal bool UsesUnmodifiedSessionKeys => Volatile.Read(ref _sessionKeys) is
     { Supported: true, AcceptModifiers: ShortcutModifiers.None, ExitModifiers: ShortcutModifiers.None };
     public string ShortcutStatus => _hotkeys.Status;
+    internal IReadOnlyList<RegisteredShortcut> RegisteredShortcuts => _hotkeys.Bindings.ToArray();
     // Decode the exact supported pair. Source writing and no-write session
     // commands advertise separate capabilities.
     internal void ConfigureSessionShortcuts(SessionShortcutBindings bindings)

@@ -476,6 +476,65 @@ class DesktopSessionTests(unittest.TestCase):
         self.assertEqual(receipts(self.data), [])
         os.close(removal_lock(self.data))
 
+    def test_support_disconnect_preserves_component_and_refuses_active_application(self):
+        from application_support import ApplicationSupport
+
+        daemon_guardian, daemon, tools, _ = self.owned_daemon()
+        app_guardian, _ = self.spawn(self.command(gate_name="finish-app"))
+        application = self.started()
+        component = self.managed / "kept-component"
+        component.write_text("installed component")
+        support = ApplicationSupport(self.paths)
+        support.practice_session_stopped = True  # A prior explicit connection ended.
+        with patch.dict(os.environ, {"PATH": str(tools)}):
+            asyncio.run(support.refresh())
+            self.assertFalse(support.practice_session_stopped)
+            result = asyncio.run(support.execute("desktop-text", "Disconnect"))
+            self.assertFalse(result["ok"], result)
+            self.assertEqual(result["reason"], "cooperative-applications-running")
+            self.assertEqual(process_identity(daemon["pid"]), daemon)
+            self.assertEqual(process_identity(application["pid"]), application)
+            self.assertFalse(support.practice_session_stopped)
+            (self.home / "finish-app").touch()
+            app_guardian.wait(timeout=5)
+            result = asyncio.run(support.execute("desktop-text", "Disconnect"))
+            self.assertTrue(result["ok"], result)
+            self.assertEqual(result["reason"], "private-session-stopped")
+            self.assertTrue(support.practice_session_stopped)
+            self.assertFalse(support.practice_component_removed)
+            self.assertEqual(component.read_text(), "installed component")
+            self.assertIn("手动恢复", support.desktop_guidance()["notice"])
+            self.assertIn("不能证明原启动方式已恢复", support.desktop_guidance()["notice"])
+        daemon_guardian.wait(timeout=5)
+        self.assertEqual(receipts(self.data), [])
+
+    def test_disconnect_without_private_session_is_safe_and_repeatable(self):
+        from application_support import ApplicationSupport
+
+        tools = self.input_status_tools(None)
+        support = ApplicationSupport(self.paths)
+        with patch.dict(os.environ, {"PATH": str(tools)}):
+            for _ in range(2):
+                result = asyncio.run(support.execute("desktop-text", "Disconnect"))
+                self.assertTrue(result["ok"], result)
+                self.assertEqual(result["reason"], "private-session-inactive")
+                self.assertFalse(receipts(self.data))
+                self.assertFalse(support.practice_component_removed)
+
+    def test_disconnect_does_not_claim_success_for_a_foreign_input_method(self):
+        from application_support import ApplicationSupport
+
+        tools = self.input_status_tools("org.fcitx.Fcitx5")
+        support = ApplicationSupport(self.paths)
+        with patch.dict(os.environ, {"PATH": str(tools)}):
+            result = asyncio.run(support.execute("desktop-text", "Disconnect"))
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(result["reason"], "existing-fcitx-session")
+        self.assertFalse(support.practice_session_stopped)
+        self.assertFalse(support.practice_component_removed)
+        self.assertFalse(support.last_results["desktop-text"]["ok"])
+        self.assertFalse(receipts(self.data))
+
     def test_stop_refuses_a_live_child_launched_from_the_daemon(self):
         from unittest.mock import patch
 

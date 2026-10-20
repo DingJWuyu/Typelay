@@ -1,6 +1,8 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Automation;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -14,6 +16,48 @@ namespace TypeLay.App.Tests;
 [Collection("Desktop")]
 public sealed class OwnedPracticeSettingsTests(WpfDesktopFixture desktop)
 {
+    [Fact]
+    public Task ConfirmedShortcutSaveDisablesEditingUntilRetirementSettles() => desktop.RunAsync(async () =>
+    {
+        using var fixture = new SettingsFixture();
+        var retirement = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        int requests = 0;
+        fixture.Window.PrepareSettingsChange = _ => { requests++; return retirement.Task; };
+        fixture.Window.ShowPage("shortcuts");
+        fixture.Window.UpdateLayout();
+        Wake().Text = "Ctrl+C";
+        string persisted = File.ReadAllText(fixture.Path);
+        Button("保存修改").RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        Assert.Equal(0, requests); // The warning itself cannot retire the input session.
+        Assert.Equal(persisted, File.ReadAllText(fixture.Path));
+        Button("强制保存").RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+        Assert.Equal(1, requests);
+        Assert.Equal(persisted, File.ReadAllText(fixture.Path));
+        fixture.Window.ShowPage("general");
+        fixture.Window.ShowPage("shortcuts");
+        fixture.Window.UpdateLayout();
+        string[] labels = ["唤醒翻译 UI 快捷键", "直接翻译并替换快捷键", "接受译文", "退出当前翻译"];
+        var controls = Descendants(fixture.Window).OfType<Control>()
+            .Where(control => labels.Contains(AutomationProperties.GetName(control))).ToArray();
+        Assert.Equal(4, controls.Length);
+        Assert.All(controls, control => Assert.False(control.IsEnabled));
+        var peer = UIElementAutomationPeer.CreatePeerForElement(Wake());
+        var value = Assert.IsAssignableFrom<IValueProvider>(peer.GetPattern(PatternInterface.Value));
+        Assert.Throws<ElementNotEnabledException>(() => value.SetValue("Ctrl+V"));
+        Assert.Equal("Ctrl+C", Wake().Text);
+        Assert.Equal(persisted, File.ReadAllText(fixture.Path));
+        retirement.SetResult(true);
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal("Ctrl+C", new SettingsStore(fixture.Path).Value.WakeShortcut);
+        Assert.True(Wake().IsEnabled);
+        Assert.Equal("Ctrl+C", Wake().Text);
+        Assert.False(Button("强制保存").IsVisible);
+        TextBox Wake() => Descendants(fixture.Window).OfType<TextBox>()
+            .Single(control => AutomationProperties.GetName(control) == "唤醒翻译 UI 快捷键");
+        Button Button(string label) => Descendants(fixture.Window).OfType<Button>()
+            .Single(button => Equals(button.Content, label));
+    });
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

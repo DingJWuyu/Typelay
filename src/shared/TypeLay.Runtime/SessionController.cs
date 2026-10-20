@@ -1337,8 +1337,7 @@ public sealed partial class SessionController : IDisposable
         {
             TranslationOperation.Style => _model.StyledTranslationCapability is not null,
             TranslationOperation.Glossary => _model.GlossaryTranslationCapability is not null,
-            TranslationOperation.Alternative => identity.Packages.Count > 0 && identity.Packages.All(package =>
-                package.Version == "1.9" && package.Id is "argos-zh-en" or "argos-en-zh"),
+            TranslationOperation.Alternative => identity.AlternativeTranslationAvailable,
             _ => false
         };
 

@@ -46,7 +46,8 @@ public enum ApplicationSupportAction
     Connect,
     Repair,
     Remove,
-    CheckComponent
+    CheckComponent,
+    Disconnect
 }
 
 // Installation and connection facts never grant a Session acceptance permit.

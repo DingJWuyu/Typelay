@@ -17,7 +17,7 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
     private uint? _processId;
     internal sealed record ExitResult(uint? RootProcessId, int? RootExitCode, bool RootKernelSignaled,
         uint? ActiveProcesses, bool AssignedBeforeResume, bool Interrupted,
-        string CleanupMode, string? Failure)
+        string CleanupMode, string? Failure, uint? TotalProcessesAtRootExit, uint? ActiveProcessesAtRootExit)
     {
         public bool NoActiveOwnedConsumers => AssignedBeforeResume && RootKernelSignaled
             && ActiveProcesses == 0 && !Interrupted && Failure is null;
@@ -107,7 +107,8 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
             throw new InvalidOperationException("fixture-owner-already-used");
         bool interrupted = false, signaled = false;
         int? exitCode = null;
-        uint? active = null;
+        uint? active = null, totalAtRootExit = null, activeAtRootExit = null;
+        bool soleExitedRoot = false;
         string cleanupMode = "unconfirmed";
         string? failure = null;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
@@ -123,8 +124,14 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
             if (!GetExitCodeProcess(_process, out uint code))
                 throw Error("fixture-exit-code");
             exitCode = unchecked((int)code);
-            active = Active();
-            cleanupMode = active == 0 ? "natural" : "terminated";
+            Accounting accounting = ReadAccounting();
+            active = activeAtRootExit = accounting.ActiveProcesses;
+            totalAtRootExit = accounting.TotalProcesses;
+            // A signaled sole root cannot create another process. Job accounting
+            // may still retain its association after the process has exited.
+            // This is not evidence about jobs that have ever contained a child.
+            soleExitedRoot = accounting.TotalProcesses == 1 && active == 1;
+            cleanupMode = active == 0 ? "natural" : "unconfirmed";
         }
         catch (OperationCanceledException) { interrupted = true; }
         catch (Exception error) when (error is not OutOfMemoryException) { failure = error.GetType().Name; }
@@ -135,7 +142,7 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
             using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             if (_process != 0)
             {
-                if (!signaled || active != 0)
+                if (!signaled || (active != 0 && !(soleExitedRoot && !deadline.IsCancellationRequested)))
                 {
                     cleanupMode = "terminated";
                     if (_job != 0 && !TerminateJobObject(_job, 2))
@@ -148,13 +155,27 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
                 }
                 while (!(signaled = Signaled()) || (active = Active()) != 0)
                     await Task.Delay(10, cleanup.Token);
+                if (cleanupMode == "unconfirmed" && soleExitedRoot)
+                    cleanupMode = "natural";
             }
             if (_forwardOutput is not null && _forwardError is not null)
                 await Task.WhenAll(_forwardOutput, _forwardError).WaitAsync(cleanup.Token);
         }
-        catch (Exception error) when (error is not OutOfMemoryException) { failure ??= error.GetType().Name; }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            failure ??= error.GetType().Name;
+            if (soleExitedRoot && cleanupMode == "unconfirmed")
+            {
+                // An unconfirmed drain still fails closed. Do not restart its
+                // deadline or turn a cleanup attempt into an empty-job proof.
+                cleanupMode = "terminated";
+                if (_job != 0)
+                    TerminateJobObject(_job, 2);
+            }
+        }
         interrupted |= cancellation.IsCancellationRequested || deadline.IsCancellationRequested;
-        return new(_processId, exitCode, signaled, active, _assigned, interrupted, cleanupMode, failure);
+        return new(_processId, exitCode, signaled, active, _assigned, interrupted, cleanupMode, failure,
+            totalAtRootExit, activeAtRootExit);
     }
 
     private void Start(ProcessStartInfo start)
@@ -239,11 +260,12 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
         258 => false,
         _ => throw Error("fixture-root-wait")
     };
-    private uint Active()
+    private uint Active() => ReadAccounting().ActiveProcesses;
+    private Accounting ReadAccounting()
     {
         if (!QueryInformationJobObject(_job, 1, out Accounting accounting, (uint)Marshal.SizeOf<Accounting>(), 0))
             throw Error("fixture-job-accounting");
-        return accounting.ActiveProcesses;
+        return accounting;
     }
     private static FileStream OpenRead(ref nint handle)
     {

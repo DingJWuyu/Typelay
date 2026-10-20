@@ -1533,6 +1533,7 @@ static void dispatch(GdkEvent *event, gpointer data) {
     if (event->type == GDK_FOCUS_CHANGE && !event->focus_change.in && !event->focus_change.send_event) {
         shortcut_key = 0; shortcut_consumed = FALSE;
     }
+    tl_overlay_pointer(event);
     if (tl_dispatch_key(event)) return;
     OrderedTicket *prefix = event->type == GDK_KEY_PRESS && ordered && !ordered->finished
         && ordered->keycode == event->key.hardware_keycode && ordered->time == event->key.time

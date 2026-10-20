@@ -139,6 +139,31 @@ class SettingsScrollCalibrationTests(unittest.TestCase):
         }
         self.assertEqual(settings_viewport_from_pane(self.initial, moved), moved["pane"])
 
+    def test_draft_footer_shrink_uses_the_smaller_live_clip(self):
+        initial = {
+            **self.initial,
+            "viewport": (202, 130, 614, 453),
+            "pane": (202, 130, 614, 453),
+            "frame": (0, 0, 842, 612),
+        }
+        current = {
+            **initial,
+            "viewport": (-(2**31), -(2**31), 614, 363),
+            "pane": (202, 130, 614, 363),
+        }
+        clip = settings_viewport_from_pane(initial, current)
+        self.assertEqual(clip, (202, 130, 614, 363))
+        self.assertIsNotNone(settings_text_visible_point((226, 409, 0, 19), [clip]))
+        self.assertIsNone(settings_text_visible_point((226, 510, 0, 19), [clip]))
+        for change in (
+            {"viewport": (-(2**31), -(2**31), 614, 454), "pane": (202, 130, 614, 454)},
+            {"viewport": (-(2**31), -(2**31), 613, 363), "pane": (202, 130, 613, 363)},
+            {"viewport": (-(2**31), -(2**31), 614, 363), "pane": (202, 131, 614, 363)},
+            {"viewport": (-(2**31), -(2**31), 614, 453)},
+        ):
+            with self.subTest(change=change):
+                self.assertIsNone(settings_viewport_from_pane(initial, {**current, **change}))
+
     def test_new_instance_requires_its_own_valid_first_screen_measurement(self):
         reopened = {
             **self.initial,

@@ -1174,6 +1174,7 @@ class Input:
         record = {
             "peer": peer,
             "authority": native["authority"],
+            "documentGeneration": native["metadata"].get("documentGeneration"),
             "window": window,
             "geometry": geometry,
             "time": now_ms(),
@@ -1241,19 +1242,26 @@ class Input:
     def qt6_source_glossary(peer, native):
         metadata, authority = native.get("metadata", {}), native.get("authority", {})
         stamp = authority.get("contextStamp", {})
-        # Qt's field/provider generations are not GTK context identities. The
-        # initial native slice is exact QLineEdit only, not subclasses/rich text.
+        # Qt's field/provider generations are not GTK context identities.
+        # Multiline sources also require the native adapter's tracked document
+        # identity. QTextEdit and subclasses remain outside this capability.
+        document = metadata.get("documentGeneration")
+        field = type(document) is int and (
+            metadata.get("aria") == "QLineEdit"
+            and metadata.get("multiline") is False
+            and document == 0
+            or metadata.get("aria") == "QPlainTextEdit"
+            and metadata.get("multiline") is True
+            and document > 0
+        )
         return bool(
             peer.backend == "qt6"
             and getattr(native, "route", None) is None
             and native.get("sourceGlossarySupported") is True
-            and metadata.get("aria") == "QLineEdit"
+            and field
             and metadata.get("password") is False
             and metadata.get("readOnly") is False
             and metadata.get("enabled") is True
-            and metadata.get("multiline") is False
-            and type(metadata.get("documentGeneration")) is int
-            and metadata["documentGeneration"] == 0
             and authority.get("target") == native.get("target")
             and isinstance(stamp, dict)
             and all(type(stamp.get(key)) is int and stamp[key] > 0 for key in ("context", "field"))
@@ -1304,6 +1312,8 @@ class Input:
             basis, authority = receipt.get("sourceAuthority", {}), native.get("authority", {})
             return bool(
                 self.qt6_source_glossary(peer, native)
+                and native["metadata"]["documentGeneration"]
+                == receipt.get("sourceDocumentGeneration")
                 and receipt["token"]["target"]["lifetime"] == peer.lifetime
                 and all(
                     authority.get(key) == basis.get(key)

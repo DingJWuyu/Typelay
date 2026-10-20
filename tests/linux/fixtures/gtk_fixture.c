@@ -183,24 +183,35 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
             json_builder_set_member_name(builder, "width"); json_builder_add_int_value(builder, gtk_widget_get_allocated_width(widget));
             json_builder_set_member_name(builder, "height"); json_builder_add_int_value(builder, gtk_widget_get_allocated_height(widget));
         }
-        if (GTK_IS_COMBO_BOX_TEXT(widget)) {
-            GtkComboBox *combo = GTK_COMBO_BOX(widget);
-            GtkTreeModel *model = gtk_combo_box_get_model(combo);
-            json_builder_set_member_name(builder, "modelInstance");
-            json_builder_add_int_value(builder, language_instance(G_OBJECT(model)));
-            json_builder_set_member_name(builder, "selected");
-            json_builder_add_int_value(builder, gtk_combo_box_get_active(combo));
-            json_builder_set_member_name(builder, "items");
-            json_builder_begin_array(builder);
-            GtkTreeIter iter;
-            gint column = gtk_combo_box_get_entry_text_column(combo);
-            if (model && column >= 0 && gtk_tree_model_get_iter_first(model, &iter)) do {
-                char *label = NULL;
-                gtk_tree_model_get(model, &iter, column, &label, -1);
-                json_builder_add_string_value(builder, label ? label : "");
-                g_free(label);
-            } while (gtk_tree_model_iter_next(model, &iter));
-            json_builder_end_array(builder);
+        if (GTK_IS_MENU_BUTTON(widget)) {
+            GtkPopover *popup = gtk_menu_button_get_popover(GTK_MENU_BUTTON(widget));
+            GtkWidget *scroll = popup ? gtk_bin_get_child(GTK_BIN(popup)) : NULL;
+            GtkWidget *list = scroll ? gtk_bin_get_child(GTK_BIN(scroll)) : NULL;
+            if (GTK_IS_TREE_VIEW(list)) {
+                GtkTreeModel *model = gtk_tree_view_get_model(GTK_TREE_VIEW(list));
+                json_builder_set_member_name(builder, "modelInstance");
+                json_builder_add_int_value(builder, language_instance(G_OBJECT(model)));
+                GtkTreeIter iter;
+                gint selected = -1;
+                if (gtk_tree_selection_get_selected(gtk_tree_view_get_selection(GTK_TREE_VIEW(list)), NULL, &iter)) {
+                    GtkTreePath *path = gtk_tree_model_get_path(model, &iter);
+                    selected = gtk_tree_path_get_indices(path)[0];
+                    gtk_tree_path_free(path);
+                }
+                json_builder_set_member_name(builder, "selected");
+                json_builder_add_int_value(builder, selected);
+                json_builder_set_member_name(builder, "popupVisible");
+                json_builder_add_boolean_value(builder, gtk_widget_get_mapped(GTK_WIDGET(popup)));
+                json_builder_set_member_name(builder, "items");
+                json_builder_begin_array(builder);
+                if (model && gtk_tree_model_get_iter_first(model, &iter)) do {
+                    char *label = NULL;
+                    gtk_tree_model_get(model, &iter, 1, &label, -1);
+                    json_builder_add_string_value(builder, label ? label : "");
+                    g_free(label);
+                } while (gtk_tree_model_iter_next(model, &iter));
+                json_builder_end_array(builder);
+            }
         }
         json_builder_end_object(builder);
     }

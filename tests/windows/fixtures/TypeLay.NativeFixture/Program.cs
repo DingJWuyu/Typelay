@@ -143,8 +143,6 @@ internal static class Program
         N.SetFocus((nint)fields[0].Hwnd);
         var descriptor = new FixtureDescriptor(Environment.ProcessId, (long)_root, (long)_submit,
             Guid.NewGuid(), fields.ToArray());
-        Console.WriteLine(JsonSerializer.Serialize(descriptor));
-        Console.Out.Flush(); // Metadata only; never output text or IME preedit content.
         if (hookTest)
         {
             nint status = N.CreateWindow(0, "Static", "Hook starting", 0x50000000,
@@ -153,6 +151,14 @@ internal static class Program
             if (SetTimer(_root, 1, 20, 0) == 0)
                 throw new InvalidOperationException("Hook fixture timer failed.");
         }
+        _readyDescriptor = descriptor;
+        // Publish readiness only after the GUI dispatches its queued startup work.
+        // The regression holds that same queue using the existing stock-control barrier.
+        if (stockControls && Environment.GetEnvironmentVariable("TYPELAY_FIXTURE_HOLD_READY") == "1"
+            && !N.PostMessage(_root, N.FixtureBlockGui, 0, 0))
+            throw new InvalidOperationException("Fixture readiness barrier could not be queued.");
+        if (!N.PostMessage(_root, ReadyMessage, 0, 0))
+            throw new InvalidOperationException("Fixture readiness could not be queued.");
         try
         {
             while (true)
@@ -197,6 +203,8 @@ internal static class Program
         }
     }
 
+    private const uint ReadyMessage = 0x8054;
+    private static FixtureDescriptor? _readyDescriptor;
     private static nint _root, _submit;
     private static nint _replayField, _secondField, _replayStatus, _lastFocusedField;
     private static int _replayIndex, _focusSwitches;
@@ -255,6 +263,13 @@ internal static class Program
             N.SetFocus(++_focusSwitches % 2 == 0 ? _replayField : _secondField);
             if (_focusSwitches == 100)
                 FinishFocusReplay("completed");
+            return 0;
+        }
+        if (message == ReadyMessage && _readyDescriptor is { } descriptor)
+        {
+            _readyDescriptor = null;
+            Console.WriteLine(JsonSerializer.Serialize(descriptor));
+            Console.Out.Flush(); // Metadata only; never output text or IME preedit content.
             return 0;
         }
         if (message == N.FixtureSubmitCount)

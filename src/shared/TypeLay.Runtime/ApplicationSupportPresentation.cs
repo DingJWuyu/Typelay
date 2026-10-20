@@ -96,6 +96,25 @@ public static class ApplicationSupportPresentation
                     Guidance = "当前模型不包含这个方向。请切换模型或调整语言。"
                 };
         }
+        if (idle && packages.InventoryKnown && facts.ModelReady && packages.ReadyPackages.Count == 0
+            && facts.ReadyDirections is { Count: > 0 } legacyDirections)
+        {
+            // Legacy hello proves ordinary directions, not exact package identity.
+            // Both hosts display that readiness without manufacturing ReadyPackages.
+            var ready = legacyDirections.Select(ModelCatalog.Get).ToArray();
+            bool covered = packages.Source == packages.Target || ready.Any(direction =>
+                direction.Target == packages.Target && (packages.Source == "auto" || direction.Source == packages.Source));
+            view = view with
+            {
+                StatusText = "本地翻译已就绪 · " + string.Join("、", ready.Select(DirectionLabel)),
+                Guidance = covered ? "旧安装尚未提供精确包身份，可明确选择修复以升级安装记录。"
+                    : "当前模型不包含这个方向。请切换模型或调整语言。"
+            };
+            rows = rows.Select(row => row.Current ? row with
+            {
+                AvailabilityText = "当前 · 旧版方向已加载，包身份未验证"
+            } : row).ToArray();
+        }
         return view with
         {
             CurrentModelText = currentText,
@@ -362,6 +381,9 @@ public static class ApplicationSupportPresentation
             ApplicationSupportAction.Repair => fact.State == ApplicationSupportState.Error,
             ApplicationSupportAction.CheckComponent => fact.State is ApplicationSupportState.NeedsInstall
                 or ApplicationSupportState.AwaitingApproval or ApplicationSupportState.RestartRequired or ApplicationSupportState.Error,
+            ApplicationSupportAction.Disconnect => fact.Id == "desktop-text" && fact.State is
+                ApplicationSupportState.Connected or ApplicationSupportState.AwaitingApproval or ApplicationSupportState.Error
+                or ApplicationSupportState.NeedsInstall,
             ApplicationSupportAction.Remove => fact.State is ApplicationSupportState.Registered or ApplicationSupportState.Connected
                 or ApplicationSupportState.RestartRequired or ApplicationSupportState.AwaitingApproval or ApplicationSupportState.Error,
             _ => false
@@ -379,6 +401,8 @@ public static class ApplicationSupportPresentation
             "将为所选应用配置 TypeLay 接入。需要应用或系统批准时，请按提示完成授权，再检查连接。"),
         ApplicationSupportAction.Repair => new(action, "修复连接…", true,
             "将修复此应用的 TypeLay 接入配置，保留设置、模型与个人数据。不会覆盖其他软件的注册项。"),
+        ApplicationSupportAction.Disconnect => new(action, "结束本次连接…", true,
+            "将结束仅由 TypeLay 启动的本次输入会话，保留接入组件、设置、模型与个人数据。请先正常关闭相关应用及其子窗口；不会关闭你的应用，也不会自动恢复原输入法，请按原方式手动恢复。"),
         ApplicationSupportAction.Remove => new(action, "移除接入…", true,
             "将移除此应用的 TypeLay 接入配置，保留设置、模型与个人数据。需要时可以重新连接。"),
         _ => throw new ArgumentOutOfRangeException(nameof(action))

@@ -630,6 +630,12 @@ class DesktopSession:
             lock = use_lock(self.paths.data)
             start = action_lock(self.paths.data)
             status = self._status()
+            if status["state"] == "inactive":
+                return {
+                    "ok": True,
+                    "reason": "private-session-inactive",
+                    "detail": "当前没有运行中的 TypeLay 私有会话；接入组件保留。这不证明原输入法已恢复。",
+                }
             if status["state"] != "active":
                 return {"ok": False, **status}
             identity = status["daemon"]

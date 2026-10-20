@@ -32,6 +32,78 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
     private void Stage(string name) => _stages.Enqueue($"{_elapsed.ElapsedMilliseconds} ms: {name}");
 
     [Fact]
+    public Task ShortcutConflictConfirmationKeepsTheDraftAndCannotAuthorizeAnEditedChord() => desktop.RunAsync(() =>
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-shortcut-conflict-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string path = Path.Combine(directory, "settings.json");
+            var settings = WindowsRuntime.CreateSettings(path);
+            settings.Update(settings.Value with
+            {
+                Theme = "dark"
+            });
+            string before = File.ReadAllText(path);
+            using var model = WindowsRuntime.CreateModel();
+            var window = new SettingsWindow(settings, model, () => { });
+            window.ShowPage("shortcuts");
+            ShortcutEditor(window).Text = "Ctrl+C";
+            Click(SettingsDraftPresentation.Create().SaveLabel);
+            Assert.Equal(before, File.ReadAllText(path));
+            Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text.Contains("Ctrl+C") && text.Text.Contains("可能"));
+            Assert.True(FindButton("强制保存").IsVisible);
+            Click("继续编辑");
+            Assert.False(FindButton("强制保存").IsVisible);
+            Assert.Equal("Ctrl+C", ShortcutEditor(window).Text);
+            Assert.Equal(before, File.ReadAllText(path));
+            Click(SettingsDraftPresentation.Create().SaveLabel);
+            ShortcutEditor(window).Text = "Ctrl+V";
+            Assert.False(FindButton("强制保存").IsVisible);
+            // Even an already queued click on the old button cannot confirm new text.
+            Click("强制保存");
+            Assert.Equal(before, File.ReadAllText(path));
+            Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text.Contains("Ctrl+V") && text.Text.Contains("可能"));
+            Click("强制保存");
+            Assert.Equal("Ctrl+V", WindowsRuntime.CreateSettings(path).Value.WakeShortcut);
+            Assert.Equal("dark", settings.Value.Theme);
+            Assert.False(FindButton("强制保存").IsVisible);
+            window.Close();
+            Button FindButton(string label) => Descendants(window).OfType<Button>().Single(button => Equals(button.Content, label));
+            void Click(string label) => FindButton(label).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        }
+        finally { if (Directory.Exists(directory)) Directory.Delete(directory, true); }
+    });
+
+    [Fact]
+    public Task RegistrationPreflightDetectsExternalOwnershipWithoutChangingSavedOrActiveBindings() => desktop.RunAsync(() =>
+    {
+        const uint modifiers = 2 | 4 | 0x4000;
+        const int blocker = 0x53B0;
+        Assert.True(Native.RegisterHotKey(0, blocker, modifiers, 0x87));
+        try
+        {
+            var draft = new ShortcutSettingsDraft("Ctrl+Shift+F24", "Ctrl+Shift+F23", "Tab", "Esc");
+            Assert.Equal(new[] { draft.Wake }, ShortcutConflictProbe.Inspect(draft));
+            Assert.True(Native.UnregisterHotKey(0, blocker));
+            using var active = new OnDemandHotkeys(0);
+            active.Configure(true, draft.Wake, draft.Direct);
+            Assert.True(active.Registered);
+            Assert.Empty(ShortcutConflictProbe.Inspect(draft, active.Bindings)); // Our actual active reservation is not an external conflict.
+            Assert.True(active.Registered);
+            Assert.Equal(2, active.Bindings.Length);
+            active.Suspend();
+            Assert.Empty(ShortcutConflictProbe.Inspect(draft));
+            // The probe has returned without retaining either reservation.
+            Assert.True(Native.RegisterHotKey(0, blocker, modifiers, 0x87));
+            using var raced = new OnDemandHotkeys(0);
+            raced.Configure(true, draft.Wake, draft.Direct);
+            Assert.True(raced.RegistrationFailed); // A successful preflight is not a guarantee.
+            Assert.DoesNotContain(raced.Bindings, binding => binding.Action == "wake");
+        }
+        finally { Native.UnregisterHotKey(0, blocker); }
+    });
+
+    [Fact]
     public Task TheUnavailablePreviewPackageHasDetailsAndNoDownloadOrSelectionButtons() => desktop.RunAsync(async () =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-package-settings-" + Guid.NewGuid().ToString("N"));

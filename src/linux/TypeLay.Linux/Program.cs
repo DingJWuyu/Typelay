@@ -8,7 +8,7 @@ internal static class Program
 {
     private sealed record ModelActivationRequest(string Identity, string Generation);
     private sealed record SettingsDraftRequest(Guid Session, long Request, ShortcutSettingsDraft Shortcuts,
-        ExclusionSettingsDraft? Exclusions = null);
+        ExclusionSettingsDraft? Exclusions = null, ShortcutSettingsDraft? ConfirmedShortcuts = null);
     private sealed record SettingsDraftCancellation(Guid Session, long Request);
     private sealed record TranslationSettingsRequest(Guid Session, long Request, long ExpectedSettingsRevision,
         TranslationStyle? Style = null, string? Application = null, GlossaryRule[]? Rules = null);
@@ -435,6 +435,17 @@ internal static class Program
                         {
                             saved = false,
                             message = SettingsDraftPresentation.Create().InvalidMessage
+                        };
+                    var shortcutWarning = SettingsDraftPresentation.ShortcutConflicts(ShortcutSettingsDraft.From(updated!));
+                    if (ShortcutSettingsDraft.From(updated!) != ShortcutSettingsDraft.From(expectedSettings)
+                        && shortcutWarning.RequiresConfirmation && draft.ConfirmedShortcuts != draft.Shortcuts)
+                        return new
+                        {
+                            saved = false,
+                            confirmationRequired = true,
+                            message = shortcutWarning.Message,
+                            saveLabel = shortcutWarning.SaveLabel,
+                            cancelLabel = shortcutWarning.CancelLabel
                         };
                     pendingSettingsDraft = draft;
                     try

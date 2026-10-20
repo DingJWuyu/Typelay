@@ -34,29 +34,44 @@ public sealed class ModelClientCapabilityTests
     [Theory]
     [InlineData(1)]
     [InlineData(2)]
-    public async Task VerifiedLegacyHelloAuthorizesOnlyItsLiveIdentity(int schema)
+    [InlineData(3)]
+    public async Task VerifiedPackageHelloAuthorizesOnlyItsLiveIdentity(int schema)
     {
         string hello = schema == 1
             ? """{"status":"ready","directions":["zh_en","en_zh"],"packages":[{"id":"argos-zh-en","version":"1.9","directions":["zh_en"]},{"id":"argos-en-zh","version":"1.9","directions":["en_zh"]}]}"""
             : """{"status":"ready","directions":["zh_en"],"packages":[{"id":"argos-zh-en","version":"1.9","directions":["zh_en"]}]}""";
-        using var peer = new ProtocolPeer(hello, """{"status":"translated","text":"different"}""",
-            schema == 1 ? """{"schema":1}""" : """{"schema":2,"directions":["zh_en"]}""");
-        await peer.Client.StartAsync();
+        string inventory = schema switch
+        {
+            1 => """{"schema":1}""",
+            2 => """{"schema":2,"directions":["zh_en"]}""",
+            _ => """{"schema":3,"activePackages":["argos-zh-en"],"packages":[{"id":"argos-zh-en","version":"1.9","directions":["zh_en"],"files":[{"path":"metadata.json","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}]}]}"""
+        };
+        using var peer = new ProtocolPeer(hello, """{"status":"translated","text":"different"}""", inventory);
+        if (schema == 3)
+            Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+                () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        else
+            await peer.Client.StartAsync();
         Assert.True(peer.Client.Ready);
         var identity = Assert.IsType<VerifiedModelIdentity>(peer.Client.VerifiedIdentity);
         Assert.Equal(schema == 1 ? 2 : 1, identity.Packages.Count);
         Assert.Equal("1.9", identity.Packages[0].Version);
+        Assert.True(identity.AlternativeTranslationAvailable);
         Assert.False(TranslationReleasePolicy.Current.Allows(TranslationOperation.Alternative, identity, new("zh", "en")));
         Assert.Equal("different", (await peer.Client.TranslateAsync(AlternativeJob(), identity)).Text);
         Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
             () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
         Assert.NotSame(identity, peer.Client.VerifiedIdentity);
+        Assert.True(peer.Client.VerifiedIdentity!.AlternativeTranslationAvailable);
         Assert.Equal("not-ready", (await peer.Client.TranslateAsync(AlternativeJob(), identity)).Code);
+        peer.Client.Dispose();
+        Assert.Null(peer.Client.VerifiedIdentity);
     }
 
     [Theory]
     [InlineData("[]")]
     [InlineData("[{\"id\":\"argos-zh-en\",\"version\":\"1.8\",\"directions\":[\"zh_en\"]}]")]
+    [InlineData("[{\"id\":\"argos-zh-en\",\"version\":\"1.10\",\"directions\":[\"zh_en\"]}]")]
     [InlineData("[{\"id\":\"argos-zh-en\",\"version\":\"1.9\",\"directions\":[\"en_zh\"]}]")]
     [InlineData("[{\"id\":\"argos-en-zh\",\"version\":\"1.9\",\"directions\":[\"zh_en\"]}]")]
     [InlineData("[{\"id\":\"argos-zh-en\",\"version\":\"1.9\",\"directions\":[\"zh_en\",\"en_zh\"]}]")]
@@ -430,6 +445,7 @@ public sealed class ModelClientCapabilityTests
         using var peer = new ProtocolPeer(HyHello, inventory: HyInventory);
         Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
             () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        Assert.False(Assert.IsType<VerifiedModelIdentity>(peer.Client.VerifiedIdentity).AlternativeTranslationAvailable);
         var result = await peer.Client.TranslateAsync(AlternativeJob());
         Assert.Equal("alternative-unavailable", result.Code);
         Assert.True(peer.Client.Ready);

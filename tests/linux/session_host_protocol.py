@@ -1686,6 +1686,30 @@ while True:
             },
         }
 
+    async def test_common_shortcut_conflict_keeps_settings_until_exact_draft_is_confirmed(self):
+        await self.ask("settings", {"theme": "dark"})
+        before = (self.home / "config/settings.json").read_bytes()
+        draft = self.draft()
+        draft["shortcuts"]["wake"] = "Ctrl+C"
+        response = await self.ask("saveSettingsDraft", draft)
+        self.assertFalse(response["saved"])
+        self.assertTrue(response["confirmationRequired"])
+        self.assertIn("Ctrl+C", response["message"])
+        self.assertEqual((self.home / "config/settings.json").read_bytes(), before)
+        draft["confirmedShortcuts"] = dict(draft["shortcuts"])
+        draft["shortcuts"]["wake"] = "Ctrl+V"
+        changed = await self.ask("saveSettingsDraft", draft)
+        self.assertFalse(changed["saved"])
+        self.assertEqual((self.home / "config/settings.json").read_bytes(), before)
+        draft["confirmedShortcuts"] = dict(draft["shortcuts"])
+        self.assertTrue((await self.ask("saveSettingsDraft", draft))["saved"])
+        self.assertEqual(self.latest("settings")["wakeShortcut"], "Ctrl+V")
+        self.assertEqual(self.latest("settings")["theme"], "dark")
+        # Confirmation does not override invalid, internally conflicting bindings.
+        draft["shortcuts"]["direct"] = "Ctrl+V"
+        draft["confirmedShortcuts"] = dict(draft["shortcuts"])
+        self.assertFalse((await self.ask("saveSettingsDraft", draft))["saved"])
+
     async def test_exclusion_draft_merges_only_local_changes_with_latest_settings(self):
         draft = self.draft()
         draft["exclusions"] = {
@@ -2243,6 +2267,8 @@ while True:
         self.assertIn("按需模式", self.latest("settingsGuidance")["modeDescription"])
         draft = self.draft("F7", "F8")
         draft["shortcuts"].update(wake="Ctrl+F3", direct="Alt+F4")
+        self.assertTrue((await self.ask("saveSettingsDraft", draft))["confirmationRequired"])
+        draft["confirmedShortcuts"] = dict(draft["shortcuts"])
         self.assertTrue((await self.ask("saveSettingsDraft", draft))["saved"])
         guidance = self.latest("settingsGuidance")
         self.assertIn("Ctrl+F3", guidance["modeDescription"])
@@ -2391,7 +2417,10 @@ while True:
         self.assertFalse((await self.ask("onDemandPractice"))["completed"])
 
     async def test_automatic_mode_configures_session_keys_without_enabling_on_demand_keys(self):
-        self.assertTrue((await self.ask("saveSettingsDraft", self.draft("F1", "F24")))["saved"])
+        draft = self.draft("F1", "F24")
+        self.assertTrue((await self.ask("saveSettingsDraft", draft))["confirmationRequired"])
+        draft["confirmedShortcuts"] = dict(draft["shortcuts"])
+        self.assertTrue((await self.ask("saveSettingsDraft", draft))["saved"])
         configuration = self.latest("shortcuts")
         self.assertFalse(configuration["enabled"])
         self.assertTrue(configuration["sessionEnabled"])

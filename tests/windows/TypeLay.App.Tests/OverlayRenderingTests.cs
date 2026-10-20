@@ -1138,6 +1138,31 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 CanEdit = false
             };
             overlay.Render(session, settings, false, context: context);
+            var nativeMessages = new List<string>();
+            var overlaySource = HwndSource.FromHwnd(overlay.Handle)!;
+            var sourceWindow = (HwndSource)PresentationSource.FromVisual(input);
+            string FocusEvidence()
+            {
+                var (root, field) = N.Focused();
+                return $"foregroundOverlay={N.GetForegroundWindow() == overlay.Handle}; "
+                    + $"foregroundSource={N.GetForegroundWindow() == sourceWindow.Handle}; "
+                    + $"rootOverlay={root == overlay.Handle}; rootSource={root == sourceWindow.Handle}; "
+                    + $"hasNativeFocus={field != 0}; editorKeyboardFocused={editor.IsKeyboardFocused}";
+            }
+            string beforeRejected = FocusEvidence();
+            nint ObserveNative(nint hwnd, int message, nint wParam, nint lParam, ref bool handled)
+            {
+                bool chordKey = message is 0x100 or 0x101 or 0x104 or 0x105
+                    && wParam is 0x11 or 0xa2 or 0xa3 or 0x79;
+                bool menu = message == 0x112 && ((long)wParam & 0xfff0) == 0xf100;
+                if (nativeMessages.Count < 32 && (chordKey || menu || message is 0x7 or 0x8))
+                    nativeMessages.Add($"{(hwnd == overlay.Handle ? "overlay" : "source")}:"
+                        + $"message={message:x}; key={(chordKey ? (long)wParam : 0):x}; "
+                        + $"flags={(chordKey ? ((long)lParam >> 29) & 7 : 0)}");
+                return 0; // Observation only: never claim, reroute or synthesize input.
+            }
+            overlaySource.AddHook(ObserveNative);
+            sourceWindow.AddHook(ObserveNative);
             var rejected = new List<KeyEventArgs>();
             bool rejectedControlReleased = false;
             KeyEventHandler observeRejected = (_, args) =>
@@ -1156,7 +1181,16 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
                 // This next independent group has no editable token. Its first
                 // down, repeat and up must not inherit the old consumed mirror.
                 Send([Scan(0x1D, true), Scan(0x44, true), Scan(0x44, true), Scan(0x44, false), Scan(0x1D, false)]);
-                await Wait(() => rejectedControlReleased);
+                try
+                {
+                    await Wait(() => rejectedControlReleased);
+                }
+                catch (OperationCanceledException error)
+                {
+                    throw new InvalidOperationException($"Third Ctrl/F10 release was not routed; "
+                        + $"before=[{beforeRejected}]; after=[{FocusEvidence()}]; "
+                        + $"routedF10={rejected.Count}; native=[{string.Join(" | ", nativeMessages)}]", error);
+                }
                 Assert.Equal(3, rejected.Count);
                 Assert.All(rejected, args => Assert.False(args.Handled));
                 Assert.False(rejected[0].IsRepeat);
@@ -1165,6 +1199,8 @@ public sealed class OverlayRenderingTests(WpfDesktopFixture desktop)
             }
             finally
             {
+                overlaySource.RemoveHook(ObserveNative);
+                sourceWindow.RemoveHook(ObserveNative);
                 overlay.RemoveHandler(Keyboard.PreviewKeyDownEvent, observeRejected);
                 overlay.RemoveHandler(Keyboard.PreviewKeyUpEvent, observeRejected);
             }

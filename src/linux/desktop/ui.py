@@ -1787,6 +1787,7 @@ class Settings:
         self.draft_request = 0
         self.pending_draft = None
         self.submitted_draft = {}
+        self.shortcut_confirmation = None
         self.draft_messages = None
         self.loading_draft_messages = False
         self.pending_settings = {}
@@ -2199,6 +2200,16 @@ class Settings:
         self.save_button.connect("clicked", lambda *_: self.tasks(self.save()))
         self.save_button.set_sensitive(False)
         buttons.pack_end(self.save_button, False, False, 0)
+        self.force_shortcuts = Gtk.Button(label="强制保存")
+        self.force_shortcuts.set_no_show_all(True)
+        self.force_shortcuts.connect(
+            "clicked", lambda *_: self.tasks(self.save(force_shortcuts=True))
+        )
+        buttons.pack_end(self.force_shortcuts, False, False, 0)
+        self.edit_shortcuts = Gtk.Button(label="继续编辑")
+        self.edit_shortcuts.set_no_show_all(True)
+        self.edit_shortcuts.connect("clicked", self.keep_editing_shortcuts)
+        buttons.pack_end(self.edit_shortcuts, False, False, 0)
         buttons.show_all()
         self.tutorial = Tutorial(self, preview)
         self.application_support = ApplicationSupportPane(
@@ -2300,7 +2311,14 @@ class Settings:
             self.draft_messages["unsavedNotice"] if dirty and self.draft_messages else ""
         )
         self.draft_notice.set_visible(dirty and self.draft_messages is not None)
-        self.save_button.set_visible(dirty and self.draft_messages is not None)
+        confirming = self.shortcut_confirmation is not None
+        self.save_button.set_visible(dirty and self.draft_messages is not None and not confirming)
+        self.force_shortcuts.set_visible(confirming)
+        self.edit_shortcuts.set_visible(confirming)
+        self.force_shortcuts.set_sensitive(
+            self.pending_draft is None
+            and not (translation and (translation.pending or translation.saving))
+        )
         self.render_footer()
 
     def render_guidance(self, value):
@@ -2480,9 +2498,17 @@ class Settings:
             self.application_support.busy = False
             self.application_support.render_selected()
 
+    def keep_editing_shortcuts(self, *_):
+        self.shortcut_confirmation = None
+        self.message.set_text("")
+        self.render_draft()
+        self.controls["wakeShortcut"].grab_focus()
+
     def draft_changed(self, key):
         if self.configuring or self.value is None:
             return
+        if key in ("wakeShortcut", "directShortcut", "acceptShortcut", "exitShortcut"):
+            self.shortcut_confirmation = None
         value = self.draft_value(key)
         baseline = self.value.get(key) or ([] if key == "excludedApplications" else "")
         if key == "excludedApplications" and self.exclusion_baseline is not None:
@@ -2540,7 +2566,7 @@ class Settings:
                 else "未保存，已恢复原设置。请检查语言方向或系统权限。",
             )
 
-    async def save(self):
+    async def save(self, *, force_shortcuts=False):
         if (
             self.translation.pending is not None
             or self.translation.saving
@@ -2549,9 +2575,9 @@ class Settings:
             return
         await self.translation.save()
         if not self.translation.dirty:
-            await self.save_ordinary()
+            await self.save_ordinary(force_shortcuts=force_shortcuts)
 
-    async def save_ordinary(self):
+    async def save_ordinary(self, *, force_shortcuts=False):
         if (
             self.value is None
             or not self.dirty_controls
@@ -2584,6 +2610,11 @@ class Settings:
                         **identity,
                         "shortcuts": shortcuts,
                         **(
+                            {"confirmedShortcuts": shortcuts}
+                            if force_shortcuts and self.shortcut_confirmation == shortcuts
+                            else {}
+                        ),
+                        **(
                             {
                                 "exclusions": {
                                     "baseline": self.exclusion_baseline,
@@ -2598,6 +2629,11 @@ class Settings:
                 if self.pending_draft is not identity:
                     return
                 saved = isinstance(response, dict) and response.get("saved") is True
+                self.shortcut_confirmation = (
+                    dict(shortcuts)
+                    if isinstance(response, dict) and response.get("confirmationRequired") is True
+                    else None
+                )
                 if saved:
                     for key, value in draft.items():
                         if self.same_draft_value(key, self.draft_value(key), value):
@@ -2626,8 +2662,20 @@ class Settings:
             if self.pending_draft is identity:
                 self.pending_draft = None
                 self.submitted_draft = {}
+                confirmation = self.shortcut_confirmation
                 for key in list(self.dirty_controls):
                     self.draft_changed(key)
+                current = {
+                    name: self.draft_value(key)
+                    for name, key in (
+                        ("wake", "wakeShortcut"),
+                        ("direct", "directShortcut"),
+                        ("accept", "acceptShortcut"),
+                        ("exit", "exitShortcut"),
+                    )
+                }
+                if confirmation == current:
+                    self.shortcut_confirmation = confirmation
                 self.render_draft()
 
     def dismiss(self, *_, quit_requested=None):
@@ -2679,6 +2727,7 @@ class Settings:
                 self.submitted_draft = {}
                 self.exclusion_baseline = None
                 self.dirty_controls.clear()
+                self.shortcut_confirmation = None
                 self.configure(self.value)
                 self.render_draft()
                 if quit_requested:

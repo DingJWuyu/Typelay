@@ -60,6 +60,7 @@ class ApplicationSupport:
         self.original_input_seen = False
         self.practice_session_started = False
         self.practice_component_removed = False
+        self.practice_session_stopped = False
         installer_path = paths.home / "install.py"
         if installer_path.is_file():
             specification = importlib.util.spec_from_file_location(
@@ -485,6 +486,7 @@ class ApplicationSupport:
         if result["ok"]:
             self.practice_session_started = True
             self.practice_component_removed = False
+            self.practice_session_stopped = False
             result = await self.desktop_session.launch_application(
                 application["argv"], toolkit=application["toolkit"], startup_id=startup_id
             )
@@ -514,6 +516,8 @@ class ApplicationSupport:
             if revision != self.refresh_revision:
                 return
             self.desktop_session_state = session
+            if session["state"] == "active":
+                self.practice_session_stopped = False
             if session["state"] == "conflict":
                 self.original_input_seen = True
                 if self.no_original_method:
@@ -577,12 +581,21 @@ class ApplicationSupport:
             if self.no_original_method
             else "保存工作、完成候选，手动退出原输入法；重新检查无冲突后，再打开应用或练习。"
         )
-        restore = "正常关闭应用或练习及其子窗口，再用本页“移除”结束私有输入法会话；"
+        restore = (
+            "正常关闭应用或练习及其子窗口，再用本页“结束本次连接”停止私有输入法，保留接入组件；"
+        )
         restore += (
-            "你此前确认没有原输入法需要恢复，移除后请重新检查。"
+            "你此前确认没有原输入法需要恢复，结束后请重新检查。"
             if self.no_original_method
             else "随后按记录手动恢复原输入法并重新检查。"
         )
+        if self.practice_session_stopped:
+            restore = (
+                "本次私有输入法已结束，接入组件保留。你此前确认没有原输入法需要恢复，请重新检查。"
+                if self.no_original_method and state == "inactive"
+                else "本次私有输入法已结束，接入组件保留；这不能证明原启动方式已恢复，"
+                "请按自己的记录手动恢复并核对，再重新检查。"
+            )
         if self.practice_component_removed:
             restore = (
                 "受管组件已移除，当前未检测到输入法冲突。你此前确认没有原输入法需要恢复。"
@@ -590,7 +603,11 @@ class ApplicationSupport:
                 else "受管组件已移除。这不能证明原启动方式已恢复，"
                 "请按自己的记录手动恢复并核对，再重新检查。"
             )
-        if self.practice_component_removed or state in ("active", "applications-running"):
+        if (
+            self.practice_component_removed
+            or self.practice_session_stopped
+            or state in ("active", "applications-running")
+        ):
             notice = restore
         elif state in ("inactive", "conflict"):
             notice = observed if state == "conflict" else ""
@@ -634,7 +651,7 @@ class ApplicationSupport:
                     "通过 TypeLay 打开应用或开始练习将使用本包的独立输入法会话。"
                     "请先完成当前候选并保存工作；已有 Fcitx/IBus 时必须由你自行退出，TypeLay 不会替你停止或切换。"
                     "会话使用独立配置和词库，不复制或修改个人输入法配置。关闭 TypeLay 不会关闭已打开的应用或练习窗口。"
-                    "移除会结束本次私有输入法；不会自动恢复原输入法，之后需要你自行启动。\n\n"
+                    "结束本次连接只停止私有输入法并保留组件；不会自动恢复原输入法，之后需要你自行启动。\n\n"
                     "移除前请正常关闭应用、练习及其子窗口。移除会结束仅由 TypeLay 启动的私有输入法并删除受管组件；"
                     "模型、TypeLay 设置和练习配置保留。\n\n"
                     "源码、许可证在组件文件夹，原始压缩包仍在主包中。准备完成或会话运行都不代表普通字段已经连接。"
@@ -648,9 +665,11 @@ class ApplicationSupport:
                     else:
                         details += " 仍是上一版组件的会话，请先结束它再使用新版本。"
                     if session.get("canStop"):
-                        actions.append("Remove")
+                        actions.extend(["Disconnect", "Remove"])
                     else:
-                        details += " 请先正常关闭练习窗口、应用及其子窗口，再重新检查以移除。"
+                        details += (
+                            " 请先正常关闭练习窗口、应用及其子窗口，再重新检查以结束连接或移除。"
+                        )
                 elif session["state"] == "conflict":
                     details += "\n\n" + session.get("detail", "已有输入法正在运行。")
                     source = session.get("source", {}).get("source")
@@ -692,7 +711,7 @@ class ApplicationSupport:
         if prepared["state"] != "prepared" and session["state"] == "active":
             details += "\n\n受管私有输入法会话仍在运行；组件文件变化不会自动停止该会话。"
             if session.get("canStop"):
-                actions.append("Remove")
+                actions.extend(["Disconnect", "Remove"])
             else:
                 details += " 请先正常关闭应用或练习及其子窗口，再重新检查。"
         if "Connect" in actions and not self.original_method_recorded:
@@ -935,6 +954,7 @@ class ApplicationSupport:
             if result["ok"]:
                 self.practice_session_started = True
                 self.practice_component_removed = False
+                self.practice_session_stopped = False
                 result = await self.desktop_session.launch_application(
                     ["/usr/bin/python3", "-I", "-B", str(self.paths.home / "desktop/practice.py")],
                     toolkit="gtk3",
@@ -953,6 +973,17 @@ class ApplicationSupport:
                         "detail": "已请求打开 TypeLay 实操练习。若窗口未在前台，请切到该窗口并点击练习输入框；"
                         "尚未确认预览或替换能力。",
                     }
+            self.last_results[identity] = result
+            await self.refresh()
+            return result
+        if identity == "desktop-text" and action == "Disconnect":
+            result = await self.desktop_session.stop_session()
+            if result["ok"]:
+                if result.get("reason") == "private-session-stopped":
+                    self.practice_session_stopped = True
+                self.practice_launch = self.application_launch = None
+                self.application_result = "本次连接已结束；接入组件保留，再次打开应用时会重新检查。"
+                self.application_failed = False
             self.last_results[identity] = result
             await self.refresh()
             return result

@@ -6,6 +6,38 @@ namespace TypeLay.Runtime.Tests;
 public sealed class ApplicationSupportPresentationTests
 {
     [Theory]
+    [InlineData(ApplicationSupportState.AwaitingApproval)]
+    [InlineData(ApplicationSupportState.NeedsInstall)]
+    [InlineData(ApplicationSupportState.Error)]
+    public void EndConnectionIsExplicitAndSeparateFromRemovingComponents(ApplicationSupportState state)
+    {
+        var row = ApplicationSupportPresentation.Create([
+            new("desktop-text", state,
+                ApplicationSupportReason.UserApprovalRequired,
+                SupportedActions: [ApplicationSupportAction.Refresh, ApplicationSupportAction.Disconnect, ApplicationSupportAction.Remove])
+        ]).Rows[0];
+        var action = Assert.Single(row.Actions, item => item.Id == ApplicationSupportAction.Disconnect);
+        Assert.Equal("结束本次连接…", action.Label);
+        Assert.True(action.RequiresConfirmation);
+        Assert.Contains("保留接入组件", action.ConfirmationText);
+        Assert.Contains("不会自动恢复", action.ConfirmationText);
+        if (state != ApplicationSupportState.NeedsInstall)
+            Assert.Contains(row.Actions, item => item.Id == ApplicationSupportAction.Remove);
+        Assert.NotEqual(action, row.PrimaryAction);
+    }
+
+    [Fact]
+    public void BuiltInDesktopDoesNotInventAnOwnedConnectionToEnd()
+    {
+        var row = ApplicationSupportPresentation.Create([
+            new("desktop-text", ApplicationSupportState.BuiltInAvailable,
+                ApplicationSupportReason.NoFocusedField,
+                SupportedActions: [ApplicationSupportAction.Refresh, ApplicationSupportAction.OpenInstructions])
+        ]).Rows[0];
+        Assert.DoesNotContain(row.Actions, item => item.Id == ApplicationSupportAction.Disconnect);
+    }
+
+    [Theory]
     [InlineData("auto", "Auto")]
     [InlineData("zh", "中文")]
     [InlineData("en", "EN")]
@@ -90,6 +122,69 @@ public sealed class ApplicationSupportPresentationTests
         Assert.Equal([], select.Request.PackageIds);
         Assert.Equal(["argos-zh-en"], select.Request.ActivePackages);
         Assert.Equal(new string('a', 32), select.Request.ExpectedCurrent);
+    }
+
+    [Theory]
+    [InlineData(TranslationPreparationNextStep.TryIt)]
+    [InlineData(TranslationPreparationNextStep.ChooseConnection)]
+    public void LegacyOrdinaryReadinessDoesNotInventVerifiedPackageIdentity(TranslationPreparationNextStep nextStep)
+    {
+        var installed = PackageSelections("argos-zh-en", "argos-en-zh");
+        var facts = new ModelPackageManagementFact(new string('a', 32), true, installed, installed, [],
+            false, "native-unavailable", "zh", "en", false);
+        var view = ApplicationSupportPresentation.Preparation(new(true, true,
+            ReadyDirections: ["zh_en"], Packages: facts), nextStep);
+
+        Assert.Equal("本地翻译已就绪 · 中文 → English", view.StatusText);
+        Assert.Contains("包身份", view.Guidance);
+        Assert.DoesNotContain("不包含这个方向", view.Guidance);
+        Assert.True(view.PrimaryAction.Enabled);
+        Assert.All(view.PackageRows, row =>
+        {
+            Assert.False(row.Ready);
+            Assert.Empty(row.ReadyDirectionIds);
+            if (row.Current)
+                Assert.Equal("当前 · 旧版方向已加载，包身份未验证", row.AvailabilityText);
+        });
+    }
+
+    [Theory]
+    [InlineData("en", "zh", true)]
+    [InlineData("auto", "en", false)]
+    [InlineData("zh", "zh", false)]
+    public void LegacyReadinessOnlyCoversItsObservedDirections(string source, string target, bool missing)
+    {
+        var installed = PackageSelections("argos-zh-en", "argos-en-zh");
+        var facts = new ModelPackageManagementFact(new string('a', 32), true, installed, installed, [],
+            false, "native-unavailable", source, target, false);
+        var view = ApplicationSupportPresentation.Preparation(new(true, true,
+            ReadyDirections: ["zh_en"], Packages: facts));
+        Assert.Equal(missing, view.Guidance.Contains("不包含这个方向", StringComparison.Ordinal));
+        Assert.DoesNotContain("English → 中文", view.StatusText);
+        Assert.All(view.PackageRows, row => Assert.False(row.Ready));
+    }
+
+    [Theory]
+    [InlineData(false, true, TranslationPreparationPhase.Idle)]
+    [InlineData(true, false, TranslationPreparationPhase.Idle)]
+    [InlineData(true, true, TranslationPreparationPhase.StartingModel)]
+    [InlineData(true, true, TranslationPreparationPhase.Failed)]
+    public void LegacyDirectionsDoNotOverrideMissingReadinessInventoryOrRecovery(
+        bool ready, bool inventoryKnown, TranslationPreparationPhase phase)
+    {
+        var installed = PackageSelections("argos-zh-en");
+        var packages = new ModelPackageManagementFact(new string('a', 32), inventoryKnown, installed, installed, [],
+            false, "native-unavailable", "zh", "en", false);
+        var facts = new TranslationPreparationFact(ready, true, phase, Packages: packages);
+        var before = ApplicationSupportPresentation.Preparation(facts);
+        var after = ApplicationSupportPresentation.Preparation(facts with
+        {
+            ReadyDirections = ["zh_en"]
+        });
+        Assert.Equal(before.StatusText, after.StatusText);
+        Assert.Equal(before.Guidance, after.Guidance);
+        Assert.Equal(before.PrimaryAction, after.PrimaryAction);
+        Assert.All(after.PackageRows, row => Assert.False(row.Ready));
     }
 
     [Theory]

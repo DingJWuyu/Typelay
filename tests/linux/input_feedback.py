@@ -1918,7 +1918,7 @@ class InputFeedbackTests(unittest.TestCase):
         asyncio.run(exercise())
 
     def test_source_glossary_native_capability_requires_backend_specific_identity(self):
-        async def exercise(backend, aria, capable):
+        async def exercise(backend, aria, capable, multiline=False, document=0):
             self.peer = self.connect_peer(backend)
             original = self.description
 
@@ -1930,7 +1930,8 @@ class InputFeedbackTests(unittest.TestCase):
                 value["authority"]["contextStamp"] = (
                     {"context": 7, "field": 3, "input": 2} if backend == "qt6" else {"context": 7}
                 )
-                value["metadata"]["documentGeneration"] = 0
+                value["metadata"]["documentGeneration"] = document
+                value["metadata"]["multiline"] = multiline
                 return value
 
             self.description = description
@@ -1940,21 +1941,34 @@ class InputFeedbackTests(unittest.TestCase):
             finally:
                 self.description = original
 
-        for backend, aria, capable, expected in (
-            ("gtk3", "GtkEntry", True, True),
-            ("gtk3", "GtkTextView", True, False),
-            ("gtk3", "GtkEntry", False, False),
-            ("gtk4", "GtkEntry", True, False),
-            ("qt6", "GtkEntry", True, False),
-            ("qt6", "QLineEdit", True, True),
-            ("qt6", "QLineEdit", False, False),
+        for backend, aria, capable, multiline, document, expected in (
+            ("gtk3", "GtkEntry", True, False, 0, True),
+            ("gtk3", "GtkTextView", True, True, 1, False),
+            ("gtk3", "GtkEntry", False, False, 0, False),
+            ("gtk4", "GtkEntry", True, False, 0, False),
+            ("qt6", "GtkEntry", True, False, 0, False),
+            ("qt6", "QLineEdit", True, False, 0, True),
+            ("qt6", "QLineEdit", False, False, 0, False),
+            ("qt6", "QPlainTextEdit", True, True, 1, True),
+            ("qt6", "QPlainTextEdit", False, True, 1, False),
+            ("qt6", "QPlainTextEdit", True, False, 1, False),
+            ("qt6", "QPlainTextEdit", True, True, 0, False),
+            ("qt6", "QPlainTextEdit", True, True, True, False),
+            ("qt6", "QLineEdit", True, True, 1, False),
+            ("qt6", "QTextEdit", True, True, 1, False),
         ):
-            with self.subTest(backend=backend, aria=aria, capable=capable):
-                target = asyncio.run(exercise(backend, aria, capable))
+            with self.subTest(backend=backend, aria=aria, capable=capable, document=document):
+                target = asyncio.run(exercise(backend, aria, capable, multiline, document))
                 self.assertEqual(target is not None, expected)
 
     async def native_glossary_scenario(
-        self, *, revoke=False, invalidation=None, backend="gtk3", state="ValidTranslation"
+        self,
+        *,
+        revoke=False,
+        invalidation=None,
+        backend="gtk3",
+        state="ValidTranslation",
+        multiline=False,
     ):
         self.input.set_overlay_focus(False)
         self.peer = self.connect_peer(backend)
@@ -1962,8 +1976,11 @@ class InputFeedbackTests(unittest.TestCase):
 
         def description():
             value = original(self)
-            value["metadata"]["aria"] = "QLineEdit" if backend == "qt6" else "GtkEntry"
-            value["metadata"]["documentGeneration"] = 0
+            value["metadata"]["aria"] = (
+                ("QPlainTextEdit" if multiline else "QLineEdit") if backend == "qt6" else "GtkEntry"
+            )
+            value["metadata"]["documentGeneration"] = 1 if multiline else 0
+            value["metadata"]["multiline"] = multiline
             value["geometry"]["space"] = self.peer.anchor_space
             value["sourceGlossarySupported"] = True
             value["authority"]["contextStamp"] = (
@@ -2072,9 +2089,9 @@ class InputFeedbackTests(unittest.TestCase):
         )
 
     def test_qt6_source_glossary_opens_without_fabricating_editor_ownership(self):
-        async def exercise(state):
+        async def exercise(state, multiline):
             overlay, jobs, entry, request, emit = await self.native_glossary_scenario(
-                backend="qt6", state=state, revoke=True
+                backend="qt6", state=state, revoke=True, multiline=multiline
             )
             self.assertIsNotNone(request)
             window = self.input.window_epoch
@@ -2093,8 +2110,9 @@ class InputFeedbackTests(unittest.TestCase):
             self.assertNotIn("beginEdit", [operation for operation, _ in self.host.requests])
 
         for state in ("ValidTranslation", "EditedTranslationPending"):
-            with self.subTest(state=state):
-                asyncio.run(exercise(state))
+            for multiline in (False, True):
+                with self.subTest(state=state, multiline=multiline):
+                    asyncio.run(exercise(state, multiline))
 
     def test_qt6_auxiliary_term_focus_stream_preserves_original_window_identity(self):
         async def exercise():
@@ -2349,10 +2367,10 @@ class InputFeedbackTests(unittest.TestCase):
 
         asyncio.run(exercise())
 
-    def native_glossary_return_capture(self, backend):
+    def native_glossary_return_capture(self, backend, multiline=False):
         async def exercise():
             overlay, jobs, entry, request, emit = await self.native_glossary_scenario(
-                backend=backend
+                backend=backend, multiline=multiline
             )
             receipt = {key: entry[key] for key in ("formId", "token")}
             self.native_glossary_transfer(entry, "Opening")
@@ -2440,7 +2458,7 @@ class InputFeedbackTests(unittest.TestCase):
                                     "contextStamp"
                                 ].update(input=3),
                                 "Qt document identity": lambda value: value["metadata"].update(
-                                    documentGeneration=1
+                                    documentGeneration=2 if multiline else 1
                                 ),
                                 "GTK identity on Qt": lambda value: value["metadata"].update(
                                     aria="GtkEntry"
@@ -2506,6 +2524,9 @@ class InputFeedbackTests(unittest.TestCase):
 
     def test_qt6_glossary_return_needs_fresh_original_source_clear_read_only_capture(self):
         self.native_glossary_return_capture("qt6")
+
+    def test_qt6_multiline_glossary_return_rejects_document_replacement_and_write_authority(self):
+        self.native_glossary_return_capture("qt6", multiline=True)
 
     def test_source_glossary_return_capture_is_read_only_and_original_save_reply_survives_retirement(
         self,

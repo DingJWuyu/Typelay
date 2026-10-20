@@ -69,7 +69,8 @@ static struct {
     GtkCssProvider *css;
     GdkDisplay *display;
     JsonObject *view, *authority;
-    gulong focus_handler, active_handler;
+    gulong focus_handler, active_handler, layout_hook;
+    guint layout_signal;
     gboolean setting_text, setting_languages, composing, focused, expanded, pending_edit, pending_resume;
     char *generation;
     gint edit_offset;
@@ -131,6 +132,48 @@ static void trace_language_unmap(GtkWidget *widget, gpointer unused) {
         g_printerr("TypeLay GTK4 language-unmap-stack event=%u frame=%d module=%.96s symbol=%.96s offset=0x%zx\n",
             count, index, module, info.dli_sname ? info.dli_sname : "-", offset);
     }
+}
+
+/* GdkSurface::layout is RUN_FIRST without a class closure or NO_HOOKS.
+ * Emission hooks therefore precede GtkNative's ordinary layout handler. Observe
+ * only our visible surface, before GtkPopover can reject its configured size. */
+static gboolean trace_language_layout(GSignalInvocationHint *hint, guint count_values,
+    const GValue *values, gpointer unused) {
+    (void)hint; (void)unused;
+    /* The isolated language case renders revision 1, then renews revision 2
+     * before its first click. Reserve two observations for each: initial
+     * layout activity must not consume the failing renewal's budget. */
+    static guint counts[2];
+    static gboolean measuring;
+    if ((overlay.revision != 1 && overlay.revision != 2) || measuring || count_values != 3 || !overlay.popover
+        || !gtk_widget_get_visible(overlay.popover)) return TRUE;
+    guint index = overlay.revision == 1 ? 0 : 1;
+    if (counts[index] >= 2) return TRUE;
+    GdkSurface *surface = g_value_get_object(&values[0]);
+    if (surface != gtk_native_get_surface(GTK_NATIVE(overlay.popover))) return TRUE;
+    gint width = g_value_get_int(&values[1]), height = g_value_get_int(&values[2]);
+    if (width <= 0 || height <= 0) return TRUE;
+    counts[index]++;
+    measuring = TRUE;
+    GtkWidget *widget = g_object_ref(overlay.popover);
+    gint64 revision = overlay.revision;
+    gint min_width, min_height, natural_width, natural_height;
+    GtkSizeRequestMode mode = gtk_widget_get_request_mode(widget);
+    if (mode == GTK_SIZE_REQUEST_WIDTH_FOR_HEIGHT) {
+        gtk_widget_measure(widget, GTK_ORIENTATION_VERTICAL, -1, &min_height, &natural_height, NULL, NULL);
+        gtk_widget_measure(widget, GTK_ORIENTATION_HORIZONTAL, height, &min_width, &natural_width, NULL, NULL);
+    } else {
+        gtk_widget_measure(widget, GTK_ORIENTATION_HORIZONTAL, -1, &min_width, &natural_width, NULL, NULL);
+        gtk_widget_measure(widget, GTK_ORIENTATION_VERTICAL, width, &min_height, &natural_height, NULL, NULL);
+    }
+    if (widget == overlay.popover && surface == gtk_native_get_surface(GTK_NATIVE(widget)))
+        g_printerr("TypeLay GTK4 language-layout revision=%" G_GINT64_FORMAT
+            " configured=%dx%d minimum=%dx%d natural=%dx%d visible=%d mapped=%d\n",
+            revision, width, height, min_width, min_height, natural_width, natural_height,
+            gtk_widget_get_visible(widget), gtk_widget_get_mapped(widget));
+    g_object_unref(widget);
+    measuring = FALSE;
+    return TRUE;
 }
 
 void tl_overlay_control_cancel(void) {
@@ -1203,6 +1246,7 @@ void tl_overlay_hide(void) {
     clear_language_menu(&overlay.target_languages);
     clear_translation_menu();
     if (overlay.glossary_draft_token) json_object_unref(overlay.glossary_draft_token);
+    if (overlay.layout_hook) g_signal_remove_emission_hook(overlay.layout_signal, overlay.layout_hook);
     memset(&overlay, 0, sizeof overlay);
     if (top) {
         if (focus_handler) g_signal_handler_disconnect(top, focus_handler);
@@ -1432,6 +1476,12 @@ static void create(Target *target) {
     if (g_getenv("TYPELAY_TRACE_LANGUAGE_RENDER")) {
         g_signal_connect_after(overlay.popover, "map", G_CALLBACK(trace_language_map), NULL);
         g_signal_connect_after(overlay.popover, "unmap", G_CALLBACK(trace_language_unmap), NULL);
+        overlay.layout_signal = g_signal_lookup("layout", GDK_TYPE_SURFACE);
+        GSignalQuery query = {0};
+        if (overlay.layout_signal) g_signal_query(overlay.layout_signal, &query);
+        if (query.signal_id && !(query.signal_flags & G_SIGNAL_NO_HOOKS))
+            overlay.layout_hook = g_signal_add_emission_hook(overlay.layout_signal, 0,
+                trace_language_layout, NULL, NULL);
     }
     g_object_ref_sink(overlay.popover);
     g_object_set_data(G_OBJECT(overlay.popover), "typelay-overlay", GINT_TO_POINTER(1));

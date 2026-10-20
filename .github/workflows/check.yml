@@ -283,6 +283,9 @@ jobs:
             artifacts/hy-results/*.stderr
             artifacts/hy-production/*.json
             artifacts/hy-packages/*.json
+            artifacts/hy-packages/trace.jsonl
+            artifacts/hy-packages/trace.jsonl.overlay.jsonl
+            artifacts/hy-packages/trace.jsonl.broker.jsonl
             artifacts/TypeLay-Windows-preview.zip
             artifacts/TypeLay-Windows-preview.zip.sha256
           if-no-files-found: warn

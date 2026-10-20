@@ -29,10 +29,34 @@ public static class SettingsDraftPresentation
         _ => Create().InvalidMessage
     };
 
+    // A deliberately small list of common editing/window commands, not a claim
+    // that another application's bindings have been enumerated. Platforms may
+    // append actual registration failures independently of these risk warnings.
+    public static ShortcutConflictWarning ShortcutConflicts(ShortcutSettingsDraft draft,
+        IReadOnlyList<string>? unavailable = null)
+    {
+        string[] chords = [draft.Wake, draft.Direct, draft.Accept, draft.Exit];
+        string[] common = ["Ctrl+A", "Ctrl+C", "Ctrl+V", "Ctrl+X", "Ctrl+Z", "Ctrl+Y",
+            "Ctrl+S", "Ctrl+F", "Ctrl+P", "Ctrl+O", "Ctrl+N", "Ctrl+W", "Ctrl+T", "Ctrl+L",
+            "Ctrl+R", "Alt+F4", "Ctrl+F4", "F1", "F5", "F11", "F12"];
+        var risks = chords.Where(chord => common.Contains(chord, StringComparer.Ordinal)).Distinct().ToArray();
+        var failures = (unavailable ?? []).Where(chords.Contains).Distinct().ToArray();
+        var messages = new List<string>();
+        if (failures.Length > 0)
+            messages.Add("当前无法注册：" + string.Join("、", failures) + "。可能被系统或其他应用占用。");
+        if (risks.Length > 0)
+            messages.Add(string.Join("、", risks) + " 可能与应用常用编辑或窗口操作冲突；这不是对当前应用的检测结果。");
+        if (messages.Count > 0)
+            messages.Add("可以继续编辑，或强制保存这组快捷键。保存不保证启用，也不会绕过原输入框的安全检查。");
+        return new(messages.Count > 0, string.Join("\n", messages),
+            "不能完整检测每个应用内部的快捷键。未发现冲突不代表没有冲突；实际启用状态以当前输入适配器为准。",
+            "强制保存", "继续编辑");
+    }
+
     public static SessionShortcutMessages SessionShortcuts(TypeLay.Core.SessionShortcutBindings keys) => new(
         "接受译文", keys.Accept, $"{keys.Accept} 接受译文", $"{keys.Accept} 返回原输入框",
         "退出当前翻译", keys.Exit, $"{keys.Exit} 退出当前翻译",
-        "接受默认使用 Tab，退出默认使用 Esc；也可选择 F1-F24 或 Ctrl+F1-F24。接受与退出须使用不同主键；当前输入适配器须确认实际键对。唤醒与直接替换另支持 Shift+功能键（不含 F12），不适用于接受与退出。",
+        "接受默认使用 Tab，退出默认使用 Esc；也可选择 F1-F24 或 Ctrl+F1-F24。接受与退出须使用不同主键；当前输入适配器须确认实际键对。唤醒与直接替换另支持 Shift+功能键（不含 F12），不适用于接受与退出。不能完整检测每个应用内部的快捷键，未发现冲突不代表没有冲突。",
         TypeLay.Core.Presentation.From(TypeLay.Core.SessionState.IdleCapsule, false, shortcuts: keys).TabHint);
 }
 
@@ -80,3 +104,6 @@ public sealed record ShortcutSettingsDraft(string Wake, string Direct, string Ac
 
 public sealed record SessionShortcutMessages(string AcceptLabel, string AcceptKey, string AcceptHint,
     string ReturnHint, string ExitLabel, string ExitKey, string ExitHint, string ScopeNote, string PassThroughHint);
+
+public sealed record ShortcutConflictWarning(bool RequiresConfirmation, string Message, string ScopeNote,
+    string SaveLabel, string CancelLabel);

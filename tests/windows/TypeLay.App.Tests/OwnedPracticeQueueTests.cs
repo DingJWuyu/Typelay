@@ -355,48 +355,65 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         await broker.StartAsync();
         var request = new BrokerRequest(BrokerProtocol.Version, 0, "capture-owned", "", OwnedCapture: scene.Descriptor);
         Assert.NotNull((await broker.CallAsync(request)).Snapshot);
-        switch (change)
-        {
-            case "excluded":
-                using (var process = Process.GetProcessById(scene.Descriptor.ProcessId))
-                    request = request with
-                    {
-                        Excluded = [process.ProcessName]
-                    };
-                break;
-            case "sensitive-label":
-                nint label = GetWindow(scene.Field, 3); // The production label immediately precedes the Edit.
-                Assert.Equal("练习输入框", N.ReadText(label, 128));
-                N.SendString(label, N.WM_SETTEXT, "Password");
-                break;
-            case "readonly":
-                Assert.NotEqual(nuint.Zero, N.Send(scene.Field, 0x00CF, 1)); // EM_SETREADONLY.
-                break;
-            case "password":
-                nint style = GetWindowLongPtrW(scene.Field, -16);
-                Assert.NotEqual(nint.Zero, style);
-                Assert.Equal(style, SetWindowLongPtrW(scene.Field, -16, style | 0x20));
-                Assert.NotEqual(0, (long)GetWindowLongPtrW(scene.Field, -16) & 0x20);
-                break;
-            case "hidden":
-                ShowWindow(scene.Field, 0);
-                break;
-            case "parent-disabled":
-                EnableWindow(scene.Root, false);
-                break;
-        }
+        nint? passwordStyle = null;
         try
         {
+            switch (change)
+            {
+                case "excluded":
+                    using (var process = Process.GetProcessById(scene.Descriptor.ProcessId))
+                        request = request with
+                        {
+                            Excluded = [process.ProcessName]
+                        };
+                    break;
+                case "sensitive-label":
+                    nint label = GetWindow(scene.Field, 3); // The production label immediately precedes the Edit.
+                    Assert.Equal("练习输入框", N.ReadText(label, 128));
+                    N.SendString(label, N.WM_SETTEXT, "Password");
+                    break;
+                case "readonly":
+                    Assert.NotEqual(nuint.Zero, N.Send(scene.Field, 0x00CF, 1)); // EM_SETREADONLY.
+                    break;
+                case "password":
+                    nint style = GetWindowLongPtrW(scene.Field, -16);
+                    Assert.NotEqual(nint.Zero, style);
+                    passwordStyle = style;
+                    Assert.Equal(style, SetWindowLongPtrW(scene.Field, -16, style | 0x20));
+                    Assert.NotEqual(0, (long)GetWindowLongPtrW(scene.Field, -16) & 0x20);
+                    break;
+                case "hidden":
+                    ShowWindow(scene.Field, 0);
+                    break;
+                case "parent-disabled":
+                    EnableWindow(scene.Root, false);
+                    break;
+            }
             var refused = await broker.CallAsync(request);
             Assert.Null(refused.Snapshot);
             Assert.Equal(FocusMember.Other, refused.Focus);
+            if (passwordStyle is { } originalStyle)
+                Assert.Equal(originalStyle | 0x20, GetWindowLongPtrW(scene.Field, -16));
+            // Refusal is proved while the fixture's password style is active.
+            // Restore our own metadata before the independent unchanged-text
+            // check; protected cross-process WM_GETTEXT is not that contract.
+            RestorePasswordStyle();
             Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
         }
         finally
         {
+            RestorePasswordStyle();
             // Restore only the fixture-owned root so its normal close path remains available.
             if (change == "parent-disabled")
                 EnableWindow(scene.Root, true);
+        }
+        void RestorePasswordStyle()
+        {
+            if (passwordStyle is not { } style)
+                return;
+            SetWindowLongPtrW(scene.Field, -16, style);
+            Assert.Equal(style, GetWindowLongPtrW(scene.Field, -16));
+            passwordStyle = null;
         }
     });
 
@@ -825,6 +842,9 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         Directory.CreateDirectory(directory);
         string path = Path.Combine(directory, "settings.json");
         string script = Path.Combine(directory, "peer.py");
+        string received = Path.Combine(directory, "received");
+        Directory.CreateDirectory(received);
+        int observedFrames = 0;
         ChildProcess? child = null;
         var overlay = new OverlayWindow();
         var held = new HeldPracticeContext();
@@ -833,7 +853,9 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             // This peer observes the real inherited pipe, not Host internals.
             // Its only ACK starts on-demand practice; it grants no input authority.
             File.WriteAllText(script, """
-                import json, struct, sys
+                import json, os, pathlib, struct, sys
+                received = pathlib.Path(sys.argv[1])
+                sequence = 0
                 def read_exact(n):
                     value = b''
                     while len(value) < n:
@@ -844,7 +866,10 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 try:
                     while True:
                         message = json.loads(read_exact(struct.unpack('<I', read_exact(4))[0]))
-                        print(json.dumps(message), file=sys.stderr, flush=True)
+                        sequence += 1
+                        pending = received / (str(sequence) + ".tmp")
+                        pending.write_text(json.dumps(message), encoding="utf-8")
+                        os.replace(pending, received / (str(sequence) + ".json"))
                         if message['Kind'] == 'begin':
                             reply = {k: message[k] for k in ('Connection', 'Run', 'Sequence')}
                             reply['Kind'] = 'started'
@@ -873,6 +898,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                 info.ArgumentList.Add("-I");
                 info.ArgumentList.Add("-B");
                 info.ArgumentList.Add(script);
+                info.ArgumentList.Add(received);
                 return child = new ChildProcess(info);
             });
             using var hook = new KeyboardHook(allowInjectedInput: true);
@@ -915,8 +941,12 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
 
             async Task<PracticeMessage> ReadFrame()
             {
-                string? json = await child!.Process.StandardError.ReadLineAsync(deadline.Token);
-                Assert.NotNull(json);
+                // ChildProcess owns stderr draining. This atomic peer receipt is
+                // published only after its real stdin received a complete frame.
+                string receipt = Path.Combine(received, $"{++observedFrames}.json");
+                while (!File.Exists(receipt))
+                    await Task.Delay(10, deadline.Token);
+                string json = await File.ReadAllTextAsync(receipt, deadline.Token);
                 return System.Text.Json.JsonSerializer.Deserialize<PracticeMessage>(json)!;
             }
         }

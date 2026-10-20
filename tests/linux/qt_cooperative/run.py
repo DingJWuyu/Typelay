@@ -664,6 +664,7 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                     "observedAtMs": captured["observedAtMs"],
                     "inputEpoch": captured["authority"]["inputRevision"],
                     "focusEpoch": captured["authority"]["focusRevision"],
+                    "multiline": description["metadata"]["multiline"],
                 }
                 replacement = plan(source, replacement_text)
                 value = {
@@ -1035,12 +1036,22 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                 native.call("overlay-hide")
                 result["updating_translation_muted_and_manual_states_normal"] = True
 
-                # Controlled view data exercises the real QLineEdit/Fcitx/JSON
+                # Controlled view data exercises the real QLineEdit/QPlainTextEdit/Fcitx/JSON
                 # adapter. It never enables a production gate or claims model quality.
-                def glossary_source(view_state, finish):
+                def glossary_source(view_state, finish, field="first"):
                     import uuid
 
-                    prepare()
+                    if field == "plain":
+                        fixture("plain-visible", enabled=True)
+                        fixture("set", field=field, text="A😀\nSecond\nThird")
+                        fixture("select", field=field, start=1, length=10)
+                        fixture("focus", field=field)
+                        wait(
+                            lambda: state().get(field, {}).get("focused") and settled(),
+                            "multiline source focus",
+                        )
+                    else:
+                        prepare()
                     publication = publish()
                     target = publication["target"]
                     actions = {
@@ -1063,7 +1074,7 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                     assert render_view(
                         publication, view_state, "Kept candidate", False, 1, actions
                     )["visible"]
-                    original = state()["first"]
+                    original = state()[field]
                     before = len(native.events)
 
                     def renew():
@@ -1114,16 +1125,26 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                         ]
 
                     def unchanged():
-                        actual = state()["first"]
-                        for key in (
+                        actual = state()[field]
+                        keys = (
                             "text",
                             "cursor",
                             "selectionStart",
                             "selectionLength",
                             "changes",
-                            "edits",
                             "undoAvailable",
-                        ):
+                        ) + (
+                            ("edits",)
+                            if field == "first"
+                            else (
+                                "redoAvailable",
+                                "contentsChanges",
+                                "documentGeneration",
+                                "blocks",
+                                "characters",
+                            )
+                        )
+                        for key in keys:
                             assert actual[key] == original[key], (
                                 view_state,
                                 finish,
@@ -1183,14 +1204,26 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                         click("typelay-glossary-cancel")
                         observe(
                             lambda value: not value.get("glossary", {}).get("visible")
-                            and value["first"]["focused"],
+                            and value[field]["focused"],
                             "cancel restores the exact source without writing",
                         )
-                    elif finish == "changed-source":
-                        fixture("set", field="first", text="Changed externally")
+                    elif finish in (
+                        "changed-source",
+                        "changed-selection",
+                        "replaced-document",
+                        "external-focus",
+                    ):
+                        if finish == "changed-source":
+                            fixture("set", field=field, text="Changed externally")
+                        elif finish == "changed-selection":
+                            fixture("select", field=field, start=0, length=1)
+                        elif finish == "replaced-document":
+                            fixture("replace-document", field=field, text=original["text"])
+                        else:
+                            fixture("focus", field="second")
                         observe(
                             lambda value: not value.get("glossary", {}).get("visible"),
-                            "changed source retires glossary",
+                            "changed source identity or external focus retires glossary",
                         )
                         assert not events("sessionGlossaryAdd")
                         native.call("overlay-hide")
@@ -1223,7 +1256,7 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                         retirement = [
                             item
                             for item in state()["providerEvents"]
-                            if item["sequence"] > departure and item["role"] == "first"
+                            if item["sequence"] > departure and item["role"] == field
                         ]
                         # The original source's sealed background-write proof is
                         # retired by this focus change, not an unknown IM reset.
@@ -1296,7 +1329,7 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                             },
                         ) == {**receipt, "returned": True}
                         actual = observe(
-                            lambda value: value["first"]["focused"] and value,
+                            lambda value: value[field]["focused"] and value,
                             "original source refocused",
                         )
                         description = native.describe(target)
@@ -1315,7 +1348,10 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                             captured["glossarySource"] == receipt
                             and captured["text"] == original["text"]
                         )
-                        assert actual["first"]["selectionStart"] == original["selectionStart"]
+                        assert actual[field]["selectionStart"] == original["selectionStart"]
+                        if field == "plain":
+                            assert captured["selection"] == {"start": 1, "end": 11}
+                            assert captured["text"] == "A😀\nSecond\nThird"
                     unchanged()
                     native.call("overlay-hide")
 
@@ -1332,6 +1368,25 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
                     ):
                         glossary_source(glossary_state, glossary_finish)
                 result["qlineedit_explicit_source_glossary_zero_write_return_and_refusals"] = True
+                for glossary_state in ("ValidTranslation", "EditedTranslationPending"):
+                    for glossary_finish in (
+                        "cancel",
+                        "return",
+                        "stale",
+                        "changed-source",
+                        "changed-selection",
+                        "replaced-document",
+                        "external-focus",
+                        "reset",
+                        "absent-opt-in",
+                        "false-opt-in",
+                        "wrong-type-opt-in",
+                    ):
+                        glossary_source(glossary_state, glossary_finish, "plain")
+                fixture("plain-visible", enabled=False)
+                result["qplaintextedit_explicit_source_glossary_zero_write_return_and_refusals"] = (
+                    True
+                )
 
                 def editor_view():
                     prepare()

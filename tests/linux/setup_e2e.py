@@ -1368,6 +1368,21 @@ class ApplicationSupportTests(unittest.TestCase):
             os.readlink(managed / "current"), "releases/" + descriptor["archiveSha256"]
         )
 
+    def test_disconnect_is_offered_only_for_a_stoppable_owned_session(self):
+        self.desktop_payload()
+        self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Install"))["ok"])
+        bundle = str(self.support.component_folder("desktop-text"))
+        for state in ("inactive", "conflict", "unknown", "starting", "applications-running"):
+            self.support.desktop_session_state = {"state": state, "detail": "unconfirmed"}
+            self.assertNotIn("Disconnect", self.support.desktop_fact()["supportedActions"])
+        self.support.desktop_session_state = {"state": "active", "bundle": bundle, "canStop": False}
+        self.assertNotIn("Disconnect", self.support.desktop_fact()["supportedActions"])
+        self.support.desktop_session_state["canStop"] = True
+        actions = self.support.desktop_fact()["supportedActions"]
+        self.assertIn("Disconnect", actions)
+        self.assertIn("Remove", actions)
+        self.assertFalse(self.support.desktop_fact()["capabilities"])
+
     def test_detected_system_service_is_information_not_permission_to_connect(self):
         self.desktop_payload()
         self.assertTrue(asyncio.run(self.support.execute("desktop-text", "Install"))["ok"])
@@ -1423,7 +1438,7 @@ class ApplicationSupportTests(unittest.TestCase):
         guidance = self.support.desktop_guidance()
         self.assertIn("应用或练习", guidance["notice"])
         self.assertIn("手动恢复", guidance["notice"])
-        self.assertIn("移除", guidance["notice"])
+        self.assertIn("结束本次连接", guidance["notice"])
         self.assertNotIn("记下", guidance["notice"])
         self.assertNotIn("开始练习", guidance["notice"])
         self.assertIn("已由你确认", guidance["steps"])

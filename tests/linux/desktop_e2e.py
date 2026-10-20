@@ -75,8 +75,9 @@ def settings_viewport_from_pane(initial, current):
     GTK 3.24.52's accessibility on_screen check treats a viewport as its own
     ancestor. A deep scroll can therefore report G_MININT for its origin even
     though only its bin window moved. This is not a general bounds fallback:
-    the original direct pair, frame, dimensions and fixed page layout must
-    still match the real first-screen observation.
+    the original direct pair, frame, width and relative origin must still
+    match the first-screen observation. The draft footer may shorten both
+    native allocations; only their matching smaller height is admissible.
 
     https://github.com/GNOME/gtk/blob/3.24.52/gtk/a11y/gtkwidgetaccessible.c#L778-L809
     https://github.com/GNOME/gtk/blob/3.24.52/gtk/gtkviewport.c#L1038-L1060
@@ -117,8 +118,9 @@ def settings_viewport_from_pane(initial, current):
     old_pane, old_frame = initial["pane"], initial["frame"]
     if (
         initial["viewport"] != old_pane
-        or current["viewport"] != (-(2**31), -(2**31), *old_pane[2:])
-        or pane[2:] != old_pane[2:]
+        or current["viewport"] != (-(2**31), -(2**31), *pane[2:])
+        or pane[2] != old_pane[2]
+        or pane[3] > old_pane[3]
         or frame[2:] != old_frame[2:]
         or (pane[0] - frame[0], pane[1] - frame[1])
         != (old_pane[0] - old_frame[0], old_pane[1] - old_frame[1])
@@ -218,6 +220,18 @@ def select_session_keys(paths, host_pid, accept, exit_key):
     assert paths.settings.read_bytes() == before, "session-key draft saved before confirmation"
     save = wait_for(lambda: named(host_pid, "保存修改"), "session key save was unavailable")
     assert Atspi.Action.do_action(save.get_action_iface(), 0)
+    if accept in ("F1", "F5", "F11", "F12", "Ctrl+F4") or exit_key in (
+        "F1",
+        "F5",
+        "F11",
+        "F12",
+        "Ctrl+F4",
+    ):
+        force = wait_for(
+            lambda: named(host_pid, "强制保存"), "shortcut risk confirmation was unavailable"
+        )
+        assert paths.settings.read_bytes() == before, "risk warning silently persisted shortcuts"
+        assert Atspi.Action.do_action(force.get_action_iface(), 0)
 
     def saved_pair():
         saved = json.loads(paths.settings.read_text())
@@ -5917,6 +5931,51 @@ def run(arguments):
                     and not status()["setup"]["settingsDraft"],
                     "default session keys were not restored for later desktop scenarios",
                 )
+                # A common application chord is a risk, not proof that this app
+                # has that binding. Both cancellation and changed-draft confirmation
+                # are exercised through the real GTK controls and production host.
+                before_conflict = paths.settings.read_bytes()
+                assert Atspi.EditableText.set_text_contents(
+                    wake.get_editable_text_iface(), "Ctrl+C"
+                )
+                activate_setting("保存修改")
+                wait_for(
+                    lambda: "Ctrl+C" in text(settings_control("设置反馈"))
+                    and "可能" in text(settings_control("设置反馈")),
+                    "common shortcut risk was not explained before persistence",
+                )
+                assert paths.settings.read_bytes() == before_conflict
+                activate_setting("继续编辑")
+                assert text(wake) == "Ctrl+C"
+                assert paths.settings.read_bytes() == before_conflict
+                assert Atspi.EditableText.set_text_contents(
+                    wake.get_editable_text_iface(), "Ctrl+V"
+                )
+                activate_setting("保存修改")
+                wait_for(
+                    lambda: "Ctrl+V" in text(settings_control("设置反馈")),
+                    "edited shortcut reused an earlier confirmation",
+                )
+                assert paths.settings.read_bytes() == before_conflict
+                activate_setting("强制保存")
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text())["WakeShortcut"] == "Ctrl+V"
+                    and not status()["setup"]["settingsDraft"],
+                    "explicit shortcut confirmation did not save the exact draft",
+                )
+                assert Atspi.EditableText.set_text_contents(
+                    wake.get_editable_text_iface(), saved["WakeShortcut"]
+                )
+                activate_setting("保存修改")
+                wait_for(
+                    lambda: json.loads(paths.settings.read_text())["WakeShortcut"]
+                    == saved["WakeShortcut"]
+                    and not status()["setup"]["settingsDraft"],
+                    "shortcut conflict scenario did not restore the saved binding",
+                )
+                evidence.append(
+                    "Real GTK shortcut risk warning, keep-editing, changed draft and explicit force-save; original binding restored."
+                )
                 # One global draft spans all four shortcuts and the separate support
                 # page's exclusions. A language change must save without consuming it.
                 assert Atspi.Selection.select_child(accept_key.get_selection_iface(), 12)
@@ -6140,6 +6199,12 @@ def run(arguments):
                 )
                 settings_page("常规")
                 activate_setting("保存修改")
+                wait_for(
+                    lambda: "F12" in text(settings_control("设置反馈"))
+                    and "F11" in text(settings_control("设置反馈")),
+                    "cross-page function-key risk was not confirmed",
+                )
+                activate_setting("强制保存")
                 wait_for(
                     lambda: (value := json.loads(paths.settings.read_text()))["WakeShortcut"]
                     == "Ctrl+Shift+F8"
@@ -6515,9 +6580,11 @@ def run(arguments):
                         assert named(managed_window["pid"], restarted_notice) is None
                         before_restart = text(source)
                         key("alt+r")
+                        # Restart replaces the ordinary bound-progress label with
+                        # this receipt only after a different run has a target.
+                        # The two notices occupy the same label, not two widgets.
                         wait_for(
                             lambda: named(managed_window["pid"], restarted_notice)
-                            and named(managed_window["pid"], "已识别练习输入框，尚未生成预览。")
                             and restart_ready(),
                             "this practice restart did not finish binding its new run",
                         )
@@ -6528,10 +6595,9 @@ def run(arguments):
                         typed(original)
                         wait_for(lambda: text(source) == original, "on-demand practice lost source")
                         wait_for(
-                            lambda: named(
-                                managed_window["pid"], "已识别练习输入框，尚未生成预览。"
-                            ),
-                            "practice identity was not bound before the first command",
+                            lambda: named(managed_window["pid"], restarted_notice)
+                            and restart_ready(),
+                            "restarted practice identity was not bound before the first command",
                         )
                         assert control(paths, "finishOnboarding", {"outcome": "completed"}) is False
                         key("ctrl+shift+F9")
@@ -6745,6 +6811,78 @@ def run(arguments):
                         and any(a["id"] == "Remove" for a in row["actions"]),
                         "normally closed practice did not release its component lease",
                     )
+                    # End the owned session without uninstalling its components.
+                    # Cancellation must leave the actual daemon untouched, not
+                    # merely retain a stale Connected label.
+                    pointer = paths.data / "components/desktop-text/current"
+                    prepared_target = os.readlink(pointer)
+                    daemon_receipts = [
+                        row for row in receipts(paths.data) if row["kind"] == "daemon"
+                    ]
+                    assert len(daemon_receipts) == 1, daemon_receipts
+                    prior_daemon = daemon_receipts[0]["child"]
+                    desktop_action("Disconnect", cancel=True)
+                    assert process_identity(prior_daemon["pid"]) == prior_daemon
+                    assert os.readlink(pointer) == prepared_target
+                    desktop_action("Disconnect")
+                    wait_for(
+                        lambda: not receipts(paths.data)
+                        and process_identity(prior_daemon["pid"]) != prior_daemon,
+                        "ending connection did not release the actual private daemon and guardian",
+                        timeout=30,
+                    )
+                    assert pointer.is_dir() and os.readlink(pointer) == prepared_target
+                    assert user_profile.read_bytes() == before_profile
+                    assert paths.settings.is_file() and status().get("modelReady")
+                    # This client was reopened above. Reconnection requires the
+                    # same explicit recovery acknowledgement, not an internal
+                    # command or a silently restored original input method.
+                    wait_for(
+                        lambda: (row := desktop_row())
+                        and not any(a["id"] == "Disconnect" for a in row["actions"]),
+                        "ended connection retained its active-session action",
+                    )
+                    activate_scrolled_setting(
+                        "我已记下原输入法的启动方式，并知道如何恢复",
+                        evidence_name="reconnection-recovery-acknowledgement-scroll",
+                    )
+                    desktop_action("Connect")
+                    managed_window = wait_for(
+                        lambda: next(
+                            (
+                                window
+                                for window in contents(request("Windows"), "Windows")
+                                if window.get("title") == "TypeLay 实操练习"
+                            ),
+                            None,
+                        ),
+                        "reconnection did not reopen practice using retained components",
+                        timeout=60,
+                    )
+                    try:
+                        wait_for(
+                            lambda: (row := desktop_row()) and row["state"] == "Connected",
+                            "reopened application did not establish a real connection",
+                        )
+                        current_daemons = [
+                            row for row in receipts(paths.data) if row["kind"] == "daemon"
+                        ]
+                        assert len(current_daemons) == 1, current_daemons
+                        assert current_daemons[0]["child"] != prior_daemon
+                        assert os.readlink(pointer) == prepared_target
+                    finally:
+                        if sys.exc_info()[0] is None:
+                            close_managed_window()
+                        else:
+                            try:
+                                close_managed_window()
+                            except (OSError, EOFError, ValueError):
+                                print("Reconnected practice close was not confirmed", flush=True)
+                    wait_for(
+                        lambda: (row := desktop_row())
+                        and any(a["id"] == "Remove" for a in row["actions"]),
+                        "reopened practice did not release its component lease after close",
+                    )
                     desktop_action("Remove")
                     wait_for(
                         lambda: (row := desktop_row()) and row["state"] == "NeedsInstall",
@@ -6762,7 +6900,9 @@ def run(arguments):
                     evidence.append(
                         "Managed desktop connection: explicit approval opens the shipped practice, "
                         "real model and one Tab verify; normal client quit preserves the application; normal "
-                        "application close permits explicit private-session stop and component removal, "
+                        "application close permits cancelling or confirming disconnect without removing components; "
+                        "reconnection reuses the retained components with a new real daemon/application; "
+                        "separate removal then deletes the components, "
                         "with original user profile, models, settings and practice configuration retained"
                     )
         assert control(paths, "settings") is True

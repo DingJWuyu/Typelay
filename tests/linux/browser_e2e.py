@@ -1,6 +1,7 @@
 """Real Chromium DOM contract for the production content-script input adapter.
 
-The fixture replaces only the extension message transport. Chromium owns DOM,
+The fixture replaces the extension message transport; the coarse-clock case
+also supplies an explicitly controlled clock bucket. Chromium owns DOM,
 selection, keyboard dispatch, composition and synchronous mutation. No model is
 loaded, no extension is installed and no user browser profile is opened. This
 is not physical IME, native-host routing or complete desktop acceptance.
@@ -109,15 +110,16 @@ class BrowserContract(unittest.TestCase):
         self.context = self.browser_scope.__enter__()
         self.addCleanup(self.browser_scope.__exit__, None, None, None)
         clock_setup = ""
-        if self._testMethodName == "test_coarse_privacy_timer_refuses_capture":
-            # Capability fault in the real browser, before production caches its
-            # clock. A 100ms privacy clock cannot grant a 90ms write permit.
+        if self._testMethodName == "test_coarse_clock_frozen_bucket_refuses_capture":
+            # Capability fault before production caches its clock. Both clocks
+            # stay in one explicitly controlled 100ms bucket during capture.
+            # This is not an emulation of any browser's privacy-clock algorithm.
             clock_setup = """(() => {
-              const nativeNow = performance.now.bind(performance);
-              let origin = 0;
-              window.fixtureBeginClockBucket = () => { origin = nativeNow(); };
-              Object.defineProperty(performance, 'now', {
-                value: () => origin + Math.floor((nativeNow() - origin) / 100) * 100});
+              const wallOrigin = Date.now();
+              let bucket = 0;
+              window.fixtureAdvanceClockBucket = () => { bucket += 100; };
+              Object.defineProperty(performance, 'now', {value: () => bucket});
+              Date.now = () => wallOrigin + bucket;
             })();"""
         bridge = (
             BRIDGE.read_text()
@@ -1389,25 +1391,24 @@ class BrowserContract(unittest.TestCase):
             )
         )
 
-    def test_coarse_privacy_timer_refuses_capture(self):
+    def test_coarse_clock_frozen_bucket_refuses_capture(self):
         self.page.keyboard.insert_text("Hello")
-        # Start a real 100ms bucket and echo the new authority in the same page
-        # turn. A Python/CDP round trip could instead cross a bucket boundary
-        # and correctly reject wall/monotonic disagreement before the precision
-        # capability check that this case isolates.
+        # Isolate the precision capability: no fine tick can be observed in this
+        # frozen bucket. Both clocks advance together before the new authority,
+        # then stay fixed regardless of OS scheduling. Clock disagreement/expiry
+        # must not substitute for the timerPrecision rejection asserted below.
         result = self.page.evaluate("""() => {
-          fixtureBeginClockBucket();
+          fixtureAdvanceClockBucket();
           const description = fixtureCommand({id: 930, op: 'describe'});
           const capture = fixtureCommand({id: 931, op: 'capture', data: {
             target: description.target, authority: description.authority}});
           return {capture, diagnostics: fixtureCommand({id: 932, op: 'describe'}).diagnostics};
         }""")
-        self.assertIsNone(result["capture"])
         diagnostics = result["diagnostics"]
-        self.assertEqual(diagnostics["captureCounts"]["timerPrecision"], 1)
-        self.assertEqual(diagnostics["captureCounts"]["supported"], 0)
-        tick = diagnostics["timerTickMs"]
-        self.assertTrue(tick is None or tick >= 100)
+        self.assertIsNone(result["capture"], diagnostics)
+        self.assertEqual(diagnostics["captureCounts"]["timerPrecision"], 1, diagnostics)
+        self.assertEqual(diagnostics["captureCounts"]["supported"], 0, diagnostics)
+        self.assertIsNone(diagnostics["timerTickMs"], diagnostics)
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 
