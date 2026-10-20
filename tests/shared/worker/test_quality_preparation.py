@@ -139,8 +139,12 @@ class QualityPreparationTests(unittest.TestCase):
                 report["holdoutInputSha256"],
                 "f837e7a5983bc2303c3c279052cc05166ba2cfe05d6dccd0f364fe15896d3616",
             )
-            original = json.loads((RUNNERS / "styled_quality_inputs.json").read_text())
-            holdout = json.loads((RUNNERS / "styled_quality_holdout_inputs.json").read_text())
+            original = json.loads(
+                (RUNNERS / "styled_quality_inputs.json").read_text(encoding="utf-8")
+            )
+            holdout = json.loads(
+                (RUNNERS / "styled_quality_holdout_inputs.json").read_text(encoding="utf-8")
+            )
             expected = original["samples"] + holdout["samples"]
             self.assertEqual(len(report["cases"]), 8)
             for case, sample in zip(report["cases"], expected, strict=True):

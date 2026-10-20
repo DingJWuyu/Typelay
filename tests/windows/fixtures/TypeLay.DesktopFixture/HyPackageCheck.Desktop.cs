@@ -451,6 +451,14 @@ internal static partial class HyPackageCheck
         {
             get; set;
         }
+        public string[]? CurrentPackageIds
+        {
+            get; set;
+        }
+        public string? PublicPreparationState
+        {
+            get; set;
+        }
         public bool? PriorWorkerExited
         {
             get; set;
@@ -471,7 +479,7 @@ internal static partial class HyPackageCheck
         AutomationElement? details = null;
         await WaitAsync(async () =>
         {
-            // Retain only the current poll's existing predicate results. A null
+            // Retain only the current poll's observed state. A null
             // means not reached or not completed, never a failed readiness check.
             var observation = new ActiveObservation(expected.Length);
             scene.Facts = observation;
@@ -484,9 +492,31 @@ internal static partial class HyPackageCheck
             if (!state.InventoryKnown)
                 return false;
             observation.Gate = "active-packages";
-            observation.ExpectedActiveMatched = state.CurrentPackages.Select(item => item.Package.Id).ToHashSet(StringComparer.Ordinal).SetEquals(expected);
+            observation.CurrentPackageIds = state.CurrentPackages.Select(item => item.Package.Id).ToArray();
+            observation.ExpectedActiveMatched = observation.CurrentPackageIds.ToHashSet(StringComparer.Ordinal).SetEquals(expected);
             if (observation.ExpectedActiveMatched != true)
+            {
+                // A failed preparation leaves the old inventory active. Observe the
+                // public outcome here instead of hiding it behind the inventory gate
+                // until the suite deadline. Never retain arbitrary UI text.
+                observation.Gate = "public-preparation-status";
+                string preparation = await PublicStatusAsync(settings, ct);
+                var failure = Enum.GetValues<SetupFailureCategory>()
+                    .Select(SetupFailurePresentation.Create).FirstOrDefault(item => item.Message == preparation);
+                observation.PublicPreparationState = failure is not null ? "failed-" + failure.Code : preparation switch
+                {
+                    "正在准备本地翻译组件…" => "preparing",
+                    "正在暂停，保留已验证的下载进度…" => "pausing",
+                    "正在启动本地翻译…" => "starting-model",
+                    _ when preparation == SetupFailurePresentation.PausedMessage => "paused",
+                    _ when preparation.StartsWith("本地翻译已就绪", StringComparison.Ordinal) => "ready",
+                    _ => "unrecognized"
+                };
+                // Only an exact terminal failure message stops the check. Preparing,
+                // rollback/startup, paused, missing and unknown observations do not.
+                Require(failure is null, "public-preparation-failed-" + failure?.Code);
                 return false;
+            }
             observation.Gate = "prior-worker-exit";
             observation.PriorWorkerExited = workers.Exited(priorPid);
             if (observation.PriorWorkerExited != true)

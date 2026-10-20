@@ -105,6 +105,32 @@ static void trace_language_map(GtkWidget *widget, gpointer unused) {
 static void trace_language_unmap(GtkWidget *widget, gpointer unused) {
     (void)unused;
     trace_language_render(widget, "unmap");
+    static guint count;
+    if (!g_getenv("TYPELAY_TRACE_LANGUAGE_RENDER") || count >= 4) return;
+    count++;
+    GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(widget));
+    gint width = surface ? gdk_surface_get_width(surface) : -1;
+    gint height = surface ? gdk_surface_get_height(surface) : -1;
+    gint min_width = -1, min_height = -1;
+    /* Observe the current minimum at this existing unmap boundary. GTK may
+     * reject a configured popup size in native_layout; this is not its cause
+     * or a snapshot of the earlier allocation, and must not reopen the popup. */
+    GtkSizeRequestMode mode = gtk_widget_get_request_mode(widget);
+    if (mode == GTK_SIZE_REQUEST_WIDTH_FOR_HEIGHT) {
+        gtk_widget_measure(widget, GTK_ORIENTATION_VERTICAL, -1, &min_height, NULL, NULL, NULL);
+        gtk_widget_measure(widget, GTK_ORIENTATION_HORIZONTAL, MAX(height, 0), &min_width, NULL, NULL, NULL);
+    } else {
+        gtk_widget_measure(widget, GTK_ORIENTATION_HORIZONTAL, -1, &min_width, NULL, NULL, NULL);
+        gtk_widget_measure(widget, GTK_ORIENTATION_VERTICAL, MAX(width, 0), &min_height, NULL, NULL, NULL);
+    }
+    GtkWidget *focus = overlay.top ? gtk_window_get_focus(GTK_WINDOW(overlay.top)) : NULL;
+    const char *focus_kind = !focus ? "none" : focus == widget || gtk_widget_is_ancestor(focus, widget)
+        ? "overlay" : overlay.target && (focus == overlay.target->widget
+            || gtk_widget_is_ancestor(focus, overlay.target->widget)) ? "source" : "other";
+    g_printerr("TypeLay GTK4 language-unmap-size atMs=%" G_GINT64_FORMAT
+        " surface=%dx%d minimum=%dx%d requestMode=%d active=%d focus=%s\n",
+        tl_now(), width, height, min_width, min_height, mode,
+        overlay.top && gtk_window_is_active(GTK_WINDOW(overlay.top)), focus_kind);
 }
 
 void tl_overlay_control_cancel(void) {

@@ -5803,23 +5803,24 @@ def run(arguments):
             }
 
             def exclusion_editor_focused():
-                # Preserve short-circuit order; skipped observations stay unknown.
+                # Sample all three gates independently: a false SHOWING bit
+                # must not hide whether the compositor still owns this window.
                 exclusion_focus_state.update(focused=None, showing=None, settingsWindowFocused=None)
                 exclusion_focus_state["focused"] = focused(excluded)
-                if not exclusion_focus_state["focused"]:
-                    return False
                 exclusion_focus_state["showing"] = excluded.get_state_set().contains(
                     Atspi.StateType.SHOWING
                 )
-                if not exclusion_focus_state["showing"]:
-                    return False
                 exclusion_focus_state["settingsWindowFocused"] = any(
                     window.get("id") == settings_window["id"]
                     and window.get("pid") == process.pid
                     and window.get("is_focused") is True
                     for window in contents(request("Windows"), "Windows")
                 )
-                return exclusion_focus_state["settingsWindowFocused"]
+                return (
+                    exclusion_focus_state["focused"]
+                    and exclusion_focus_state["showing"]
+                    and exclusion_focus_state["settingsWindowFocused"]
+                )
 
             try:
                 wait_for(
@@ -5828,6 +5829,42 @@ def run(arguments):
                     timeout=deadline - time.monotonic(),
                 )
             finally:
+                # Observe after the verdict without changing the acceptance gate.
+                # A screenshot alone cannot distinguish stale AT-SPI state from
+                # GTK's on_screen/viewport calculation or a clipped editor.
+                try:
+                    ancestry = []
+                    exclusion_focus_state["freshAncestry"] = ancestry
+                    exclusion_focus_state["frameReached"] = False
+                    ancestor = excluded
+                    for _ in range(16):
+                        if ancestor is None:
+                            break
+                        ancestor.clear_cache()
+                        states = ancestor.get_state_set()
+                        role = ancestor.get_role()
+                        observation = {
+                            "role": ancestor.get_role_name(),
+                            "pidMatches": ancestor.get_process_id() == process.pid,
+                            "focused": states.contains(Atspi.StateType.FOCUSED),
+                            "showing": states.contains(Atspi.StateType.SHOWING),
+                            "visible": states.contains(Atspi.StateType.VISIBLE),
+                            "defunct": states.contains(Atspi.StateType.DEFUNCT),
+                        }
+                        ancestry.append(observation)
+                        component = ancestor.get_component_iface()
+                        if component is not None:
+                            rect = Atspi.Component.get_extents(component, Atspi.CoordType.SCREEN)
+                            observation["screenBounds"] = [rect.x, rect.y, rect.width, rect.height]
+                        if role == Atspi.Role.FRAME:
+                            exclusion_focus_state["frameReached"] = observation["pidMatches"]
+                            break
+                        if not observation["pidMatches"]:
+                            break
+                        ancestor = ancestor.get_parent()
+                except Exception as error:
+                    # Diagnostic failures must not mask the actual focus failure.
+                    exclusion_focus_state["observationError"] = type(error).__name__
                 try:
                     (arguments.output / "settings-exclusion-focus.json").write_text(
                         json.dumps(exclusion_focus_state, indent=2)

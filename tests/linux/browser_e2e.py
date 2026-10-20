@@ -2633,10 +2633,32 @@ class BrowserContract(unittest.TestCase):
     def test_rapid_resize_and_same_content_renew_do_not_restart_motion(self):
         data = self.motion_view()
         before = self.page.locator("html > div").bounding_box()
-        self.click_overlay_control("展开")
-        self.command("overlay-renew", {"target": data["target"], "authority": data["authority"]})
-        self.click_overlay_control("缩小")
-        self.observe_overlay_frames()
+        # Freeze the browser animation timeline, not adapter state. Otherwise
+        # the header can move between CDP's rectangle read and mouse dispatch,
+        # so a missed collapse click would test an uninterrupted expansion.
+        self.cdp.send("Animation.enable")
+        self.cdp.send("Animation.setPlaybackRate", {"playbackRate": 0})
+        try:
+            self.click_overlay_control("展开")
+            editor = self.overlay_control("TypeLay 译文", "textbox")
+            self.overlay_dom(
+                editor,
+                """function() {
+              for (const animation of this.getRootNode().host.getAnimations())
+                animation.currentTime = 140;
+            }""",
+            )
+            intermediate = self.page.locator("html > div").bounding_box()
+            self.assertGreater(intermediate["width"], before["width"])
+            self.assertLess(intermediate["width"], 520)
+            self.command(
+                "overlay-renew", {"target": data["target"], "authority": data["authority"]}
+            )
+            self.click_overlay_control("缩小")
+            self.assertTrue(self.overlay_control("展开"))
+            self.observe_overlay_frames()
+        finally:
+            self.cdp.send("Animation.setPlaybackRate", {"playbackRate": 1})
         # Same-content renewals are display proofs only; their arrival cannot
         # replay expansion or extend the numeric resize's 280ms duration.
         self.command("overlay-renew", {"target": data["target"], "authority": data["authority"]})
