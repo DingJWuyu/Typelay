@@ -290,27 +290,41 @@ internal sealed partial class PracticeHost : IDisposable
 
     private async Task SendProgressAsync(IChildProcess child, ChannelReader<PracticeMessage> updates, CancellationToken cancellation)
     {
+        // The sole writer consumes immutable frames. Neither waiting for a
+        // frame nor completing pipe I/O needs the UI that admitted the control.
+        // Capture this configuration before the first context-free await.
+        bool traceEditing = _monitor is { OwnedEditorTraceEnabled: true };
         try
         {
-            await foreach (var update in updates.ReadAllAsync(cancellation))
+            var stream = child.Process.StandardInput.BaseStream;
+            await foreach (var update in updates.ReadAllAsync(cancellation).ConfigureAwait(false))
             {
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
                 deadline.CancelAfter(TimeSpan.FromSeconds(2));
-                bool traceFence = update.Kind == "edit-fence" && update.Editing is not null
-                    && _monitor is { OwnedEditorTraceEnabled: true };
-                // Both atMs values use WindowsInterruptClock. Completion is the
-                // original await resuming on this Host loop, including any UI
-                // continuation delay; it is not the underlying flush instant.
+                bool traceFence = traceEditing && update.Kind == "edit-fence" && update.Editing is not null;
                 if (traceFence)
-                    TraceOwnedEditor(update.Editing!.Intent, OwnedEditorEvent.FenceSendStarted);
-                await PracticeProgressPipe.WriteAsync(child.Process.StandardInput.BaseStream, update, deadline.Token);
+                    NotifyFence(update.Editing!.Intent, OwnedEditorEvent.FenceSendStarted);
+                await PracticeProgressPipe.WriteAsync(stream, update, deadline.Token).ConfigureAwait(false);
                 if (traceFence)
-                    TraceOwnedEditor(update.Editing!.Intent, OwnedEditorEvent.FenceSendCompleted);
+                    NotifyFence(update.Editing!.Intent, OwnedEditorEvent.FenceSendCompleted);
             }
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException)
         {
-            CommunicationFailed(child, cancellation);
+            // One terminal notification; connection identity/cancellation and
+            // all controller/host state remain owned by the original dispatcher.
+            NotifyUi(() => CommunicationFailed(child, cancellation));
+        }
+
+        void NotifyFence(Guid intent, OwnedEditorEvent evt)
+        {
+            long transportAtMs = WindowsInterruptClock.NowMs;
+            NotifyUi(() => TraceOwnedEditor(intent, evt, transportAtMs: transportAtMs));
+        }
+        void NotifyUi(Action notification)
+        {
+            if (!_dispatcher.HasShutdownStarted && !_dispatcher.HasShutdownFinished)
+                _dispatcher.BeginInvoke(notification);
         }
     }
 

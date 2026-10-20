@@ -1,14 +1,16 @@
-# Matt Pocock skills
+# Agent skills
+
+## Matt Pocock skills
 
 Source: https://github.com/mattpocock/skills
 Revision: 49dd158d1076134a641b33efb035946536778336
 Installer: skills CLI 1.7.2, project scope, universal agent directory.
 
-27 个正式技能及各自的参考文件保留在 .agents/skills，安装器生成 skills-lock.json。保留原始文件，不翻译、压缩或手工重写 SKILL.md。更新时明确选择 revision 与本文件列出的 27 个 skill 名称，通过安装器重建并检查 diff；不要用 --skill *，以免引入上游的实验或归档技能，不在 CI 自动追踪 latest。只使用一种安装方式；已由编辑器全局插件提供同一套技能时避免重复注册。
+Matt Pocock 的 27 个正式技能及各自的参考文件保留在 .agents/skills，安装器生成 skills-lock.json。保留原始文件，不翻译、压缩或手工重写 SKILL.md。更新时明确选择 revision 与本文件列出的 27 个 skill 名称，通过安装器重建并检查 diff；不要用 --skill *，以免引入上游的实验或归档技能，不在 CI 自动追踪 latest。只使用一种安装方式；已由编辑器全局插件提供同一套技能时避免重复注册。
 
 本目录供能发现 .agents/skills 的编码 Agent 使用。无法原生调用 skills 的环境应读取原文执行可用步骤，明确说明缺少的调用/子代理能力，不能声称已经运行不存在的 Skill 工具。
 
-## Model-invoke: 11
+### Model-invoke: 11
 
 条件成立时读取对应 .agents/skills/<name>/SKILL.md 和其要求的参考文件。不要为了凑数量执行不相关流程。
 
@@ -28,9 +30,20 @@ Installer: skills CLI 1.7.2, project scope, universal agent directory.
 
 code-review 若要求独立子代理而当前环境没有该能力，则分别执行 Standards 与 Spec 两轮自审并如实说明，不伪称独立评审。大量子代理流程仍须用户事先批准。
 
-## User-invoke: 16
+### User-invoke: 16
 
 工程：ask-matt、grill-with-docs、triage、improve-codebase-architecture、setup-matt-pocock-skills、to-spec、to-tickets、implement、implement-spec、wayfinder、retro。
 生产力：grill-me、handoff、teach、to-questionnaire、wait-what。
 
 这些技能保留 disable-model-invocation，不因主题相关而自行触发。项目配置位于根 AGENTS 的 Agent skills 区块及 issue-tracker/domain/triage-labels 文件；不会自行发布任务或开启 PR。技能输出同样遵守根 AGENTS 的内容保留规则，不另建历史归档。
+
+## HumanLayer show-me
+
+Source: https://github.com/humanlayer/skills
+Revision: 653b6411c1f70c275a18e37673b042ff99f67ceb
+Source path: plugins/show-me/skills/show-me/
+License: MIT，见 `.agents/skills/show-me/LICENSE`（上游根 LICENSE 原文）。
+
+用户明确调用 show-me，或明确要求用此技能画架构图、流程图时，读取 `.agents/skills/show-me/SKILL.md`。保持上游 user-invoke 设置：`disable-model-invocation: true` 与 `agents/openai.yaml` 中的 `allow_implicit_invocation: false`。图描述当前源码中的真实模块、边界与流程；按问题选择最小清晰视图，图旁保留必要说明。HTML 展示使用当前环境实际可用的浏览器或文件交付方式。
+
+此技能按固定 revision 直接复制上游 `SKILL.md`、`agents/openai.yaml`，另附根 LICENSE；不安装上游插件或依赖，也不改写技能原文。更新时先审查指定 revision，再复制这两个文件及许可证并核对字节一致。其固定来源由本节管理；`skills-lock.json` 仍由原安装器管理 Matt Pocock 的 27 个技能，不手工增写生成锁文件。

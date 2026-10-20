@@ -2,6 +2,120 @@
 
 改模块边界、进程启动、会话或目录时读取。TypeLay.slnx 是工作区入口；[ADR-0001](../adr/0001-workspace-and-delivery.md)规定工作区与交付，[ADR-0003](../adr/0003-cross-platform-runtime.md)规定共享运行时与宿主契约。产品要求从[产品验收基线](../product/README.md)读取，平台现状不降低要求。
 
+## 先看整体怎么工作
+
+TypeLay 不是把模型输出直接粘回输入框。它先确认“这是哪个输入框、现在能读什么”，再翻译和展示；只有用户接受且原目标仍满足写入条件，才尝试写回。**模型只生成文本，不拥有焦点、按键或写入权限。**
+
+下面三张图分别回答：代码由谁负责、运行时有哪些进程、一次翻译怎样安全结束。它们描述当前实现，不表示所有输入框或模型能力都已通过验收。
+
+### 1. 源码职责：共享规则，分别接入系统
+
+```mermaid
+flowchart TB
+    subgraph platforms[平台源码：各自装配宿主与适配器]
+        W["src/windows<br/>WPF、UIA Broker、Hook、浏览器接入"]
+        L["src/linux<br/>.NET 宿主、GTK 桌面、GTK/Qt 合作输入、浏览器接入"]
+    end
+    subgraph shared[共享源码：两端使用同一份实现]
+        R["Runtime<br/>SessionController 编排、SettingsStore、ModelClient"]
+        C["Core<br/>会话规则、候选状态、接受与写入检查"]
+        P["Protocol<br/>长度前缀帧与 worker 消息"]
+        B["browser<br/>浏览器扩展脚本与源字段交互"]
+        M["Python worker<br/>结构保护、本地模型校验与推理"]
+    end
+    W -->|装配| R
+    L -->|装配| R
+    R -->|调用纯规则| C
+    R -->|使用帧契约| P
+    M -.->|实现同一帧契约| P
+    W -->|打包并接入| B
+    L -->|打包并接入| B
+```
+
+- **Core 回答“能不能做”，Runtime 决定“何时做”，平台负责“怎样在当前系统里做”。** 输入、视图、串行事件循环与子进程所有权由宿主注入；共享控制器不直接操作窗口或输入法。
+- `shared` 指共享源码，**不是一台两端共同访问的服务器**。Windows 与 Linux 各自在本机创建 Runtime、Core 会话和模型客户端。worker 是另一个本地进程，不在 .NET 进程里执行。
+- 浏览器脚本共用，但扩展清单、注册、native host 与宿主连接仍有平台差异。Linux 内部共用的 GTK/Qt 代码不因此成为跨平台共享代码。
+
+### 2. 运行时协作：同一产品，不是同一个进程
+
+每条分支表示一台机器上的运行实例；图中连线表示通信或本机调用，不表示依赖下载。为突出主路径，省略安装器、教程和子进程监督细节。
+
+```mermaid
+flowchart TB
+    subgraph win[Windows 实例]
+        WA["App 进程<br/>WPF + Runtime/Core + ModelClient"]
+        WB["UIA Broker 进程<br/>Windows 输入观察与操作"]
+        WE["外部原生应用<br/>目标输入控件"]
+        WX["浏览器进程<br/>共享扩展脚本 + 网页输入控件"]
+        WH["BrowserHost 进程"]
+        WM["本地 Python worker 进程<br/>加载 Argos 或 Hy"]
+        WA <-->|私有标准输入输出协议| WB
+        WB <-->|UIA 或原生输入路径| WE
+        WX <-->|native messaging| WH
+        WH <-->|命名管道| WA
+        WA <-->|标准输入输出：worker 帧| WM
+    end
+    subgraph linux[Linux 实例]
+        LD["GTK 桌面进程<br/>设置、托盘、输入与视图路由"]
+        LA[".NET 宿主进程<br/>Runtime/Core + ModelClient"]
+        LE["外部 GTK/Qt 应用进程<br/>合作模块 + 源控件与浮层"]
+        LX["浏览器进程<br/>共享扩展脚本 + 网页输入控件"]
+        LH["native-messaging 进程"]
+        LM["本地 Python worker 进程<br/>加载 Argos 或 Hy"]
+        LE <-->|同用户 socket| LD
+        LX <-->|native messaging| LH
+        LH <-->|同用户 socket| LD
+        LD <-->|私有继承管道| LA
+        LA <-->|标准输入输出：worker 帧| LM
+    end
+```
+
+Windows 的原生浮层由 WPF 呈现，浏览器浮层在页面内；Linux GTK/Qt 浮层在对应源应用中，浏览器浮层也在页面内。因此“浮层”不是所有平台都共用的一个窗口。Linux 当前还依赖 niri 前台观察与可选 Fcitx 合作组件；上图省略它们，不表示已实现合成器或输入法无关支持。
+
+翻译 worker 只做本地推理，不监听网络端口；**用户确认后的模型准备可以下载运行时或模型**，那是安装流程，不是把输入文字发给在线翻译服务。当前后端是 Argos 与 Hy；更换模型仍涉及协议能力、模型包与后端适配，不能把这张图理解成任意模型即插即用。
+
+### 3. 一次自动翻译：显示结果不等于允许写入
+
+以下以自动模式、源输入框中的一次接受为例。按需唤醒复用会话路径；一次性直接替换不经过预览或 Tab，始终绑定触发时的原目标，详见 [ADR-0002](../adr/0002-on-demand-and-direct-write.md)。
+
+```mermaid
+flowchart TD
+    A["用户在源输入框输入"] --> B["平台先检查字段元数据<br/>允许后读取正文与选区快照"]
+    B --> C{观察与会话条件满足？}
+    C -->|否| N["拒绝本次操作或保持不可接受的预览<br/>不授予写入权限"]
+    C -->|是| D["Runtime 冻结源文本与请求身份<br/>通过 ModelClient 请求本地 worker"]
+    D --> E["worker 校验、保护结构、推理<br/>返回结果或明确错误"]
+    E --> F{结果仍属于当前会话与请求？}
+    F -->|否| X["按会话规则丢弃或仅作预览<br/>不能凭旧结果取得新许可"]
+    F -->|是| G["更新浮层<br/>Core 判断候选及接受条件"]
+    G --> H{用户接受且短效许可仍有效？}
+    H -->|否| N
+    H -->|是| I["平台重新校验原目标、文本版本、IME 等<br/>只执行原写入计划"]
+    I --> J{写入回执}
+    J -->|Verified| K["确认本次写回完成<br/>不发送或提交源应用表单"]
+    J -->|RejectedBeforeMutation| N
+    J -->|OutcomeUnknown| U["隔离原目标<br/>不换目标、不自动重试"]
+```
+
+这里有四个容易混淆的东西：**快照**是一次输入观察；**候选**是仍匹配会话的译文；**许可**是短期、可撤销、只能消费一次的接受资格；**回执**是本次写入的结果。候选不是许可，写入计划也不是平台授权。完整术语见 [GLOSSARY](../../GLOSSARY.md)。
+
+图里的“平台执行”有两条实际路径：源端同步接受路径在源控件线程完成操作，再向控制器报告 `CompletedReceipt`，**控制器只结算，不再补写一次**；异步路径由控制器调用 `IInputService.WriteAsync` 并等待回执。两者都不能把未知结果当成功或安全重试；Windows 通用 UIA 的非原子风险仍未解决，见下文 [开放风险](#开放风险与安全边界)。编辑译文时人工稿另有保护，不能被新模型结果覆盖；编辑回源也不自动代表已经写入。
+
+### 从图找到实现
+
+链接指向当前源码，按职责阅读，不必先通读整个仓库。修改职责或通信边界时，同步更新对应图；具体通过、失败与未测状态仍以平台说明为准，不在图里复制每轮 CI 结果。
+
+| 想看什么 | 从哪里开始 |
+| --- | --- |
+| 两端怎样创建同一控制器 | [WindowsRuntime](../../src/windows/TypeLay.App/Windows/WindowsRuntime.cs)、[Linux Program](../../src/linux/TypeLay.Linux/Program.cs) |
+| 输入、翻译、编辑与接受怎样衔接 | [SessionController](../../src/shared/TypeLay.Runtime/SessionController.cs)、[输入端口](../../src/shared/TypeLay.Runtime/InputContracts.cs)、[视图与事件循环端口](../../src/shared/TypeLay.Runtime/SessionHost.cs) |
+| 候选与写入为何被允许或拒绝 | [Session](../../src/shared/TypeLay.Core/Session.cs)、[AcceptanceGate](../../src/shared/TypeLay.Core/AcceptanceGate.cs)、[WriteSafety](../../src/shared/TypeLay.Core/WriteSafety.cs) |
+| 模型请求怎样跨进程并执行 | [ModelClient](../../src/shared/TypeLay.Runtime/ModelClient.cs)、[worker 入口](../../src/shared/TypeLay.Worker/run_worker.py)、[LocalEngine](../../src/shared/TypeLay.Worker/typelay_worker/engine.py) |
+| Linux 两个宿主进程怎样连接 | [desktop main](../../src/linux/desktop/main.py)、[DesktopLink](../../src/linux/TypeLay.Linux/DesktopLink.cs) |
+| 为什么两端输入能力不同 | [Windows 架构](../platforms/windows/architecture.md)、[Linux 架构](../platforms/linux/architecture.md) |
+
+下面保留实现与维护所需的精确合同。风格、术语与另述虽已有代码，当前质量发布门仍关闭；图中的普通翻译链不代表这些要求已交付。
+
 ## 生产边界
 
 Windows/Linux 在 trunk 共用 src/shared/ 下的一份 Core、Runtime、Protocol、Python worker 与浏览器脚本。src/windows/ 和 src/linux/ 只拥有各自宿主及本机适配；eng/ 拥有构建，packaging/ 拥有运行时包装与安装，tests/ 拥有受控工具和断言。

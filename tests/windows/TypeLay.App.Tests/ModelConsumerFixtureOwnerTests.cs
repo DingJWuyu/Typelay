@@ -133,7 +133,8 @@ public sealed class ModelConsumerFixtureOwnerTests
             else
                 release.Set();
             var result = await execution;
-            Assert.True(result.RootKernelSignaled);
+            Assert.True(result.RootKernelSignaled, JsonSerializer.Serialize(result));
+            Assert.Null(result.Failure);
             Assert.Equal(0u, result.ActiveProcesses);
             Assert.Equal("terminated", result.CleanupMode);
             Assert.Equal(cancel, result.Interrupted);

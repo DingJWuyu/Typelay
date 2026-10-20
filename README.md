@@ -21,6 +21,8 @@ Windows/Linux 同步推进共同产品功能与体验，各平台问题和验收
 
 ## 源码与文档导航
 
+先看[三张架构图](docs/engineering/architecture.md#先看整体怎么工作)，了解共享代码、运行进程与翻译写回的区别。
+
 ```text
 src/shared/                 Core、Runtime、Protocol、Python worker
 src/windows/                WPF、Broker、Windows.Contracts、原生入口与输入事务
@@ -36,7 +38,7 @@ docs/engineering/           共享架构、开发和验证约定
 docs/platforms/             Windows/Linux 专属使用、实现与验收
 docs/adr/                   当前有效的工作区、产品增量与共享运行时决策
 docs/agents/                Agent skills、任务跟踪、领域与 triage 指引
-.agents/skills/             固定版本的 Matt Pocock skills
+.agents/skills/             固定版本的上游 skills
 ```
 
 Windows 与 Linux 保留独立宿主，不复制 Core、Runtime 或 worker；Linux 内多个后端共享的实现仍属于 Linux。模块归属与安全不变量见[架构约束](docs/engineering/architecture.md)，接口取舍见 [ADR-0003](docs/adr/0003-cross-platform-runtime.md)。VS Code 仅提供手动命令，尚未交付 macOS。

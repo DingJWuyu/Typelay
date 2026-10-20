@@ -727,11 +727,9 @@ internal static partial class HyPackageCheck
             {
                 var point = icon.GetClickablePoint();
                 Require(icon.Current.BoundingRectangle.Contains(point) && SetCursorPos((int)point.X, (int)point.Y), "tray-click-point-unavailable");
-                var click = new[] { new KeyInput { MouseFlags = 2 }, new KeyInput { MouseFlags = 4 } };
-                uint inserted = SendInput(2, click, Marshal.SizeOf<KeyInput>());
-                if (inserted == 1)
-                    Require(SendInput(1, [click[1]], Marshal.SizeOf<KeyInput>()) == 1, "tray-click-release-incomplete");
-                Require(inserted == 2, "tray-click-incomplete");
+                var click = SendLeftClick();
+                Require(click.ReleaseComplete, "tray-click-release-incomplete");
+                Require(click.Complete, "tray-click-incomplete");
             }
         }, ct);
         AutomationElement? quit = null;
@@ -784,11 +782,9 @@ internal static partial class HyPackageCheck
         Require(OwnedField() && element.Current.BoundingRectangle.Contains(pixel.X, pixel.Y)
             && WindowFromPoint(pixel) == field, "source-click-target-changed");
         ct.ThrowIfCancellationRequested();
-        var click = new[] { new KeyInput { MouseFlags = 2 }, new KeyInput { MouseFlags = 4 } };
-        uint inserted = SendInput(2, click, Marshal.SizeOf<KeyInput>());
-        if (inserted == 1)
-            Require(SendInput(1, [click[1]], Marshal.SizeOf<KeyInput>()) == 1, "source-click-release-incomplete");
-        Require(inserted == 2, "source-click-incomplete");
+        var click = SendLeftClick();
+        Require(click.ReleaseComplete, "source-click-release-incomplete");
+        Require(click.Complete, "source-click-incomplete");
     }, ct);
     [DllImport("user32.dll")] private static extern nint WindowFromPoint(N.Point point);
     private static void SendWakeOnce()
@@ -796,14 +792,7 @@ internal static partial class HyPackageCheck
         Require(new[] { 0x10, 0x11, 0x12, 0x5B, 0x5C, 0x78 }.All(key => GetAsyncKeyState(key) >= 0), "wake-key-already-held");
         BrowserCooperationCheck.SendChord([0x11, 0x10, 0x78], () => throw new Failure("wake-key-release-incomplete"));
     }
-    [StructLayout(LayoutKind.Explicit, Size = 40)]
-    private struct KeyInput
-    {
-        [FieldOffset(0)] public uint Type;
-        [FieldOffset(24)] public uint MouseFlags;
-    }
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)] private static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
-    [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint count, KeyInput[] inputs, int size);
 }

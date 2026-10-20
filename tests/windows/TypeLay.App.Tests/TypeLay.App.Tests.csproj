@@ -22,6 +22,7 @@
     <Compile Include="../support/SettingsLanguageActions.cs" Link="SettingsLanguageActions.cs" />
     <Compile Include="../support/ProcessImage.cs" Link="ProcessImage.cs" />
     <Compile Include="../fixtures/TypeLay.DesktopFixture/ModelConsumerFixtureOwner.cs" Link="ModelConsumerFixtureOwner.cs" />
+    <Compile Include="../fixtures/TypeLay.DesktopFixture/HyPackageCheck.Mouse.cs" Link="HyPackageCheck.Mouse.cs" />
   </ItemGroup>
   <Target Name="CopyProductionBrokerForDesktopTests" AfterTargets="Build">
     <ItemGroup>

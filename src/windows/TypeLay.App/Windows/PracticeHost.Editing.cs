@@ -298,7 +298,7 @@ internal sealed partial class PracticeHost
 
     internal void TraceOwnedEditor(Guid intent, OwnedEditorEvent evt, OwnedEditorReason reason = OwnedEditorReason.None,
         OwnedEditorPeer peer = OwnedEditorPeer.None, OwnedEditorPeer nextPeer = OwnedEditorPeer.None,
-        bool? active = null, long? sourceSequence = null)
+        bool? active = null, long? sourceSequence = null, long? transportAtMs = null)
     {
         if (_editorAttempt is not { } attempt || attempt.Control.Intent != intent || attempt.TraceCount >= 32)
             return;
@@ -313,6 +313,10 @@ internal sealed partial class PracticeHost
             run = attempt.Run,
             sequence = attempt.Sequence,
             eventSequence = ++attempt.TraceCount,
+            // Transport boundaries are sampled by the single writer before
+            // posting here. atMs and the flags describe this UI projection,
+            // which may run later; they are not the pipe completion instant.
+            transportAtMs,
             stage = evt.ToString(),
             reason = reason.ToString(),
             peer = peer.ToString(),

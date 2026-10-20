@@ -7,6 +7,7 @@ import json
 import os
 import re
 import select
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,8 +22,51 @@ from main import control
 from native_e2e import key
 from niri import contents, request
 from paths import Paths
-from setup import model_catalog
+from setup import (
+    copy_runtime,
+    current_generation,
+    model_catalog,
+    read_metadata,
+    runtime_copy_plan,
+)
 from wire import Decoder, encode, now_ms
+
+
+def copy_setup_model_data(source_data, destination_data):
+    """Copy only the CI's freshly verified model generation, never app state.
+
+    This is fixture isolation, not an integrity or readiness proof. The real
+    installed worker still verifies versions, file hashes and hello on startup.
+    Recovery chains are deliberately not cloned or rewritten.
+    """
+    components = source_data / "typelay/components"
+    generation = current_generation(components)
+    if generation is None:
+        raise ValueError("setup-scope-model-generation-missing")
+    source = components / generation
+    activation = read_metadata(source / "activation.json", 16384)
+    if (
+        "previous" not in activation
+        or activation["previous"] is not None
+        or (activation.get("recoveryPrevious") is not None)
+    ):
+        raise ValueError("setup-scope-requires-fresh-model-installation")
+    destination = destination_data / "typelay/components"
+    destination.mkdir(parents=True, exist_ok=False, mode=0o700)
+    runtime = source / "runtime"
+    runtime_plan = runtime_copy_plan(runtime)
+    copied = destination / generation
+    shutil.copytree(
+        source,
+        copied,
+        symlinks=True,
+        ignore=lambda folder, names: {"runtime"} if Path(folder) == source else set(),
+    )
+    # uv's venv contains absolute links and metadata. Reuse the installer's
+    # bounded relocation and dependency-origin validation, never share the old
+    # runtime or invent another rewriting algorithm here.
+    copy_runtime(runtime, copied / "runtime", runtime_plan)
+    (destination / "current").symlink_to(generation, target_is_directory=True)
 
 
 def settings_viewport_from_pane(initial, current):
@@ -625,6 +669,19 @@ def run(arguments):
             [sys.executable, str(package / "install.py"), "install"], check=True, timeout=30
         )
         package = (Path(home) / ".local/lib/typelay/current").resolve(strict=True)
+    if arguments.desktop_scope in ("setup-settings", "setup-tutorial"):
+        # Both scopes prepare and approve their own desktop component. A fresh
+        # config alone is insufficient: the component lives in XDG_DATA_HOME.
+        source_data = Path(os.environ["XDG_DATA_HOME"])
+        isolated_data = Path(
+            resources.enter_context(tempfile.TemporaryDirectory(prefix="typelay-setup-data-"))
+        )
+        try:
+            copy_setup_model_data(source_data, isolated_data)
+        except BaseException:
+            resources.close()
+            raise
+        resources.enter_context(patch.dict(os.environ, {"XDG_DATA_HOME": str(isolated_data)}))
     paths = Paths(package)
     environment = dict(os.environ)
     trace_path = arguments.output / "controller.jsonl"
@@ -5899,66 +5956,10 @@ def run(arguments):
                 )
                 excluded = settings_control("设置：排除的应用", timeout=deadline - time.monotonic())
                 assert excluded.get_process_id() == process.pid
-                # GTK 3.24.52 compares this nested TextView's local allocation
-                # against its outer viewport adjustment in on_screen(). Its
-                # SHOWING/Component extents can therefore falsely reject a visible
-                # editor. Text extents instead use the actual text GDK window:
-                # gtk/a11y/gtktextviewaccessible.c, get_character_extents.
-                excluded.clear_cache()
-                states = excluded.get_state_set()
-                assert all(
-                    states.contains(state)
-                    for state in (
-                        Atspi.StateType.VISIBLE,
-                        Atspi.StateType.ENABLED,
-                        Atspi.StateType.SENSITIVE,
-                        Atspi.StateType.EDITABLE,
-                    )
-                ) and not states.contains(Atspi.StateType.DEFUNCT)
+                # Expanding at the bottom edge can leave the child below the
+                # viewport. A real Tab moves focus and lets GTK scroll it into
+                # view before measuring visibility; focus alone is not proof.
                 assert focused(advanced_exclusions) and not focused(excluded)
-                character = Atspi.Text.get_character_extents(
-                    excluded.get_text_iface(), 0, Atspi.CoordType.SCREEN
-                )
-                clips = []
-                ancestor = excluded.get_parent()
-                for _ in range(16):
-                    assert ancestor is not None and ancestor.get_process_id() == process.pid
-                    ancestor.clear_cache()
-                    assert not ancestor.get_state_set().contains(Atspi.StateType.DEFUNCT)
-                    role = ancestor.get_role()
-                    if role in clip_roles:
-                        area = Atspi.Component.get_extents(
-                            ancestor.get_component_iface(), Atspi.CoordType.SCREEN
-                        )
-                        clip = (area.x, area.y, area.width, area.height)
-                        if role == Atspi.Role.VIEWPORT and clip[:2] == (-(2**31),) * 2:
-                            clip = settings_viewport_from_pane(
-                                settings_scroll_calibration, settings_scroll_snapshot(ancestor)
-                            )
-                        else:
-                            assert ancestor.get_state_set().contains(Atspi.StateType.SHOWING)
-                        clips.append(clip)
-                    if role == Atspi.Role.FRAME:
-                        assert ancestor.get_name() == "TypeLay 设置"
-                        break
-                    ancestor = ancestor.get_parent()
-                else:
-                    raise AssertionError("exclusion editor has no bounded settings frame")
-                point = settings_text_visible_point(
-                    (character.x, character.y, character.width, character.height), clips
-                )
-                assert point is not None, (
-                    "exclusion editor text point is outside known visible clips"
-                )
-                assert any(
-                    window.get("id") == settings_window["id"]
-                    and window.get("pid") == process.pid
-                    and window.get("is_focused") is True
-                    for window in contents(request("Windows"), "Windows")
-                )
-                # Both text and clip extents above are in the same GTK surface
-                # coordinate domain. Do not reinterpret Wayland SCREEN as global
-                # nested-X11 coordinates or guess the CSD shadow offset.
                 key("Tab")
                 exclusion_focus_state = {
                     "focused": None,
@@ -6043,6 +6044,74 @@ def run(arguments):
                         )
                     except OSError:
                         pass  # Evidence output must not replace the original failure.
+                # GTK 3.24.52 compares this nested TextView's local allocation
+                # against its outer viewport adjustment in on_screen(). Its
+                # SHOWING/Component extents can therefore falsely reject a visible
+                # editor. Text extents instead use the actual text GDK window:
+                # gtk/a11y/gtktextviewaccessible.c, get_character_extents.
+                excluded.clear_cache()
+                states = excluded.get_state_set()
+                assert all(
+                    states.contains(state)
+                    for state in (
+                        Atspi.StateType.VISIBLE,
+                        Atspi.StateType.ENABLED,
+                        Atspi.StateType.SENSITIVE,
+                        Atspi.StateType.EDITABLE,
+                    )
+                ) and not states.contains(Atspi.StateType.DEFUNCT)
+                assert focused(excluded)
+                character = Atspi.Text.get_character_extents(
+                    excluded.get_text_iface(), 0, Atspi.CoordType.SCREEN
+                )
+                clips = []
+                ancestor = excluded.get_parent()
+                for _ in range(16):
+                    assert ancestor is not None and ancestor.get_process_id() == process.pid
+                    ancestor.clear_cache()
+                    assert not ancestor.get_state_set().contains(Atspi.StateType.DEFUNCT)
+                    role = ancestor.get_role()
+                    if role in clip_roles:
+                        area = Atspi.Component.get_extents(
+                            ancestor.get_component_iface(), Atspi.CoordType.SCREEN
+                        )
+                        clip = (area.x, area.y, area.width, area.height)
+                        if role == Atspi.Role.VIEWPORT and clip[:2] == (-(2**31),) * 2:
+                            clip = settings_viewport_from_pane(
+                                settings_scroll_calibration, settings_scroll_snapshot(ancestor)
+                            )
+                        else:
+                            assert ancestor.get_state_set().contains(Atspi.StateType.SHOWING)
+                        clips.append(clip)
+                    if role == Atspi.Role.FRAME:
+                        assert ancestor.get_name() == "TypeLay 设置"
+                        break
+                    ancestor = ancestor.get_parent()
+                else:
+                    raise AssertionError("exclusion editor has no bounded settings frame")
+                point = settings_text_visible_point(
+                    (character.x, character.y, character.width, character.height), clips
+                )
+                exclusion_focus_state["characterBounds"] = [
+                    character.x,
+                    character.y,
+                    character.width,
+                    character.height,
+                ]
+                exclusion_focus_state["visibleClips"] = clips
+                exclusion_focus_state["visiblePoint"] = point
+                (arguments.output / "settings-exclusion-focus.json").write_text(
+                    json.dumps(exclusion_focus_state, indent=2)
+                )
+                assert point is not None, (
+                    "exclusion editor text point is outside known visible clips"
+                )
+                assert any(
+                    window.get("id") == settings_window["id"]
+                    and window.get("pid") == process.pid
+                    and window.get("is_focused") is True
+                    for window in contents(request("Windows"), "Windows")
+                )
                 persisted_before_edit = paths.settings.read_bytes()
                 key("ctrl+a")
                 typed("typelay-navigation-test")

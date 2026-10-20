@@ -140,7 +140,10 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
                     cleanupMode = "terminated";
                     if (_job != 0 && !TerminateJobObject(_job, 2))
                         throw Error("fixture-job-terminate");
-                    if (!Signaled() && !TerminateProcess(_process, 2))
+                    // Job termination already includes every assigned root.
+                    // A second root termination can race its kernel exit and
+                    // throw before the original bounded proof drain below.
+                    if (!_assigned && !Signaled() && !TerminateProcess(_process, 2))
                         throw Error("fixture-root-terminate");
                 }
                 while (!(signaled = Signaled()) || (active = Active()) != 0)
@@ -206,10 +209,10 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
             _processId = created.ProcessId;
             _thread = created.Thread;
             SuspendedProcess.AssignToJob(_job, _process);
+            _assigned = true; // Ownership is established even if limit verification fails.
             if (!QueryInformationJobObject(_job, 9, out ExtendedLimits actual, (uint)Marshal.SizeOf<ExtendedLimits>(), 0)
                 || actual.Basic.Flags != 0x2000)
                 throw Error("fixture-job-limit-query");
-            _assigned = true;
             _output = OpenRead(ref outputRead);
             _error = OpenRead(ref errorRead);
             _forwardOutput = Task.Run(() => _output.CopyToAsync(Console.OpenStandardOutput()));

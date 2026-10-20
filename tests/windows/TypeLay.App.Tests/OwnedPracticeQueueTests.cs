@@ -816,6 +816,178 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         }
     });
 
+    [Fact]
+    public Task HostSendsOrderedPracticeControlsWithoutWaitingForUiContinuations() => desktop.RunAsync(async () =>
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(25));
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-practice-writer-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        string path = Path.Combine(directory, "settings.json");
+        string script = Path.Combine(directory, "peer.py");
+        ChildProcess? child = null;
+        var overlay = new OverlayWindow();
+        var held = new HeldPracticeContext();
+        try
+        {
+            // This peer observes the real inherited pipe, not Host internals.
+            // Its only ACK starts on-demand practice; it grants no input authority.
+            File.WriteAllText(script, """
+                import json, struct, sys
+                def read_exact(n):
+                    value = b''
+                    while len(value) < n:
+                        chunk = sys.stdin.buffer.read(n - len(value))
+                        if not chunk: raise EOFError()
+                        value += chunk
+                    return value
+                try:
+                    while True:
+                        message = json.loads(read_exact(struct.unpack('<I', read_exact(4))[0]))
+                        print(json.dumps(message), file=sys.stderr, flush=True)
+                        if message['Kind'] == 'begin':
+                            reply = {k: message[k] for k in ('Connection', 'Run', 'Sequence')}
+                            reply['Kind'] = 'started'
+                            encoded = json.dumps(reply).encode()
+                            sys.stdout.buffer.write(struct.pack('<I', len(encoded)) + encoded)
+                            sys.stdout.buffer.flush()
+                except EOFError:
+                    pass
+                """);
+            var settings = WindowsRuntime.CreateSettings(path);
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.OnDemand,
+                Enabled = true
+            });
+            using var model = WindowsRuntime.CreateModel();
+            using var host = new PracticeHost(_ =>
+            {
+                var info = new ProcessStartInfo("python")
+                {
+                    UseShellExecute = false,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                info.ArgumentList.Add("-I");
+                info.ArgumentList.Add("-B");
+                info.ArgumentList.Add(script);
+                return child = new ChildProcess(info);
+            });
+            using var hook = new KeyboardHook(allowInjectedInput: true);
+            using var input = new WindowsInputService(new BrokerClient(), overlay.Handle, monitor: hook, practice: host);
+            using var controller = new SessionController(settings, model, overlay, hook, input, new ManualPracticeLoop());
+            host.Bind(controller);
+            var original = SynchronizationContext.Current;
+            try
+            {
+                SynchronizationContext.SetSynchronizationContext(held);
+                host.Open(path);
+            }
+            finally { SynchronizationContext.SetSynchronizationContext(original); }
+
+            // The old writer captures the empty-channel await here. With that
+            // continuation withheld, even the first frame cannot reach the peer.
+            var begin = await ReadFrame();
+            Assert.Equal("begin", begin.Kind);
+            Assert.Equal(1, begin.Sequence);
+            Assert.NotEqual(Guid.Empty, begin.Connection);
+            Assert.NotEqual(Guid.Empty, begin.Run);
+            Assert.Equal(0, held.Delivered);
+            Assert.Null(controller.PracticeProgress); // ACK processing still belongs to UI.
+
+            await held.DeliverOneAsync(deadline.Token); // Admit only the real started ACK.
+            Assert.Equal(begin.Run, controller.PracticeProgress!.RunId);
+            Assert.True(controller.EndOnDemandPractice(begin.Run));
+            var progress = await ReadFrame();
+            var retire = await ReadFrame();
+            Assert.Equal("progress", progress.Kind);
+            Assert.Equal("retire", retire.Kind);
+            Assert.Equal(begin.Connection, progress.Connection);
+            Assert.Equal(begin.Connection, retire.Connection);
+            Assert.Equal(begin.Run, progress.Run);
+            Assert.Equal(begin.Run, retire.Run);
+            Assert.Equal(1, progress.Sequence);
+            Assert.Equal(2, retire.Sequence);
+            Assert.Equal(begin.Run, progress.Progress!.RunId);
+            Assert.Equal(1, held.Delivered); // No writer continuation needed releasing.
+
+            async Task<PracticeMessage> ReadFrame()
+            {
+                string? json = await child!.Process.StandardError.ReadLineAsync(deadline.Token);
+                Assert.NotNull(json);
+                return System.Text.Json.JsonSerializer.Deserialize<PracticeMessage>(json)!;
+            }
+        }
+        finally
+        {
+            // Disposal cancels the original connection before releasing pending
+            // read/timer callbacks; none can revive the retired run.
+            held.ReleaseAll();
+            child?.Dispose();
+            overlay.Close();
+            Directory.Delete(directory, true);
+        }
+    });
+
+    private sealed class HeldPracticeContext : SynchronizationContext
+    {
+        private readonly Queue<(SendOrPostCallback Callback, object? State)> _pending = new();
+        private readonly SemaphoreSlim _posted = new(0);
+        private readonly SynchronizationContext _original = Current!;
+        private bool _released;
+        public int Delivered
+        {
+            get; private set;
+        }
+        public override void Post(SendOrPostCallback callback, object? state)
+        {
+            lock (_pending)
+            {
+                if (!_released)
+                {
+                    _pending.Enqueue((callback, state));
+                    _posted.Release();
+                    return;
+                }
+            }
+            _original.Post(callback, state);
+        }
+        public async Task DeliverOneAsync(CancellationToken cancellation)
+        {
+            await _posted.WaitAsync(cancellation);
+            (SendOrPostCallback Callback, object? State) item;
+            lock (_pending)
+                item = _pending.Dequeue();
+            Deliver(item);
+        }
+        public void ReleaseAll()
+        {
+            (SendOrPostCallback Callback, object? State)[] pending;
+            lock (_pending)
+            {
+                _released = true;
+                pending = _pending.ToArray();
+                _pending.Clear();
+            }
+            foreach (var item in pending)
+                Deliver(item);
+            _posted.Dispose();
+        }
+        private void Deliver((SendOrPostCallback Callback, object? State) item)
+        {
+            var previous = Current;
+            try
+            {
+                SetSynchronizationContext(this);
+                Delivered++;
+                item.Callback(item.State);
+            }
+            finally { SetSynchronizationContext(previous); }
+        }
+    }
+
     // The production host, hook and child run normally; only the controller's
     // inference/capture heartbeat is held so these controlled plans stay local.
     private sealed class ManualPracticeLoop : ISessionLoop

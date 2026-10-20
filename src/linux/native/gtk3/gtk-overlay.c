@@ -427,6 +427,36 @@ static gboolean active(void) {
     return overlay.target && !overlay.target->dead && overlay.top
         && gtk_window_is_active(GTK_WINDOW(overlay.top));
 }
+/* Bounded lifecycle metadata only: distinguish native popup dismissal from
+ * source-authority retirement without logging input, labels or identities. */
+static void trace_language_surface(const char *phase, GtkWidget *destination) {
+    static guint count;
+    if (!g_getenv("TYPELAY_TRACE") || count >= 160 || !overlay.popover
+        || !overlay.menu || !gtk_widget_get_visible(overlay.menu)) return;
+    count++;
+    gboolean source_popup = FALSE, target_popup = FALSE;
+    if (overlay.source) g_object_get(overlay.source, "popup-shown", &source_popup, NULL);
+    if (overlay.destination) g_object_get(overlay.destination, "popup-shown", &target_popup, NULL);
+    GtkWidget *focus = overlay.top ? gtk_window_get_focus(GTK_WINDOW(overlay.top)) : NULL;
+    const char *family = !focus ? "none" : overlay.target && focus == overlay.target->widget ? "source"
+        : tl_overlay_contains(focus) ? "overlay" : "other";
+    const char *next = !destination ? "none" : overlay.target && destination == overlay.target->widget ? "source"
+        : tl_overlay_contains(destination) ? "overlay" : "other";
+    g_printerr("TypeLay GTK languageSurface phase=%s atMs=%" G_GINT64_FORMAT
+        " revision=%" G_GINT64_FORMAT " active=%d visible=%d mapped=%d focus=%s next=%s"
+        " sourcePopup=%d targetPopup=%d remainingMs=%" G_GINT64_FORMAT "\n",
+        phase, tl_now(), overlay.revision, active(), gtk_widget_get_visible(overlay.popover),
+        gtk_widget_get_mapped(overlay.popover), family, next, source_popup, target_popup,
+        overlay.expires - tl_now());
+}
+static void language_popup_changed(GObject *object, GParamSpec *property, gpointer data) {
+    (void)object; (void)property; (void)data;
+    trace_language_surface("popup", NULL);
+}
+static void language_surface_unmapped(GtkWidget *widget, gpointer data) {
+    (void)widget; (void)data;
+    trace_language_surface("unmap", NULL);
+}
 static gboolean paused(void) {
     return g_strcmp0(tl_string(overlay.view, "state"), "Paused") == 0;
 }
@@ -1330,6 +1360,7 @@ static void emit_editor_focus(GtkWidget *widget) {
 }
 static void focus_changed(GtkWindow *window, GtkWidget *widget, gpointer data) {
     (void)data;
+    trace_language_surface("focus", widget);
     if (glossary_handoff) return;
     tl_overlay_control_cancel();
     if (widget != overlay.text) overlay.pending_glossary = FALSE;
@@ -1363,6 +1394,7 @@ static void focus_changed(GtkWindow *window, GtkWidget *widget, gpointer data) {
 }
 static void active_changed(GObject *object, GParamSpec *property, gpointer data) {
     (void)object; (void)property; (void)data;
+    trace_language_surface("active", NULL);
     tl_overlay_control_cancel();
     if (!active()) {
         if (glossary_handoff) glossary_handoff->failed = TRUE;
@@ -1383,6 +1415,7 @@ static gboolean expired(gpointer data) {
     return G_SOURCE_CONTINUE;
 }
 void tl_overlay_hide(void) {
+    trace_language_surface("hide", NULL);
     if (glossary_handoff) glossary_handoff->failed = TRUE;
     tl_overlay_control_cancel();
     glossary_close(FALSE, TRUE);
@@ -1657,6 +1690,7 @@ static void create(Target *target) {
     g_object_set_data(G_OBJECT(overlay.popover), "typelay-overlay", GINT_TO_POINTER(1));
     gtk_widget_set_name(overlay.popover, "typelay-overlay");
     gtk_popover_set_modal(GTK_POPOVER(overlay.popover), FALSE);
+    g_signal_connect(overlay.popover, "unmap", G_CALLBACK(language_surface_unmapped), NULL);
     gtk_popover_set_position(GTK_POPOVER(overlay.popover), GTK_POS_TOP);
     overlay.card = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_container_add(GTK_CONTAINER(overlay.popover), overlay.card);
@@ -1727,6 +1761,8 @@ static void create(Target *target) {
     gtk_widget_set_name(overlay.destination, "typelay-target-language");
     g_signal_connect(overlay.source, "changed", G_CALLBACK(language_selection_changed), NULL);
     g_signal_connect(overlay.destination, "changed", G_CALLBACK(language_selection_changed), NULL);
+    g_signal_connect(overlay.source, "notify::popup-shown", G_CALLBACK(language_popup_changed), NULL);
+    g_signal_connect(overlay.destination, "notify::popup-shown", G_CALLBACK(language_popup_changed), NULL);
     gtk_box_pack_start(GTK_BOX(overlay.menu), gtk_label_new("源语言"), FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(overlay.menu), overlay.source, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(overlay.menu), gtk_label_new("目标语言"), FALSE, FALSE, 0);
