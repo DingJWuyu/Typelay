@@ -296,7 +296,16 @@ internal sealed partial class PracticeHost : IDisposable
             {
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
                 deadline.CancelAfter(TimeSpan.FromSeconds(2));
+                bool traceFence = update.Kind == "edit-fence" && update.Editing is not null
+                    && _monitor is { OwnedEditorTraceEnabled: true };
+                // Both atMs values use WindowsInterruptClock. Completion is the
+                // original await resuming on this Host loop, including any UI
+                // continuation delay; it is not the underlying flush instant.
+                if (traceFence)
+                    TraceOwnedEditor(update.Editing!.Intent, OwnedEditorEvent.FenceSendStarted);
                 await PracticeProgressPipe.WriteAsync(child.Process.StandardInput.BaseStream, update, deadline.Token);
+                if (traceFence)
+                    TraceOwnedEditor(update.Editing!.Intent, OwnedEditorEvent.FenceSendCompleted);
             }
         }
         catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException)

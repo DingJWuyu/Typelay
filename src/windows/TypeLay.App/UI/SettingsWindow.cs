@@ -61,10 +61,16 @@ internal sealed class SettingsWindow : Window
     private TextBlock? _languageAvailability;
     private TextBlock? _returnShortcutHint;
     private TextBlock? _shortcutStatus;
+    private Button? _shortcutRetryButton;
+    private ShortcutRegistrationFailure? _shortcutFailure;
     private Window? _closeDialog;
     private bool _updatingShortcuts, _emergencyShutdown;
     private bool _startupPresentationAllowed = true;
     public Func<string>? ShortcutStatus
+    {
+        get; set;
+    }
+    public ShortcutRegistrationRecovery? ShortcutRecovery
     {
         get; set;
     }
@@ -103,7 +109,17 @@ internal sealed class SettingsWindow : Window
             return;
         }
         if (_page == "shortcuts" && _renderedPage == _page && _shortcutStatus is not null)
+        {
             _shortcutStatus.Text = ShortcutStatus?.Invoke() ?? "仅在启用 TypeLay 的按需模式下生效。自动模式不注册这两个快捷键。";
+            _shortcutFailure = ShortcutRecovery?.Read();
+            if (_shortcutRetryButton is not null)
+            {
+                _shortcutRetryButton.Visibility = _shortcutFailure is not null ? Visibility.Visible : Visibility.Collapsed;
+                _shortcutRetryButton.IsEnabled = _shortcutFailure?.CanRetry == true;
+                _shortcutRetryButton.ToolTip = _shortcutFailure is { } failure
+                    ? $"已保存：唤醒 {failure.Wake}；直接替换 {failure.Direct}。未保存的修改不会应用。" : null;
+            }
+        }
     }
     public void RefreshPracticeProgress()
     {
@@ -863,6 +879,16 @@ internal sealed class SettingsWindow : Window
         Row("唤醒翻译 UI", "为当前输入框开启持续翻译；离开后结束。", wake);
         Row("直接翻译并替换", "一次性操作，绑定原输入框，不显示预览、不自动发送。", direct);
         _shortcutStatus = Note("按需快捷键状态", "");
+        _shortcutRetryButton = UiTheme.Button("重试启用快捷键", () =>
+        {
+            if (_shortcutFailure is { } failure)
+                ShortcutRecovery?.Retry(failure.Generation);
+            RefreshShortcutStatus();
+        });
+        AutomationProperties.SetAutomationId(_shortcutRetryButton, "RetrySavedShortcuts");
+        _shortcutRetryButton.HorizontalAlignment = HorizontalAlignment.Left;
+        _shortcutRetryButton.Margin = new(0, 0, 0, 14);
+        _content.Children.Add(_shortcutRetryButton);
         Note("直接替换的当前范围", "Windows x64 中通过运行时校验的原生 Edit 控件支持后台写回。翻译时可以切换焦点，结果仍只写回原输入框；冲突、输入法状态不明或不兼容控件会安全拒写。不会抢回焦点，也不使用实验性 Tab 写回作为后备。结果与失败原因可在托盘快速面板查看。");
         Note("组合键格式", "唤醒与直接替换支持 Ctrl / Alt（可加 Shift）与字母、数字或 F1-F24，当前不支持 F12。组合键被其他应用占用时，设置仍保存，但对应命令不会启用。");
         Rule();

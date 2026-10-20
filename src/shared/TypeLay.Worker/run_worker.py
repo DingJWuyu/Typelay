@@ -70,7 +70,7 @@ def serve(engine, self_check):
             operation = request.get("op")
             if operation == "hello":
                 response = {"id": request_id, "status": "ready", "directions": engine.directions}
-                if engine.schema == 3:
+                if engine.packages:
                     response["packages"] = engine.packages
                 if engine.styled_translation_version is not None:
                     response["styledTranslationVersion"] = engine.styled_translation_version

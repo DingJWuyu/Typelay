@@ -69,7 +69,9 @@ internal static class Program
             var overlay = new OverlayWindow(automationTest);
             var support = new WindowsApplicationSupport();
             practiceHost = new PracticeHost();
-            session = WindowsRuntime.CreateSession(settings, model, overlay, automationTest, support: support, practice: practiceHost);
+            ShortcutRegistrationRecovery? shortcutRecovery = null;
+            session = WindowsRuntime.CreateSession(settings, model, overlay, automationTest, support: support, practice: practiceHost,
+                bindShortcutRecovery: recovery => shortcutRecovery = recovery);
             practiceHost.Bind(session);
             var window = new SettingsWindow(settings, model,
                 () => practiceHost.Open(Path.Combine(AppPaths.Data, "settings.json")), support, controller: session)
@@ -78,6 +80,7 @@ internal static class Program
                 PrepareSettingsChange = session.PrepareSettingsChangeAsync,
                 PrepareModelChange = session.PrepareModelChangeAsync,
                 ShortcutStatus = () => session.ShortcutStatus,
+                ShortcutRecovery = shortcutRecovery,
                 PracticeProgress = () => session.PracticeProgress,
                 AutomaticPracticeProgress = () => session.AutomaticPracticeProgress
             };

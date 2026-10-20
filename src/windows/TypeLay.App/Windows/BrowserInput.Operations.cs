@@ -5,6 +5,8 @@ using TypeLay.Windows;
 
 namespace TypeLay.App;
 
+internal sealed record ShortcutRegistrationFailure(Guid Generation, string Wake, string Direct, bool CanRetry);
+
 // Coordinates only outstanding RPCs. Field approval, identity, and the original
 // authority deadline remain BrowserInput's responsibility. No completed round
 // is a cache, and a body reply is never a prerequisite for the next round.
@@ -173,10 +175,36 @@ internal sealed partial class BrowserInput
     private bool _commandsEnabled, _ownerRefreshRequested = true, _registrationDeferred, _restorationAttempted;
     private string[]? _commandExcluded;
     private BrowserCommandKey? _wake, _direct;
+    internal ShortcutRegistrationFailure? CommandRegistrationFailure => _commandsEnabled && _sessionEnabled
+        && _hook.FailedCommandConfiguration is { } configuration && !OwnsForeground
+        ? new(_hook.CommandGeneration, configuration.Wake, configuration.Direct, CommandRegistrationAllowed(WindowsInterruptClock.NowMs)) : null;
+    internal void RetryCommandRegistration(Guid expectedGeneration)
+    {
+        // Recheck the presented saved configuration and current failure on the
+        // UI owner. A stale button cannot register a newer pair or queue work.
+        if (CommandRegistrationFailure is not { CanRetry: true } failure || failure.Generation != expectedGeneration)
+            return;
+        RestoreCommandRegistration(WindowsInterruptClock.NowMs, preserveNativeCommands: true);
+    }
+    private bool CommandOwnersRetired(long now) => _commandOwner is null
+        && _retiredCommandOwners.All(owner => owner.RetirementAcknowledged || now > owner.MaxIssuedExpiry);
+    private bool CommandRegistrationAllowed(long now) => CommandOwnersRetired(now) && _hook.CommandsReleased;
+    private void RestoreCommandRegistration(long now, bool preserveNativeCommands = false)
+    {
+        if (!CommandRegistrationAllowed(now))
+            return;
+        _restorationAttempted = true;
+        bool restored = _hook.RestoreCommandRegistration(preserveNativeCommands);
+        if (restored)
+            _registrationDeferred = false;
+        TraceOwner(OwnerStage.Restore, restored ? OwnerReason.Ready : OwnerReason.RestoreFailed, now: now);
+    }
     internal string? CommandStatus
     {
         get
         {
+            if (CommandRegistrationFailure is { } failure)
+                return _hook.ShortcutStatus + (failure.CanRetry ? "" : " 请释放全部按键并等待快捷键交接完成，再重试。");
             if (!(_registrationDeferred || OwnsForeground))
             {
                 TraceOwner(OwnerStage.Status, OwnerReason.Native);
@@ -301,8 +329,7 @@ internal sealed partial class BrowserInput
                 PollCommandPolicy(activeOwner, now);
             return;
         }
-        bool safelyRetired = _retiredCommandOwners.All(owner => owner.RetirementAcknowledged || now > owner.MaxIssuedExpiry);
-        if (!safelyRetired)
+        if (!CommandOwnersRetired(now))
         {
             TraceOwner(OwnerStage.Candidate, OwnerReason.RetirementPending, now: now);
             return;
@@ -338,13 +365,7 @@ internal sealed partial class BrowserInput
                 : OwnerReason.DocumentMissing;
         }
         if (_registrationDeferred && !_restorationAttempted)
-        {
-            _restorationAttempted = true;
-            bool restored = _hook.RestoreCommandRegistration();
-            if (restored)
-                _registrationDeferred = false;
-            TraceOwner(OwnerStage.Restore, restored ? OwnerReason.Ready : OwnerReason.RestoreFailed, now: now);
-        }
+            RestoreCommandRegistration(now);
         TraceOwner(OwnerStage.Candidate, candidateReason, now: now, released: released);
     }
     private async Task PrepareCommandOwnerAsync(CommandOwner owner)

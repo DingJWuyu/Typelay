@@ -17,6 +17,12 @@ internal sealed class OnDemandHotkeys(nint window,
 
     public bool Registered => _wakeRegistered && _directRegistered;
     public bool HasRegistration => _wakeRegistered || _directRegistered;
+    public bool RegistrationFailed
+    {
+        get; private set;
+    }
+    public (string Wake, string Direct)? FailedConfiguration => RegistrationFailed && _configuration is { Enabled: true } configuration
+        ? (configuration.Wake, configuration.Direct) : null;
 
     public void Configure(bool enabled, string wake, string direct, bool registerNow = true)
     {
@@ -25,6 +31,9 @@ internal sealed class OnDemandHotkeys(nint window,
             return;
         if (!Suspend())
         {
+            // The old tuple is no longer the saved configuration. Retain only
+            // actual reservations for release, never restore its missing keys.
+            _configuration = null;
             Bindings = [];
             Status = "快捷键注销未确认，当前不会执行按需命令。";
             return;
@@ -45,6 +54,7 @@ internal sealed class OnDemandHotkeys(nint window,
     // release remains owned and must never be represented as a successful handoff.
     public bool Suspend()
     {
+        RegistrationFailed = false;
         if (_wakeRegistered && (unregister ?? Native.UnregisterHotKey)(window, WakeId))
             _wakeRegistered = false;
         if (_directRegistered && (unregister ?? Native.UnregisterHotKey)(window, DirectId))
@@ -57,6 +67,7 @@ internal sealed class OnDemandHotkeys(nint window,
 
     public bool Resume(bool restoring = true)
     {
+        RegistrationFailed = false;
         if (_configuration is not { Enabled: true } configuration)
         {
             Bindings = [];
@@ -74,8 +85,8 @@ internal sealed class OnDemandHotkeys(nint window,
             AddBinding("direct", configuration.Direct, bindings);
         Bindings = bindings.ToArray();
         Status = Registered ? "两个快捷键已启用；操作不会切换工作模式。"
-            : (restoring ? "快捷键恢复未确认：" : "设置已保存，但") + string.Join("、", failures)
-                + "未能注册，可能已被系统或其他应用占用。请修改组合键。";
+            : (restoring ? "快捷键当前不可用：" : "设置已保存，但") + string.Join("、", failures)
+                + "未能注册，可能被系统或其他应用占用。可重试启用快捷键或修改组合键。";
         return Registered;
     }
     private static void AddBinding(string action, string text, List<RegisteredShortcut> bindings)
@@ -91,7 +102,7 @@ internal sealed class OnDemandHotkeys(nint window,
     {
         if (!TranslationShortcut.TryParse(text, out var chord))
         {
-            failures.Add(label);
+            failures.Add(label + "（" + text + "）");
             return false;
         }
         uint modifiers = (chord!.Modifiers.HasFlag(ShortcutModifiers.Alt) ? 1u : 0)
@@ -100,7 +111,8 @@ internal sealed class OnDemandHotkeys(nint window,
         uint key = Key(chord);
         if (!(register ?? Native.RegisterHotKey)(window, id, modifiers | 0x4000, key))
         {
-            failures.Add(label);
+            RegistrationFailed = true;
+            failures.Add(label + "（" + text + "）");
             return false;
         }
         bindings.Add(new(action, key, chord.Modifiers));

@@ -2,12 +2,16 @@ using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
 using System.Runtime.ExceptionServices;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Automation;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Threading;
 using TypeLay.Core;
 using System.Windows.Media;
@@ -148,7 +152,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
     [Theory]
     [InlineData("zh_en", false)]
     [InlineData("en_zh", true)]
-    public Task InstalledDirectionStaysLockedWhileRepairAndCompletionKeepTheirDistinctScopes(string installed, bool complete) => desktop.RunAsync(async () =>
+    public Task InstalledDirectionStaysLockedWhilePackageRepairAndCompletionKeepTheirDistinctScopes(string installed, bool complete) => desktop.RunAsync(async () =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-direction-ui-" + Guid.NewGuid().ToString("N"));
         SettingsWindow? window = null;
@@ -172,22 +176,32 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
                 Assert.False(choice.IsEnabled);
                 Assert.Equal(Equals(choice.Tag, installed), ((string)choice.Content).Contains("已安装"));
             });
-            Assert.True(Named<Button>(window, "PreparationCompleteDirectionsAction").IsEnabled);
-            Assert.True(Named<Button>(window, "PreparationRepairAction").IsEnabled);
-            Click(window, complete ? "补齐另一方向" : "修复本地翻译组件…");
+            string other = installed == "zh_en" ? "en_zh" : "zh_en";
+            string requested = complete ? other : installed;
+            string packageId = "argos-" + requested.Replace('_', '-');
+            string inventory = File.ReadAllText(Path.Combine(directory, "models", "installed.json"));
+            Assert.True(PackageAction(window, "argos-" + other.Replace('_', '-'), ModelPackageOperation.Install).IsEnabled);
+            Assert.True(PackageAction(window, "argos-" + installed.Replace('_', '-'), ModelPackageOperation.Repair).IsEnabled);
+            await ConfirmPackageAction(window, PackageAction(window, packageId,
+                complete ? ModelPackageOperation.Install : ModelPackageOperation.Repair));
             await attempts[0].Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            Assert.All(directions, choice => Assert.Equal(complete || Equals(choice.Tag, installed), choice.IsChecked == true));
+            AssertPackageDownloadScope(directory, attempts[0], installed, requested, complete);
+            // A pending download is not an installed direction, including after pause.
+            Assert.All(directions, choice => Assert.Equal(Equals(choice.Tag, installed), choice.IsChecked == true));
             Click(window, "暂停下载");
             await Until(() => Buttons(window).Any(button => Equals(button.Content, SetupFailurePresentation.ResumeLabel)));
             window.ShowPage("apps");
             directions = DirectionChoices(window);
             Assert.All(directions, choice =>
             {
-                Assert.Equal(complete || Equals(choice.Tag, installed), choice.IsChecked == true);
+                Assert.Equal(Equals(choice.Tag, installed), choice.IsChecked == true);
                 Assert.False(choice.IsEnabled);
             });
             Click(window, SetupFailurePresentation.ResumeLabel);
             await attempts[1].Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            AssertPackageDownloadScope(directory, attempts[1], installed, requested, complete);
+            Assert.Equal(inventory, File.ReadAllText(Path.Combine(directory, "models", "installed.json")));
+            Assert.False(File.Exists(Path.Combine(directory, "components.json")));
             Assert.True(model.Ready);
             Assert.Equal(new[] { installed }, model.AvailableDirections);
             Assert.False(settings.Value.OnboardingComplete);
@@ -196,7 +210,7 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
     });
 
     [Fact]
-    public Task UnreadableInstallationOffersExplicitFullRepairAndRetainsItAfterPause() => desktop.RunAsync(async () =>
+    public Task UnreadableInstallationDisablesMutationsAndPreservesTheInventory() => desktop.RunAsync(async () =>
     {
         string directory = Path.Combine(Path.GetTempPath(), "typelay-repair-ui-" + Guid.NewGuid().ToString("N"));
         SettingsWindow? window = null;
@@ -204,34 +218,35 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
         {
             var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
             Directory.CreateDirectory(Path.Combine(directory, "models"));
-            File.WriteAllText(Path.Combine(directory, "models", "installed.json"), "{");
+            string inventory = Path.Combine(directory, "models", "installed.json");
+            File.WriteAllText(inventory, "{");
             using var model = Model(directory);
-            var attempts = new List<WaitingHttp>();
-            window = new SettingsWindow(settings, model, () => { }, createInstaller: () =>
-            {
-                var http = new WaitingHttp();
-                attempts.Add(http);
-                return new ModelInstaller(directory, Path.Combine(directory, "worker.py"), http);
-            }, installations: Installations(directory));
+            int attempts = 0;
+            window = new SettingsWindow(settings, model, () => Assert.Fail("Unknown installation must not start practice."),
+                createInstaller: () =>
+                {
+                    attempts++;
+                    throw new InvalidOperationException("Unknown installation must not be changed.");
+                }, installations: Installations(directory));
             window.ReportSetupFailure(new(SetupFailureCategory.Integrity, ModelSetupStage.Activate));
-            window.ShowPage("translation");
-            var directions = DirectionChoices(window);
-            Assert.All(directions, choice => { Assert.False(choice.IsChecked); Assert.False(choice.IsEnabled); });
-            Assert.Equal("请完整修复中英双向组件。", Named<TextBlock>(window, "PreparationGuidance").Text);
-            Click(window, "完整修复本地翻译…");
-            await attempts[0].Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            Assert.All(directions, choice => Assert.True(choice.IsChecked));
-            Click(window, "暂停下载");
-            await Until(() => Buttons(window).Any(button => Equals(button.Content, SetupFailurePresentation.ResumeLabel)));
-            window.RequestClose();
-            window.ShowPage("translation");
-            directions = DirectionChoices(window);
-            Assert.All(directions, choice => { Assert.True(choice.IsChecked); Assert.False(choice.IsEnabled); });
-            Click(window, SetupFailurePresentation.ResumeLabel);
-            await attempts[1].Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            foreach (string page in new[] { "translation", "apps" })
+            {
+                window.ShowPage(page);
+                var directions = DirectionChoices(window);
+                Assert.All(directions, choice => { Assert.False(choice.IsChecked); Assert.False(choice.IsEnabled); });
+                Assert.Equal("未更改模型。请重新打开 TypeLay 检查安装记录。", Named<TextBlock>(window, "PreparationGuidance").Text);
+                var primary = Named<Button>(window, "PreparationPrimaryAction");
+                Assert.False(primary.IsEnabled);
+                Assert.DoesNotContain(Buttons(window), button => AutomationProperties.GetAutomationId(button).StartsWith("ModelPackage_", StringComparison.Ordinal));
+                primary.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                window.RequestClose();
+            }
+            Assert.Equal(0, attempts);
             Assert.False(model.Ready);
             Assert.False(settings.Value.OnboardingComplete);
-            Assert.Equal("{", File.ReadAllText(Path.Combine(directory, "models", "installed.json")));
+            Assert.Equal("{", File.ReadAllText(inventory));
+            Assert.False(File.Exists(Path.Combine(directory, "components.json")));
+            Assert.False(Directory.Exists(Path.Combine(directory, "components")));
         }
         finally { await ClosePreparation(window, directory); }
     });
@@ -263,23 +278,21 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             Assert.False(model.Ready);
             var primary = Named<Button>(window, "PreparationPrimaryAction");
             Assert.DoesNotContain("已就绪", Named<TextBlock>(window, "PreparationStatus").Text);
-            Assert.False(Named<Button>(window, "PreparationNextStepAction").IsEnabled);
-            Assert.True(primary.Focus());
+            Assert.Equal("试一试", primary.Content);
+            Assert.False(primary.IsEnabled);
             await model.StartAsync().WaitAsync(TimeSpan.FromSeconds(5));
             Assert.True(model.Ready);
+            Assert.True(primary.IsEnabled);
+            Assert.True(primary.Focus());
             Assert.Same(primary, Keyboard.FocusedElement);
             foreach (string theme in new[] { "light", "dark" })
             {
                 UiTheme.Apply(theme);
                 window.UpdateLayout();
                 Assert.Same(primary, Named<Button>(window, "PreparationPrimaryAction"));
+                Assert.Same(primary, Keyboard.FocusedElement);
                 Assert.Equal("试一试", primary.Content);
                 AssertPrimary(window, primary);
-                var repair = Named<Button>(window, "PreparationRepairAction");
-                Assert.Equal("修复本地翻译组件…", repair.Content);
-                Assert.NotEqual(Assert.IsType<SolidColorBrush>(primary.Background).Color,
-                    Assert.IsType<SolidColorBrush>(repair.Background).Color);
-                AssertWithinViewport(window, repair);
                 AssertWithinViewport(window, primary);
                 AssertWithinViewport(window, Named<TextBlock>(window, "PreparationGuidance"));
                 Assert.Contains(Descendants(window).OfType<TextBlock>(), text => text.Text == ApplicationSupportPresentation.ReasonText(ApplicationSupportReason.NoFocusedField));
@@ -321,7 +334,16 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             Assert.False(settings.Value.OnboardingComplete);
             window.ShowPage("translation");
             window.UpdateLayout();
-            Assert.True(Named<Button>(window, "PreparationRepairAction").IsEnabled);
+            DirectionChoices(window);
+            var repair = PackageAction(window, "argos-zh-en", ModelPackageOperation.Repair);
+            Assert.True(repair.IsEnabled);
+            Assert.Equal("修复…", repair.Content);
+            Assert.NotEqual(Assert.IsType<SolidColorBrush>(Named<Button>(window, "PreparationPrimaryAction").Background).Color,
+                Assert.IsType<SolidColorBrush>(repair.Background).Color);
+            repair.BringIntoView();
+            await window.Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ContextIdle);
+            window.UpdateLayout();
+            AssertWithinViewport(window, repair);
         }
         finally { await ClosePreparation(window, directory); }
     });
@@ -339,7 +361,8 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
                 createInstaller: () => new ModelInstaller(directory, Path.Combine(directory, "worker.py"),
                     new WaitingHttp(), downloadTimeout: TimeSpan.FromMilliseconds(50)), installations: Installations(directory));
             window.ShowPage("apps");
-            Click(window, "重新准备");
+            DirectionChoices(window);
+            await ConfirmPackageAction(window, PackageAction(window, "argos-zh-en", ModelPackageOperation.Repair));
             await Until(() => Descendants(window).OfType<Expander>().Any(expander => Equals(expander.Header, "安装诊断")));
             await model.StartAsync().WaitAsync(TimeSpan.FromSeconds(5));
             Assert.True(model.Ready);
@@ -384,18 +407,50 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
     });
 
     // A controlled worker protocol reply drives the real ModelClient and real WPF
-    // controls. It verifies presentation only, not model inference or installation.
+    // controls. Controlled inventoried bytes also exercise package copy/download
+    // scope; they do not demonstrate real model loading or inference.
     private static ModelClient ProtocolModel(string directory, string[]? directions = null)
     {
-        Directory.CreateDirectory(Path.Combine(directory, "models"));
-        string python = Path.Combine(directory, "python.exe");
+        string[] selected = directions ?? ["zh_en", "en_zh"];
+        string python = Path.Combine(directory, "runtime", "python", "tools", "python.exe");
         string worker = Path.Combine(directory, "worker.py");
+        Directory.CreateDirectory(Path.GetDirectoryName(python)!);
         File.WriteAllText(python, "controlled executable marker");
+        File.WriteAllText(Path.Combine(directory, "runtime-inventory.json"), JsonSerializer.Serialize(new
+        {
+            schema = 1,
+            files = new[] { new { path = "python/tools/python.exe", sha256 = Hash(python) } }
+        }));
+        var files = new List<object>();
+        foreach (string direction in selected)
+        {
+            string[] pair = direction.Split('_');
+            var contents = new Dictionary<string, string>
+            {
+                ["metadata.json"] = JsonSerializer.Serialize(new { from_code = pair[0], to_code = pair[1], package_version = "1.9" }),
+                ["sentencepiece.model"] = "controlled tokenizer",
+                ["model/model.bin"] = "controlled model",
+                ["model/config.json"] = "{}",
+                ["model/shared_vocabulary.json"] = "[]"
+            };
+            foreach (var (relative, content) in contents)
+            {
+                string path = Path.Combine(directory, "models", direction, relative.Replace('/', Path.DirectorySeparatorChar));
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllText(path, content);
+                files.Add(new
+                {
+                    path = direction + "/" + relative,
+                    sha256 = Hash(path)
+                });
+            }
+        }
         File.WriteAllText(Path.Combine(directory, "models", "installed.json"),
             JsonSerializer.Serialize(new
             {
                 schema = 2,
-                directions = directions ?? ["zh_en", "en_zh"]
+                directions = selected,
+                files
             }));
         File.WriteAllText(worker, """
             import json, struct, sys
@@ -423,6 +478,68 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
             return new ChildProcess(start);
         });
     }
+
+    private static string Hash(string path) => Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant();
+
+    private static Button PackageAction(Window window, string package, ModelPackageOperation operation) =>
+        Buttons(window).Single(button => AutomationProperties.GetAutomationId(button) == $"ModelPackage_{package}_{operation}");
+
+    private static void AssertPackageDownloadScope(string directory, WaitingHttp http, string installed, string requested, bool complete)
+    {
+        var package = ModelCatalog.Packages.Packages.Single(item => item.Id == "argos-" + requested.Replace('_', '-'));
+        Assert.Equal(new Uri(package.Url), http.RequestedUri);
+        string staged = Assert.Single(Directory.GetDirectories(Path.Combine(directory, "components")));
+        string retained = Path.Combine(staged, "models", "packages", "argos-" + installed.Replace('_', '-'), "1.9");
+        if (complete)
+            Assert.Equal("controlled model", File.ReadAllText(Path.Combine(retained, "model", "model.bin")));
+        else
+            Assert.False(Directory.Exists(retained));
+    }
+
+    private static async Task ConfirmPackageAction(Window window, Button button)
+    {
+        Assert.True(button.IsEnabled);
+        nint owner = new WindowInteropHelper(window).Handle;
+        // Close only this test window's native confirmation. The real modal and
+        // real package action run unchanged; no private WPF state is inspected.
+        var confirm = Task.Run(async () =>
+        {
+            var elapsed = Stopwatch.StartNew();
+            while (elapsed.Elapsed < TimeSpan.FromSeconds(5))
+            {
+                nint dialog = GetWindow(owner, 6); // GW_ENABLEDPOPUP
+                if (dialog != owner && dialog != 0 && GetWindow(dialog, 4) == owner) // GW_OWNER
+                {
+                    var className = new StringBuilder(64);
+                    GetClassName(dialog, className, className.Capacity);
+                    if (className.ToString() == "#32770")
+                    {
+                        var title = new StringBuilder(128);
+                        GetWindowText(dialog, title, title.Capacity);
+                        bool expected = title.ToString() == "本地模型";
+                        if (!PostMessage(dialog, 0x0111, expected ? 1 : 2, 0)) // WM_COMMAND: IDOK/IDCANCEL
+                            throw new InvalidOperationException("Could not close the test-owned model confirmation.");
+                        Assert.True(expected, "The package action opened an unexpected confirmation.");
+                        return;
+                    }
+                }
+                await Task.Delay(20);
+            }
+            nint remaining = GetWindow(owner, 6);
+            if (remaining != owner && remaining != 0 && GetWindow(remaining, 4) == owner)
+                PostMessage(remaining, 0x0010, 0, 0); // WM_CLOSE only our test-owned popup.
+            Assert.Fail("The package action did not open its model confirmation.");
+        });
+        button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await confirm;
+    }
+
+    [DllImport("user32.dll")] private static extern nint GetWindow(nint window, uint command);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(nint window, StringBuilder value, int capacity);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(nint window, StringBuilder value, int capacity);
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostMessage(nint window, uint message, nint wParam, nint lParam);
 
     private static ModelInstallationStore Installations(string directory) => new(directory, Path.Combine(directory, "worker.py"));
 
@@ -464,9 +581,14 @@ public sealed class SetupRenderingTests(WpfDesktopFixture desktop)
 
     private sealed class WaitingHttp : HttpMessageHandler
     {
+        public Uri? RequestedUri
+        {
+            get; private set;
+        }
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            RequestedUri = request.RequestUri;
             Started.TrySetResult();
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             throw new InvalidOperationException("The transport must be cancelled.");

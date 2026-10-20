@@ -249,16 +249,26 @@
     const remaining = Math.min(current.expiresAtPerformanceMs - monoNow(), current.expiresAtWallMs - Date.now());
     commandOwnerTimer = setTimeout(() => { if (commandOwner === current) retireCommandOwner(); }, Math.max(0, Math.ceil(remaining)));
   }
-  function commandPolicyProof(field, basis) {
+  function commandPolicyProof(field, basis, diagnostic = null) {
     drainMutations();
-    return ownerCheck(!!field, "FieldMissing") && ownerCheck(!field.richText, "RichField")
-      && ownerCheck(!field.dead, "FieldDead") && ownerCheck(!field.quarantined, "FieldQuarantined")
-      && ownerCheck(focused(field), "NotFocused") && ownerCheck(basis?.target === field.id, "TargetMismatch")
-      && ownerCheck(approved(field, basis), "Metadata") && ownerCheck(!!issued(field, basis), "AuthorityMissing")
-      && ownerCheck(Number.isSafeInteger(basis.observedAtMs), "PolicyTimeInvalid")
-      && ownerCheck(basis.observedAtMs >= 0, "PolicyTimeInvalid")
-      && ownerCheck(Number.isFinite(now(true)), "ClockUnavailable")
-      && ownerCheck(now(true) <= basis.observedAtMs + 150, "PolicyExpired");
+    // Project only the first original short-circuit failure into the existing
+    // per-key diagnostic; no state is reread and the owner proof is unchanged.
+    const check = (value, reason) => commandCheck(ownerCheck(value, reason), diagnostic, reason.startsWith("Policy") ? reason : "Policy" + reason);
+    const checkIssued = () => {
+      const value = !!issued(field, basis);
+      const reason = {authorityMissing: "PolicyAuthorityMissing", authorityChanged: "PolicyAuthorityChanged",
+        authorityExpired: "PolicyAuthorityExpired", authorityClock: "PolicyAuthorityClock"}[lastClockReason]
+        || "PolicyAuthorityMissing";
+      return commandCheck(ownerCheck(value, "AuthorityMissing"), diagnostic, reason);
+    };
+    return check(!!field, "FieldMissing") && check(!field.richText, "RichField")
+      && check(!field.dead, "FieldDead") && check(!field.quarantined, "FieldQuarantined")
+      && check(focused(field), "NotFocused") && check(basis?.target === field.id, "TargetMismatch")
+      && check(approved(field, basis), "Metadata") && checkIssued()
+      && check(Number.isSafeInteger(basis.observedAtMs), "PolicyTimeInvalid")
+      && check(basis.observedAtMs >= 0, "PolicyTimeInvalid")
+      && check(Number.isFinite(now(true)), "ClockUnavailable")
+      && check(now(true) <= basis.observedAtMs + 150, "PolicyExpired");
   }
   function storeCommandPolicy(field, basis) {
     commandPolicy = {field, authority: basis, expiresAtMs: basis.observedAtMs + 150};
@@ -315,14 +325,16 @@
     if (!field || field.richText || !focused(field) || field.dead || field.quarantined) return reject("SourceChanged");
     if (event.isComposing || event.keyCode === 229) field.ime = "Composing";
     if (field.ime !== "Clear") return reject("ImeUnclear");
-    if (!policy || policy.field !== field || !commandPolicyProof(field, policy.authority)) return reject("PolicyUnavailable");
+    if (!commandCheck(!!policy, diagnostic, "PolicyMissing")
+      || !commandCheck(policy.field === field, diagnostic, "PolicyFieldMismatch")
+      || !commandPolicyProof(field, policy.authority, diagnostic)) return reject("PolicyUnavailable");
     const snapshot = capture(field, policy.authority, true);
     const captureMono = monoNow(), captureUpperMs = Math.ceil(frozenClock.upper + captureMono);
     if (!commandCheck(!!snapshot, diagnostic, "CaptureUnavailable")
       || !commandCheck(commandPolicy === policy, diagnostic, "PolicyChanged")
       || !commandCheck(commandOwner === current, diagnostic, "OwnerChanged")
       || !commandCheck(commandOwnerCurrent(), diagnostic, "OwnerUnavailable")
-      || !commandCheck(commandPolicyProof(field, policy.authority), diagnostic, "PolicyUnavailable")
+      || !commandCheck(commandPolicyProof(field, policy.authority, diagnostic), diagnostic, "PolicyUnavailable")
       || !commandCheck(!(triggerMono > captureMono), diagnostic, "CaptureBeforeTrigger")
       || !commandCheck(Number.isSafeInteger(captureUpperMs), diagnostic, "CaptureTimeInvalid")
       || !commandCheck(captureUpperMs <= current.expiresAtMs, diagnostic, "OwnerExpiredAtCapture")

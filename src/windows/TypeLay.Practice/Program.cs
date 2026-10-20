@@ -28,7 +28,7 @@ internal static partial class Program
     private static nint _window, _instance, _bodyFont, _titleFont, _backgroundBrush;
     private static Control? _title, _summary, _capability, _notice, _inputLabel, _edit, _preview, _replace, _progressNotice, _restart, _close;
     private static OnDemandPracticeProgress? _progress;
-    private static readonly ConcurrentQueue<PracticeMessage> PendingControls = new();
+    private static readonly ConcurrentQueue<(PracticeMessage Message, long? ReadCompletedAtMs)> PendingControls = new();
     private static int _pendingCount, _disconnected;
     private static OwnedPracticeField? _owned;
     private static Guid _connection, _run;
@@ -75,7 +75,8 @@ internal static partial class Program
         None, Overlay, OverlayThread, Other
     }
     private sealed record EditorTrace(long AtMs, int Order, Guid Intent, long SourceSequence,
-        EditorHandoff State, EditorEvent Event, EditorReason Reason, EditorPeer Peer, bool? Active);
+        EditorHandoff State, EditorEvent Event, EditorReason Reason, EditorPeer Peer, bool? Active,
+        long? ReadCompletedAtMs, long? GuiDequeuedAtMs);
     private enum EditorHandoff
     {
         None, Armed, RootLeft, FieldLeft, Left, Invalid
@@ -390,9 +391,14 @@ internal static partial class Program
             while (true)
             {
                 var message = await PracticeProgressPipe.ReadAsync(input, CancellationToken.None);
+                // The original reader has returned a complete, parsed frame.
+                // Only numeric timing crosses this existing bounded queue;
+                // EditorTraces and all trace projection remain GUI-owned.
+                long? readCompletedAtMs = message.Kind == "edit-fence" && !string.IsNullOrWhiteSpace(EditorTracePath)
+                    ? WindowsInterruptClock.NowMs : null;
                 if (Interlocked.Increment(ref _pendingCount) > 16)
                     throw new InvalidDataException("practice-control-overflow");
-                PendingControls.Enqueue(message);
+                PendingControls.Enqueue((message, readCompletedAtMs));
                 if (!Native.PostMessageW(_window, ProgressMessage, 0, 0))
                     throw new IOException("practice-control-wake");
             }
@@ -438,8 +444,10 @@ internal static partial class Program
             // The reader bounds queued controls to 16. Snapshot the bound so a
             // continuing producer cannot starve input or closing indefinitely.
             int count = Math.Min(16, Volatile.Read(ref _pendingCount));
-            for (int index = 0; index < count && PendingControls.TryDequeue(out var message); index++)
+            for (int index = 0; index < count && PendingControls.TryDequeue(out var pending); index++)
             {
+                long? guiDequeuedAtMs = pending.ReadCompletedAtMs is not null ? WindowsInterruptClock.NowMs : null;
+                var message = pending.Message;
                 Interlocked.Decrement(ref _pendingCount);
                 if (Volatile.Read(ref _disconnected) != 0 || message.Connection != _connection)
                     throw new InvalidDataException("practice-control-connection");
@@ -511,7 +519,8 @@ internal static partial class Program
                             _automaticProgress = message.AutomaticProgress;
                             break;
                         case "edit-fence" when _automatic:
-                            FenceEditor(message.Editing ?? throw new InvalidDataException("practice-editor-missing"));
+                            FenceEditor(message.Editing ?? throw new InvalidDataException("practice-editor-missing"),
+                                pending.ReadCompletedAtMs, guiDequeuedAtMs);
                             break;
                         case "edit-cancel" when _automatic:
                             if (_editorFence is null || message.Editing != _editorFence)
@@ -630,7 +639,7 @@ internal static partial class Program
                 Reply("witness-consumed", new(WitnessSequence: _lastWitnessAcknowledged));
             }
         }
-        catch (Exception error) when (error is IOException or InvalidOperationException or OperationCanceledException
+        catch (Exception error) when (error is IOException or InvalidDataException or InvalidOperationException or OperationCanceledException
             or ArgumentException or OverflowException)
         {
             ResetCompletion();
@@ -663,7 +672,7 @@ internal static partial class Program
     private static bool SourceFocused() => _edit is not null && Native.GetFocus() == _edit.Handle
         && Native.GetForegroundWindow() == _window;
 
-    private static void FenceEditor(OwnedEditorControl control)
+    private static void FenceEditor(OwnedEditorControl control, long? readCompletedAtMs, long? guiDequeuedAtMs)
     {
         // This runs at the same outer GUI boundary as InstallPlan, never on the
         // pipe reader. Fence only the old generation; keep this field's cookie,
@@ -673,13 +682,15 @@ internal static partial class Program
             || !SourceFocused() || _closePending || _restartPending
             || WindowsInterruptClock.NowMs >= control.ExpiresAtMs)
         {
-            QueueEditorTrace(control.Intent, EditorEvent.FenceRejected, EditorReason.Fence);
+            QueueEditorTrace(control.Intent, EditorEvent.FenceRejected, EditorReason.Fence,
+                readCompletedAtMs: readCompletedAtMs, guiDequeuedAtMs: guiDequeuedAtMs);
             throw new InvalidDataException("practice-editor-fence");
         }
         uint overlayThread = Native.GetWindowThreadProcessId((nint)control.OverlayHwnd, out uint overlayProcess);
         if (control.OverlayHwnd == 0 || overlayThread == 0 || overlayProcess == 0)
         {
-            QueueEditorTrace(control.Intent, EditorEvent.FenceRejected, EditorReason.Fence);
+            QueueEditorTrace(control.Intent, EditorEvent.FenceRejected, EditorReason.Fence,
+                readCompletedAtMs: readCompletedAtMs, guiDequeuedAtMs: guiDequeuedAtMs);
             throw new InvalidDataException("practice-editor-fence");
         }
         ClearPrefixProof();
@@ -698,7 +709,8 @@ internal static partial class Program
             {
                 SourceEventSequence = checked(++_editorEventSequence)
             }));
-        QueueEditorTrace(control.Intent, EditorEvent.Fenced);
+        QueueEditorTrace(control.Intent, EditorEvent.Fenced,
+            readCompletedAtMs: readCompletedAtMs, guiDequeuedAtMs: guiDequeuedAtMs);
     }
 
     private static void ObserveEditorApp(nuint activation, nint peerThread)
@@ -1004,12 +1016,12 @@ internal static partial class Program
     }
 
     private static void QueueEditorTrace(Guid intent, EditorEvent kind, EditorReason reason = EditorReason.None,
-        EditorPeer peer = EditorPeer.None, bool? active = null)
+        EditorPeer peer = EditorPeer.None, bool? active = null, long? readCompletedAtMs = null, long? guiDequeuedAtMs = null)
     {
         if (string.IsNullOrWhiteSpace(EditorTracePath) || _editorTraceCount >= 16)
             return;
         EditorTraces.Add(new(WindowsInterruptClock.NowMs, ++_editorTraceCount, intent, _editorEventSequence,
-            _editorHandoff, kind, reason, peer, active));
+            _editorHandoff, kind, reason, peer, active, readCompletedAtMs, guiDequeuedAtMs));
     }
 
     private static void FlushEditorTrace()
@@ -1033,7 +1045,13 @@ internal static partial class Program
                     kind = entry.Event.ToString(),
                     reason = entry.Reason.ToString(),
                     peer = entry.Peer.ToString(),
-                    active = entry.Active
+                    active = entry.Active,
+                    // Same WindowsInterruptClock domain as atMs and Host send
+                    // events. Delay includes reader scheduling/enqueue/posting
+                    // through GUI dequeue, not time inside ReadAsync.
+                    readCompletedAtMs = entry.ReadCompletedAtMs,
+                    guiDequeuedAtMs = entry.GuiDequeuedAtMs,
+                    guiQueueDelayMs = entry.GuiDequeuedAtMs - entry.ReadCompletedAtMs
                 }));
             File.AppendAllText(EditorTracePath + ".practice.jsonl", lines.ToString());
         }

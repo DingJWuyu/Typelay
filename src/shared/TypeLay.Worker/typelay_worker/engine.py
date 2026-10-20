@@ -197,9 +197,11 @@ class LocalEngine:
         self._pairs = {}
         self._owned = []
         self._selection = ()
+        self._identity_verified = False
         try:
             inventory = verify_inventory(models, packages)
             self.schema = inventory.schema
+            self._identity_verified = inventory.identity_verified
             if self.schema in (1, 2):
                 self.catalog = packages.legacy_directions
             selected = inventory.packages
@@ -245,6 +247,8 @@ class LocalEngine:
 
     @property
     def packages(self):
+        if not self._identity_verified:
+            return ()
         return tuple(
             {
                 "id": item.package.id,

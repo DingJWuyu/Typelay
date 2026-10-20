@@ -9,7 +9,12 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from .catalog import ModelPackageSelection, load_package_catalog, read_active_selection
+from .catalog import (
+    ModelPackageSelection,
+    load_package_catalog,
+    read_active_selection,
+    read_file_manifest,
+)
 
 
 @dataclass(frozen=True)
@@ -23,6 +28,7 @@ class VerifiedPackage:
 class VerifiedInventory:
     schema: int
     packages: tuple[VerifiedPackage, ...]
+    identity_verified: bool
 
 
 def verify_inventory(models: Path, catalog=None) -> VerifiedInventory:
@@ -40,6 +46,7 @@ def verify_inventory(models: Path, catalog=None) -> VerifiedInventory:
             return VerifiedInventory(
                 inventory["schema"],
                 tuple(VerifiedPackage(item, models / item.directions[0].id) for item in selected),
+                _verify_legacy_identity(models, inventory, selected),
             )
         verified = []
         # Complete all file checks before any native import or model load.
@@ -48,27 +55,7 @@ def verify_inventory(models: Path, catalog=None) -> VerifiedInventory:
             expected = {entry.path: entry.sha256 for entry in item.files}
             _verify_files(root, expected)
             if item.package.backend == "argos":
-                required = {
-                    "metadata.json",
-                    "sentencepiece.model",
-                    "model/config.json",
-                    "model/model.bin",
-                    "model/shared_vocabulary.json",
-                }
-                if not required.issubset(expected):
-                    raise ValueError("model-inventory")
-                direction = item.directions[0]
-                with (root / "metadata.json").open("rb") as stream:
-                    metadata_raw = stream.read(16385)
-                if len(metadata_raw) > 16384:
-                    raise ValueError("model-inventory")
-                metadata = json.loads(metadata_raw)
-                if not isinstance(metadata, dict) or (
-                    metadata.get("from_code"),
-                    metadata.get("to_code"),
-                    metadata.get("package_version"),
-                ) != (direction.source, direction.target, item.package.version):
-                    raise ValueError("model-inventory")
+                _verify_argos_metadata(root, expected, item)
                 native = None
             else:
                 # Admission only; the fixed production gate below still verifies the
@@ -81,9 +68,62 @@ def verify_inventory(models: Path, catalog=None) -> VerifiedInventory:
 
                 native = verify_production(root, verified_files=expected)
             verified.append(VerifiedPackage(item, root, native))
-        return VerifiedInventory(3, tuple(verified))
+        return VerifiedInventory(3, tuple(verified), identity_verified=True)
     except (OSError, KeyError, TypeError, UnicodeError):
         raise ValueError("model-inventory") from None
+
+
+def _verify_argos_metadata(root, expected, item):
+    required = {
+        "metadata.json",
+        "sentencepiece.model",
+        "model/config.json",
+        "model/model.bin",
+        "model/shared_vocabulary.json",
+    }
+    if not required.issubset(expected):
+        raise ValueError("model-inventory")
+    direction = item.directions[0]
+    with (root / "metadata.json").open("rb") as stream:
+        metadata_raw = stream.read(16385)
+    if len(metadata_raw) > 16384:
+        raise ValueError("model-inventory")
+    metadata = json.loads(metadata_raw)
+    if not isinstance(metadata, dict) or (
+        metadata.get("from_code"),
+        metadata.get("to_code"),
+        metadata.get("package_version"),
+    ) != (direction.source, direction.target, item.package.version):
+        raise ValueError("model-inventory")
+
+
+def _verify_legacy_identity(models, inventory, selected):
+    # Optional read-only attestation. Legacy ordinary loading keeps its existing
+    # requirements; special operations require the same complete files/metadata
+    # proof as schema3, never just the catalog's inferred legacy selection.
+    try:
+        consumed = 0
+        for item in selected:
+            prefix = item.directions[0].id + "/"
+            files = read_file_manifest(
+                [
+                    {"path": entry["path"][len(prefix) :], "sha256": entry["sha256"]}
+                    for entry in inventory["files"]
+                    if entry["path"].startswith(prefix)
+                ]
+            )
+            expected = {entry.path: entry.sha256 for entry in files}
+            consumed += len(expected)
+            root = models / item.directions[0].id
+            _verify_files(root, expected)
+            _verify_argos_metadata(root, expected, item)
+        return consumed == len(inventory["files"])
+    except ValueError as error:
+        if str(error) == "model-integrity":
+            raise
+        return False
+    except (OSError, KeyError, TypeError, AttributeError):
+        return False
 
 
 def _verify_files(root: Path, expected: dict[str, str]) -> None:

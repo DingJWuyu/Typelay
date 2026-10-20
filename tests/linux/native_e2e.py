@@ -458,8 +458,95 @@ def inside(arguments):
         paths.native.unlink(missing_ok=True)
 
 
+def quality_exit(arguments, compositor, work_deadline, result, failure):
+    from support.translation_quality_capture import (
+        CLEANUP_SECONDS,
+        COLLECTIONS,
+        inspect_report,
+        process_identity,
+    )
+
+    cancelled = False
+    signalled = False
+    owner = None
+    cleanup_deadline = work_deadline + CLEANUP_SECONDS - 3
+
+    def interrupt(signum, frame):
+        nonlocal cancelled, cleanup_deadline
+        cancelled = True
+        cleanup_deadline = min(cleanup_deadline, time.monotonic() + CLEANUP_SECONDS - 3)
+
+    handlers = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}
+    for signum in handlers:
+        signal.signal(signum, interrupt)
+    try:
+        while time.monotonic() < cleanup_deadline:
+            if owner is None:
+                try:
+                    owner = json.loads((arguments.output / "quality-inside-owner.json").read_text())
+                    assert type(owner["pid"]) is int and owner["pid"] > 1
+                    assert isinstance(owner["startTime"], str) and owner["startTime"].isdigit()
+                except (OSError, ValueError, KeyError, TypeError, AssertionError):
+                    owner = None  # Missing/partial/invalid owner is never permission to signal.
+            try:
+                identity = process_identity(owner["pid"]) if owner is not None else None
+            except (OSError, ValueError, IndexError):
+                identity = "unknown"  # Read failure cannot prove the recorded process exited.
+            barrier = result.exists() or failure.exists()
+            if owner is not None and barrier and identity not in ("unknown", owner["startTime"]):
+                report = json.loads((arguments.output / "hy-package-result.json").read_text())
+                quality = report["translationQuality"]
+                assert report["hostExitConfirmed"] is True, "host exit unconfirmed; preserve data"
+                assert report["workerExitConfirmed"] is True, (
+                    "serving exit unconfirmed; preserve data"
+                )
+                assert quality["workerExitConfirmed"] is True, (
+                    "quality exit unconfirmed; preserve data"
+                )
+                for item in quality["collections"]:
+                    original, _ = inspect_report(
+                        item["runner"], arguments.output / f"{item['runner']}-quality.json"
+                    )
+                    assert original["workerExitConfirmed"] is True, (
+                        "runner exit unconfirmed; preserve data"
+                    )
+                assert not cancelled and not failure.exists() and report["status"] == "passed", (
+                    "quality lifecycle failed; preserve its reports and isolated data"
+                )
+                assert [item["runner"] for item in quality["collections"]] == list(COLLECTIONS)
+                assert (
+                    quality["actualTranslationRequests"] == 45 and quality["requestCountComplete"]
+                )
+                return
+            if not cancelled and (
+                time.monotonic() >= work_deadline or compositor.poll() is not None
+            ):
+                # Compositor exit is not a model-process exit proof. Address only
+                # this run's recorded inside process, even if niri already exited.
+                cancelled = True
+                cleanup_deadline = min(cleanup_deadline, time.monotonic() + CLEANUP_SECONDS - 3)
+            if cancelled and not signalled and owner is not None and identity == owner["startTime"]:
+                # Recheck immediately before signalling; never chase a reused PID.
+                try:
+                    if process_identity(owner["pid"]) == owner["startTime"]:
+                        os.kill(owner["pid"], signal.SIGTERM)
+                        signalled = True
+                except (OSError, ValueError, IndexError):
+                    pass
+            time.sleep(0.05)
+        raise RuntimeError("quality inside exit unconfirmed; preserve isolated data and reports")
+    finally:
+        for signum, handler in handlers.items():
+            signal.signal(signum, handler)
+
+
 def outer(arguments, script=None):
     arguments.output.mkdir(parents=True, exist_ok=True)
+    quality = getattr(arguments, "collect_translation_quality", False)
+    if quality and any(arguments.output.iterdir()):
+        raise RuntimeError(
+            "quality capture requires a fresh output directory; preserve prior results"
+        )
     result_name = "desktop-result.json" if arguments.desktop else "native-result.json"
     (arguments.output / result_name).unlink(missing_ok=True)
     failure = arguments.output / "inside.failed"
@@ -477,6 +564,14 @@ def outer(arguments, script=None):
         "--output",
         str(arguments.output),
     ]
+    quality_deadline = None
+    if quality:
+        from support.translation_quality_capture import WORK_SECONDS
+
+        quality_deadline = time.monotonic() + WORK_SECONDS
+        command.extend(
+            ["--collect-translation-quality", "--quality-work-deadline", str(quality_deadline)]
+        )
     if getattr(arguments, "gtk_refusal", False):
         command.append("--gtk-refusal")
     if getattr(arguments, "gtk_session_bindings", False):
@@ -531,8 +626,11 @@ def outer(arguments, script=None):
                 timeout = 260  # 240 seconds of work, then owned-process cleanup.
             deadline = time.monotonic() + (timeout if arguments.desktop else 45)
             result = arguments.output / result_name
+            if quality:
+                quality_exit(arguments, compositor, quality_deadline, result, failure)
             while (
-                time.monotonic() < deadline
+                not quality
+                and time.monotonic() < deadline
                 and compositor.poll() is None
                 and not result.exists()
                 and not failure.exists()
@@ -548,16 +646,33 @@ def outer(arguments, script=None):
             if compositor.poll() is None:
                 os.killpg(compositor.pid, signal.SIGTERM)
             try:
-                compositor.wait(timeout=3)
+                timeout = 3
+                if quality:
+                    from support.translation_quality_capture import CLEANUP_SECONDS
+
+                    timeout = max(
+                        0, min(timeout, quality_deadline + CLEANUP_SECONDS - time.monotonic())
+                    )
+                compositor.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 os.killpg(compositor.pid, signal.SIGKILL)
-                compositor.wait()
+                if quality:
+                    from support.translation_quality_capture import CLEANUP_SECONDS
+
+                    remaining = quality_deadline + CLEANUP_SECONDS - time.monotonic()
+                    if remaining <= 0:
+                        raise RuntimeError("compositor exit unconfirmed; preserve quality data")
+                    compositor.wait(timeout=remaining)
+                else:
+                    compositor.wait()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--inside", action="store_true")
     parser.add_argument("--desktop", action="store_true")
+    parser.add_argument("--collect-translation-quality", action="store_true")
+    parser.add_argument("--quality-work-deadline", type=float, help=argparse.SUPPRESS)
     parser.add_argument(
         "--desktop-scope",
         choices=("all", "browser", "gtk", "gtk4", "qt", "setup", "model-packages"),
@@ -580,6 +695,18 @@ if __name__ == "__main__":
     parser.add_argument("--native", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.collect_translation_quality and (
+        not args.desktop or args.desktop_scope != "model-packages"
+    ):
+        parser.error(
+            "--collect-translation-quality requires --desktop --desktop-scope model-packages"
+        )
+    if args.collect_translation_quality and args.inside and args.quality_work_deadline is None:
+        parser.error("inside quality capture requires the outer work deadline")
+    if args.quality_work_deadline is not None and (
+        not args.inside or not args.collect_translation_quality
+    ):
+        parser.error("--quality-work-deadline is private to the quality inside process")
     args.native = args.native.resolve()
     args.output = args.output.resolve()
     if not args.desktop and not args.gtk_refusal:

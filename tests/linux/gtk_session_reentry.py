@@ -134,6 +134,9 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
         "TYPELAY_FIXTURE_REENTRY_TEXT": replacement,
     }
     child_environment.pop("TYPELAY_FIXTURE_TWO_WINDOWS", None)
+    if stage == "language-options":
+        child_environment["TYPELAY_TRACE_LANGUAGE_RENDER"] = "1"
+
     if stage == "footer":
         child_environment["G_DEBUG"] = "fatal-criticals"
     identity = str(display) + "\n" + child_environment.get("NIRI_SOCKET", "")
@@ -709,7 +712,11 @@ def check_language_options(
         phase = phases[-1] if revision <= 3 else {}
         if phase:
             phase.update(control=name, point=point, beforeClick=observe(actual))
+        if phase:
+            phase["clickStartedAtMonoMs"] = time.monotonic_ns() // 1_000_000
         click_once(nested, point, phase)
+        if phase:
+            phase["clickFinishedAtMonoMs"] = time.monotonic_ns() // 1_000_000
 
     def toggle(opened, renew=True):
         if renew:
@@ -723,6 +730,14 @@ def check_language_options(
     def select(name, index):
         render()
         click(name)
+        if revision == 3:
+            # Read the existing report once, without waiting for a fresh frame.
+            # Its timestamp distinguishes a stale sample from post-click focus.
+            try:
+                phases[-1]["afterClickBeforeKeys"] = observe(state())
+            except (OSError, ValueError, AssertionError):
+                phases[-1]["afterClickObservationUnavailable"] = True
+            phases[-1]["keysStartedAtMonoMs"] = time.monotonic_ns() // 1_000_000
         key("Home")
         for _ in range(index):
             key("Down")

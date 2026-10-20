@@ -482,6 +482,36 @@ def verify_direction_installation(arguments, environment):
                             {"text": samples["en_zh"], "source": "auto", "target": "zh"},
                         ],
                     )
+                    known_statuses = ("translated", "no-translation", "error")
+                    known_codes = (
+                        "invalid-request",
+                        "language-unavailable",
+                        "translation-failed",
+                        "translation-timeout",
+                        "invalid-output",
+                        "output-too-long",
+                        "segment-too-long",
+                        "decoding-limit",
+                    )
+                    result["completedInference"] = [
+                        {
+                            "direction": direction,
+                            "status": response.get("status")
+                            if response.get("status") in known_statuses
+                            else "unknown",
+                            "code": response.get("code")
+                            if response.get("code") in known_codes
+                            else "none"
+                            if response.get("code") is None
+                            else "unknown",
+                            "nonempty": isinstance(response.get("text"), str)
+                            and bool(response["text"]),
+                            "differs": response.get("text") != sample,
+                        }
+                        for direction, response, sample in zip(
+                            ("zh_en", "en_zh"), responses, samples.values(), strict=True
+                        )
+                    ]
                     for response, sample in zip(responses, samples.values(), strict=True):
                         assert response["status"] == "translated" and response["text"] not in (
                             None,

@@ -43,7 +43,9 @@ internal sealed partial class BrowserInput
         CaptureUpperInvalid, OwnerExpired, PolicyExpired, OwnerRetired, ApprovalRejected,
         TargetMismatch, KeyAcknowledgementMissing, KeyTargetMismatch, MetadataChanged,
         SourceNotFocused, SnapshotUnavailable, EvidenceRejected, DirectUnsupported,
-        FrozenCapacity, Queued, Expired, Rejected, Delivered
+        FrozenCapacity, Queued, Expired, Rejected, Delivered,
+        PolicyFieldMismatch, PolicyFieldMissing, PolicyRichField, PolicyFieldDead, PolicyFieldQuarantined, PolicyNotFocused,
+        PolicyTargetMismatch, PolicyMetadata, PolicyAuthorityMissing, PolicyAuthorityChanged, PolicyAuthorityExpired, PolicyAuthorityClock, PolicyTimeInvalid, PolicyClockUnavailable
     }
     private bool CommandTraceEnabled => !string.IsNullOrWhiteSpace(_tracePath) && TraceBudget.CommandsAvailable;
     private void TraceCommandPath(CommandPathStage stage, CommandPathReason reason, string? kind,
@@ -77,6 +79,10 @@ internal sealed partial class BrowserInput
                 or "SourceChanged" or "ImeUnclear" or "PolicyUnavailable" or "CaptureUnavailable" or "PolicyChanged"
                 or "OwnerChanged" or "CaptureBeforeTrigger" or "CaptureTimeInvalid" or "OwnerExpiredAtCapture"
                 or "PolicyExpiredAtCapture" or "CaptureBudgetExceeded" or "StaleObservation" or "Sent"
+                or "PolicyMissing" or "PolicyExpired"
+                or "PolicyFieldMismatch" or "PolicyFieldMissing" or "PolicyRichField" or "PolicyFieldDead"
+                or "PolicyFieldQuarantined" or "PolicyNotFocused" or "PolicyTargetMismatch" or "PolicyMetadata"
+                or "PolicyAuthorityMissing" or "PolicyTimeInvalid" or "PolicyClockUnavailable" or "PolicyAuthorityChanged" or "PolicyAuthorityExpired" or "PolicyAuthorityClock"
                 ? Enum.Parse<CommandPathReason>(rawReason) : CommandPathReason.Unknown;
             TraceCommandPath(CommandPathStage.Page, reason, String(data, "kind"),
                 Boolean(data, "commandSent"), Boolean(data, "hasNative"));

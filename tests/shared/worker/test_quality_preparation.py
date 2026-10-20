@@ -1,11 +1,17 @@
 """Validate-only reports are preparation evidence, never model or quality evidence."""
 
+import asyncio
+import io
 import json
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+
+import alternative_quality
+from typelay_worker.protocol import read_frame, write_frame
 
 ROOT = Path(__file__).resolve().parents[3]
 RUNNERS = Path(__file__).resolve().parent
@@ -41,7 +47,7 @@ class QualityPreparationTests(unittest.TestCase):
             result = self.validate("glossary_quality.py", output)
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertTrue(output.is_file(), result.stderr)
-            report = json.loads(output.read_text())
+            report = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual((report["status"], report["quality"]), ("not-run", "not-run"))
             self.assertEqual(report["requiredNativeAbi"], 5)
             self.assertEqual(report["requiredGlossaryTranslationVersion"], 1)
@@ -68,7 +74,9 @@ class QualityPreparationTests(unittest.TestCase):
                     "quantization": "Q4_K_M",
                 },
             )
-            inputs = json.loads((RUNNERS / "glossary_quality_inputs.json").read_text())
+            inputs = json.loads(
+                (RUNNERS / "glossary_quality_inputs.json").read_text(encoding="utf-8")
+            )
             self.assertEqual(len(report["cases"]), 5)
             for case, sample in zip(report["cases"], inputs["samples"], strict=True):
                 self.assertEqual({key: case[key] for key in sample}, sample)
@@ -96,7 +104,7 @@ class QualityPreparationTests(unittest.TestCase):
             output = Path(temporary) / "report.json"
             result = self.validate("styled_quality.py", output)
             self.assertEqual(result.returncode, 2, result.stderr)
-            report = json.loads(output.read_text())
+            report = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual((report["status"], report["quality"]), ("not-run", "not-run"))
             self.assertEqual(report["requiredNativeAbi"], 5)
             self.assertEqual(report["maximumTranslationRequests"], 8)
@@ -106,6 +114,59 @@ class QualityPreparationTests(unittest.TestCase):
                 self.assertIsNone(case["natural"])
                 self.assertIsNone(case["formal"])
                 self.assertTrue(all(value is None for value in case["pairReview"].values()))
+
+
+class AlternativeHelloTests(unittest.IsolatedAsyncioTestCase):
+    async def test_capture_accepts_optional_verified_legacy_identity_and_rejects_mismatch(self):
+        packages = [
+            {"id": "argos-zh-en", "version": "1.9", "directions": ["zh_en"]},
+            {"id": "argos-en-zh", "version": "1.9", "directions": ["en_zh"]},
+        ]
+
+        class Input(io.BytesIO):
+            async def drain(self):
+                pass
+
+        for schema, identity, accepted in (
+            (1, None, True),
+            (2, None, True),
+            (1, packages, True),
+            (2, packages, True),
+            (3, packages, True),
+            (3, None, False),
+            (1, [], False),
+            (2, [packages[0]], False),
+            (1, [{**packages[0], "version": "1.8"}, packages[1]], False),
+        ):
+            with self.subTest(schema=schema, identity=identity):
+                response = {
+                    "id": 1,
+                    "status": "ready",
+                    "elapsedMs": 0,
+                    "directions": ["zh_en", "en_zh"],
+                }
+                if identity is not None:
+                    response["packages"] = identity
+                wire = io.BytesIO()
+                write_frame(wire, response)
+                reader = asyncio.StreamReader()
+                reader.feed_data(wire.getvalue())
+                reader.feed_eof()
+                writer = Input()
+                process = SimpleNamespace(stdin=writer, stdout=reader)
+                report = {
+                    "requests": [],
+                    "installation": {"schema": schema, "expectedPackages": packages},
+                }
+                args = SimpleNamespace(request_timeout=1)
+                if accepted:
+                    actual = await alternative_quality.request(process, report, args, "hello")
+                    self.assertEqual(actual, response)
+                else:
+                    with self.assertRaisesRegex(ValueError, "hello-packages-or-directions"):
+                        await alternative_quality.request(process, report, args, "hello")
+                writer.seek(0)
+                self.assertEqual(read_frame(writer), {"id": 1, "op": "hello"})
 
 
 if __name__ == "__main__":

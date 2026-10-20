@@ -630,11 +630,14 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
     {
         [FieldOffset(0)] public uint Type;
         [FieldOffset(8)] public ushort Key;
+        [FieldOffset(10)] public ushort ScanCode;
         [FieldOffset(12)] public uint KeyboardFlags;
         [FieldOffset(20)] public uint MouseFlags;
     }
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint count, Input[] input, int size);
+    [DllImport("user32.dll")]
+    private static extern uint MapVirtualKeyW(uint code, uint mapType);
     [DllImport("user32.dll")]
     private static extern nint WindowFromPoint(NativePoint point);
     [DllImport("user32.dll")]
@@ -760,6 +763,197 @@ public sealed class SettingsRenderingTests(WpfDesktopFixture desktop, ITestOutpu
         }
         finally { testOutput.WriteLine(string.Join(Environment.NewLine, _stages)); }
     }
+
+    [Fact]
+    public Task ShortcutRetryUsesSavedBindingsAndKeepsTheDraftAndSuccessfulNativeCommand() => desktop.RunAsync(async () =>
+    {
+        const int blocker = 0x5420;
+        Assert.True(Native.RegisterHotKey(0, blocker, 2 | 4 | 0x4000, 0x87));
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-shortcut-retry-" + Guid.NewGuid().ToString("N"));
+        var held = new List<Input>();
+        void SendEdges(Input[] edges)
+        {
+            uint inserted = SendInput((uint)edges.Length, edges, Marshal.SizeOf<Input>());
+            foreach (var edge in edges.Take((int)Math.Min(inserted, (uint)edges.Length)))
+                if ((edge.KeyboardFlags & 2) == 0)
+                    held.Add(edge);
+                else
+                    held.RemoveAll(press => press.ScanCode == edge.ScanCode);
+            Assert.Equal((uint)edges.Length, inserted);
+        }
+        try
+        {
+            string path = Path.Combine(directory, "settings.json");
+            var settings = WindowsRuntime.CreateSettings(path);
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.OnDemand,
+                WakeShortcut = "Ctrl+Shift+F24",
+                DirectShortcut = "Ctrl+Shift+F23"
+            });
+            string persisted = File.ReadAllText(path);
+            using var model = WindowsRuntime.CreateModel(); // No model starts or source reads are needed for registration.
+            var window = new SettingsWindow(settings, model, () => { });
+            window.ShowPage("shortcuts");
+            using var hook = new KeyboardHook(allowInjectedInput: true, editorHwnd: new WindowInteropHelper(window).Handle);
+            using var browser = new BrowserInput(new BrowserServer(window.Dispatcher), hook);
+            hook.ConfigureShortcuts(true, settings.Value.WakeShortcut, settings.Value.DirectShortcut, SessionShortcutBindings.Default, true);
+            browser.Configure(true, settings.Value.WakeShortcut, settings.Value.DirectShortcut, SessionShortcutBindings.Default, true);
+            window.ShortcutStatus = () => browser.CommandStatus ?? hook.ShortcutStatus;
+            window.ShortcutRecovery = new(() => browser.CommandRegistrationFailure, browser.RetryCommandRegistration);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+            var editor = ShortcutEditor(window);
+            editor.Text = "Alt+F22";
+            window.Activate();
+            editor.Focus();
+            while (!hook.ShortcutsReady || !hook.CommandsReleased || !editor.IsKeyboardFocused
+                || Native.GetForegroundWindow() != new WindowInteropHelper(window).Handle)
+                await Task.Delay(10, timeout.Token);
+            editor.Select(2, 3);
+            window.RefreshShortcutStatus();
+            window.UpdateLayout();
+            var retry = Descendants(window).OfType<Button>().Single(button => AutomationProperties.GetAutomationId(button) == "RetrySavedShortcuts");
+            Assert.True(retry.IsVisible);
+            Assert.True(retry.IsEnabled);
+            Assert.Equal("已保存：唤醒 Ctrl+Shift+F24；直接替换 Ctrl+Shift+F23。未保存的修改不会应用。", retry.ToolTip);
+            Guid generation = hook.CommandGeneration;
+            retry.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.NotNull(browser.CommandRegistrationFailure);
+            Assert.True(retry.IsVisible);
+            Assert.Equal("快捷键当前不可用：唤醒翻译 UI（Ctrl+Shift+F24）未能注册，可能被系统或其他应用占用。可重试启用快捷键或修改组合键。",
+                browser.CommandStatus);
+            Assert.True(editor.IsKeyboardFocused);
+            Assert.Equal(2, editor.SelectionStart);
+            Assert.Equal(3, editor.SelectionLength);
+            // A second failure must leave the already registered direct chord
+            // dispatchable. With no source lease it reports a refusal, not a write.
+            Assert.Equal(ModifierKeys.None, Keyboard.Modifiers);
+            var presses = new ushort[] { 0x11, 0x10, 0x86 }.Select(key =>
+            {
+                uint scan = MapVirtualKeyW(key, 0);
+                Assert.InRange(scan, 1u, 0xffu);
+                return new Input { Type = 1, ScanCode = (ushort)scan, KeyboardFlags = 8 };
+            }).ToArray();
+            // Resolve physical identities once, including every release and any
+            // partial-insertion cleanup. Never repeat an inserted keydown.
+            SendEdges(presses.Concat(presses.Reverse().Select(press => press with { KeyboardFlags = 10 })).ToArray());
+            InputNotice? notice = null;
+            while (!hook.TryRead(out notice))
+                await Task.Delay(1, timeout.Token);
+            Assert.Equal("direct", notice!.Kind);
+            Assert.Null(notice.Source);
+            Assert.Equal(Denial.StaleObservation, notice.Rejection);
+            while (!hook.CommandsReleased)
+                await Task.Delay(1, timeout.Token);
+
+            SendEdges([presses[0]]);
+            try
+            {
+                while (hook.CommandsReleased)
+                    await Task.Delay(1, timeout.Token);
+                window.RefreshShortcutStatus();
+                Assert.False(retry.IsEnabled);
+                Assert.True(Native.UnregisterHotKey(0, blocker));
+                browser.RetryCommandRegistration(generation);
+                Assert.NotNull(browser.CommandRegistrationFailure); // Held group cannot retry or queue restoration.
+            }
+            finally { SendEdges([presses[0] with { KeyboardFlags = 10 }]); }
+            while (!hook.CommandsReleased)
+                await Task.Delay(1, timeout.Token);
+            browser.Poll();
+            Assert.NotNull(browser.CommandRegistrationFailure); // Release alone does not replay the refused action.
+            window.RefreshShortcutStatus();
+            retry.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Null(browser.CommandRegistrationFailure);
+            Assert.False(retry.IsVisible);
+            Assert.Equal(generation, hook.CommandGeneration);
+            Assert.Contains("两个快捷键已启用", hook.ShortcutStatus);
+            Assert.Same(editor, ShortcutEditor(window));
+            Assert.Equal("Alt+F22", editor.Text);
+            Assert.Equal(persisted, File.ReadAllText(path));
+            window.RefreshShortcutStatus();
+            Assert.False(retry.IsVisible);
+            InteractWithCloseDialog(window, window.Close, SettingsDraftCloseChoice.Discard);
+        }
+        finally
+        {
+            try
+            {
+                var release = held.AsEnumerable().Reverse().Select(press => press with { KeyboardFlags = 10 }).ToArray();
+                if (release.Length > 0)
+                    Assert.Equal((uint)release.Length, SendInput((uint)release.Length, release, Marshal.SizeOf<Input>()));
+            }
+            finally
+            {
+                Native.UnregisterHotKey(0, blocker);
+                if (Directory.Exists(directory))
+                    Directory.Delete(directory, true);
+            }
+        }
+    });
+
+    [Fact]
+    public Task StaleShortcutRetryDoesNotRegisterTheNewSavedConfiguration() => desktop.RunAsync(async () =>
+    {
+        const int blocker = 0x5421;
+        Assert.True(Native.RegisterHotKey(0, blocker, 2 | 4 | 0x4000, 0x87));
+        string directory = Path.Combine(Path.GetTempPath(), "typelay-stale-retry-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var settings = WindowsRuntime.CreateSettings(Path.Combine(directory, "settings.json"));
+            settings.Update(settings.Value with
+            {
+                Mode = WorkMode.OnDemand,
+                WakeShortcut = "Ctrl+Shift+F24",
+                DirectShortcut = "Ctrl+Shift+F23"
+            });
+            using var model = WindowsRuntime.CreateModel();
+            var window = new SettingsWindow(settings, model, () => { });
+            window.ShowPage("shortcuts");
+            using var hook = new KeyboardHook(editorHwnd: new WindowInteropHelper(window).Handle);
+            using var browser = new BrowserInput(new BrowserServer(window.Dispatcher), hook);
+            void Configure()
+            {
+                browser.BeforeConfigure();
+                hook.ConfigureShortcuts(true, settings.Value.WakeShortcut, settings.Value.DirectShortcut, SessionShortcutBindings.Default, true);
+                browser.Configure(true, settings.Value.WakeShortcut, settings.Value.DirectShortcut, SessionShortcutBindings.Default, true);
+            }
+            Configure();
+            window.ShortcutStatus = () => browser.CommandStatus ?? hook.ShortcutStatus;
+            window.ShortcutRecovery = new(() => browser.CommandRegistrationFailure, browser.RetryCommandRegistration);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(5));
+            while (!hook.ShortcutsReady || !hook.CommandsReleased)
+                await Task.Delay(10, timeout.Token);
+            window.RefreshShortcutStatus();
+            window.UpdateLayout();
+            var retry = Descendants(window).OfType<Button>().Single(button => AutomationProperties.GetAutomationId(button) == "RetrySavedShortcuts");
+            Assert.True(retry.IsEnabled);
+            Guid presented = hook.CommandGeneration;
+            settings.Update(settings.Value with
+            {
+                DirectShortcut = "Ctrl+Shift+F22"
+            });
+            Configure(); // The settings refresh above still presented the previous registration generation.
+            Assert.NotEqual(presented, hook.CommandGeneration);
+            Assert.True(Native.UnregisterHotKey(0, blocker));
+            retry.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.NotNull(browser.CommandRegistrationFailure);
+            Assert.True(retry.IsVisible);
+            Assert.Equal("Ctrl+Shift+F22", settings.Value.DirectShortcut);
+            retry.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Assert.Null(browser.CommandRegistrationFailure);
+            Assert.False(retry.IsVisible);
+            window.Close();
+        }
+        finally
+        {
+            Native.UnregisterHotKey(0, blocker);
+            if (Directory.Exists(directory))
+                Directory.Delete(directory, true);
+        }
+    });
 
     [Fact]
     public Task ExclusionEditsStayUnsavedAcrossPagesAndSaveAtomicallyWithShortcuts() => desktop.RunAsync(() =>

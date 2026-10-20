@@ -289,12 +289,15 @@ public sealed class ModelClient : ITranslationService, IDisposable
         lock (_owner)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            _operation?.Superseded.Cancel();
+            var previousOperation = _operation;
             var operation = new Operation(ct);
             _operation = operation;
             ++_admission;
             if (_active is null)
                 _status = "正在准备翻译";
+            // Cancellation may synchronously finish the old lifecycle. Revoke
+            // its ownership first so its cleanup cannot restore or clear this one.
+            previousOperation?.Superseded.Cancel();
             return ReplaceAsync(plan, publishConfirmed, confirmCurrent, operation);
         }
     }
@@ -527,9 +530,9 @@ public sealed class ModelClient : ITranslationService, IDisposable
         var hello = await ExchangeAsync(connection, new(0, "hello"), TimeSpan.FromSeconds(120), ct);
         ct.ThrowIfCancellationRequested();
         ValidateHello(plan, hello);
-        // Legacy hello has no package-version attestation: ordinary Ready remains
-        // compatible, but cannot authorize a product-released special operation.
-        if (plan.InventorySchema == 3)
+        // Identity requires exact packages from this worker connection. A legacy
+        // worker may omit attestation and retain ordinary Ready only.
+        if (hello.Packages is not null)
             connection.VerifiedIdentity = new(plan);
         connection.Directions = Array.AsReadOnly(hello.Directions!.ToArray());
         if (hello.StyledTranslationVersion == 1)
@@ -550,12 +553,8 @@ public sealed class ModelClient : ITranslationService, IDisposable
             || directions.Distinct(StringComparer.Ordinal).Count() != directions.Length
             || !directions.ToHashSet(StringComparer.Ordinal).SetEquals(plan.Directions))
             throw new IOException("model-hello-directions");
-        if (plan.InventorySchema != 3)
-        {
-            if (hello.Packages is not null)
-                throw new IOException("model-hello-packages");
+        if (plan.InventorySchema != 3 && hello.Packages is null)
             return;
-        }
         if (hello.Packages is not { Length: > 0 } packages || packages.Length != plan.ActivePackages.Count)
             throw new IOException("model-hello-packages");
         HashSet<string> seen = new(StringComparer.Ordinal), union = new(StringComparer.Ordinal);

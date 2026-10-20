@@ -847,6 +847,7 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         Assert.True(N.IsWindowEnabled(GetDlgItem(scene.Root, 102)));
         await scene.Send("install", scene.InstallControl); // Retired child rejects before reopening handles.
         await scene.Wait(() => !N.IsWindowEnabled(GetDlgItem(scene.Root, 102)));
+        scene.AssertSourceOpen();
         Assert.Equal(0, scene.Receipts);
         scene.AssertOrdinary();
     });
@@ -893,10 +894,47 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             Assert.True(N.IsWindowEnabled(GetDlgItem(scene.Root, 102)));
             await scene.Install(expectAcknowledgement: false); // A fresh real plan, after the GUI fence/cancel ACK.
             await scene.Wait(() => !N.IsWindowEnabled(GetDlgItem(scene.Root, 102)));
+            scene.AssertSourceOpen();
             Assert.Equal(nint.Zero, N.GetProp(scene.Field, "TypeLay.NativeInput.Lifetime.v2"));
             Assert.DoesNotContain(scene.Messages, message => message.Kind == "installed" && message.Acceptance?.PlanId == scene.InstallControl!.PlanId);
             Assert.Equal(0, scene.Receipts);
             Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+            Assert.Equal((scene.Root, scene.Field), N.Focused());
+        }
+        finally
+        {
+            overlay.Close();
+        }
+    });
+
+    [Fact]
+    public Task ExpiredEditorFenceRetiresAcceptanceWithoutClosingOrChangingTheSource() => desktop.RunAsync(async () =>
+    {
+        await using var scene = new QueueScene(true);
+        await scene.Start(true);
+        var selection = N.ReadSelection(scene.Field);
+        var overlay = new Window { ShowActivated = false, Width = 240, Height = 100 };
+        try
+        {
+            nint overlayHandle = new System.Windows.Interop.WindowInteropHelper(overlay).EnsureHandle();
+            var descriptor = scene.Descriptor;
+            var target = new WindowsTarget(descriptor.ProcessId, descriptor.ProcessStartUtcTicks,
+                descriptor.RootHwnd, descriptor.ControlHwnd, "win32-edit-transaction-v2", "controlled-owned-editor", Guid.NewGuid()).Id;
+            var displayed = new SessionViewToken(target, Guid.NewGuid(), 10);
+            var intent = new OwnedEditorControl(Guid.NewGuid(), descriptor, displayed, displayed with
+            {
+                Revision = 11
+            },
+                (long)overlayHandle, WindowsInterruptClock.NowMs - 1, 1);
+            Assert.True(N.IsWindowEnabled(GetDlgItem(scene.Root, 102)));
+            await scene.SendEditor("edit-fence", intent);
+            await scene.Wait(() => !N.IsWindowEnabled(GetDlgItem(scene.Root, 102)));
+            scene.AssertSourceOpen();
+            Assert.Equal(nint.Zero, N.GetProp(scene.Field, "TypeLay.NativeInput.Lifetime.v2"));
+            Assert.DoesNotContain(scene.Messages, message => message.Kind == "edit-fenced");
+            Assert.Equal(0, scene.Receipts);
+            Assert.Equal(scene.Original, N.ReadText(scene.Field, Limits.MaxTextUnits));
+            Assert.Equal(selection, N.ReadSelection(scene.Field));
             Assert.Equal((scene.Root, scene.Field), N.Focused());
         }
         finally
@@ -1061,6 +1099,12 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
             Assert.Equal(N.ReadSelection(Field).Start, N.ReadSelection(Field).End);
         }
         private SourceState ReadState() => new(N.ReadText(Field, Limits.MaxTextUnits), N.ReadSelection(Field), N.Focused());
+        public void AssertSourceOpen()
+        {
+            Assert.False(_child!.Process.HasExited, "Rejecting a control must leave the practice process alive.");
+            Assert.True(N.IsWindow(Root));
+            Assert.Equal((nint)Descriptor.ControlHwnd, Field);
+        }
         public async Task PressControlPrefix()
         {
             Key(0x11, true);

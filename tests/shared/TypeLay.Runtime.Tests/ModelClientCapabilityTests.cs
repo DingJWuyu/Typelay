@@ -32,6 +32,45 @@ public sealed class ModelClientCapabilityTests
     }
 
     [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task VerifiedLegacyHelloAuthorizesOnlyItsLiveIdentity(int schema)
+    {
+        string hello = schema == 1
+            ? """{"status":"ready","directions":["zh_en","en_zh"],"packages":[{"id":"argos-zh-en","version":"1.9","directions":["zh_en"]},{"id":"argos-en-zh","version":"1.9","directions":["en_zh"]}]}"""
+            : """{"status":"ready","directions":["zh_en"],"packages":[{"id":"argos-zh-en","version":"1.9","directions":["zh_en"]}]}""";
+        using var peer = new ProtocolPeer(hello, """{"status":"translated","text":"different"}""",
+            schema == 1 ? """{"schema":1}""" : """{"schema":2,"directions":["zh_en"]}""");
+        await peer.Client.StartAsync();
+        Assert.True(peer.Client.Ready);
+        var identity = Assert.IsType<VerifiedModelIdentity>(peer.Client.VerifiedIdentity);
+        Assert.Equal(schema == 1 ? 2 : 1, identity.Packages.Count);
+        Assert.Equal("1.9", identity.Packages[0].Version);
+        Assert.False(TranslationReleasePolicy.Current.Allows(TranslationOperation.Alternative, identity, new("zh", "en")));
+        Assert.Equal("different", (await peer.Client.TranslateAsync(AlternativeJob(), identity)).Text);
+        Assert.Equal(ModelPublicationOutcome.Confirmed, await peer.Client.ReloadAsync(peer.CreateLoadPlan(),
+            () => ModelPublicationOutcome.Confirmed, _ => false, TestContext.Current.CancellationToken));
+        Assert.NotSame(identity, peer.Client.VerifiedIdentity);
+        Assert.Equal("not-ready", (await peer.Client.TranslateAsync(AlternativeJob(), identity)).Code);
+    }
+
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("[{\"id\":\"argos-zh-en\",\"version\":\"1.8\",\"directions\":[\"zh_en\"]}]")]
+    [InlineData("[{\"id\":\"argos-zh-en\",\"version\":\"1.9\",\"directions\":[\"en_zh\"]}]")]
+    [InlineData("[{\"id\":\"argos-en-zh\",\"version\":\"1.9\",\"directions\":[\"zh_en\"]}]")]
+    [InlineData("[{\"id\":\"argos-zh-en\",\"version\":\"1.9\",\"directions\":[\"zh_en\",\"en_zh\"]}]")]
+    public async Task LegacySubsetCannotAcceptMismatchedAdvertisedIdentity(string packages)
+    {
+        using var peer = new ProtocolPeer("{\"status\":\"ready\",\"directions\":[\"zh_en\"],\"packages\":" + packages + "}",
+            inventory: """{"schema":2,"directions":["zh_en"]}""");
+        await peer.Client.StartAsync();
+        Assert.False(peer.Client.Ready);
+        Assert.Null(peer.Client.VerifiedIdentity);
+        Assert.Empty(peer.Client.AvailableDirections);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task SpecialDispatchRejectsAnIdentityFromBeforeReplacementOrRestoration(bool restore)

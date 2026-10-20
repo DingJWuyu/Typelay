@@ -509,7 +509,7 @@ public sealed class LanguagePickerInteractionTests(WpfDesktopFixture desktop)
             {
                 status = "ready",
                 directions,
-                packages
+                packages = packages.Select(package => new { package.id, package.version, package.directions })
             });
             File.WriteAllText(_worker, """
                 import json, struct, sys

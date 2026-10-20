@@ -86,6 +86,27 @@ typedef struct {
 static EditorControl editor_control;
 static guint64 editor_control_serial;
 
+/* Opt-in ordinary-render diagnostics for the isolated language-controls case.
+ * Fixed metadata only; no event-loop dispatch, input, or content inspection. */
+static void trace_language_render(GtkWidget *popover, const char *stage) {
+    static guint count;
+    if (!g_getenv("TYPELAY_TRACE_LANGUAGE_RENDER") || count >= 48 || !popover) return;
+    count++;
+    GdkSurface *surface = gtk_native_get_surface(GTK_NATIVE(popover));
+    g_printerr("TypeLay GTK4 language-render step=%s revision=%" G_GINT64_FORMAT
+        " atMs=%" G_GINT64_FORMAT " visible=%d mapped=%d surfaceMapped=%d\n",
+        stage, overlay.revision, tl_now(), gtk_widget_get_visible(popover),
+        gtk_widget_get_mapped(popover), surface && gdk_surface_get_mapped(surface));
+}
+static void trace_language_map(GtkWidget *widget, gpointer unused) {
+    (void)unused;
+    trace_language_render(widget, "map");
+}
+static void trace_language_unmap(GtkWidget *widget, gpointer unused) {
+    (void)unused;
+    trace_language_render(widget, "unmap");
+}
+
 void tl_overlay_control_cancel(void) {
     memset(&editor_control, 0, sizeof editor_control);
 }
@@ -1382,6 +1403,10 @@ static void create(Target *target) {
     overlay.top = GTK_WIDGET(gtk_widget_get_root(target->widget));
     g_object_add_weak_pointer(G_OBJECT(overlay.top), (gpointer *)&overlay.top);
     overlay.popover = gtk_popover_new();
+    if (g_getenv("TYPELAY_TRACE_LANGUAGE_RENDER")) {
+        g_signal_connect_after(overlay.popover, "map", G_CALLBACK(trace_language_map), NULL);
+        g_signal_connect_after(overlay.popover, "unmap", G_CALLBACK(trace_language_unmap), NULL);
+    }
     g_object_ref_sink(overlay.popover);
     g_object_set_data(G_OBJECT(overlay.popover), "typelay-overlay", GINT_TO_POINTER(1));
     gtk_widget_set_name(overlay.popover, "typelay-overlay");
@@ -1653,7 +1678,9 @@ static gboolean render(Target *target, JsonObject *data) {
     gtk_widget_set_tooltip_text(overlay.text, editable_preview ? "点击译文编辑" : NULL);
     gboolean stale_preview = g_strcmp0(state, "Translating") == 0
         && *text_or_empty(value, "text") && !boolean(presentation, "editorOwnsText");
+    trace_language_render(overlay.popover, "before-theme");
     theme(text_or_empty(data, "theme"), stale_preview);
+    trace_language_render(overlay.popover, "after-theme");
     gboolean capsule = is_paused || g_strcmp0(tl_string(value, "state"), "IdleCapsule") == 0;
     gint width = capsule ? 160 : CLAMP(gtk_widget_get_width(target->widget), 390, 520);
     width = MIN(width, MAX(160, gtk_widget_get_width(top) - 48));
@@ -1691,10 +1718,14 @@ static gboolean render(Target *target, JsonObject *data) {
         .y = (gint)tl_integer(bounds, "y", 0) - (gint)origin.y,
         .width = 1, .height = (gint)tl_integer(bounds, "height", 1)
     };
+    trace_language_render(overlay.popover, "before-anchor");
     gtk_popover_set_pointing_to(GTK_POPOVER(overlay.popover), &anchor);
+    trace_language_render(overlay.popover, "after-anchor");
     json_object_unref(geometry);
     gtk_popover_popup(GTK_POPOVER(overlay.popover));
+    trace_language_render(overlay.popover, "after-popup");
     gtk_popover_present(GTK_POPOVER(overlay.popover));
+    trace_language_render(overlay.popover, "after-present");
     if (!overlay.expiry_timer) overlay.expiry_timer = g_timeout_add(100, expired, NULL);
     tl_overlay_sync();
     return pause_render_result(is_paused, "shown", request_revision, TRUE);

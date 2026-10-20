@@ -210,8 +210,10 @@ async def request(process, report, args, operation, case=None, previous=None):
             expected = report["installation"]
             if (
                 response.get("status") != "ready"
-                or response.get("packages")
-                != (expected["expectedPackages"] if expected["schema"] == 3 else None)
+                or (
+                    (expected["schema"] == 3 or response.get("packages") is not None)
+                    and response.get("packages") != expected["expectedPackages"]
+                )
                 or sorted(response.get("directions", [])) != ["en_zh", "zh_en"]
             ):
                 raise ValueError("hello-packages-or-directions")
@@ -289,19 +291,30 @@ async def collect(args, report):
             report["stage"] = "installation-intent"
             report["installation"] = installation(args)
             report["stage"] = "load-and-hello"
-            process = await asyncio.create_subprocess_exec(
-                str(args.python),
-                "-I",
-                "-B",
-                str(WORKER),
-                "--models",
-                str(args.models),
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-                start_new_session=True,
-                limit=MAX_FRAME + 4,
+            spawn = asyncio.create_task(
+                asyncio.create_subprocess_exec(
+                    str(args.python),
+                    "-I",
+                    "-B",
+                    str(WORKER),
+                    "--models",
+                    str(args.models),
+                    stdin=asyncio.subprocess.PIPE,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    start_new_session=True,
+                    limit=MAX_FRAME + 4,
+                )
             )
+            try:
+                process = await asyncio.shield(spawn)
+            except asyncio.CancelledError:
+                # Acquire the one process owner before cancellation reaches cleanup.
+                for signum in previous_handlers:
+                    loop.add_signal_handler(signum, lambda: report.update(cleanupInterrupted=True))
+                process = await spawn
+                report["workerStarts"] = 1
+                raise
             report["workerStarts"] = 1
             await request(process, report, args, "hello")
             for case in report["cases"]:

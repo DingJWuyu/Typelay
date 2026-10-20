@@ -16,6 +16,7 @@ internal sealed partial class KeyboardHook
     internal bool CommandsReleased => Volatile.Read(ref _commandGroupReleased) != 0;
     internal long CommandsReleasedAt => Interlocked.Read(ref _commandsReleasedAt);
     internal long NextCommandSequence() => Interlocked.Increment(ref _commandSequence);
+    internal (string Wake, string Direct)? FailedCommandConfiguration => _hotkeys.FailedConfiguration;
     internal void DeferCommandRegistration()
     {
         _deferCommandRegistration = true;
@@ -24,7 +25,7 @@ internal sealed partial class KeyboardHook
     }
     // These methods run on the same UI thread that owns RegisterHotKey.
     internal bool SuspendCommandRegistration() => _hotkeys.Suspend();
-    internal bool RestoreCommandRegistration()
+    internal bool RestoreCommandRegistration(bool preserveNativeCommands = false)
     {
         if (!CommandsReleased)
             return false;
@@ -34,7 +35,10 @@ internal sealed partial class KeyboardHook
         {
             Bindings = _hotkeys.Bindings
         });
-        _nativeCommandsEnabled = restored;
+        // An initial partial registration already serves its successful chord.
+        // A retry must not disable it, while a page handoff stays disabled until
+        // both reservations have really returned.
+        _nativeCommandsEnabled = restored || preserveNativeCommands && _nativeCommandsEnabled;
         if (restored)
             _deferCommandRegistration = false;
         return restored;

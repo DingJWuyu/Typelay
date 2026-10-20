@@ -580,7 +580,7 @@ class BrowserContract(unittest.TestCase):
 
     def test_source_command_owner_renewal_cannot_renew_policy_or_revive_a_retired_owner(self):
         self.type_source()
-        owner = self.activate_source_command_owner()["owner"]
+        owner = self.activate_source_command_owner(trace_command=True)["owner"]
         self.page.wait_for_timeout(175)  # Expire only the original 150ms read policy.
         self.page.evaluate("""() => fixtureCommand({id: 7810, op: 'renew-command-owner', data: {
           ...fixtureOwner, grantSequence: 2, expiresAtMs: fixtureHostClock().boottimeMs + 800}})""")
@@ -590,9 +590,9 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(commands[0]["data"]["reason"], "PolicyUnavailable")
         self.assertEqual(
             self.page.evaluate(
-                "fixtureMessages.filter(item => item.event === 'source-command-diagnostic')"
+                "fixtureMessages.filter(item => item.event === 'source-command-diagnostic').map(item => item.data.firstReason)"
             ),
-            [],
+            ["PolicyAuthorityExpired"],
         )
         self.assertNotIn("native", commands[0]["data"])
         self.assertEqual(self.page.evaluate("fixturePassedCommandKeys"), [])
@@ -612,7 +612,7 @@ class BrowserContract(unittest.TestCase):
 
     def test_source_command_requires_new_policy_after_focus_change(self):
         self.type_source()
-        self.activate_source_command_owner()
+        self.activate_source_command_owner(trace_command=True)
         late = self.page.evaluate("""() => {
           document.getElementById('other').focus();
           document.getElementById('source').focus();
@@ -625,6 +625,12 @@ class BrowserContract(unittest.TestCase):
         self.page.keyboard.insert_text("Other")
         self.page.keyboard.press("F9")
         self.assertEqual(self.source_commands()[0]["data"]["reason"], "PolicyUnavailable")
+        self.assertEqual(
+            self.page.evaluate(
+                "fixtureMessages.filter(item => item.event === 'source-command-diagnostic').map(item => item.data.firstReason)"
+            ),
+            ["PolicyMissing"],
+        )
         applied = self.page.evaluate("""() => {
           const description = fixtureCommand({id: 7820, op: 'describe'});
           return fixtureCommand({id: 7821, op: 'approve-command-policy', data: {

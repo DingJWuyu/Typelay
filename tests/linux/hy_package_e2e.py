@@ -14,7 +14,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 from contextlib import redirect_stdout
@@ -26,6 +25,13 @@ sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from main import control  # noqa: E402
 from paths import Paths  # noqa: E402
 from setup import download_resource, hy_assets, package_catalog  # noqa: E402
+from support.translation_quality_capture import (  # noqa: E402
+    WORK_SECONDS,
+    Capture,
+    exclusive_inventory,
+    fixture_home,
+    process_identity,
+)
 
 HY = "hy-mt2-1-8b-q4-k-m"
 ARGOS = ["argos-zh-en", "argos-en-zh"]
@@ -146,9 +152,38 @@ def run(arguments):
     sys.stdout = sys.stderr = (arguments.output / "inside.log").open("w", buffering=1)
     started, process = time.monotonic(), None
     deadline = started + 240
+    quality = getattr(arguments, "collect_translation_quality", False)
+    capture = Capture(arguments.output, arguments.quality_work_deadline) if quality else None
+    if quality:
+        assert arguments.quality_work_deadline is not None
+        assert 0 < arguments.quality_work_deadline - started <= WORK_SECONDS
+        (arguments.output / "quality-inside-owner.json").write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "startTime": process_identity(os.getpid()),
+                }
+            )
+        )
+
+        def interrupted(signum, frame):
+            raise KeyboardInterrupt("quality lifecycle interrupted")
+
+        signal.signal(signal.SIGTERM, interrupted)
     report = {"scope": "formal-linux-hy-package-lifecycle", "status": "failed", "stages": []}
+    if capture is not None:
+        report["translationQuality"] = capture.report
     environment = dict(os.environ)
     package = arguments.package
+    if capture is not None:
+        for name in ("XDG_DATA_HOME", "XDG_CACHE_HOME"):
+            folder = Path(environment[name]).resolve(strict=True)
+            assert (
+                folder.is_dir()
+                and folder.is_relative_to(ROOT / "artifacts")
+                and folder != ROOT / "artifacts"
+            ), "quality capture requires existing isolated artifacts data and cache"
+            assert folder.stat().st_uid == os.getuid()
     assets, fixed, cache = model_cache(package, Path(environment["XDG_CACHE_HOME"]))
     for kind in ("model", "model_license"):
         assets.verify_file(cache / fixed[kind]["file"], fixed[kind])
@@ -165,6 +200,8 @@ def run(arguments):
 
     def remaining():
         value = deadline - time.monotonic()
+        if capture is not None:
+            value = min(value + capture.elapsed, capture.work_deadline - time.monotonic())
         assert value > 0, "Hy package lifecycle exhausted its 240-second budget"
         return value
 
@@ -179,7 +216,7 @@ def run(arguments):
 
     # User installation and relocation are part of this acceptance. The package
     # is immutable; only this test's HOME/config and prepared model data are used.
-    with tempfile.TemporaryDirectory(prefix="hy-package-home-", dir=arguments.output) as home:
+    with fixture_home(arguments.output, capture, report) as home:
         environment.update(HOME=home, XDG_CONFIG_HOME=str(Path(home) / "config"))
         subprocess.run(
             [sys.executable, str(package / "install.py"), "install"],
@@ -223,6 +260,7 @@ def run(arguments):
         previous_worker = None
         previous_generation = None
         seen_workers = {}
+        seen_hosts = {}
         initial_free = shutil.disk_usage(paths.data).free
         report.update(minimumDataFreeBytes=initial_free, peakWorkerRssBytes=0)
 
@@ -281,6 +319,10 @@ def run(arguments):
             found = []
             for pid in owned:
                 try:
+                    if capture is not None and (Path("/proc") / str(pid) / "exe").samefile(
+                        package / "app/TypeLay.Linux"
+                    ):
+                        seen_hosts[pid] = process_identity(pid)
                     if worker_generation(pid, package, paths.data / "components") is not None:
                         found.append(pid)
                         info = (
@@ -364,8 +406,97 @@ def run(arguments):
                     "workerCount": 1,
                 }
             )
+            return value
 
-        def activate(name):
+        def collect_and_restart(names, expected, log):
+            nonlocal process, previous_worker
+            remaining()
+            assert workers() == [previous_worker]
+            generation = paths.models.parent.resolve(strict=True)
+            assert generation.name == previous_generation
+            inventory = (generation / "models/installed.json").read_bytes()
+            settings = paths.settings.read_bytes()
+            original = {
+                pid: identity
+                for pid, identity in seen_hosts.items()
+                if process_identity(pid) == identity
+            }
+            assert len(original) == 1, "expected one precisely owned host before collection"
+            original[previous_worker] = seen_workers[previous_worker]
+            original[process.pid] = process_identity(process.pid)
+            assert all(identity is not None for identity in original.values())
+            assert control(paths, "quit", timeout=min(3, remaining())) is True
+            assert process.wait(timeout=min(7, remaining())) == 0
+            wait(
+                lambda: all(
+                    process_identity(pid) != identity for pid, identity in original.items()
+                ),
+                "original host or worker exit not confirmed",
+                maximum=7,
+            )
+            assert not any(os.path.lexists(path) for path in (paths.control, paths.native)), (
+                "original desktop sockets were not retired"
+            )
+
+            def unchanged():
+                assert paths.models.parent.resolve(strict=True) == generation
+                assert (generation / "models/installed.json").read_bytes() == inventory
+                assert paths.settings.read_bytes() == settings == saved_settings
+
+            with exclusive_inventory(paths, generation), patch.dict(os.environ, environment):
+                unchanged()
+                for name in names:
+                    remaining()
+                    capture.run(name, generation, package / "worker/run_worker.py")
+                    unchanged()
+            remaining()
+            process = subprocess.Popen(
+                [str(paths.launcher), "--background"], env=environment, stdout=log, stderr=log
+            )
+
+            def restarted():
+                unchanged()
+                current_workers = workers()
+                value = state()
+                assert value.get("setup", {}).get("installation") != "failed"
+                return (
+                    value
+                    if (
+                        value.get("modelReady") is True
+                        and value.get("modelDirections") == expected["modelDirections"]
+                        and value.get("modelPackages") == expected["modelPackages"]
+                        and not value.get("modelCleanupPending")
+                        and value.get("setup", {}).get("installation") == "idle"
+                        and len(current_workers) == 1
+                        and worker_generation(
+                            current_workers[0], package, paths.data / "components"
+                        )
+                        == generation.name
+                        and all(
+                            process_identity(pid) != identity for pid, identity in original.items()
+                        )
+                    )
+                    else None
+                )
+
+            wait(restarted, "same-generation real hello did not become ready", remaining())
+            previous_worker = workers()[0]
+            unchanged()
+            report["stages"].append(
+                {
+                    "stage": "restart-after-" + "-and-".join(names),
+                    "generation": generation.name,
+                    "inventoryUnchanged": True,
+                    "settingsUnchanged": True,
+                    "originalProcessesExited": True,
+                    "socketsRetired": True,
+                    "workerCount": 1,
+                    "activePackages": expected["modelPackages"],
+                }
+            )
+            assert control(paths, "settings") is True
+
+        def activate(name, *, package_control=False):
             node = wait(lambda: named(process.pid, name), "GTK package control missing: " + name)
 
             def enabled():
@@ -380,6 +511,14 @@ def run(arguments):
                 )
 
             wait(enabled, "GTK package control not enabled: " + name)
+            if package_control:
+                # The ready view can collapse this section while publishing
+                # the new action. Observe that action before revealing it.
+                manager = wait(
+                    lambda: named(process.pid, "本地翻译组件管理"), "package management missing"
+                )
+                if not manager.get_state_set().contains(Atspi.StateType.EXPANDED):
+                    activate("本地翻译组件管理")
             assert Atspi.Component.grab_focus(node.get_component_iface()), name
 
             def showing():
@@ -391,12 +530,7 @@ def run(arguments):
 
         def action(title, label):
             select_settings_page(process.pid, "应用支持", timeout=min(15, remaining()))
-            manager = wait(
-                lambda: named(process.pid, "本地翻译组件管理"), "package management missing"
-            )
-            if not manager.get_state_set().contains(Atspi.StateType.EXPANDED):
-                activate("本地翻译组件管理")
-            activate(title + "：" + label)
+            activate(title + "：" + label, package_control=True)
             wait(
                 lambda: named(process.pid, label.rstrip("…") + "？"), "confirmation dialog missing"
             )
@@ -404,10 +538,14 @@ def run(arguments):
 
         try:
             with (arguments.output / "desktop.log").open("w") as log:
+                if capture is not None:
+                    remaining()
                 process = subprocess.Popen(
                     [str(paths.launcher), "--background"], env=environment, stdout=log, stderr=log
                 )
-                ready(ARGOS, ["zh_en", "en_zh"], "original-argos")
+                argos = ready(ARGOS, ["zh_en", "en_zh"], "original-argos")
+                if capture is not None:
+                    collect_and_restart(("alternative",), argos, log)
                 assert control(paths, "settings") is True
                 wait(
                     lambda: row()
@@ -418,7 +556,9 @@ def run(arguments):
                     "shipped Hy runtime unavailable",
                 )
                 action("Hy-MT2 1.8B · 中文多语", "下载并使用…")
-                ready([HY], DIRECTIONS, "install-and-use-hy")
+                hy = ready([HY], DIRECTIONS, "install-and-use-hy")
+                if capture is not None:
+                    collect_and_restart(("styled", "glossary"), hy, log)
                 request = {
                     "id": 1,
                     "operation": "translateEditorSnapshot",
@@ -480,6 +620,10 @@ def run(arguments):
                     twelveDirectionQualityAcceptance=False,
                 )
         finally:
+            if capture is not None:
+                # A repeated outer TERM must not interrupt owned-process cleanup.
+                signal.signal(signal.SIGTERM, lambda signum, frame: None)
+                signal.signal(signal.SIGINT, lambda signum, frame: None)
             cleanup_deadline = time.monotonic() + 18
             if process is not None and process.poll() is None:
                 try:
@@ -498,6 +642,13 @@ def run(arguments):
             def surviving_workers():
                 alive = []
                 for pid, identity in seen_workers.items():
+                    if capture is not None:
+                        try:
+                            if process_identity(pid) == identity:
+                                alive.append(pid)
+                        except (OSError, ValueError, IndexError):
+                            alive.append(pid)
+                        continue
                     try:
                         info = (
                             (Path("/proc") / str(pid) / "stat")
@@ -517,24 +668,55 @@ def run(arguments):
                 report["status"] = "failed"
                 for pid in survivors:
                     try:
-                        os.kill(pid, signal.SIGTERM)
+                        if capture is None or process_identity(pid) == seen_workers[pid]:
+                            os.kill(pid, signal.SIGTERM)
                     except ProcessLookupError:
                         pass
+                    except (OSError, ValueError, IndexError):
+                        if capture is None:
+                            raise
                 grace = min(cleanup_deadline, time.monotonic() + 2)
                 while surviving_workers() and time.monotonic() < grace:
                     time.sleep(0.05)
                 for pid in surviving_workers():
                     try:
-                        os.kill(pid, signal.SIGKILL)
+                        if capture is None or process_identity(pid) == seen_workers[pid]:
+                            os.kill(pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
+                    except (OSError, ValueError, IndexError):
+                        if capture is None:
+                            raise
                 while surviving_workers() and time.monotonic() < cleanup_deadline:
                     time.sleep(0.05)
             report["workerExitConfirmed"] = not surviving_workers()
+            if capture is not None:
+                try:
+                    report["hostExitConfirmed"] = (
+                        process is not None
+                        and process.poll() is not None
+                        and all(
+                            process_identity(pid) != identity
+                            for pid, identity in seen_hosts.items()
+                        )
+                    )
+                except (OSError, ValueError, IndexError):
+                    report["hostExitConfirmed"] = False
+                if not report["hostExitConfirmed"] or not capture.report["workerExitConfirmed"]:
+                    report["status"] = "failed"
+                report["collectionWallSeconds"] = round(capture.elapsed, 3)
+                report["nonCollectionSeconds"] = round(
+                    time.monotonic() - started - capture.elapsed, 3
+                )
+                report["wallBudgetSeconds"] = WORK_SECONDS + 30
             report["peakAdditionalDiskBytes"] = initial_free - report["minimumDataFreeBytes"]
             report["elapsedSeconds"] = round(time.monotonic() - started, 3)
             (arguments.output / "hy-package-result.json").write_text(json.dumps(report, indent=2))
         assert report["status"] == "passed", "owned model process cleanup was not confirmed"
+        if capture is None:
+            (arguments.output / "desktop-result.json").write_text(json.dumps(report, indent=2))
+    if capture is not None:
+        (arguments.output / "hy-package-result.json").write_text(json.dumps(report, indent=2))
         (arguments.output / "desktop-result.json").write_text(json.dumps(report, indent=2))
 
 

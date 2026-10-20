@@ -117,7 +117,7 @@ public interface ITranslationService
 }
 
 // Created only after this connection's strict hello matched its immutable load plan.
-// Schema 1/2 hello omits package versions and therefore grants no such projection.
+// A legacy hello without verified package versions grants no such projection.
 public sealed class VerifiedModelIdentity
 {
     internal VerifiedModelIdentity(ModelLoadPlan plan)

@@ -410,11 +410,14 @@ public sealed class ModelClientReplacementTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task SuccessorOrDisposePreventsOldHyOperationFromRestoringItself(bool dispose)
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task SuccessorOrDisposePreventsOldHyOperationFromRestoringItself(bool dispose, bool synchronousExit)
     {
         using var peers = new Peers();
+        peers.BeforeStart = (name, peer) => peer.ConfirmExitSynchronously = synchronousExit && name == "held-hello-hy";
         using var client = peers.Client();
         await client.StartAsync();
         bool restored = false;
@@ -430,7 +433,10 @@ public sealed class ModelClientReplacementTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => replacing);
         Assert.False(restored);
         Assert.Equal(dispose ? 2 : 3, peers.Started.Count);
+        Assert.True(peers.Started[1].Exited);
         Assert.Equal(!dispose, client.Ready);
+        if (!dispose)
+            Assert.Equal("new-hy", (await client.TranslateTextAsync("稍后", new("zh", "fr"))).Text);
     }
 
     [Fact]
@@ -607,6 +613,10 @@ public sealed class ModelClientReplacementTests
         {
             get; set;
         }
+        public bool ConfirmExitSynchronously
+        {
+            get; set;
+        }
         public TaskCompletionSource<bool>? ExitGate
         {
             get; set;
@@ -630,7 +640,11 @@ public sealed class ModelClientReplacementTests
                 await gate.Task.WaitAsync(cancellationToken);
             if (!Process.HasExited)
                 Process.Kill(true);
-            await Process.WaitForExitAsync(cancellationToken);
+            // Exercise cancellation reentrancy when exit proof needs no async yield.
+            if (ConfirmExitSynchronously)
+                Assert.True(Process.WaitForExit(5000));
+            else
+                await Process.WaitForExitAsync(cancellationToken);
         }
         public void Dispose()
         {

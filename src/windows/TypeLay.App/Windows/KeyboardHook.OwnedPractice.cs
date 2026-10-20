@@ -287,9 +287,10 @@ internal sealed partial class KeyboardHook
         public uint Data, Flags, Time;
         public nuint Extra;
     }
+    internal bool OwnedEditorTraceEnabled => !string.IsNullOrWhiteSpace(_tracePath);
     internal void QueueOwnedEditorTrace(object record)
     {
-        if (string.IsNullOrWhiteSpace(_tracePath))
+        if (!OwnedEditorTraceEnabled)
             return;
         if (Interlocked.Increment(ref _shortcutTraceCount) > 64)
         {

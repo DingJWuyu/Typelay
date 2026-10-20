@@ -30,7 +30,7 @@ TypeLay.Worker 是独立 Python 进程，拥有本地模型校验、文本结构
 
 目录版本与 `installed.json` 版本独立。`ReadInstallationSelection` 只读库存意图；schema3 的 packages 每项含精确 id/version、非空方向子集和包根相对 files 清单，允许库存备选覆盖同一方向。`ReadActiveSelection` 单独要求非空、无重复的 activePackages ID 列表，只接受原 Argos 包的非空子集或恰一个 Hy 包，拒绝混合家族、多 Hy 与方向冲突。schema3 包根是 `models/packages/<id>/<version>/`；原 schema1/2 的默认选择、文件位置与校验要求保持兼容。读取意图不校验磁盘，也不授予 Ready。
 
-worker 先规范校验全部库存元数据，只扫描及完整 SHA 校验 active 包的精确文件集合，全部验证后才导入并加载相应模型；inactive 包不读取模型文件、不导入后端。schema3 Argos 还核对 metadata 的来源/目标/版本及安装器五项必需文件。普通 hello 不做推理，只在全部 active 加载成功后返回方向；schema3 另返回已加载包 identity，旧 schema1/2 hello 不变。停止或启动失败释放已加载资源，不以安装标记存在代替验证。Auto、同语和人工追加判断继续先于缺方向反馈，无静默中转。
+worker 先规范校验全部库存元数据，只扫描及完整 SHA 校验 active 包的精确文件集合，全部验证后才导入并加载相应模型；inactive 包不读取模型文件、不导入后端。schema3 Argos 还核对 metadata 的来源/目标/版本及安装器五项必需文件。普通 hello 不做推理，只在全部 active 加载成功后返回方向；schema3 另返回已加载包 identity；schema1/2 仅在同样严格的文件集合、SHA、五项必需文件及 metadata 来源/目标/版本校验后追加 packages，否则保持原普通 hello。身份校验只读，不迁移库存；原完整性失败仍拒绝启动。停止或启动失败释放已加载资源，不以安装标记存在代替验证。Auto、同语和人工追加判断继续先于缺方向反馈，无静默中转。
 
 Hy 的 Linux x86_64 与 Windows x64 路径使用 ABI5 的固定十二方向，实际选择的方向共享一个模型 handle；Windows 开发候选已接通生产 DLL 闭包、加载器与包操作，真实发行链仍待验证。打开模型前必须解析唯一版本化导出 `hy_open_v5`，旧 ABI2/3/4 adapter 不得进入加载或 hello。新安装登记完整十二方向；已有合法方向子集在选择和修复时保持原意图，hello 只报告实际加载子集。可信 native 与 CPU 闭包随 worker 发布，GGUF 和模型许可证属于安装包。生产门只消费随包固定锁和 production-adapter 清单，不依赖源码、header、原下载 ZIP 或测试报告；CPU 选择使用官方 score，并检查实际已映射库的精确路径与字节身份，拒绝异源预加载库。共享 native 源码在 `src/shared/TypeLay.Worker/native/hy/`，构建测试与生产共用，audit 仅 fixture 宏启用。构建入口和 runtime-only 交付见 [Linux 开发](../platforms/linux/development.md#hy-worker-可选构建)及 [Windows 开发](../platforms/windows/development.md#hy-生产载荷候选构建)。
 
@@ -40,7 +40,7 @@ Hy 保留通用 8192 UTF-16 文本上限，并在结构分段前对整请求加 
 
 共享风格状态与持久化已接通，新增风格入口仍受产品发布门控制：旧设置 Styles=null 保持普通行为，首次明确选择建立 Natural 全局默认及应用覆盖；删除覆盖重新继承全局，无法确认应用身份时只用全局，不借用上一应用。保存须经控制器验证产品发布策略、真实 Hy 活连接的 styledTranslationVersion=1、设置版本及当前源 token/观察代次；没有当前会话也可保存全局，但不能绕过能力与发布验证。原 settings 原子落盘成功后先同步应用配置、撤销旧资格并从原源重译，再发独立 StyleChanged；不广播普通 Configure/settings，也不让旧全量表单反向覆盖。人工编辑、回源中、待接受人工稿及续写种子均拒绝保存风格；明确重新生成后才解除。活动教程/写回/直接任务期间暂拒绝变更，已有退休 ACK 等待结束后重验原保存上下文。每个会话和 Direct 任务冻结风格、原源、方向及配置代次；Direct 应用身份仅沿原成功命令 lease/capture 传递。换到非 Hy 时已保存偏好休眠，普通 Argos 保持原请求，新风格保存拒绝且不换模型；技术能力不代表已通过质量或已开放 Windows/Linux UI。入口开放前，须以实际 Q4_K_M、greedy、1024 context 和192输出 token 配置完成自然/正式成对验证，检查风格效果、原义、否定、状态、时态与 CPU 响应，按已验证方向开放；提示词存在和软件合同通过不构成质量证据。术语表独立接口见下段。
 
-共享产品发布策略是编译期的操作与精确包 ID/版本/方向表，风格、术语、另述当前全部关闭；技术 hello 不授予质量放行。管理入口发布与实际模型采用分别判断，状态查询和命令共用资格，普通/Direct/Append 的专用分发再次核验。只有 schema3 的真实 hello 精确核对 packages/version/directions 后才生成本连接身份；发送在 ModelClient 同一 owner 锁内绑定该身份，旧身份不能借模型切换派发。Auto 必须覆盖该已验证 active 身份内通往目标的全部可能方向，不新增检测请求。schema1/2 保留原普通 Ready/翻译，但不猜包版本授予新操作；旧 Argos 用户的另述入口仍需后续合法库存升级或明确身份握手。双端设置与浮层风格/另述会话入口已接线，主动加词使用独立辅助输入合同；受控注入策略测试不构成真实模型质量验收。
+共享产品发布策略是编译期的操作与精确包 ID/版本/方向表，风格、术语、另述当前全部关闭；技术 hello 不授予质量放行。管理入口发布与实际模型采用分别判断，状态查询和命令共用资格，普通/Direct/Append 的专用分发再次核验。只有真实 hello 精确核对 packages/version/directions 后才生成本连接身份；发送在 ModelClient 同一 owner 锁内绑定该身份，旧身份不能借模型切换派发。Auto 必须覆盖该已验证 active 身份内通往目标的全部可能方向，不新增检测请求。schema1/2 保留原普通 Ready/翻译；完整安装可经 worker 只读校验得到精确身份，缺少身份的旧安装仍不授予新操作，不从目录意图猜包版本。显式包修复仍沿既有 schema3 事务，启动不触发修复、迁移或下载。双端设置与浮层风格/另述会话入口已接线，主动加词使用独立辅助输入合同；受控注入策略测试不构成真实模型质量验收。
 
 恢复操作独立于新增能力发布：用户明确确认“重置翻译风格”才原子清除全局及所有应用覆盖到 Styles=null；Natural 不表示重置。离线或非 Hy 可移除休眠偏好，有活动会话仍保留人工稿、IME、教程、写回、退休及原 token/源观察门，无变化不写盘或重算。重置保留术语并继续其采用门，不静默清规则。术语恢复只允许删除已提交规则的严格原样子集或清空，删除豁免保存发布门，不豁免残余规则的模型采用门。
 

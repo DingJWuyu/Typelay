@@ -6,7 +6,7 @@ namespace TypeLay.App;
 
 internal enum OwnedEditorEvent
 {
-    Admitted, AdmissionRejected, FenceQueued, FenceAck, SourceLeftAck, SourceInvalidAck,
+    Admitted, AdmissionRejected, FenceQueued, FenceSendStarted, FenceSendCompleted, FenceAck, SourceLeftAck, SourceInvalidAck,
     Activation, UiApp, UiRoot, UiFocusGained, UiFocusLost, UiActivation, Cancelled, Complete, PipeFailure
 }
 internal enum OwnedEditorReason

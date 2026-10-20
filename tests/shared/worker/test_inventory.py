@@ -158,6 +158,148 @@ class InventoryTests(unittest.TestCase):
         (self.root / "installed.json").write_text(json.dumps(value), encoding="utf8")
         return value
 
+    def legacy_with_metadata(self, schema=1, selected=("zh_en", "en_zh")):
+        for direction in selected:
+            root = self.root / direction
+            for name, content in (
+                (
+                    "metadata.json",
+                    json.dumps(
+                        {
+                            "from_code": direction[:2],
+                            "to_code": direction[3:],
+                            "package_version": "1.9",
+                        }
+                    ),
+                ),
+                ("model/config.json", "{}"),
+                ("model/shared_vocabulary.json", "[]"),
+            ):
+                (root / name).write_text(content, encoding="utf8")
+        self.entries = [
+            {
+                "path": path.relative_to(self.root).as_posix(),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+            for direction in selected
+            for path in (self.root / direction).rglob("*")
+            if path.is_file()
+        ]
+        self.save(schema=schema, directions=list(selected))
+
+    def test_legacy_complete_verified_files_report_actual_identity_without_migration(self):
+        for schema, selected in ((1, ("zh_en", "en_zh")), (2, ("en_zh",))):
+            with self.subTest(schema=schema):
+                self.legacy_with_metadata(schema, selected)
+                marker = (self.root / "installed.json").read_bytes()
+                result, response, loaded = self.start_worker()
+                self.assertEqual((result, loaded), (0, list(selected)))
+                self.assertEqual(
+                    response.get("packages"),
+                    [
+                        {
+                            "id": "argos-" + direction.replace("_", "-"),
+                            "version": "1.9",
+                            "directions": [direction],
+                        }
+                        for direction in selected
+                    ],
+                )
+                self.assertEqual((self.root / "installed.json").read_bytes(), marker)
+                self.assertFalse((self.root / "packages").exists())
+
+    def test_legacy_unproven_metadata_keeps_ordinary_ready_without_identity(self):
+        for fault in (
+            "missing",
+            "uninventoried",
+            "invalid-json",
+            "version",
+            "direction",
+            "extra",
+            "hardlink",
+        ):
+            with self.subTest(fault=fault):
+                self.legacy_with_metadata()
+                path = self.root / "en_zh/metadata.json"
+                if fault == "missing":
+                    path.unlink()
+                elif fault == "invalid-json":
+                    path.write_text("not-json")
+                elif fault == "version":
+                    path.write_text(
+                        json.dumps({"from_code": "en", "to_code": "zh", "package_version": "1.8"})
+                    )
+                elif fault == "direction":
+                    path.write_text(
+                        json.dumps({"from_code": "zh", "to_code": "en", "package_version": "1.9"})
+                    )
+                elif fault == "extra":
+                    (self.root / "en_zh/uninventoried").write_text("extra")
+                elif fault == "hardlink":
+                    os.link(path, self.root / "metadata-link")
+                entries = [
+                    entry for entry in self.entries if entry["path"] != "en_zh/metadata.json"
+                ]
+                if path.exists() and fault != "uninventoried":
+                    entries.append(
+                        {
+                            "path": "en_zh/metadata.json",
+                            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        }
+                    )
+                self.entries = entries
+                self.save()
+                try:
+                    result, responses, loaded = self.start_worker(
+                        request={
+                            "id": 2,
+                            "op": "translate",
+                            "text": "Hello there",
+                            "source": "en",
+                            "target": "zh",
+                        }
+                    )
+                    self.assertEqual((result, loaded), (0, ["zh_en", "en_zh"]))
+                    self.assertEqual(responses[0]["status"], "ready")
+                    self.assertNotIn("packages", responses[0])
+                    self.assertEqual(responses[1]["status"], "translated")
+                finally:
+                    (self.root / "en_zh/uninventoried").unlink(missing_ok=True)
+                    (self.root / "metadata-link").unlink(missing_ok=True)
+
+    @unittest.skipIf(sys.platform == "win32", "Windows cannot create these legacy file names")
+    def test_legacy_noncanonical_manifest_never_grants_package_identity(self):
+        for name in ("extra.", "CON", "a:b"):
+            with self.subTest(name=name):
+                self.legacy_with_metadata()
+                path = self.root / "en_zh/model" / name
+                path.write_text("inventoried legacy extra")
+                self.entries.append(
+                    {
+                        "path": path.relative_to(self.root).as_posix(),
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    }
+                )
+                self.save()
+                try:
+                    result, response, loaded = self.start_worker()
+                    self.assertEqual((result, loaded), (0, ["zh_en", "en_zh"]))
+                    self.assertNotIn("packages", response)
+                finally:
+                    path.unlink()
+
+    def test_legacy_metadata_hash_failure_never_downgrades_to_ordinary_ready(self):
+        for schema in (1, 2):
+            with self.subTest(schema=schema):
+                self.legacy_with_metadata(schema)
+                (self.root / "en_zh/metadata.json").write_text("changed after installation")
+                self.assertEqual(self.start_worker(), (2, None, []))
+
+    def test_verified_legacy_identity_waits_for_all_native_loads(self):
+        self.legacy_with_metadata()
+        result, response, loaded = self.start_worker(fail_load="en_zh")
+        self.assertEqual((result, response, loaded), (2, None, ["zh_en", "en_zh"]))
+
     def test_schema3_loads_only_active_inventory_and_reports_its_package(self):
         self.schema3()
         shutil.rmtree(self.root / "packages/argos-en-zh")
@@ -312,6 +454,7 @@ class InventoryTests(unittest.TestCase):
                 self.assertEqual(loaded, expected)
                 self.assertEqual(response["status"], "ready")
                 self.assertEqual(response["directions"], expected)
+                self.assertNotIn("packages", response)
                 self.assertNotIn("styledTranslationVersion", response)
 
     def test_second_native_model_load_failure_never_advertises_any_direction(self):
