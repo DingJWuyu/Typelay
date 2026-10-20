@@ -40,7 +40,7 @@ internal static class BrokerQueueProbe
                     if (!await Task.Run(() => release.WaitOne(TimeSpan.FromSeconds(10)), deadline.Token))
                         return 4;
                 }
-                if (request.Op == "return")
+                if (request.Op is "return" or "return-glossary")
                 {
                     returned.Set();
                     // Deliberately offer a late success. The production client
@@ -49,7 +49,7 @@ internal static class BrokerQueueProbe
                         await Task.Delay(1, deadline.Token);
                 }
                 await Wire.WriteAsync(output, new BrokerResponse(BrokerProtocol.Version, request.Id,
-                    request.Op == "hello" ? "ready" : request.Op == "return" ? "focused" : "observed"), deadline.Token);
+                    request.Op == "hello" ? "ready" : request.Op is "return" or "return-glossary" ? "focused" : "observed"), deadline.Token);
             }
         }
         catch (Exception error) when (error is IOException or OperationCanceledException) { return 0; }

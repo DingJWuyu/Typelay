@@ -349,8 +349,9 @@ static gboolean language_handoff_current(JsonObject *view) {
 }
 static void close_language_menu(JsonObject *view) {
     GtkWidget *menu = overlay.menu;
-    /* Only the user's close/Apply/Escape inside this live language family may
-     * hand focus to its trigger. Outside focus and expired views stay untouched. */
+    /* Closing this live language family may hand focus to its trigger, including
+     * before a host update disables its choices. Outside focus and expired views
+     * stay untouched. */
     if (language_handoff_current(view) && gtk_widget_get_mapped(menu) && language_focus_current())
         gtk_widget_grab_focus(overlay.language);
     if (overlay.view == view && overlay.menu == menu && menu) gtk_widget_hide(menu);
@@ -484,8 +485,14 @@ static gboolean render_languages(JsonObject *view) {
     gboolean reset = !gtk_widget_get_visible(overlay.menu) || !valid;
     JsonObject *rendered = json_object_ref(overlay.view);
     GtkWidget *source_widget = g_object_ref(overlay.source), *target_widget = g_object_ref(overlay.destination);
-    overlay.setting_languages = TRUE;
-    gboolean current = sync_language(source_widget, &overlay.source_languages, source_choices, source, source_label, reset, rendered)
+    /* A missing choice catalogue disables both selectors. Move an existing
+     * owned interaction before model replacement or sensitivity clears focus;
+     * never recover focus from NULL or an outside destination. */
+    if (!valid && language_handoff_current(rendered) && language_focus_current())
+        close_language_menu(rendered);
+    gboolean current = overlay.view == rendered;
+    if (current) overlay.setting_languages = TRUE;
+    current = current && sync_language(source_widget, &overlay.source_languages, source_choices, source, source_label, reset, rendered)
         && sync_language(target_widget, &overlay.target_languages, target_choices, target, target_label, reset, rendered);
     if (current) { gtk_widget_set_sensitive(source_widget, valid); current = overlay.view == rendered; }
     if (current) { gtk_widget_set_sensitive(target_widget, valid); current = overlay.view == rendered; }

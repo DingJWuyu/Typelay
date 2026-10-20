@@ -367,11 +367,37 @@ static void language_item_bind(GtkSignalListItemFactory *factory, GtkListItem *i
 }
 static void language_popup_mapped(GtkWidget *popup, gpointer data) {
     GtkWidget *button = data;
-    if (!active() || (button != overlay.source && button != overlay.destination)) return;
-    if (GTK_WIDGET(gtk_menu_button_get_popover(GTK_MENU_BUTTON(button))) != popup) return;
+    if ((button != overlay.source && button != overlay.destination)
+        || !language_handoff_current(overlay.view) || !gtk_widget_get_mapped(popup)
+        || !gtk_menu_button_get_active(GTK_MENU_BUTTON(button))
+        || GTK_WIDGET(gtk_menu_button_get_popover(GTK_MENU_BUTTON(button))) != popup) return;
+    GtkWidget *focus = gtk_window_get_focus(GTK_WINDOW(overlay.top));
+    if (!focus || !gtk_widget_get_mapped(focus)
+        || (focus != button && !gtk_widget_is_ancestor(focus, button))) return;
+    g_object_ref(button);
+    g_object_ref(popup);
+    JsonObject *view = json_object_ref(overlay.view);
+    GtkListView *list = g_object_ref(language_list(button));
     guint selected = gtk_single_selection_get_selected(language_selection(button));
-    if (selected != GTK_INVALID_LIST_POSITION)
-        gtk_list_view_scroll_to(language_list(button), selected, GTK_LIST_SCROLL_FOCUS, NULL);
+    if (selected != GTK_INVALID_LIST_POSITION) {
+        /* GTK 4.22 scroll_to updates the focus tracker, but only grabs an item
+         * when focus is already inside the list. Enter this user-opened popup
+         * explicitly; otherwise Home/Down still navigate from its button. */
+        gtk_list_view_scroll_to(list, selected, GTK_LIST_SCROLL_FOCUS, NULL);
+        if ((button == overlay.source || button == overlay.destination)
+            && language_handoff_current(view) && gtk_widget_get_mapped(popup)
+            && gtk_menu_button_get_active(GTK_MENU_BUTTON(button))
+            && language_list(button) == list) {
+            focus = gtk_window_get_focus(GTK_WINDOW(overlay.top));
+            if (focus && gtk_widget_get_mapped(focus)
+                && (focus == button || gtk_widget_is_ancestor(focus, button)))
+                gtk_widget_grab_focus(GTK_WIDGET(list));
+        }
+    }
+    g_object_unref(list);
+    json_object_unref(view);
+    g_object_unref(popup);
+    g_object_unref(button);
 }
 static void close_language_popup(GtkWidget *widget) {
     GtkWidget *button = g_object_ref(widget);
@@ -485,8 +511,14 @@ static gboolean render_languages(JsonObject *view) {
     gboolean reset = !gtk_widget_get_visible(overlay.menu) || !valid;
     JsonObject *rendered = json_object_ref(overlay.view);
     GtkWidget *source_widget = g_object_ref(overlay.source), *target_widget = g_object_ref(overlay.destination);
-    overlay.setting_languages = TRUE;
-    gboolean current = sync_language(source_widget, &overlay.source_languages, source_choices, source, source_label, reset, rendered)
+    /* A missing choice catalogue disables both selectors. Move an existing
+     * owned interaction before model replacement or sensitivity clears focus;
+     * never recover focus from NULL or an outside destination. */
+    if (!valid && language_handoff_current(rendered) && language_focus_current())
+        close_language_menu(rendered);
+    gboolean current = overlay.view == rendered;
+    if (current) overlay.setting_languages = TRUE;
+    current = current && sync_language(source_widget, &overlay.source_languages, source_choices, source, source_label, reset, rendered)
         && sync_language(target_widget, &overlay.target_languages, target_choices, target, target_label, reset, rendered);
     if (current) { gtk_widget_set_sensitive(source_widget, valid); current = overlay.view == rendered; }
     if (current) { gtk_widget_set_sensitive(target_widget, valid); current = overlay.view == rendered; }

@@ -813,7 +813,7 @@ def check_language_options(
     phases = evidence["languagePhases"] = []
 
     def observe(value):
-        # Only the first three existing render/input boundaries. Do not retain
+        # Only the first six existing render/input boundaries. Do not retain
         # source/candidate text, labels, or add observation requests or sleeps.
         return {
             "observedAtMonoMs": value.get("observedAtMs"),
@@ -828,6 +828,8 @@ def check_language_options(
                         "enabled",
                         "focused",
                         "selected",
+                        "popupVisible",
+                        "popupFocused",
                         "x",
                         "y",
                         "width",
@@ -844,8 +846,17 @@ def check_language_options(
         nonlocal revision
         revision += 1
         phase = None
-        if revision <= 3:
-            phase = {"stage": ("initial", "menu-renew", "choice-renew")[revision - 1]}
+        if revision <= 6:
+            phase = {
+                "stage": (
+                    "initial",
+                    "menu-renew",
+                    "choice-renew",
+                    "draft-renew",
+                    "saved-update",
+                    "second-choice",
+                )[revision - 1]
+            }
             phases.append(phase)
         result = render_preview(
             client,
@@ -886,7 +897,7 @@ def check_language_options(
             (control["x"] + control["width"] / 2, control["y"] + control["height"] / 2),
             dimensions,
         )
-        phase = phases[-1] if revision <= 3 else {}
+        phase = phases[-1] if revision <= 6 else {}
         if phase:
             phase.update(control=name, point=point, beforeClick=observe(actual))
         if phase:
@@ -907,7 +918,7 @@ def check_language_options(
     def select(name, index):
         render()
         click(name)
-        if revision == 3:
+        if revision in (3, 6):
             # Read the existing report once, without waiting for a fresh frame.
             # Its timestamp distinguishes a stale sample from post-click focus.
             try:
@@ -915,17 +926,22 @@ def check_language_options(
             except (OSError, ValueError, AssertionError):
                 phases[-1]["afterClickObservationUnavailable"] = True
             phases[-1]["keysStartedAtMonoMs"] = time.monotonic_ns() // 1_000_000
+        if client.hello["backend"] == "gtk4":
+            wait_for(
+                lambda: controls().get(name, {}).get("popupFocused"),
+                "opened language popup did not acquire real list focus",
+            )
         key("Home")
         for _ in range(index):
             key("Down")
         key("Return")
-        if revision == 3:
+        if revision in (3, 6):
             phases[-1]["keysReturnedAtMs"] = now_ms()
 
         def selected():
             actual = state()
             value = actual.get("overlayControls", {})
-            if revision == 3 and "afterKeys" not in phases[-1]:
+            if revision in (3, 6) and "afterKeys" not in phases[-1]:
                 phases[-1]["afterKeys"] = observe(actual)
             return value if value.get(name, {}).get("selected") == index else None
 
@@ -1001,11 +1017,22 @@ def check_language_options(
     )
     assert render()[trigger]["text"] == "Saved Japanese → Saved Korean"
     view["languageChoices"] = {}
-    assert render()[trigger]["text"] == "Saved Japanese → Saved Korean"
+    unavailable = render()
+    assert unavailable[trigger]["text"] == "Saved Japanese → Saved Korean"
+    if client.hello["backend"] in ("gtk3", "gtk4"):
+        assert unavailable[trigger]["focused"], "disabling choices lost owned language focus"
+        assert not unavailable[menu]["visible"]
+        assert not unavailable[source_control]["enabled"]
+        assert not unavailable[target_control]["enabled"]
     view["languageChoices"] = choices
     view.pop("sourceLanguageLabel")
     view.pop("targetLanguageLabel")
-    assert render()[trigger]["text"] == "日本語 → 한국어"
+    restored = render()
+    assert restored[trigger]["text"] == "日本語 → 한국어"
+    if client.hello["backend"] in ("gtk3", "gtk4"):
+        assert restored[trigger]["focused"], "restored choices lost owned trigger focus"
+        toggle(True, renew=False)
+        assert controls()[source_control]["focused"]
     view["sourceLanguage"] = "zz"
     actual = render()
     assert actual[trigger]["text"] == "zz（当前不可用） → 한국어"

@@ -164,6 +164,22 @@ class SettingsScrollCalibrationTests(unittest.TestCase):
             with self.subTest(change=change):
                 self.assertIsNone(settings_viewport_from_pane(initial, {**current, **change}))
 
+    def test_changed_layout_requires_a_new_unscrolled_basis_before_scrolling(self):
+        # A page switch or native window allocation can change the same pair.
+        # An old basis cannot authorize that new geometry, even when identities
+        # match; a separately observed unclipped first screen can.
+        layout = {
+            **self.initial,
+            "viewport": (202, 95, 440, 696),
+            "pane": (202, 95, 440, 696),
+            "frame": (0, 0, 668, 800),
+        }
+        scrolled = {**layout, "viewport": (-(2**31), -(2**31), 440, 696)}
+        self.assertIsNone(settings_viewport_from_pane(self.initial, scrolled))
+        self.assertEqual(settings_viewport_from_pane(layout, scrolled), layout["pane"])
+        # A failed/scrolled observation is never itself a replacement basis.
+        self.assertIsNone(settings_viewport_from_pane(scrolled, scrolled))
+
     def test_new_instance_requires_its_own_valid_first_screen_measurement(self):
         reopened = {
             **self.initial,

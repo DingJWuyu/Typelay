@@ -500,11 +500,14 @@ internal static partial class ContinuousTranslationCheck
             result.Stage = "ordinary-editor-control-return";
             int beforeReturn = broker.Captures;
             SendOrdinaryControlShortcut(0x41, out returnInputs, result.CleanupErrors);
-            await UntilAsync(() => broker.Returns == 1 && N.Focused() == (root, field), cancellation);
+            // A terminal denial cannot become a focused reply by waiting for a
+            // later unrelated focus change. Preserve it before the focus postcondition.
+            await UntilAsync(() => broker.Returns == 1, cancellation);
             returnStatus = broker.ReturnStatus;
             returnTargetMatches = broker.ReturnTarget == target;
             Require(returnTargetMatches == true, "ordinary-return-target-mismatch");
             Require(returnStatus == "focused", "ordinary-return-not-focused");
+            await UntilAsync(() => N.Focused() == (root, field), cancellation);
             // The observed capture must have started after the real Broker return
             // completed. Runtime must then expose the retained draft as editable.
             await UntilAsync(() => FreshSource(beforeReturn, 1) && ReadyPresentation() && editor.Text == draft, cancellation);
@@ -517,11 +520,12 @@ internal static partial class ContinuousTranslationCheck
             await ClickEditorAsync();
             Require(editor.Text == draft, "ordinary-draft-lost-on-reentry");
             SendOrdinaryControlShortcut(0x42, out editorExitInputs, result.CleanupErrors);
-            await UntilAsync(() => broker.Returns == 2 && N.Focused() == (root, field) && !overlay.IsVisible, cancellation);
+            await UntilAsync(() => broker.Returns == 2, cancellation);
             returnStatus = broker.ReturnStatus;
             returnTargetMatches = broker.ReturnTarget == target;
             Require(returnTargetMatches == true, "ordinary-editor-exit-return-target-mismatch");
             Require(returnStatus == "focused", "ordinary-editor-exit-return-not-focused");
+            await UntilAsync(() => N.Focused() == (root, field) && !overlay.IsVisible, cancellation);
             editorExitReturned = true;
             int afterEditorExit = broker.Captures;
             await UntilAsync(() =>

@@ -716,7 +716,7 @@ public sealed class ProductionForegroundWriteTests
             _pipeToken = broker.StartInfo.Environment["TYPELAY_PIPE_TOKEN"]!;
             _isolatedDirectory = isolatedDirectory;
         }
-        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null)
+        public static async Task<Desktop> Start(bool withoutNativeDll = false, bool owned = false, string? retirementProbe = null, string? returnFocus = null, string? returnTrace = null)
         {
             var deadline = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
             deadline.CancelAfter(TimeSpan.FromSeconds(30));
@@ -748,7 +748,7 @@ public sealed class ProductionForegroundWriteTests
                     }
                     finally { NativeLibrary.Free(library); }
                 }
-                broker = StartProcess(Path.Combine(directory, "TypeLay.Broker.dll"));
+                broker = StartProcessWithTrace(returnTrace, Path.Combine(directory, "TypeLay.Broker.dll"));
                 var desktop = new Desktop(fixture, broker, deadline, isolatedDirectory);
                 Assert.Equal("ready", (await desktop.Call(new(BrokerProtocol.Version, 0, "hello", ""))).Status);
                 return desktop;
@@ -923,7 +923,8 @@ public sealed class ProductionForegroundWriteTests
         public ValueTask DisposeAsync() => new(Stop(process));
     }
 
-    private static Process StartProcess(params string[] arguments)
+    private static Process StartProcess(params string[] arguments) => StartProcessWithTrace(null, arguments);
+    private static Process StartProcessWithTrace(string? trace, params string[] arguments)
     {
         var info = new ProcessStartInfo("dotnet")
         {
@@ -936,6 +937,8 @@ public sealed class ProductionForegroundWriteTests
             info.ArgumentList.Add(argument);
         info.Environment["TYPELAY_PIPE_TOKEN"] = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
         info.Environment.Remove("TYPELAY_TRACE");
+        if (trace is not null)
+            info.Environment["TYPELAY_TRACE"] = trace;
         return Process.Start(info) ?? throw new InvalidOperationException("Test process did not start.");
     }
     private static async Task Stop(Process process)

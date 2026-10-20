@@ -4331,9 +4331,34 @@ def run(arguments):
                             last_scroll_check["clipping"].append(observation)
                             clip_bounds = (clip.x, clip.y, clip.width, clip.height)
                             if role == Atspi.Role.VIEWPORT and clip_bounds[:2] == (-(2**31),) * 2:
-                                restored = settings_viewport_from_pane(
-                                    settings_scroll_calibration, settings_scroll_snapshot(ancestor)
-                                )
+                                measured = settings_scroll_snapshot(ancestor)
+                                initial = settings_scroll_calibration
+                                # Record only this gate's existing geometry and
+                                # identity comparisons, not accessible text or
+                                # proxy identities. A rejected basis stays rejected.
+                                last_scroll_check["calibration"] = {
+                                    "initial": {
+                                        key: initial[key]
+                                        for key in ("viewport", "pane", "frame", "showing", "alive")
+                                    }
+                                    if initial is not None
+                                    else None,
+                                    "current": {
+                                        key: measured[key]
+                                        for key in ("viewport", "pane", "frame", "showing", "alive")
+                                    }
+                                    if measured is not None
+                                    else None,
+                                    "sameProcess": bool(
+                                        initial and measured and initial["pid"] == measured["pid"]
+                                    ),
+                                    "sameAncestry": bool(
+                                        initial
+                                        and measured
+                                        and initial["ancestry"] == measured["ancestry"]
+                                    ),
+                                }
+                                restored = settings_viewport_from_pane(initial, measured)
                                 if restored is not None:
                                     x, y, width, height = restored
                                     contains_control = (
@@ -6876,7 +6901,6 @@ def run(arguments):
                             and not any(a["id"] == "Remove" for a in row["actions"]),
                             "an application still using the components was offered removal",
                         )
-                        calibrate_settings_scroll(settings_control(next_step_label))
                         settings_page("常规")
                         mode = settings_control("设置：工作模式")
                         assert Atspi.Selection.select_child(mode.get_selection_iface(), 0)
@@ -6899,6 +6923,11 @@ def run(arguments):
                         and any(a["id"] == "Remove" for a in row["actions"]),
                         "normally closed practice did not release its component lease",
                     )
+                    # The restarted settings window has now switched pages, saved
+                    # the mode and outlived the practice window. Calibrate this
+                    # final, still-unscrolled layout before the first details
+                    # scroll, not the earlier layout while practice was open.
+                    calibrate_settings_scroll(settings_control(next_step_label))
                     # End the owned session without uninstalling its components.
                     # Cancellation must leave the actual daemon untouched, not
                     # merely retain a stale Connected label.

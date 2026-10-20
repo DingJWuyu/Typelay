@@ -210,6 +210,8 @@ dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows
 
 `TypeLay.DesktopFixture --verify-browser-cooperation <结果目录> <发行根> <CfT路径>` 使用实际发行 App 的既有 `--automation-test` 入口与 BrowserHost，独立 CfT profile 加载包内标准页扩展。CI 从固定官方版本及摘要取得浏览器，缓存命中仍重新校验；不运行旧浏览器身份研究探针。场景要求当前用户 TypeLay 数据目录和注册为空，仅清理自己创建的资源；使用本轮已校验模型组件并由正式 worker 重新加载。注册写入仅在明确的 `TYPELAY_BROWSER_REGISTRATION_E2E=1` 测试环境启用，普通发行检查默认不写注册。
 
+设置发现检查使用标准 Chrome `User Data` 根，不能把任意测试 profile 路径传给生产发现器，也不改发行 `connection.json`。一般运行仍要求根不存在并由 fixture 原子创建。仅当前 workflow 对官方 GitHub-hosted Windows 一次性 VM 显式开启 `TYPELAY_HOSTED_EMPTY_BROWSER_CONTAINER_E2E=1` 时，可使用预存在但完整枚举确认为空的普通目录；四个已知子项不存在不等于空。目录必须没有 reparse 标记、没有既存 Chrome 进程，持真实目录 handle 禁止写目录及删除/重命名，核对卷号和文件 ID；创建本次 nonce 后再次确认目录只有该文件，才启动浏览器。任何未知项目、观察失败或身份变化均拒绝。预存在容器分支永不删除根、nonce 或浏览器产生的内容，即使退出已证也保留给一次性 VM 回收；原自建目录仍遵守既有 nonce 和进程族退出证明后清理。该测试准入不是面向用户的安装能力，也不是允许使用未知非空 profile。[GitHub 官方说明每个标准 hosted job 使用新 VM](https://docs.github.com/en/actions/how-tos/manage-runners/github-hosted-runners/use-github-hosted-runners)，环境判别使用官方 `RUNNER_ENVIRONMENT` 与 workflow 显式开关，不改变生产设置的目录、权限或身份规则。新空容器路径及其实际 Win32 handle 反例尚待 Windows CI 执行，本地交叉编译不计为通过。
+
 验收覆盖标准页的自动接受、真实按需直接替换、已受理后原字段后台写入，以及经正式 UI 主动移除后的无写负控。软件输入和开发扩展不代表物理输入法或品牌 Chrome 扩展安装已经验收；当前结果以本轮 run 的 result.json 为准，未执行的后续阶段不得计作通过。
 
 ## 可选 Hy 隔离 adapter 验证

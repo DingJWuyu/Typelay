@@ -20,9 +20,9 @@ public sealed partial class NativeSourceGlossaryTests
     [Fact]
     public Task RealControllerPersistsAnExplicitRuleAfterNativeReturnWithoutAWritePermit() => desktop.RunAsync(async () =>
     {
-        await using var native = await ProductionForegroundWriteTests.Desktop.Start();
         string directory = Path.Combine(Path.GetTempPath(), "TypeLay.GlossaryController." + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start(returnTrace: Path.Combine(directory, "return"));
         var overlay = new OverlayWindow(clientAreaAnimation: () => false);
         var monitor = new KeyboardHook(allowInjectedInput: true, editorHwnd: overlay.Handle);
         SessionController? controller = null;
@@ -90,6 +90,7 @@ public sealed partial class NativeSourceGlossaryTests
             else
                 monitor.Dispose();
             overlay.Close();
+            WriteReturnTrace(directory);
             Directory.Delete(directory, true);
         }
     });

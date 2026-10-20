@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Win32.SafeHandles;
 using TypeLay.App;
@@ -18,12 +19,43 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
     internal sealed record ExitResult(uint? RootProcessId, int? RootExitCode, bool RootKernelSignaled,
         uint? ActiveProcesses, bool AssignedBeforeResume, bool Interrupted,
         string CleanupMode, string? Failure, uint? TotalProcessesAtRootExit, uint? ActiveProcessesAtRootExit,
-        bool? MemberQuerySucceeded, uint? AssignedMembers, uint? ListedMembers, ulong? SoleMemberProcessId)
+        bool? MemberQuerySucceeded, uint? AssignedMembers, uint? ListedMembers, ulong? SoleMemberProcessId, MemberObservation? RemainingMember)
     {
         public bool NoActiveOwnedConsumers => AssignedBeforeResume && RootKernelSignaled
             && ActiveProcesses == 0 && !Interrupted && Failure is null;
         public int ExitCode => RootExitCode is { } code && code != 0 ? code
             : NoActiveOwnedConsumers && CleanupMode == "natural" ? 0 : 1;
+    }
+
+    internal sealed record MemberObservation(bool Opened, bool IdentityConfirmed,
+        bool? InOwnedJob, bool? KernelSignaled, string? ImageName, int? Error);
+
+    private MemberObservation ObserveMember(nuint id)
+    {
+        if (id == 0 || id > uint.MaxValue)
+            return new(false, false, null, null, null, null);
+        nint member = OpenProcess(0x00101000, false, (uint)id); // Synchronize + query-limited, never mutate.
+        if (member == 0)
+            return new(false, false, null, null, null, Marshal.GetLastWin32Error());
+        try
+        {
+            if (GetProcessId(member) != (uint)id)
+                return new(true, false, null, null, null, Marshal.GetLastWin32Error());
+            if (!IsProcessInJob(member, _job, out bool inJob))
+                return new(true, true, null, null, null, Marshal.GetLastWin32Error());
+            // A reused or foreign PID is not this owner's member. Never inspect its image.
+            if (!inJob)
+                return new(true, true, false, null, null, null);
+            uint wait = WaitForSingleObject(member, 0);
+            bool? signaled = wait == 0 ? true : wait == 258 ? false : null;
+            var image = new StringBuilder(32768);
+            uint size = (uint)image.Capacity;
+            bool imageRead = QueryFullProcessImageNameW(member, 0, image, ref size);
+            return new(true, true, true, signaled,
+                imageRead ? Path.GetFileName(image.ToString()) : null,
+                imageRead ? null : Marshal.GetLastWin32Error());
+        }
+        finally { CloseHandle(member); }
     }
 
     internal static int Run(string[] args)
@@ -112,6 +144,7 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
         bool soleExitedRoot = false;
         bool? memberQuerySucceeded = null;
         ProcessIdList members = default;
+        MemberObservation? remainingMember = null;
         string cleanupMode = "unconfirmed";
         string? failure = null;
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
@@ -140,6 +173,8 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
                     (uint)Marshal.SizeOf<ProcessIdList>(), 0);
                 soleExitedRoot = IsSoleRetainedRoot(memberQuerySucceeded == true,
                     members.Assigned, members.Listed, members.ProcessId, _processId!.Value);
+                if (memberQuerySucceeded == true && members.Assigned == 1 && members.Listed == 1 && !soleExitedRoot)
+                    remainingMember = ObserveMember(members.ProcessId);
             }
             cleanupMode = active == 0 ? "natural" : "unconfirmed";
         }
@@ -188,7 +223,7 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
             totalAtRootExit, activeAtRootExit, memberQuerySucceeded,
             memberQuerySucceeded is null ? null : members.Assigned,
             memberQuerySucceeded is null ? null : members.Listed,
-            memberQuerySucceeded == true && members.Listed == 1 ? (ulong)members.ProcessId : null);
+            memberQuerySucceeded == true && members.Listed == 1 ? (ulong)members.ProcessId : null, remainingMember);
     }
 
     internal static bool IsSoleRetainedRoot(bool querySucceeded, uint assigned, uint listed,
@@ -346,6 +381,10 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
     {
         public uint Assigned, Listed; public nuint ProcessId;
     }
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern nint OpenProcess(uint access, bool inherit, uint id);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern uint GetProcessId(nint process);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool IsProcessInJob(nint process, nint job, out bool belongs);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern bool QueryFullProcessImageNameW(nint process, uint flags, StringBuilder name, ref uint size);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool QueryInformationJobObject(nint job, int kind, out ProcessIdList value, uint size, nint length);
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] private static extern nint CreateJobObjectW(nint attributes, string? name);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool SetInformationJobObject(nint job, int kind, ref ExtendedLimits value, uint size);

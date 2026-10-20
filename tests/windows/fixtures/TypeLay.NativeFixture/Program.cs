@@ -224,6 +224,7 @@ internal static class Program
     private static EventWaitHandle? _barrierEntered, _barrierRelease, _barrierDrained;
     private static int _barrierStatus;
     private static bool _blockNextNull;
+    private static bool _changeAfterNull;
     private static readonly Dictionary<nint, nint> PreviousProcedures = new();
     private static readonly HashSet<nint> StockFields = new();
     // Keep delegates alive as long as the HWNDs exist.
@@ -300,6 +301,7 @@ internal static class Program
             _barrierRelease.Reset();
             _barrierStatus = 0;
             _blockNextNull = true;
+            _changeAfterNull = wParam == 1;
             return 1;
         }
         if ((message == N.FixtureBlockGui || (message == 0 && _blockNextNull))
@@ -310,6 +312,11 @@ internal static class Program
             // Non-alertable kernel wait: no sent messages may reenter the GUI
             // thread here. The bounded escape prevents a failed test hanging it.
             _barrierStatus = WaitForSingleObject(_barrierRelease.SafeWaitHandle.DangerousGetHandle(), 2_000) == 0 ? 1 : 2;
+            if (_changeAfterNull)
+            {
+                _changeAfterNull = false;
+                N.SendString(_replayField, N.WM_SETTEXT, "Changed while form owns focus");
+            }
             return 0;
         }
         if (message == N.FixtureGuiDrained && _barrierDrained is not null)

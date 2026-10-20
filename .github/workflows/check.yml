@@ -255,6 +255,8 @@ jobs:
         shell: pwsh
         env:
           TYPELAY_BROWSER_REGISTRATION_E2E: "1"
+          # Only this fresh GitHub-hosted VM may use a verified empty standard container.
+          TYPELAY_HOSTED_EMPTY_BROWSER_CONTAINER_E2E: ${{ runner.environment == 'github-hosted' && '1' || '0' }}
         run: |
           python eng/windows/observe-browser-profile.py --stage before-browser-cooperation --output artifacts/browser-profile/before-browser-cooperation.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

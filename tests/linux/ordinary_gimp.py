@@ -7,6 +7,7 @@ remain unchanged. Missing/unsupported GIMP or any incomplete phase fails.
 import asyncio
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -25,6 +26,51 @@ def launched_application(child, executable):
     expected = Path(executable).resolve(strict=True)
     assert process_identity(child["pid"]) == child, "application identity changed during launch"
     return child if actual == expected else None
+
+
+def validate_nested_output(outputs, output_size):
+    assert len(outputs) == 1, "ordinary click requires one observed nested output"
+    logical = next(iter(outputs.values()))["logical"]
+    assert logical is not None, "nested output is disabled"
+    assert [logical["width"], logical["height"]] == output_size, "nested output size mismatch"
+    assert logical["x"] == logical["y"] == 0, "nested output origin mismatch"
+    assert logical["scale"] == 1 and logical["transform"] == "Normal", (
+        "nested output scale mismatch"
+    )
+
+
+def fullscreen_content_origin(layout, output_size):
+    """Fixed-size fullscreen content can be centered inside the output tile."""
+    if layout.get("tile_size") != output_size or layout.get("tile_pos_in_workspace_view") != [0, 0]:
+        return None
+    size = layout.get("window_size")
+    offset = layout.get("window_offset_in_tile")
+    for pair in (size, offset, output_size):
+        assert isinstance(pair, (list, tuple)) and len(pair) == 2, "unknown content geometry"
+        assert all(type(v) in (int, float) and math.isfinite(v) and v == int(v) for v in pair), (
+            "nonintegral geometry"
+        )
+    assert all(0 < size[i] <= output_size[i] for i in range(2)), "invalid content size"
+    assert all(0 <= offset[i] <= output_size[i] - size[i] for i in range(2)), "content off output"
+    return tuple(int(v) for v in offset)
+
+
+def properties_click_point(window, current, measured, remeasured, output_size):
+    assert current == window and current.get("is_focused"), (
+        "GIMP identity/layout changed before click"
+    )
+    assert measured == remeasured, "GIMP candidate/frame moved before click"
+    area, frame = measured
+    size = current["layout"]["window_size"]
+    assert tuple(frame[2:]) == tuple(size), "GTK frame differs from niri window"
+    x, y, width, height = area
+    assert 0 < width <= size[0] and 0 < height <= size[1]
+    assert 0 <= x <= size[0] - width and 0 <= y <= size[1] - height
+    origin = fullscreen_content_origin(current["layout"], output_size)
+    assert origin is not None, "fullscreen tile disappeared before click"
+    point = (origin[0] + x + width // 2, origin[1] + y + height // 2)
+    assert all(0 <= point[i] < output_size[i] for i in range(2))
+    return point
 
 
 def session_exit_confirmed(data, identities):
@@ -292,34 +338,43 @@ def run_gimp(
             ).splitlines()
         )
         expected = [int(geometry["WIDTH"]), int(geometry["HEIGHT"])]
+        outputs = contents(request("Outputs"), "Outputs")
+        validate_nested_output(outputs, expected)
         if fullscreen_properties != properties["id"]:
             request({"Action": {"FullscreenWindow": {"id": properties["id"]}}})
             fullscreen_properties = properties["id"]
-        current = wait_for(
-            lambda: next(
-                (
-                    w
-                    for w in windows(application["pid"])
-                    if w["id"] == properties["id"]
-                    and w.get("is_focused")
-                    and w["layout"]["window_size"] == expected
-                    and w["layout"]["window_offset_in_tile"] == [0, 0]
-                    and w["layout"]["tile_pos_in_workspace_view"] == [0, 0]
-                ),
-                None,
-            ),
-            "GIMP properties did not reach the observed full-output origin/allocation",
+
+        def observed_fullscreen():
+            current = next(
+                (w for w in windows(application["pid"]) if w["id"] == properties["id"]), None
+            )
+            report["clickWindow"] = current
+            report["clickOutputSize"] = expected
+            if current is None or not current.get("is_focused"):
+                return None
+            origin = fullscreen_content_origin(current["layout"], expected)
+            return (current, origin) if origin is not None else None
+
+        current, _ = wait_for(
+            observed_fullscreen, "GIMP properties did not reach the observed full-output tile"
         )
-        area, _ = bounds(node, application["pid"], current["layout"]["window_size"])
-        x, y, width, height = area
+        measured = bounds(node, application["pid"], current["layout"]["window_size"])
+        remeasured = bounds(node, application["pid"], current["layout"]["window_size"])
+        assert contents(request("Outputs"), "Outputs") == outputs, (
+            "nested output changed before click"
+        )
+        observed = observed_fullscreen()
+        assert observed is not None, "GIMP fullscreen geometry disappeared before click"
+        point = properties_click_point(current, observed[0], measured, remeasured, expected)
+        assert process_identity(application["pid"]) == application
         subprocess.run(
             [
                 "xdotool",
                 "mousemove",
                 "--window",
                 nested_window,
-                str(x + width // 2),
-                str(y + height // 2),
+                str(point[0]),
+                str(point[1]),
                 "click",
                 "1",
             ],
@@ -649,6 +704,14 @@ def run_gimp(
     except BaseException as error:
         report["status"] = "failed"
         report["failureType"] = type(error).__name__
+        try:
+            subprocess.run(
+                ["grim", str(arguments.output / "ordinary-gimp-before-cleanup.png")],
+                check=True,
+                timeout=3,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass  # Preserve the original failure, not a diagnostic capture failure.
         diagnostic_record()
         raise
     finally:

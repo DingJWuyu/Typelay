@@ -22,7 +22,9 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
     public static IEnumerable<object[]> SourceFormCases()
     {
         foreach (string action in new[] { "save", "cancel", "foreign", "source-changed", "selection-changed", "readonly",
-            "wrong-source-field", "return-root", "return-second", "foreign-pending", "foreign-back-pending", "close-pending", "config-pending" })
+            "wrong-source-field", "return-root", "return-second", "foreign-pending", "foreign-back-pending", "close-pending", "config-pending",
+            "barrier-save", "barrier-cancel", "barrier-close", "barrier-config", "barrier-cookie",
+            "barrier-source", "barrier-timeout", "barrier-wrong-field", "barrier-foreign" })
             foreach (bool editedPending in new[] { false, true })
                 yield return new object[] { action, editedPending };
     }
@@ -31,14 +33,15 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
     [MemberData(nameof(SourceFormCases))]
     public Task SourceFormUsesRealForegroundAndBrokerWithoutWritingSource(string action, bool editedPending) => desktop.RunAsync(async () =>
     {
-        string? returnFocus = action.StartsWith("return-", StringComparison.Ordinal) ? action[7..] : null;
-        await using var native = await ProductionForegroundWriteTests.Desktop.Start(returnFocus: returnFocus);
+        string directory = Path.Combine(Path.GetTempPath(), "TypeLay.SourceGlossary." + Guid.NewGuid().ToString("N"));
+        string? returnFocus = action == "barrier-wrong-field" ? "second"
+            : action.StartsWith("return-", StringComparison.Ordinal) ? action[7..] : null;
+        await using var native = await ProductionForegroundWriteTests.Desktop.Start(returnFocus: returnFocus, returnTrace: Path.Combine(directory, "return"));
         var overlay = new OverlayWindow(clientAreaAnimation: () => false);
         using var monitor = new KeyboardHook(allowInjectedInput: true, editorHwnd: overlay.Handle);
         while (!monitor.ShortcutsReady)
             await Task.Delay(10, native.Token);
         overlay.ConfigureOrdinaryInput(monitor);
-        string directory = Path.Combine(Path.GetTempPath(), "TypeLay.SourceGlossary." + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
         try
         {
@@ -128,7 +131,52 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
             Assert.True(view.IsGlossarySourceWindowCurrent(entry!, initialEpoch, monitor.WindowEpoch));
             Children(overlay).OfType<TextBox>().Single(item => AutomationProperties.GetName(item) == "术语源词").Text = "你好";
             Children(overlay).OfType<TextBox>().Single(item => AutomationProperties.GetName(item) == "术语译词").Text = "Hello";
-            if (action.EndsWith("-pending", StringComparison.Ordinal))
+            if (action.StartsWith("barrier-", StringComparison.Ordinal))
+            {
+                using var entered = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(native.FixtureProcessId, "entered"));
+                using var release = EventWaitHandle.OpenExisting(N.FixtureGuiBarrierName(native.FixtureProcessId, "release"));
+                Assert.Equal((nuint)1, N.Send(native.Root, N.FixtureArmNullBarrier, action == "barrier-source" ? 1u : 0u));
+                nint expectedRoot = native.Root;
+                try
+                {
+                    var save = Button(overlay, "保存术语");
+                    Assert.True(save.Focus());
+                    save.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+                    Assert.True(await Task.Run(() => entered.WaitOne(TimeSpan.FromSeconds(2)), native.Token),
+                        $"The real original root did not enter its WM_NULL barrier; broker={broker.ReturnStatus}.");
+                    Assert.False(saved.Task.IsCompleted);
+                    if (action == "barrier-timeout")
+                        Assert.False((await saved.Task.WaitAsync(native.Token)).Saved);
+                    else
+                    {
+                        if (action == "barrier-cancel")
+                            Button(overlay, "取消加入术语表").RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+                        if (action == "barrier-close")
+                            view.HideQuietly();
+                        if (action == "barrier-config")
+                            monitor.ConfigureSessionShortcuts(SessionShortcutBindings.Default);
+                        if (action == "barrier-cookie")
+                            Assert.NotEqual(nint.Zero, N.RemoveProp(native.A, "TypeLay.NativeInput.Lifetime.v2"));
+                        if (action == "barrier-foreign")
+                        {
+                            var elsewhere = new Window { Content = new TextBox(), Width = 250, Height = 100 };
+                            elsewhere.Show();
+                            Assert.True(elsewhere.Activate());
+                            Assert.True(((TextBox)elsewhere.Content).Focus());
+                            expectedRoot = new WindowInteropHelper(elsewhere).Handle;
+                        }
+                        release.Set();
+                        var result = await saved.Task.WaitAsync(native.Token);
+                        Assert.True(result.Saved == (action == "barrier-save"),
+                            $"{action}: {result.Code}; broker={broker.ReturnStatus}");
+                    }
+                }
+                finally { release.Set(); }
+                Assert.Equal(expectedRoot, Native.GetForegroundWindow());
+                if (action != "barrier-foreign")
+                    Assert.Equal((native.Root, action == "barrier-wrong-field" ? native.B : native.A), N.Focused());
+            }
+            else if (action.EndsWith("-pending", StringComparison.Ordinal))
             {
                 // Hold the actual stock field GUI thread while a real Broker
                 // return is in flight. No fake IME/capture/focus result is used.
@@ -197,7 +245,9 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
                 var save = Button(overlay, "保存术语");
                 Assert.True(save.Focus());
                 save.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
-                Assert.Equal(action == "save", (await saved.Task.WaitAsync(native.Token)).Saved);
+                var outcome = await saved.Task.WaitAsync(native.Token);
+                Assert.True((action == "save") == outcome.Saved,
+                    $"{action}: {outcome.Code}; broker={broker.ReturnStatus}; focus={N.Focused()}");
                 if (action == "save")
                 {
                     Assert.Equal((native.Root, native.A), N.Focused());
@@ -208,9 +258,9 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
                 else
                     Assert.Equal(overlay.Handle, Native.GetForegroundWindow());
             }
-            Assert.Equal(action == "source-changed" ? "Changed while form owns focus" : source.Text,
+            Assert.Equal(action is "source-changed" or "barrier-source" ? "Changed while form owns focus" : source.Text,
                 N.ReadText(native.A, Limits.MaxTextUnits));
-            if (action != "source-changed")
+            if (action is not ("source-changed" or "barrier-source"))
             {
                 Assert.Equal(action == "selection-changed" ? new TextRange(0, 0) : source.Selection, N.ReadSelection(native.A));
                 Assert.Equal(sourceUndo, N.Send(native.A, 0x00c6));
@@ -222,7 +272,11 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
             view.HideQuietly();
             Assert.False(view.IsGlossarySourceWindowCurrent(entry!, initialEpoch, initialEpoch));
         }
-        finally { Directory.Delete(directory, true); }
+        finally
+        {
+            WriteReturnTrace(directory);
+            Directory.Delete(directory, true);
+        }
     });
 
     [Theory]
@@ -270,18 +324,35 @@ public sealed partial class NativeSourceGlossaryTests(WpfDesktopFixture desktop)
         {
             get; private set;
         }
+        public string? ReturnStatus
+        {
+            get; private set;
+        }
         public bool Available => true;
         public int ProcessId => native.BrokerProcessId;
         public Task StartAsync() => Task.CompletedTask;
-        public Task<BrokerResponse> CallAsync(BrokerRequest request, TimeSpan? timeout = null)
+        public async Task<BrokerResponse> CallAsync(BrokerRequest request, TimeSpan? timeout = null)
         {
             if (request.Op is "write" or "direct-write")
                 SourceWrites++;
-            return native.Call(request, request.Op == "return-glossary" ? () => ReturnDispatched.TrySetResult() : null);
+            var response = await native.Call(request, request.Op == "return-glossary" ? () => ReturnDispatched.TrySetResult() : null);
+            if (request.Op == "return-glossary")
+                ReturnStatus = response.Status;
+            return response;
         }
         public void Dispose()
         {
         } // The enclosing fixture owns its real child process.
+    }
+    private static void WriteReturnTrace(string directory)
+    {
+        try
+        {
+            string path = Path.Combine(directory, "return.broker.jsonl");
+            if (File.Exists(path))
+                TestContext.Current.TestOutputHelper?.WriteLine(File.ReadAllText(path));
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
     }
     private static Button Button(OverlayWindow overlay, string name) => Children(overlay).OfType<Button>()
         .Single(item => AutomationProperties.GetName(item) == name);

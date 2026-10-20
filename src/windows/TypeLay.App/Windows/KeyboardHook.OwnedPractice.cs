@@ -454,6 +454,32 @@ internal sealed partial class KeyboardHook
             }
         } == latest;
     }
+    // Read once after a failed wait. No input, dispatch, lease renewal or text logging.
+    internal object AcceptanceDiagnostics(InputLease lease, AcceptancePermit permit)
+    {
+        var installed = Volatile.Read(ref _ownedInstalled);
+        var channel = Volatile.Read(ref _ownedChannel);
+        long now = WindowsInterruptClock.NowMs;
+        return new
+        {
+            sessionEnabled = _sessionEnabled,
+            installed = installed is not null,
+            channelPresent = channel is not null,
+            channelPoisoned = channel?.Writer.Poisoned,
+            attempted = installed is not null && Interlocked.Read(ref _ownedAttemptSequence) == installed.Sequence,
+            targetMatches = installed?.Lease.Source.Target == lease.Source.Target,
+            generationMatches = installed?.Lease.CommandGeneration == lease.CommandGeneration,
+            sessionRevisionMatches = installed?.Lease.SessionRevision == lease.SessionRevision,
+            connectionMatches = installed?.Lease.PracticeConnectionId == channel?.Connection,
+            currentGenerationMatches = installed?.Lease.CommandGeneration == CommandGeneration,
+            userEpochMatches = installed?.Lease.UserEpoch == UserEpoch,
+            foregroundEpochMatches = installed?.Lease.ForegroundEpoch == ForegroundEpoch,
+            focusMatches = installed is not null && OwnedFocus(installed.Descriptor),
+            originalTimeValid = installed is not null && now >= installed.Permit.ObservedAtMs && now <= installed.Permit.ExpiresAtMs,
+            planMatches = installed?.Permit.Plan.Id == permit.Plan.Id
+        };
+    }
+
     public bool AcceptanceReady(SessionViewToken token, AcceptancePermit issued, long nowMs)
     {
         if (_ownedPracticeTarget?.Invoke(token.Target) != true)

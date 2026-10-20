@@ -839,7 +839,12 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
                         + $"foregroundEpochMatched={hook.ForegroundEpoch == plan.Lease.ForegroundEpoch}; "
                         + $"focus={hook.GetFocus(plan.Lease.Source.Target)}; "
                         + $"sourceReady={host.SourceReady(plan.Lease.Source.Target)}; "
-                        + $"editorReady={host.EditorReady(plan.Lease.Source.Target)}");
+                        + $"editorReady={host.EditorReady(plan.Lease.Source.Target)}; "
+                        + System.Text.Json.JsonSerializer.Serialize(new
+                        {
+                            host = host.AcceptanceDiagnostics(plan.Lease, plan.Permit),
+                            hook = hook.AcceptanceDiagnostics(plan.Lease, plan.Permit)
+                        }));
                     Assert.False(child!.Process.HasExited);
                     await Task.Delay(1, deadline.Token);
                 }

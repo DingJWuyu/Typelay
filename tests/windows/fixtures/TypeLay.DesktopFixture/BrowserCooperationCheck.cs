@@ -171,6 +171,7 @@ internal static partial class BrowserCooperationCheck
         string profile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Google", "Chrome", "User Data");
         string profileOwnerFile = Path.Combine(profile, "typelay-browser-fixture-owner");
         bool ownProfile = false, settingsIdentityDiscovered = false, releaseConnectionUnmodified = false;
+        HostedEmptyBrowserProfile? hostedContainer = null;
         bool uiConnectCancelled = false, uiConnectConfirmed = false, uiRemoveConfirmed = false;
         ChildProcess? app = null, browser = null;
         BrowserWindows? windows = null;
@@ -245,17 +246,26 @@ internal static partial class BrowserCooperationCheck
                 if (!CreateDirectoryW(profile, 0))
                 {
                     int error = Marshal.GetLastWin32Error();
-                    throw new Failure(error == 183 ? "standard-chrome-profile-already-exists"
-                        : "standard-chrome-profile-create-failed-" + error);
+                    if (error != 183)
+                        throw new Failure("standard-chrome-profile-create-failed-" + error);
+                    bool authorizedHosted = Environment.GetEnvironmentVariable("TYPELAY_HOSTED_EMPTY_BROWSER_CONTAINER_E2E") == "1"
+                        && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true"
+                        && Environment.GetEnvironmentVariable("RUNNER_ENVIRONMENT") == "github-hosted"
+                        && Environment.GetEnvironmentVariable("RUNNER_OS") == "Windows";
+                    hostedContainer = HostedEmptyBrowserProfile.Open(profile, ownerToken, authorizedHosted, AnyChromeProcess());
                 }
-                ownProfile = true;
-                await File.WriteAllTextAsync(profileOwnerFile, ownerToken, ct);
+                else
+                {
+                    ownProfile = true;
+                    await File.WriteAllTextAsync(profileOwnerFile, ownerToken, ct);
+                }
                 var chromeStart = StartInfo(chrome);
                 foreach (string argument in new[] { "--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check",
                     "--disable-search-engine-choice-screen", "--remote-debugging-port=0", "--load-extension=" + extension,
                     "--disable-extensions-except=" + extension, "--new-window", "about:blank" })
                     chromeStart.ArgumentList.Add(argument);
                 setup.Stage = "start-cft";
+                hostedContainer?.VerifyBeforeStart(AnyChromeProcess());
                 browser = browserLifetime.Start(() => new ChildProcess(chromeStart));
                 setup.Stage = "identify-cft-process";
                 windows = new BrowserWindows(browser.Process, "TypeLay cooperation");
@@ -437,7 +447,7 @@ internal static partial class BrowserCooperationCheck
         catch (Exception error) when (error is not OutOfMemoryException)
         {
             active.Outcome = "failed";
-            active.Failure = error is Failure failure ? failure.Code : error is OperationCanceledException ? active.Stage + "-deadline" : "unexpected-error";
+            active.Failure = error is Failure failure ? failure.Code : error is HostedBrowserContainerRejected rejected ? rejected.Code : error is OperationCanceledException ? active.Stage + "-deadline" : "unexpected-error";
             active.ErrorType = error.GetType().Name;
             if (ReferenceEquals(active, setup))
             {
@@ -526,6 +536,18 @@ internal static partial class BrowserCooperationCheck
                     Directory.Delete(profile, true);
                     return Task.CompletedTask;
                 });
+            if (hostedContainer is not null)
+                await Clean("hosted-browser-container-preserved", () =>
+                {
+                    try
+                    {
+                        hostedContainer.VerifyIdentity();
+                    }
+                    finally { hostedContainer.Dispose(); }
+                    // Never delete this pre-existing root, nonce or any browser
+                    // output, regardless of success or process-exit certainty.
+                    return Task.CompletedTask;
+                });
             try
             {
                 commandPath = ReadCommandPath(trace);
@@ -554,6 +576,7 @@ internal static partial class BrowserCooperationCheck
             extensionId,
             extensionDiscovery = cdp?.Discovery,
             settingsIdentityDiscovered,
+            preexistingEmptyHostedContainerPreserved = hostedContainer is not null,
             releaseConnectionUnmodified,
             modelSource = "same-run-verified-installation",
             realModelPreviewObserved = modelPreviewObserved,
@@ -565,6 +588,15 @@ internal static partial class BrowserCooperationCheck
         }, Json));
         Console.WriteLine($"Browser cooperation: {(passed ? "passed" : "failed")}; stage={first?.Stage ?? (passed ? "complete" : "cleanup")}; failure={first?.Failure ?? "none"}.");
         return passed ? 0 : 1;
+    }
+    private static bool AnyChromeProcess()
+    {
+        Process[] processes = Process.GetProcessesByName("chrome");
+        try
+        {
+            return processes.Length != 0;
+        }
+        finally { foreach (var process in processes) process.Dispose(); }
     }
     private static ProcessStartInfo StartInfo(string executable) => new(executable)
     {

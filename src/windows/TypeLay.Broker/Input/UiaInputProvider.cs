@@ -605,10 +605,30 @@ internal sealed class UiaInputProvider : IDisposable
             reason = "foreground-denied";
             return false;
         }
-        reason = "return-canceled";
-        if (glossary && (!_edits.ConfirmsReturnFocus(binding)
-            || !authorization!.BeforeFocus((nint)binding.RootHwnd)))
-            return false;
+        if (glossary)
+        {
+            // SetForegroundWindow crosses input queues. Complete that one
+            // activation on the original root, without correcting field focus.
+            reason = "return-canceled";
+            if (!authorization!.BeforeFocus((nint)binding.RootHwnd))
+                return false;
+            long remaining = request.ExpiresAtMs - WindowsInterruptClock.NowMs;
+            reason = "return-expired";
+            if (remaining <= 0 || remaining > SourceGlossaryReturnAuthorization.MaximumAgeMs)
+                return false;
+            reason = "activation-barrier";
+            if (SendMessageTimeoutW((nint)binding.RootHwnd, 0, 0, 0, 0x22, (uint)remaining, out _) == 0)
+                return false;
+            reason = "return-canceled";
+            if (!authorization.BeforeFocus((nint)binding.RootHwnd))
+                return false;
+            reason = "native-source-changed";
+            if (!_edits.ConfirmsReturnSource(_previous) || !_edits.ConfirmsReturnFocus(binding))
+                return false;
+            reason = "return-canceled";
+            if (!authorization.BeforeFocus((nint)binding.RootHwnd))
+                return false;
+        }
         reason = "return-expired";
         if (!glossary && WindowsInterruptClock.NowMs >= request.ExpiresAtMs)
             return false;
@@ -634,9 +654,24 @@ internal sealed class UiaInputProvider : IDisposable
             reason = "return-expired";
             if (WindowsInterruptClock.NowMs >= request.ExpiresAtMs)
                 return false;
-            reason = "activation-target-changed";
-            if (GetForegroundWindow() != (nint)binding.RootHwnd
-                || (binding.Provider == NativeEditTransactions.Provider && !_edits.ConfirmsReturnIdentity(binding)))
+            nint foreground = GetForegroundWindow(); // One original post-barrier observation.
+            if (foreground != (nint)binding.RootHwnd)
+            {
+                if (foreground == 0)
+                    reason = "activation-foreground-none";
+                else if (foreground == (nint)request.OverlayHwnd)
+                    reason = "activation-foreground-overlay";
+                else
+                {
+                    uint thread = GetWindowThreadProcessId(foreground, out uint process);
+                    reason = thread == 0 ? "activation-foreground-other-unknown"
+                        : process == binding.ProcessId ? "activation-foreground-other-source-process"
+                        : "activation-foreground-other-process";
+                }
+                return false;
+            }
+            reason = "activation-native-identity-changed";
+            if (binding.Provider == NativeEditTransactions.Provider && !_edits.ConfirmsReturnIdentity(binding))
                 return false;
         }
         reason = "return-expired";
@@ -651,6 +686,9 @@ internal sealed class UiaInputProvider : IDisposable
                 reason = "return-expired";
                 return false;
             }
+            reason = "return-canceled";
+            if (glossary && !authorization!.BeforeFocus((nint)binding.RootHwnd))
+                return false;
             reason = "focused";
             return true;
         }
@@ -693,6 +731,9 @@ internal sealed class UiaInputProvider : IDisposable
             reason = "return-expired";
             return false;
         }
+        reason = "return-canceled";
+        if (glossary && !authorization!.BeforeFocus((nint)binding.RootHwnd))
+            return false;
         reason = "focused-native";
         return true;
     }

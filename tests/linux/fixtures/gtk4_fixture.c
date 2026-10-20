@@ -221,6 +221,9 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
                 json_builder_add_int_value(builder, gtk_single_selection_get_selected(selection));
                 json_builder_set_member_name(builder, "popupVisible");
                 json_builder_add_boolean_value(builder, gtk_widget_get_mapped(GTK_WIDGET(popup)));
+                json_builder_set_member_name(builder, "popupFocused");
+                json_builder_add_boolean_value(builder, focus && gtk_widget_get_mapped(GTK_WIDGET(popup))
+                    && (focus == list || gtk_widget_is_ancestor(focus, list)));
                 json_builder_set_member_name(builder, "items");
                 json_builder_begin_array(builder);
                 if (model) for (guint index = 0; index < g_list_model_get_n_items(model); index++) {

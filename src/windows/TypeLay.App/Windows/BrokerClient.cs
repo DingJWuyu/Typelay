@@ -32,7 +32,7 @@ internal sealed class BrokerClient : IInputBroker
     }
     public async Task<BrokerResponse> CallAsync(BrokerRequest request, TimeSpan? timeout = null)
     {
-        using var returnDeadline = request.Op == "return" ? new CancellationTokenSource() : null;
+        using var returnDeadline = request.Op is "return" or "return-glossary" ? new CancellationTokenSource() : null;
         if (returnDeadline is not null)
         {
             long remaining = request.ExpiresAtMs - WindowsInterruptClock.NowMs;

@@ -2137,10 +2137,25 @@ def run_qt(
                     and settled(value),
                     "actual multiline UTF-16 selection did not settle",
                 )
-                wait_for(
-                    ready_to_accept, "multiline selection did not receive a CPU model candidate"
+                # Host readiness and the fixture's native widget snapshot travel
+                # independently. Observe the actual nonempty rendered candidate,
+                # not the previous translating frame after the host has completed.
+                value = wait_for(
+                    lambda: value
+                    if (value := state()).get("overlayVisible")
+                    and value.get("editorVisible")
+                    and value.get("editorReadOnly")
+                    and value.get("editorText")
+                    and value["plain"]["text"] == plain_source
+                    and value["plain"]["selectionStart"] == start
+                    and value["plain"]["selectionLength"] == length
+                    and value["plain"]["focused"]
+                    and value["plain"]["focusObject"]
+                    and settled(value)
+                    and ready_to_accept()
+                    else None,
+                    "multiline selection did not display its ready CPU model candidate",
                 )
-                value = state()
                 plain_candidate = value["editorText"]
                 assert value["overlayVisible"] and value["editorReadOnly"]
                 assert re.search(r"[\u3400-\u9fff]", plain_candidate)

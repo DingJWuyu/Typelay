@@ -13,11 +13,15 @@ namespace TypeLay.App.Tests;
 public sealed class BrokerQueueDeadlineTests
 {
     [Theory]
-    [InlineData(800)]
-    [InlineData(null)]
-    [InlineData(-1)]
-    [InlineData(0)]
-    public Task ExpiredQueuedReturnDoesNotOwnTheActiveCallOrSendARequest(int? relativeMilliseconds) => WithPeer(async peer =>
+    [InlineData("return", 800)]
+    [InlineData("return", null)]
+    [InlineData("return", -1)]
+    [InlineData("return", 0)]
+    [InlineData("return-glossary", 800)]
+    [InlineData("return-glossary", null)]
+    [InlineData("return-glossary", -1)]
+    [InlineData("return-glossary", 0)]
+    public Task ExpiredQueuedReturnDoesNotOwnTheActiveCallOrSendARequest(string operation, int? relativeMilliseconds) => WithPeer(async peer =>
     {
         var broker = peer.Client;
         await broker.StartAsync();
@@ -25,7 +29,7 @@ public sealed class BrokerQueueDeadlineTests
         await peer.Wait(peer.Entered);
         try
         {
-            var queued = broker.CallAsync(new(BrokerProtocol.Version, 0, "return", "",
+            var queued = broker.CallAsync(new(BrokerProtocol.Version, 0, operation, "",
                 ExpiresAtMs: WindowsInterruptClock.NowMs + 800),
                 relativeMilliseconds is { } milliseconds ? TimeSpan.FromMilliseconds(milliseconds) : null);
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(peer.Token));
@@ -40,15 +44,17 @@ public sealed class BrokerQueueDeadlineTests
         Assert.Equal(new long[] { 1, 2, 3 }, peer.Messages().Select(message => message.Id));
     });
 
-    [Fact]
-    public Task ReturnAcquiringTheSlotKeepsItsOriginalDeadlineAndRejectsLateSuccess() => WithPeer(async peer =>
+    [Theory]
+    [InlineData("return")]
+    [InlineData("return-glossary")]
+    public Task ReturnAcquiringTheSlotKeepsItsOriginalDeadlineAndRejectsLateSuccess(string operation) => WithPeer(async peer =>
     {
         var broker = peer.Client;
         await broker.StartAsync();
         var active = broker.CallAsync(new(BrokerProtocol.Version, 0, "capture", ""), TimeSpan.FromSeconds(10));
         await peer.Wait(peer.Entered);
         long expiresAt = WindowsInterruptClock.NowMs + 800;
-        var queued = broker.CallAsync(new(BrokerProtocol.Version, 0, "return", "", ExpiresAtMs: expiresAt),
+        var queued = broker.CallAsync(new(BrokerProtocol.Version, 0, operation, "", ExpiresAtMs: expiresAt),
             TimeSpan.FromMilliseconds(800));
         try
         {
@@ -62,7 +68,7 @@ public sealed class BrokerQueueDeadlineTests
         await peer.Wait(peer.Returned);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(peer.Token));
         Assert.False(broker.Available); // Acquired-call failure retains original cleanup policy.
-        var request = Assert.Single(peer.Messages(), message => message.Op == "return");
+        var request = Assert.Single(peer.Messages(), message => message.Op == operation);
         Assert.Equal(expiresAt, request.ExpiresAtMs);
         Assert.True(request.ReceivedAtMs < expiresAt, "The return must reach the wire with part of its original budget remaining.");
     });

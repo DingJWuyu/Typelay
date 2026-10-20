@@ -226,6 +226,32 @@ internal sealed partial class PracticeHost
         if (_nativeActive && _pending is null)
             Enqueue(new("auto-progress", _connection, _runId, _sequence, AutomaticProgress: progress));
     }
+    // Failure-only metadata observation; never participates in readiness or refresh.
+    internal object AcceptanceDiagnostics(InputLease lease, AcceptancePermit permit)
+    {
+        _dispatcher.VerifyAccess();
+        var current = _acceptance;
+        return new
+        {
+            runMatches = lease.PracticeRunId == _runId,
+            connectionMatches = lease.PracticeConnectionId == _connection,
+            generationMatches = lease.CommandGeneration == _monitor?.CommandGeneration,
+            nativeActive = _nativeActive,
+            pendingControl = _pending?.Kind,
+            descriptorPresent = _descriptor is not null,
+            sourceReady = SourceReady(lease.Source.Target),
+            witnessPresent = _witnessWriter is not null,
+            witnessPoisoned = _witnessWriter?.Poisoned,
+            queuedPlan = _nextAcceptance is not null,
+            acceptanceState = current?.State,
+            planMatches = current?.Plan.Permit.Plan.Id == permit.Plan.Id,
+            leaseMatches = current is not null && SameAcceptanceLease(current.Lease, lease),
+            descriptorMatches = current is not null && _descriptor == current.Plan.Descriptor,
+            currentBasis = current is not null && CurrentAcceptanceBasis(current),
+            received = current?.Received
+        };
+    }
+
     internal void PublishAcceptance(InputLease lease, AcceptancePermit? permit)
     {
         _dispatcher.VerifyAccess();

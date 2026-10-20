@@ -61,6 +61,8 @@ internal static partial class Program
     private static readonly string? EditorTracePath = Environment.GetEnvironmentVariable("TYPELAY_TRACE");
     private static readonly List<EditorTrace> EditorTraces = [];
     private static int _editorTraceCount;
+    private static readonly List<object> AcceptanceRejectionTraces = [];
+    private static int _acceptanceRejectionTraceCount;
     private enum EditorEvent
     {
         Fenced, FenceRejected, App, Root, FocusGained, FocusLost, Left, Invalid,
@@ -1026,7 +1028,7 @@ internal static partial class Program
 
     private static void FlushEditorTrace()
     {
-        if (EditorTraces.Count == 0)
+        if (EditorTraces.Count == 0 && AcceptanceRejectionTraces.Count == 0)
             return;
         try
         {
@@ -1053,10 +1055,16 @@ internal static partial class Program
                     guiDequeuedAtMs = entry.GuiDequeuedAtMs,
                     guiQueueDelayMs = entry.GuiDequeuedAtMs - entry.ReadCompletedAtMs
                 }));
+            foreach (var entry in AcceptanceRejectionTraces)
+                lines.AppendLine(JsonSerializer.Serialize(entry));
             File.AppendAllText(EditorTracePath + ".practice.jsonl", lines.ToString());
         }
         catch (Exception error) when (error is not OutOfMemoryException) { }
-        finally { EditorTraces.Clear(); }
+        finally
+        {
+            EditorTraces.Clear();
+            AcceptanceRejectionTraces.Clear();
+        }
     }
 
     private static void InstallPlan(OwnedAcceptanceControl control)
@@ -1449,25 +1457,73 @@ internal static partial class Program
             }
             OwnedInputContext? expectedInput = null;
             long now = WindowsInterruptClock.NowMs;
+            // Nullable facts preserve the original short circuit: null means not
+            // evaluated, not a failed gate. Prefix consumption is never repeated.
+            bool? keyPolicy = null, messageMatches = null, modifiersMatch = null, sequenceFresh = null,
+                planMatches = null, witnessFocusMatches = null, sourceFocusMatches = null, epochsMatch = null,
+                witnessInPermit = null, dispatchInPermit = null, sourceFocused = null, connected = null,
+                notClosing = null, notRestarting = null, controlsEmpty = null, prefixMatches = null,
+                prefixConsumed = null;
             bool qualified = !repeated && witness.Eligible
-                && witness.VirtualKey == plan.VirtualKey && witness.Modifiers == plan.Modifiers
-                && witness.Modified == (plan.Modifiers != ShortcutModifiers.None)
-                && (!witness.Injected || _allowInjectedInput)
-                && message.Id is 0x0100 or 0x0104 && message.Window == _edit!.Handle
-                && (bits & (1UL << 29)) == 0 && ExactModifiers(plan.Modifiers)
-                && witness.Sequence > _installWitnessFloor && witness.Sequence > plan.InstallWitnessSequence
-                && witness.PlanSequence == plan.PlanSequence
-                && witness.NativeFocusRevision == plan.Descriptor.NativeFocusRevision
-                && _owned!.FocusRevision == plan.Descriptor.NativeFocusRevision
-                && witness.UserEpoch == plan.UserEpoch && witness.ForegroundEpoch == plan.ForegroundEpoch
-                && witness.ObservedAtMs >= plan.Permit.ObservedAtMs && witness.ObservedAtMs <= plan.Permit.ExpiresAtMs
-                && now >= witness.ObservedAtMs && now <= plan.Permit.ExpiresAtMs
-                && SourceFocused() && Volatile.Read(ref _disconnected) == 0
-                && !_closePending && !_sendRestart && PendingControls.IsEmpty
-                && (plan.Modifiers == ShortcutModifiers.None && witness.PrefixSequence == 0
-                    || plan.Modifiers == ShortcutModifiers.Control && TryUsePrefix(witness, plan.PlanSequence, 0, out expectedInput));
+                && (keyPolicy = witness.VirtualKey == plan.VirtualKey && witness.Modifiers == plan.Modifiers
+                    && witness.Modified == (plan.Modifiers != ShortcutModifiers.None)
+                    && (!witness.Injected || _allowInjectedInput)) == true
+                && (messageMatches = message.Id is 0x0100 or 0x0104 && message.Window == _edit!.Handle
+                    && (bits & (1UL << 29)) == 0) == true
+                && (modifiersMatch = ExactModifiers(plan.Modifiers)) == true
+                && (sequenceFresh = witness.Sequence > _installWitnessFloor && witness.Sequence > plan.InstallWitnessSequence) == true
+                && (planMatches = witness.PlanSequence == plan.PlanSequence) == true
+                && (witnessFocusMatches = witness.NativeFocusRevision == plan.Descriptor.NativeFocusRevision) == true
+                && (sourceFocusMatches = _owned!.FocusRevision == plan.Descriptor.NativeFocusRevision) == true
+                && (epochsMatch = witness.UserEpoch == plan.UserEpoch && witness.ForegroundEpoch == plan.ForegroundEpoch) == true
+                && (witnessInPermit = witness.ObservedAtMs >= plan.Permit.ObservedAtMs && witness.ObservedAtMs <= plan.Permit.ExpiresAtMs) == true
+                && (dispatchInPermit = now >= witness.ObservedAtMs && now <= plan.Permit.ExpiresAtMs) == true
+                && (sourceFocused = SourceFocused()) == true
+                && (connected = Volatile.Read(ref _disconnected) == 0) == true
+                && (notClosing = !_closePending) == true && (notRestarting = !_sendRestart) == true
+                && (controlsEmpty = PendingControls.IsEmpty) == true
+                && (prefixMatches = plan.Modifiers == ShortcutModifiers.None && witness.PrefixSequence == 0
+                    || plan.Modifiers == ShortcutModifiers.Control
+                        && (prefixConsumed = TryUsePrefix(witness, plan.PlanSequence, 0, out expectedInput)) == true) == true;
             _planActive = false; // One attempt; neither a repeat nor equal final state restores it.
             ClearPrefixProof();
+            try
+            {
+                if (!qualified && !string.IsNullOrWhiteSpace(EditorTracePath) && _acceptanceRejectionTraceCount < 16)
+                    AcceptanceRejectionTraces.Add(new
+                    {
+                        atMs = now,
+                        operation = "owned-acceptance-qualification-rejected",
+                        order = ++_acceptanceRejectionTraceCount,
+                        repeated,
+                        witness.Eligible,
+                        witness.Injected,
+                        allowInjectedInput = _allowInjectedInput,
+                        witnessObservedAtMs = witness.ObservedAtMs,
+                        dispatchObservedAtMs = now,
+                        permitObservedAtMs = plan.Permit.ObservedAtMs,
+                        permitExpiresAtMs = plan.Permit.ExpiresAtMs,
+                        retired = _retired,
+                        keyPolicy,
+                        messageMatches,
+                        modifiersMatch,
+                        sequenceFresh,
+                        planMatches,
+                        witnessFocusMatches,
+                        sourceFocusMatches,
+                        epochsMatch,
+                        witnessInPermit,
+                        dispatchInPermit,
+                        sourceFocused,
+                        connected,
+                        notClosing,
+                        notRestarting,
+                        controlsEmpty,
+                        prefixMatches,
+                        prefixConsumed
+                    });
+            }
+            catch (Exception error) when (error is not OutOfMemoryException) { }
             WriteReceipt receipt;
             if (!qualified)
                 receipt = new(WriteStatus.RejectedBeforeMutation, Denial.EpochChanged);

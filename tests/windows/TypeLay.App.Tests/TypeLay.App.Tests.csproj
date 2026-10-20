@@ -18,6 +18,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="../fixtures/TypeLay.DesktopFixture/BrowserFixtureProcess.cs" Link="BrowserFixtureProcess.cs" />
+    <Compile Include="../fixtures/TypeLay.DesktopFixture/HostedEmptyBrowserProfile.cs" Link="HostedEmptyBrowserProfile.cs" />
     <Compile Include="../support/BrowserWindows.cs" Link="BrowserWindows.cs" />
     <Compile Include="../support/SettingsPackageActions.cs" Link="SettingsPackageActions.cs" />
     <Compile Include="../support/SettingsLanguageActions.cs" Link="SettingsLanguageActions.cs" />
