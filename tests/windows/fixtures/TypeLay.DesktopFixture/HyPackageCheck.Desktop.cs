@@ -110,7 +110,7 @@ internal static partial class HyPackageCheck
             await report.Phase("install-hy", async scene =>
             {
                 await PackageActionAsync(app!.Process, settings!, HyId, ModelPackageOperation.Install, scene, ct);
-                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, [HyId], lastWorker, generations, ct);
+                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, [HyId], lastWorker, generations, scene, ct);
                 scene.Facts = CaptureInstallation(data, worker, lastWorker);
             });
             await report.Phase("choose-french", async scene =>
@@ -148,14 +148,14 @@ internal static partial class HyPackageCheck
             await report.Phase("select-argos", async scene =>
             {
                 await PackageActionAsync(app!.Process, settings!, argos[0], ModelPackageOperation.Select, scene, ct);
-                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, argos, lastWorker, generations, ct);
+                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, argos, lastWorker, generations, scene, ct);
                 Require(ReadSettings(data) is { Source: "zh", Target: "fr" }, "model-switch-changed-language");
                 scene.Facts = CaptureInstallation(data, worker, lastWorker);
             });
             await report.Phase("select-hy", async scene =>
             {
                 await PackageActionAsync(app!.Process, settings!, HyId, ModelPackageOperation.Select, scene, ct);
-                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, [HyId], lastWorker, generations, ct);
+                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, [HyId], lastWorker, generations, scene, ct);
                 Require(ReadSettings(data) is { Source: "zh", Target: "fr" }, "model-switch-changed-language");
                 scene.Facts = CaptureInstallation(data, worker, lastWorker);
             });
@@ -248,7 +248,7 @@ internal static partial class HyPackageCheck
             await report.Phase("return-to-argos", async scene =>
             {
                 await PackageActionAsync(app!.Process, settings!, argos[0], ModelPackageOperation.Select, scene, ct);
-                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, argos, lastWorker, generations, ct);
+                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, argos, lastWorker, generations, scene, ct);
                 Require(ReadSettings(data) is { Source: "zh", Target: "fr" }, "model-switch-changed-language");
                 scene.Facts = CaptureInstallation(data, worker, lastWorker);
             });
@@ -256,7 +256,7 @@ internal static partial class HyPackageCheck
             {
                 Require(cacheFiles.All(File.Exists), "installed-hy-cache-missing-before-remove");
                 await PackageActionAsync(app!.Process, settings!, HyId, ModelPackageOperation.Remove, scene, ct);
-                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, argos, lastWorker, generations, ct);
+                lastWorker = await ObserveActiveAsync(app.Process, settings!, workers!, data, worker, argos, lastWorker, generations, scene, ct);
                 await WaitAsync(() =>
                 {
                     workers!.Check();
@@ -387,23 +387,66 @@ internal static partial class HyPackageCheck
             workerPid = pid
         };
     }
+    private sealed class ActiveObservation(int expectedReadyRows)
+    {
+        public string Gate { get; set; } = "app";
+        public bool? InventoryKnown
+        {
+            get; set;
+        }
+        public bool? ExpectedActiveMatched
+        {
+            get; set;
+        }
+        public bool? PriorWorkerExited
+        {
+            get; set;
+        }
+        public bool? PublicReady
+        {
+            get; set;
+        }
+        public int? ReadyRowCount
+        {
+            get; set;
+        }
+        public int ExpectedReadyRows { get; } = expectedReadyRows;
+    }
     private static async Task<int> ObserveActiveAsync(Process app, AutomationElement settings, WorkerObserver workers,
-        string data, string worker, string[] expected, int priorPid, HashSet<string> generations, CancellationToken ct)
+        string data, string worker, string[] expected, int priorPid, HashSet<string> generations, Scene scene, CancellationToken ct)
     {
         await WaitAsync(async () =>
         {
+            // Retain only the current poll's existing predicate results. A null
+            // means not reached or not completed, never a failed readiness check.
+            var observation = new ActiveObservation(expected.Length);
+            scene.Facts = observation;
             Require(!app.HasExited, "shipped-app-exited");
+            observation.Gate = "worker-observer";
             workers.Check();
+            observation.Gate = "inventory";
             var state = new ModelInstallationStore(data, worker).ReadInstallationState();
-            if (!state.InventoryKnown || !state.CurrentPackages.Select(item => item.Package.Id).ToHashSet(StringComparer.Ordinal).SetEquals(expected)
-                || !workers.Exited(priorPid))
+            observation.InventoryKnown = state.InventoryKnown;
+            if (!state.InventoryKnown)
                 return false;
+            observation.Gate = "active-packages";
+            observation.ExpectedActiveMatched = state.CurrentPackages.Select(item => item.Package.Id).ToHashSet(StringComparer.Ordinal).SetEquals(expected);
+            if (observation.ExpectedActiveMatched != true)
+                return false;
+            observation.Gate = "prior-worker-exit";
+            observation.PriorWorkerExited = workers.Exited(priorPid);
+            if (observation.PriorWorkerExited != true)
+                return false;
+            observation.Gate = "public-status";
             string status = await PublicStatusAsync(settings, ct);
-            if (!status.StartsWith("本地翻译已就绪", StringComparison.Ordinal))
+            observation.PublicReady = status.StartsWith("本地翻译已就绪", StringComparison.Ordinal);
+            if (observation.PublicReady != true)
                 return false;
-            return await UiAsync(() => settings.FindAll(TreeScope.Descendants, new AndCondition(
+            observation.Gate = "ready-rows";
+            observation.ReadyRowCount = await UiAsync(() => settings.FindAll(TreeScope.Descendants, new AndCondition(
                 new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Text),
-                new PropertyCondition(AutomationElement.NameProperty, "当前 · 已就绪"))).Count == expected.Length, ct);
+                new PropertyCondition(AutomationElement.NameProperty, "当前 · 已就绪"))).Count, ct);
+            return observation.ReadyRowCount == expected.Length;
         }, ct);
         var store = new ModelInstallationStore(data, worker);
         var current = store.ReadInstallationState();

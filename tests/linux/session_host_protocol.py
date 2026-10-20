@@ -19,6 +19,12 @@ import time
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "src/linux/desktop"))
+from input import Input  # noqa: E402
 
 HOST = None
 SUPERVISOR = None
@@ -2067,6 +2073,53 @@ while True:
             lambda value: value.get("event") == "status"
             and value["data"].get("connectionState") == "ListenerUnavailable"
         )
+
+    async def test_first_desktop_observation_before_shortcuts_keeps_startup_available(self):
+        # Drive the production input's first maintenance tick before the host's
+        # shortcut configuration arrives. GLib and the unused native listening
+        # socket are controlled ports; host framing/decoding are real, with no model.
+        pending = []
+        loop = SimpleNamespace(
+            IO_IN=1,
+            PRIORITY_DEFAULT=0,
+            timeout_add=lambda *_: 1,
+            io_add_watch=lambda *_: 1,
+            idle_add=lambda *_, **__: 1,
+            source_remove=lambda *_: None,
+        )
+        listener = SimpleNamespace(
+            bind=lambda path: Path(path).touch(),
+            fileno=lambda: -1,
+            listen=lambda *_: None,
+            setblocking=lambda *_: None,
+            close=lambda: None,
+        )
+        self.enterContext(mock.patch.dict(os.environ, {"NIRI_SOCKET": ""}))
+        self.enterContext(mock.patch("socket.socket", return_value=listener))
+        source = Input(
+            loop,
+            SimpleNamespace(keyval_from_name=lambda name: {"F9": 0xFFC6, "F10": 0xFFC7}[name]),
+            SimpleNamespace(native=self.home / "native.sock"),
+            SimpleNamespace(
+                send=lambda event, data: pending.append({"event": event, "data": data})
+            ),
+            None,
+        )
+        self.addCleanup(source.close)
+        source.expire()
+        self.assertEqual(len(pending), 1)
+        await self.send(pending.pop())
+        self.assertTrue(await self.ask("start"))
+        self.assertFalse(self.latest("status")["modelReady"])
+        self.assertEqual(self.latest("status")["connectionState"], "ListenerUnavailable")
+        self.assertIsInstance(await self.ask("translationPreparation", {"phase": "Idle"}), dict)
+
+        source.notification("shortcuts", self.latest("shortcuts"))
+        self.assertEqual(len(pending), 1)
+        await self.send(pending.pop())
+        self.assertIsInstance(await self.ask("translationPreparation", {"phase": "Idle"}), dict)
+        self.assertFalse((await self.ask("getGlossarySettings"))["isReleased"])
+        self.assertIsNone(self.process.returncode)
 
     async def test_language_choices_remain_available_without_claiming_a_ready_model(self):
         self.assertTrue(await self.ask("start"))

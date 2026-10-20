@@ -8,7 +8,7 @@ internal sealed record DesktopState(bool Ready = false, long UserEpoch = 0, long
     long ForegroundEpoch = 0, long WindowEpoch = 0, long ContentEpoch = 0,
     TargetId? Target = null, FocusMember Focus = FocusMember.Other, bool NativeReady = false,
     SessionShortcutAcknowledgement? SessionShortcuts = null, Guid ConnectionId = default, bool ForegroundExpired = false, OwnedPracticeBinding? PracticeForegroundSuspension = null,
-    TargetId? SourceGlossaryTarget = null, Guid SourceGlossaryGeneration = default);
+    TargetId? SourceGlossaryTarget = null, Guid? SourceGlossaryGeneration = null);
 
 internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMonitor
 {
@@ -39,7 +39,7 @@ internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMoni
     }
     public FocusMember GetFocus(TargetId target) => _state.Target == target ? _state.Focus : FocusMember.Other;
 
-    public bool SupportsSourceGlossaryEntry(SessionViewToken token) => Ready
+    public bool SupportsSourceGlossaryEntry(SessionViewToken token) => Ready && CommandGeneration != Guid.Empty
         && token.Target == _state.SourceGlossaryTarget && token.CommandGeneration == CommandGeneration
         && token.CommandGeneration == _state.SourceGlossaryGeneration;
 
