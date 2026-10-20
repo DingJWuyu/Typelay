@@ -71,23 +71,23 @@
 
 ### 当前可验证候选
 
-这是开发候选，不是通用输入验收已完成的正式发布。[已核对的 Actions 运行](https://github.com/DingJWuyu/Typelay/actions/runs/39357455312)对应源码 `d519a9dc27ef5e18cb1db7be2ae1bbb9d9c8e3b7`；[下载 Windows artifact](https://github.com/DingJWuyu/Typelay/actions/runs/39357455312/artifacts/12236852160)，名称为 `typelay-windows-d519a9dc27ef5e18cb1db7be2ae1bbb9d9c8e3b7`。取出内层 `TypeLay-Windows-preview.zip`，再完整解压启动。artifact 预计于 **2026-11-03 02:33 UTC** 到期；以本节源码及摘要配对识别构建。
+这是开发候选，不是通用输入验收已完成的正式发布。[已核对的 Actions 运行](https://github.com/DingJWuyu/Typelay/actions/runs/39372457101)对应源码 `16f6b744a671b3e0530972edd246b38cdaf198b5`；[下载 Windows artifact](https://github.com/DingJWuyu/Typelay/actions/runs/39372457101/artifacts/12242078836)，名称为 `typelay-windows-16f6b744a671b3e0530972edd246b38cdaf198b5`。取出内层 `TypeLay-Windows-preview.zip`，再完整解压启动。artifact 预计于 **2026-11-03 05:09 UTC** 到期；以本节源码及摘要配对识别构建。
 
-此包包含 Chrome 明确接入与移除、独立字段策略维护和有序消息读取、浮层直接展开、可选单向 Argos 安装，以及 Windows Hy ABI5 生产闭包与模型包操作代码。默认仍为中英 Argos，正式商店扩展身份为空。Hy 入口须组件齐备；本轮正式 ABI5 后端加载与退出已通过，Settings 安装流程仍被控件前置挡住，切换/移除未验；风格、术语与换种说法代码已接线，质量发布门保持关闭。
+此包包含 Chrome 明确接入与移除、独立字段策略维护和有序消息读取、浮层直接展开、可选单向 Argos 安装，以及 Windows Hy ABI5 生产闭包与模型包操作代码。默认仍为中英 Argos，正式商店扩展身份为空。Hy 入口须组件齐备；本轮正式 ABI5 后端加载与退出已通过，Settings 已通过控件前置并发起安装，随后进程映像观察失败，切换/移除未验；风格、术语与换种说法代码已接线，质量发布门保持关闭。
 
 <details>
 <summary>包校验与版本配对</summary>
 
-- 源码提交：`d519a9dc27ef5e18cb1db7be2ae1bbb9d9c8e3b7`
-- 内层安装 ZIP：86,976,297 字节；SHA-256：`7d9293ed6023aae6cb425ad53c5a0fd58df13162d8d373f6947e1b1d0ab301c9`。已与包旁 `.sha256` 核对。
-- 外层 Actions artifact：88,587,463 字节；SHA-256：`5597ad4e5e77690e6bcc0cc66965a8acdcd4fba9b325a94655199b6d6a670428`。已与 Actions 摘要核对，勿混用内外层值。
+- 源码提交：`16f6b744a671b3e0530972edd246b38cdaf198b5`
+- 内层安装 ZIP：86,976,469 字节；SHA-256：`4d68c7a080c2a1f6ae3b80a995bc5c2608dc9ba67662cd5dd6dd0d152f3b0df2`。已与包旁 `.sha256` 核对。
+- 外层 Actions artifact：88,590,166 字节；SHA-256：`5ea5544057d6d069982e86dad07c2b44add176dc457ea0f805130d08b8469bfc`。已与 Actions 摘要核对，勿混用内外层值。
 - App、Broker、Practice 与 BrowserHost 必须来自同一个完整包；仅看 `0.2.0.0` 不能区分开发包。
 
 可用 `Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256` 核对内层包。
 
 </details>
 
-Windows 检查未全绿：Core **290**、Protocol **17**、Windows.Contracts **31**、Runtime **996** 项通过；App **395 项通过、6 项失败**。设置/语言前置、模型取消所有权与编码修复已纳入本轮；剩余 App 失败涉及原生密码字段/失效票、普通编辑返回超时，以及 WinEventProbe 和 Chrome 文件清理占用，仍须按真实需求处理。
+Windows 检查未全绿：Core **290**、Protocol **17**、Windows.Contracts **31**、Runtime **996** 项通过；App **396 项通过、6 项失败**。设置/语言前置、模型取消所有权与编码修复已纳入本轮；剩余 App 失败涉及原生密码字段/失效票、普通编辑返回超时，以及 WinEventProbe 和 Chrome 文件清理占用，仍须按真实需求处理。
 
 本轮中英实际安装、自检、模型握手与单向补装链通过：仅中文→英文安装后，Auto 同语无须翻译、缺方向无输出；补装保留旧方向并验证双向翻译。该场景验证正式安装器及模型 API，Hy 动态语言选项仍待真实 Windows 验证。安装库存损坏时会保留原数据并禁用修改；目前缺少用户可执行的库存恢复入口，重启本身不能修复损坏清单。
 
@@ -95,7 +95,7 @@ Windows 检查未全绿：Core **290**、Protocol **17**、Windows.Contracts **3
 
 Chrome 合作本轮七个场景全部通过：真实 UI 取消/确认接入、实验写回关闭时自动接受、按需设置、选区 F10、受理后切到 B 而仅原 A 被替换，以及真实移除后 App 存活时零写与提交计数正控。cleanupErrors 为空。使用独立 profile、发行 App/Host/扩展和本地模型的软件输入检查，不代表物理输入法、品牌 Chrome 商店安装或长期稳定性验收。
 
-Hy 官方资源准备与 ABI5 生产包构建通过；实际发行程序集、正式 ModelClient/ModelChildProcess 完成 Argos→Hy 单实例加载、十二方向 hello、旧进程退出、最终 Job 回收与代使用锁释放。该前置零推理，不等于质量验收。Settings 链随后在查找模型操作按钮时耗尽预算，尚未开始 Hy 安装；中法预览、切换和移除均未运行。下一消费者修复仍待实际界面验证。
+Hy 官方资源准备与 ABI5 生产包构建通过；实际发行程序集、正式 ModelClient/ModelChildProcess 完成 Argos→Hy 单实例加载、十二方向 hello、旧进程退出、最终 Job 回收与代使用锁释放。该前置零推理，不等于质量验收。Settings 链已通过真实展开、滚动与安装确认，随后约 78 秒在等待发布与就绪时由测试报告 `worker-image-unavailable`；该观察失败不能证明安装成功或产品启动失败。中法预览、切换和移除均未运行，下一进程观察修复仍待实际验证。
 
 ## 工作模式与按需操作
 

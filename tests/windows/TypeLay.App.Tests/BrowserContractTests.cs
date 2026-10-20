@@ -11,6 +11,64 @@ namespace TypeLay.App.Tests;
 public sealed class BrowserContractTests
 {
     [Fact]
+    public void ReturnedSourceRequiresTheCurrentFormAndActualReturnReceiptForReadOnlyObservation()
+    {
+        var target = new TargetId("windows-browser", Document + ":1", Guid.NewGuid());
+        var token = new SessionViewToken(target, Guid.NewGuid(), 4);
+        var entry = new SessionGlossaryEntry(Guid.NewGuid(), token, 2, [], SourceOrigin: true);
+        JsonElement Description(Guid formId, SessionViewToken receiptToken, bool focused = true, bool supported = true,
+            int version = 0, SessionGlossaryFocus? focus = null) => JsonSerializer.SerializeToElement(new
+            {
+                sessionBindings = new
+                {
+                    sourceReady = false,
+                    editorReady = false,
+                    sourceLocalAcceptanceVersion = version,
+                    target = target.Value
+                },
+                focused,
+                sourceGlossarySupported = supported,
+                glossaryFocus = focus,
+                glossarySource = new
+                {
+                    formId,
+                    token = receiptToken
+                }
+            }, BrowserServer.Json);
+        var description = Description(entry.FormId, token);
+        var ack = BrowserInput.ApproveObservationRoles(description, target, token.CommandGeneration,
+            SessionShortcutBindings.Default, entry, returned: entry);
+        Assert.NotNull(ack);
+        Assert.False(ack.SourceReady);
+        Assert.False(ack.EditorReady);
+        Assert.Equal(0, ack.SourceLocalAcceptanceVersion);
+        Assert.Null(BrowserInput.ApproveObservationRoles(description, target, token.CommandGeneration,
+            SessionShortcutBindings.Default, entry)); // A page assertion alone is not a return receipt.
+        Assert.Null(BrowserInput.ApproveObservationRoles(description, target, token.CommandGeneration,
+            SessionShortcutBindings.Default, returned: entry)); // The form must still be current.
+        Assert.Null(BrowserInput.ApproveObservationRoles(description, target, Guid.NewGuid(),
+            SessionShortcutBindings.Default, entry, returned: entry));
+        foreach (var refused in new[]
+        {
+            Description(Guid.NewGuid(), token),
+            Description(entry.FormId, token with { Revision = 5 }),
+            Description(entry.FormId, token with { Target = target with { Lifetime = Guid.NewGuid() } }),
+            Description(entry.FormId, token, focused: false),
+            Description(entry.FormId, token, supported: false),
+            Description(entry.FormId, token, version: 1),
+            Description(entry.FormId, token, focus: new(entry.FormId, token, ImeState.Clear))
+        })
+            Assert.Null(BrowserInput.ApproveObservationRoles(refused, target, token.CommandGeneration,
+                SessionShortcutBindings.Default, entry, returned: entry));
+        var editorEntry = entry with
+        {
+            SourceOrigin = false
+        };
+        Assert.Null(BrowserInput.ApproveObservationRoles(description, target, token.CommandGeneration,
+            SessionShortcutBindings.Default, editorEntry, returned: editorEntry));
+    }
+
+    [Fact]
     public void CurrentAuxiliaryObservationRetainsReadOnlyAcknowledgementWithoutSourceOrEditorTickets()
     {
         var target = new TargetId("windows-browser", Document + ":1", Guid.NewGuid());

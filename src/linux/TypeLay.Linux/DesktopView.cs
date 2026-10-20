@@ -8,6 +8,7 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
 {
     private string? _last;
     private bool _editing;
+    private bool _sourceGlossary;
     private SessionGlossaryFocus? _glossaryFocus;
     public Func<SessionViewToken, SessionGlossaryEntry?>? BeginGlossaryRequested
     {
@@ -22,7 +23,25 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
         get; set;
     }
     public SessionGlossaryFocus? GlossaryEntryFocus => _glossaryFocus is { } focus
-        && _editing && focus.Token == Token && input.GetFocus(focus.Token.Target) == FocusMember.Overlay ? focus : null;
+        && (_editing || _sourceGlossary) && focus.Token == Token && input.GetFocus(focus.Token.Target) == FocusMember.Overlay ? focus : null;
+    public bool SupportsSourceGlossaryEntry(SessionViewToken token) => token == Token
+        && input.SupportsSourceGlossaryEntry(token);
+    public async Task<bool> ReturnGlossaryToSourceAsync(SessionGlossaryEntry entry)
+    {
+        if (!entry.SourceOrigin || !_sourceGlossary || entry.Token != Token
+            || GlossaryEntryFocus is not { Ime: ImeState.Clear } focus || focus.FormId != entry.FormId)
+            return false;
+        var reply = await link.Ask("sessionGlossaryReturn", new
+        {
+            entry.FormId,
+            entry.Token
+        });
+        return entry.Token == Token && input.GetFocus(entry.Token.Target) == FocusMember.Source
+            && reply.ValueKind == JsonValueKind.Object && reply.EnumerateObject().Count() == 3
+            && reply.TryGetProperty("formId", out var id) && id.TryGetGuid(out var formId) && formId == entry.FormId
+            && reply.TryGetProperty("token", out var token) && token.Deserialize<SessionViewToken>(DesktopLink.Json) == entry.Token
+            && reply.TryGetProperty("returned", out var returned) && returned.ValueKind == JsonValueKind.True;
+    }
     public void SetGlossaryFocus(SessionGlossaryFocus? focus)
     {
         _glossaryFocus = focus;
@@ -163,6 +182,7 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
         }
         Token = context?.Token;
         _editing = session.State == SessionState.EditingTranslation;
+        _sourceGlossary = session.State is SessionState.ValidTranslation or SessionState.EditedTranslationPending;
         RefreshGlossaryFocus();
         var value = new
         {
@@ -193,7 +213,7 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
     public void RenderPaused(PauseAnchor anchor, long revision)
     {
         Token = null;
-        _editing = false;
+        _editing = _sourceGlossary = false;
         _glossaryFocus = null;
         var value = new
         {
@@ -217,7 +237,7 @@ internal sealed class DesktopView(DesktopLink link, DesktopInput input) : ISessi
     public void HideQuietly()
     {
         Token = null;
-        _editing = false;
+        _editing = _sourceGlossary = false;
         _glossaryFocus = null;
         if (_last == "hidden")
             return;

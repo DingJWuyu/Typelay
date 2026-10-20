@@ -68,6 +68,10 @@ public interface ISessionView
     {
         get;
     }
+    // Capability is presentation only. Opening and returning still require the
+    // original source/form identity and actual focus at the platform seam.
+    bool SupportsSourceGlossaryEntry(SessionViewToken token) => false;
+    Task<bool> ReturnGlossaryToSourceAsync(SessionGlossaryEntry entry) => Task.FromResult(false);
     Action? ExcludeRequested
     {
         get; set;

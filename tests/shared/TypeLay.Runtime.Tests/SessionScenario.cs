@@ -502,6 +502,17 @@ internal sealed class SessionScenario : IDisposable
         {
             get; set;
         }
+        public bool SourceGlossarySupported
+        {
+            get; set;
+        }
+        public Func<SessionGlossaryEntry, Task<bool>>? ReturnGlossary
+        {
+            get; set;
+        }
+        public bool SupportsSourceGlossaryEntry(SessionViewToken token) => SourceGlossarySupported && token == Token;
+        public Task<bool> ReturnGlossaryToSourceAsync(SessionGlossaryEntry entry) =>
+            ReturnGlossary?.Invoke(entry) ?? Task.FromResult(false);
         public SessionGlossaryFocus? GlossaryEntryFocus
         {
             get; set;

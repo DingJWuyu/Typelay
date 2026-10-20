@@ -184,6 +184,8 @@ class Input:
         self.settings_generation = 0
         self.overlay_focused = False
         self.ui_event = lambda *_: None
+        self.glossary_focus_transfer = lambda *_: False
+        self.source_glossary_return = None
         self.user_epoch = self.source_epoch = self.foreground_epoch = 0
         self.window_epoch = self.content_epoch = 0
         self.last_focus = None
@@ -1035,6 +1037,10 @@ class Input:
                 self.practice_continuity["runId"], acknowledged=False, require_fresh=False
             )
             else "00000000-0000-0000-0000-000000000000",
+            "sourceGlossaryTarget": self.bound
+            if self.source_glossary_supported(self.bound_observation)
+            else None,
+            "sourceGlossaryGeneration": self.shortcut_config.get("generation"),
             "nativeReady": self.focused_peer() is not None,
             "sessionShortcuts": self.current_session_acknowledgement(self.bound_observation)
             if self.bound_observation
@@ -1180,6 +1186,96 @@ class Input:
         while len(collection) > (4 if frozen else 128):
             collection.popitem(last=False)
         return snapshot, record
+
+    def source_glossary_supported(self, record):
+        # Display capability only. Native and browser origins keep separate
+        # identity checks; neither can borrow the other's route or readiness.
+        current = bool(
+            record
+            and record is self.bound_observation
+            and record.get("sourceGlossarySupported") is True
+            and record["target"] == self.bound
+            and record.get("commandGeneration") == self.shortcut_config.get("generation")
+            and record["peer"] in self.peers
+            and record["peer"] is self.focused_peer()
+            and self.fresh()
+        )
+        if not current:
+            return False
+        peer = record["peer"]
+        if peer.backend == "gtk3":
+            return bool(
+                record.get("gtk3SourceGlossary") is True
+                and record.get("route") is None
+                and record["target"]["lifetime"] == peer.lifetime
+                and record["window"]["id"] == self.niri.focused["id"]
+            )
+        return bool(
+            peer.backend == "browser"
+            and self.browser_source_local(
+                record["peer"],
+                RoutedReply({"target": record["target"]["value"]}, record.get("route")),
+            )
+        )
+
+    @staticmethod
+    def gtk3_source_glossary(peer, native):
+        metadata, authority = native.get("metadata", {}), native.get("authority", {})
+        context = authority.get("contextStamp", {}).get("context")
+        return bool(
+            peer.backend == "gtk3"
+            and getattr(native, "route", None) is None
+            and native.get("sourceGlossarySupported") is True
+            and metadata.get("aria") == "GtkEntry"
+            and metadata.get("password") is False
+            and metadata.get("readOnly") is False
+            and metadata.get("enabled") is True
+            and metadata.get("multiline") is False
+            and authority.get("target") == native.get("target")
+            and type(context) is int
+            and context > 0
+        )
+
+    def source_glossary_return_current(self, receipt, peer, native):
+        # This exact, live form receipt narrows its return capture only. Ordinary
+        # Linux preview captures retain their existing read-only ACK semantics.
+        acknowledgement = self.session_acknowledgement(peer, native)
+        current = bool(
+            receipt is not None
+            and self.source_glossary_return is receipt
+            and receipt["peer"] is peer
+            and receipt["windowEpoch"] == self.window_epoch
+            and receipt["foregroundEpoch"] == self.foreground_epoch
+            and receipt["token"]["commandGeneration"] == self.shortcut_config.get("generation")
+            and receipt["token"]["target"] == self.bound
+            and native.get("target") == self.bound["value"]
+            and native.get("glossarySource")
+            == {"formId": receipt["formId"], "token": receipt["token"]}
+            and getattr(native, "route", None) == receipt["route"]
+            and native.get("focused") is True
+            and native.get("sourceGlossarySupported") is True
+            and not self.overlay_focused
+            and self.focused_peer() is peer
+            and self.fresh()
+            and acknowledgement
+            and not acknowledgement["sourceReady"]
+            and not acknowledgement["editorReady"]
+        )
+        if not current:
+            return False
+        if peer.backend == "gtk3":
+            basis, authority = receipt.get("sourceAuthority", {}), native.get("authority", {})
+            return bool(
+                self.gtk3_source_glossary(peer, native)
+                and receipt["token"]["target"]["lifetime"] == peer.lifetime
+                and all(
+                    authority.get(key) == basis.get(key)
+                    for key in ("target", "metadataKey", "inputRevision", "contentRevision")
+                )
+                and authority.get("contextStamp", {}).get("context")
+                == basis.get("contextStamp", {}).get("context")
+            )
+        return peer.backend == "browser" and self.browser_source_local(peer, native)
 
     def session_acknowledgement(self, peer, native):
         acknowledgement = native.get("sessionBindings")
@@ -1616,6 +1712,7 @@ class Input:
         self.capture_started_at = now_ms()
         settings_generation = self.settings_generation
         command_generation = self.shortcut_config.get("generation")
+        glossary_return = self.source_glossary_return
         editor = self.practice_editor
         returning = self.practice_return
         practice = self.practice_authorization or self.practice_continuity or returning
@@ -1705,6 +1802,10 @@ class Input:
             self.remember_browser_diagnostics(description.get("diagnostics"))
         if not reuse:
             self.remember_publication(peer, description, publication_generation)
+        if glossary_return is not None and not self.source_glossary_return_current(
+            glossary_return, peer, description
+        ):
+            return self.captured("glossary-return-identity-lost")
         if not await self.approve(peer, description):
             return self.captured("excluded-or-sensitive")
         if peer.browser_retired:
@@ -1777,6 +1878,12 @@ class Input:
                 if resumed is not None:
                     return resumed
             return self.captured("native-read-declined", native_failure=native_failure)
+        if glossary_return is not None and (
+            not self.source_glossary_return_current(glossary_return, peer, native)
+            or native.get("ime") != "Clear"
+            or native.get("writeSupported") is not False
+        ):
+            return self.captured("glossary-return-identity-lost")
         if not self.fresh():
             self.captured("compositor-stale")
             return self.expired_practice_capture(practice, native)
@@ -1862,6 +1969,16 @@ class Input:
             )
         ):
             acknowledgement = None
+        record["gtk3SourceGlossary"] = self.gtk3_source_glossary(
+            peer, description
+        ) and self.gtk3_source_glossary(peer, native)
+        record["sourceGlossarySupported"] = record["gtk3SourceGlossary"] or (
+            peer.backend == "browser"
+            and description.get("sourceGlossarySupported") is True
+            and native.get("sourceGlossarySupported") is True
+            and getattr(description, "route", None) == getattr(native, "route", None)
+            and self.browser_source_local(peer, native)
+        )
         record["sessionShortcuts"] = acknowledgement
         if acknowledgement and acknowledgement["sourceLocalAcceptanceVersion"] == 1:
             peer.browser_had_v1 = True
@@ -2538,7 +2655,10 @@ class Input:
                     self.source_epoch += 1
                 if value["textChanged"]:
                     self.content_epoch += 1
-                if value["focusChanged"]:
+                # Only the current form's one-use, browser-proved synchronous
+                # transfer is internal to this window. Every other field focus
+                # event retains the ordinary window invalidation semantics.
+                if value["focusChanged"] and not self.glossary_focus_transfer(peer, value, route):
                     self.window_epoch += 1
                 if value["focused"] and self.enabled is not False:
                     self.bound = target_id(peer, value["target"])

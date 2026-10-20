@@ -9,6 +9,7 @@ inference worker. Windows availability and default installation are unchanged.
 import argparse
 import gettext
 import json
+import math
 import os
 import shutil
 import signal
@@ -49,6 +50,41 @@ DIRECTIONS = [
     "zh_pt",
     "pt_zh",
 ]
+
+
+def valid_rectangle(area):
+    return (
+        area is not None
+        and len(area) == 4
+        and all(type(value) is int and -(2**31) < value < 2**31 for value in area)
+        and area[2] > 0
+        and area[3] > 0
+    )
+
+
+def rectangle_contains(outer, inner):
+    return (
+        valid_rectangle(outer)
+        and valid_rectangle(inner)
+        and outer[0] <= inner[0] <= outer[0] + outer[2] - inner[2]
+        and outer[1] <= inner[1] <= outer[1] + outer[3] - inner[3]
+    )
+
+
+def package_scroll_value(current, lower, upper, card, viewport):
+    """Compute one public scrollbar move, never an actionable button geometry."""
+    assert all(
+        type(value) in (int, float) and math.isfinite(value) for value in (current, lower, upper)
+    ), "package scrollbar has unknown values"
+    assert lower <= current <= upper, "package scrollbar has an invalid range"
+    assert valid_rectangle(card) and valid_rectangle(viewport), "unknown package scroll geometry"
+    x, y, width, height = card
+    left, top, viewport_width, viewport_height = viewport
+    assert left <= x <= left + viewport_width - width and height <= viewport_height, (
+        "package card cannot fit the observed viewport"
+    )
+    delta = y - top if y < top else max(0, y + height - top - viewport_height)
+    return max(lower, min(upper, current + delta))
 
 
 def model_cache(package, cache):
@@ -498,8 +534,9 @@ def run(arguments):
 
         def activate(name, *, package_control=False):
             node = wait(lambda: named(process.pid, name), "GTK package control missing: " + name)
+            scroll_observation = None
 
-            def snapshot():
+            def observe():
                 observed = []
                 ancestor = node
                 for _ in range(16):
@@ -527,11 +564,116 @@ def run(arguments):
                     if component is not None:
                         area = Atspi.Component.get_extents(component, Atspi.CoordType.SCREEN)
                         value["bounds"] = [area.x, area.y, area.width, area.height]
-                    observed.append(value)
+                    observed.append((ancestor, value))
                     if ancestor.get_role() == Atspi.Role.FRAME:
                         break
                     ancestor = ancestor.get_parent()
-                return {"control": name, "ancestry": observed}
+                return observed
+
+            def package_path():
+                assert named(process.pid, name) == node, "GTK package control was replaced: " + name
+                assert node.get_role() == Atspi.Role.PUSH_BUTTON, (
+                    "current GTK package control is not a button: " + name
+                )
+                observed = observe()
+                assert all(
+                    value["owned"] and not value["states"]["DEFUNCT"] for _, value in observed
+                ), "GTK package control has a retired or foreign ancestor"
+                viewports = [
+                    index
+                    for index, (ancestor, _) in enumerate(observed)
+                    if ancestor.get_role() == Atspi.Role.VIEWPORT
+                ]
+                assert len(viewports) == 1, "GTK package control has no unique viewport"
+                index = viewports[0]
+                assert index + 1 < len(observed)
+                pane, pane_value = observed[index + 1]
+                frame, frame_value = observed[-1]
+                assert (
+                    pane.get_role() == Atspi.Role.SCROLL_PANE
+                    and pane.get_name() == "设置页：应用支持"
+                    and frame.get_role() == Atspi.Role.FRAME
+                    and frame.get_name() == "TypeLay 设置"
+                    and not any(
+                        ancestor.get_role() in (Atspi.Role.SCROLL_PANE, Atspi.Role.FRAME)
+                        for ancestor, _ in observed[:index] + observed[index + 2 : -1]
+                    )
+                ), "GTK package control is outside its exact settings scroll pane"
+                clips = (observed[index][1], pane_value, frame_value)
+                assert all(
+                    value["states"]["SHOWING"] and valid_rectangle(value.get("bounds"))
+                    for value in clips
+                ), "GTK package control has unknown clipping geometry"
+                assert rectangle_contains(pane_value["bounds"], clips[0]["bounds"])
+                assert rectangle_contains(frame_value["bounds"], pane_value["bounds"])
+                return observed, index, clips
+
+            def scroll_package():
+                nonlocal scroll_observation
+                observed, index, clips = package_path()
+                target = observed[0][1]
+                if target["states"]["SHOWING"] and all(
+                    rectangle_contains(value["bounds"], target.get("bounds")) for value in clips
+                ):
+                    return
+                card = next(
+                    (
+                        value["bounds"]
+                        for _, value in observed[1:index]
+                        if value["states"]["SHOWING"] and valid_rectangle(value.get("bounds"))
+                    ),
+                    None,
+                )
+                assert card is not None, "GTK package control has no observed scroll anchor"
+                pane = observed[index + 1][0]
+                count = pane.get_child_count()
+                assert 0 < count <= 8, "GTK settings scroll pane has unexpected direct children"
+                scrollbars = []
+                for child_index in range(count):
+                    child = pane.get_child_at_index(child_index)
+                    assert child is not None, "GTK settings scroll pane child disappeared"
+                    child.clear_cache()
+                    assert child.get_process_id() == process.pid and child.get_parent() == pane
+                    if child.get_role() == Atspi.Role.SCROLL_BAR and child.get_state_set().contains(
+                        Atspi.StateType.VERTICAL
+                    ):
+                        scrollbars.append(child)
+                assert len(scrollbars) == 1, "GTK settings has no unique vertical scrollbar"
+                scrollbar = scrollbars[0]
+                states = scrollbar.get_state_set()
+                assert not states.contains(Atspi.StateType.DEFUNCT) and all(
+                    states.contains(value)
+                    for value in (
+                        Atspi.StateType.SHOWING,
+                        Atspi.StateType.SENSITIVE,
+                        Atspi.StateType.ENABLED,
+                    )
+                ), "GTK settings vertical scrollbar is not interactive"
+                value = scrollbar.get_value_iface()
+                assert value is not None, "GTK settings vertical scrollbar has no public Value"
+                current = Atspi.Value.get_current_value(value)
+                lower = Atspi.Value.get_minimum_value(value)
+                upper = Atspi.Value.get_maximum_value(value)
+                requested = package_scroll_value(current, lower, upper, card, clips[0]["bounds"])
+                assert requested != current, "GTK package control cannot be revealed by scrolling"
+                scroll_observation = {
+                    "before": current,
+                    "requested": requested,
+                    "minimum": lower,
+                    "maximum": upper,
+                }
+                # GTK3 buttons do not implement Component.scroll_to. Drive only
+                # their actual parent pane's public scrollbar, once.
+                assert time.monotonic() < visibility_deadline, (
+                    "GTK package control exhausted its visibility budget before scrolling"
+                )
+                assert Atspi.Value.set_current_value(value, requested), (
+                    "GTK settings public scrollbar rejected its position"
+                )
+                scroll_observation["actual"] = Atspi.Value.get_current_value(value)
+                assert scroll_observation["actual"] == requested, (
+                    "GTK settings public scrollbar did not retain its requested position"
+                )
 
             def enabled():
                 node.clear_cache()
@@ -565,34 +707,65 @@ def run(arguments):
                     "GTK package management did not finish expanding",
                     visibility_deadline - time.monotonic(),
                 )
-            assert Atspi.Component.grab_focus(node.get_component_iface()), name
 
             def showing():
+                if package_control:
+                    observed, _, clips = package_path()
+                    target = observed[0][1]
+                    return all(
+                        target["states"][state]
+                        for state in ("SHOWING", "FOCUSED", "SENSITIVE", "ENABLED")
+                    ) and all(
+                        rectangle_contains(value["bounds"], target.get("bounds")) for value in clips
+                    )
                 node.clear_cache()
                 states = node.get_state_set()
-                return all(
-                    states.contains(value)
-                    for value in (
-                        Atspi.StateType.SHOWING,
-                        Atspi.StateType.FOCUSED,
-                        Atspi.StateType.SENSITIVE,
-                        Atspi.StateType.ENABLED,
-                    )
+                return not states.contains(Atspi.StateType.DEFUNCT) and all(
+                    states.contains(getattr(Atspi.StateType, state))
+                    for state in ("SHOWING", "FOCUSED", "SENSITIVE", "ENABLED")
                 )
 
+            def focused():
+                node.clear_cache()
+                return node.get_state_set().contains(Atspi.StateType.FOCUSED)
+
             try:
+                if package_control:
+                    # Expansion can publish a replacement action. Resolve it
+                    # before the single focus/scroll/action sequence.
+                    node = wait(
+                        lambda: named(process.pid, name),
+                        "current GTK package control missing: " + name,
+                        visibility_deadline - time.monotonic(),
+                    )
+                    assert enabled(), "current GTK package control is disabled: " + name
+                assert Atspi.Component.grab_focus(node.get_component_iface()), name
+                if package_control:
+                    wait(
+                        focused,
+                        "GTK package control did not receive focus: " + name,
+                        visibility_deadline - time.monotonic(),
+                    )
+                    scroll_package()
                 wait(
                     showing,
                     "GTK package control not visible and focused: " + name,
                     visibility_deadline - time.monotonic(),
                 )
-            except AssertionError:
+                assert time.monotonic() < visibility_deadline and showing(), (
+                    "GTK package control changed before its single action: " + name
+                )
+                assert Atspi.Action.do_action(node.get_action_iface(), 0), name
+            except Exception:
                 try:
-                    report["failedControlObservation"] = snapshot()
+                    report["failedControlObservation"] = {
+                        "control": name,
+                        "ancestry": [value for _, value in observe()],
+                        "scroll": scroll_observation,
+                    }
                 except Exception:
                     pass  # Diagnostics must not replace the original visibility failure.
                 raise
-            assert Atspi.Action.do_action(node.get_action_iface(), 0), name
 
         def action(title, label):
             select_settings_page(process.pid, "应用支持", timeout=min(15, remaining()))

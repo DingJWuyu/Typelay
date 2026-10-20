@@ -99,6 +99,8 @@ internal sealed partial class BrowserInput
             rejection = ObservationReason.AcknowledgementNotCurrent;
         else if (lease.CommandGeneration != _hook.CommandGeneration)
             rejection = ObservationReason.CommandGenerationChanged;
+        else if (_glossaryEntry?.SourceOrigin == true)
+            rejection = ObservationReason.EditorFocused;
         if (rejection != ObservationReason.Ready)
         {
             Revoke();
@@ -135,7 +137,7 @@ internal sealed partial class BrowserInput
             rejection = ObservationReason.AcknowledgementNotCurrent;
         else if (!lease.Source.DirectWriteSupported)
             rejection = ObservationReason.DirectWriteUnsupported;
-        else if (_editorFocused || GlossaryFocus is not null)
+        else if (_editorFocused || GlossaryFocus is not null || _glossaryEntry?.SourceOrigin == true)
             rejection = ObservationReason.EditorFocused;
         if (rejection != ObservationReason.Ready)
         {
@@ -583,6 +585,7 @@ internal sealed partial class BrowserInput
         && owner.FocusRevision == focusRevision && _hook.ForegroundEpoch == foregroundEpoch
         && owner.Generation == _configurationGeneration && OwnerForeground(owner)
         && _commandsEnabled && _sessionEnabled && !_editorFocused && GlossaryFocus is null && _editorTransition is null
+        && _glossaryEntry?.SourceOrigin != true
         && _commandExcluded is not null && owner.Excluded.SequenceEqual(_commandExcluded);
     private static void InvalidateCommandPolicy(CommandOwner owner)
     {
@@ -1086,6 +1089,7 @@ internal sealed partial class BrowserInput
         _editorFocused = false;
         _glossaryEntry = null;
         _glossaryFocus = null;
+        _returnedGlossary = null;
     }
     internal void EditorFocus(SessionViewToken token, bool focused)
     {
@@ -1116,10 +1120,46 @@ internal sealed partial class BrowserInput
     }
     internal bool OpenGlossaryEntry(SessionGlossaryEntry entry)
     {
-        if (_glossaryEntry is not null || entry.FormId == Guid.Empty || _editorToken != entry.Token
-            || GetFocus(entry.Token.Target) != FocusMember.Overlay)
+        if (_glossaryEntry is not null || entry.FormId == Guid.Empty
+            || (entry.SourceOrigin ? !SupportsSourceGlossaryEntry(entry.Token) || GetFocus(entry.Token.Target) != FocusMember.Source
+                : _editorToken != entry.Token || GetFocus(entry.Token.Target) != FocusMember.Overlay))
             return false;
         _glossaryEntry = entry;
+        _returnedGlossary = null;
+        if (entry.SourceOrigin && _commandOwner is { } owner)
+            InvalidateCommandPolicy(owner);
+        return true;
+    }
+    internal bool SupportsSourceGlossaryEntry(SessionViewToken token) => _current is { SourceGlossarySupported: true } current
+        && current.Target == token.Target && token.CommandGeneration == _hook.CommandGeneration
+        && ForegroundCurrent(current) && AcknowledgementCurrent(current);
+    internal async Task<bool> ReturnGlossaryToSourceAsync(SessionGlossaryEntry entry, BrowserObservation original)
+    {
+        if (_glossaryEntry != entry || !entry.SourceOrigin || _returnedGlossary is not null
+            || entry.Token.Target != original.Target || !ForegroundCurrent(original) || !SupportsSourceGlossaryEntry(entry.Token)
+            || _current is not { } current || current.Peer != original.Peer || current.Route != original.Route
+            || GlossaryFocus is not { Ime: ImeState.Clear } focus || focus.FormId != entry.FormId || focus.Token != entry.Token
+            || GetFocus(original.Target) != FocusMember.Overlay)
+            return false;
+        var epochs = _hook.BrowserEpochs;
+        var reply = await original.Peer.RequestAsync("overlay-glossary-return", new
+        {
+            target = entry.Token.Target.Value,
+            generation = entry.Token.CommandGeneration,
+            revision = entry.Token.Revision,
+            formId = entry.FormId,
+            token = entry.Token
+        });
+        if (_glossaryEntry != entry || !ForegroundCurrent(original) || !SupportsSourceGlossaryEntry(entry.Token)
+            || _current is not { } latest || latest.Peer != original.Peer || latest.Route != original.Route
+            || _hook.WindowEpoch != epochs.Window || _hook.ContentEpoch != epochs.Content
+            || reply is null || reply.Route != original.Route || !MatchingGlossarySource(reply.Data, entry, returned: true))
+            return false;
+        // Only the actual page focus-transfer receipt enables a subsequent
+        // target-bound, read-only capture. It grants no key or write authority.
+        _returnedGlossary = entry;
+        _glossaryFocus = null;
+        _editorFocused = false;
         return true;
     }
     internal void CloseGlossaryEntry(Guid formId)
@@ -1130,6 +1170,7 @@ internal sealed partial class BrowserInput
         // Clearing the auxiliary role never manufactures or restores that event.
         _glossaryEntry = null;
         _glossaryFocus = null;
+        _returnedGlossary = null;
     }
     internal void SetGlossaryFocus(SessionGlossaryFocus? focus)
     {
@@ -1141,7 +1182,10 @@ internal sealed partial class BrowserInput
             return;
         _glossaryFocus = focus;
         if (focus is not null)
+        {
             _editorFocused = false;
+            _returnedGlossary = null;
+        }
         if (_commandOwner is { } owner)
             InvalidateCommandPolicy(owner);
         _hook.NotifyBrowserChange(false, false, source: false);
@@ -1167,6 +1211,19 @@ internal sealed partial class BrowserInput
             return current;
         }
         catch (JsonException) { return null; }
+    }
+
+    private static bool MatchingGlossarySource(JsonElement data, SessionGlossaryEntry expected, bool returned = false)
+    {
+        if (data.ValueKind != JsonValueKind.Object || data.EnumerateObject().Count() != (returned ? 3 : 2)
+            || !Guid.TryParse(String(data, "formId"), out var formId) || formId != expected.FormId
+            || !data.TryGetProperty("token", out var token) || returned && !Boolean(data, "returned"))
+            return false;
+        try
+        {
+            return token.Deserialize<SessionViewToken>(BrowserServer.Json) == expected.Token;
+        }
+        catch (JsonException) { return false; }
     }
 
 }

@@ -25,6 +25,458 @@ public sealed class InlineGlossaryTests
         s.View.AddGlossaryRequested!(new(entry.FormId, entry.Token, entry.SettingsRevision, new("hello", target)));
 
     [Fact]
+    public async Task SourceCandidateReturnsAndRevalidatesBeforeSavingWithoutEditing()
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var token = s.View.Token;
+        string candidate = s.View.Preview;
+        var entry = Open(s);
+        Assert.Equal(SessionState.ValidTranslation, s.View.State);
+        Assert.Equal(candidate, s.View.Preview);
+        Assert.Null(s.Input.Permit);
+        s.Input.InEditor = true; // This host role is the exact auxiliary form, not a Core editor transition.
+        s.View.ReturnGlossary = returned =>
+        {
+            Assert.Same(entry, returned);
+            Assert.Null(s.Input.Permit);
+            s.Input.InEditor = false;
+            s.View.GlossaryEntryFocus = null;
+            s.Source = s.Source with
+            {
+                FocusEpoch = s.Source.FocusEpoch + 2
+            };
+            return Task.FromResult(true);
+        };
+        int captures = s.Service.Captures;
+        var result = await Add(s, entry);
+        Assert.True(result.Saved, result.Code);
+        Assert.Equal(captures + 1, s.Service.Captures);
+        Assert.Equal("fixed", Assert.Single(s.ReloadSettings().Glossary!.Rules).TargetTerm);
+        Assert.NotEqual(token, s.View.Token);
+        Assert.Equal(SessionState.Translating, s.View.State);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+        Assert.Equal(0, s.Service.Returns);
+    }
+
+    [Fact]
+    public async Task SourceFormRejectsWindowChangesBeforeReturn()
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var entry = Open(s);
+        s.Input.InEditor = true;
+        int returns = 0;
+        s.View.ReturnGlossary = _ =>
+        {
+            returns++;
+            s.Input.InEditor = false;
+            s.View.GlossaryEntryFocus = null;
+            return Task.FromResult(true);
+        };
+        s.Input.WindowEpoch++;
+        Assert.False((await Add(s, entry)).Saved);
+        Assert.Equal(0, returns);
+        Assert.Null(s.ReloadSettings().Glossary);
+    }
+
+    [Fact]
+    public async Task SourceFormCannotHoldSessionAfterExternalFocusLoss()
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var entry = Open(s);
+        s.Input.InEditor = true;
+        s.Tick(1000);
+        Assert.Equal(SessionState.ValidTranslation, s.View.State);
+        s.Input.InEditor = false;
+        s.Input.FocusedTarget = new("controlled", "external", Guid.NewGuid());
+        s.View.GlossaryEntryFocus = null;
+        s.Tick();
+        Assert.False(s.View.Visible);
+        Assert.False((await Add(s, entry)).Saved);
+        Assert.Null(s.Input.Permit);
+    }
+
+    [Fact]
+    public async Task FailedSourceSaveRetainsFormWithoutPermitsAndCanRetryFromAuxiliaryFocus()
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var entry = Open(s);
+        s.Input.InEditor = true;
+        s.View.ReturnGlossary = _ =>
+        {
+            s.Input.InEditor = false;
+            s.View.GlossaryEntryFocus = null;
+            return Task.FromResult(true);
+        };
+        s.BlockSettingsWrites();
+        Assert.Equal("glossary-save-failed", (await Add(s, entry)).Code);
+        s.Tick(1000);
+        Assert.True(s.View.Visible);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.View.Context!.TranslationActions!.CanOpenGlossary);
+        s.AllowSettingsWrites();
+        s.Input.InEditor = true;
+        s.View.GlossaryEntryFocus = new(entry.FormId, entry.Token, ImeState.Clear);
+        Assert.True((await Add(s, entry)).Saved);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData("text")]
+    [InlineData("input")]
+    [InlineData("selection")]
+    [InlineData("target")]
+    [InlineData("ime")]
+    [InlineData("composing")]
+    [InlineData("model")]
+    [InlineData("settings")]
+    [InlineData("close")]
+    public async Task SourceReturnRechecksOriginalBasisBeforeAnyPersistence(string change)
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var entry = Open(s);
+        s.Input.InEditor = true;
+        s.View.ReturnGlossary = _ =>
+        {
+            s.Input.InEditor = false;
+            s.View.GlossaryEntryFocus = null;
+            switch (change)
+            {
+                case "text":
+                    s.Source = s.Source with
+                    {
+                        Text = "other"
+                    };
+                    break;
+                case "input":
+                    s.Source = s.Source with
+                    {
+                        InputEpoch = 2
+                    };
+                    break;
+                case "selection":
+                    s.Source = s.Source with
+                    {
+                        Selection = new(1, 2)
+                    };
+                    break;
+                case "target":
+                    s.Source = s.Source with
+                    {
+                        Target = s.Source.Target with
+                        {
+                            Lifetime = Guid.NewGuid()
+                        }
+                    };
+                    break;
+                case "ime":
+                case "composing":
+                    s.Source = s.Source with
+                    {
+                        Ime = change == "composing" ? ImeState.Composing : ImeState.Unknown
+                    };
+                    break;
+                case "model":
+                    s.Model.VerifiedIdentity = SessionScenario.ArgosIdentity;
+                    break;
+                case "settings":
+                    s.Settings.Update(s.Settings.Value with
+                    {
+                        Source = "fr"
+                    });
+                    break;
+                case "close":
+                    s.View.CloseGlossaryRequested!(entry.FormId);
+                    break;
+            }
+            return Task.FromResult(true);
+        };
+        Assert.False((await Add(s, entry)).Saved);
+        Assert.Null(s.ReloadSettings().Glossary);
+        Assert.Empty(s.Service.Writes);
+        Assert.Null(s.Input.Permit);
+    }
+
+    [Fact]
+    public async Task SourcePendingDraftKeepsItsCandidateAndAppliesSavedRuleOnlyToNextMachineJob()
+    {
+        using var s = Editing();
+        s.View.DraftChanged!("keep my manual draft");
+        s.View.ReturnRequested!(s.View.Token);
+        s.Tick();
+        Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+        s.View.SourceGlossarySupported = true;
+        var token = s.View.Token;
+        string draft = s.View.Draft, preview = s.View.Preview;
+        int jobs = s.Model.Jobs.Count;
+        var entry = Open(s);
+        s.Input.InEditor = true;
+        s.View.ReturnGlossary = _ =>
+        {
+            s.Input.InEditor = false;
+            s.View.GlossaryEntryFocus = null;
+            s.Source = s.Source with
+            {
+                FocusEpoch = s.Source.FocusEpoch + 2
+            };
+            return Task.FromResult(true);
+        };
+        Assert.True((await Add(s, entry)).Saved);
+        s.Tick();
+        Assert.Equal(SessionState.EditedTranslationPending, s.View.State);
+        Assert.Equal(token, s.View.Token);
+        Assert.Equal(draft, s.View.Draft);
+        Assert.Equal(preview, s.View.Preview);
+        Assert.Equal(jobs, s.Model.Jobs.Count);
+        Assert.Null(s.Input.Permit);
+        Assert.Empty(s.Service.Writes);
+        s.View.CloseGlossaryRequested!(entry.FormId);
+        s.View.RegenerateRequested!();
+        s.Tick(Limits.DebounceMs);
+        Assert.Equal("fixed", Assert.Single(s.Model.Jobs[^1].Glossary!.Rules).TargetTerm);
+    }
+
+    [Fact]
+    public async Task SourceCommitReturnsSavedEvenWhenRenderRetiresFormAndNotificationFails()
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.Source = s.Source with
+        {
+            Selection = new(1, 4)
+        };
+        s.ReadyCandidate();
+        var entry = Open(s);
+        s.Input.InEditor = true;
+        s.View.ReturnGlossary = _ =>
+        {
+            s.Input.InEditor = false;
+            s.View.GlossaryEntryFocus = null;
+            return Task.FromResult(true);
+        };
+        s.Settings.GlossarySaved += () => throw new IOException("controlled notification failure");
+        var result = await Add(s, entry);
+        Assert.True(result.Saved);
+        Assert.Equal("glossary-saved-notification-failed", result.Code);
+        Assert.Equal("fixed", Assert.Single(s.ReloadSettings().Glossary!.Rules).TargetTerm);
+        Assert.NotEqual(entry.Token, s.View.Token);
+        Assert.False((await Add(s, entry)).Saved);
+        s.Tick(Limits.DebounceMs);
+        Assert.Equal("ell", s.Model.Jobs[^1].SourceText);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public async Task ClosingSourceFormWhileFreshCaptureIsPendingCannotCommitLater()
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var entry = Open(s);
+        s.Input.InEditor = true;
+        s.View.ReturnGlossary = _ =>
+        {
+            s.Input.InEditor = false;
+            s.View.GlossaryEntryFocus = null;
+            return Task.FromResult(true);
+        };
+        s.Service.PendingCapture = new();
+        var saving = Add(s, entry);
+        Assert.False(saving.IsCompleted);
+        s.View.CloseGlossaryRequested!(entry.FormId);
+        s.CompleteCapture(new(s.Fresh, FocusMember.Source, "org.typelay.ControlledApp",
+            s.Input.UserEpoch, s.Input.ForegroundEpoch,
+            new(s.Source.Target, s.Input.CommandGeneration, s.Input.SessionBindings, false, false)));
+        Assert.Equal("glossary-canceled", (await saving).Code);
+        Assert.Null(s.ReloadSettings().Glossary);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void FailedCaptureStartedBeforeSourceFormCannotCloseItsAuxiliarySession()
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        s.Service.PendingCapture = new();
+        s.Tick();
+        var entry = Open(s);
+        string preview = s.View.Preview;
+        s.Input.InEditor = true;
+        s.FailCapture();
+        Assert.True(s.View.Visible);
+        Assert.Equal(entry.Token, s.View.Token);
+        Assert.Equal(preview, s.View.Preview);
+        Assert.Equal(SessionState.ValidTranslation, s.View.State);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.View.CanAccept);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public void CaptureStartedBeforeSourceFormCannotReplaceItsBasisOrIssueAnotherPermit()
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        s.Service.PendingCapture = new();
+        s.Tick();
+        var entry = Open(s);
+        string preview = s.View.Preview;
+        s.Input.InEditor = true;
+        s.CompleteCapture(new(s.Fresh with
+        {
+            Text = "late source observation",
+            InputEpoch = 9
+        },
+            FocusMember.Source, "org.typelay.ControlledApp", s.Input.UserEpoch, s.Input.ForegroundEpoch,
+            new(s.Source.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true)));
+        s.Tick(1000);
+        Assert.Equal(entry.Token, s.View.Token);
+        Assert.Equal(preview, s.View.Preview);
+        Assert.Equal(SessionState.ValidTranslation, s.View.State);
+        Assert.Null(s.Input.Permit);
+        Assert.False(s.View.CanAccept);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CaptureDisplacedByOpenedAndClosedSourceFormCannotChangeTheCandidate(bool failed)
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        s.Service.PendingCapture = new();
+        s.Tick();
+        var entry = Open(s);
+        string preview = s.View.Preview;
+        s.Input.InEditor = true;
+        // Cancel restores actual source focus and retires the form before the
+        // original ordinary read completes. Both owners now appear absent.
+        s.Input.InEditor = false;
+        s.View.GlossaryEntryFocus = null;
+        s.View.CloseGlossaryRequested!(entry.FormId);
+        if (failed)
+            s.FailCapture();
+        else
+            s.CompleteCapture(new(s.Fresh with
+            {
+                Text = "late source observation",
+                InputEpoch = 9
+            }, FocusMember.Source, "org.typelay.ControlledApp", s.Input.UserEpoch, s.Input.ForegroundEpoch,
+                new(s.Source.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true)));
+        Assert.True(s.View.Visible);
+        Assert.Equal(entry.Token, s.View.Token);
+        Assert.Equal(preview, s.View.Preview);
+        Assert.Equal(SessionState.ValidTranslation, s.View.State);
+        Assert.Equal(InputConnectionState.Connected, s.Controller.ConnectionState);
+        Assert.Null(s.Input.Permit);
+        Assert.True(s.View.Context!.TranslationActions!.CanOpenGlossary);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CaptureDisplacedBySourceFormCannotAffectItAfterReturningToSource(bool failed)
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var earlierRead = new TaskCompletionSource<InputCapture>();
+        s.Service.PendingCapture = earlierRead;
+        s.Tick();
+        var entry = Open(s);
+        string preview = s.View.Preview;
+        s.Input.InEditor = true;
+        s.View.ReturnGlossary = _ =>
+        {
+            s.Input.InEditor = false;
+            s.View.GlossaryEntryFocus = null;
+            return Task.FromResult(true);
+        };
+        // The explicit return gets its own fresh read while the earlier
+        // ordinary read remains pending at the input-service boundary.
+        s.Service.PendingCapture = null;
+        s.BlockSettingsWrites();
+        Assert.Equal("glossary-save-failed", (await Add(s, entry)).Code);
+        s.Service.PendingCapture = earlierRead;
+        if (failed)
+            s.FailCapture();
+        else
+            s.CompleteCapture(new(s.Fresh with
+            {
+                Text = "late source observation",
+                InputEpoch = 9
+            }, FocusMember.Source, "org.typelay.ControlledApp", s.Input.UserEpoch, s.Input.ForegroundEpoch,
+                new(s.Source.Target, s.Input.CommandGeneration, s.Input.SessionBindings, true, true)));
+        Assert.True(s.View.Visible);
+        Assert.Equal(entry.Token, s.View.Token);
+        Assert.Equal(preview, s.View.Preview);
+        Assert.Equal(SessionState.ValidTranslation, s.View.State);
+        Assert.Equal(InputConnectionState.Connected, s.Controller.ConnectionState);
+        Assert.Null(s.Input.Permit);
+        s.AllowSettingsWrites();
+        s.Input.InEditor = true;
+        s.View.GlossaryEntryFocus = new(entry.FormId, entry.Token, ImeState.Clear);
+        Assert.True((await Add(s, entry)).Saved);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
+    public async Task CurrentCaptureFailureAfterSourceReturnStillClosesTheSession()
+    {
+        using var s = new SessionScenario(experimental: true, translationRelease: SessionScenario.HyRelease,
+            modelIdentity: SessionScenario.HyIdentity, direction: new("zh", "ja"), glossaryAvailable: true);
+        s.View.SourceGlossarySupported = true;
+        s.ReadyCandidate();
+        var entry = Open(s);
+        s.Input.InEditor = true;
+        s.View.ReturnGlossary = _ =>
+        {
+            s.Input.InEditor = false;
+            s.View.GlossaryEntryFocus = null;
+            return Task.FromResult(true);
+        };
+        s.BlockSettingsWrites();
+        Assert.Equal("glossary-save-failed", (await Add(s, entry)).Code);
+        s.Service.PendingCapture = new();
+        int captures = s.Service.Captures;
+        s.Tick();
+        Assert.Equal(captures + 1, s.Service.Captures);
+        s.FailCapture();
+        Assert.False(s.View.Visible);
+        Assert.Equal(InputConnectionState.Unavailable, s.Controller.ConnectionState);
+        Assert.False((await Add(s, entry)).Saved);
+        Assert.Null(s.Input.Permit);
+        Assert.Null(s.ReloadSettings().Glossary);
+        Assert.Empty(s.Service.Writes);
+    }
+
+    [Fact]
     public async Task ExplicitAddNeedsNoChangedCharacterAndPreservesDraftAndPermission()
     {
         using var s = Editing();

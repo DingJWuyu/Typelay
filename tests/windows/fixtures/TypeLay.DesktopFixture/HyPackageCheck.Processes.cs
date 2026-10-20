@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using TypeLay.App;
+using TypeLay.Windows.Testing;
 
 internal static partial class HyPackageCheck
 {
@@ -43,17 +44,29 @@ internal static partial class HyPackageCheck
         });
         public void Check()
         {
-            lock (_gate)
-                if (_failure is { } failure)
-                    throw new Failure(failure is Failure known ? known.Code : "worker-observation-failed");
-            Sample();
+            try
+            {
+                lock (_gate)
+                    if (_failure is { } failure)
+                        throw failure;
+                Sample();
+            }
+            catch (Win32Exception error)
+            {
+                // Keep diagnostics bounded and body-free, including access errors.
+                throw new Failure("worker-observation-win32-" + error.NativeErrorCode);
+            }
+            catch (Exception error) when (error is not Failure and not OutOfMemoryException)
+            {
+                throw new Failure("worker-observation-failed");
+            }
         }
         public int RequireCurrent(string python)
         {
             Check();
             lock (_gate)
             {
-                var live = _workers.Values.Where(worker => !worker.Process.HasExited).ToArray();
+                var live = _workers.Values.Where(worker => !ProcessImage.Exited(worker.Process.SafeHandle)).ToArray();
                 Require(live.Length == 1 && string.Equals(live[0].Image, python, StringComparison.OrdinalIgnoreCase), "active-worker-path-or-count");
                 return live[0].Process.Id;
             }
@@ -62,13 +75,13 @@ internal static partial class HyPackageCheck
         {
             Check();
             lock (_gate)
-                return _workers.Values.All(worker => worker.Process.HasExited);
+                return _workers.Values.All(worker => ProcessImage.Exited(worker.Process.SafeHandle));
         }
         public bool Exited(int pid)
         {
             Check();
             lock (_gate)
-                return _workers.TryGetValue(pid, out var worker) && worker.Process.HasExited;
+                return _workers.TryGetValue(pid, out var worker) && ProcessImage.Exited(worker.Process.SafeHandle);
         }
         public string GenerationRoot(int pid)
         {
@@ -95,29 +108,26 @@ internal static partial class HyPackageCheck
                     int pid = checked((int)item.ProcessId);
                     if (_workers.ContainsKey(pid))
                         continue;
-                    Process process;
+                    var process = Process.GetProcessById(pid);
                     try
                     {
-                        process = Process.GetProcessById(pid);
-                    }
-                    catch (ArgumentException) { continue; } // An already-exited process is not a live worker observation.
-                    try
-                    {
-                        _ = process.Handle; // Keep the exact process, including after PID reuse.
-                        if (process.HasExited)
+                        // Retain the exact handle before querying identity or exit.
+                        // MainModule may be absent before the native owner resumes
+                        // its suspended child, even though the image is known.
+                        string? image = ProcessImage.Read(process.SafeHandle);
+                        if (image is null)
                         {
                             process.Dispose();
                             continue;
                         }
-                        string image = process.MainModule?.FileName ?? throw new Failure("worker-image-unavailable");
                         Require(image.StartsWith(data + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
                             && item.ParentProcessId == app.Id, "unexpected-model-process-origin");
-                        Require(_workers.Values.All(worker => worker.Process.HasExited), "overlapping-model-workers");
+                        Require(_workers.Values.All(worker => ProcessImage.Exited(worker.Process.SafeHandle)), "overlapping-model-workers");
                         _workers.Add(pid, new(process, image));
                     }
                     catch { process.Dispose(); throw; }
                 }
-                int count = _workers.Values.Count(worker => !worker.Process.HasExited);
+                int count = _workers.Values.Count(worker => !ProcessImage.Exited(worker.Process.SafeHandle));
                 MaximumLive = Math.Max(MaximumLive, count);
                 Require(count <= 1, "overlapping-model-workers");
             }

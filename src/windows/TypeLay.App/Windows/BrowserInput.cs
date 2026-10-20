@@ -7,7 +7,7 @@ namespace TypeLay.App;
 
 internal sealed record BrowserObservation(BrowserPeer Peer, BrowserRoute Route, JsonElement Authority,
     TargetId Target, long ObservedAtMs, nint Root, BrowserInputEpochs Epochs,
-    SessionShortcutAcknowledgement Acknowledgement);
+    SessionShortcutAcknowledgement Acknowledgement, bool SourceGlossarySupported = false);
 
 // Retain arrival order explicitly: Dictionary enumeration does not retain it
 // after a removed slot is reused by a later capture.
@@ -47,6 +47,7 @@ internal sealed partial class BrowserInput : IDisposable
     private long _lastWindowEpoch;
     private bool _editorFocused;
     private SessionGlossaryEntry? _glossaryEntry;
+    private SessionGlossaryEntry? _returnedGlossary;
     private SessionGlossaryFocus? _glossaryFocus;
     internal SessionGlossaryFocus? GlossaryFocus => _glossaryFocus is { } focus
         && _glossaryEntry?.FormId == focus.FormId && _glossaryEntry.Token == focus.Token
@@ -142,7 +143,8 @@ internal sealed partial class BrowserInput : IDisposable
         && ForegroundCurrent(current) ? _editorFocused || GlossaryFocus is not null
             ? FocusMember.Overlay : FocusMember.Source : FocusMember.Other;
     public bool CanIntercept => _current is { } current && GetFocus(current.Target) != FocusMember.Other
-        && GlossaryFocus is null && AcknowledgementCurrent(current) && current.Acknowledgement.SourceReady;
+        && _glossaryEntry?.SourceOrigin != true && GlossaryFocus is null
+        && AcknowledgementCurrent(current) && current.Acknowledgement.SourceReady;
     private bool AcknowledgementCurrent(BrowserObservation record) => _sessionEnabled
         && record.Acknowledgement.Generation == _hook.CommandGeneration && record.Acknowledgement.Bindings == _bindings;
     public void Start() => _server.Start();
@@ -222,20 +224,22 @@ internal sealed partial class BrowserInput : IDisposable
         bool editor = bound is not null && (_editorFocused || GlossaryFocus is not null)
             && GetFocus(bound.Target) == FocusMember.Overlay;
         var glossary = GlossaryFocus;
+        var returnedGlossary = _returnedGlossary is { } returned && _glossaryEntry == returned
+            && bound?.Target == returned.Token.Target ? returned : null;
         var owner = _commandOwner;
         long ownerFocusRevision = owner?.FocusRevision ?? 0;
-        bool sharedDescription = !editor && owner is { Active: true } && owner.Peer == peer
+        bool sharedDescription = !editor && returnedGlossary is null && owner is { Active: true } && owner.Peer == peer
             && PolicyContextCurrent(owner, ownerFocusRevision, epochs.Foreground);
         // Only the current source owner shares its in-flight metadata round.
         // Editor and unowned reads retain their own target-bound describe path.
         var description = sharedDescription
             ? await owner!.PolicyRefresh.CaptureAsync()
-            : await peer.RequestAsync("describe", editor ? new
+            : await peer.RequestAsync("describe", editor || returnedGlossary is not null ? new
             {
                 target = bound!.Target.Value
             } : null);
         if (!Approved(peer, description, context.Excluded, out var authority, out var metadata, out var id, out var ack,
-            ObservationStage.Describe, glossary))
+            ObservationStage.Describe, glossary, returnedGlossary))
             return new(null);
         if (sharedDescription && !PolicyContextCurrent(owner!, ownerFocusRevision, epochs.Foreground))
             return CaptureRejected(ObservationReason.ForegroundEpochChanged, description, editor);
@@ -284,7 +288,7 @@ internal sealed partial class BrowserInput : IDisposable
         if (active != result.Route)
             return CaptureRejected(ObservationReason.ActiveDocumentChanged, result, editor);
         if (!Approved(peer, result, context.Excluded, out var capturedAuthority, out metadata, out var capturedId, out ack,
-            ObservationStage.Capture, glossary))
+            ObservationStage.Capture, glossary, returnedGlossary))
             return new(null);
         if (capturedId != id)
             return CaptureRejected(ObservationReason.TargetChanged, result, editor);
@@ -302,7 +306,14 @@ internal sealed partial class BrowserInput : IDisposable
             return CaptureRejected(ObservationReason.SnapshotFuture, result, editor, now - snapshot.ObservedAtMs);
         if (now - snapshot.ObservedAtMs > Limits.ObservationMaxAgeMs)
             return CaptureRejected(ObservationReason.SnapshotExpired, result, editor, now - snapshot.ObservedAtMs);
-        var record = new BrowserObservation(peer, result.Route, capturedAuthority, id, snapshot.ObservedAtMs, root, epochs, ack!);
+        if (returnedGlossary is not null)
+            snapshot = snapshot with
+            {
+                WriteSupported = false,
+                DirectWriteSupported = false
+            };
+        var record = new BrowserObservation(peer, result.Route, capturedAuthority, id, snapshot.ObservedAtMs, root, epochs, ack!,
+            Boolean(description.Data, "sourceGlossarySupported") && Boolean(result.Data, "sourceGlossarySupported"));
         _observations.Remember(record);
         _current = record;
         _supportObservation = record;
@@ -316,7 +327,8 @@ internal sealed partial class BrowserInput : IDisposable
     }
     private bool Approved(BrowserPeer peer, BrowserReply? reply, string[] excluded,
         out JsonElement authority, out FieldMetadata? metadata, out TargetId id, out SessionShortcutAcknowledgement? acknowledgement,
-        ObservationStage stage = ObservationStage.None, SessionGlossaryFocus? glossary = null)
+        ObservationStage stage = ObservationStage.None, SessionGlossaryFocus? glossary = null,
+        SessionGlossaryEntry? returnedGlossary = null)
     {
         authority = default;
         metadata = null;
@@ -370,10 +382,12 @@ internal sealed partial class BrowserInput : IDisposable
             if (String(applied, "exit") != _bindings.Exit)
                 return ApprovalRejected(stage, ObservationReason.ExitKeyMismatch, reply);
             id = new("windows-browser", target, peer.ConnectionId);
-            if (glossary is not null && (_current is not { } current || current.Peer != peer
+            if ((glossary is not null || returnedGlossary is not null) && (_current is not { } current || current.Peer != peer
                 || current.Route != reply.Route || current.Target != id))
                 return ApprovalRejected(stage, ObservationReason.EditorAcknowledgement, reply);
-            acknowledgement = ApproveObservationRoles(data, id, generation, _bindings, _glossaryEntry, glossary, GlossaryFocus);
+            if (returnedGlossary is not null && (_returnedGlossary != returnedGlossary || _glossaryEntry != returnedGlossary))
+                return ApprovalRejected(stage, ObservationReason.EditorAcknowledgement, reply);
+            acknowledgement = ApproveObservationRoles(data, id, generation, _bindings, _glossaryEntry, glossary, GlossaryFocus, returnedGlossary);
             return acknowledgement is not null || ApprovalRejected(stage, glossary is not null
                 ? ObservationReason.EditorAcknowledgement : !Boolean(applied, "sourceReady")
                     ? ObservationReason.SourceNotReady : ObservationReason.EditorNotReady, reply);
@@ -387,13 +401,27 @@ internal sealed partial class BrowserInput : IDisposable
     // generation and configured keys. This grants observation roles only.
     internal static SessionShortcutAcknowledgement? ApproveObservationRoles(JsonElement data, TargetId target,
         Guid generation, SessionShortcutBindings bindings, SessionGlossaryEntry? entry = null,
-        SessionGlossaryFocus? expected = null, SessionGlossaryFocus? current = null)
+        SessionGlossaryFocus? expected = null, SessionGlossaryFocus? current = null, SessionGlossaryEntry? returned = null)
     {
         try
         {
             var applied = data.GetProperty("sessionBindings");
             var source = applied.GetProperty("sourceReady").ValueKind;
             var editor = applied.GetProperty("editorReady").ValueKind;
+            if (returned is not null)
+            {
+                if (entry != returned || !returned.SourceOrigin || expected is not null || current is not null
+                    || returned.Token.Target != target || returned.Token.CommandGeneration != generation
+                    || source != JsonValueKind.False || editor != JsonValueKind.False
+                    || !applied.TryGetProperty("sourceLocalAcceptanceVersion", out var local)
+                    || !local.TryGetInt32(out int returnedVersion) || returnedVersion != 0
+                    || String(applied, "target") != target.Value || !Boolean(data, "focused")
+                    || !Boolean(data, "sourceGlossarySupported")
+                    || !data.TryGetProperty("glossaryFocus", out var auxiliary) || auxiliary.ValueKind != JsonValueKind.Null
+                    || !data.TryGetProperty("glossarySource", out var receipt) || !MatchingGlossarySource(receipt, returned))
+                    return null;
+                return new(target, generation, bindings, false, false, 0);
+            }
             if (expected is null)
             {
                 if (current is not null || source != JsonValueKind.True || editor != JsonValueKind.True

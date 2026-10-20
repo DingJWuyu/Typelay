@@ -473,6 +473,27 @@ public sealed partial class SessionController : IDisposable
                 return;
             }
         }
+        if (_glossaryEntry is { Entry.SourceOrigin: true } sourceForm)
+        {
+            RetireInvalidGlossaryEntry();
+            if (ReferenceEquals(_glossaryEntry, sourceForm))
+            {
+                RevokeInput("glossary-entry");
+                _permitUntil = 0;
+                // Keep the original source basis, not an invented observation.
+                // Platform form focus includes its existing liveness deadline.
+                if (GlossaryAuxiliaryCurrent(sourceForm) || sourceForm.Returning
+                    && _hook.GetFocus(sourceForm.Entry.Token.Target) == FocusMember.Source)
+                    return;
+                // Only an actual auxiliary owner may suspend normal source
+                // observation. An abandoned opening is bounded by its original
+                // observation, and external focus ends the form immediately.
+                if (_hook.GetFocus(sourceForm.Entry.Token.Target) == FocusMember.Other
+                    || !sourceForm.Returned && (sourceForm.Source is not { } basis
+                        || now - basis.ObservedAtMs > Limits.ObservationMaxAgeMs))
+                    CancelGlossaryEntry();
+            }
+        }
         // The editor owns focus and its saved source basis until the user returns.
         // Chromium may expose no source selection when another window has focus.
         // Revalidate the source on return instead of polling an unfocused TextPattern.
@@ -650,6 +671,7 @@ public sealed partial class SessionController : IDisposable
         long configurationRevision = _configurationRevision;
         long windowEpoch = _hook.WindowEpoch;
         long contentEpoch = _hook.ContentEpoch;
+        long sourceGlossaryReadRevision = _sourceGlossaryReadRevision;
         var request = Context();
         bool traceCapture = false;
         if (!string.IsNullOrWhiteSpace(_tracePath) && _settings.Value.Mode == WorkMode.OnDemand
@@ -679,6 +701,17 @@ public sealed partial class SessionController : IDisposable
                 observedAtMs = result.Snapshot?.ObservedAtMs;
                 resultFocus = result.Focus;
             }
+            // A source read started before an auxiliary transfer cannot replace
+            // its frozen basis or publish a new permit. Its explicit return uses
+            // a separate, freshly checked read in RefreshGlossarySourceAsync.
+            if (sourceGlossaryReadRevision != _sourceGlossaryReadRevision)
+            {
+                captureExit = "glossary-entry-changed";
+                return;
+            }
+            if (_glossaryEntry is { Entry.SourceOrigin: true } sourceForm
+                && (!sourceForm.Returned || sourceForm.Returning || GlossaryAuxiliaryCurrent(sourceForm)))
+                return;
             // Input already queued before this read completed owns the earlier action.
             // Accepting it advances generation before an obsolete read can clear it.
             if (!_disposed)
@@ -859,7 +892,7 @@ public sealed partial class SessionController : IDisposable
                 ? (_session.Revision, request.SourceUserEpoch, contentEpoch, request.ForegroundEpoch, windowEpoch)
                 : default;
             var practiceBinding = AutomaticPracticeFor(snapshot.Target);
-            if (inputUnchanged && result.Focus == FocusMember.Source && _model.Ready
+            if (_glossaryEntry is null && inputUnchanged && result.Focus == FocusMember.Source && _model.Ready
                 && !RetiredAutomaticTarget(snapshot.Target)
                 && (_settings.Value.ExperimentalWriteback || practiceBinding is not null
                     || _sessionShortcuts is { SourceLocalAcceptanceVersion: 1 })
@@ -896,6 +929,11 @@ public sealed partial class SessionController : IDisposable
             if (traceCapture)
                 resumedAtMs ??= _loop.NowMs;
             captureExit = "capture-failed";
+            if (sourceGlossaryReadRevision != _sourceGlossaryReadRevision)
+            {
+                captureExit = "glossary-entry-changed";
+                return;
+            }
             if (!_disposed)
                 DrainInputNotices();
             if (_disposed || generation != _generation)
@@ -1788,7 +1826,7 @@ public sealed partial class SessionController : IDisposable
     public void RefreshAcceptancePresentation() => Render();
     private bool CanPresentAcceptance(long nowMs)
     {
-        if (_presentationPermit is not { } issued || _permitUntil == 0 || nowMs > _permitUntil
+        if (_glossaryEntry is not null || _presentationPermit is not { } issued || _permitUntil == 0 || nowMs > _permitUntil
             || _session.State is not (SessionState.ValidTranslation or SessionState.EditedTranslationPending)
             || _session.Current is not { } source)
             return false;

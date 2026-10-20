@@ -489,6 +489,8 @@ async def desktop(paths, background, lock, tutorial=False):
             status["operationFeedback"] = components["tray"].feedback_status
 
     async def host_request(operation, value):
+        if operation == "sessionGlossaryReturn":
+            return await components["overlay"].return_glossary_to_source(value)
         return await components["input"].request(operation, value)
 
     process = subprocess.Popen(

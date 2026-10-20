@@ -70,6 +70,11 @@ internal sealed class WindowsSessionView : ISessionView
         get; set;
     }
     public SessionGlossaryFocus? GlossaryEntryFocus => _active?.GlossaryEntryFocus;
+    public bool SupportsSourceGlossaryEntry(SessionViewToken token) =>
+        ReferenceEquals(_active, _browser) && BrowserInput.Owns(token.Target) && _browser.SupportsSourceGlossaryEntry(token);
+    public Task<bool> ReturnGlossaryToSourceAsync(SessionGlossaryEntry entry) =>
+        ReferenceEquals(_active, _browser) && BrowserInput.Owns(entry.Token.Target)
+            ? _browser.ReturnGlossaryToSourceAsync(entry) : Task.FromResult(false);
     public Action? ExcludeRequested
     {
         get; set;

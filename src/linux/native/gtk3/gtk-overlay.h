@@ -21,3 +21,10 @@ JsonObject *tl_overlay_command(const char *operation, Target *target, JsonObject
 
 /* Exact, already-proved editor family; no source/provider observation. */
 gboolean tl_overlay_private_return(Target *target, JsonObject *proof, gboolean starting);
+
+/* GTK3 source-origin form only. No editor ticket or write authority is created. */
+gboolean tl_glossary_transfer_begin(Target *target, JsonObject *identity, const char *phase);
+gboolean tl_glossary_transfer_end(gboolean valid);
+JsonObject *tl_overlay_glossary_return_basis(Target *target, JsonObject *request);
+gboolean tl_overlay_glossary_return(Target *target, JsonObject *request, gboolean starting, gboolean ready);
+JsonObject *tl_overlay_glossary_source(Target *target);

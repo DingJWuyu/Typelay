@@ -2247,6 +2247,154 @@ class BrowserContract(unittest.TestCase):
         self.assertEqual(self.page.locator("#source").input_value(), "Hello")
         self.assertEqual(self.accepted(), [])
 
+    def test_source_glossary_returns_without_editing_or_mutating_candidate(self):
+        data = self.motion_view()
+        self.page.emulate_media(reduced_motion="reduce")
+        actions = self.translation_menu_state(
+            glossaryReleased=True, canOpenGlossary=True, glossaryUnavailableReason=None
+        )
+        self.set_translation_menu(data, actions)
+        self.page.locator("#source").evaluate("element => element.setSelectionRange(1, 4)")
+        editor = self.overlay_control("TypeLay 译文", "textbox")
+        before = self.overlay_dom(
+            editor,
+            "function() { return [this.value, this.selectionStart, this.selectionEnd, this.readOnly]; }",
+        )
+        self.click_overlay_control("更多")
+        self.click_overlay_control("加入术语表")
+        self.assertTrue(
+            self.page.evaluate(
+                "fixtureMessages.some(message => message.event === 'ui' && message.data.operation === 'sessionGlossaryBegin')"
+            )
+        )
+        entry = {
+            "formId": str(uuid.uuid4()),
+            "token": data["view"]["viewContext"]["token"],
+            "settingsRevision": 12,
+            "directions": [],
+            "sourceOrigin": True,
+        }
+        envelope = {
+            "target": data["target"],
+            "generation": entry["token"]["commandGeneration"],
+            "revision": data["revision"],
+            "formId": entry["formId"],
+            "token": entry["token"],
+        }
+        self.set_translation_menu(data, {**actions, "canOpenGlossary": False})
+        self.assertTrue(
+            self.command("overlay-glossary-open", {**envelope, "entry": entry})["opened"]
+        )
+        self.assertTrue(
+            self.overlay_dom(
+                self.overlay_control("源词", "textbox"),
+                "function() { return this.getRootNode().activeElement === this; }",
+            )
+        )
+        self.assertEqual(
+            self.page.evaluate(
+                "fixtureMessages.filter(message => message.event === 'input' && message.data.glossaryTransfer).map(message => [message.data.glossaryTransfer, message.data.focused])"
+            ),
+            [[{"formId": entry["formId"], "token": entry["token"], "phase": "Opening"}, False]],
+        )
+        description = self.command("describe", {"target": data["target"]})
+        self.assertFalse(description["sessionBindings"]["sourceReady"])
+        self.assertFalse(description["sessionBindings"]["editorReady"])
+        self.page.keyboard.insert_text("PR")
+        self.page.keyboard.press("Tab")
+        self.page.keyboard.insert_text("pull request")
+        self.click_overlay_control("保存")
+        self.assertEqual(
+            self.command("overlay-glossary-return", envelope),
+            {"formId": entry["formId"], "token": entry["token"], "returned": True},
+        )
+        self.assertEqual(self.page.evaluate("document.activeElement.id"), "source")
+        self.assertEqual(
+            self.page.evaluate(
+                "fixtureMessages.filter(message => message.event === 'input' && message.data.glossaryTransfer).map(message => [message.data.glossaryTransfer, message.data.focused])"
+            ),
+            [
+                [{"formId": entry["formId"], "token": entry["token"], "phase": phase}, focused]
+                for phase, focused in (("Opening", False), ("Returning", True))
+            ],
+        )
+        self.assertEqual(
+            self.page.locator("#source").evaluate(
+                "element => [element.value, element.selectionStart, element.selectionEnd]"
+            ),
+            ["Hello", 1, 4],
+        )
+        description = self.command("describe", {"target": data["target"]})
+        self.assertFalse(description["sessionBindings"]["sourceReady"])
+        self.assertFalse(description["sessionBindings"]["editorReady"])
+        self.assertEqual(
+            self.overlay_dom(
+                editor,
+                "function() { return [this.value, this.selectionStart, this.selectionEnd, this.readOnly]; }",
+            ),
+            before,
+        )
+        self.assertFalse(
+            self.page.evaluate(
+                "fixtureMessages.some(message => message.event === 'ui' && ['beginEdit', 'return'].includes(message.data.operation))"
+            )
+        )
+        self.assertEqual(self.accepted(), [])
+
+    def test_source_glossary_owned_focus_never_marks_interposed_or_synthetic_events(self):
+        for interruption in ("external-roundtrip", "synthetic-overflow"):
+            with self.subTest(interruption=interruption):
+                data = self.motion_view()
+                self.page.emulate_media(reduced_motion="reduce")
+                actions = self.translation_menu_state(
+                    glossaryReleased=True, canOpenGlossary=True, glossaryUnavailableReason=None
+                )
+                self.set_translation_menu(data, actions)
+                self.click_overlay_control("更多")
+                self.click_overlay_control("加入术语表")
+                entry = {
+                    "formId": str(uuid.uuid4()),
+                    "token": data["view"]["viewContext"]["token"],
+                    "settingsRevision": 12,
+                    "directions": [],
+                    "sourceOrigin": True,
+                }
+                envelope = {
+                    "target": data["target"],
+                    "generation": entry["token"]["commandGeneration"],
+                    "revision": data["revision"],
+                    "formId": entry["formId"],
+                    "token": entry["token"],
+                }
+                self.set_translation_menu(data, {**actions, "canOpenGlossary": False})
+                self.page.evaluate(
+                    """kind => {
+                    window.fixtureMessages.length = 0;
+                    const source = document.querySelector('#source');
+                    source.addEventListener('blur', () => {
+                        if (kind === 'external-roundtrip') {
+                            document.querySelector('#other').focus(); source.focus();
+                        } else {
+                            for (let index = 0; index < 12; index++) source.dispatchEvent(
+                                new FocusEvent('focusout', {bubbles: true, composed: true}));
+                        }
+                    }, {once: true});
+                }""",
+                    interruption,
+                )
+                self.assertFalse(
+                    self.command("overlay-glossary-open", {**envelope, "entry": entry})["opened"]
+                )
+                inputs = self.page.evaluate(
+                    "fixtureMessages.filter(message => message.event === 'input').map(message => message.data)"
+                )
+                self.assertTrue(inputs)
+                self.assertTrue(all("glossaryTransfer" not in event for event in inputs))
+                if interruption == "synthetic-overflow":
+                    self.assertGreaterEqual(len(inputs), 13)
+                self.command("overlay-glossary-close", envelope)
+                self.command("overlay-hide", {})
+
     def test_inline_glossary_preserves_editor_and_requires_clear_separate_auxiliary_fields(self):
         snapshot, data = self.open_editor("Ctrl+F7", "Ctrl+F8")
         self.page.emulate_media(reduced_motion="reduce")

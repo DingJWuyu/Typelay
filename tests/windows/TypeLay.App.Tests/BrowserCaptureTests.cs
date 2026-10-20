@@ -98,7 +98,7 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             try
             {
                 if (windows is not null && ownedBrowser is not null)
-                    await windows.StopAsync(ownedBrowser);
+                    await windows.StopAsync(ownedBrowser, output.WriteLine);
                 else
                     ownedBrowser?.Dispose();
                 if (Directory.Exists(directory))
@@ -191,7 +191,7 @@ public sealed class BrowserCaptureTests(ITestOutputHelper output)
             try
             {
                 if (windows is not null && ownedBrowser is not null)
-                    await windows.StopAsync(ownedBrowser);
+                    await windows.StopAsync(ownedBrowser, output.WriteLine);
                 else
                     ownedBrowser?.Dispose();
                 if (Directory.Exists(directory))

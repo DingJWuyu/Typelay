@@ -4490,8 +4490,8 @@ def run(arguments):
                 raise AssertionError("language completion exceeds its accessibility tree")
 
             for name, field, prefix, label, code in (
-                ("源语言", "Source", "U4e2d", "中文", "zh"),
-                ("目标语言", "Target", "U82f1", "英语", "en"),
+                ("源语言", "Source", "4e2d", "中文", "zh"),
+                ("目标语言", "Target", "82f1", "英语", "en"),
             ):
                 picker = settings_control("设置：" + name)
                 pending = [picker]
@@ -4511,11 +4511,23 @@ def run(arguments):
                 assert Atspi.Component.grab_focus(editor.get_component_iface())
                 wait_for(lambda: focused(editor), "language search did not receive focus")
                 before_search = paths.settings.read_bytes()
+                search_deadline = time.monotonic() + 15
                 key("ctrl+a")
-                key(prefix)
+                # Use GTK's native Unicode composition with ordinary keycodes.
+                # An xdotool Uxxxx keysym remaps only the outer X server; the
+                # nested Wayland client's keymap need not receive that change.
+                key("ctrl+shift+u")
+                typed(prefix)
+                key("space")
+                wait_for(
+                    lambda: text(editor) == label[0] and focused(editor),
+                    "GTK Unicode composition did not commit the language search prefix",
+                    timeout=search_deadline - time.monotonic(),
+                )
                 wait_for(
                     lambda: text(editor) == label[0] and visible_language_choice(label),
                     "typing a language prefix did not expose its native completion",
+                    timeout=search_deadline - time.monotonic(),
                 )
                 assert paths.settings.read_bytes() == before_search, (
                     "language search saved before choosing a match"

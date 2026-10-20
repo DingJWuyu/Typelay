@@ -121,11 +121,45 @@ public sealed class WindowsSessionViewTests
         Assert.Equal(1, saves);
     }
 
+    [Fact]
+    public async Task SourceGlossaryCapabilityAndReturnBelongOnlyToTheActiveBrowserSurface()
+    {
+        var native = new View();
+        var browser = new View { SourceGlossarySupported = true };
+        ISessionView router = new WindowsSessionView(native, browser);
+        var session = new Session(new("auto", "en"));
+        var source = Source("windows-browser");
+        session.Observe(source, FocusMember.Source, 1);
+        var token = new SessionViewToken(source.Target, Guid.NewGuid(), 7);
+        var entry = new SessionGlossaryEntry(Guid.NewGuid(), token, 4, [], SourceOrigin: true);
+        Assert.False(router.SupportsSourceGlossaryEntry(token));
+        Assert.False(await router.ReturnGlossaryToSourceAsync(entry));
+        router.Render(session, new(), false);
+        Assert.True(router.SupportsSourceGlossaryEntry(token));
+        Assert.True(await router.ReturnGlossaryToSourceAsync(entry));
+        Assert.Same(entry, browser.ReturnedGlossary);
+        session.Observe(Source("native"), FocusMember.Source, 2);
+        router.Render(session, new(), false);
+        Assert.False(router.SupportsSourceGlossaryEntry(token));
+        Assert.False(await router.ReturnGlossaryToSourceAsync(entry));
+        router.HideQuietly();
+        Assert.False(router.SupportsSourceGlossaryEntry(token));
+        Assert.False(await router.ReturnGlossaryToSourceAsync(entry));
+    }
+
     private static InputSnapshot Source(string backend) => new(new(backend, "field", Guid.NewGuid()), "source", new(0, 0),
         new(0, 0, 100, 20), false, FieldAccess.Supported, ImeState.Clear, 1, 1, 1);
     private sealed class View : ISessionView
     {
         public int Hidden, Rendered;
+        public bool SourceGlossarySupported;
+        public SessionGlossaryEntry? ReturnedGlossary;
+        public bool SupportsSourceGlossaryEntry(SessionViewToken token) => SourceGlossarySupported;
+        public Task<bool> ReturnGlossaryToSourceAsync(SessionGlossaryEntry entry)
+        {
+            ReturnedGlossary = entry;
+            return Task.FromResult(SourceGlossarySupported);
+        }
         public Func<SessionViewToken, bool>? BeginEditing
         {
             get; set;

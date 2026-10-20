@@ -577,7 +577,7 @@ internal sealed class BrowserWindows
         finally { Native.CloseHandle(snapshot); }
     }
 
-    public async Task StopAsync(ChildProcess owner)
+    public async Task StopAsync(ChildProcess owner, Action<string> log)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(3));
         try
@@ -594,12 +594,25 @@ internal sealed class BrowserWindows
                 await owner.TerminateAndWaitAsync(deadline.Token);
             }
             await Task.WhenAll(_processes.Values.Select(process => process.WaitForExitAsync(deadline.Token)));
+            // WaitForExitAsync may return on HasExited's early exit-code check.
+            // WaitForExit(0) instead tests the kernel signal on our retained
+            // handle, without reopening a PID or waiting for redirected output.
+            // https://github.com/dotnet/runtime/blob/v10.0.12/src/libraries/System.Diagnostics.Process/src/System/Diagnostics/ProcessManager.Windows.cs#L259-L291
+            int pending = _processes.Values.Count(process => !process.WaitForExit(0));
+            log($"Owned browser exit proof: retainedProcesses={_processes.Count}; pendingKernelSignals={pending}");
+            while (pending != 0)
+            {
+                await Task.Delay(10, deadline.Token);
+                pending = _processes.Values.Count(process => !process.WaitForExit(0));
+            }
+            log($"Owned browser exit proof: kernelSignaledProcesses={_processes.Count}");
         }
         finally
         {
             foreach (var process in _processes.Values)
                 process.Dispose();
             _processes.Clear();
+            owner.Dispose();
         }
     }
 

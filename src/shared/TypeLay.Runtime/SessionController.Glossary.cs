@@ -79,7 +79,7 @@ public sealed partial class SessionController
 
     private async Task<GlossaryChangeResult> SaveGlossaryAsync(IEnumerable<GlossaryRule> rules,
         long expectedSettingsRevision, SessionViewToken? token, CancellationToken cancellationToken,
-        Func<string?>? entryCheck = null)
+        Func<string?>? entryCheck = null, Action? committed = null)
     {
         var next = CreateGlossary(rules, out string? invalid);
         if (invalid is not null)
@@ -115,7 +115,10 @@ public sealed partial class SessionController
         // The inline form may re-add an existing exact rule. After the same
         // qualification, confirm it without writing or notifying again.
         if (entryCheck is not null && next!.SameRules(_settings.Value.Glossary))
+        {
+            committed?.Invoke();
             return new(true, "glossary-unchanged");
+        }
         _glossaryChangeRunning = true;
         try
         {
@@ -129,7 +132,11 @@ public sealed partial class SessionController
             long before = _settings.Revision;
             try
             {
-                _settings.CommitGlossary(expectedSettingsRevision, next!, ApplyGlossarySettings);
+                _settings.CommitGlossary(expectedSettingsRevision, next!, () =>
+                {
+                    committed?.Invoke();
+                    ApplyGlossarySettings();
+                });
             }
             catch (SettingsPersistenceException) { return new(false, "glossary-save-failed"); }
             catch (Exception error) when (error is not OutOfMemoryException && _settings.Revision != before)

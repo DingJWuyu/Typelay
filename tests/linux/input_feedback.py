@@ -6,6 +6,7 @@ claim native key interception, an IME, or a real desktop interaction.
 
 import asyncio
 import contextlib
+import copy
 import io
 import json
 import os
@@ -217,7 +218,15 @@ class InputFeedbackTests(unittest.TestCase):
         return self.native_frames(self.peer)
 
     async def capture_browser(
-        self, *, bindings=None, description_route=None, capture_route=None, before_reply=None
+        self,
+        *,
+        bindings=None,
+        description_route=None,
+        capture_route=None,
+        before_reply=None,
+        source_glossary=False,
+        glossary_source=None,
+        captured_glossary_source=None,
     ):
         self.host.capture_allowed = True
         self.input.notification("settings", {"enabled": True})
@@ -228,6 +237,8 @@ class InputFeedbackTests(unittest.TestCase):
         target = self.route["documentToken"] + ":1"
         description["target"] = description["authority"]["target"] = target
         description["metadata"]["inDocument"] = True
+        description["sourceGlossarySupported"] = source_glossary
+        description["glossarySource"] = glossary_source
         description["geometry"]["space"] = "browser-viewport"
         description["sessionBindings"] = {
             "target": target,
@@ -246,7 +257,10 @@ class InputFeedbackTests(unittest.TestCase):
             "selection": {"start": 0, "end": 0},
             "ime": "Clear",
             "observedAtMs": 1000,
-            "writeSupported": True,
+            "writeSupported": glossary_source is None,
+            "glossarySource": glossary_source
+            if captured_glossary_source is None
+            else captured_glossary_source,
         }
         self.browser_native = native
         for expected, value, route in (
@@ -1697,7 +1711,7 @@ class InputFeedbackTests(unittest.TestCase):
         await self.settle_overlay(jobs)
         return overlay, jobs, token, view
 
-    async def settle_overlay(self, jobs):
+    async def settle_overlay(self, jobs, *, source_transfer=False):
         received = []
         async with asyncio.timeout(1):
             while any(not job.done() for job in jobs):
@@ -1716,12 +1730,935 @@ class InputFeedbackTests(unittest.TestCase):
                             }
                         )
                     elif frame["op"] == "overlay-glossary-open" and "id" in frame:
-                        self.peer.link.receive({"id": frame["id"], "data": {"opened": True}})
+                        if source_transfer and frame["data"]["entry"].get("sourceOrigin"):
+                            entry = frame["data"]["entry"]
+                            receipt = {key: entry[key] for key in ("formId", "token")}
+                            self.peer.link.receive(
+                                {
+                                    "event": "input",
+                                    "route": getattr(self, "route", None),
+                                    "data": {
+                                        "target": entry["token"]["target"]["value"],
+                                        "textChanged": False,
+                                        "focusChanged": True,
+                                        "focused": False,
+                                        "inputRevision": 1,
+                                        "contentRevision": 1,
+                                        "glossaryTransfer": {
+                                            **receipt,
+                                            "phase": "Opening",
+                                            **(
+                                                {"ordinal": 1, "count": 1}
+                                                if self.peer.backend == "gtk3"
+                                                else {}
+                                            ),
+                                        },
+                                    },
+                                }
+                            )
+                            self.peer.link.receive(
+                                {
+                                    "event": "ui",
+                                    "route": getattr(self, "route", None),
+                                    "data": {
+                                        "target": entry["token"]["target"]["value"],
+                                        "generation": self.generation,
+                                        "revision": frame["data"]["revision"],
+                                        "operation": "sessionGlossaryFocus",
+                                        "value": {**receipt, "ime": "Unknown"},
+                                    },
+                                }
+                            )
+                        self.peer.link.receive(
+                            {
+                                "id": frame["id"],
+                                "route": getattr(self, "route", None),
+                                "data": {"opened": True},
+                            }
+                        )
                 for job in jobs:
                     if job.done():
                         job.result()
         received.extend(self.native_frames(self.peer))
         return received
+
+    def test_source_glossary_uses_browser_form_without_beginning_editor(self):
+        self.connect_registered_browser()
+
+        async def exercise():
+            capture = await self.capture_browser(source_glossary=True)
+            jobs = []
+            overlay = Overlay(
+                self.host,
+                self.input,
+                lambda coroutine: jobs.append(asyncio.create_task(coroutine)),
+                lambda: None,
+            )
+            token = {
+                "target": capture["snapshot"]["target"],
+                "commandGeneration": self.generation,
+                "revision": 9,
+            }
+            view = {
+                "state": "ValidTranslation",
+                "source": {"target": token["target"]},
+                "viewContext": {
+                    "token": token,
+                    "bindings": {"accept": "Tab", "exit": "Esc"},
+                    "canEdit": True,
+                },
+                "canAccept": False,
+            }
+            overlay.render(view)
+            await self.settle_overlay(jobs)
+            entry = {
+                "formId": str(uuid.uuid4()),
+                "token": token,
+                "settingsRevision": 12,
+                "directions": [],
+                "sourceOrigin": True,
+            }
+            original_ask = self.host.ask
+
+            async def ask(operation, value=None):
+                if operation == "sessionGlossaryBegin":
+                    self.host.requests.append((operation, value))
+                    return entry
+                return await original_ask(operation, value)
+
+            self.host.ask = ask
+            self.peer.link.receive(
+                {
+                    "event": "ui",
+                    "route": self.route,
+                    "data": {
+                        "target": token["target"]["value"],
+                        "revision": overlay.revision,
+                        "generation": self.generation,
+                        "operation": "sessionGlossaryBegin",
+                    },
+                }
+            )
+            window, user = self.input.window_epoch, self.input.user_epoch
+            frames = await self.settle_overlay(jobs, source_transfer=True)
+            self.assertEqual(self.input.window_epoch, window)
+            self.assertGreater(self.input.user_epoch, user)
+            self.assertEqual(self.input.focus(), "Overlay")
+            self.assertTrue(any(frame["op"] == "overlay-glossary-open" for frame in frames))
+            self.assertNotIn("beginEdit", [operation for operation, _ in self.host.requests])
+
+        asyncio.run(exercise())
+
+    def test_source_glossary_native_capability_is_only_exact_gtk3_entry(self):
+        async def exercise(backend, aria, capable):
+            self.peer = self.connect_peer(backend)
+            original = self.description
+
+            def description():
+                value = original()
+                value["metadata"]["aria"] = aria
+                value["geometry"]["space"] = self.peer.anchor_space
+                value["sourceGlossarySupported"] = capable
+                value["authority"]["contextStamp"] = {"context": 7}
+                return value
+
+            self.description = description
+            try:
+                await self.publish_acceptance(pause=False)
+                return self.input.last_state.get("sourceGlossaryTarget")
+            finally:
+                self.description = original
+
+        for backend, aria, capable, expected in (
+            ("gtk3", "GtkEntry", True, True),
+            ("gtk3", "GtkTextView", True, False),
+            ("gtk3", "GtkEntry", False, False),
+            ("gtk4", "GtkEntry", True, False),
+            ("qt6", "GtkEntry", True, False),
+        ):
+            with self.subTest(backend=backend, aria=aria, capable=capable):
+                target = asyncio.run(exercise(backend, aria, capable))
+                self.assertEqual(target is not None, expected)
+
+    async def gtk3_glossary_scenario(self, *, revoke=False, invalidation=None):
+        self.input.set_overlay_focus(False)
+        self.peer = self.connect_peer("gtk3")
+        original = InputFeedbackTests.description
+
+        def description():
+            value = original(self)
+            value["metadata"]["aria"] = "GtkEntry"
+            value["geometry"]["space"] = "gtk-toplevel"
+            value["sourceGlossarySupported"] = True
+            value["authority"]["contextStamp"] = {"context": 7}
+            return value
+
+        self.description = description
+        overlay, jobs, token, view = await self.overlay_scenario()
+        view = copy.deepcopy(view)
+        view["text"] = "保留的人工候选"
+        view["editable"] = True
+        view["source"]["ime"] = "Clear"
+        view["presentation"] = {"tabHint": "Tab 接受译文", "editorOwnsText": False}
+        view["viewContext"]["translationActions"] = {
+            "settingsRevision": 12,
+            "canOpenGlossary": True,
+            "glossaryUnavailableReason": None,
+            "futureField": "unchanged",
+        }
+        overlay.render(view)
+        await self.settle_overlay(jobs)
+        entry = {
+            "formId": str(uuid.uuid4()),
+            "token": token,
+            "settingsRevision": 12,
+            "directions": [],
+            "sourceOrigin": True,
+        }
+        original_ask = self.host.ask
+
+        async def ask(operation, value=None):
+            if operation == "sessionGlossaryBegin":
+                if revoke:
+                    following = copy.deepcopy(overlay.value)
+                    following["canAccept"] = False
+                    following["presentation"]["tabHint"] = "Tab 交还应用"
+                    actions = following["viewContext"]["translationActions"]
+                    actions.update(
+                        canOpenGlossary=False, glossaryUnavailableReason="请先完成当前术语表单"
+                    )
+                    if invalidation == "actions":
+                        actions["futureField"] = "changed"
+                    elif invalidation == "settings":
+                        actions["settingsRevision"] += 1
+                    elif invalidation == "text":
+                        following["text"] += " changed"
+                    elif invalidation == "state":
+                        following["state"] = "EditedTranslationPending"
+                    elif invalidation == "token":
+                        following["viewContext"]["token"]["revision"] += 1
+                    elif invalidation == "ime":
+                        following["source"]["ime"] = "Unknown"
+                    elif invalidation == "hint":
+                        following["presentation"]["tabHint"] = "unexpected"
+                    overlay.render(following)
+                    if invalidation == "repeat":
+                        overlay.render(copy.deepcopy(following))
+                    elif invalidation == "close":
+                        overlay.close_glossary()
+                return entry
+            return await original_ask(operation, value)
+
+        self.host.ask = ask
+
+        def emit(operation, value=None):
+            self.peer.event(
+                "ui",
+                {
+                    "target": token["target"]["value"],
+                    "revision": overlay.revision,
+                    "generation": self.generation,
+                    "operation": operation,
+                    "value": value,
+                },
+            )
+
+        emit("sessionGlossaryBegin")
+        await asyncio.sleep(0)
+        request = next(
+            (
+                frame
+                for frame in self.native_frames(self.peer)
+                if frame["op"] == "overlay-glossary-open"
+            ),
+            None,
+        )
+        return overlay, jobs, entry, request, emit
+
+    def gtk3_glossary_transfer(self, entry, phase, ordinal=1, count=1, **changes):
+        marker = {key: entry[key] for key in ("formId", "token")}
+        marker.update(phase=phase, ordinal=ordinal, count=count)
+        self.peer.event(
+            "input",
+            {
+                "target": entry["token"]["target"]["value"],
+                "textChanged": False,
+                "focusChanged": True,
+                "focused": phase == "Returning",
+                "inputRevision": 1,
+                "contentRevision": 1,
+                "glossaryTransfer": marker,
+                **changes,
+            },
+        )
+
+    def test_gtk3_source_glossary_opens_without_entering_translation_editor(self):
+        async def exercise():
+            overlay, jobs, entry, request, emit = await self.gtk3_glossary_scenario()
+            window = self.input.window_epoch
+            self.gtk3_glossary_transfer(entry, "Opening", 1, 2)
+            self.gtk3_glossary_transfer(entry, "Opening", 2, 2)
+            emit(
+                "sessionGlossaryFocus",
+                {"formId": entry["formId"], "token": entry["token"], "ime": "Unknown"},
+            )
+            self.peer.link.receive({"id": request["id"], "data": {"opened": True}})
+            await self.settle_overlay(jobs)
+            self.assertEqual(self.input.window_epoch, window)
+            self.assertEqual(self.input.focus(), "Overlay")
+            self.assertEqual(overlay.value["state"], "ValidTranslation")
+            self.assertNotIn("beginEdit", [operation for operation, _ in self.host.requests])
+
+        asyncio.run(exercise())
+
+    def test_gtk3_glossary_begin_survives_its_own_acceptance_revocation_render(self):
+        async def exercise():
+            overlay, jobs, entry, request, emit = await self.gtk3_glossary_scenario(revoke=True)
+            self.assertIsNotNone(request)
+            self.gtk3_glossary_transfer(entry, "Opening")
+            emit(
+                "sessionGlossaryFocus",
+                {"formId": entry["formId"], "token": entry["token"], "ime": "Unknown"},
+            )
+            self.peer.link.receive({"id": request["id"], "data": {"opened": True}})
+            await self.settle_overlay(jobs)
+            self.assertIsNotNone(overlay.glossary)
+            self.assertFalse(overlay.value["canAccept"])
+            self.assertEqual(overlay.value["viewContext"]["token"], entry["token"])
+
+        asyncio.run(exercise())
+
+    def test_gtk3_glossary_pending_begin_rejects_other_changes_and_closed_attempt(self):
+        async def exercise(case):
+            overlay, jobs, entry, request, _ = await self.gtk3_glossary_scenario(
+                revoke=True, invalidation=case
+            )
+            self.assertIsNone(request)
+            await self.settle_overlay(jobs)
+            self.assertIsNone(overlay.glossary)
+            self.assertIn(("sessionGlossaryClose", entry["formId"]), self.host.events)
+
+        for case in (
+            "actions",
+            "settings",
+            "text",
+            "state",
+            "token",
+            "ime",
+            "hint",
+            "repeat",
+            "close",
+        ):
+            with self.subTest(case=case):
+                asyncio.run(exercise(case))
+
+    def test_gtk3_glossary_auxiliary_render_allows_only_exact_ack_withdrawal(self):
+        async def exercise(case):
+            overlay, jobs, entry, request, emit = await self.gtk3_glossary_scenario(revoke=True)
+            self.gtk3_glossary_transfer(entry, "Opening")
+            emit(
+                "sessionGlossaryFocus",
+                {"formId": entry["formId"], "token": entry["token"], "ime": "Unknown"},
+            )
+            self.peer.link.receive({"id": request["id"], "data": {"opened": True}})
+            await self.settle_overlay(jobs)
+            revision, original = overlay.revision, copy.deepcopy(overlay.value)
+            following = copy.deepcopy(original)
+            following["editable"] = False
+            following["viewContext"]["canEdit"] = False
+            actions = following["viewContext"]["translationActions"]
+            actions["glossaryUnavailableReason"] = "内容或设置已变化，请重新打开表单"
+            if case == "settings":
+                actions["settingsRevision"] += 1
+            elif case == "unknown":
+                actions["futureField"] = "changed"
+            elif case == "model":
+                actions["glossaryReleased"] = False
+            elif case == "alternative":
+                actions["canRequestAlternative"] = False
+            elif case == "feedback":
+                actions["feedback"] = "new feedback"
+            elif case == "hint":
+                actions["glossaryUnavailableReason"] = "unexpected"
+            elif case == "missing":
+                del following["viewContext"]["translationActions"]
+            elif case == "null":
+                following["viewContext"]["translationActions"] = None
+            overlay.render(following)
+            if case == "regrant":
+                overlay.render(original)
+            await self.settle_overlay(jobs)
+            self.assertEqual(overlay.glossary is not None, case is None)
+            if case is None:
+                self.assertEqual(overlay.revision, revision)
+                self.assertFalse(overlay.value["viewContext"]["canEdit"])
+            else:
+                self.assertGreater(overlay.revision, revision)
+                self.assertIn(("sessionGlossaryClose", entry["formId"]), self.host.events)
+
+        for case in (
+            None,
+            "settings",
+            "unknown",
+            "model",
+            "alternative",
+            "feedback",
+            "hint",
+            "regrant",
+            "missing",
+            "null",
+        ):
+            with self.subTest(case=case):
+                asyncio.run(exercise(case))
+
+    def test_gtk3_glossary_transfer_rejects_incomplete_replayed_and_external_sequences(self):
+        async def exercise(case):
+            overlay, jobs, entry, request, emit = await self.gtk3_glossary_scenario()
+            window = self.input.window_epoch
+            if case == "missing":
+                self.gtk3_glossary_transfer(entry, "Opening", 1, 2)
+            elif case == "out-of-order":
+                self.gtk3_glossary_transfer(entry, "Opening", 2, 2)
+            elif case == "boolean":
+                self.gtk3_glossary_transfer(entry, "Opening", True, 1)
+            elif case == "changed-count":
+                self.gtk3_glossary_transfer(entry, "Opening", 1, 2)
+                self.gtk3_glossary_transfer(entry, "Opening", 2, 3)
+            elif case == "replay":
+                self.gtk3_glossary_transfer(entry, "Opening")
+                self.gtk3_glossary_transfer(entry, "Opening")
+            elif case == "external":
+                self.gtk3_glossary_transfer(entry, "Opening", 1, 2)
+                self.peer.event(
+                    "input",
+                    {
+                        "target": "another-field",
+                        "textChanged": False,
+                        "focusChanged": True,
+                        "focused": True,
+                    },
+                )
+                self.gtk3_glossary_transfer(entry, "Opening", 2, 2)
+            elif case == "input":
+                self.gtk3_glossary_transfer(entry, "Opening", inputRevision=2)
+            elif case == "old-form":
+                self.gtk3_glossary_transfer({**entry, "formId": str(uuid.uuid4())}, "Opening")
+            elif case == "old-token":
+                self.gtk3_glossary_transfer(
+                    {**entry, "token": {**entry["token"], "revision": 8}}, "Opening"
+                )
+            elif case == "no-witness":
+                pass
+            self.peer.link.receive({"id": request["id"], "data": {"opened": True}})
+            frames = await self.settle_overlay(jobs)
+            self.assertTrue(any(frame["op"] == "overlay-glossary-close" for frame in frames))
+            self.assertIsNone(overlay.glossary)
+            if case not in ("missing", "no-witness"):
+                self.assertGreater(self.input.window_epoch, window)
+
+        for case in (
+            "missing",
+            "out-of-order",
+            "boolean",
+            "changed-count",
+            "replay",
+            "external",
+            "input",
+            "old-form",
+            "old-token",
+            "no-witness",
+        ):
+            with self.subTest(case=case):
+                asyncio.run(exercise(case))
+
+    def test_gtk3_auxiliary_external_focus_retires_form_without_another_source_event(self):
+        async def exercise():
+            overlay, jobs, entry, request, emit = await self.gtk3_glossary_scenario()
+            receipt = {key: entry[key] for key in ("formId", "token")}
+            self.gtk3_glossary_transfer(entry, "Opening")
+            emit("sessionGlossaryFocus", {**receipt, "ime": "Clear"})
+            self.peer.link.receive({"id": request["id"], "data": {"opened": True}})
+            await self.settle_overlay(jobs)
+            # An ordinary button/NULL is not a source Target. It need not emit
+            # a second source input event to invalidate the auxiliary family.
+            emit("focus", False)
+            emit("sessionGlossaryFocus", {**receipt, "ime": "Clear"})
+            self.assertIsNone(overlay.glossary)
+            emit(
+                "sessionGlossaryAdd",
+                {
+                    **receipt,
+                    "settingsRevision": 12,
+                    "rule": {
+                        "sourceTerm": "PR",
+                        "targetTerm": "pull request",
+                        "sourceLanguage": None,
+                        "targetLanguage": None,
+                    },
+                },
+            )
+            await self.settle_overlay(jobs)
+            self.assertNotIn(
+                "sessionGlossaryAdd", [operation for operation, _ in self.host.requests]
+            )
+
+        asyncio.run(exercise())
+
+    def test_gtk3_glossary_return_needs_fresh_original_source_clear_read_only_capture(self):
+        async def exercise():
+            overlay, jobs, entry, request, emit = await self.gtk3_glossary_scenario()
+            receipt = {key: entry[key] for key in ("formId", "token")}
+            self.gtk3_glossary_transfer(entry, "Opening")
+            emit("sessionGlossaryFocus", {**receipt, "ime": "Clear"})
+            self.peer.link.receive({"id": request["id"], "data": {"opened": True}})
+            await self.settle_overlay(jobs)
+            original_ask = self.host.ask
+
+            async def capture(mutation=None):
+                task = asyncio.create_task(self.input.request("capture", {}))
+                description = self.description()
+                description["glossarySource"] = receipt
+                description["sessionBindings"] = {
+                    "generation": self.generation,
+                    "accept": "Tab",
+                    "exit": "Esc",
+                    "sourceReady": False,
+                    "editorReady": False,
+                }
+                description["authority"]["sessionBindings"] = copy.deepcopy(
+                    description["sessionBindings"]
+                )
+                native = {
+                    **copy.deepcopy(description),
+                    "text": "Original source",
+                    "selection": {"start": 0, "end": 0},
+                    "ime": "Clear",
+                    "observedAtMs": 1000,
+                    "writeSupported": False,
+                }
+                if mutation:
+                    mutation(native)
+                async with asyncio.timeout(1):
+                    while not task.done():
+                        await asyncio.sleep(0)
+                        for frame in self.native_frames(self.peer):
+                            self.assertIn(frame["op"], ("describe", "capture"))
+                            self.peer.link.receive(
+                                {
+                                    "id": frame["id"],
+                                    "data": description if frame["op"] == "describe" else native,
+                                }
+                            )
+                return task.result()
+
+            async def ask(operation, value=None):
+                if operation == "sessionGlossaryAdd":
+                    returned = await overlay.return_glossary_to_source(receipt)
+                    self.assertEqual(returned, {**receipt, "returned": True})
+                    mutations = {
+                        "context": lambda value: value["authority"]["contextStamp"].update(
+                            context=8
+                        ),
+                        "input": lambda value: value["authority"].update(inputRevision=2),
+                        "content": lambda value: value["authority"].update(contentRevision=2),
+                        "metadata": lambda value: value["authority"].update(
+                            metadataKey="replacement"
+                        ),
+                        "unknown IME": lambda value: value.update(ime="Unknown"),
+                        "composing IME": lambda value: value.update(ime="Composing"),
+                        "write authority": lambda value: value.update(writeSupported=True),
+                        "old form": lambda value: value.update(
+                            glossarySource={**receipt, "formId": str(uuid.uuid4())}
+                        ),
+                        "editor ticket": lambda value: value["sessionBindings"].update(
+                            editorReady=True
+                        ),
+                        "source ticket": lambda value: value["sessionBindings"].update(
+                            sourceReady=True
+                        ),
+                    }
+                    for name, mutation in mutations.items():
+                        with self.subTest(refusal=name):
+                            self.assertIsNone(await capture(mutation))
+                            self.assertEqual(
+                                self.input.capture_status, "glossary-return-identity-lost"
+                            )
+                    result = await capture()
+                    self.assertEqual(result["focus"], "Source")
+                    self.assertFalse(result["snapshot"]["writeSupported"])
+                    self.assertFalse(result["sessionShortcuts"]["sourceReady"])
+                    self.assertFalse(result["sessionShortcuts"]["editorReady"])
+                    return {"saved": True, "code": "glossary-saved"}
+                return await original_ask(operation, value)
+
+            self.host.ask = ask
+            emit(
+                "sessionGlossaryAdd",
+                {
+                    **receipt,
+                    "settingsRevision": 12,
+                    "rule": {
+                        "sourceTerm": "PR",
+                        "targetTerm": "pull request",
+                        "sourceLanguage": None,
+                        "targetLanguage": None,
+                    },
+                },
+            )
+            await asyncio.sleep(0)
+            request = next(
+                frame
+                for frame in self.native_frames(self.peer)
+                if frame["op"] == "overlay-glossary-return"
+            )
+            window = self.input.window_epoch
+            self.gtk3_glossary_transfer(entry, "Returning", 1, 2, focused=False)
+            self.gtk3_glossary_transfer(entry, "Returning", 2, 2)
+            emit("sessionGlossaryFocus", None)
+            emit("focus", False)
+            self.assertEqual(self.input.window_epoch, window)
+            self.peer.link.receive({"id": request["id"], "data": {**receipt, "returned": True}})
+            await asyncio.wait_for(jobs[-1], 1)
+            frames = await self.settle_overlay(jobs)
+            saved = next(frame for frame in frames if frame["op"] == "overlay-glossary-result")
+            self.assertTrue(saved["data"]["result"]["saved"])
+            self.assertFalse(
+                any(
+                    frame["op"] in ("return", "write", "publish", "overlay-edit")
+                    for frame in frames
+                )
+            )
+
+        asyncio.run(exercise())
+
+    def test_source_glossary_return_capture_is_read_only_and_original_save_reply_survives_retirement(
+        self,
+    ):
+        self.connect_registered_browser()
+
+        async def exercise():
+            capture = await self.capture_browser(source_glossary=True)
+            jobs = []
+            overlay = Overlay(
+                self.host,
+                self.input,
+                lambda coroutine: jobs.append(asyncio.create_task(coroutine)),
+                lambda: None,
+            )
+            token = {
+                "target": capture["snapshot"]["target"],
+                "commandGeneration": self.generation,
+                "revision": 9,
+            }
+            view = {
+                "state": "ValidTranslation",
+                "source": {"target": token["target"]},
+                "viewContext": {
+                    "token": token,
+                    "bindings": {"accept": "Tab", "exit": "Esc"},
+                    "canEdit": True,
+                },
+                "canAccept": False,
+            }
+            overlay.render(view)
+            await self.settle_overlay(jobs)
+            entry = {
+                "formId": str(uuid.uuid4()),
+                "token": token,
+                "settingsRevision": 12,
+                "directions": [],
+                "sourceOrigin": True,
+            }
+            receipt = {"formId": entry["formId"], "token": token}
+            original_ask = self.host.ask
+
+            async def ask(operation, value=None):
+                if operation == "sessionGlossaryBegin":
+                    return entry
+                if operation == "sessionGlossaryAdd":
+                    returned = await overlay.return_glossary_to_source(receipt)
+                    self.assertEqual(returned, {**receipt, "returned": True})
+                    rejected = await self.capture_browser(
+                        source_glossary=True,
+                        glossary_source=receipt,
+                        captured_glossary_source={**receipt, "formId": str(uuid.uuid4())},
+                        bindings={
+                            "sourceReady": False,
+                            "editorReady": False,
+                            "sourceLocalAcceptanceVersion": 0,
+                        },
+                    )
+                    self.assertIsNone(rejected)
+                    self.assertEqual(self.input.capture_status, "glossary-return-identity-lost")
+                    captured = await self.capture_browser(
+                        source_glossary=True,
+                        glossary_source=receipt,
+                        bindings={
+                            "sourceReady": False,
+                            "editorReady": False,
+                            "sourceLocalAcceptanceVersion": 0,
+                        },
+                    )
+                    self.assertEqual(captured["focus"], "Source")
+                    self.assertFalse(captured["snapshot"]["writeSupported"])
+                    self.assertFalse(captured["sessionShortcuts"]["sourceReady"])
+                    self.assertFalse(captured["sessionShortcuts"]["editorReady"])
+                    # A real commit changes the session before its Add reply.
+                    overlay.render(
+                        {
+                            **view,
+                            "state": "Translating",
+                            "viewContext": {
+                                **view["viewContext"],
+                                "token": {**token, "revision": 10},
+                            },
+                        }
+                    )
+                    return {"saved": True, "code": "glossary-saved"}
+                return await original_ask(operation, value)
+
+            self.host.ask = ask
+            event = {
+                "target": token["target"]["value"],
+                "revision": overlay.revision,
+                "generation": self.generation,
+            }
+
+            def emit(operation, value=None):
+                self.peer.link.receive(
+                    {
+                        "event": "ui",
+                        "route": self.route,
+                        "data": {**event, "operation": operation, "value": value},
+                    }
+                )
+
+            emit("sessionGlossaryBegin")
+            window = self.input.window_epoch
+            await self.settle_overlay(jobs, source_transfer=True)
+            self.assertEqual(self.input.window_epoch, window)
+            emit("sessionGlossaryFocus", {**receipt, "ime": "Clear"})
+            emit(
+                "sessionGlossaryAdd",
+                {
+                    **receipt,
+                    "settingsRevision": 12,
+                    "rule": {
+                        "sourceTerm": "PR",
+                        "targetTerm": "pull request",
+                        "sourceLanguage": None,
+                        "targetLanguage": None,
+                    },
+                },
+            )
+            saving = jobs[-1]
+            await asyncio.sleep(0)
+            frames = self.native_frames(self.peer)
+            request = next(frame for frame in frames if frame["op"] == "overlay-glossary-return")
+            emit("sessionGlossaryFocus", None)
+            self.peer.link.receive(
+                {
+                    "event": "input",
+                    "route": self.route,
+                    "data": {
+                        "target": token["target"]["value"],
+                        "textChanged": False,
+                        "focusChanged": True,
+                        "focused": True,
+                        "glossaryTransfer": {**receipt, "phase": "Returning"},
+                    },
+                }
+            )
+            emit("focus", False)
+            self.assertEqual(self.input.window_epoch, window)
+            self.peer.link.receive(
+                {"id": request["id"], "route": self.route, "data": {**receipt, "returned": True}}
+            )
+            await asyncio.wait_for(saving, 1)
+            frames = await self.settle_overlay(jobs)
+            result = next(
+                frame["data"] for frame in frames if frame["op"] == "overlay-glossary-result"
+            )
+            self.assertEqual(result["formId"], entry["formId"])
+            self.assertEqual(result["result"], {"saved": True, "code": "glossary-saved"})
+            self.assertIsNone(overlay.glossary)
+            self.assertIsNone(self.input.source_glossary_return)
+            self.assertFalse(any(frame["op"] in ("write", "return", "publish") for frame in frames))
+
+        asyncio.run(exercise())
+
+    def test_source_glossary_transfer_rejects_external_focus_and_replayed_identity(self):
+        self.connect_registered_browser()
+        original_ask = self.host.ask
+
+        async def exercise(phase, fault):
+            self.input.set_overlay_focus(False)
+            capture = await self.capture_browser(source_glossary=True)
+            jobs = []
+            overlay = Overlay(
+                self.host,
+                self.input,
+                lambda coroutine: jobs.append(asyncio.create_task(coroutine)),
+                lambda: None,
+            )
+            token = {
+                "target": capture["snapshot"]["target"],
+                "commandGeneration": self.generation,
+                "revision": 9,
+            }
+            overlay.render(
+                {
+                    "state": "ValidTranslation",
+                    "source": {"target": token["target"]},
+                    "viewContext": {
+                        "token": token,
+                        "bindings": {"accept": "Tab", "exit": "Esc"},
+                        "canEdit": True,
+                    },
+                    "canAccept": False,
+                }
+            )
+            await self.settle_overlay(jobs)
+            entry = {
+                "formId": str(uuid.uuid4()),
+                "token": token,
+                "settingsRevision": 12,
+                "directions": [],
+                "sourceOrigin": True,
+            }
+            receipt = {"formId": entry["formId"], "token": token}
+
+            async def ask(operation, value=None):
+                if operation == "sessionGlossaryBegin":
+                    return entry
+                if operation != "sessionGlossaryAdd":
+                    return await original_ask(operation, value)
+                self.assertIsNone(await overlay.return_glossary_to_source(receipt))
+                return {"saved": False, "code": "glossary-entry-return-failed"}
+
+            self.host.ask = ask
+
+            def emit(operation, value=None):
+                self.peer.link.receive(
+                    {
+                        "event": "ui",
+                        "route": self.route,
+                        "data": {
+                            "target": token["target"]["value"],
+                            "revision": overlay.revision,
+                            "generation": self.generation,
+                            "operation": operation,
+                            "value": value,
+                        },
+                    }
+                )
+
+            emit("sessionGlossaryBegin")
+            if phase == "Returning":
+                await self.settle_overlay(jobs, source_transfer=True)
+                emit("sessionGlossaryFocus", {**receipt, "ime": "Clear"})
+                emit(
+                    "sessionGlossaryAdd",
+                    {
+                        **receipt,
+                        "settingsRevision": 12,
+                        "rule": {
+                            "sourceTerm": "PR",
+                            "targetTerm": "pull request",
+                            "sourceLanguage": None,
+                            "targetLanguage": None,
+                        },
+                    },
+                )
+            await asyncio.sleep(0)
+            operation = "overlay-glossary-open" if phase == "Opening" else "overlay-glossary-return"
+            request = next(
+                frame for frame in self.native_frames(self.peer) if frame["op"] == operation
+            )
+            window = self.input.window_epoch
+            event = {
+                "target": token["target"]["value"],
+                "textChanged": False,
+                "focusChanged": True,
+                "focused": phase == "Returning",
+                "glossaryTransfer": {**receipt, "phase": phase},
+            }
+            route = self.route
+            if fault == "missing":
+                event.pop("glossaryTransfer")
+            elif fault == "wrong-form":
+                event["glossaryTransfer"]["formId"] = str(uuid.uuid4())
+            elif fault == "wrong-lifetime":
+                event["glossaryTransfer"]["token"] = {
+                    **token,
+                    "target": {**token["target"], "lifetime": str(uuid.uuid4())},
+                }
+            elif fault == "wrong-route":
+                route = {**self.route, "documentId": "another-document"}
+            elif fault == "external-field":
+                self.peer.link.receive(
+                    {
+                        "event": "input",
+                        "route": self.route,
+                        "data": {
+                            "target": self.route["documentToken"] + ":2",
+                            "textChanged": False,
+                            "focusChanged": True,
+                            "focused": True,
+                        },
+                    }
+                )
+            elif fault == "window-roundtrip":
+                for identity in (100, 99):
+                    self.input.niri._deliver(
+                        (
+                            "test",
+                            [{"id": identity, "pid": os.getpid(), "is_focused": True}],
+                            {},
+                            {},
+                            False,
+                            1000,
+                        )
+                    )
+            elif fault == "tab-roundtrip":
+                for active in ({**self.route, "tabId": 7}, self.route):
+                    self.peer.link.receive(
+                        {"event": "document-focus", "data": True, "route": active}
+                    )
+            message = {"event": "input", "route": route, "data": event}
+            self.peer.link.receive(message)
+            if fault == "replay":
+                self.peer.link.receive(message)
+            self.assertGreater(self.input.window_epoch, window)
+            self.peer.link.receive(
+                {
+                    "id": request["id"],
+                    "route": self.route,
+                    "data": {"opened": True}
+                    if phase == "Opening"
+                    else {**receipt, "returned": True},
+                }
+            )
+            await self.settle_overlay(jobs)
+            if phase == "Opening":
+                self.assertIsNone(overlay.glossary)
+            self.assertIsNone(self.input.source_glossary_return)
+            overlay.close_glossary()
+            self.native_frames(self.peer)
+
+        for phase in ("Opening", "Returning"):
+            for fault in (
+                "missing",
+                "wrong-form",
+                "wrong-lifetime",
+                "wrong-route",
+                "replay",
+                "external-field",
+                "window-roundtrip",
+                "tab-roundtrip",
+            ):
+                with self.subTest(phase=phase, fault=fault):
+                    asyncio.run(exercise(phase, fault))
 
     def test_inline_glossary_dispatches_one_rule_only_from_current_clear_auxiliary_focus(self):
         async def exercise():

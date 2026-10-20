@@ -18,6 +18,7 @@ internal sealed class BrowserSessionView : ISessionView
     private bool _renewing;
     private SessionState _state;
     private SessionGlossaryEntry? _glossary;
+    private SessionState _glossaryState;
     private bool _savingGlossary, _glossaryOutcomeUnknown, _glossarySaved;
     public Func<SessionViewToken, bool>? BeginEditing
     {
@@ -61,6 +62,14 @@ internal sealed class BrowserSessionView : ISessionView
     }
     public SessionGlossaryFocus? GlossaryEntryFocus => _glossary is { } entry && _context?.Token == entry.Token
         && _input.GlossaryFocus is { } focus && focus.FormId == entry.FormId && focus.Token == entry.Token ? focus : null;
+    public bool SupportsSourceGlossaryEntry(SessionViewToken token) => _input.SupportsSourceGlossaryEntry(token);
+    public Task<bool> ReturnGlossaryToSourceAsync(SessionGlossaryEntry entry) =>
+        _glossary == entry && entry.SourceOrigin && _savingGlossary && _context?.Token == entry.Token
+        && GlossaryStateCurrent(entry) && _record is { } record
+            ? _input.ReturnGlossaryToSourceAsync(entry, record) : Task.FromResult(false);
+    private bool GlossaryStateCurrent(SessionGlossaryEntry entry) => entry.SourceOrigin
+        ? _state == _glossaryState && _state is SessionState.ValidTranslation or SessionState.EditedTranslationPending
+        : _state == SessionState.EditingTranslation;
     public Action? ExcludeRequested
     {
         get; set;
@@ -97,7 +106,7 @@ internal sealed class BrowserSessionView : ISessionView
         _record = record;
         _context = context;
         _state = session.State;
-        if (_glossary is { } entry && (entry.Token != context.Token || session.State != SessionState.EditingTranslation
+        if (_glossary is { } entry && (entry.Token != context.Token || !GlossaryStateCurrent(entry)
             || context.TranslationActions?.GlossaryReleased != true))
             CloseGlossary(entry.FormId);
         var view = new
@@ -316,7 +325,8 @@ internal sealed class BrowserSessionView : ISessionView
         SessionGlossaryEntry? entry = null;
         try
         {
-            if (_glossary is null && !EditingComposition && _state == SessionState.EditingTranslation
+            if (_glossary is null && !EditingComposition
+                && _state is SessionState.EditingTranslation or SessionState.ValidTranslation or SessionState.EditedTranslationPending
                 && context.TranslationActions is { GlossaryReleased: true, CanOpenGlossary: true })
                 entry = BeginGlossaryRequested?.Invoke(token);
             if (entry is not null && (entry.Token != token || _context?.Token != token || !_input.OpenGlossaryEntry(entry)))
@@ -336,6 +346,7 @@ internal sealed class BrowserSessionView : ISessionView
                 return;
             }
             _glossary = entry;
+            _glossaryState = _state;
             _savingGlossary = _glossaryOutcomeUnknown = _glossarySaved = false;
             var reply = await record.Peer.RequestAsync("overlay-glossary-open", new
             {
@@ -384,7 +395,7 @@ internal sealed class BrowserSessionView : ISessionView
         GlossaryChangeResult result;
         try
         {
-            result = _state != SessionState.EditingTranslation ? new(false, "glossary-stale")
+            result = !GlossaryStateCurrent(entry) ? new(false, "glossary-stale")
                 : GlossaryEntryFocus is not { } focus || focus.FormId != entry.FormId ? new(false, "glossary-entry-focus")
                 : focus.Ime != ImeState.Clear ? new(false, "glossary-entry-ime")
                 : AddGlossaryRequested is not { } add ? new(false, "glossary-unavailable") : await add(request);
@@ -393,11 +404,14 @@ internal sealed class BrowserSessionView : ISessionView
         {
             result = new(false, "glossary-unconfirmed");
         }
-        if (_glossary != entry || _context?.Token != entry.Token || _record?.Peer != record.Peer || _record.Route != record.Route)
-            return;
-        _savingGlossary = false;
-        _glossarySaved = result.Saved;
-        _glossaryOutcomeUnknown = result.Code == "glossary-unconfirmed";
+        if (_glossary == entry && _context?.Token == entry.Token && _record?.Peer == record.Peer && _record.Route == record.Route)
+        {
+            _savingGlossary = false;
+            _glossarySaved = result.Saved;
+            _glossaryOutcomeUnknown = result.Code == "glossary-unconfirmed";
+        }
+        // Persistence may synchronously render and retire this form. Complete
+        // the original Add on its original peer/token without reviving any UI.
         record.Peer.Send("overlay-glossary-result", new
         {
             target = entry.Token.Target.Value,

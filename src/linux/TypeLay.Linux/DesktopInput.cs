@@ -7,7 +7,8 @@ namespace TypeLay.Linux;
 internal sealed record DesktopState(bool Ready = false, long UserEpoch = 0, long SourceUserEpoch = 0,
     long ForegroundEpoch = 0, long WindowEpoch = 0, long ContentEpoch = 0,
     TargetId? Target = null, FocusMember Focus = FocusMember.Other, bool NativeReady = false,
-    SessionShortcutAcknowledgement? SessionShortcuts = null, Guid ConnectionId = default, bool ForegroundExpired = false, OwnedPracticeBinding? PracticeForegroundSuspension = null);
+    SessionShortcutAcknowledgement? SessionShortcuts = null, Guid ConnectionId = default, bool ForegroundExpired = false, OwnedPracticeBinding? PracticeForegroundSuspension = null,
+    TargetId? SourceGlossaryTarget = null, Guid SourceGlossaryGeneration = default);
 
 internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMonitor
 {
@@ -37,6 +38,10 @@ internal sealed class DesktopInput(DesktopLink link) : IInputService, IInputMoni
         get; private set;
     }
     public FocusMember GetFocus(TargetId target) => _state.Target == target ? _state.Focus : FocusMember.Other;
+
+    public bool SupportsSourceGlossaryEntry(SessionViewToken token) => Ready
+        && token.Target == _state.SourceGlossaryTarget && token.CommandGeneration == CommandGeneration
+        && token.CommandGeneration == _state.SourceGlossaryGeneration;
 
     public void Receive(string operation, JsonElement data)
     {

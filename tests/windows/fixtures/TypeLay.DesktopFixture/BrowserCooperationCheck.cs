@@ -455,7 +455,7 @@ internal static partial class BrowserCooperationCheck
                 if (browser is not null)
                 {
                     if (windows is not null)
-                        await windows.StopAsync(browser);
+                        await windows.StopAsync(browser, Console.WriteLine);
                     else
                     {
                         using var limit = new CancellationTokenSource(TimeSpan.FromSeconds(5));

@@ -127,7 +127,7 @@ internal static partial class ContinuousTranslationCheck
             try
             {
                 if (windows is not null && child is not null)
-                    await windows.StopAsync(child);
+                    await windows.StopAsync(child, Console.WriteLine);
                 else
                     child?.Dispose();
                 if (Directory.Exists(sourceDirectory))

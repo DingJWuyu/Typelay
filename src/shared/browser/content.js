@@ -37,7 +37,20 @@
   const areaReplace = HTMLTextAreaElement.prototype.setRangeText;
   const inputValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").get;
   const areaValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").get;
-  const send = (event, data) => { if (alive) port.postMessage({event, data}); };
+  let glossaryTransfer = null;
+  const send = (event, data) => {
+    if (!alive) return;
+    const transfer = glossaryTransfer;
+    if (transfer?.buffering) {
+      if (transfer.messages.length < 8) { transfer.messages.push({event, data}); return; }
+      // A reentrant/unexpected sequence cannot earn an internal-focus marker.
+      // Flush every original message in order and stop buffering this call.
+      transfer.valid = transfer.buffering = false;
+      for (const message of transfer.messages) port.postMessage(message);
+      transfer.messages.length = 0;
+    }
+    port.postMessage({event, data});
+  };
   const ui = (operation, value) => {
     if (overlay) send("ui", {target: overlay.field.id, operation, revision: overlay.revision,
       generation: overlay.generation, value});
@@ -61,7 +74,8 @@
   }
   const controlBinding = action => typeof configuration?.[action] === "string" && configuration[action].startsWith("Ctrl+");
   const controlPair = () => controlBinding("accept") || controlBinding("exit");
-  const sourceConfigured = field => sessionConfigured() && (!controlPair()
+  const sourceConfigured = field => sessionConfigured()
+    && !(overlay?.field === field && overlay.glossary?.entry.sourceOrigin === true) && (!controlPair()
     || !!field && (field.richText ? rich?.orderedClaim === 1 && field.richControlSupported === true
       && rich.root(field.element) === field.element : allowedElement(field.element)) && !field.dead);
   const editorConfigured = field => sourceConfigured(field) && (!field?.richText
@@ -485,7 +499,11 @@
     return {target: field.id, metadata: meta, authority: authority(field, meta),
       geometry: geometry(field), focused: focused(field), diagnostics: diagnostics(),
       publication: publicationState(field, meta), sessionBindings: sessionBindings(field),
-      glossaryFocus: overlay?.field === field ? glossaryFocus() : null};
+      glossaryFocus: overlay?.field === field ? glossaryFocus() : null,
+      sourceGlossarySupported: sourceGlossarySupported(field),
+      glossarySource: overlay?.field === field && overlay.glossary?.entry.sourceOrigin === true
+        && overlay.glossary.returned && glossaryCurrent() && focused(field)
+        ? {formId: overlay.glossary.entry.formId, token: overlay.glossary.entry.token} : null};
   }
   function approved(field, basis, domOnly = false) {
     const meta = field && metadata(field, domOnly);
@@ -692,7 +710,13 @@
     if (focusChanged) field.focus++;
     if (overlay?.paused && overlay.field === field) hide();
     refreshHint();
-    send("input", {target: field.id, textChanged, focusChanged, focused: focused(field)});
+    const data = {target: field.id, textChanged, focusChanged, focused: focused(field)};
+    if (glossaryTransfer) {
+      if (!focusChanged || textChanged || field !== glossaryTransfer.form.field || glossaryTransfer.sourceEvent)
+        glossaryTransfer.valid = false;
+      else glossaryTransfer.sourceEvent = data;
+    }
+    send("input", data);
   }
   function mutations(records) {
     if (records.length && overlay?.paused && !pauseCurrent(overlay.field, overlay.authority, true)) hide();
@@ -1042,11 +1066,12 @@
       glossary.addEventListener("click", event => {
         const current = overlay, opened = current?.menuContext, actions = current?.translationActions;
         if (!event.isTrusted || !opened || !actions?.glossaryReleased || !actions.canOpenGlossary
-          || !current.editing || current.composing || current.glossary || current.glossaryOpening || !liveDeadline(current)
+          || !glossaryOriginReady(current) || current.glossary || current.glossaryOpening || !liveDeadline(current)
           || current.field !== opened.field || current.revision !== opened.revision
           || current.generation !== opened.generation || JSON.stringify(current.viewToken) !== opened.token
           || actions.settingsRevision !== opened.actions?.settingsRevision) return;
-        current.glossaryOpening = {tokenKey: opened.token, generation: opened.generation, revision: opened.revision};
+        current.glossaryOpening = {tokenKey: opened.token, generation: opened.generation, revision: opened.revision,
+          sourceOrigin: !current.editing, field: current.field};
         setMoreOpen(false);
         ui("sessionGlossaryBegin");
       });
@@ -1083,6 +1108,7 @@
     overlay.revision = data.revision;
     overlay.generation = data.generation;
     overlay.viewToken = view.viewContext?.token;
+    overlay.state = view.state;
     overlay.translationActions = translationActions(view);
     renderTranslationActions(overlay);
     overlay.shortcuts = view.sessionShortcuts;
@@ -1116,7 +1142,8 @@
       overlay.more.setAttribute("aria-expanded", "false");
     }
     if (paused || !view.presentation.editorOwnsText) {
-      overlay.editor.value = paused ? "" : view.text || "";
+      const text = paused ? "" : view.text || "";
+      if (overlay.editor.value !== text) overlay.editor.value = text;
       overlay.editing = false; overlay.editor.readOnly = true;
     } else if (!overlay.editing) overlay.editor.value = view.text || "";
     sizeEditor(); position();
@@ -1158,11 +1185,24 @@
   }
   // One explicitly approved, source-bound auxiliary form. These identities are
   // separate from both the source field registry and the translation editor.
+  function sourceGlossarySupported(field) {
+    return alive && !!field && !field.richText && !field.dead && !field.quarantined
+      && allowedElement(field.element) && field.element.isConnected && field.element.getRootNode() === document;
+  }
+  function glossaryOriginReady(current) {
+    if (!current || current.paused || !document.hasFocus()) return false;
+    return current.editing ? !current.composing && document.activeElement === current.host
+      && current.shadow.activeElement === current.editor
+      : ["ValidTranslation", "EditedTranslationPending"].includes(current.state)
+        && sourceGlossarySupported(current.field) && current.field.ime === "Clear" && focused(current.field);
+  }
   function glossaryControl(form, control) {
     return !!form && [form.source, form.target, form.scope, form.save, form.cancel].includes(control);
   }
   function glossaryCurrent(form = overlay?.glossary) {
-    return !!form && overlay?.glossary === form && overlay.editing && !overlay.paused
+    return !!form && overlay?.glossary === form && overlay.field === form.field && !overlay.paused
+      && (form.entry.sourceOrigin === true
+        ? !overlay.editing && overlay.state === form.state && sourceGlossarySupported(form.field) : overlay.editing)
       && overlay.revision === form.revision && overlay.generation === form.generation
       && JSON.stringify(overlay.viewToken) === form.tokenKey && liveDeadline(overlay)
       && sessionCurrent(form.generation) && form.box.isConnected;
@@ -1180,6 +1220,40 @@
     ui("sessionGlossaryFocus", focus);
     return focus;
   }
+  function observeGlossaryTransfer(event, kind) {
+    const transfer = glossaryTransfer;
+    if (!transfer) return;
+    const {origin, destinationTarget} = transfer;
+    const expected = transfer.events === 0
+      ? kind === "focusout" && event.target === origin && event.relatedTarget === destinationTarget
+      : transfer.events === 1 && kind === "focusin" && event.target === destinationTarget && event.relatedTarget === origin;
+    if (!event.isTrusted || !expected) transfer.valid = false;
+    transfer.events++;
+  }
+  function focusGlossaryControl(form, destination, phase) {
+    const current = overlay;
+    if (glossaryTransfer || !glossaryCurrent(form)) return false;
+    const opening = phase === "Opening";
+    const transfer = {form, phase, origin: opening ? form.field.element : current.host,
+      destinationTarget: opening ? current.host : form.field.element,
+      messages: [], events: 0, sourceEvent: null, buffering: true, valid: true};
+    // This buffer exists only within the synchronous owned focus() stack. It
+    // preserves event order while waiting for the real destination to be known.
+    glossaryTransfer = transfer;
+    let verified = false;
+    try {
+      destination.focus({preventScroll: true});
+      verified = transfer.valid && transfer.buffering && transfer.events === 2 && !!transfer.sourceEvent
+        && glossaryCurrent(form) && document.hasFocus() && document.visibilityState === "visible"
+        && (opening ? document.activeElement === current.host && current.shadow.activeElement === destination
+          : focused(form.field));
+      if (verified) transfer.sourceEvent.glossaryTransfer = {formId: form.entry.formId, token: form.entry.token, phase};
+    } finally {
+      glossaryTransfer = null;
+      for (const message of transfer.messages) if (alive) port.postMessage(message);
+    }
+    return verified;
+  }
   function closeGlossary(restore = true, notify = true) {
     const current = overlay, form = current?.glossary;
     if (!form) return;
@@ -1189,7 +1263,7 @@
     // The real editor focus event must precede Close/aux-loss. No timeout or
     // temporary family claim substitutes for a successful DOM focus change.
     form.restoring = resume;
-    if (resume) current.editor.focus({preventScroll: true});
+    if (resume) (form.entry.sourceOrigin === true ? form.field.element : current.editor).focus({preventScroll: true});
     form.restoring = false;
     if (notify) ui("sessionGlossaryClose", form.entry.formId);
     ui("sessionGlossaryFocus", null);
@@ -1202,9 +1276,10 @@
     if (!current || !overlayCurrent(data) || !opening || opening.revision !== current.revision
       || opening.generation !== current.generation || opening.tokenKey !== JSON.stringify(current.viewToken)) return false;
     current.glossaryOpening = null;
-    if (current.glossary || !current.editing || current.composing || current.paused
+    if (current.glossary || !glossaryOriginReady(current) || opening.field !== current.field
+      || opening.sourceOrigin !== (entry?.sourceOrigin === true)
+      || entry?.sourceOrigin !== undefined && typeof entry.sourceOrigin !== "boolean"
       || !current.translationActions?.glossaryReleased
-      || !document.hasFocus() || document.activeElement !== current.host || current.shadow.activeElement !== current.editor
       || typeof entry?.formId !== "string" || !/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(entry.formId)
       || !Number.isSafeInteger(entry.settingsRevision) || entry.settingsRevision < 0
       || tokenKey !== JSON.stringify(current.viewToken) || !Array.isArray(entry.directions)
@@ -1222,7 +1297,7 @@
     entry.directions.forEach((direction, index) => scope.append(new Option(`${direction.sourceName} → ${direction.targetName}`, String(index))));
     const save = document.createElement("button"), cancel = document.createElement("button"), status = document.createElement("span");
     save.textContent = "保存"; cancel.textContent = "取消"; status.setAttribute("role", "status");
-    const form = {entry, tokenKey, generation: current.generation, revision: current.revision,
+    const form = {entry, tokenKey, field: current.field, state: current.state, generation: current.generation, revision: current.revision,
       box, source, target, scope, save, cancel, status, pending: false, states: new Map([[source, "Unknown"], [target, "Unknown"]])};
     for (const field of [source, target]) {
       for (const kind of ["compositionstart", "compositionupdate", "compositionend", "beforeinput", "input"]) {
@@ -1241,7 +1316,7 @@
       control.addEventListener("blur", event => {
         retireEditorControl();
         if (!glossaryControl(form, event.relatedTarget)) {
-          if (form.restoring && event.relatedTarget === current.editor) return;
+          if (form.restoring && event.relatedTarget === (entry.sourceOrigin === true ? form.field.element : current.editor)) return;
           ui("sessionGlossaryFocus", null);
           if (event.relatedTarget !== current.editor) ui("focus", false);
         }
@@ -1256,16 +1331,38 @@
       if (scope.value !== "" && !direction) return;
       save.focus({preventScroll: true});
       if (!glossaryCurrent(form) || current.shadow.activeElement !== save || publishGlossaryFocus()?.ime !== "Clear") return;
-      form.pending = true; source.readOnly = target.readOnly = true; scope.disabled = true;
+      form.returned = false; form.pending = true; source.readOnly = target.readOnly = true; scope.disabled = true;
       save.setAttribute("aria-disabled", "true"); status.textContent = "正在保存…";
       ui("sessionGlossaryAdd", {formId: entry.formId, token: entry.token, settingsRevision: entry.settingsRevision,
         rule: {sourceTerm: source.value, targetTerm: target.value,
           sourceLanguage: direction?.source ?? null, targetLanguage: direction?.target ?? null}});
     });
     box.append(source, target, scope, save, cancel, status);
-    retireEditorControl(); current.glossary = form; current.panel.append(box); source.focus({preventScroll: true});
+    retireOrdered(); retireEditorControl(); publication = shortcut = null;
+    current.glossary = form; current.panel.append(box);
+    const transferred = entry.sourceOrigin === true ? focusGlossaryControl(form, source, "Opening")
+      : (source.focus({preventScroll: true}), true);
     publishGlossaryFocus(); position();
-    return glossaryFocus() !== null;
+    return transferred && glossaryFocus() !== null;
+  }
+  function returnGlossary(data) {
+    const current = overlay, form = current?.glossary;
+    const result = {formId: data.formId, token: data.token, returned: false};
+    drainMutations();
+    if (!glossaryCurrent(form) || !overlayCurrent(data) || form.entry.sourceOrigin !== true
+      || data.target !== form.field.id || data.formId !== form.entry.formId
+      || JSON.stringify(data.token) !== form.tokenKey || !form.pending || form.returned
+      || glossaryFocus()?.ime !== "Clear") return result;
+    retireOrdered(); retireEditorControl(); publication = shortcut = null;
+    form.restoring = true;
+    let transferred;
+    try { transferred = focusGlossaryControl(form, form.field.element, "Returning"); }
+    finally { form.restoring = false; }
+    const returned = transferred && glossaryCurrent(form) && focused(form.field);
+    form.returned = returned;
+    publishGlossaryFocus();
+    if (returned) ui("focus", false);
+    return {...result, returned};
   }
   function glossaryResult(data) {
     const current = overlay, form = current?.glossary;
@@ -1505,7 +1602,9 @@
           && approved(field, data.authority)
           // Editing may renew the clock with a fresh metadata-only host proof.
           // Existing source permits and pressed-key tickets keep their copied deadlines.
-          && (data.metadataOnly !== true || ["native", "source-local"].includes(shortcutDispatch()) && overlay.editing && !overlay.paused
+          && (data.metadataOnly !== true || ["native", "source-local"].includes(shortcutDispatch())
+            && (overlay.editing || overlay.glossary?.entry.sourceOrigin === true && glossaryCurrent() && glossaryFocus() !== null)
+            && !overlay.paused
             && data.target === field.id && overlay.revision === data.revision && document.hasFocus()
             && field.ime === "Clear" && field.content === data.authority.contentRevision
             && field.input === data.authority.inputRevision && field.focus === data.authority.focusRevision
@@ -1522,6 +1621,7 @@
         } else hide();
         return null;
       case "overlay-glossary-open": return {opened: openGlossary(data)};
+      case "overlay-glossary-return": return returnGlossary(data);
       case "overlay-glossary-result": glossaryResult(data); return null;
       case "overlay-glossary-close":
         if (overlayCurrent(data) && data.formId === overlay?.glossary?.entry.formId) closeGlossary(false, false);
@@ -1591,11 +1691,13 @@
     if (document.hidden) { retireCommandOwner(); retireOrdered(); publication = shortcut = null; hide(); }
   });
   window.addEventListener("focusin", event => {
+    observeGlossaryTransfer(event, "focusin");
     const field = fieldFor(event.target);
     if (field) changed(field, false, true);
     reportFocus();
   }, true);
   window.addEventListener("focusout", event => {
+    observeGlossaryTransfer(event, "focusout");
     const field = fields.get(event.target);
     if (field) changed(field, false, true);
   }, true);

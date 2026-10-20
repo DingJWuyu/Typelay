@@ -8,6 +8,52 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src/linux/desktop"))
 from desktop_e2e import settings_viewport_from_pane  # noqa: E402
 from gtk_session_reentry import click_point, parent_geometry_ready, validated_geometry  # noqa: E402
+from hy_package_e2e import package_scroll_value, rectangle_contains  # noqa: E402
+
+
+class PackageControlScrollTests(unittest.TestCase):
+    def test_clipped_package_card_uses_only_the_observed_bottom_overflow(self):
+        self.assertEqual(
+            package_scroll_value(0, 0, 625, (238, 672, 368, 165), (202, 130, 440, 661)),
+            46,
+        )
+
+    def test_upper_clipping_scrolls_back_without_moving_an_already_visible_card(self):
+        viewport = (202, 130, 440, 661)
+        self.assertEqual(package_scroll_value(120, 0, 625, (238, 84, 368, 165), viewport), 74)
+        self.assertEqual(package_scroll_value(120, 0, 625, (238, 200, 368, 165), viewport), 120)
+
+    def test_one_scroll_is_clamped_but_never_claims_the_button_is_visible(self):
+        card, viewport = (238, 672, 368, 165), (202, 130, 440, 661)
+        self.assertEqual(package_scroll_value(600, 0, 625, card, viewport), 625)
+        self.assertFalse(rectangle_contains(viewport, card))
+        self.assertFalse(rectangle_contains(viewport, (238, 778, 122, 34)))
+        self.assertFalse(rectangle_contains(viewport, (-(2**31), -(2**31), 122, 34)))
+        self.assertTrue(rectangle_contains(viewport, (238, 757, 122, 34)))
+
+    def test_unknown_ranges_or_bounds_cannot_authorize_a_scroll(self):
+        card, viewport = (238, 672, 368, 165), (202, 130, 440, 661)
+        for values in (
+            (float("nan"), 0, 625),
+            (0, 0, float("inf")),
+            (0, float("-inf"), 625),
+            (0, 1, 625),
+            (626, 0, 625),
+            (False, 0, 625),
+        ):
+            with self.subTest(values=values), self.assertRaises(AssertionError):
+                package_scroll_value(*values, card, viewport)
+        for unknown in (None, (0, 0, 1), (-(2**31), 130, 440, 661), (202, 130, 0, 661)):
+            with self.subTest(bounds=unknown), self.assertRaises(AssertionError):
+                package_scroll_value(0, 0, 625, unknown, viewport)
+            with self.subTest(clip=unknown), self.assertRaises(AssertionError):
+                package_scroll_value(0, 0, 625, card, unknown)
+
+    def test_vertical_scroll_cannot_rescue_horizontal_or_oversized_clipping(self):
+        viewport = (202, 130, 440, 661)
+        for card in ((201, 672, 368, 165), (275, 672, 368, 165), (238, 130, 368, 662)):
+            with self.subTest(card=card), self.assertRaises(AssertionError):
+                package_scroll_value(0, 0, 625, card, viewport)
 
 
 class GtkReentryGeometryTests(unittest.TestCase):

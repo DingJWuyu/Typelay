@@ -300,10 +300,63 @@ static void send_frame(JsonObject *object) {
         g_io_channel_unref(channel);
     }
 }
+/* Only a synchronous source/auxiliary focus call may hold these few original
+ * input events. Any other event fails and flushes first, preserving wire order. */
+typedef struct {
+    Target *target;
+    JsonObject *marker, *frames[8];
+    guint count;
+    gboolean failed;
+} GlossaryEvents;
+static GlossaryEvents *glossary_events;
+static void glossary_flush(GlossaryEvents *events, gboolean marked) {
+    guint count = events->count;
+    JsonObject *frames[G_N_ELEMENTS(events->frames)];
+    memcpy(frames, events->frames, sizeof frames);
+    events->count = 0;
+    for (guint index = 0; index < count; index++) {
+        if (marked) {
+            JsonObject *marker = tl_copy(events->marker);
+            json_object_set_int_member(marker, "ordinal", index + 1);
+            json_object_set_int_member(marker, "count", count);
+            json_object_set_object_member(tl_object(frames[index], "data"), "glossaryTransfer", marker);
+        }
+        send_frame(frames[index]);
+    }
+}
+gboolean tl_glossary_transfer_begin(Target *target, JsonObject *identity, const char *phase) {
+    if (glossary_events || !target || target->dead || connection < 0) return FALSE;
+    glossary_events = g_new0(GlossaryEvents, 1);
+    glossary_events->target = target;
+    glossary_events->marker = tl_copy(identity);
+    json_object_set_string_member(glossary_events->marker, "phase", phase);
+    return TRUE;
+}
+gboolean tl_glossary_transfer_end(gboolean valid) {
+    GlossaryEvents *events = glossary_events;
+    if (!events) return FALSE;
+    glossary_events = NULL;
+    valid = valid && !events->failed && events->count > 0;
+    glossary_flush(events, valid);
+    json_object_unref(events->marker);
+    g_free(events);
+    return valid;
+}
 void tl_send_event(const char *event, JsonObject *data) {
     JsonObject *frame = json_object_new();
     json_object_set_string_member(frame, "event", event);
     json_object_set_object_member(frame, "data", data);
+    GlossaryEvents *events = glossary_events;
+    if (events && !events->failed) {
+        if (strcmp(event, "input") == 0 && events->count < G_N_ELEMENTS(events->frames)
+            && g_strcmp0(tl_string(data, "target"), events->target->id) == 0
+            && boolean(data, "focusChanged") && !boolean(data, "textChanged")) {
+            events->frames[events->count++] = frame;
+            return;
+        }
+        events->failed = TRUE;
+        glossary_flush(events, FALSE);
+    }
     send_frame(frame);
 }
 void tl_invalidate(Target *target, gboolean text_changed, gboolean focus_changed) {
@@ -380,7 +433,7 @@ static void capture_response(gint64 id, JsonObject *data, const CaptureFailure *
 }
 typedef struct {
     Target *target;
-    JsonObject *basis, *practice;
+    JsonObject *basis, *practice, *glossary;
     gint64 id, until;
     guint64 connection, generation, focus_revision;
 } PendingReturn;
@@ -388,6 +441,7 @@ static void free_return(gpointer data) {
     PendingReturn *pending = data;
     json_object_unref(pending->basis);
     if (pending->practice) json_object_unref(pending->practice);
+    if (pending->glossary) json_object_unref(pending->glossary);
     g_free(pending);
 }
 static gboolean private_return_identity(PendingReturn *pending) {
@@ -416,6 +470,14 @@ static gboolean private_return_observed(PendingReturn *pending, gboolean ready, 
 static JsonObject *return_reply(PendingReturn *pending, gboolean ready, gint64 observed_at,
         const char *phase, gboolean same) {
     JsonObject *reply = json_object_new();
+    if (pending->glossary) {
+        ready = ready && connection >= 0 && pending->connection == connection_generation
+            && pending->generation == return_generation && tl_now() <= pending->until
+            && tl_now() >= observed_at && tl_now() - observed_at <= 150
+            && tl_overlay_glossary_return(pending->target, pending->glossary, FALSE, TRUE);
+        json_object_set_string_member(reply, "formId", tl_string(pending->glossary, "formId"));
+        json_object_set_object_member(reply, "token", tl_copy(tl_object(pending->glossary, "token")));
+    }
     json_object_set_boolean_member(reply, "returned", ready);
     if (ready && pending->practice && private_return_current(pending)
         && tl_now() >= observed_at && tl_now() - observed_at <= 150 && tl_now() <= pending->until) {
@@ -442,6 +504,7 @@ static gboolean await_return(gpointer data) {
     gint64 observed_at = tl_now();
     gboolean same = pending->generation == return_generation && !pending->target->dead
         && (!pending->practice || private_return_identity(pending))
+        && (!pending->glossary || tl_overlay_glossary_return(pending->target, pending->glossary, FALSE, FALSE))
         && tl_focused() == pending->target && tl_metadata_matches(pending->target, pending->basis)
         && (gint64)pending->target->content_revision == tl_integer(pending->basis, "contentRevision", -1)
         && (gint64)pending->target->input_revision == tl_integer(pending->basis, "inputRevision", -1);
@@ -449,6 +512,11 @@ static gboolean await_return(gpointer data) {
     // Metadata/IME calls can dispatch callbacks. Establish F2 only once, after Ready.
     if (pending->practice)
         same = same && private_return_observed(pending, ready, observed_at);
+    if (pending->glossary)
+        same = same && connection >= 0 && pending->connection == connection_generation
+            && pending->generation == return_generation
+            && tl_overlay_glossary_return(pending->target, pending->glossary, FALSE, FALSE);
+    if (pending->glossary) ready = ready && tl_now() <= pending->until;
     ready = ready && same;
     if (!ready && same && tl_now() < pending->until) return G_SOURCE_CONTINUE;
     respond(pending->id, return_reply(pending, ready, observed_at,
@@ -783,7 +851,28 @@ static void command(JsonObject *frame) {
     if (!operation) { disconnect_peer(); return; }
     const char *target_id = tl_string(data, "target");
     Target *target = target_id ? tl_lookup(target_id) : tl_focused();
-    if (g_str_has_prefix(operation, "overlay-")) respond(id, tl_overlay_command(operation, target, data));
+    if (strcmp(operation, "overlay-glossary-return") == 0) {
+        guint64 generation = ++return_generation, owner = connection_generation;
+        JsonObject *basis = tl_overlay_glossary_return_basis(target, data);
+        if (!basis) { respond(id, NULL); return; }
+        PendingReturn state = {.target = target, .basis = basis, .glossary = data, .id = id,
+            .until = tl_now() + 450, .connection = owner, .generation = generation};
+        gboolean focused = tl_overlay_glossary_return(target, data, TRUE, FALSE);
+        gint64 observed_at = tl_now();
+        gboolean ready = focused && tl_return_ready(target, basis);
+        gboolean same = focused && owner == connection_generation && generation == return_generation
+            && tl_overlay_glossary_return(target, data, FALSE, FALSE);
+        ready = ready && same && tl_now() <= state.until;
+        if (same && !ready && tl_now() < state.until) {
+            PendingReturn *pending = g_new0(PendingReturn, 1);
+            *pending = state;
+            pending->glossary = tl_copy(data);
+            g_timeout_add_full(G_PRIORITY_DEFAULT, 10, await_return, pending, free_return);
+            return;
+        }
+        respond(id, return_reply(&state, ready, observed_at, "glossary", same));
+        json_object_unref(basis);
+    } else if (g_str_has_prefix(operation, "overlay-")) respond(id, tl_overlay_command(operation, target, data));
     else if (strcmp(operation, "describe") == 0) {
         JsonObject *description = tl_describe(target);
         if (description) json_object_set_object_member(description, "publication", publication_state(target));
