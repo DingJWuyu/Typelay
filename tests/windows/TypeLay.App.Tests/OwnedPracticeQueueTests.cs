@@ -1394,9 +1394,36 @@ public sealed class OwnedPracticeQueueTests(WpfDesktopFixture desktop)
         public async Task Focus(long afterRevision = 0)
         {
             await FocusSource();
-            await Wait(() => N.Focused() == (Root, Field) && Descriptor is not null
-                && Descriptor.BeginSequence == _sequence && Descriptor.NativeFocusRevision > afterRevision
-                && (long)N.GetProp(Field, "TypeLay.OwnedFocusRevision.v1") == Descriptor.NativeFocusRevision);
+            try
+            {
+                await Wait(() => N.Focused() == (Root, Field) && Descriptor is not null
+                    && Descriptor.BeginSequence == _sequence && Descriptor.NativeFocusRevision > afterRevision
+                    && (long)N.GetProp(Field, "TypeLay.OwnedFocusRevision.v1") == Descriptor.NativeFocusRevision);
+            }
+            catch (OperationCanceledException error)
+            {
+                // Observe only after failure. Never refresh a descriptor, pump
+                // native input, or alter the original focus/revision oracle.
+                string evidence;
+                try
+                {
+                    var messages = Messages.TakeLast(16).Select(message =>
+                        $"{message.Kind}:runMatches={message.Run == _run}:sequence={message.Sequence}"
+                        + $":focusRevision={message.Acceptance?.Descriptor?.NativeFocusRevision}");
+                    evidence = $"focused={N.Focused() == (Root, Field)}; "
+                        + $"foregroundMatches={Native.GetForegroundWindow() == Root}; afterRevision={afterRevision}; "
+                        + $"descriptorRevision={Descriptor?.NativeFocusRevision}; descriptorSequence={Descriptor?.BeginSequence}; "
+                        + $"sequence={_sequence}; nativeRevision={(long)N.GetProp(Field, "TypeLay.OwnedFocusRevision.v1")}; "
+                        + $"witnessFailed={Messages.Any(message => message.Kind == "witness-failed" && message.Run == _run)}; "
+                        + $"pipeError={_pipeError?.GetType().Name}; childExited={_child!.Process.HasExited}; "
+                        + $"messages=[{string.Join(" | ", messages)}]";
+                }
+                catch (Exception observationError)
+                {
+                    evidence = "observationError=" + observationError.GetType().Name;
+                }
+                throw new InvalidOperationException("Owned source focus publication did not converge: " + evidence, error);
+            }
             _hook.SetOwnedChannel(_connection, _writer!, Descriptor);
         }
         public async Task Install(bool expectAcknowledgement = true)

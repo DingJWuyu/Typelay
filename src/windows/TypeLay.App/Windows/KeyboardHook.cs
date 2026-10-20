@@ -551,10 +551,14 @@ internal sealed partial class KeyboardHook : IInputMonitor
 
     private bool Modified => _keys[0x10] || _keys[0x11] || _keys[0x12] || _keys[0xA0] || _keys[0xA1]
         || _keys[0xA2] || _keys[0xA3] || _keys[0xA4] || _keys[0xA5] || _keys[0x5B] || _keys[0x5C];
+    private sealed record DeferredWake(TargetId Target, nint RootHwnd, Guid Generation,
+        long Sequence, long TriggeredAtMs, long ForegroundEpoch, long WindowEpoch);
     private nint OnKey(int code, nint wParam, nint lParam)
     {
         if (code < 0)
             return Native.CallNextHookEx(_hook, code, wParam, lParam);
+        DeferredWake? wake = null;
+        bool completed = false;
         try
         {
             Interlocked.Increment(ref _editorInputSequence);
@@ -571,7 +575,7 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 _commandConsumed[data.Key] = false;
             if (down && !IsModifier(data.Key))
             {
-                commandConsumed = TryInvokeShortcut(data.Key, repeated, injected);
+                commandConsumed = TryInvokeShortcut(data.Key, repeated, injected, out wake);
                 Interlocked.Increment(ref _contentEpoch);
             }
             var binding = Volatile.Read(ref _lease);
@@ -636,10 +640,25 @@ internal sealed partial class KeyboardHook : IInputMonitor
                 if (Native.GetForegroundWindow() != _editorHwnd)
                     Interlocked.Increment(ref _sourceUserEpoch);
             }
+            completed = true;
             return commandConsumed ? 1 : Native.CallNextHookEx(_hook, code, wParam, lParam);
         }
         finally
         {
+            if (wake is not null)
+            {
+                bool current = completed && wake.Generation == CommandGeneration
+                    && wake.ForegroundEpoch == ForegroundEpoch && wake.WindowEpoch == WindowEpoch
+                    && Native.GetForegroundWindow() == wake.RootHwnd;
+                _notices.Enqueue(new("wake", AcceptedAtMs: wake.TriggeredAtMs,
+                    CommandGeneration: wake.Generation, CommandSequence: wake.Sequence,
+                    Rejection: current ? Denial.None : Denial.NotSourceFocus,
+                    WakeCapture: current ? new(wake.Target, wake.TriggeredAtMs, UserEpoch,
+                        SourceUserEpoch, ForegroundEpoch, WindowEpoch, ContentEpoch) : null));
+                QueueShortcutTrace("key", current ? "wake-capture-intent-enqueued" : "wake-capture-intent-invalid",
+                    action: "wake", evaluatedAtMs: wake.TriggeredAtMs,
+                    commandGeneration: wake.Generation, commandSequence: wake.Sequence);
+            }
             ObserveCommandRelease();
         }
     }
@@ -650,8 +669,9 @@ internal sealed partial class KeyboardHook : IInputMonitor
         | (_keys[0x12] || _keys[0xA4] || _keys[0xA5] ? ShortcutModifiers.Alt : ShortcutModifiers.None)
         | (_keys[0x10] || _keys[0xA0] || _keys[0xA1] ? ShortcutModifiers.Shift : ShortcutModifiers.None)
         | (_keys[0x5B] || _keys[0x5C] ? (ShortcutModifiers)8 : ShortcutModifiers.None);
-    private bool TryInvokeShortcut(uint key, bool repeated, bool injected)
+    private bool TryInvokeShortcut(uint key, bool repeated, bool injected, out DeferredWake? wake)
     {
+        wake = null;
         if (key < 256 && _commandConsumed[key])
             return true;
         if (!_nativeCommandsEnabled)
@@ -702,7 +722,8 @@ internal sealed partial class KeyboardHook : IInputMonitor
             Reject(Denial.StaleObservation, "no-lease");
             return true;
         }
-        if (lease.ContentEpoch != contentEpoch)
+        bool freshWake = command.Action == "wake" && lease.ContentEpoch < contentEpoch;
+        if (lease.ContentEpoch != contentEpoch && !freshWake)
         {
             Reject(Denial.EpochChanged, "content-epoch");
             return true;
@@ -732,6 +753,17 @@ internal sealed partial class KeyboardHook : IInputMonitor
         if (lease.Source.Ime != ImeState.Clear && !previewWake)
         {
             Reject(Denial.ImeUnclear, "ime");
+            return true;
+        }
+        if (freshWake)
+        {
+            if (nativeLease!.DiagnosticGeneration != configuration.Generation)
+            {
+                Reject(Denial.StaleObservation, "generation");
+                return true;
+            }
+            wake = new(lease.Source.Target, nativeLease.RootHwnd, configuration.Generation, sequence,
+                now, foregroundEpoch, WindowEpoch);
             return true;
         }
         _notices.Enqueue(new(command.Action, AcceptedAtMs: now, ForegroundEpoch: foregroundEpoch, Source: lease.Source,

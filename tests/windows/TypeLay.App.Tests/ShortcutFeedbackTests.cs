@@ -99,6 +99,59 @@ public sealed class ShortcutFeedbackTests
             Assert.Equal("direct", direct!.Kind);
             Assert.Equal(Denial.None, direct.Rejection);
             Assert.Equal("captured-editor", direct.Application);
+            hook.PublishShortcut(new(source with
+            {
+                Ime = ImeState.Clear,
+                ObservedAtMs = WindowsInterruptClock.NowMs
+            }, hook.ContentEpoch - 1, hook.ForegroundEpoch));
+            Keys(0x11, 0x10, 0x86);
+            InputNotice? freshWake = null;
+            await Until(() => freshWake is not null || hook.TryRead(out freshWake), deadline.Token);
+            Assert.Equal("wake", freshWake!.Kind);
+            Assert.Equal(Denial.None, freshWake.Rejection);
+            Assert.Null(freshWake.Source);
+            Assert.Null(freshWake.Permit);
+            Assert.Null(freshWake.CommandCapture);
+            Assert.Null(freshWake.Application);
+            var intent = Assert.IsType<WakeCaptureIntent>(freshWake.WakeCapture);
+            Assert.Equal(source.Target, intent.Target);
+            Assert.Equal(freshWake.AcceptedAtMs, intent.TriggeredAtMs);
+            Assert.Equal(hook.ContentEpoch, intent.ContentEpoch);
+            Assert.Equal(hook.UserEpoch, intent.UserEpoch);
+            Assert.Equal(hook.SourceUserEpoch, intent.SourceUserEpoch);
+            Assert.Equal(hook.ForegroundEpoch, intent.ForegroundEpoch);
+            Assert.Equal(hook.WindowEpoch, intent.WindowEpoch);
+            hook.PublishShortcut(new(source with
+            {
+                Ime = ImeState.Clear,
+                ObservedAtMs = WindowsInterruptClock.NowMs
+            }, hook.ContentEpoch - 1, hook.ForegroundEpoch));
+            Keys(0x11, 0x10, 0x87);
+            InputNotice? changedDirect = null;
+            await Until(() => changedDirect is not null || hook.TryRead(out changedDirect), deadline.Token);
+            Assert.Equal(Denial.EpochChanged, changedDirect!.Rejection);
+            Assert.Null(changedDirect.Source);
+            Assert.Null(changedDirect.WakeCapture);
+            hook.PublishShortcut(new(source with
+            {
+                ObservedAtMs = WindowsInterruptClock.NowMs - Limits.ObservationMaxAgeMs - 1
+            }, hook.ContentEpoch - 1, hook.ForegroundEpoch));
+            Keys(0x11, 0x10, 0x86);
+            InputNotice? staleWake = null;
+            await Until(() => staleWake is not null || hook.TryRead(out staleWake), deadline.Token);
+            Assert.Equal(Denial.StaleObservation, staleWake!.Rejection);
+            Assert.Null(staleWake.Source);
+            Assert.Null(staleWake.WakeCapture);
+            hook.PublishShortcut(new(source with
+            {
+                ObservedAtMs = WindowsInterruptClock.NowMs
+            }, hook.ContentEpoch + 1, hook.ForegroundEpoch));
+            Keys(0x11, 0x10, 0x86);
+            InputNotice? futureEpoch = null;
+            await Until(() => futureEpoch is not null || hook.TryRead(out futureEpoch), deadline.Token);
+            Assert.Equal(Denial.EpochChanged, futureEpoch!.Rejection);
+            Assert.Null(futureEpoch.Source);
+            Assert.Null(futureEpoch.WakeCapture);
             Assert.Equal("Do not change this text", N.ReadText(field, Limits.MaxTextUnits));
             Assert.Equal(((nint)host.RootHwnd, field), N.Focused());
             Assert.Equal(0, (long)N.Send((nint)host.RootHwnd, N.FixtureSubmitCount));

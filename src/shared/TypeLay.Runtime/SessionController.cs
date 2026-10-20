@@ -13,7 +13,7 @@ public sealed partial class SessionController : IDisposable
     private readonly TranslationActivation _activation;
     // Only identifies an explicit wake awaiting its first source observation; no text or permission.
     private sealed record PendingWakeCapture(TargetId Target, long Generation, long FeedbackRevision,
-        Guid CommandGeneration, long CommandSequence);
+        Guid CommandGeneration, long CommandSequence, WakeCaptureIntent? Intent = null, long ConfigurationRevision = 0);
     private PendingWakeCapture? _pendingWakeCapture;
     private OnDemandPracticeProgress? _practiceWakeCommand, _pendingDirectPractice;
     private Guid _lastRetiredPracticeRun;
@@ -345,6 +345,11 @@ public sealed partial class SessionController : IDisposable
             RejectShortcut(notice.Kind, notice.Rejection);
             return;
         }
+        if (notice.WakeCapture is not null)
+        {
+            RequestWakeCapture(notice);
+            return;
+        }
         if (notice.Source is null)
         {
             RejectShortcut(notice.Kind, Denial.Unsupported);
@@ -416,7 +421,9 @@ public sealed partial class SessionController : IDisposable
         }
         if (!_broker.Available && !_startingBroker && now >= _retryBrokerAt)
             _ = StartBroker();
-        if (_pendingWakeCapture is { } wake && _hook.GetFocus(wake.Target) == FocusMember.Other)
+        if (_pendingWakeCapture is { Intent: not null } freshWake && !WakeCaptureCurrent(freshWake))
+            FailWakeCapture(freshWake);
+        else if (_pendingWakeCapture is { } wake && _hook.GetFocus(wake.Target) == FocusMember.Other)
             _pendingWakeCapture = null;
         if (_session.Current is { } current)
         {
@@ -518,7 +525,8 @@ public sealed partial class SessionController : IDisposable
             _nextCapture = now + 35;
             _ = Capture();
         }
-        if (!_translationRunning && !_directRunning && _pendingDirect is null && !_model.Busy && _model.Ready && !_writing)
+        if (_pendingWakeCapture?.Intent is null && !_translationRunning && !_directRunning && _pendingDirect is null
+            && !_model.Busy && _model.Ready && !_writing)
         {
             var job = _session.TakeTranslationJob(now);
             // A manual seed can retain a dormant style while newly saved rules
@@ -673,6 +681,7 @@ public sealed partial class SessionController : IDisposable
         long contentEpoch = _hook.ContentEpoch;
         long sourceGlossaryReadRevision = _sourceGlossaryReadRevision;
         var request = Context();
+        var freshWake = _pendingWakeCapture is { Intent: not null } intent ? intent : null;
         bool traceCapture = false;
         if (!string.IsNullOrWhiteSpace(_tracePath) && _settings.Value.Mode == WorkMode.OnDemand
             && PracticeProgress is { } practice && request.SessionShortcuts is { } configuration
@@ -694,6 +703,11 @@ public sealed partial class SessionController : IDisposable
         string captureExit = "exception";
         try
         {
+            if (freshWake is not null && !WakeCaptureCurrent(freshWake))
+            {
+                FailWakeCapture(freshWake);
+                return;
+            }
             var result = await _broker.CaptureAsync(request);
             if (traceCapture)
             {
@@ -748,6 +762,32 @@ public sealed partial class SessionController : IDisposable
             {
                 captureExit = _disposed ? "disposed" : "generation-changed";
                 return;
+            }
+            if (freshWake is not null)
+            {
+                if (!ReferenceEquals(freshWake, _pendingWakeCapture) || !WakeCaptureCurrent(freshWake)
+                    || result.Snapshot is not { } freshSource || freshSource.Target != freshWake.Target
+                    || result.Focus != FocusMember.Source || result.UserEpoch != freshWake.Intent!.UserEpoch
+                    || result.ForegroundEpoch != freshWake.Intent.ForegroundEpoch
+                    || freshSource.ObservedAtMs < freshWake.Intent.TriggeredAtMs || freshSource.ObservedAtMs > _loop.NowMs
+                    || freshSource.Access != FieldAccess.Supported
+                    || freshSource.Ime != ImeState.Clear
+                        && !(freshSource.Ime == ImeState.Unknown && freshSource.PreviewText is not null))
+                {
+                    FailWakeCapture(freshWake);
+                    captureExit = "wake-capture-invalid";
+                    return;
+                }
+                // Only this newly completed, fully rebound read may activate preview.
+                // The intent and its old shortcut lease never supply write authority.
+                if (_session.State == SessionState.NoSession)
+                    _session.LeaveFamily();
+                _activation.Wake(freshSource.Target);
+                _practiceWakeCommand = PracticeCommand(new("wake", AcceptedAtMs: freshWake.Intent!.TriggeredAtMs,
+                    Source: freshSource, CommandGeneration: freshWake.CommandGeneration,
+                    CommandSequence: freshWake.CommandSequence), false);
+                _pendingWakeCapture = null;
+                OperationStatus = null;
             }
             if (_pendingWakeCapture is { } pending && _hook.GetFocus(pending.Target) == FocusMember.Other)
                 _pendingWakeCapture = null;
@@ -892,7 +932,7 @@ public sealed partial class SessionController : IDisposable
                 ? (_session.Revision, request.SourceUserEpoch, contentEpoch, request.ForegroundEpoch, windowEpoch)
                 : default;
             var practiceBinding = AutomaticPracticeFor(snapshot.Target);
-            if (_glossaryEntry is null && inputUnchanged && result.Focus == FocusMember.Source && _model.Ready
+            if (freshWake is null && _glossaryEntry is null && inputUnchanged && result.Focus == FocusMember.Source && _model.Ready
                 && !RetiredAutomaticTarget(snapshot.Target)
                 && (_settings.Value.ExperimentalWriteback || practiceBinding is not null
                     || _sessionShortcuts is { SourceLocalAcceptanceVersion: 1 })
@@ -942,7 +982,13 @@ public sealed partial class SessionController : IDisposable
                 return;
             }
             var pendingWake = _pendingWakeCapture;
-            StopSession("capture-failed");
+            if (freshWake is not null)
+            {
+                if (!FailWakeCapture(freshWake, report: false))
+                    return;
+            }
+            else
+                StopSession("capture-failed");
             _inputReadFailed = true;
             _retryBrokerAt = _loop.NowMs + 2000;
             RefreshConnectionStatus();

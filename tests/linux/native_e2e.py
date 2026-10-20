@@ -562,6 +562,7 @@ def outer(arguments, script=None):
         "setup",
         "setup-settings",
         "setup-tutorial",
+        "ordinary-gimp",
     ):
         return run_outer(arguments, script)
     arguments.output.mkdir(parents=True, exist_ok=True)
@@ -740,6 +741,7 @@ if __name__ == "__main__":
             "setup",
             "setup-settings",
             "setup-tutorial",
+            "ordinary-gimp",
             "model-packages",
         ),
         default="all",

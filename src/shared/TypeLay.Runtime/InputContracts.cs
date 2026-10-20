@@ -14,7 +14,12 @@ public sealed record InputNotice(string Kind, AcceptancePermit? Permit = null, l
     long UserEpoch = 0, long ForegroundEpoch = 0, InputSnapshot? Source = null, Guid CommandGeneration = default,
     WriteReceipt? CompletedReceipt = null, Denial Rejection = Denial.None, long CommandSequence = 0, TargetId? Target = null, long SessionRevision = 0,
     Guid? PracticeRunId = null, Guid? PracticeConnectionId = null, CommandCaptureEvidence? CommandCapture = null,
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Application = null);
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Application = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] WakeCaptureIntent? WakeCapture = null);
+// An explicit preview-only request for a NEW read, never a source observation
+// or permission to write. Epochs are sampled after the command key itself.
+public sealed record WakeCaptureIntent(TargetId Target, long TriggeredAtMs, long UserEpoch,
+    long SourceUserEpoch, long ForegroundEpoch, long WindowEpoch, long ContentEpoch);
 // Only an explicit command's refusal, cancellation or failure is broadcast.
 // Revision identifies every command, including legacy sequence zero. Hosts may
 // use it for queued UI de-duplication; messages and codes never contain field text.

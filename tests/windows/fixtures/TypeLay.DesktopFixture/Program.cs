@@ -14,7 +14,7 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        if (args.Length == 4 && args[0] is "--verify-continuous" or "--verify-browser-cooperation")
+        if (args.Length == 4 && args[0] is "--verify-continuous" or "--verify-browser-cooperation" or "--verify-ordinary-notepad")
             return ModelConsumerFixtureOwner.Run(args);
         if (args.Length == 6 && args[0] == "--owned-model-consumer")
         {
@@ -25,6 +25,7 @@ internal static class Program
             return args[2] switch
             {
                 "--verify-continuous" => ContinuousTranslationCheck.Run(args[3], args[4], args[5]),
+                "--verify-ordinary-notepad" => HyPackageCheck.RunOrdinaryNotepad(args[3], args[4], args[5]),
                 "--verify-browser-cooperation" => BrowserCooperationCheck.Run(args[3], args[4], args[5]),
                 _ => 2
             };

@@ -203,12 +203,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $elapsed = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [long]$env:TYPELAY_WINDOWS_CHECK_START
-          $remaining = 75 * 60 - $elapsed
-          $required = 50 * 60 # prepare 10m, browser 10m, production 6m, settings 16m, cache/tail 7m, pack 1m
-          New-Item -ItemType Directory -Force artifacts/hy-results | Out-Null
-          @{ admitted = ($remaining -ge $required); elapsedSeconds = $elapsed; remainingSeconds = $remaining; requiredSeconds = $required } |
-            ConvertTo-Json | Set-Content artifacts/hy-results/admission.json -Encoding utf8
-          if ($remaining -lt $required) { throw 'Insufficient 75-minute job budget for the bounded production Hy chain.' }
+          python eng/windows/admit-package-chain.py --elapsed-seconds $elapsed --report artifacts/hy-results/admission.json
+          if ($LASTEXITCODE -ne 0) { throw 'Insufficient 75-minute job budget for the bounded ordinary-app and Hy chain.' }
           $pin = Get-Content src/shared/TypeLay.Worker/native/hy/assets.lock.json -Raw | ConvertFrom-Json
           "cache-key=typelay-hy-win-$($pin.model.sha256)-$($pin.runtime_archive.sha256)" >> $env:GITHUB_OUTPUT
       - name: Restore the fixed Hy model and CPU archive cache
@@ -249,10 +245,23 @@ jobs:
         run: |
           dotnet tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows/TypeLay.DesktopFixture.dll --verify-browser-cooperation artifacts/browser-cooperation artifacts/package/TypeLay '${{ steps.cooperative-browser-prepare.outputs.chrome }}'
           exit $LASTEXITCODE
+      - name: Verify real classic Notepad through shipped app Settings
+        id: windows-ordinary-notepad
+        if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.windows-browser.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = 'tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows'
+          foreach ($assembly in @('TypeLay.App', 'TypeLay.Runtime', 'TypeLay.Core', 'TypeLay.Protocol', 'TypeLay.Windows.Contracts')) {
+            Copy-Item -LiteralPath "artifacts/package/TypeLay/app/$assembly.dll" -Destination "$fixture/$assembly.dll" -Force
+          }
+          dotnet "$fixture/TypeLay.DesktopFixture.dll" --verify-ordinary-notepad artifacts/ordinary-notepad artifacts/package/TypeLay artifacts/continuous-translation
+          exit $LASTEXITCODE
       # All earlier model consumers have exited before this production-only chain.
       - name: Verify the shipped Hy ABI5 worker and production process owner
         id: hy-production
-        if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.windows-browser.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.windows-package.outcome == 'success' && steps.windows-ordinary-notepad.outcome == 'success' }}
         timeout-minutes: 6
         shell: pwsh
         run: |
@@ -289,6 +298,8 @@ jobs:
             artifacts/browser-cooperation/result.json
             artifacts/browser-cooperation/consumer-exit.json
             artifacts/browser-cooperation/trace*.jsonl
+            artifacts/ordinary-notepad/*.json
+            artifacts/ordinary-notepad/trace*.jsonl
             artifacts/hy-results/*.json
             artifacts/hy-results/*.stderr
             artifacts/hy-production/*.json
@@ -331,7 +342,7 @@ jobs:
       - name: Record the Linux check budget start
         run: echo "TYPELAY_LINUX_CHECK_START=$(date +%s)" >> "$GITHUB_ENV"
       - name: Install target desktop build dependencies
-        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 gtk4 at-spi2-core json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols ccache opencc procps-ng zstd qt6-base libxkbcommon libxcb
+        run: pacman -Syu --noconfirm git cmake ninja pkgconf gtk3 gtk4 gimp at-spi2-core json-glib python python-gobject libayatana-appindicator niri mesa uv grim noto-fonts-cjk curl icu openssl zlib libxkbcommon-x11 xdg-desktop-portal-gtk xorg-server-xvfb xdotool dbus chromium python-playwright firefox geckodriver code nodejs npm fcitx5 fcitx5-gtk fcitx5-chinese-addons boost libime patch fmt glib2-devel nlohmann-json expat xkeyboard-config iso-codes extra-cmake-modules gettext wayland-protocols plasma-wayland-protocols ccache opencc procps-ng zstd qt6-base libxkbcommon libxcb
       - name: Restore the fixed GTK4 package
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         id: gtk4-package-cache
@@ -508,13 +519,17 @@ jobs:
       - name: Probe original Fcitx Qt input delivery boundaries
         id: qt
         if: ${{ !cancelled() && steps.fcitx.outcome == 'success' }}
-        run: python tests/linux/qt_cooperative/run.py --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22
+        shell: bash
+        run: |
+          set -o pipefail
+          python tests/linux/qt_cooperative/run.py --fcitx-root artifacts/linux/fcitx-cooperative-5.1.22 2>&1 | tee artifacts/linux/qt-cooperative-probe.log
       - name: Preserve early Qt probe failure evidence
         if: ${{ !cancelled() && steps.qt.outcome == 'failure' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: typelay-linux-qt-probe-failure-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            artifacts/linux/qt-cooperative-probe.log
             artifacts/linux/qt-cooperative/versions.json
             artifacts/linux/qt-cooperative/result.json
             artifacts/linux/qt-cooperative/framework.log
@@ -678,6 +693,15 @@ jobs:
           export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
           export XDG_CACHE_HOME="$PWD/artifacts/linux/desktop-cache"
           python tests/linux/native_e2e.py --desktop --desktop-scope setup-tutorial --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/setup-tutorial
+      - name: Exercise ordinary GIMP comments through shipped Settings
+        if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' && steps.fcitx-package.outcome == 'success' }}
+        timeout-minutes: 6
+        run: |
+          export DISPLAY=:99
+          export XDG_CONFIG_HOME="$PWD/artifacts/linux/ordinary-gimp-config"
+          export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
+          export XDG_CACHE_HOME="$PWD/artifacts/linux/ordinary-gimp-cache"
+          python tests/linux/native_e2e.py --desktop --desktop-scope ordinary-gimp --package artifacts/linux/package --native artifacts/linux/native --output artifacts/linux/ordinary-gimp
       - name: Exercise the production desktop and real browser input
         if: ${{ needs.scope.outputs.quality_only != 'true' && needs.scope.outputs.practice != 'true' && !cancelled() && steps.models.outcome == 'success' }}
         run: |
@@ -783,12 +807,16 @@ jobs:
             artifacts/linux/gtk4-desktop/
             artifacts/linux/setup-settings/
             artifacts/linux/setup-tutorial/
+            artifacts/linux/ordinary-gimp/*.json
+            artifacts/linux/ordinary-gimp/*.png
+            artifacts/linux/ordinary-gimp/*.log
             artifacts/linux/firefox-native/
             artifacts/linux/browser-native/
             artifacts/linux/vscode/
             artifacts/linux/vscode-model/
             artifacts/linux/editor-probe/
             artifacts/linux/fcitx-probe/
+            artifacts/linux/qt-cooperative-probe.log
             artifacts/linux/qt-cooperative/*.json
             artifacts/linux/qt-cooperative/*.log
             artifacts/linux/fcitx-cooperative-5.1.22/*.json

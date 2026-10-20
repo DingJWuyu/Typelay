@@ -1116,17 +1116,40 @@ void tl_overlay_sync(void) {
         emit_boolean("focus", focused);
     }
 }
+/* Opt-in discriminator for the two real focus-driven retirements. Do not
+ * inspect text, measure widgets, dispatch events or change focus here. */
+static void trace_language_retirement(const char *reason) {
+    static guint count;
+    if (!g_getenv("TYPELAY_TRACE_GTK4_LANGUAGE_RETIRE") || count >= 2 || !overlay.popover) return;
+    count++;
+    GtkWidget *focus = overlay.top ? gtk_window_get_focus(GTK_WINDOW(overlay.top)) : NULL;
+    Target *focused_target = tl_focused();
+    gint64 now = tl_now();
+    g_printerr("TypeLay GTK4 language-retirement reason=%s atMs=%" G_GINT64_FORMAT
+        " active=%d mapped=%d menuMapped=%d focusPresent=%d focusOwned=%d"
+        " focusedSource=%d focusedOther=%d leaseRemainingMs=%" G_GINT64_FORMAT "\n",
+        reason, now, active(), gtk_widget_get_mapped(overlay.popover),
+        overlay.menu && gtk_widget_get_mapped(overlay.menu), focus != NULL, tl_overlay_contains(focus),
+        focused_target && focused_target == overlay.target,
+        focused_target && focused_target != overlay.target, overlay.expires - now);
+}
 static void focus_changed(GObject *object, GParamSpec *property, gpointer data) {
     (void)object; (void)property; (void)data;
     tl_overlay_control_cancel();
     if (overlay.top && gtk_window_get_focus(GTK_WINDOW(overlay.top)) != overlay.text) overlay.pending_glossary = FALSE;
     tl_overlay_sync();
-    if (active() && tl_focused() != overlay.target && (paused() || tl_focused())) tl_overlay_hide();
+    if (active() && tl_focused() != overlay.target && (paused() || tl_focused())) {
+        trace_language_retirement("focus");
+        tl_overlay_hide();
+    }
 }
 static void active_changed(GObject *object, GParamSpec *property, gpointer data) {
     (void)object; (void)property; (void)data;
     tl_overlay_control_cancel();
-    if (!active()) tl_overlay_hide();
+    if (!active()) {
+        trace_language_retirement("active");
+        tl_overlay_hide();
+    }
 }
 static gboolean expired(gpointer data) {
     (void)data;

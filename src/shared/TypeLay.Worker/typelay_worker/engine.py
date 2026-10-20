@@ -140,7 +140,7 @@ class Ct2Pair:
             raise EngineError("segment-too-long")
         outputs = self._model.translate_batch(
             [pieces],
-            beam_size=2,
+            beam_size=4,
             max_input_length=0,
             max_decoding_length=512,
             repetition_penalty=1.05,
@@ -158,7 +158,7 @@ class Ct2Pair:
             raise EngineError("segment-too-long")
         outputs = self._model.translate_batch(
             [pieces],
-            beam_size=2,
+            beam_size=4,
             patience=1,
             num_hypotheses=2,
             max_input_length=0,

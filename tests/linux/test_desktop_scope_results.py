@@ -68,7 +68,7 @@ class DesktopScopeResultTests(unittest.TestCase):
             self.assertEqual(set(result), {"schema", "scope", "status"})
 
     def test_each_setup_scope_records_failure_before_inside_start(self):
-        for scope in ("setup", "setup-settings", "setup-tutorial"):
+        for scope in ("setup", "setup-settings", "setup-tutorial", "ordinary-gimp"):
             with self.subTest(scope=scope):
                 self.exercise(scope, launch_error=True)
 
@@ -76,7 +76,9 @@ class DesktopScopeResultTests(unittest.TestCase):
         self.exercise("setup-settings", inside_error=True)
 
     def test_inside_receipt_does_not_override_failed_cleanup(self):
-        self.exercise("setup-tutorial", cleanup_error=True)
+        for scope in ("setup-tutorial", "ordinary-gimp"):
+            with self.subTest(scope=scope):
+                self.exercise(scope, cleanup_error=True)
 
     def test_report_write_failure_preserves_original_launch_exception(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -671,11 +671,19 @@ def run(arguments):
     subprocess.run(["xdotool", "windowfocus", "--sync", nested[0]], check=True, timeout=2)
     resources = ExitStack()
     package = arguments.package
-    if arguments.desktop_scope in ("all", "browser"):
+    if arguments.desktop_scope in ("all", "browser", "ordinary-gimp"):
         # The running desktop and native host must be the same real installed
         # release in one disposable HOME. Keep the fixture's isolated XDG model
         # data rather than downloading or copying another model.
-        home = resources.enter_context(tempfile.TemporaryDirectory(prefix="typelay-desktop-home-"))
+        # A normal third-party app can outlive the desktop. Keep its isolated
+        # profile if exit cannot be proven; never delete files beneath it.
+        home = (
+            tempfile.mkdtemp(prefix="ordinary-home-", dir=arguments.output)
+            if arguments.desktop_scope == "ordinary-gimp"
+            else resources.enter_context(
+                tempfile.TemporaryDirectory(prefix="typelay-desktop-home-")
+            )
+        )
         resources.enter_context(
             patch.dict(os.environ, {"HOME": home, "XDG_CONFIG_HOME": str(Path(home) / "config")})
         )
@@ -683,12 +691,14 @@ def run(arguments):
             [sys.executable, str(package / "install.py"), "install"], check=True, timeout=30
         )
         package = (Path(home) / ".local/lib/typelay/current").resolve(strict=True)
-    if arguments.desktop_scope in ("setup-settings", "setup-tutorial"):
+    if arguments.desktop_scope in ("setup-settings", "setup-tutorial", "ordinary-gimp"):
         # Both scopes prepare and approve their own desktop component. A fresh
         # config alone is insufficient: the component lives in XDG_DATA_HOME.
         source_data = Path(os.environ["XDG_DATA_HOME"])
         isolated_data = Path(
-            resources.enter_context(tempfile.TemporaryDirectory(prefix="typelay-setup-data-"))
+            tempfile.mkdtemp(prefix="ordinary-data-", dir=arguments.output)
+            if arguments.desktop_scope == "ordinary-gimp"
+            else resources.enter_context(tempfile.TemporaryDirectory(prefix="typelay-setup-data-"))
         )
         try:
             copy_setup_model_data(source_data, isolated_data)
@@ -698,6 +708,8 @@ def run(arguments):
         resources.enter_context(patch.dict(os.environ, {"XDG_DATA_HOME": str(isolated_data)}))
     paths = Paths(package)
     environment = dict(os.environ)
+    if arguments.desktop_scope == "ordinary-gimp":
+        environment.update(LC_ALL="C.UTF-8", LANGUAGE="en")
     trace_path = arguments.output / "controller.jsonl"
     environment["TYPELAY_TRACE"] = str(trace_path)
     process = None
@@ -714,9 +726,9 @@ def run(arguments):
         "Enabled": True,
         "Source": "en",
         "Target": "zh",
-        "OnboardingComplete": not setup_scope,
+        "OnboardingComplete": not setup_scope and arguments.desktop_scope != "ordinary-gimp",
         "ExperimentalWriteback": not setup_scope
-        and arguments.desktop_scope not in ("all", "browser"),
+        and arguments.desktop_scope not in ("all", "browser", "ordinary-gimp"),
         "Mode": 1 if setup_scope else 0,
     }
 
@@ -864,7 +876,7 @@ def run(arguments):
             evidence.append(verify_direction_installation(arguments, environment))
         send_tab = (
             prepare_tab(resources)
-            if arguments.desktop_scope in ("all", "browser", "qt", "gtk4")
+            if arguments.desktop_scope in ("all", "browser", "qt", "gtk4", "ordinary-gimp")
             else None
         )
         control_keys = (
@@ -1921,6 +1933,31 @@ def run(arguments):
                         evidence.append(
                             "GTK renderer: catalog language choices preserve menu drafts and focus"
                         )
+                        if not gtk4:
+                            for refusal in (
+                                "body",
+                                "authority",
+                                "permissions",
+                                "external-focus",
+                                "source-input",
+                            ):
+                                with tempfile.TemporaryDirectory(
+                                    prefix="tl-gtk-language-refusal-"
+                                ) as directory:
+                                    run_case(
+                                        fixture_command,
+                                        gtk_environment,
+                                        arguments.output,
+                                        None,
+                                        Path(directory),
+                                        "language-retention-" + refusal,
+                                        False,
+                                        nested[0],
+                                    )
+                            evidence.append(
+                                "GTK3 language preview: detached renewal rejects changed body, authority, "
+                                "editing permission, external focus and source input"
+                            )
                         fixture = subprocess.Popen(
                             fixture_command,
                             env=gtk_environment,
@@ -3987,6 +4024,26 @@ def run(arguments):
                             except subprocess.TimeoutExpired:
                                 child.kill()
                                 child.wait()
+        if arguments.desktop_scope == "ordinary-gimp":
+            from ordinary_gimp import run_gimp
+
+            evidence.extend(
+                run_gimp(
+                    arguments,
+                    paths,
+                    process.pid,
+                    nested_window=nested[0],
+                    wait_for=wait_for,
+                    key=key,
+                    typed=typed,
+                    ready_to_accept=ready_to_accept,
+                    status=status,
+                    trace_checkpoint=trace_checkpoint,
+                    verified_write=verified_write,
+                    new_write_outcomes=new_write_outcomes,
+                    send_tab=send_tab,
+                )
+            )
         if arguments.desktop_scope == "qt":
             from qt_desktop import run_qt
 
@@ -6937,6 +6994,13 @@ def run(arguments):
         subprocess.run(["grim", str(arguments.output / "settings.png")], check=True, timeout=3)
         stop()
         evidence.append("settings, duplicate background start and graceful desktop shutdown")
+        if arguments.desktop_scope == "ordinary-gimp":
+            ordinary_result = json.loads(
+                (arguments.output / "ordinary-gimp-result.json").read_text()
+            )
+            assert ordinary_result["status"] == "passed" and ordinary_result["cleanupConfirmed"]
+            shutil.rmtree(home)
+            shutil.rmtree(isolated_data)
         (arguments.output / "desktop-result.json").write_text(
             json.dumps(
                 {

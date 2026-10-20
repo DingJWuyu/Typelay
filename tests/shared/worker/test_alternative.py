@@ -121,7 +121,7 @@ class AlternativeTests(unittest.TestCase):
                     (
                         [["你好"]],
                         {
-                            "beam_size": 2,
+                            "beam_size": 4,
                             "patience": 1,
                             "num_hypotheses": 2,
                             "max_input_length": 0,
@@ -213,5 +213,17 @@ class AlternativeTests(unittest.TestCase):
         with controlled_engine() as (engine, calls):
             result = engine.translate("你好", "zh", "en")
             self.assertEqual((result.status, result.text), ("translated", "Hello"))
-            self.assertNotIn("num_hypotheses", calls[0][1])
-            self.assertNotIn("patience", calls[0][1])
+            self.assertEqual(
+                calls,
+                [
+                    (
+                        [["你好"]],
+                        {
+                            "beam_size": 4,
+                            "max_input_length": 0,
+                            "max_decoding_length": 512,
+                            "repetition_penalty": 1.05,
+                        },
+                    )
+                ],
+            )

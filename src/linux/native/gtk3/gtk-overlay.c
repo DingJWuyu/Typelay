@@ -1909,6 +1909,68 @@ static gboolean refresh_translation_actions(JsonObject *value, JsonObject *autho
     json_object_unref(context); json_object_unref(view);
     return current;
 }
+static gboolean language_focus_current(void) {
+    GtkWidget *focus = overlay.top ? gtk_window_get_focus(GTK_WINDOW(overlay.top)) : NULL;
+    if (!focus || !overlay.menu || !gtk_widget_get_mapped(overlay.menu)) return FALSE;
+    GtkWidget *buttons[] = {overlay.source, overlay.destination};
+    for (guint index = 0; index < G_N_ELEMENTS(buttons); index++) {
+        if (!buttons[index]) continue;
+        GtkWidget *popup = GTK_WIDGET(gtk_menu_button_get_popover(GTK_MENU_BUTTON(buttons[index])));
+        if ((focus == buttons[index] && gtk_widget_get_mapped(buttons[index]))
+            || (popup && gtk_widget_get_mapped(popup)
+                && (focus == popup || gtk_widget_is_ancestor(focus, popup)))) return TRUE;
+    }
+    return FALSE;
+}
+static gboolean retained_language_preview(Target *target, JsonObject *data) {
+    JsonObject *value = tl_object(data, "view"), *basis = tl_object(data, "authority");
+    const char *state = tl_string(overlay.view, "state");
+    if (!target || target != overlay.target || !active() || !overlay.popover || !overlay.text
+        || overlay.glossary || !gtk_widget_get_mapped(overlay.popover) || !language_focus_current()
+        || gtk_text_view_get_editable(GTK_TEXT_VIEW(overlay.text)) || tl_now() > overlay.expires
+        || g_strcmp0(overlay.generation, tl_string(data, "generation")) != 0
+        || (g_strcmp0(state, "ValidTranslation") != 0 && g_strcmp0(state, "Translating") != 0
+            && g_strcmp0(state, "EditedTranslationPending") != 0)
+        || !value || !basis || !overlay.authority || !json_object_equal(overlay.authority, basis)
+        || boolean(tl_object(overlay.view, "presentation"), "editorOwnsText")
+        || !tl_view_context_matches(target, overlay.view) || !tl_view_context_matches(target, value)) return FALSE;
+    JsonObject *previous = json_object_ref(overlay.view);
+    gboolean current = tl_preview_detached_current(target, basis)
+        && overlay.view == previous && overlay.target == target && active() && language_focus_current()
+        && overlay.popover && overlay.text && !overlay.glossary && gtk_widget_get_mapped(overlay.popover)
+        && !gtk_text_view_get_editable(GTK_TEXT_VIEW(overlay.text))
+        && tl_now() <= overlay.expires && tl_configuration_current(tl_string(data, "generation"));
+    if (current) {
+        JsonObject *old_view = tl_copy(previous), *new_view = tl_copy(value);
+        JsonObject *old_token = tl_object(tl_object(old_view, "viewContext"), "token");
+        JsonObject *new_token = tl_object(tl_object(new_view, "viewContext"), "token");
+        current = old_token && new_token && tl_integer(old_token, "revision", -1) == overlay.revision
+            && tl_integer(new_token, "revision", -1) == tl_integer(data, "revision", -2);
+        if (current) {
+            /* tl_copy retains nested objects. Copy each edited level so neither
+             * stored authority/view tokens nor the incoming request are changed. */
+            JsonObject *old_context = tl_copy(tl_object(old_view, "viewContext"));
+            JsonObject *new_context = tl_copy(tl_object(new_view, "viewContext"));
+            old_token = tl_copy(old_token); new_token = tl_copy(new_token);
+            json_object_remove_member(old_token, "revision");
+            json_object_remove_member(new_token, "revision");
+            json_object_set_object_member(old_context, "token", old_token);
+            json_object_set_object_member(new_context, "token", new_token);
+            json_object_set_object_member(old_view, "viewContext", old_context);
+            json_object_set_object_member(new_view, "viewContext", new_context);
+            const char *menu_fields[] = {"sourceLanguage", "targetLanguage", "sourceLanguageLabel",
+                "targetLanguageLabel", "languageChoices"};
+            for (guint index = 0; index < G_N_ELEMENTS(menu_fields); index++) {
+                json_object_remove_member(old_view, menu_fields[index]);
+                json_object_remove_member(new_view, menu_fields[index]);
+            }
+            current = json_object_equal(old_view, new_view);
+        }
+        json_object_unref(old_view); json_object_unref(new_view);
+    }
+    json_object_unref(previous);
+    return current;
+}
 static gboolean render(Target *target, JsonObject *data) {
     JsonObject *value = tl_object(data, "view"), *presentation = tl_object(value, "presentation");
     JsonObject *authority = tl_object(data, "authority");
@@ -1927,7 +1989,8 @@ static gboolean render(Target *target, JsonObject *data) {
     if (!target || !boolean(presentation, "visible") || !tl_metadata_matches(target, authority)
         || until < now || until - now > 1000
         || (is_paused ? !pause_current(target, authority)
-            : !retained_source_form && !retained_editor && !tl_ime_clear(target))) return FALSE;
+            : !retained_source_form && !retained_editor && !tl_ime_clear(target)
+                && !retained_language_preview(target, data))) return FALSE;
     GtkWidget *top = gtk_widget_get_toplevel(target->widget);
     if (!GTK_IS_WINDOW(top) || !gtk_window_is_active(GTK_WINDOW(top))) return FALSE;
     if (tl_focused() != target && !(!is_paused && overlay.target == target && overlay.focused)) return FALSE;

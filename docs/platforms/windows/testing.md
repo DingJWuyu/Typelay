@@ -2,6 +2,22 @@
 
 按[共享验证协议](../../engineering/testing.md)表述证据；本页只适用于 Windows，Linux 入口见其[开发与验证](../linux/development.md)。
 
+## 普通外部桌面应用验收
+
+`--verify-ordinary-notepad` 从完整发行目录启动真实 App，以当前 Windows 已安装的 `System32/notepad.exe` 和临时合成 `.txt` 文档为源。先核对原进程镜像、原生 x64 与唯一严格原生 `Edit` 控件（经典记事本的 UIA 类型可以是 Document，不与原生类名混淆）；不存在、转交其它进程、现代自绘控件或已有 Notepad 进程均失败，不回退 NativeFixture，不声称支持现代记事本或用户此前报告的四处输入框。
+
+本入口复用同一轮 `continuous-translation` 已正式准备并验证的 Argos 文件，保持库存/代次，不下载模型；真实 App 再校验并加载。仅在 `%LOCALAPPDATA%/TypeLay` 原本不存在且没有运行中的 TypeLay 时独占创建测试数据。通过实际设置确认实验性 Tab 写回及切换工作模式，依次验证无标点原文的自动预览、一次 Tab、原生撤销、编辑后第一 Tab 回源且不写、第二 Tab 精确接受、按需唤醒/取消、一次直接替换和正常退出。应用有自己的消息循环、实际 UIA/Hook 与模型；软件注入模式仍不等于物理输入法或最终安全验收。
+
+```powershell
+$fixture = 'tests/windows/fixtures/TypeLay.DesktopFixture/bin/Release/net10.0-windows'
+foreach ($assembly in @('TypeLay.App', 'TypeLay.Runtime', 'TypeLay.Core', 'TypeLay.Protocol', 'TypeLay.Windows.Contracts')) {
+  Copy-Item "artifacts/package/TypeLay/app/$assembly.dll" "$fixture/$assembly.dll" -Force
+}
+dotnet "$fixture/TypeLay.DesktopFixture.dll" --verify-ordinary-notepad artifacts/ordinary-notepad artifacts/package/TypeLay artifacts/continuous-translation
+```
+
+必须在前一个模型消费者已确认退出后串行执行。内层总预算 540 秒含 20 秒清理预留，外层既有进程 owner 最多 585 秒，CI 步骤预留 10 分钟。`result.json` 记录逐段结果、实际系统应用版本/哈希与控件类别；`consumer-exit.json` 单独证明所有自有子进程退出；失败保留 trace 和结果，未测不得计为通过。只有 source、App 及失败启动时返回的全部 owner 均证明整个进程族退出，且没有创建/观察器未知状态，才删除自有数据；正常 root 退出不授权删除。便携契约回归另验证真实 root 已退出但 family proof 失败时保留临时数据。此入口已接入 `check.yml`，但尚待 Windows 实跑。步骤位于 browser 成功退出后，Notepad 成功退出才允许 Hy production 继续；缺少经典原生 Edit 不跳过、不换成 fixture。原 Windows job 仍为 75 分钟，准备前的 admission 为完整后续链保留 60 分钟（准备 10、browser 10、Notepad 10、Hy production 6、Settings 16、缓存/上传尾部 7、打包 1）；前段超过 15 分钟即写失败 admission 并失败退出，不静默略过真实应用验收。CI 上传 `artifacts/ordinary-notepad/*.json` 与 `trace*.jsonl`，包括消费者退出证明。
+
 ## 自动化层级
 
 `dev.ps1 check` 在 Windows 验证构建、标准 xUnit 行为/契约测试、Python 行为/启动测试和格式/lint。

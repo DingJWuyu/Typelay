@@ -1306,9 +1306,19 @@ def ordered_controls(out, env, children, delay_finished=False, language_options_
 
                         if legacy:
                             save_with_term_retirement()
+                            # LineEdit source retirement invalidates evidence at
+                            # Tab; Plain has no source seal, so its first term's
+                            # retirement invalidates evidence only as Save takes
+                            # focus. Both checks refuse, at different stages.
+                            refusal = (
+                                "请先完成两个词的输入，确认输入法已结束组合后再保存。"
+                                if field == "first"
+                                else "输入法状态尚未确认，请完成输入后再保存。"
+                            )
                             observe(
-                                lambda value: value.get("glossary", {}).get("feedback")
-                                == "请先完成两个词的输入，确认输入法已结束组合后再保存。",
+                                lambda value: value.get("glossary", {}).get("feedback") == refusal
+                                and value["overlayControls"]["typelay-glossary-save"]["focused"]
+                                == (field == "plain"),
                                 "absent or invalid opt-in remains Unknown and refuses Save",
                             )
                             assert not events("sessionGlossaryAdd")

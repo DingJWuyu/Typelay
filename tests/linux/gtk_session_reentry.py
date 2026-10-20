@@ -134,6 +134,9 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
         "TYPELAY_FIXTURE_REENTRY_TEXT": replacement,
     }
     child_environment.pop("TYPELAY_FIXTURE_TWO_WINDOWS", None)
+    child_environment.pop("TYPELAY_TRACE_GTK4_LANGUAGE_RETIRE", None)
+    if stage == "language-options":
+        child_environment["TYPELAY_TRACE_GTK4_LANGUAGE_RETIRE"] = "1"
 
     if stage == "footer":
         child_environment["G_DEBUG"] = "fatal-criticals"
@@ -189,7 +192,9 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                         return {}
 
                 dimensions = None
-                if stage in ("expand", "resume-editor", "language-options"):
+                if stage in ("expand", "resume-editor", "language-options") or stage.startswith(
+                    "language-retention-"
+                ):
                     geometry = dict(
                         line.split("=", 1)
                         for line in subprocess.check_output(
@@ -239,6 +244,12 @@ def run_case(command, environment, output, send_accept, runtime, stage, change_g
                     "editorReady": False,
                 }
                 assert source["authority"]["sessionBindings"] == source["sessionBindings"]
+                if stage.startswith("language-retention-"):
+                    check_language_retention_refusal(
+                        client, source, generation, state, initial, nested, dimensions, stage
+                    )
+                    print(f"GTK read-only language preview: {stage} refused", flush=True)
+                    return
                 if stage == "language-options":
                     check_language_options(
                         client,
@@ -644,6 +655,108 @@ def check_preview_colors(client, source, generation, state, initial):
             )
         assert actual["focus"] == "fixture-first"
         assert actual["first"] == initial["first"] and actual["second"] == initial["second"]
+
+
+def check_language_retention_refusal(
+    client, source, generation, state, initial, nested, dimensions, stage
+):
+    """Exercise the real detached source and own language focus, not a fake IME."""
+    assert client.hello["backend"] == "gtk3"
+    trigger, menu, control = (
+        "typelay-menu-trigger",
+        "typelay-language-menu",
+        "typelay-source-language",
+    )
+    languages = {
+        "sourceLanguage": "en",
+        "targetLanguage": "ja",
+        "languageChoices": {
+            "source": [{"code": "en", "label": "English"}, {"code": "ja", "label": "日本語"}],
+            "target": [{"code": "en", "label": "English"}, {"code": "ja", "label": "日本語"}],
+        },
+    }
+
+    def click(name, field=False):
+        actual = state()
+        item = actual[name] if field else actual["overlayControls"][name]
+        assert item["width"] > 0 and item["height"] > 0
+        point = click_point(
+            actual, (item["x"] + item["width"] / 2, item["y"] + item["height"] / 2), dimensions
+        )
+        click_once(nested, point, {})
+
+    def controls():
+        return state().get("overlayControls", {})
+
+    def detached_menu():
+        actual = state()
+        selected = actual.get("overlayControls", {}).get(control, {})
+        return (
+            selected.get("visible")
+            and selected.get("focused")
+            and not actual["firstEntry"]["focused"]
+            and actual["firstEntry"]["ime"]["flags"] == 17  # Known | Detached, not Clear.
+            and not actual["imeClear"]
+            and actual
+        )
+
+    assert render_preview(client, source, generation, 1, "fixture exit", language_view=languages)[
+        "visible"
+    ]
+    wait_for(lambda: controls().get(trigger, {}).get("visible"), "language trigger missing")
+    click(trigger)
+    wait_for(lambda: controls().get(menu, {}).get("visible"), "language menu missing")
+    click(control)
+    wait_for(detached_menu, "source did not detach under exact language control focus")
+    # The old implementation fails here. This must not alter source IME authority.
+    assert render_preview(client, source, generation, 2, "fixture exit", language_view=languages)[
+        "visible"
+    ]
+    wait_for(detached_menu, "read-only renewal changed source/menu focus")
+    changed_source = json.loads(json.dumps(source))
+    kwargs = {}
+    expected_first = initial["first"]
+    if stage == "language-retention-body":
+        kwargs["text"] = "A different candidate cannot borrow the detached preview."
+    elif stage == "language-retention-authority":
+        changed_source["authority"]["inputRevision"] += 1
+    elif stage == "language-retention-permissions":
+        kwargs["can_edit"] = True
+    elif stage == "language-retention-external-focus":
+        click("secondEntry", field=True)
+        wait_for(lambda: state().get("focus") == "fixture-second", "external field not focused")
+    elif stage == "language-retention-source-input":
+        click("firstEntry", field=True)
+        wait_for(
+            lambda: state().get("focus") == "fixture-first" and state().get("imeClear"),
+            "source did not regain actual IME Clear",
+        )
+        key("End")
+        key("x")
+        expected_first += "x"
+        after_input = wait_for(
+            lambda: (actual := state()).get("first") == expected_first and actual,
+            "real source input not delivered",
+        )
+        assert after_input.get("candidate") and after_input.get("overlayControls", {}).get(
+            control, {}
+        ).get("visible"), (
+            "source input retired the preview before detached-retention refusal could be exercised"
+        )
+        click(control)
+        wait_for(detached_menu, "language control did not regain focus after source input")
+    else:
+        raise AssertionError(f"unknown language retention stage: {stage}")
+    result = render_preview(
+        client, changed_source, generation, 3, "fixture exit", language_view=languages, **kwargs
+    )
+    assert result == {"visible": False, "editing": False}, (stage, result)
+    final = wait_for(
+        lambda: (actual := state()) and actual.get("candidate") is None and actual,
+        "refused language renewal left a preview visible",
+    )
+    assert final["first"] == expected_first and final["second"] == initial["second"]
+    assert not any(event.get("event") == "accepted" for event in client.events)
 
 
 def check_language_options(

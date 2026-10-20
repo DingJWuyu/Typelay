@@ -252,6 +252,19 @@ static gboolean inspect_ime(Target *target) {
 gboolean tl_ime_clear(Target *target) {
     return target && !target->mutating && inspect_ime(target) && target->ime_known && !target->composing;
 }
+/* A detached source may back an unchanged, read-only menu preview. This is
+ * deliberately not IME Clear and cannot authorize capture or source writes. */
+gboolean tl_preview_detached_current(Target *target, JsonObject *basis) {
+    JsonObject *stamp = tl_object(basis, "contextStamp");
+    return target && !target->dead && !target->mutating && !target->quarantined && stamp
+        && inspect_ime(target) && target->im_state.flags == (TL_FCITX_KNOWN | TL_FCITX_DETACHED)
+        && target->im_state.server_serial == target->im_state.applied_serial
+        && (gint64)target->im_state.context_generation == tl_integer(stamp, "context", -1)
+        && (gint64)target->im_state.input_epoch == tl_integer(stamp, "input", -1)
+        && (gint64)target->content_revision == tl_integer(basis, "contentRevision", -1)
+        && (gint64)target->input_revision == tl_integer(basis, "inputRevision", -1)
+        && tl_metadata_matches(target, basis);
+}
 static gboolean validate_ime_locally(Target *target, const TlFcitxStateV1 *baseline) {
     if (!target || target->dead || target->thread != g_thread_self() || target->im_probing
         || g_main_depth() != 1 || !bind_context(target)) return FALSE;

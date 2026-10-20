@@ -6,7 +6,7 @@ using System.Text.Json;
 using Microsoft.Win32.SafeHandles;
 using TypeLay.App;
 
-// Only the continuous/browser fixtures use this outer owner. It proves that
+// The continuous/browser/ordinary-app fixtures share this outer owner. It proves that
 // their job has no active consumers, not that every renderer resource is freed.
 internal sealed class ModelConsumerFixtureOwner : IDisposable
 {
@@ -54,7 +54,7 @@ internal sealed class ModelConsumerFixtureOwner : IDisposable
         ExitResult result;
         try
         {
-            // Inner scene budgets remain 20m/9m. These outer ceilings leave room
+            // Inner scene budgets remain 20m/9m (including ordinary Notepad). These outer ceilings leave room
             // for their existing cleanup within the existing 25m/10m CI steps.
             using var owner = new ModelConsumerFixtureOwner();
             result = owner.ExecuteAsync(start, mode == "--verify-continuous" ? TimeSpan.FromMinutes(24)
