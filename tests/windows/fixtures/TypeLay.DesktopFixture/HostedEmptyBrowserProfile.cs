@@ -74,9 +74,10 @@ internal sealed class HostedEmptyBrowserProfile : IDisposable
     public void Dispose() => _held.Dispose();
     private static SafeFileHandle OpenDirectory(string path)
     {
-        // Read attributes, share READ only: deny directory write/delete handles,
+        // LIST_DIRECTORY participates in sharing checks; READ_ATTRIBUTES alone does not.
+        // Share READ only: deny directory write/delete handles,
         // including rename and reparse-point replacement, for the entire lease.
-        var handle = CreateFileW(path, 0x80, 1, 0, 3, 0x02000000 | 0x00200000, 0);
+        var handle = CreateFileW(path, 0x81, 1, 0, 3, 0x02000000 | 0x00200000, 0);
         if (handle.IsInvalid)
         {
             int error = Marshal.GetLastWin32Error();

@@ -108,6 +108,14 @@ python tests/linux/native_e2e.py --desktop --desktop-scope model-packages \
 
 失败不重试，不继续恢复、Select 或 Remove。原 JSON、隔离数据和失败 HOME/搬迁包保留；缺失、坏或空的报告及退出未知均失败。outer 只在 fixture finally 后的本轮完成/失败标记、精确 inside 退出及各份退出证据齐全后收束。本入口的受控测试只证明参数、导入隔离、预算、取消/进程清理和失败保留；实际53请求、GTK全链、资源峰值与语言人工复核仍须分别执行，不能由这些测试推断。
 
+### 可选的 Hy 解码对照
+
+仅手动运行时，可在上述 `quality-only` 与 `collect_translation_quality=true` 之外明确设置 `hy_decode_comparison=true`。默认仍采集53次；该选项将风格槽扩为 A/B 各16次，总计69次。它不改变发行模型或生产默认：A 使用同次实际发行 worker 的 greedy，B 在隔离产物目录中复用已验证 CPU 库编译另一个 adapter。两组使用同一安装代、模型、提示和固定样本，但 native/manifest 摘要必须分别记录，不能冒称同一二进制。
+
+B 采用明确的 Transformers v5.6.0 顺序：repetition penalty 1.05、temperature 0.7、top-k 20、top-p 0.6，最后用逐请求重置的固定 seed `20261020` 采样。这只是原产品资源预算下的四参数对照，不是原厂完整运行配置；ctx1024、新生成192 token、CPU2、2.5 GiB及原 EOG/截断拒绝保持不变。
+
+B 构建、真实 ELF/ABI 检查及 A/B 采集共用原风格槽600秒绝对截止，最终退出清理最多7秒，不增加外层预算。A 响应不完整或退出未确认时不开始 B 推理；不重试、不换 seed、不挑结果。分别保存 `styled-quality.json`、`styled-b-quality.json` 与 `hy-decode/build.json`、`build.log`，逐份核对响应和退出证明。采集或单 seed 样本改善都不能自动开放质量门；仍需逐项审阅全部保义锚点、记录退化及不确定性。
+
 ## 结果表述
 
 在任务回复或 CI 结果中分别说明构建、行为/协议、分发/进程、模型推理、真实桌面交互与视觉结果，使用 passed/failed/not-run 并明确范围。结果属于执行时的提交，不能外推到其它版本；不新增仓库内验收报告或空白验收模板。

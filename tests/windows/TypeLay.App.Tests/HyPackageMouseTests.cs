@@ -26,6 +26,7 @@ public sealed class HyPackageMouseTests(WpfDesktopFixture desktop, ITestOutputHe
             Left = 80,
             Top = 80,
             WindowStartupLocation = WindowStartupLocation.Manual,
+            ShowActivated = false,
             Content = new Border { Background = Brushes.White }
         };
         Assert.True(GetCursorPos(out var previous));
@@ -39,6 +40,10 @@ public sealed class HyPackageMouseTests(WpfDesktopFixture desktop, ITestOutputHe
             await rendered.Task.WaitAsync(deadline.Token);
             window.UpdateLayout();
             nint handle = new WindowInteropHelper(window).Handle;
+            // Establish the receiver explicitly once, rather than relying on
+            // Show to activate it while another process owns the foreground.
+            Assert.True(window.Activate(), "The mouse receiver could not be activated.");
+            Assert.Equal(handle, GetForegroundWindow());
             source = HwndSource.FromHwnd(handle);
             Assert.NotNull(source);
             source.AddHook(Receive);

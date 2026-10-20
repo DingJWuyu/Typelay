@@ -40,15 +40,23 @@ public sealed class HostedEmptyBrowserProfileTests
     public void RealDirectoryHandlePreventsRenameAndWriteHandleWhileAllowingBrowserChildFiles()
     {
         string root = TemporaryRoot(), nonce = Guid.NewGuid().ToString("N");
+        string moved = root + "-moved";
+        bool assertionFailed = false;
         try
         {
             using (var lease = HostedEmptyBrowserProfile.Open(root, nonce, true, false))
             {
                 lease.VerifyBeforeStart(false);
-                Assert.ThrowsAny<IOException>(() => Directory.Move(root, root + "-moved"));
+                Assert.ThrowsAny<IOException>(() => Directory.Move(root, moved));
+                using var deniedDelete = CreateFileW(root, 0x00010000, 7, 0, 3, 0x02000000 | 0x00200000, 0);
+                int deleteError = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+                Assert.True(deniedDelete.IsInvalid);
+                Assert.Equal(32, deleteError);
                 // A directory write handle would permit FSCTL_SET_REPARSE_POINT.
                 using var denied = CreateFileW(root, 0x40000000, 7, 0, 3, 0x02000000 | 0x00200000, 0);
+                int writeError = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
                 Assert.True(denied.IsInvalid);
+                Assert.Equal(32, writeError);
                 Directory.CreateDirectory(Path.Combine(root, "Default"));
                 File.WriteAllText(Path.Combine(root, "Local State"), "browser-generated");
                 lease.VerifyIdentity();
@@ -57,8 +65,31 @@ public sealed class HostedEmptyBrowserProfileTests
             Assert.True(Directory.Exists(root));
             Assert.Equal(nonce, File.ReadAllText(Path.Combine(root, "typelay-browser-fixture-owner")));
             Assert.Equal("browser-generated", File.ReadAllText(Path.Combine(root, "Local State")));
+            // Releasing the lease restores rename access, rather than changing ACLs.
+            Directory.Move(root, moved);
+            Assert.Equal(nonce, File.ReadAllText(Path.Combine(moved, "typelay-browser-fixture-owner")));
         }
-        finally { Directory.Delete(root, true); }
+        catch
+        {
+            assertionFailed = true;
+            throw;
+        }
+        finally
+        {
+            // Both names belong only to this test. Preserve the original failed assertion
+            // if a regression allowed the attempted rename while the lease was held.
+            try
+            {
+                if (Directory.Exists(root))
+                    Directory.Delete(root, true);
+                if (Directory.Exists(moved))
+                    Directory.Delete(moved, true);
+            }
+            catch when (assertionFailed)
+            {
+                // The original safety assertion, not cleanup, must reach the runner.
+            }
+        }
     }
     [Fact]
     public void FailedLaunchOrUnconfirmedExitDisposalNeverDeletesContainerOrGeneratedContents()

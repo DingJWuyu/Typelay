@@ -19,6 +19,11 @@ on:
         type: boolean
         required: false
         default: false
+      hy_decode_comparison:
+        description: Compare fixed Hy greedy and sampled decoding within the existing quality budget
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -44,6 +49,7 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
+          HY_DECODE_COMPARISON: ${{ inputs.hy_decode_comparison }}
           CHECK_MODE: ${{ inputs.check_mode || 'full' }}
           COLLECT_TRANSLATION_QUALITY: ${{ inputs.collect_translation_quality }}
           BRANCH: ${{ github.ref_name }}
@@ -51,7 +57,9 @@ jobs:
           AFTER: ${{ github.event.after }}
           CREATED: ${{ github.event.created }}
           FORCED: ${{ github.event.forced }}
-        run: python eng/shared/ci_scope.py
+        run: |
+          python -B tests/shared/worker/hy_decode_comparison.py --check-dispatch
+          python eng/shared/ci_scope.py
   shared:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -799,6 +807,8 @@ jobs:
       - name: Exercise formal Python and real GTK Hy install select return and remove
         if: ${{ !cancelled() && steps.hy-model-prepare.outcome == 'success' }}
         timeout-minutes: ${{ needs.scope.outputs.collect_quality == 'true' && 36 || 5 }}
+        env:
+          HY_DECODE_COMPARISON: ${{ inputs.hy_decode_comparison }}
         run: |
           export DISPLAY=:99
           export XDG_DATA_HOME="$PWD/artifacts/linux/desktop-data"
@@ -808,6 +818,9 @@ jobs:
           if [ "$TYPELAY_COLLECT_TRANSLATION_QUALITY" = true ]; then
             set -- --collect-translation-quality
             output=artifacts/linux/quality-capture
+          fi
+          if [ "$HY_DECODE_COMPARISON" = true ]; then
+            set -- "$@" --hy-decode-comparison
           fi
           python tests/linux/native_e2e.py --desktop --desktop-scope model-packages --package artifacts/linux/package --native artifacts/linux/native --output "$output" "$@"
           if [ "$TYPELAY_COLLECT_TRANSLATION_QUALITY" = true ]; then
@@ -848,6 +861,8 @@ jobs:
             artifacts/linux/quality-capture/*.json
             artifacts/linux/quality-capture/*.log
             artifacts/linux/quality-capture/*.png
+            artifacts/linux/quality-capture/hy-decode/build.json
+            artifacts/linux/quality-capture/hy-decode/build.log
             artifacts/linux/native/libtypelay-gtk3.so
             artifacts/linux/native/typelay-supervise
             artifacts/TypeLay-Linux-preview-x86_64.tar.gz

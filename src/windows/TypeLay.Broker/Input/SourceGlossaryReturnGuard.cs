@@ -65,12 +65,36 @@ internal sealed class SourceGlossaryReturnGuard : IDisposable
             owner?.Dispose();
         }
     }
-    public bool BeforeFocus(nint expectedForeground)
+    public bool BeforeFocus(nint expectedForeground) => BeforeFocus(expectedForeground, out _);
+    public bool BeforeFocus(nint expectedForeground, out string reason)
+    {
+        if (!AuthorityCurrent(out reason))
+            return false;
+        reason = "foreground-changed";
+        if (GetForegroundWindow() != expectedForeground)
+            return false;
+        reason = "current";
+        return true;
+    }
+    // This checks the lifetime of the zero-write attempt, not focus or source
+    // acceptance. It is insufficient to authorize a focus-changing operation.
+    public bool AuthorityCurrent(out string reason)
     {
         long now = WindowsInterruptClock.NowMs;
-        return now >= _openedAt && now <= _expires && !_cancellation.WaitOne(0) && !_owner.HasExited
-            && GetWindowThreadProcessId(_overlay, out uint process) == _thread && process == _owner.Id
-            && GetForegroundWindow() == expectedForeground;
+        reason = "expired";
+        if (now < _openedAt || now > _expires)
+            return false;
+        reason = "event-canceled";
+        if (_cancellation.WaitOne(0))
+            return false;
+        reason = "owner-exited";
+        if (_owner.HasExited)
+            return false;
+        reason = "overlay-identity-changed";
+        if (GetWindowThreadProcessId(_overlay, out uint process) != _thread || process != _owner.Id)
+            return false;
+        reason = "current";
+        return true;
     }
     public void Dispose()
     {

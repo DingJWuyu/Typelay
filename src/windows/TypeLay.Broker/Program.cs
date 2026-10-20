@@ -32,6 +32,7 @@ internal static class Program
                 last = request.Id;
                 BrokerResponse response;
                 string? returnReason = null, returnErrorType = null;
+                UiaInputProvider.ReturnForegroundFacts? returnForeground = null;
                 try
                 {
                     response = request.Op switch
@@ -42,7 +43,7 @@ internal static class Program
                         "write" => new(BrokerProtocol.Version, request.Id, "receipt", Receipt: provider.Write(request)),
                         "direct-write" => new(BrokerProtocol.Version, request.Id, "receipt", Receipt: provider.WriteDirect(request)),
                         "return" or "return-glossary" => new(BrokerProtocol.Version, request.Id,
-                            provider.ReturnToSource(request, out returnReason) ? "focused" : "denied"),
+                            provider.ReturnToSource(request, out returnReason, out returnForeground) ? "focused" : "denied"),
                         "capture" => Observe(provider, request),
                         "capture-owned" => ObserveOwned(provider, request),
                         "observe-pause" => ObservePause(provider, request),
@@ -80,7 +81,8 @@ internal static class Program
                             operation = "return",
                             status = response.Status,
                             reason = returnReason,
-                            errorType = returnErrorType
+                            errorType = returnErrorType,
+                            foreground = returnForeground
                         }) + Environment.NewLine);
                     }
                     catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }

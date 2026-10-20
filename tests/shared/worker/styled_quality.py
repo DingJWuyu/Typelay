@@ -358,6 +358,7 @@ async def collect(
     collect_cases=collect_styled_cases,
     required_directions=DIRECTIONS,
     capability="styledTranslationVersion",
+    work_deadline=None,
 ):
     process = None
     started = time.monotonic()
@@ -368,7 +369,14 @@ async def collect(
     for signum in previous_handlers:
         loop.add_signal_handler(signum, asyncio.current_task().cancel)
     try:
-        async with asyncio.timeout(TOTAL_TIMEOUT):
+        deadline = (
+            min(started + TOTAL_TIMEOUT, work_deadline)
+            if work_deadline is not None
+            else started + TOTAL_TIMEOUT
+        )
+        if deadline <= time.monotonic():
+            raise TimeoutError
+        async with asyncio.timeout_at(deadline):
             report["stage"] = "installation-intent"
             report["installation"] = installation(args, required_directions)
             report["stage"] = "production-worker-identity"

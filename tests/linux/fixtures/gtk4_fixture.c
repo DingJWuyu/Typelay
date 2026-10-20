@@ -174,6 +174,46 @@ static guint language_instance(GObject *object) {
     }
     return instance;
 }
+/* Bounded diagnostic for the first language popup transitions. Signals only
+ * sample public state: no measure, focus operation or event-loop iteration. */
+static JsonObject *language_transitions[16];
+static guint language_transition_count;
+static void observe_language_popup(GtkWidget *button, const char *event) {
+    if (language_transition_count == G_N_ELEMENTS(language_transitions)) return;
+    GtkPopover *popup = gtk_menu_button_get_popover(GTK_MENU_BUTTON(button));
+    if (!popup) return;
+    JsonObject *value = language_transitions[language_transition_count++] = json_object_new();
+    json_object_set_int_member(value, "atMonoMs", g_get_monotonic_time() / 1000);
+    json_object_set_string_member(value, "control", gtk_widget_get_name(button));
+    json_object_set_string_member(value, "event", event);
+    json_object_set_boolean_member(value, "active", gtk_menu_button_get_active(GTK_MENU_BUTTON(button)));
+    json_object_set_boolean_member(value, "visible", gtk_widget_get_visible(GTK_WIDGET(popup)));
+    json_object_set_boolean_member(value, "mapped", gtk_widget_get_mapped(GTK_WIDGET(popup)));
+}
+static void language_active_changed(GObject *button, GParamSpec *spec, gpointer data) {
+    (void)spec; (void)data;
+    observe_language_popup(GTK_WIDGET(button), "active");
+}
+static void language_visible_changed(GObject *popup, GParamSpec *spec, gpointer data) {
+    (void)popup; (void)spec;
+    observe_language_popup(data, "visible");
+}
+static void language_mapped(GtkWidget *popup, gpointer data) {
+    (void)popup;
+    observe_language_popup(data, "map");
+}
+static void language_unmapped(GtkWidget *popup, gpointer data) {
+    (void)popup;
+    observe_language_popup(data, "unmap");
+}
+static void watch_language_popup(GtkWidget *button, GtkPopover *popup) {
+    if (g_object_get_data(G_OBJECT(button), "fixture-language-popup-watched")) return;
+    g_object_set_data(G_OBJECT(button), "fixture-language-popup-watched", GINT_TO_POINTER(1));
+    g_signal_connect_after(button, "notify::active", G_CALLBACK(language_active_changed), NULL);
+    g_signal_connect_object(popup, "notify::visible", G_CALLBACK(language_visible_changed), button, G_CONNECT_AFTER);
+    g_signal_connect_object(popup, "map", G_CALLBACK(language_mapped), button, G_CONNECT_AFTER);
+    g_signal_connect_object(popup, "unmap", G_CALLBACK(language_unmapped), button, G_CONNECT_AFTER);
+}
 static gboolean language_control(const char *name) {
     return g_strcmp0(name, "typelay-menu-trigger") == 0
         || g_strcmp0(name, "typelay-source-language") == 0
@@ -213,6 +253,11 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
             GtkWidget *scroll = popup ? gtk_popover_get_child(popup) : NULL;
             GtkWidget *list = GTK_IS_SCROLLED_WINDOW(scroll) ? gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(scroll)) : NULL;
             if (GTK_IS_LIST_VIEW(list)) {
+                watch_language_popup(widget, popup);
+                json_builder_set_member_name(builder, "popupActive");
+                json_builder_add_boolean_value(builder, gtk_menu_button_get_active(GTK_MENU_BUTTON(widget)));
+                json_builder_set_member_name(builder, "popupShown");
+                json_builder_add_boolean_value(builder, gtk_widget_get_visible(GTK_WIDGET(popup)));
                 GtkSingleSelection *selection = GTK_SINGLE_SELECTION(gtk_list_view_get_model(GTK_LIST_VIEW(list)));
                 GListModel *model = gtk_single_selection_get_model(selection);
                 json_builder_set_member_name(builder, "modelInstance");
@@ -221,6 +266,10 @@ static void report_language_control(GtkWidget *widget, gpointer data) {
                 json_builder_add_int_value(builder, gtk_single_selection_get_selected(selection));
                 json_builder_set_member_name(builder, "popupVisible");
                 json_builder_add_boolean_value(builder, gtk_widget_get_mapped(GTK_WIDGET(popup)));
+                json_builder_set_member_name(builder, "buttonFocused");
+                json_builder_add_boolean_value(builder, focus && gtk_widget_get_mapped(focus)
+                    && (focus == widget || gtk_widget_is_ancestor(focus, widget))
+                    && focus != GTK_WIDGET(popup) && !gtk_widget_is_ancestor(focus, GTK_WIDGET(popup)));
                 json_builder_set_member_name(builder, "popupFocused");
                 json_builder_add_boolean_value(builder, focus && gtk_widget_get_mapped(GTK_WIDGET(popup))
                     && (focus == list || gtk_widget_is_ancestor(focus, list)));
@@ -393,6 +442,14 @@ static gboolean report_state(gpointer unused) {
     json_builder_set_member_name(builder, "down"); json_builder_add_int_value(builder, tab_down);
     json_builder_set_member_name(builder, "up"); json_builder_add_int_value(builder, tab_up);
     json_builder_end_object(builder);
+    json_builder_set_member_name(builder, "languageTransitions");
+    json_builder_begin_array(builder);
+    for (guint index = 0; index < language_transition_count; index++) {
+        JsonNode *transition = json_node_new(JSON_NODE_OBJECT);
+        json_node_set_object(transition, language_transitions[index]);
+        json_builder_add_value(builder, transition);
+    }
+    json_builder_end_array(builder);
     json_builder_set_member_name(builder, "focusSequence"); json_builder_add_int_value(builder, focus_sequence);
     json_builder_set_member_name(builder, "focusTransitions");
     json_builder_begin_array(builder);
@@ -542,6 +599,8 @@ int main(void) {
     if (motion_frames) json_array_unref(motion_frames);
     for (guint index = 0; index < G_N_ELEMENTS(focus_transitions); index++)
         if (focus_transitions[index]) json_object_unref(focus_transitions[index]);
+    for (guint index = 0; index < language_transition_count; index++)
+        json_object_unref(language_transitions[index]);
     if (first_insert_context) json_object_unref(first_insert_context);
     if (first_delete_context) json_object_unref(first_delete_context);
     return 0;

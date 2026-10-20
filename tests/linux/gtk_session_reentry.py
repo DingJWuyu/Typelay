@@ -827,8 +827,11 @@ def check_language_options(
                         "visible",
                         "enabled",
                         "focused",
+                        "buttonFocused",
                         "selected",
                         "popupVisible",
+                        "popupActive",
+                        "popupShown",
                         "popupFocused",
                         "x",
                         "y",
@@ -943,7 +946,17 @@ def check_language_options(
             value = actual.get("overlayControls", {})
             if revision in (3, 6) and "afterKeys" not in phases[-1]:
                 phases[-1]["afterKeys"] = observe(actual)
-            return value if value.get(name, {}).get("selected") == index else None
+            control = value.get(name, {})
+            if control.get("selected") != index:
+                return None
+            # Return selects a row before GTK finishes closing its child popup.
+            # Do not start another click on a still-closing surface. This is the
+            # same action's existing bounded wait, not another key or a retry.
+            if client.hello["backend"] in ("gtk3", "gtk4") and (
+                control.get("popupVisible") is not False or control.get("buttonFocused") is not True
+            ):
+                return None
+            return value
 
         return wait_for(
             selected,

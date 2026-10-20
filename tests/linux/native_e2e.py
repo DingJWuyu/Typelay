@@ -461,7 +461,7 @@ def inside(arguments):
 def quality_exit(arguments, compositor, work_deadline, result, failure):
     from support.translation_quality_capture import (
         CLEANUP_SECONDS,
-        COLLECTIONS,
+        collections,
         inspect_report,
         process_identity,
         process_status,
@@ -514,18 +514,31 @@ def quality_exit(arguments, compositor, work_deadline, result, failure):
                     "quality exit unconfirmed; preserve data"
                 )
                 for item in quality["collections"]:
-                    original, _ = inspect_report(
+                    original, checked = inspect_report(
                         item["runner"], arguments.output / f"{item['runner']}-quality.json"
                     )
                     assert original["workerExitConfirmed"] is True, (
                         "runner exit unconfirmed; preserve data"
                     )
+                    expected_count = collections(getattr(arguments, "hy_decode_comparison", False))[
+                        item["runner"]
+                    ]
+                    assert (
+                        original["status"] == "completed"
+                        and original["workerStarts"] == 1
+                        and original["workerExitCode"] == 0
+                        and checked["actualTranslationRequests"] == expected_count
+                        and len(original["requests"]) == expected_count + 1
+                    ), "individual runner response or exit evidence incomplete"
                 assert not cancelled and not failure.exists() and report["status"] == "passed", (
                     "quality lifecycle failed; preserve its reports and isolated data"
                 )
-                assert [item["runner"] for item in quality["collections"]] == list(COLLECTIONS)
+                assert [item["runner"] for item in quality["collections"]] == list(
+                    collections(getattr(arguments, "hy_decode_comparison", False))
+                )
                 assert (
-                    quality["actualTranslationRequests"] == sum(COLLECTIONS.values())
+                    quality["actualTranslationRequests"]
+                    == sum(collections(getattr(arguments, "hy_decode_comparison", False)).values())
                     and quality["requestCountComplete"]
                 )
                 return
@@ -624,6 +637,8 @@ def run_outer(arguments, script=None):
         command.extend(
             ["--collect-translation-quality", "--quality-work-deadline", str(quality_deadline)]
         )
+    if getattr(arguments, "hy_decode_comparison", False):
+        command.append("--hy-decode-comparison")
     if getattr(arguments, "gtk_refusal", False):
         command.append("--gtk-refusal")
     if getattr(arguments, "gtk_session_bindings", False):
@@ -729,6 +744,7 @@ if __name__ == "__main__":
     parser.add_argument("--inside", action="store_true")
     parser.add_argument("--desktop", action="store_true")
     parser.add_argument("--collect-translation-quality", action="store_true")
+    parser.add_argument("--hy-decode-comparison", action="store_true")
     parser.add_argument("--quality-work-deadline", type=float, help=argparse.SUPPRESS)
     parser.add_argument(
         "--desktop-scope",
@@ -764,6 +780,8 @@ if __name__ == "__main__":
     parser.add_argument("--native", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.hy_decode_comparison and not args.collect_translation_quality:
+        parser.error("--hy-decode-comparison requires --collect-translation-quality")
     if args.collect_translation_quality and (
         not args.desktop or args.desktop_scope != "model-packages"
     ):

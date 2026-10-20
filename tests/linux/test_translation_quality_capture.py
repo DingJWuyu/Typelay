@@ -55,6 +55,60 @@ class CaptureModeTests(unittest.TestCase):
         )
 
 
+class DecodeComparisonAdmissionTests(unittest.TestCase):
+    def test_comparison_requires_original_collection_mode(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tests/linux/native_e2e.py"),
+                "--hy-decode-comparison",
+                "--desktop",
+                "--desktop-scope",
+                "model-packages",
+                "--native",
+                "/absent",
+                "--output",
+                "/absent",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("requires --collect-translation-quality", result.stderr)
+
+    def test_dispatch_boolean_is_exact_and_requires_manual_collection(self):
+        for event, enabled, comparison, success in (
+            ("push", "", "false", True),
+            ("pull_request", "", "false", True),
+            ("workflow_dispatch", "false", "false", True),
+            ("workflow_dispatch", "true", "true", True),
+            ("workflow_dispatch", "false", "true", False),
+            ("push", "true", "true", False),
+            ("pull_request", "true", "true", False),
+            ("workflow_dispatch", "true", "yes", False),
+        ):
+            with self.subTest(event=event, collect=enabled, comparison=comparison):
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        "-B",
+                        str(ROOT / "tests/shared/worker/hy_decode_comparison.py"),
+                        "--check-dispatch",
+                    ],
+                    env={
+                        **os.environ,
+                        "EVENT_NAME": event,
+                        "COLLECT_TRANSLATION_QUALITY": enabled,
+                        "HY_DECODE_COMPARISON": comparison,
+                    },
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                self.assertEqual(result.returncode == 0, success, result.stderr)
+
+
 class CaptureHandoffTests(unittest.TestCase):
     def setUp(self):
         (ROOT / "artifacts").mkdir(exist_ok=True)
@@ -205,6 +259,38 @@ class CaptureHandoffTests(unittest.TestCase):
         )
         self.assertEqual(capture.report["actualTranslationRequests"], 0)
         self.assertEqual(marker.read_text(), '{"schema":1}')
+
+    def test_comparison_failure_preserves_a_and_does_not_start_b(self):
+        generation = self.output / "generation"
+        (generation / "models").mkdir(parents=True)
+        (generation / "models/installed.json").write_text('{"schema":1}')
+        capture = Capture(self.output, time.monotonic() + 1000, comparison=True)
+        with self.assertRaisesRegex(RuntimeError, "incomplete"):
+            capture.run_comparison(generation, self.output / "absent-worker")
+        report = json.loads((self.output / "styled-quality.json").read_text())
+        self.assertEqual(report["workerStarts"], 0)
+        self.assertEqual(report["decodeComparison"]["variant"], "A")
+        self.assertFalse(report["decodeComparison"]["recipeVerified"])
+        self.assertEqual(capture.report["maximumTranslationRequests"], 69)
+        self.assertEqual([c["runner"] for c in capture.report["collections"]], ["styled"])
+        self.assertFalse((self.output / "styled-b-quality.json").exists())
+        self.assertFalse((self.output / "hy-decode").exists())
+        with self.assertRaisesRegex(RuntimeError, "retried"):
+            capture.run_comparison(generation, self.output / "absent-worker")
+
+    def test_expired_shared_deadline_never_starts_a_worker(self):
+        import styled_quality
+
+        report = styled_quality.prepare_report(include_holdout=True)
+        args = types.SimpleNamespace(
+            models=self.output / "absent",
+            python=self.output / "absent",
+            worker=self.output / "absent",
+        )
+        asyncio.run(styled_quality.collect(args, report, work_deadline=time.monotonic() - 1))
+        self.assertEqual(report["failureCode"], "timeout")
+        self.assertEqual(report["workerStarts"], 0)
+        self.assertEqual(report["requests"], [])
 
     def test_unknown_exit_keeps_home_and_no_lock_file_is_manufactured(self):
         capture = Capture(self.output, time.monotonic() + 1000)
@@ -383,6 +469,191 @@ while True: time.sleep(0.05)
                 os.killpg(owned.pid, 0)
 
         asyncio.run(scenario())
+
+
+class DecodeComparisonProcessTests(unittest.TestCase):
+    def test_build_cancellation_reaps_its_owned_process_before_return(self):
+        import hy_decode_comparison as experiment
+
+        with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as directory:
+
+            async def exercise():
+                created = asyncio.Event()
+                actual_spawn = asyncio.create_subprocess_exec
+                children = []
+
+                async def controlled_child(*command, **options):
+                    # Real process, no compiler/model. EOF makes it terminate normally.
+                    child = await actual_spawn(
+                        sys.executable, "-c", "import sys; sys.stdin.buffer.read()", **options
+                    )
+                    children.append(child)
+                    created.set()
+                    return child
+
+                report = {}
+                with patch.object(
+                    experiment.asyncio, "create_subprocess_exec", side_effect=controlled_child
+                ):
+                    task = asyncio.create_task(
+                        experiment.prepare_variant(
+                            Path(directory) / "experiment",
+                            Path(directory) / "unused-worker",
+                            time.monotonic() + 10,
+                            report,
+                        )
+                    )
+                    await created.wait()
+                    task.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await task
+                self.assertEqual(len(children), 1)
+                self.assertIsNotNone(children[0].returncode)
+                self.assertTrue(report["variantBuild"]["workerExitConfirmed"])
+                self.assertFalse((Path(directory) / "experiment/build.json").exists())
+
+            asyncio.run(exercise())
+
+    def test_build_deadline_starts_nothing_and_preserves_existing_evidence(self):
+        import hy_decode_comparison as experiment
+
+        with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as directory:
+            folder = Path(directory) / "not-started"
+            report = {}
+            with self.assertRaises(TimeoutError):
+                asyncio.run(
+                    experiment.prepare_variant(folder, Path("unused"), time.monotonic() - 1, report)
+                )
+            self.assertFalse(folder.exists())
+            folder.mkdir()
+            marker = folder / "build.log"
+            marker.write_text("prior evidence")
+            with self.assertRaises(FileExistsError):
+                asyncio.run(
+                    experiment.prepare_variant(
+                        folder, Path("unused"), time.monotonic() + 10, report
+                    )
+                )
+            self.assertEqual(marker.read_text(), "prior evidence")
+
+    def test_comparison_rejects_unknown_a_exit_before_starting_b(self):
+        self.exercise_pair(unknown_a=True)
+
+    def test_comparison_requires_second_exit_and_full_responses(self):
+        self.exercise_pair(unknown_b=True)
+        self.exercise_pair(short_b=True)
+
+    def test_inventory_change_prevents_pair_acceptance(self):
+        self.exercise_pair(change_inventory=True)
+
+    def test_a_cleanup_exhausting_shared_time_does_not_start_b(self):
+        self.exercise_pair(exhaust_a=True)
+
+    def test_relabeling_greedy_native_as_sampled_is_rejected(self):
+        import hy_decode_comparison as experiment
+
+        with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as directory:
+            folder = Path(directory)
+            original = (ROOT / "src/shared/TypeLay.Worker/native/hy/hy_adapter.cpp").read_text()
+            # Deliberately invalid evidence: a B label cannot reuse A's actual native hash.
+            (folder / "build.json").write_text(
+                json.dumps(
+                    {
+                        "recipe": experiment.RECIPE,
+                        "sourceSha256": hashlib.sha256(
+                            original.replace(experiment.GREEDY, experiment.SAMPLED).encode()
+                        ).hexdigest(),
+                        "baselineNativeSha256": "same-greedy-native",
+                        "nativeSha256": "same-greedy-native",
+                    }
+                )
+            )
+            with self.assertRaisesRegex(experiment.styled.CollectionError, "identity-or-abi"):
+                experiment.verify_variant(folder, "same-greedy-native")
+
+    def test_pair_has_one_shared_deadline_and_both_exit_proofs(self):
+        self.exercise_pair()
+
+    def exercise_pair(
+        self,
+        *,
+        unknown_a=False,
+        unknown_b=False,
+        short_b=False,
+        change_inventory=False,
+        exhaust_a=False,
+    ):
+        # Controlled collector reports test the orchestration contract, NOT inference.
+        import styled_quality
+        from support.translation_quality_capture import inspect_report
+
+        with tempfile.TemporaryDirectory(dir=ROOT / "artifacts") as directory:
+            output = Path(directory)
+            generation = output / "generation"
+            (generation / "models").mkdir(parents=True)
+            inventory = generation / "models/installed.json"
+            inventory.write_text('{"schema":3}')
+            deadlines = []
+            clock = [100.0]
+
+            def collector(name, arguments, *, comparison):
+                deadlines.append(comparison["work_deadline"])
+                report = styled_quality.prepare_report(include_holdout=True)
+                report.update(
+                    status="completed",
+                    quality="not-reviewed",
+                    workerStarts=1,
+                    workerExitCode=0,
+                    workerExitConfirmed=not (
+                        (name == "styled" and unknown_a) or (name == "styled-b" and unknown_b)
+                    ),
+                )
+                report["requests"] = [{"op": "hello"}] + [
+                    {"op": "translate-styled-v1"}
+                    for _ in range(15 if name == "styled-b" and short_b else 16)
+                ]
+                report["installation"] = {
+                    "models": str(generation / "models"),
+                    "python": str(generation / "runtime/venv/bin/python"),
+                    "inventorySha256": hashlib.sha256(inventory.read_bytes()).hexdigest(),
+                }
+                (output / f"{name}-quality.json").write_text(json.dumps(report))
+                if change_inventory and name == "styled-b":
+                    inventory.write_text('{"schema":3,"changed":true}')
+                if exhaust_a and name == "styled":
+                    clock[0] += 601
+                return 0
+
+            capture = Capture(output, 1100, comparison=True)
+            with (
+                patch("support.translation_quality_capture.invoke_runner", side_effect=collector),
+                patch(
+                    "support.translation_quality_capture.time.monotonic",
+                    side_effect=lambda: clock[0],
+                ),
+            ):
+                if exhaust_a:
+                    with self.assertRaisesRegex(TimeoutError, "before B"):
+                        capture.run_comparison(generation, output / "actual-shipped-worker")
+                    self.assertTrue(capture.blocked)
+                elif unknown_a or unknown_b or short_b or change_inventory:
+                    with self.assertRaisesRegex(RuntimeError, "incomplete"):
+                        capture.run_comparison(generation, output / "actual-shipped-worker")
+                    self.assertTrue(capture.blocked)
+                else:
+                    capture.run_comparison(generation, output / "actual-shipped-worker")
+                    self.assertEqual(capture.report["actualTranslationRequests"], 32)
+                    self.assertTrue(capture.report["workerExitConfirmed"])
+                    for name in ("styled", "styled-b"):
+                        raw, summary = inspect_report(name, output / f"{name}-quality.json")
+                        self.assertEqual(summary["actualTranslationRequests"], 16)
+                        self.assertTrue(raw["workerExitConfirmed"])
+                        self.assertEqual(raw["workerExitCode"], 0)
+                self.assertEqual(len(deadlines), 1 if unknown_a or exhaust_a else 2)
+                self.assertEqual(len(set(deadlines)), 1)
+                self.assertEqual(
+                    (output / "styled-b-quality.json").exists(), not (unknown_a or exhaust_a)
+                )
 
 
 if __name__ == "__main__":

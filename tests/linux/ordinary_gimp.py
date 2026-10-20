@@ -34,8 +34,9 @@ def validate_nested_output(outputs, output_size):
     assert logical is not None, "nested output is disabled"
     assert [logical["width"], logical["height"]] == output_size, "nested output size mismatch"
     assert logical["x"] == logical["y"] == 0, "nested output origin mismatch"
-    assert logical["scale"] == 1 and logical["transform"] == "Normal", (
-        "nested output scale mismatch"
+    assert logical["scale"] == 1, f"nested output scale mismatch: {logical['scale']!r}"
+    assert logical["transform"] == "Normal", (
+        f"nested output transform mismatch: {logical['transform']!r}"
     )
 
 
@@ -339,6 +340,14 @@ def run_gimp(
         )
         expected = [int(geometry["WIDTH"]), int(geometry["HEIGHT"])]
         outputs = contents(request("Outputs"), "Outputs")
+        # Capture before validation: a rejected calibration must not lose the
+        # exact observations needed to distinguish scale from transform.
+        report["clickCalibration"] = {
+            "nestedXWindow": nested_window,
+            "xGeometry": geometry,
+            "logicalOutputs": {name: value.get("logical") for name, value in outputs.items()},
+        }
+        diagnostic_record()
         validate_nested_output(outputs, expected)
         if fullscreen_properties != properties["id"]:
             request({"Action": {"FullscreenWindow": {"id": properties["id"]}}})

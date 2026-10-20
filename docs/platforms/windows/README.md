@@ -79,18 +79,18 @@
 
 ### 当前可验证候选
 
-最近核对的验证基线为 [`25abc76d`](https://github.com/DingJWuyu/Typelay/actions/runs/39489032855)，该运行已结束。共享检查与 Windows 整体构建、格式检查及发行打包通过；完整 Windows 检查仍失败。
+最近核对的验证基线为 [`88878d2a`](https://github.com/DingJWuyu/Typelay/actions/runs/39493873911)，该运行已结束。共享检查与 Windows 整体构建、格式检查及发行打包通过；完整 Windows 检查仍失败。
 
-- App.Tests：497 项中 490 项通过、7 项失败。红项为两项术语保存回源、一项术语控制器、两项 Ready 观察、一项自然退出所有权（code 23，另一个 PID）及一项鼠标按下/抬起接收预检。新增排队五项与 WM_NULL 五项、F10、设置详情、焦点往返及两项术语取消已通过；不能将局部通过外推为整链通过。
-- 连续翻译的自有编辑交接已取得 Verified；首次 Tab 仍报告 `EpochChanged` 拒绝，具体原因尚未确认，普通字段编辑回源仍失败于 `activation-target-changed`。
-- 真实浏览器安装链的标准 profile 根目录在本轮运行前已存在；未证明该未知目录为空，不予认领。真实记事本与 Hy 后续阶段未运行。
-- 非自有标准 Edit 源侧术语已实际运行，取消分支通过但保存与控制器仍有红项。编译或受控 Runtime 测试不等于桌面通过；本轮没有重新采集模型质量，最近结论见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
+- App.Tests：527 项中 504 项通过、23 项失败。术语原有两项保存回源、一项控制器及新增 18 项 barrier 回归失败；其中新增 barrier 在 WM_NULL 前报告 `return-canceled`；另有外进程鼠标前台预检与空容器目录锁边界各一项失败。目录属性句柄未阻止重命名，不能据此声称锁边界已验证。两项 Ready 与自然退出所有权本轮通过，不外推为长期稳定。
+- 连续翻译的首次 Tab、自有编辑、Tab 与鼠标回源、人工稿接受及完成流程均通过；普通连续翻译、直接替换及 Chrome 冷启动/新标签页也通过。仅普通字段编辑回源仍失败于 `activation-foreground-other-source-process`。
+- 未改发行配置的真实浏览器接入整链通过：标准 profile 只读发现扩展 ID、保持原 `releaseConnection` 配置、设置取消/确认/移除、真实模型 Tab 接受/直接替换，以及切焦后仅修改原字段、保持另一字段正文与焦点，预置空根目录保留。上述成功不覆盖仍失败的目录锁边界单测。
+- 真实记事本已通过精确 System32 旧版 Edit 预检，随后在 `settings-and-model` 阶段约 70 秒处发生 COMException；之后的记事本流程与 Hy 阶段均未运行。编译或受控 Runtime 测试不等于桌面通过；本轮没有重新采集模型质量，最近结论见[共同产品缺口](../../product/README.md#当前共同开发缺口)。
 
-当前可下载的是上述同提交开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39489032855)下载 [`typelay-windows-25abc76d61dcf9a56e4c36f6b7812c608ffed3bc`](https://github.com/DingJWuyu/Typelay/actions/runs/39489032855/artifacts/12295720721)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
+当前可下载的是上述同提交开发包，不是通过完整验收的稳定版。在[该次运行](https://github.com/DingJWuyu/Typelay/actions/runs/39493873911)下载 [`typelay-windows-88878d2a30ad2d1590b979e2d7b2138fa95991e5`](https://github.com/DingJWuyu/Typelay/actions/runs/39493873911/artifacts/12296729805)，取出内层 `TypeLay-Windows-preview.zip` 后完整解压：
 
-- 源码提交：`25abc76d61dcf9a56e4c36f6b7812c608ffed3bc`。
-- 内层 ZIP：87,008,356 字节。
-- SHA-256：`7f0572154f5d9ef34b0ebee6bd9409033bd753b4f84b6d225e8bfa81a102b36c`，已实际重算并核对包旁摘要。
+- 源码提交：`88878d2a30ad2d1590b979e2d7b2138fa95991e5`。
+- 内层 ZIP：87,015,848 字节。
+- SHA-256：`35644ee0886cf4d3198b67303ab2b5a7e8a2660ba131b253e5ca3d7cb51462ff`，已实际重算并核对包旁摘要。
 - 用 `Get-FileHash .\TypeLay-Windows-preview.zip -Algorithm SHA256` 核对；不要将内层摘要用于外层 Actions ZIP。App、Broker、Practice 与 BrowserHost 必须来自同一个完整包。
 
 正式安装器的单向中英准备、Auto 同语无输出、缺方向拒绝与保留旧方向的补装已通过真实模型 API 检查；该检查本身没有操作输入框或触发 F10。安装库存损坏时保留原数据并禁用修改，目前仍缺少用户可执行的库存恢复入口。

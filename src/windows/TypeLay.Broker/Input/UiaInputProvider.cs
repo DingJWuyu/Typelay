@@ -560,8 +560,34 @@ internal sealed class UiaInputProvider : IDisposable
         _quarantine.Add((t.ProcessId, t.ProcessStartUtcTicks, t.ElementToken));
         return new(WriteStatus.OutcomeUnknown, Denial.UnknownOutcome);
     }
-    public bool ReturnToSource(BrokerRequest request, out string reason)
+    internal sealed record ReturnForegroundFacts(bool IsControl, bool RootIsSource, bool RootOwnerIsSource,
+        bool OwnerIsSource, bool? IsChild, string WindowClass);
+
+    private static ReturnForegroundFacts DescribeReturnForeground(nint foreground, WindowsTarget binding)
     {
+        // Only a rejected same-process snapshot is classified. Never read a
+        // title or emit handles/class text, and never use these facts to authorize.
+        var name = new StringBuilder(64);
+        int length = GetClassNameW(foreground, name, name.Capacity);
+        string kind = length == 0 ? "Unavailable" : name.ToString() switch
+        {
+            "Edit" => "Edit",
+            "IME" => "Ime",
+            "#32770" => "Dialog",
+            _ => "Other"
+        };
+        Marshal.SetLastPInvokeError(0);
+        long style = (long)GetWindowLongPtrW(foreground, -16);
+        bool? child = style != 0 || Marshal.GetLastPInvokeError() == 0 ? (style & 0x40000000) != 0 : null;
+        return new(foreground == (nint)binding.ControlHwnd,
+            GetAncestor(foreground, 2) == (nint)binding.RootHwnd,
+            GetAncestor(foreground, 3) == (nint)binding.RootHwnd,
+            GetWindow(foreground, 4) == (nint)binding.RootHwnd, child, kind);
+    }
+
+    public bool ReturnToSource(BrokerRequest request, out string reason, out ReturnForegroundFacts? foregroundFacts)
+    {
+        foregroundFacts = null;
         // Fixed outcome/stage names only. The caller writes them after replying.
         bool glossary = request.Op == "return-glossary";
         using var authorization = glossary ? SourceGlossaryReturnGuard.TryOpen(request) : null;
@@ -593,9 +619,11 @@ internal sealed class UiaInputProvider : IDisposable
         if (binding.Provider == NativeEditTransactions.Provider
             && (glossary ? !_edits.ConfirmsReturnSource(_previous) : !_edits.ConfirmsReturnIdentity(binding)))
             return false;
-        reason = "return-canceled";
-        if (glossary && !authorization!.BeforeFocus((nint)request.OverlayHwnd))
+        if (glossary && !authorization!.BeforeFocus((nint)request.OverlayHwnd, out reason))
+        {
+            reason = "return-before-activation-" + reason;
             return false;
+        }
         reason = "return-expired";
         if (!glossary && (request.ExpiresAtMs <= 0 || request.ExpiresAtMs - WindowsInterruptClock.NowMs is <= 0 or > 800))
             return false;
@@ -609,9 +637,14 @@ internal sealed class UiaInputProvider : IDisposable
         {
             // SetForegroundWindow crosses input queues. Complete that one
             // activation on the original root, without correcting field focus.
-            reason = "return-canceled";
-            if (!authorization!.BeforeFocus((nint)binding.RootHwnd))
+            // Activation is not yet acknowledged across the input queues.
+            // Only the non-mutating WM_NULL may use this lifetime-only check;
+            // the source foreground is mandatory again after completion.
+            if (!authorization!.AuthorityCurrent(out reason))
+            {
+                reason = "return-before-barrier-" + reason;
                 return false;
+            }
             long remaining = request.ExpiresAtMs - WindowsInterruptClock.NowMs;
             reason = "return-expired";
             if (remaining <= 0 || remaining > SourceGlossaryReturnAuthorization.MaximumAgeMs)
@@ -619,15 +652,19 @@ internal sealed class UiaInputProvider : IDisposable
             reason = "activation-barrier";
             if (SendMessageTimeoutW((nint)binding.RootHwnd, 0, 0, 0, 0x22, (uint)remaining, out _) == 0)
                 return false;
-            reason = "return-canceled";
-            if (!authorization.BeforeFocus((nint)binding.RootHwnd))
+            if (!authorization.BeforeFocus((nint)binding.RootHwnd, out reason))
+            {
+                reason = "return-after-barrier-" + reason;
                 return false;
+            }
             reason = "native-source-changed";
             if (!_edits.ConfirmsReturnSource(_previous) || !_edits.ConfirmsReturnFocus(binding))
                 return false;
-            reason = "return-canceled";
-            if (!authorization.BeforeFocus((nint)binding.RootHwnd))
+            if (!authorization.BeforeFocus((nint)binding.RootHwnd, out reason))
+            {
+                reason = "return-after-source-check-" + reason;
                 return false;
+            }
         }
         reason = "return-expired";
         if (!glossary && WindowsInterruptClock.NowMs >= request.ExpiresAtMs)
@@ -667,6 +704,15 @@ internal sealed class UiaInputProvider : IDisposable
                     reason = thread == 0 ? "activation-foreground-other-unknown"
                         : process == binding.ProcessId ? "activation-foreground-other-source-process"
                         : "activation-foreground-other-process";
+                    if (thread != 0 && process == binding.ProcessId
+                        && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TYPELAY_TRACE")))
+                    {
+                        try
+                        {
+                            foregroundFacts = DescribeReturnForeground(foreground, binding);
+                        }
+                        catch (Exception error) when (error is not OutOfMemoryException) { }
+                    }
                 }
                 return false;
             }
@@ -686,9 +732,11 @@ internal sealed class UiaInputProvider : IDisposable
                 reason = "return-expired";
                 return false;
             }
-            reason = "return-canceled";
-            if (glossary && !authorization!.BeforeFocus((nint)binding.RootHwnd))
+            if (glossary && !authorization!.BeforeFocus((nint)binding.RootHwnd, out reason))
+            {
+                reason = "return-after-uia-focus-" + reason;
                 return false;
+            }
             reason = "focused";
             return true;
         }
@@ -731,9 +779,11 @@ internal sealed class UiaInputProvider : IDisposable
             reason = "return-expired";
             return false;
         }
-        reason = "return-canceled";
-        if (glossary && !authorization!.BeforeFocus((nint)binding.RootHwnd))
+        if (glossary && !authorization!.BeforeFocus((nint)binding.RootHwnd, out reason))
+        {
+            reason = "return-after-native-focus-" + reason;
             return false;
+        }
         reason = "focused-native";
         return true;
     }
@@ -791,6 +841,8 @@ internal sealed class UiaInputProvider : IDisposable
         public int Left, Top, Right, Bottom;
     }
     [DllImport("user32.dll")] private static extern nint GetForegroundWindow();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassNameW(nint hwnd, StringBuilder name, int capacity);
+    [DllImport("user32.dll")] private static extern nint GetWindow(nint hwnd, uint command);
     [DllImport("user32.dll")] private static extern nint GetAncestor(nint hwnd, uint flags);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(nint hwnd, out uint processId);
     [DllImport("user32.dll", SetLastError = true)] private static extern nint GetWindowLongPtrW(nint hwnd, int index);

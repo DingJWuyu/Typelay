@@ -190,7 +190,15 @@ def run(arguments):
     started, process = time.monotonic(), None
     deadline = started + 240
     quality = getattr(arguments, "collect_translation_quality", False)
-    capture = Capture(arguments.output, arguments.quality_work_deadline) if quality else None
+    capture = (
+        Capture(
+            arguments.output,
+            arguments.quality_work_deadline,
+            comparison=getattr(arguments, "hy_decode_comparison", False),
+        )
+        if quality
+        else None
+    )
     if quality:
         assert arguments.quality_work_deadline is not None
         assert 0 < arguments.quality_work_deadline - started <= WORK_SECONDS
@@ -484,7 +492,10 @@ def run(arguments):
                 unchanged()
                 for name in names:
                     remaining()
-                    capture.run(name, generation, package / "worker/run_worker.py")
+                    if name == "styled" and capture.comparison:
+                        capture.run_comparison(generation, package / "worker/run_worker.py")
+                    else:
+                        capture.run(name, generation, package / "worker/run_worker.py")
                     unchanged()
             remaining()
             process = subprocess.Popen(

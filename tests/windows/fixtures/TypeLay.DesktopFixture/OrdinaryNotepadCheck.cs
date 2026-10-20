@@ -229,6 +229,7 @@ internal static partial class HyPackageCheck
             {
                 Require(string.Equals(modelArtifacts, Path.Combine(Path.GetDirectoryName(directory)!, "continuous-translation"), StringComparison.OrdinalIgnoreCase),
                     "same-run-model-location-mismatch");
+                scene.Stage = "verify-shipped-release-identity";
                 report.ReleaseIdentity = await ReleaseIdentityAsync(distribution, ct);
                 report.LoadedReleaseAssembliesMatched = true;
                 string sid = WindowsIdentity.GetCurrent().User?.Value ?? throw new Failure("user-sid-unavailable");
@@ -240,6 +241,7 @@ internal static partial class HyPackageCheck
                 Require(CreateDirectoryW(data, 0), "user-data-already-exists");
                 ownsData = true;
                 await File.WriteAllTextAsync(ownerFile, owner, ct);
+                scene.Stage = "copy-same-run-model";
                 await BrowserCooperationCheck.CopyModelAsync(directory, data, ct);
                 await File.WriteAllTextAsync(Path.Combine(data, "settings.json"), JsonSerializer.Serialize(new UserSettings(
                     Source: "en", Target: "zh", Theme: "light", Mode: WorkMode.Automatic,
@@ -248,15 +250,22 @@ internal static partial class HyPackageCheck
                 info.ArgumentList.Add("--automation-test");
                 info.Environment["TYPELAY_HOME"] = distribution;
                 info.Environment["TYPELAY_TRACE"] = Path.Combine(directory, "trace.jsonl");
+                scene.Stage = "start-shipped-app";
                 app = Start(info);
                 workers = new WorkerObserver(app.Process, data);
                 workers.Start();
+                scene.Stage = "find-public-settings";
                 settings = await SettingsAsync(app.Process, ct);
+                scene.Stage = "await-public-model-ready";
                 await WaitAsync(async () => (await PublicStatusAsync(settings, ct)).StartsWith("本地翻译已就绪", StringComparison.Ordinal), ct);
+                scene.Stage = "navigate-public-general";
                 await NavigateAsync(settings, "⌂  常规", ct);
-                await EnableNotepadWriteback(settings, app.Process.Id, ct);
+                await EnableNotepadWriteback(settings, app.Process.Id, stage => scene.Stage = stage, ct);
+                scene.Stage = "await-public-writeback-setting-saved";
                 await WaitAsync(() => Task.FromResult(ReadSettings(data)?.ExperimentalWriteback == true), ct);
+                scene.Stage = "navigate-public-application-support";
                 await NavigateAsync(settings, "▦  " + ApplicationSupportPresentation.Create([]).Title, ct);
+                scene.Stage = "find-public-desktop-connection-check";
                 await UiAsync(() =>
                 {
                     var title = Find(settings, AutomationElement.NameProperty, "桌面普通输入框", ControlType.Text);
@@ -270,6 +279,7 @@ internal static partial class HyPackageCheck
                             && button.Current.BoundingRectangle.Top <= titleBounds.Bottom
                             && button.Current.BoundingRectangle.Bottom >= titleBounds.Top).ToArray();
                     Require(checks.Length == 1, "ordinary-desktop-connection-check-ambiguous");
+                    scene.Stage = "invoke-public-desktop-connection-check";
                     ((InvokePattern)checks[0].GetCurrentPattern(InvokePattern.Pattern)).Invoke();
                 }, ct);
                 scene.Facts = new
@@ -400,7 +410,22 @@ internal static partial class HyPackageCheck
                 Require(await File.ReadAllTextAsync(document, ct) == original, "ordinary-source-file-changed");
             });
         }
-        catch (Exception error) when (error is not OutOfMemoryException) { }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            if (error is COMException com && report.Scenes.LastOrDefault(scene => scene.Outcome == "failed") is { } failed)
+                failed.Facts = new
+                {
+                    hresult = $"0x{com.HResult:X8}",
+                    operation = failed.Stage,
+                    // Method names only: no exception message, source text, local
+                    // file paths, or UI contents enter this diagnostic artifact.
+                    callSites = new StackTrace(com, false).GetFrames()?.Take(12).Select(frame =>
+                    {
+                        var method = frame.GetMethod();
+                        return method?.DeclaringType?.FullName + "." + method?.Name;
+                    }).ToArray()
+                };
+        }
         finally
         {
             deadline.CancelAfter(Timeout.InfiniteTimeSpan);
@@ -468,8 +493,9 @@ internal static partial class HyPackageCheck
     }
     private static void NotepadChord(ushort[] keys) => BrowserCooperationCheck.SendChord(keys,
         () => throw new Failure("ordinary-key-release-incomplete"));
-    private static async Task EnableNotepadWriteback(AutomationElement settings, int app, CancellationToken ct)
+    private static async Task EnableNotepadWriteback(AutomationElement settings, int app, Action<string> stage, CancellationToken ct)
     {
+        stage("start-public-writeback-toggle");
         Task toggle = Task.Run(() =>
         {
             var checkbox = Find(settings, AutomationElement.NameProperty, "开发版实验：允许 Tab 写回", ControlType.CheckBox);
@@ -477,20 +503,33 @@ internal static partial class HyPackageCheck
             ((TogglePattern)checkbox!.GetCurrentPattern(TogglePattern.Pattern)).Toggle();
         }, ct);
         AutomationElement? confirmation = null;
-        await WaitAsync(async () => await UiAsync(() =>
+        stage("await-public-writeback-confirmation");
+        await WaitAsync(async () =>
+        {
+            // A failed TogglePattern call is a real failure, not a missing dialog
+            // to poll until the whole operation deadline. Preserve its exception.
+            if (toggle.IsFaulted || toggle.IsCanceled)
+            {
+                stage("public-writeback-toggle-failed");
+                await toggle;
+            }
+            return await UiAsync(() =>
         {
             confirmation = AutomationElement.RootElement.FindFirst(TreeScope.Children, new AndCondition(
                 new PropertyCondition(AutomationElement.ProcessIdProperty, app),
                 new PropertyCondition(AutomationElement.NameProperty, "TypeLay · 实验性写回"),
                 new PropertyCondition(AutomationElement.ClassNameProperty, "#32770")));
             return confirmation is not null;
-        }, ct), ct);
+        }, ct);
+        }, ct);
+        stage("invoke-public-writeback-confirmation");
         await UiAsync(() =>
         {
             var yes = Find(confirmation!, AutomationElement.AutomationIdProperty, "6", ControlType.Button);
             Require(yes is not null && yes.Current.IsEnabled, "ordinary-writeback-confirmation-missing");
             ((InvokePattern)yes!.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
         }, ct);
+        stage("await-public-writeback-toggle-return");
         await toggle.WaitAsync(ct);
     }
     private static Task ClickNotepadEditor(AutomationElement editor, int app, CancellationToken ct) => UiAsync(() =>

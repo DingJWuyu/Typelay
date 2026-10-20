@@ -34,6 +34,14 @@ public sealed class SourceGlossaryReturnGuardTests(WpfDesktopFixture desktop)
             SourceGlossaryReturn: authorization);
         using var guard = Assert.IsType<Guard>(Guard.TryOpen(request));
         Assert.True(guard.BeforeFocus(handle));
+        // The asynchronous activation may still show the original overlay.
+        // A zero-write completion barrier may run, but no source focus or
+        // acceptance may be acknowledged until the exact root is observed.
+        Assert.True(guard.AuthorityCurrent(out string authorityReason));
+        Assert.Equal("current", authorityReason);
+        Assert.False(guard.BeforeFocus(source.Root, out string focusReason));
+        Assert.Equal("foreground-changed", focusReason);
+        Assert.Equal(handle, TypeLay.Platform.Windows.NativeMethods.Focused().Item1);
         // This is explicitly after the production guard opened its independent
         // kernel handle, unlike the separate pipe-dispatched integration cases.
         cancellation.Set();
@@ -44,6 +52,9 @@ public sealed class SourceGlossaryReturnGuardTests(WpfDesktopFixture desktop)
         Assert.True(overlay.Activate());
         Assert.Equal(handle, TypeLay.Platform.Windows.NativeMethods.Focused().Item1);
         Assert.True(WindowsInterruptClock.NowMs < request.ExpiresAtMs);
-        Assert.False(guard.BeforeFocus(handle));
+        Assert.False(guard.AuthorityCurrent(out authorityReason));
+        Assert.Equal("event-canceled", authorityReason);
+        Assert.False(guard.BeforeFocus(handle, out focusReason));
+        Assert.Equal("event-canceled", focusReason);
     });
 }

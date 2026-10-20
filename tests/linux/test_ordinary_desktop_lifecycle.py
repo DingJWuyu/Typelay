@@ -122,6 +122,18 @@ class OrdinaryDesktopGeometryTests(unittest.TestCase):
                 {"a": {"logical": logical}, "b": {"logical": logical}}, [1280, 800]
             )
 
+    def test_output_failure_identifies_observed_scale_or_transform(self):
+        logical = dict(x=0, y=0, width=1280, height=800, scale=1, transform="Normal")
+        for field, value, message in (
+            ("scale", 1.25, "nested output scale mismatch: 1.25"),
+            ("transform", "Flipped180", "nested output transform mismatch: 'Flipped180'"),
+        ):
+            with self.subTest(field=field), self.assertRaises(AssertionError) as failure:
+                validate_nested_output(
+                    {"nested": {"logical": dict(logical, **{field: value})}}, [1280, 800]
+                )
+            self.assertEqual(str(failure.exception), message)
+
     def test_click_point_uses_content_offset_and_rejects_changed_identity_or_frame(self):
         window = dict(id=12, pid=345, is_focused=True, layout=self.layout())
         measured = ((10, 20, 100, 40), (0, 0, 400, 540))

@@ -21,6 +21,14 @@ CLEANUP_SECONDS = 30
 COLLECTIONS = {"alternative": 32, "styled": 16, "glossary": 5}
 
 
+def collections(comparison=False):
+    return (
+        {"alternative": 32, "styled": 16, "styled-b": 16, "glossary": 5}
+        if comparison
+        else COLLECTIONS
+    )
+
+
 def process_status(pid):
     try:
         process = Path("/proc") / str(pid)
@@ -59,14 +67,15 @@ def exclusive_inventory(paths, generation):
         yield
 
 
-def invoke_runner(name, arguments):
+def invoke_runner(name, arguments, *, comparison=None):
     """The runner keeps its own SIG/asyncio cleanup and sole worker process group."""
 
     def related(key):
         return (
             key == "typelay_worker"
             or key.startswith("typelay_worker.")
-            or key in {"alternative_quality", "styled_quality", "glossary_quality"}
+            or key
+            in {"alternative_quality", "styled_quality", "glossary_quality", "hy_decode_comparison"}
         )
 
     saved_modules = {key: value for key, value in sys.modules.items() if related(key)}
@@ -75,8 +84,13 @@ def invoke_runner(name, arguments):
         for key in saved_modules:
             del sys.modules[key]
         sys.path.insert(0, str(RUNNERS))
-        sys.argv = [str(RUNNERS / f"{name}_quality.py"), *arguments]
+        source_name = "styled" if name == "styled-b" else name
+        sys.argv = [str(RUNNERS / f"{source_name}_quality.py"), *arguments]
         try:
+            if comparison is not None:
+                import hy_decode_comparison
+
+                return hy_decode_comparison.collect_main(**comparison)
             runpy.run_path(sys.argv[0], run_name="__main__")
         except SystemExit as error:
             return error.code
@@ -119,7 +133,7 @@ def inspect_report(name, output):
         "output": str(output),
         "status": report.get("status"),
         "quality": report.get("quality", "not-run"),
-        "maximumTranslationRequests": COLLECTIONS[name],
+        "maximumTranslationRequests": collections(name == "styled-b")[name],
         "actualTranslationRequests": count,
         "workerStarts": report.get("workerStarts"),
         "workerExitConfirmed": report.get("workerExitConfirmed"),
@@ -130,26 +144,63 @@ def inspect_report(name, output):
 
 
 class Capture:
-    def __init__(self, output, work_deadline):
+    def __init__(self, output, work_deadline, *, comparison=False):
+        self.comparison = comparison
+        self.collections = collections(comparison)
         self.output = output
         self.work_deadline = work_deadline
         self.elapsed = 0.0
         self.blocked = False
         self.report = {
             "quality": "not-run",
-            "maximumTranslationRequests": sum(COLLECTIONS.values()),
+            "maximumTranslationRequests": sum(self.collections.values()),
             "actualTranslationRequests": 0,
             "requestCountComplete": True,
             "workerExitConfirmed": True,
             "collections": [],
         }
 
-    def run(self, name, generation, worker):
+    def run_comparison(self, generation, worker):
+        if not self.comparison:
+            raise RuntimeError("comparison was not explicitly selected")
+        if self.blocked or any(
+            item["runner"] in ("styled", "styled-b") for item in self.report["collections"]
+        ):
+            raise RuntimeError("failed quality collection cannot be retried")
+        if self.work_deadline - time.monotonic() < RUNNER_SECONDS:
+            raise TimeoutError("insufficient remaining quality work budget")
+        started = time.monotonic()
+        deadline = started + 600
+        # Build and runtime-only ABI probe finish before A loads a model.
+        # Helpers are isolated from any previously imported installed modules.
+        options = {
+            "variant": "A",
+            "work_deadline": deadline,
+            "experiment": self.output / "hy-decode",
+        }
+        self.run("styled", generation, worker, comparison=options)
+        if time.monotonic() >= deadline:
+            self.blocked = True
+            raise TimeoutError("shared styled deadline exhausted before B")
+        options["variant"] = "B"
+        self.run(
+            "styled-b",
+            generation,
+            self.output / "hy-decode/worker/run_worker.py",
+            comparison=options,
+        )
+        if time.monotonic() - started > RUNNER_SECONDS:
+            self.blocked = True
+            raise TimeoutError("shared styled comparison budget exceeded")
+
+    def run(self, name, generation, worker, *, comparison=None):
+        if name not in self.collections or (name == "styled-b" and comparison is None):
+            raise ValueError("collection not selected for this capture")
         if self.blocked:
             raise RuntimeError("failed quality collection cannot be retried or continued")
         if name in [item["runner"] for item in self.report["collections"]]:
             raise RuntimeError("quality collection cannot be retried")
-        if self.work_deadline - time.monotonic() < RUNNER_SECONDS:
+        if comparison is None and self.work_deadline - time.monotonic() < RUNNER_SECONDS:
             raise TimeoutError("insufficient remaining quality work budget")
         output = self.output / f"{name}-quality.json"
         if output.exists():
@@ -160,7 +211,7 @@ class Capture:
         arguments = ["--python", str(python), "--models", str(models), "--output", str(output)]
         if name != "alternative":
             arguments.extend(["--worker", str(worker)])
-        if name == "styled":
+        if name in ("styled", "styled-b"):
             arguments.append("--include-holdout")
         entry = {
             "runner": name,
@@ -175,7 +226,11 @@ class Capture:
         started = time.monotonic()
         code = None
         try:
-            code = invoke_runner(name, arguments)
+            code = (
+                invoke_runner(name, arguments, comparison=comparison)
+                if comparison is not None
+                else invoke_runner(name, arguments)
+            )
         finally:
             elapsed = time.monotonic() - started
             self.elapsed += elapsed
@@ -201,10 +256,11 @@ class Capture:
             )
         if report is None:
             raise RuntimeError("quality report missing or unreadable; preserve all data")
-        inputs = (RUNNERS / f"{name}_quality_inputs.json").read_bytes()
+        source_name = "styled" if name == "styled-b" else name
+        inputs = (RUNNERS / f"{source_name}_quality_inputs.json").read_bytes()
         expected = json.loads(inputs)["samples"]
         holdout_matches = True
-        if name == "styled":
+        if name in ("styled", "styled-b"):
             holdout = (RUNNERS / "styled_quality_holdout_inputs.json").read_bytes()
             expected.extend(json.loads(holdout)["samples"])
             holdout_matches = (
@@ -219,9 +275,9 @@ class Capture:
             and report.get("workerExitConfirmed") is True
             and type(report.get("workerExitCode")) is int
             and report["workerExitCode"] == 0
-            and report.get("maximumTranslationRequests") == COLLECTIONS[name]
-            and entry["actualTranslationRequests"] == COLLECTIONS[name]
-            and len(report["requests"]) == COLLECTIONS[name] + 1
+            and report.get("maximumTranslationRequests") == self.collections[name]
+            and entry["actualTranslationRequests"] == self.collections[name]
+            and len(report["requests"]) == self.collections[name] + 1
             and report["requests"][0].get("op") == "hello"
             and report.get("inputSha256") == hashlib.sha256(inputs).hexdigest()
             and holdout_matches
